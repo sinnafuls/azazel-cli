@@ -142,7 +142,7 @@ mod tests {
         files
             .iter()
             .map(|f| {
-                f.path
+                crate::paths::canonical(&f.path)
                     .strip_prefix(&base)
                     .unwrap()
                     .to_string_lossy()

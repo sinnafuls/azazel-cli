@@ -398,9 +398,12 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
         }
     });
     let out = Out(lines);
+    // Requests from agents go through the loop below rather than straight out, so they are written
+    // after the events emitted before them (a `tool_start` comes before its `approval_request`).
+    let (request_lines, mut requests) = mpsc::unbounded_channel::<Option<String>>();
     let waiting = Arc::new(Waiting::default());
     app.registry.services.insert(Arc::new(Ui(Arc::new(RpcBridge {
-        out: out.clone(),
+        out: Out(request_lines),
         waiting: waiting.clone(),
     }))));
 
@@ -425,10 +428,8 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
     let mut input = BufReader::new(tokio::io::stdin()).lines();
     loop {
         tokio::select! {
-            line = input.next_line() => match line {
-                Ok(Some(line)) => session.line(&line).await,
-                _ => break,
-            },
+            // Agent events first: an event is always queued before the request it causes.
+            biased;
             Some(event) = events.recv() => out.send(event_json(&lead, &event)),
             Some(event) = async { Some(team_events.as_mut()?.recv().await) } => match event {
                 Ok(TeamEvent::Agent { id, event }) => out.send(event_json(&id, &event)),
@@ -436,6 +437,13 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
                 // Events were missed; the roster says where everyone stands now.
                 Err(RecvError::Lagged(_)) => out.send(json!({ "type": "roster", "members": session.roster() })),
                 Err(RecvError::Closed) => team_events = None,
+            },
+            Some(Some(line)) = requests.recv() => {
+                let _ = out.0.send(Some(line));
+            }
+            line = input.next_line() => match line {
+                Ok(Some(line)) => session.line(&line).await,
+                _ => break,
             },
         }
     }

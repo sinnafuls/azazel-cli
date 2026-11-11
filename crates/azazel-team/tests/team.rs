@@ -390,10 +390,18 @@ async fn stopping_an_agent_cancels_what_it_is_doing() {
         "task",
         json!({ "agents": [{ "agent": "worker", "prompt": "long nap", "model": "mock/w" }], "wait": false }),
     );
-    bench.lead_calls(
-        "t2",
-        "agent_stop",
-        json!({ "id": "worker-1", "reason": "not needed" }),
+    // The stop waits a moment, so the worker is inside its nap when it arrives.
+    bench.mock.push(
+        "lead",
+        MockStep::tools(
+            "",
+            &[(
+                "t2",
+                "agent_stop",
+                json!({ "id": "worker-1", "reason": "not needed" }),
+            )],
+        )
+        .delayed(Duration::from_millis(1500)),
     );
     bench.mock.push("lead", MockStep::text("stopped it"));
     // The result of the stopped agent reaches the lead as a message, which it answers.
