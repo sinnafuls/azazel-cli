@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"role":"assistant","content":null,"tool_calls":[{"index":0,"id":"call_Zx81QmN2vLr7TtWc","type":"function","function":{"name":"read","arguments":""}}],"refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"pa"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"src"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"/main.rs\",\"limit\":40}"}}]},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"tool_calls"}],"usage":null}
+
+data: {"id":"chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a","object":"chat.completion.chunk","created":1762819260,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[],"usage":{"prompt_tokens":412,"completion_tokens":21,"total_tokens":433,"prompt_tokens_details":{"cached_tokens":256,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
+
+data: [DONE]
+

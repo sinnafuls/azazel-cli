@@ -1,0 +1,97 @@
+{
+  "query": {
+    "original": "tokio select macro site:docs.rs",
+    "show_strict_warning": false,
+    "is_navigational": false,
+    "is_news_breaking": false,
+    "spellcheck_off": true,
+    "country": "us",
+    "bad_results": false,
+    "should_fallback": false,
+    "postal_code": "",
+    "city": "",
+    "header_country": "",
+    "more_results_available": true,
+    "state": ""
+  },
+  "mixed": {
+    "type": "mixed",
+    "main": [
+      { "type": "web", "index": 0, "all": false },
+      { "type": "web", "index": 1, "all": false },
+      { "type": "web", "index": 2, "all": false }
+    ],
+    "top": [],
+    "side": []
+  },
+  "type": "search",
+  "web": {
+    "type": "search",
+    "results": [
+      {
+        "title": "select in tokio - Rust",
+        "url": "https://docs.rs/tokio/latest/tokio/macro.select.html",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "Waits on multiple concurrent branches, returning when the <strong>first</strong> branch completes, cancelling the remaining branches.",
+        "page_age": "2026-09-30T00:00:00",
+        "profile": {
+          "name": "Docs.rs",
+          "url": "https://docs.rs/tokio/latest/tokio/macro.select.html",
+          "long_name": "docs.rs",
+          "img": "https://imgs.search.brave.com/docs-rs-favicon"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "docs.rs",
+          "hostname": "docs.rs",
+          "favicon": "https://imgs.search.brave.com/docs-rs-favicon",
+          "path": "› tokio  › latest  › tokio  › macro.select.html"
+        },
+        "age": "September 30, 2026"
+      },
+      {
+        "title": "tokio::select - Rust &amp; async",
+        "url": "https://docs.rs/tokio/latest/tokio/index.html",
+        "is_source_local": false,
+        "is_source_both": false,
+        "description": "A runtime for writing reliable network applications without compromising speed. Tokio&#x27;s select! macro\n   lets a task wait on several futures.",
+        "profile": {
+          "name": "Docs.rs",
+          "url": "https://docs.rs/tokio/latest/tokio/index.html",
+          "long_name": "docs.rs",
+          "img": "https://imgs.search.brave.com/docs-rs-favicon"
+        },
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false,
+        "meta_url": {
+          "scheme": "https",
+          "netloc": "docs.rs",
+          "hostname": "docs.rs",
+          "favicon": "https://imgs.search.brave.com/docs-rs-favicon",
+          "path": "› tokio  › latest  › tokio  › index.html"
+        }
+      },
+      {
+        "title": "futures::select - Rust",
+        "url": "https://docs.rs/futures/latest/futures/macro.select.html",
+        "is_source_local": false,
+        "is_source_both": false,
+        "language": "en",
+        "family_friendly": true,
+        "type": "search_result",
+        "subtype": "generic",
+        "is_live": false
+      }
+    ],
+    "family_friendly": true
+  }
+}

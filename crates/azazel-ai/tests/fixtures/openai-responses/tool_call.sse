@@ -1,0 +1,27 @@
+event: response.created
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_04c8a17e93b52d6f00690f3d10aa7c82","object":"response","created_at":1762819260,"status":"in_progress","background":false,"error":null,"incomplete_details":null,"instructions":"You are a coding agent.","max_output_tokens":null,"model":"mock-model","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tools":[{"type":"function","description":"Read a file.","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]},"strict":false}],"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}}}
+
+event: response.in_progress
+data: {"type":"response.in_progress","sequence_number":1,"response":{"id":"resp_04c8a17e93b52d6f00690f3d10aa7c82","object":"response","created_at":1762819260,"status":"in_progress","background":false,"error":null,"incomplete_details":null,"instructions":"You are a coding agent.","max_output_tokens":null,"model":"mock-model","output":[],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"auto","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tools":[{"type":"function","description":"Read a file.","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]},"strict":false}],"top_p":1.0,"truncation":"disabled","usage":null,"user":null,"metadata":{}}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":2,"output_index":0,"item":{"id":"fc_04c8a17e93b52d6f00690f3d11c3e482","type":"function_call","status":"in_progress","arguments":"","call_id":"call_h7Kp2LmQ9sVtXw3R","name":"read"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":3,"item_id":"fc_04c8a17e93b52d6f00690f3d11c3e482","output_index":0,"delta":"{\"pa","obfuscation":"m3Xq8TzK1vBn"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":4,"item_id":"fc_04c8a17e93b52d6f00690f3d11c3e482","output_index":0,"delta":"th\":\"src","obfuscation":"Yh2LpQ9"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","sequence_number":5,"item_id":"fc_04c8a17e93b52d6f00690f3d11c3e482","output_index":0,"delta":"/main.rs\",\"limit\":40}","obfuscation":"cD5"}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","sequence_number":6,"item_id":"fc_04c8a17e93b52d6f00690f3d11c3e482","output_index":0,"arguments":"{\"path\":\"src/main.rs\",\"limit\":40}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":7,"output_index":0,"item":{"id":"fc_04c8a17e93b52d6f00690f3d11c3e482","type":"function_call","status":"completed","arguments":"{\"path\":\"src/main.rs\",\"limit\":40}","call_id":"call_h7Kp2LmQ9sVtXw3R","name":"read"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":8,"response":{"id":"resp_04c8a17e93b52d6f00690f3d10aa7c82","object":"response","created_at":1762819260,"status":"completed","background":false,"error":null,"incomplete_details":null,"instructions":"You are a coding agent.","max_output_tokens":null,"model":"mock-model","output":[{"id":"fc_04c8a17e93b52d6f00690f3d11c3e482","type":"function_call","status":"completed","arguments":"{\"path\":\"src/main.rs\",\"limit\":40}","call_id":"call_h7Kp2LmQ9sVtXw3R","name":"read"}],"parallel_tool_calls":true,"previous_response_id":null,"reasoning":{"effort":null,"summary":null},"service_tier":"default","store":false,"temperature":1.0,"text":{"format":{"type":"text"},"verbosity":"medium"},"tool_choice":"auto","tools":[{"type":"function","description":"Read a file.","name":"read","parameters":{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"integer"}},"required":["path"]},"strict":false}],"top_p":1.0,"truncation":"disabled","usage":{"input_tokens":380,"input_tokens_details":{"cached_tokens":256},"output_tokens":18,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":398},"user":null,"metadata":{}}}
+

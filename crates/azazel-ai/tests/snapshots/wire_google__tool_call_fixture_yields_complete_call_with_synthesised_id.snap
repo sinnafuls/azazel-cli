@@ -1,0 +1,65 @@
+---
+source: crates/azazel-ai/tests/wire_google.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "tool_call_start",
+    "index": 0,
+    "id": "call_Zx81aPqLm2Kc0vTnB4dE_0",
+    "name": "read"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 0,
+    "delta": "{\"path\":\"src/main.rs\",\"limit\":40}"
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "tool_call",
+      "id": "call_Zx81aPqLm2Kc0vTnB4dE_0",
+      "name": "read",
+      "input": {
+        "path": "src/main.rs",
+        "limit": 40
+      }
+    }
+  },
+  {
+    "type": "done",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_call",
+          "id": "call_Zx81aPqLm2Kc0vTnB4dE_0",
+          "name": "read",
+          "input": {
+            "path": "src/main.rs",
+            "limit": 40
+          }
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "google-generative",
+        "usage": {
+          "input": 86,
+          "output": 18,
+          "cache_read": 0,
+          "cache_write": 0,
+          "reasoning": 0
+        },
+        "stop": "tool_use",
+        "response_id": "Zx81aPqLm2Kc0vTnB4dE",
+        "duration_ms": 0
+      }
+    }
+  }
+]

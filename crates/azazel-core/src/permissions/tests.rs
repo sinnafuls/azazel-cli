@@ -1,0 +1,740 @@
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use azazel_agent::{Gate, GateDecision, Services, Tool, ToolCtx, ToolOutput};
+use serde_json::{Value, json};
+
+use super::gate::PermissionGate;
+use super::shell::analyze;
+use super::*;
+use crate::config::{Config, LoadOptions};
+use crate::ext::{Event, EventBus, EventHandler, EventKind, ExtCtx, Outcome};
+use crate::ui::{ApprovalDecision, ApprovalRequest, Headless, Ui, UiBridge, UiError};
+
+struct Fixture {
+    _tmp: tempfile::TempDir,
+    paths: Paths,
+    state: Arc<PermissionState>,
+}
+
+fn fixture(config: &str) -> Fixture {
+    let tmp = tempfile::tempdir().unwrap();
+    let project = tmp.path().join("proj");
+    std::fs::create_dir_all(project.join(".azazel")).unwrap();
+    std::fs::create_dir_all(tmp.path().join("extra")).unwrap();
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let paths = Paths::discover(&project, Some(&home.to_string_lossy()));
+    std::fs::write(paths.project_config(), config).unwrap();
+    let loaded = Config::load(
+        &paths,
+        &LoadOptions {
+            trusted: true,
+            ..LoadOptions::default()
+        },
+    )
+    .unwrap();
+    let state = Arc::new(PermissionState::new(&paths, &loaded).unwrap());
+    Fixture {
+        _tmp: tmp,
+        paths,
+        state,
+    }
+}
+
+fn agent() -> AgentInfo {
+    AgentInfo {
+        id: "lead".into(),
+        def: "lead".into(),
+        parent: None,
+        depth: 0,
+        session_id: "s".into(),
+    }
+}
+
+/// What the engine decides for `tool` called with one subject (or a shell command).
+fn verdict(f: &Fixture, tool: &str, access: Access, subject: &str) -> Verdict {
+    verdict_as(f, &agent(), tool, access, subject)
+}
+
+fn verdict_as(f: &Fixture, agent: &AgentInfo, tool: &str, access: Access, subject: &str) -> Verdict {
+    let analysis = (tool == "shell").then(|| analyze(subject, true));
+    let subjects = match &analysis {
+        Some(analysis) => analysis.subjects(),
+        None if subject.is_empty() => Vec::new(),
+        None => vec![subject.to_string()],
+    };
+    let call = Call {
+        agent,
+        tool,
+        access,
+        subjects: &subjects,
+        shell: analysis.as_ref(),
+        command: analysis.as_ref().map(|_| subject),
+    };
+    match f.state.precheck(&call) {
+        Err(reason) => Verdict::Deny(reason),
+        Ok(protected) => f.state.decide(&call, protected, false),
+    }
+}
+
+fn allowed(v: &Verdict) -> bool {
+    matches!(v, Verdict::Allow)
+}
+
+fn prompts(v: &Verdict) -> bool {
+    matches!(v, Verdict::Prompt { .. })
+}
+
+fn denied(v: &Verdict) -> bool {
+    matches!(v, Verdict::Deny(_))
+}
+
+#[test]
+fn rules_parse_and_print() {
+    for text in [
+        "shell",
+        "shell(cargo test:*)",
+        "read(src/**)",
+        "mcp__github__*",
+        "web_fetch(domain:docs.rs)",
+    ] {
+        assert_eq!(text.parse::<Rule>().unwrap().to_string(), text);
+    }
+    for bad in ["", "shell(", "shell()", "shell(x", "sh ell", "(x)"] {
+        assert!(bad.parse::<Rule>().is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn the_decision_table() {
+    use Access::*;
+    let f = fixture(
+        r#"
+        [permissions]
+        allow = ["shell(cargo test:*)", "shell(ls)", "web_fetch(domain:docs.rs)", "mcp__github__get_*", "write(generated/**)"]
+        ask = ["shell(cargo publish:*)", "read(*.env)"]
+        deny = ["shell(rm -rf:*)", "read(secrets/**)", "mcp__github__delete_*"]
+        additional_dirs = ["../extra"]
+        "#,
+    );
+    let outside = f.paths.project_root.parent().unwrap().join("elsewhere/file.txt");
+    let outside = outside.to_string_lossy();
+    let extra = f.paths.project_root.parent().unwrap().join("extra/notes.txt");
+    let extra = extra.to_string_lossy();
+
+    // (mode, tool, access, subject, expected: 'a' allow, 'p' prompt, 'd' deny)
+    let cases: &[(PermissionMode, &str, Access, &str, char)] = &[
+        // Deny rules win in every mode.
+        (PermissionMode::Auto, "shell", Exec, "rm -rf build", 'd'),
+        (PermissionMode::Auto, "shell", Exec, "echo hi && rm -rf /", 'd'),
+        (PermissionMode::Auto, "read", Read, "secrets/key.pem", 'd'),
+        (PermissionMode::Auto, "mcp__github__delete_repo", Exec, "", 'd'),
+        // The push guard wins in every mode, wherever the push hides.
+        (PermissionMode::Auto, "shell", Exec, "cargo test && git push", 'd'),
+        (PermissionMode::Auto, "shell", Exec, "echo $(git push)", 'd'),
+        (
+            PermissionMode::AcceptEdits,
+            "shell",
+            Exec,
+            "git push origin main",
+            'd',
+        ),
+        // Protected paths prompt even in auto.
+        (PermissionMode::Auto, "write", Write, ".git/hooks/pre-commit", 'p'),
+        (PermissionMode::Auto, "edit", Write, ".azazel/config.toml", 'p'),
+        (
+            PermissionMode::Auto,
+            "edit",
+            Write,
+            ".azazel/config.local.toml",
+            'p',
+        ),
+        (PermissionMode::Auto, "write", Write, "~/.bashrc", 'p'),
+        (PermissionMode::Auto, "write", Write, ".azazel/plans/x.md", 'a'),
+        (PermissionMode::Auto, "read", Read, ".git/config", 'a'),
+        // Ask rules prompt even where the mode would allow.
+        (
+            PermissionMode::Auto,
+            "shell",
+            Exec,
+            "cargo publish --dry-run",
+            'p',
+        ),
+        (PermissionMode::Ask, "read", Read, "config/prod.env", 'p'),
+        // Auto allows the rest.
+        (PermissionMode::Auto, "shell", Exec, "make all", 'a'),
+        (PermissionMode::Auto, "write", Write, &outside, 'a'),
+        // Ask mode: reads inside the roots only.
+        (PermissionMode::Ask, "read", Read, "src/main.rs", 'a'),
+        (PermissionMode::Ask, "read", Read, &extra, 'a'),
+        (PermissionMode::Ask, "read", Read, &outside, 'p'),
+        (PermissionMode::Ask, "grep", Read, "", 'a'),
+        (PermissionMode::Ask, "todo", Read, "", 'a'),
+        (PermissionMode::Ask, "write", Write, "src/main.rs", 'p'),
+        (PermissionMode::Ask, "shell", Exec, "make all", 'p'),
+        (PermissionMode::Ask, "web_search", Net, "", 'p'),
+        // Accept-edits: writes inside the roots, nothing else new.
+        (PermissionMode::AcceptEdits, "write", Write, "src/new.rs", 'a'),
+        (PermissionMode::AcceptEdits, "edit", Write, &extra, 'a'),
+        (PermissionMode::AcceptEdits, "write", Write, &outside, 'p'),
+        (PermissionMode::AcceptEdits, "shell", Exec, "make all", 'p'),
+        // Allow rules: every simple command must be covered.
+        (PermissionMode::Ask, "shell", Exec, "cargo test -p x", 'a'),
+        (PermissionMode::Ask, "shell", Exec, "cargo test", 'a'),
+        (PermissionMode::Ask, "shell", Exec, "cargo testify", 'p'),
+        (PermissionMode::Ask, "shell", Exec, "cargo test; rm x", 'p'),
+        (PermissionMode::Ask, "shell", Exec, "cargo test | ls", 'a'),
+        (PermissionMode::Ask, "shell", Exec, "ls -la", 'p'),
+        (
+            PermissionMode::Ask,
+            "shell",
+            Exec,
+            "cargo test 'unterminated",
+            'p',
+        ),
+        (PermissionMode::Ask, "web_fetch", Net, "domain:docs.rs", 'a'),
+        (PermissionMode::Ask, "web_fetch", Net, "domain:api.docs.rs", 'a'),
+        (PermissionMode::Ask, "web_fetch", Net, "domain:evildocs.rs", 'p'),
+        (PermissionMode::Ask, "mcp__github__get_issue", Exec, "", 'a'),
+        (PermissionMode::Ask, "mcp__github__create_issue", Exec, "", 'p'),
+        (PermissionMode::Ask, "write", Write, "generated/api/types.rs", 'a'),
+        // Plan mode: read-only, plus the plan file and its submission.
+        (PermissionMode::Plan, "read", Read, "src/main.rs", 'a'),
+        (PermissionMode::Plan, "write", Write, "src/main.rs", 'd'),
+        (PermissionMode::Plan, "shell", Exec, "cargo test", 'd'),
+        (
+            PermissionMode::Plan,
+            "write",
+            Write,
+            ".azazel/plans/refactor.md",
+            'a',
+        ),
+        (
+            PermissionMode::Plan,
+            "edit",
+            Write,
+            ".azazel/plans/refactor.md",
+            'a',
+        ),
+        (
+            PermissionMode::Plan,
+            "plan_submit",
+            Write,
+            ".azazel/plans/refactor.md",
+            'a',
+        ),
+        (PermissionMode::Plan, "write", Write, "generated/x.rs", 'd'),
+    ];
+    for (mode, tool, access, subject, expected) in cases {
+        f.state.set_mode(*mode);
+        let v = verdict(&f, tool, *access, subject);
+        let ok = match expected {
+            'a' => allowed(&v),
+            'p' => prompts(&v),
+            _ => denied(&v),
+        };
+        assert!(ok, "{mode} {tool}({subject}): expected {expected}, got {v:?}");
+    }
+}
+
+#[test]
+fn denial_reasons_say_what_happened() {
+    let f = fixture("[permissions]\ndeny = [\"shell(rm -rf:*)\"]\n");
+    f.state.set_mode(PermissionMode::Auto);
+    match verdict(&f, "shell", Access::Exec, "rm -rf x") {
+        Verdict::Deny(reason) => {
+            assert!(
+                reason.starts_with("denied by rule `shell(rm -rf:*)` ("),
+                "{reason}"
+            );
+            assert!(reason.contains("config.toml"), "{reason}");
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        verdict(&f, "shell", Access::Exec, "git push"),
+        Verdict::Deny(shell::PUSH_DENIED.to_string())
+    );
+    f.state.set_mode(PermissionMode::Plan);
+    assert_eq!(
+        verdict(&f, "shell", Access::Exec, "ls"),
+        Verdict::Deny(PLAN_DENIED.to_string())
+    );
+    assert!(f.state.mode_prompt(&agent()).unwrap().contains("plan_submit"));
+    f.state.set_mode(PermissionMode::Ask);
+    assert_eq!(f.state.mode_prompt(&agent()), None);
+}
+
+#[test]
+fn suggested_rules_fit_the_call() {
+    let f = fixture("");
+    let suggestion = |tool: &str, access, subject: &str| match verdict(&f, tool, access, subject) {
+        Verdict::Prompt { rule } => rule,
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        suggestion("shell", Access::Exec, "cargo test -p core").as_deref(),
+        Some("shell(cargo test:*)")
+    );
+    assert_eq!(
+        suggestion("shell", Access::Exec, "ls -la").as_deref(),
+        Some("shell(ls:*)")
+    );
+    assert_eq!(suggestion("shell", Access::Exec, "make && make install"), None);
+    assert_eq!(
+        suggestion("write", Access::Write, "src/ui/app.rs").as_deref(),
+        Some("write(src/ui/**)")
+    );
+    assert_eq!(
+        suggestion("write", Access::Write, "README.md").as_deref(),
+        Some("write(README.md)")
+    );
+    assert_eq!(
+        suggestion("web_fetch", Access::Net, "domain:docs.rs").as_deref(),
+        Some("web_fetch(domain:docs.rs)")
+    );
+    assert_eq!(
+        suggestion("web_search", Access::Net, "").as_deref(),
+        Some("web_search")
+    );
+    assert_eq!(suggestion("write", Access::Write, ".git/config"), None);
+}
+
+#[test]
+fn remembered_rules_apply_now_and_land_in_the_local_config() {
+    let f = fixture("");
+    assert!(prompts(&verdict(&f, "shell", Access::Exec, "cargo build")));
+    std::fs::write(
+        f.paths.project_local_config(),
+        "# mine\n[tui]\ntheme = \"light\"\n",
+    )
+    .unwrap();
+
+    let rule: Rule = "shell(cargo build:*)".parse().unwrap();
+    f.state.remember_allow(&rule).unwrap();
+    f.state.remember_allow(&rule).unwrap();
+    assert!(allowed(&verdict(
+        &f,
+        "shell",
+        Access::Exec,
+        "cargo build --release"
+    )));
+
+    let saved = std::fs::read_to_string(f.paths.project_local_config()).unwrap();
+    assert!(saved.starts_with("# mine\n[tui]\ntheme = \"light\"\n"), "{saved}");
+    assert_eq!(saved.matches("shell(cargo build:*)").count(), 1, "{saved}");
+    // The file is a valid config layer that grants the same rule after a restart.
+    let reloaded = Config::load(
+        &f.paths,
+        &LoadOptions {
+            trusted: true,
+            ..LoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reloaded.config.permissions.allow, ["shell(cargo build:*)"]);
+    assert_eq!(
+        f.state
+            .rules()
+            .iter()
+            .filter(|r| r.kind == RuleKind::Allow)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn an_agent_can_be_pinned_to_plan_mode_and_to_its_own_directory() {
+    let f = fixture("");
+    f.state.set_mode(PermissionMode::Auto);
+    let reviewer = AgentInfo {
+        id: "reviewer-1".into(),
+        def: "reviewer".into(),
+        parent: Some("lead".into()),
+        depth: 1,
+        session_id: "s".into(),
+    };
+    f.state.pin_agent_mode("reviewer-1", PermissionMode::Plan);
+    assert!(denied(&verdict_as(
+        &f,
+        &reviewer,
+        "write",
+        Access::Write,
+        "src/a.rs"
+    )));
+    assert!(allowed(&verdict(&f, "write", Access::Write, "src/a.rs")));
+
+    // Relative subjects resolve against the agent's own directory.
+    f.state.set_mode(PermissionMode::AcceptEdits);
+    f.state.forget_agent("reviewer-1");
+    let elsewhere = f.paths.project_root.parent().unwrap().join("elsewhere");
+    f.state.set_agent_cwd("reviewer-1", elsewhere);
+    assert!(prompts(&verdict_as(
+        &f,
+        &reviewer,
+        "write",
+        Access::Write,
+        "a.rs"
+    )));
+    assert!(allowed(&verdict(&f, "write", Access::Write, "a.rs")));
+}
+
+#[test]
+fn a_definitions_patterned_grants_bound_what_that_agent_may_do() {
+    let f = fixture("");
+    f.state.set_mode(PermissionMode::Auto);
+    let reviewer = AgentInfo {
+        id: "reviewer-1".into(),
+        def: "reviewer".into(),
+        parent: Some("lead".into()),
+        depth: 1,
+        session_id: "s".into(),
+    };
+    let grants = [
+        "read",
+        "shell(git diff:*)",
+        "shell(git log:*)",
+        "write(.azazel/plans/**)",
+    ];
+    f.state
+        .restrict_agent("reviewer-1", grants.iter().map(|g| g.parse().unwrap()).collect());
+    let as_reviewer = |tool: &str, access, subject: &str| verdict_as(&f, &reviewer, tool, access, subject);
+
+    assert!(allowed(&as_reviewer("shell", Access::Exec, "git diff HEAD~1")));
+    assert!(allowed(&as_reviewer(
+        "shell",
+        Access::Exec,
+        "git log -3 && git diff --stat"
+    )));
+    // Every command of the line has to fit, and a line that cannot be parsed never does.
+    let escaped = as_reviewer("shell", Access::Exec, "git diff; rm -rf target");
+    assert_eq!(
+        escaped,
+        Verdict::Deny(
+            "agent `reviewer-1` may use `shell` only as: shell(git diff:*), shell(git log:*)".into()
+        )
+    );
+    assert!(denied(&as_reviewer(
+        "shell",
+        Access::Exec,
+        "git diff \"unterminated"
+    )));
+    assert!(allowed(&as_reviewer(
+        "write",
+        Access::Write,
+        ".azazel/plans/next.md"
+    )));
+    assert!(denied(&as_reviewer("write", Access::Write, "src/a.rs")));
+    // A grant without a pattern, and tools no grant names, are not narrowed here.
+    assert!(allowed(&as_reviewer("read", Access::Read, "src/a.rs")));
+    assert!(allowed(&as_reviewer("edit", Access::Write, "src/a.rs")));
+    // Other agents are unaffected, and so is this one once it is forgotten.
+    assert!(allowed(&verdict(&f, "shell", Access::Exec, "cargo build")));
+    f.state.forget_agent("reviewer-1");
+    assert!(allowed(&as_reviewer("shell", Access::Exec, "cargo build")));
+}
+
+// ---------------------------------------------------------------- the gate
+
+struct FakeTool {
+    name: &'static str,
+    access: Access,
+}
+
+#[async_trait]
+impl Tool for FakeTool {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "fake"
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn access(&self, _: &Value) -> Access {
+        self.access
+    }
+    fn subjects(&self, input: &Value) -> Vec<String> {
+        input
+            .get("path")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .into_iter()
+            .collect()
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text("ran")
+    }
+}
+
+const SHELL: FakeTool = FakeTool {
+    name: "shell",
+    access: Access::Exec,
+};
+const WRITE: FakeTool = FakeTool {
+    name: "write",
+    access: Access::Write,
+};
+
+struct Answers(
+    std::sync::Mutex<Vec<ApprovalDecision>>,
+    std::sync::Mutex<Vec<ApprovalRequest>>,
+);
+
+#[async_trait]
+impl UiBridge for Answers {
+    async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: crate::ext::Level, _: &str) {}
+    async fn approval(&self, request: ApprovalRequest) -> Option<ApprovalDecision> {
+        self.1.lock().unwrap().push(request);
+        Some(self.0.lock().unwrap().remove(0))
+    }
+}
+
+struct Rig {
+    f: Fixture,
+    bus: Arc<EventBus>,
+    services: Arc<Services>,
+    gate: PermissionGate,
+}
+
+fn rig(config: &str) -> Rig {
+    let f = fixture(config);
+    let services = Arc::new(Services::new());
+    let bus = Arc::new(EventBus::new(ExtCtx {
+        services: services.clone(),
+        cwd: f.paths.cwd.clone(),
+        session_id: "s".into(),
+    }));
+    let gate = PermissionGate::new(f.state.clone(), bus.clone(), services.clone(), true);
+    Rig {
+        f,
+        bus,
+        services,
+        gate,
+    }
+}
+
+async fn before(rig: &Rig, tool: &FakeTool, input: Value) -> Result<Option<Value>, String> {
+    match rig.gate.before(&agent(), tool, "c1", &input).await {
+        GateDecision::Allow { input } => Ok(input),
+        GateDecision::Deny { reason } => Err(reason),
+    }
+}
+
+/// Rewrites every shell command to `rewrite_to`, optionally waiving the prompt or blocking.
+struct Handler {
+    rewrite_to: Option<&'static str>,
+    skip_prompt: bool,
+    block: bool,
+}
+
+#[async_trait]
+impl EventHandler for Handler {
+    async fn handle(&self, ev: &mut Event, _: &ExtCtx) -> Outcome {
+        match ev {
+            Event::ToolCall {
+                input, skip_prompt, ..
+            } => {
+                if let Some(command) = self.rewrite_to {
+                    input["command"] = json!(command);
+                }
+                *skip_prompt = self.skip_prompt;
+            }
+            Event::PermissionRequest { decision, .. } => *decision = Some(true),
+            Event::ToolResult { output, .. } => output.content.push(azazel_ai::Block::text("(audited)")),
+            _ => {}
+        }
+        if self.block {
+            Outcome::Block {
+                reason: "policy says no".into(),
+            }
+        } else {
+            Outcome::Continue
+        }
+    }
+}
+
+#[tokio::test]
+async fn headless_prompts_become_denials_that_say_how_to_proceed() {
+    let rig = rig("");
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "make"}))
+            .await
+            .unwrap_err(),
+        "permission required for shell: re-run with --mode auto or add an allow rule"
+    );
+    rig.services.insert(Arc::new(Ui(Arc::new(Headless))));
+    assert!(before(&rig, &SHELL, json!({"command": "make"})).await.is_err());
+}
+
+#[tokio::test]
+async fn the_user_can_allow_once_allow_always_or_deny_with_feedback() {
+    let rig = rig("");
+    let answers = Arc::new(Answers(
+        std::sync::Mutex::new(vec![
+            ApprovalDecision::AllowOnce,
+            ApprovalDecision::Always,
+            ApprovalDecision::Deny {
+                feedback: Some("use npm instead".into()),
+            },
+        ]),
+        std::sync::Mutex::default(),
+    ));
+    rig.services.insert(Arc::new(Ui(answers.clone())));
+
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build"})).await,
+        Ok(None)
+    );
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build"})).await,
+        Ok(None)
+    );
+    // Remembered: the third identical call no longer asks.
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build --release"})).await,
+        Ok(None)
+    );
+    assert_eq!(answers.1.lock().unwrap().len(), 2);
+    assert_eq!(
+        answers.1.lock().unwrap()[1].rule.as_deref(),
+        Some("shell(cargo build:*)")
+    );
+
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "yarn install"}))
+            .await
+            .unwrap_err(),
+        "the user denied this call: use npm instead"
+    );
+}
+
+#[tokio::test]
+async fn handlers_can_block_rewrite_and_waive_the_prompt_but_not_the_hard_limits() {
+    // Block.
+    let rig1 = rig("");
+    rig1.f.state.set_mode(PermissionMode::Auto);
+    rig1.bus.on(
+        EventKind::ToolCall,
+        "x",
+        Arc::new(Handler {
+            rewrite_to: None,
+            skip_prompt: false,
+            block: true,
+        }),
+    );
+    assert_eq!(
+        before(&rig1, &SHELL, json!({"command": "ls"})).await.unwrap_err(),
+        "policy says no"
+    );
+
+    // Rewrite and waive the prompt in ask mode.
+    let rig2 = rig("");
+    rig2.bus.on(
+        EventKind::ToolCall,
+        "x",
+        Arc::new(Handler {
+            rewrite_to: Some("ls -la"),
+            skip_prompt: true,
+            block: false,
+        }),
+    );
+    assert_eq!(
+        before(&rig2, &SHELL, json!({"command": "ls"})).await,
+        Ok(Some(json!({"command": "ls -la"})))
+    );
+    // A waived prompt does not cover a protected path.
+    assert!(
+        before(&rig2, &WRITE, json!({"path": ".git/config"}))
+            .await
+            .is_err()
+    );
+
+    // A rewrite into a push is still a push.
+    let rig3 = rig("");
+    rig3.f.state.set_mode(PermissionMode::Auto);
+    rig3.bus.on(
+        EventKind::ToolCall,
+        "x",
+        Arc::new(Handler {
+            rewrite_to: Some("git push"),
+            skip_prompt: true,
+            block: false,
+        }),
+    );
+    assert_eq!(
+        before(&rig3, &SHELL, json!({"command": "ls"})).await.unwrap_err(),
+        shell::PUSH_DENIED
+    );
+}
+
+#[tokio::test]
+async fn a_permission_handler_can_settle_the_request_and_result_handlers_amend_output() {
+    let rig = rig("");
+    rig.bus.on(
+        EventKind::PermissionRequest,
+        "x",
+        Arc::new(Handler {
+            rewrite_to: None,
+            skip_prompt: false,
+            block: false,
+        }),
+    );
+    assert_eq!(before(&rig, &SHELL, json!({"command": "make"})).await, Ok(None));
+
+    rig.bus.on(
+        EventKind::ToolResult,
+        "x",
+        Arc::new(Handler {
+            rewrite_to: None,
+            skip_prompt: false,
+            block: true,
+        }),
+    );
+    let mut output = ToolOutput::text("ran");
+    rig.gate.after(&agent(), &SHELL, "c1", &mut output).await;
+    assert_eq!(output.text_content(), "ran\n(audited)\npolicy says no");
+}
+
+#[tokio::test]
+async fn reading_a_web_address_is_decided_by_the_rules_for_web_fetch() {
+    // What the `read` tool reports for an `https://` path: a network access to a host.
+    const READ_URL: FakeTool = FakeTool {
+        name: "read",
+        access: Access::Net,
+    };
+    let rig = rig(
+        "[permissions]\nallow = [\"web_fetch(domain:docs.rs)\", \"read\"]\n\
+         deny = [\"web_fetch(domain:evil.example)\"]",
+    );
+    let denied = before(&rig, &READ_URL, json!({"path": "domain:evil.example"}))
+        .await
+        .unwrap_err();
+    assert!(
+        denied.starts_with("denied by rule `web_fetch(domain:evil.example)`"),
+        "{denied}"
+    );
+    assert_eq!(
+        before(&rig, &READ_URL, json!({"path": "domain:api.docs.rs"})).await,
+        Ok(None)
+    );
+    // Allowing `read` (of files) does not open the network.
+    let unlisted = before(&rig, &READ_URL, json!({"path": "domain:other.example"}))
+        .await
+        .unwrap_err();
+    assert!(unlisted.starts_with("permission required"), "{unlisted}");
+}

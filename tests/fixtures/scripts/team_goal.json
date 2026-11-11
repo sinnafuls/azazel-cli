@@ -1,0 +1,70 @@
+{
+  "lead": [
+    {
+      "reply": {
+        "text": "Three scouts first.",
+        "tool_calls": [
+          {
+            "id": "t1",
+            "name": "task",
+            "input": {
+              "agents": [
+                { "agent": "scout", "prompt": "Read src/lib.rs and report what `add` does." },
+                { "agent": "scout", "prompt": "Find the tests of this crate and report what they expect." },
+                { "agent": "scout", "prompt": "Read Cargo.toml and report how the crate is built and tested." }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    { "reply": { "tool_calls": [{ "id": "t2", "name": "shell", "input": { "command": "git push" } }] } },
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "t3",
+            "name": "goal_done",
+            "input": { "summary": "The scouts looked at the crate.", "evidence": "None yet." }
+          }
+        ]
+      }
+    },
+    { "reply": { "tool_calls": [{ "id": "t4", "name": "read", "input": { "path": "src/lib.rs" } }] } },
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "t5",
+            "name": "edit",
+            "input": { "path": "src/lib.rs", "edits": [{ "old": "a - b", "new": "a + b" }] }
+          }
+        ]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "t6",
+            "name": "goal_done",
+            "input": { "summary": "`add` subtracted; it adds now.", "evidence": "cargo test passes." }
+          }
+        ]
+      }
+    },
+    { "reply": { "text": "The tests pass now: `add` subtracted its arguments and adds them now." } }
+  ],
+  "scout": [
+    { "reply": { "text": "src/lib.rs:2 `add` returns `a - b`." } },
+    { "reply": { "text": "src/lib.rs:11 the test `adds_two_numbers` expects `add(2, 3) == 5`." } },
+    { "reply": { "text": "Cargo.toml: a plain library crate; `cargo test` runs its tests." } }
+  ],
+  "verifier": [
+    {
+      "reply": {
+        "text": "`add` now returns `a + b` (src/lib.rs:3) and `cargo test` passes.\n\n```json\n{\"pass\": true, \"failures\": []}\n```"
+      }
+    }
+  ]
+}

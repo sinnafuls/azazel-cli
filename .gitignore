@@ -1,0 +1,10 @@
+target/
+dist/
+tmp/
+# Third-party reference material and the local tooling around it; never published.
+/ref/
+/tools/
+# This repository's own azazel project settings, and state azazel keeps in any project.
+/.azazel/
+.azazel/worktrees/
+.azazel/config.local.toml

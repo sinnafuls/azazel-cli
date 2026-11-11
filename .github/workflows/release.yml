@@ -1,0 +1,70 @@
+name: release
+
+# Pushing a tag such as v0.2.0 builds every platform and publishes a GitHub release with
+# azazel-<os>-<arch>.(zip|tar.gz) and a .sha256 beside each. The install scripts and
+# `azazel update` download from the latest release by these names.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag matches the crate version
+        run: |
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match version $version in Cargo.toml" >&2
+            exit 1
+          fi
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes --draft
+
+  build:
+    # Linux on ARM (target aarch64-unknown-linux-gnu, runner ubuntu-24.04-arm) can be added to
+    # the matrix once the repository is public; those runners are not free for private ones.
+    needs: create
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show && rustup target add ${{ matrix.target }}
+      # Screen capture (the `screen` feature) links against these on Linux.
+      - if: runner.os == 'Linux'
+        run: >
+          sudo apt-get update && sudo apt-get install -y pkg-config libclang-dev libxcb1-dev
+          libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev
+      - run: cargo xtask dist --target ${{ matrix.target }}
+      - name: Upload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # One archive and its checksum per job; the glob for the other archive kind matches nothing.
+        run: gh release upload "$GITHUB_REF_NAME" $(ls dist/azazel-*.zip dist/azazel-*.tar.gz dist/*.sha256 2>/dev/null) --clobber
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

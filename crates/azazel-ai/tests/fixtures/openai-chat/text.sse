@@ -1,0 +1,14 @@
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"role":"assistant","content":"","refusal":null},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"content":"Hello"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"content":"! How can I"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{"content":" help you today?"},"logprobs":null,"finish_reason":null}],"usage":null}
+
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[{"index":0,"delta":{},"logprobs":null,"finish_reason":"stop"}],"usage":null}
+
+data: {"id":"chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e","object":"chat.completion.chunk","created":1762819200,"model":"mock-model","service_tier":"default","system_fingerprint":"fp_3a1c9e7b52","choices":[],"usage":{"prompt_tokens":19,"completion_tokens":9,"total_tokens":28,"prompt_tokens_details":{"cached_tokens":0,"audio_tokens":0},"completion_tokens_details":{"reasoning_tokens":0,"audio_tokens":0,"accepted_prediction_tokens":0,"rejected_prediction_tokens":0}}}
+
+data: [DONE]
+

@@ -1,0 +1,14 @@
+# Packages that `azazel pkg add <name>` and `azazel skills add <name>` install by name.
+# Names and addresses only: nothing from these repositories ships with azazel.
+
+[taste]
+source = "https://github.com/Leonxlnx/taste-skill"
+
+[components]
+source = "https://github.com/vercel/components.build"
+
+[design-styles]
+source = "https://github.com/bergside/awesome-design-skills"
+# Dozens of styles would crowd the list the model chooses from, so none is offered until it is
+# added by name (`azazel skills add design-styles/<style>`). Each stays usable as `/skill:<style>`.
+model_invocable = []

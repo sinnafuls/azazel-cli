@@ -1,0 +1,6 @@
+data: {"candidates": [{"content": {"parts": [{"text": "Here is the summary"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 31,"totalTokenCount": 31,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 31}]},"modelVersion": "mock-model","responseId": "Tt2maJ3cE9yQz7IPw5rL"}
+
+data: {"candidates": [{"content": {"parts": [{"text": " of the first"}],"role": "model"},"index": 0}],"usageMetadata": {"promptTokenCount": 31,"totalTokenCount": 31,"promptTokensDetails": [{"modality": "TEXT","tokenCount": 31}]},"modelVersion": "mock-model","responseId": "Tt2maJ3cE9yQz7IPw5rL"}
+
+data: {"error": {"code": 503,"message": "The model is overloaded. Please try again later.","status": "UNAVAILABLE"}}
+

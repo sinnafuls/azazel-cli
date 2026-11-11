@@ -1,0 +1,4 @@
+# Scripted runs give scouts and the verifier their own mock models.
+[roles]
+smol = ["mock/scout"]
+verify = ["mock/verifier"]

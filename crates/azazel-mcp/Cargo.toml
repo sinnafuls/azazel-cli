@@ -1,0 +1,34 @@
+[package]
+name = "azazel-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait.workspace = true
+azazel-agent.workspace = true
+azazel-ai.workspace = true
+azazel-core.workspace = true
+base64.workspace = true
+futures.workspace = true
+regex.workspace = true
+reqwest.workspace = true
+rmcp.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+which.workspace = true
+
+[dev-dependencies]
+azazel-ai = { workspace = true, features = ["test-support"] }
+azazel-tools.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true

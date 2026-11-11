@@ -1,0 +1,43 @@
+{
+  "query": "wiremock rust site:docs.rs",
+  "number_of_results": 0,
+  "results": [
+    {
+      "url": "https://docs.rs/wiremock/latest/wiremock/",
+      "title": "wiremock - Rust",
+      "content": "wiremock provides HTTP mocking to perform black-box testing of Rust applications that interact with third-party APIs.",
+      "publishedDate": null,
+      "thumbnail": "",
+      "engine": "duckduckgo",
+      "template": "default.html",
+      "parsed_url": ["https", "docs.rs", "/wiremock/latest/wiremock/", "", "", ""],
+      "img_src": "",
+      "priority": "",
+      "engines": ["duckduckgo", "brave"],
+      "positions": [1, 1],
+      "score": 4.0,
+      "category": "general"
+    },
+    {
+      "url": "https://docs.rs/wiremock/latest/wiremock/struct.MockServer.html",
+      "title": "MockServer in wiremock - Rust",
+      "content": null,
+      "publishedDate": null,
+      "thumbnail": "",
+      "engine": "brave",
+      "template": "default.html",
+      "parsed_url": ["https", "docs.rs", "/wiremock/latest/wiremock/struct.MockServer.html", "", "", ""],
+      "img_src": "",
+      "priority": "",
+      "engines": ["brave"],
+      "positions": [2],
+      "score": 0.5,
+      "category": "general"
+    }
+  ],
+  "answers": [],
+  "corrections": [],
+  "infoboxes": [],
+  "suggestions": ["wiremock rust example"],
+  "unresponsive_engines": []
+}

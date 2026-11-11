@@ -1,0 +1,20 @@
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"role":"assistant","content":null,"reasoning_content":""},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":null,"reasoning_content":"The user wants the tests run."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":null,"reasoning_content":" I should call the shell tool."},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":"I'll run","reasoning_content":null},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":" the test suite.","reasoning_content":null},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_00_T3stRunQ7xYb","type":"function","function":{"name":"shell","arguments":""}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"command\":"}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":null,"tool_calls":[{"index":0,"function":{"arguments":" \"cargo test\"}"}}]},"logprobs":null,"finish_reason":null}]}
+
+data: {"id":"9d4e7f10-5b2a-4c88-a1f3-6e0b7c9d2a41","object":"chat.completion.chunk","created":1762819320,"model":"mock-model","system_fingerprint":"fp_mock_8802369eaf","choices":[{"index":0,"delta":{"content":""},"logprobs":null,"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":530,"completion_tokens":96,"total_tokens":626,"prompt_tokens_details":{"cached_tokens":384},"completion_tokens_details":{"reasoning_tokens":64},"prompt_cache_hit_tokens":384,"prompt_cache_miss_tokens":146}}
+
+data: [DONE]
+

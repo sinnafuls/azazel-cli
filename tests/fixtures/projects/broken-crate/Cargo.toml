@@ -1,0 +1,8 @@
+[package]
+name = "broken-crate"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Stands alone: tests copy this directory elsewhere and build it there.
+[workspace]

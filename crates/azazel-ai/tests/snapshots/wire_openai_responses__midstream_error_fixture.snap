@@ -1,0 +1,53 @@
+---
+source: crates/azazel-ai/tests/wire_openai_responses.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": "The answer"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": " is"
+  },
+  {
+    "type": "error",
+    "error": {
+      "kind": "server",
+      "detail": {
+        "status": 500,
+        "body": "An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists."
+      }
+    },
+    "partial": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "The answer is"
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "openai-responses",
+        "usage": {
+          "input": 0,
+          "output": 0,
+          "cache_read": 0,
+          "cache_write": 0,
+          "reasoning": 0
+        },
+        "stop": "error",
+        "response_id": "resp_02a9d4f7c18e63b500690f3f0c77de84",
+        "duration_ms": 0
+      }
+    }
+  }
+]

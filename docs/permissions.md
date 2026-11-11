@@ -1,0 +1,165 @@
+# Permissions
+
+Every tool call an agent makes passes one gate before it runs. The gate combines a session-wide permission mode, allow/ask/deny rules from config, a fixed list of protected paths, a guard that stops agents from pushing, and your answer when it has to ask. There is no OS-level sandbox: containment is this gate, [checkpoints](sessions-and-checkpoints.md) and [worktree isolation](team.md#worktree-isolation).
+
+## Modes
+
+| Mode | Runs without asking | Asks | Refuses |
+|---|---|---|---|
+| `plan` | Read-only tools; `write`/`edit` under `.azazel/plans/`; `plan_submit` | nothing | Every other write, command and network call |
+| `ask` (default) | Read-only tools on paths inside the project | Everything else | |
+| `accept-edits` | As `ask`, plus file writes inside the project | Commands, network, writes outside the project | |
+| `auto` | Everything | Only what an `ask` rule or a protected path forces | |
+
+"Inside the project" means under the project root or one of `permissions.additional_dirs`. A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL and the `generate_*` tools.
+
+Deny rules, the push guard and protected paths apply in every mode, `auto` included.
+
+### Switching
+
+| How | Scope |
+|---|---|
+| `Shift+Tab` | Cycles `plan` → `ask` → `accept-edits` → `auto` in the TUI |
+| `/mode` | Picker; `/mode auto` sets it directly |
+| `--mode <mode>` | This run; works with `-p`, `azazel goal` and `azazel rpc` |
+| `[permissions] mode = "ask"` | Default for new sessions |
+| `AZAZEL_PERMISSIONS__MODE=auto` | Environment override |
+
+The mode belongs to the session and each change is recorded in the transcript. An agent whose definition says `mode: plan` stays in plan mode whatever the session mode is (see [team](team.md)).
+
+## Rules
+
+```toml
+# <project>/.azazel/config.toml
+[permissions]
+mode = "ask"
+allow = ["shell(cargo build:*)", "shell(cargo test:*)", "edit(src/**)", "web_fetch(domain:docs.rs)"]
+ask   = ["shell(rm:*)", "write(*.lock)"]
+deny  = ["read(.env)", "read(secrets/**)", "shell(curl:*)", "mcp__github__delete_*"]
+additional_dirs = ["../shared-lib"]
+```
+
+A rule is `tool` or `tool(pattern)`. The tool part is a glob over tool names, so `mcp__github__*` covers every tool of one MCP server. A rule without a pattern covers every call of the tool. What the pattern matches depends on the tool:
+
+| Tool | Pattern | Examples |
+|---|---|---|
+| `shell` | Ending in `:*`: a prefix, matching that command alone or followed by a space and anything. Otherwise a glob over the command. | `shell(git diff:*)`, `shell(npm run *)` |
+| `read`, `write`, `edit`, `glob`, `grep`, `lsp` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
+| `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL is matched as `web_fetch`. For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
+| Any other tool | A glob over the tool's subject, if it has one (for `screen`, the action name) | `screen`, `screen(capture)` |
+
+The `allow`, `ask` and `deny` arrays concatenate across config layers (home, project, `config.local.toml`, environment). A project's `permissions.allow` is ignored until the project is trusted; its `ask` and `deny` always apply. See [configuration](configuration.md).
+
+### Shell commands
+
+A `shell` command line is parsed and split into its simple commands: through pipelines, `&&`/`;` lists, subshells, command substitutions, and scripts passed to `sh -c` or `eval`. Leading variable assignments and the wrappers `sudo`, `env`, `command`, `nohup`, `time` and `xargs` are stripped. Each simple command is matched on its own.
+
+- A `deny` or `ask` rule applies when it matches **any** of the commands.
+- An `allow` rule lets the call through only when **every** command is covered by some allow rule.
+
+So `shell(cargo test:*)` allows `cargo test -p core` but not `cargo test; rm -rf target`, and `deny = ["shell(rm:*)"]` catches `ls && sudo rm -rf x`.
+
+A command line that cannot be parsed, and any command when the resolved shell is PowerShell, is treated as one opaque string: deny rules and glob patterns still see it, but allow rules never auto-allow it.
+
+## How a call is decided
+
+In this order; the first step that settles the call wins.
+
+1. A `deny` rule matches: refused, with the rule and the file it came from.
+2. The calling agent's definition restricts the tool to patterns (`tools: shell(git diff:*)`) and the call is outside them: refused.
+3. The push guard matches: refused.
+4. [Hooks](hooks.md) and [extensions](extensions.md) see the call. They can block it, rewrite its input (the rewritten call goes through steps 1–3 again), or waive the prompt.
+5. The call writes to a protected path: it goes to step 10, whatever the mode, allow rules or a waived prompt say.
+6. An `ask` rule matches: it goes to step 10, unless a hook waived the prompt, in which case it is allowed.
+7. The mode decides, as in the table above. `plan` refuses here.
+8. Every subject of the call is covered by `allow` rules: allowed.
+9. A hook waived the prompt: allowed.
+10. `permission_request` hooks may settle it. Otherwise you are asked.
+
+## Protected paths
+
+File-writing tools always ask before touching:
+
+- anything inside a `.git` directory;
+- `<project>/.azazel/config*.toml`;
+- anything under `~/.azazel/`;
+- shell profiles: `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `profile.ps1`, `Microsoft.PowerShell_profile.ps1`.
+
+These prompts have no "always allow" choice, and no allow rule or `auto` mode removes them.
+
+## The approval prompt
+
+The prompt is titled `<agent> wants to use <tool>` and shows the commands, path or host involved.
+
+| Choice | Effect |
+|---|---|
+| `Allow once` | This call only |
+| `Always allow <rule>` | Allows it and appends the rule to `permissions.allow` in `<project>/.azazel/config.local.toml` |
+| `Deny` | The model is told the user denied the call |
+| `Deny and say what to do instead` | As `Deny`, with your text passed to the model |
+
+`Esc` denies. The suggested rule is narrow: `shell(cargo test:*)` for a single command with a subcommand, `edit(src/**)` for a file's directory, `web_fetch(domain:<host>)` for a host, the bare tool name for other tools. When no single rule covers the call (a pipeline of several commands, for example) the choice is not offered.
+
+Sub-agents use the same prompt; the roster shows `waiting for your approval` beside the agent until you answer.
+
+`/permissions` prints the current mode and every rule in effect with its kind and source: a config file path, or `environment or command line`.
+
+## Agents never push
+
+Publishing is left to you. Two layers enforce it, in every mode, and no rule or hook can lift them.
+
+**Command analysis.** A `shell` call is refused when any of its commands is:
+
+- `git push` or `git send-pack` (with or without options such as `-C dir` before the subcommand);
+- `jj git push`, `hg push`;
+- `gh pr create`, `gh pr merge`, `gh release create`, or `gh repo create --push`.
+
+A command line that could not be parsed is refused when it contains `git … push` or `git … send-pack` within one command. The model receives:
+
+```text
+agents never push. Ask the user to push (they can type "!git push").
+```
+
+**Environment.** Every process started on an agent's behalf (the `shell` tool, command hooks, verify commands, `azazel.exec` in Luau extensions) runs with `GIT_TERMINAL_PROMPT=0` and extra git configuration, passed through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`, that rewrites the push URL of `https://`, `http://`, `ssh://`, `git://`, `git@` and `file://` remotes to `azazel-push-blocked://denied/`. A push started indirectly, by a script or a package manager, therefore fails at the transport with `azazel-push-blocked` in git's error. Fetching and pulling are not affected.
+
+Commands you type yourself with the `!` prefix in the TUI (`!git push`) run in your shell outside the gate and without this environment.
+
+## Plan mode
+
+In `plan` mode the agent is told to investigate with read-only tools, write a plan to `.azazel/plans/<short-name>.md` (what changes, in which files, in what order, how it is verified), and call the `plan_submit` tool with that path. Anything else that is not a read returns:
+
+```text
+plan mode: only read-only tools are available. Write the plan to a file under .azazel/plans/ and call plan_submit.
+```
+
+`plan_submit` shows the plan in the transcript and asks:
+
+| Choice | Effect |
+|---|---|
+| `Approve and run` | The session mode becomes `accept-edits`; the agent is told `approved; implement the plan` |
+| `Revise` | You type feedback; the agent revises the plan and submits again |
+
+Closing the review without choosing leaves the mode unchanged and tells the agent to ask what you want changed.
+
+```sh
+azazel --mode plan            # start a session in plan mode
+```
+
+## Headless behaviour
+
+In print mode (`-p`) and `azazel goal` nobody can answer a prompt. A call that would ask is refused instead, and the model sees:
+
+```text
+permission required for <tool>: re-run with --mode auto or add an allow rule
+```
+
+Choose the mode and rules up front:
+
+```sh
+azazel -p "fix the failing test" --mode accept-edits
+azazel goal "make cargo test pass" --mode auto
+```
+
+A project's own `permissions.allow` counts only if the project is trusted; pass `--trust` for a run in a project you have not trusted interactively. `plan_submit` without a user returns the plan's path and tells the agent to stop and summarise the plan.
+
+`azazel rpc` is not headless in this sense: prompts are sent to the client as `approval_request` events and answered with `approval_response` (`allow`, `always`, `deny`). See [rpc](rpc.md).

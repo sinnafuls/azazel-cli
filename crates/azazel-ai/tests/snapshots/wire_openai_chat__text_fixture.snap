@@ -1,0 +1,59 @@
+---
+source: crates/azazel-ai/tests/wire_openai_chat.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": "Hello"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": "! How can I"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": " help you today?"
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "text",
+      "text": "Hello! How can I help you today?"
+    }
+  },
+  {
+    "type": "done",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Hello! How can I help you today?"
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "openai-chat",
+        "usage": {
+          "input": 19,
+          "output": 9,
+          "cache_read": 0,
+          "cache_write": 0,
+          "reasoning": 0
+        },
+        "stop": "stop",
+        "response_id": "chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e",
+        "duration_ms": 0
+      }
+    }
+  }
+]

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>How the borrow checker tracks ownership in Rust</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: sans-serif; }
+    nav a { margin-right: 1em; }
+  </style>
+  <script>
+    window.analyticsQueue = window.analyticsQueue || [];
+    window.analyticsQueue.push({ event: "pageview", marker: "TRACKING_SNIPPET_MARKER" });
+  </script>
+</head>
+<body>
+  <header class="site-header">
+    <a class="logo" href="/">Ferrous Notes</a>
+    <nav class="main-navigation" aria-label="Primary">
+      <ul>
+        <li><a href="/pricing">Pricing plans</a></li>
+        <li><a href="/careers">Careers portal</a></li>
+        <li><a href="/login">Sign in to your account</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <main>
+    <article class="post">
+      <h1>How the borrow checker tracks ownership in Rust</h1>
+      <p class="byline">By Ada Example</p>
+
+      <p>Every value in a Rust program has exactly one owner at any moment, and the compiler keeps a
+      precise record of who that owner is. When the owner goes out of scope the value is dropped, which
+      means memory is released at a point the compiler can name long before the program ever runs.</p>
+
+      <p>Borrowing lets other parts of the program look at a value without taking it away from its owner.
+      The compiler accepts any number of shared borrows at the same time, or exactly one exclusive borrow,
+      but it never accepts both together, because that combination is what makes data races possible.</p>
+
+      <h2>Moves and copies</h2>
+
+      <p>Assigning a value to a new variable moves it, and the old variable can no longer be used.
+      Small types such as integers opt out of this rule by being copied instead, so both variables stay
+      usable afterwards and nothing surprising happens when one of them changes later on.</p>
+
+      <p>A function that takes a value by parameter becomes its new owner for the length of the call.
+      Passing a reference instead keeps ownership with the caller, and the function body is checked to
+      make sure that reference never escapes into a place that lives longer than the value it points to.</p>
+
+      <h2>Lifetimes</h2>
+
+      <p>Lifetimes are the names the compiler gives to the regions of code in which a borrow is valid.
+      Most of the time they are inferred, and you only write them out when a function returns a reference
+      and the compiler needs to be told which argument that reference was derived from.</p>
+
+      <p>The checker reasons about control flow, so a borrow ends at its last use and not at the closing
+      brace of the block. Code that looks like it holds two conflicting borrows often compiles because
+      the first one is already finished by the time the second one begins. See the
+      <a href="/guides/lifetimes">lifetimes guide</a> for worked examples.</p>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <p>Copyright Ferrous Notes. All rights reserved.</p>
+    <ul>
+      <li><a href="/privacy">Privacy policy</a></li>
+      <li><a href="/terms">Terms of service</a></li>
+    </ul>
+  </footer>
+
+  <script>
+    document.querySelectorAll("nav a").forEach(function (link) {
+      link.addEventListener("click", function () { console.log("NAV_CLICK_HANDLER_MARKER"); });
+    });
+  </script>
+</body>
+</html>

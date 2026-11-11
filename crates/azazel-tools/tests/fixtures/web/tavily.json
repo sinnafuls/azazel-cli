@@ -1,0 +1,24 @@
+{
+  "query": "rust 2024 edition changes",
+  "follow_up_questions": null,
+  "answer": null,
+  "images": [],
+  "results": [
+    {
+      "url": "https://doc.rust-lang.org/edition-guide/rust-2024/index.html",
+      "title": "Rust 2024 - The Rust Edition Guide",
+      "content": "The Rust 2024 edition was stabilized in Rust 1.85. It changes how return-position impl Trait captures lifetimes, [...] makes unsafe extern blocks explicit, and reserves the gen keyword.",
+      "score": 0.91204,
+      "raw_content": null
+    },
+    {
+      "url": "https://blog.rust-lang.org/2025/02/20/Rust-1.85.0/",
+      "title": "Announcing Rust 1.85.0 and Rust 2024",
+      "content": "Rust 1.85.0 stabilizes the 2024 edition as well as async closures.",
+      "score": 0.87733,
+      "raw_content": null
+    }
+  ],
+  "response_time": 1.42,
+  "request_id": "123e4567-e89b-12d3-a456-426614174111"
+}

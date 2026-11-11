@@ -1,0 +1,39 @@
+[package]
+name = "azazel-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+lsp = ["dep:lsp-types"]
+
+[dependencies]
+async-trait.workspace = true
+azazel-agent.workspace = true
+azazel-ai.workspace = true
+azazel-core.workspace = true
+dom_smoothie.workspace = true
+globset.workspace = true
+grep-regex.workspace = true
+grep-searcher.workspace = true
+htmd.workspace = true
+ignore.workspace = true
+lsp-types = { workspace = true, optional = true }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+similar.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+base64.workspace = true
+image.workspace = true
+tempfile.workspace = true
+wiremock.workspace = true
