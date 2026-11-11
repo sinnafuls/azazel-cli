@@ -595,9 +595,7 @@ impl Tui {
             }
             AgentEvent::Retry { attempt, model } => {
                 self.stream = StreamView::default();
-                self.info(&format!(
-                    "the response from {model} was cut off; retrying (attempt {attempt})"
-                ));
+                self.info(&format!("{model} did not answer; retrying (attempt {attempt})"));
             }
             AgentEvent::Fallback { from, to } => {
                 self.info(&format!("{from} is unavailable; falling back to {to}"))

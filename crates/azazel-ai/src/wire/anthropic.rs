@@ -537,9 +537,10 @@ fn classify_kind(kind: &str, message: &str) -> Option<AiError> {
         }
         "request_too_large" => Some(AiError::ContextOverflow),
         _ if is_context_overflow(message) => Some(AiError::ContextOverflow),
-        // A subscription answers a request its short usage window refuses with a 400 that says the
-        // extra usage is used up; the window resets on its own, so it is worth another attempt.
-        _ if message.contains("out of extra usage") => Some(AiError::RateLimit { retry_after: None }),
+        // A subscription refuses requests it will not bill to the plan (some tool names, a used-up
+        // usage window) with a 400 about extra usage. Retrying the same request does not help, but
+        // another model in the chain may answer, so it is handled like a billing failure.
+        _ if message.contains("out of extra usage") => Some(AiError::Auth(message.to_string())),
         _ => None,
     }
 }

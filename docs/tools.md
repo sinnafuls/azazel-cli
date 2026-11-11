@@ -137,7 +137,7 @@ The four `generate_*` tools are registered only when a media backend has credent
 | Tool | Input | Behaviour |
 |---|---|---|
 | `mcp__<server>__<tool>` | the server's own schema | A tool of a connected MCP server |
-| `mcp_resources` | `server?` | Lists resources as `mcp://<server>/<uri>  name` |
+| `list_mcp_resources` | `server?` | Lists resources as `mcp://<server>/<uri>  name` |
 | `tool_search` | `query`, `limit?` | Present only when there are too many MCP tools to list: finds tools by description and makes the hits callable. `limit` defaults to 8 (at most 25) |
 
 See [mcp](mcp.md).

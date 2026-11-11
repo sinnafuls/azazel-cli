@@ -85,7 +85,7 @@ In a session:
 
 - `/mcp` shows each server's state, tool count, and offers reconnect, enable and disable. `/mcp list` prints the same as text.
 - Tools appear to agents as `mcp__<server>__<tool>`. With many tools connected they are found through `tool_search` instead of being listed up front, which makes names and descriptions matter even more.
-- Resources are read with the `read` tool at `mcp://<server>/<resource uri>` and listed with `mcp_resources`.
+- Resources are read with the `read` tool at `mcp://<server>/<resource uri>` and listed with `list_mcp_resources`.
 - Prompts appear as `/mcp:<server>:<prompt>`.
 - A remote server that answers 401 is logged in to with `azazel mcp login <name>`.
 

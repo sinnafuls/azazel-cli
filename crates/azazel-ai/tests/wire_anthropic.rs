@@ -1158,12 +1158,14 @@ fn classify_error_returns_only_what_the_generic_mapping_would_miss() {
         (400, "rate_limit_error", "Slow down", rate_limit.clone()),
         // Not retryable on this account, but another model in the chain may answer.
         (402, "billing_error", credit, billing),
-        // A subscription whose short usage window refuses the request: worth another attempt.
+        // A subscription refusing to bill the request to the plan: shown as it is, not retried.
         (
             400,
             invalid,
             "You're out of extra usage. Add more at claude.ai/settings/usage",
-            rate_limit,
+            Some(AiError::Auth(
+                "You're out of extra usage. Add more at claude.ai/settings/usage".into(),
+            )),
         ),
         (401, "authentication_error", "invalid x-api-key", None),
         (403, "permission_error", "not allowed", None),

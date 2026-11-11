@@ -199,7 +199,7 @@ async fn a_server_tool_is_listed_called_and_called_again_after_the_server_was_ki
 
     let requests = bench.mock.requests_for("a");
     let offered = tool_names(&requests[0]);
-    for expected in ["mcp__echo__echo", "mcp__echo__add", "mcp_resources", "read"] {
+    for expected in ["mcp__echo__echo", "mcp__echo__add", "list_mcp_resources", "read"] {
         assert!(
             offered.contains(&expected),
             "{expected} is missing from {offered:?}"
@@ -296,9 +296,10 @@ async fn resources_prompts_and_instructions_reach_the_session() {
             &[("c1", "read", json!({ "path": "mcp://echo/mem://greeting" }))],
         ),
     );
-    bench
-        .mock
-        .push("a", MockStep::tools("", &[("c2", "mcp_resources", json!({}))]));
+    bench.mock.push(
+        "a",
+        MockStep::tools("", &[("c2", "list_mcp_resources", json!({}))]),
+    );
     bench.mock.push(
         "a",
         MockStep::tools(

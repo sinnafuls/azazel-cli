@@ -1,4 +1,4 @@
-//! What MCP adds to a session: proxied tools, `tool_search`, `mcp_resources`, the `mcp://`
+//! What MCP adds to a session: proxied tools, `tool_search`, `list_mcp_resources`, the `mcp://`
 //! scheme, prompt commands, `/mcp`, and the `mcp` part of the system prompt.
 
 use std::sync::Arc;
@@ -86,7 +86,7 @@ struct ResourcesTool(McpManager);
 #[async_trait]
 impl Tool for ResourcesTool {
     fn name(&self) -> &str {
-        "mcp_resources"
+        "list_mcp_resources"
     }
 
     fn description(&self) -> &str {

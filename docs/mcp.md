@@ -104,7 +104,7 @@ When connected servers offer more tools than `defer_threshold` (default 40), MCP
 
 ## Resources and prompts
 
-- `mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`.
+- `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`.
 - The `read` tool accepts those addresses: `read mcp://docs/file:///guide.md`. Text and images are returned; other binary content is saved as an artifact.
 - Each server prompt is a slash command `/mcp:<server>:<prompt>`. Arguments are filled by position, or by name as `key=value`; quotes group words. The prompt's text is sent to the lead as your message.
 
