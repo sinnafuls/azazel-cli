@@ -345,10 +345,18 @@ async fn a_message_reaches_a_working_agent_before_its_next_request() {
         "task",
         json!({ "agents": [{ "agent": "worker", "prompt": "check A", "model": "mock/w" }], "wait": false }),
     );
-    bench.lead_calls(
-        "t2",
-        "agent_send",
-        json!({ "to": "worker-1", "message": "also check B" }),
+    // The message waits a moment, so the worker has started (and is inside its nap) when it lands.
+    bench.mock.push(
+        "lead",
+        MockStep::tools(
+            "",
+            &[(
+                "t2",
+                "agent_send",
+                json!({ "to": "worker-1", "message": "also check B" }),
+            )],
+        )
+        .delayed(Duration::from_millis(250)),
     );
     bench.lead_calls("t3", "agent_wait", json!({}));
     bench.mock.push("lead", MockStep::text("done"));
