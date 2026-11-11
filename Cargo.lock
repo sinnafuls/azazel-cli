@@ -1549,7 +1549,6 @@ dependencies = [
  "azazel-agent",
  "azazel-cli",
  "azazel-core",
- "custom-distro",
  "serde_json",
  "tempfile",
  "tokio",

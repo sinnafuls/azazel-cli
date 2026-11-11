@@ -23,6 +23,6 @@ tokio.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true
-# The package depends on itself so that the binary its tests run has the scripted provider.
-custom-distro = { path = ".", features = ["test-support"] }
+# The binary the tests run is built with the scripted model provider.
+azazel-cli = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
