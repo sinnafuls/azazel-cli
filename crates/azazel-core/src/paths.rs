@@ -108,9 +108,28 @@ impl Paths {
     }
 }
 
-/// Canonical when the path exists, otherwise absolute; never a `\\?\` path on Windows.
+/// Canonical, never a `\\?\` path on Windows. A path that does not exist (yet, or any more) keeps
+/// its missing tail on the canonical form of its nearest existing ancestor, so it names the same
+/// file before and after it exists even under a symlinked directory (macOS `/var` is one).
 pub fn canonical(path: &Path) -> PathBuf {
-    dunce::canonicalize(path).unwrap_or_else(|_| absolute(path))
+    if let Ok(found) = dunce::canonicalize(path) {
+        return found;
+    }
+    let full = absolute(path);
+    let mut missing = Vec::new();
+    let mut existing = full.as_path();
+    while let Some(parent) = existing.parent() {
+        // A `..` in the missing part cannot be resolved against a real directory.
+        let Some(name) = existing.file_name() else {
+            return full;
+        };
+        missing.push(name.to_os_string());
+        existing = parent;
+        if let Ok(found) = dunce::canonicalize(existing) {
+            return missing.iter().rev().fold(found, |path, part| path.join(part));
+        }
+    }
+    full
 }
 
 fn absolute(path: &Path) -> PathBuf {

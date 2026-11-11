@@ -137,12 +137,13 @@ mod tests {
     }
 
     fn names(files: &[ContextFile], paths: &Paths) -> Vec<String> {
-        let base = paths.home.parent().unwrap();
+        // Canonical, as the loaded paths are: a temporary directory may sit behind a symlink.
+        let base = crate::paths::canonical(paths.home.parent().unwrap());
         files
             .iter()
             .map(|f| {
                 f.path
-                    .strip_prefix(base)
+                    .strip_prefix(&base)
                     .unwrap()
                     .to_string_lossy()
                     .replace('\\', "/")

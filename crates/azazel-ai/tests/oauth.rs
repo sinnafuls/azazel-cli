@@ -483,7 +483,11 @@ async fn a_login_that_cannot_be_refreshed_lasts_until_it_expires() {
 
     // The server cannot be reached: the token in hand is used while it lasts.
     let mut unreachable = settings(&server, OAuthFlow::Pkce);
-    unreachable.token_url = "http://127.0.0.1:9/token".into();
+    // A port that was just free and is closed again: connecting is refused at once.
+    let closed = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = closed.local_addr().unwrap().port();
+    drop(closed);
+    unreachable.token_url = format!("http://127.0.0.1:{port}/token");
     let unreachable = provider(Some(unreachable));
     assert_eq!(
         access(
