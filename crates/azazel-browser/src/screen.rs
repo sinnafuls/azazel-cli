@@ -169,6 +169,8 @@ fn input_key(key: &page::Key) -> Result<enigo::Key, String> {
         "Escape" => Key::Escape,
         "Backspace" => Key::Backspace,
         "Delete" => Key::Delete,
+        // macOS keyboards have no Insert key and the input library offers none there.
+        #[cfg(not(target_os = "macos"))]
         "Insert" => Key::Insert,
         " " => Key::Space,
         "ArrowUp" => Key::UpArrow,
