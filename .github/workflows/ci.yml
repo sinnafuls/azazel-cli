@@ -12,12 +12,15 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    # A cold Windows build of the whole workspace and its tests takes most of an hour.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       # Screen capture (the `screen` feature) links against these on Linux.
       - if: runner.os == 'Linux'
         run: >
