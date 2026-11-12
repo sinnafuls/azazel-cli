@@ -1,9 +1,15 @@
-//! Built-in tools: file access, search, shell, jobs, todos, user questions, web, LSP and skills.
+//! Built-in tools: file access, search, shell, jobs, todos, user questions, web, LSP and skills,
+//! and the addresses `read` resolves for sessions, jobs and GitHub.
 
+pub mod format;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod misc;
+pub mod notebook;
+#[cfg(feature = "pdf")]
+pub mod pdf;
 pub mod read;
+pub mod schemes;
 pub mod search;
 pub mod shell;
 pub mod util;
@@ -23,7 +29,8 @@ pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
 pub use write::{EditTool, WriteTool};
 
-/// Registers the core tools, the `artifact://` scheme, and the services they share:
+/// Registers the core tools, the `artifact://`, `session://` and `job://` schemes (and `pr://` and
+/// `issue://` when the `gh` program is installed), and the services they share:
 /// [`FileTracker`], [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
 pub struct CoreToolsExt {
     pub shell: Shell,
@@ -54,6 +61,12 @@ impl Extension for CoreToolsExt {
         r.service(env.clone());
         r.service(todos.clone());
         r.scheme(Arc::new(ArtifactScheme(artifacts)));
+        r.scheme(Arc::new(schemes::SessionScheme));
+        r.scheme(Arc::new(schemes::JobScheme(jobs.clone())));
+        if let Some(gh) = schemes::gh_program() {
+            r.scheme(Arc::new(schemes::GhScheme::pull_requests(gh.clone())));
+            r.scheme(Arc::new(schemes::GhScheme::issues(gh)));
+        }
 
         r.tool(Arc::new(ReadTool::new(tracker.clone(), schemes)));
         r.tool(Arc::new(WriteTool::new(tracker.clone())));

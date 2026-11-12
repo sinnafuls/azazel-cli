@@ -1,9 +1,12 @@
 //! The Luau extension host. Each script in an `extensions` directory runs in its own sandboxed
 //! VM with the global table `azazel`, through which it adds tools, event handlers, slash commands,
 //! key bindings, providers and MCP servers, and reaches the session it runs in.
+//!
+//! The same VM and sandbox run the scripts agents write for the `run_code` tool.
 
 mod api;
 mod bridge;
+mod code;
 mod confine;
 mod convert;
 mod host;
@@ -15,6 +18,7 @@ use std::sync::Arc;
 use azazel_ai::Credentials;
 use azazel_core::{ExtError, Extension, Paths, Registrar};
 
+pub use crate::code::{CodeExt, CodeLimits};
 use crate::host::Host;
 
 /// The extension that loads the Luau scripts. Everything the scripts register belongs to it, so

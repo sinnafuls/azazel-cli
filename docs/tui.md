@@ -229,6 +229,7 @@ reported reliably. Where `Shift+Enter` does not arrive, use `Ctrl+J`.
 | `@` | Fuzzy file completion over the working directory (gitignored files and `.git` are left out). On submit, each `@path` that names a UTF-8 text file of at most 256 KB is attached to the prompt and counts as read by the agent |
 | `!` | `!command` runs in your shell, outside the permission engine and the push guard. You see the output, and the agent gets it as a note without being asked to reply |
 | `!!` | `!!command` runs the same way, but the output is for you only: nothing is added to the agent's context |
+| `# ` | A one-line input such as `# always run clippy before committing` is saved as a project memory of kind `preference`, and its id is shown. Nothing is sent to the agent. See [memory](memory.md) |
 
 Example:
 

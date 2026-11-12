@@ -117,6 +117,7 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | `azazel.agent.spawn{ agent, prompt, wait? }` | Starts a sub-agent of the lead. With `wait` (default true) returns its report and its id; with `wait = false` returns the id at once |
 | `azazel.memory.save(text, kind?, tags?)` | Saves a project memory; `kind` defaults to `"fact"`. Returns the id. Errors with `memory unavailable` when memory is off |
 | `azazel.memory.search(query, limit?)` | `{ id, kind, text, tags, scope }` hits, best first; default limit 8 |
+| `azazel.tools.call(name, args?)` | Calls a tool of the harness, of another extension or of an MCP server as the lead agent, and returns the text of its result. The call passes the permission rules, the mode and the hooks like one the agent makes itself, so it may ask you; a refused or failed call is an error |
 
 The second argument of every tool, handler and command (the only argument of a shortcut) is `ctx`, read-only:
 
@@ -244,7 +245,7 @@ The traits involved:
 | `Tool` | `azazel-agent` | `name`, `description`, `schema` (JSON Schema), `access(input)` (`Read`, `Write`, `Exec`, `Net`), `subjects(input)` (what permission rules match), `call(input, &ToolCtx) -> ToolOutput`; optional `concurrency_safe` and `approval_note` |
 | `EventHandler` | `azazel-core` | `handle(&mut Event, &ExtCtx) -> Outcome` |
 | `CommandHandler` | `azazel-core` | `run(args, &ExtCtx) -> CommandOutcome` (`Done`, `Show(text)`, `Prompt { text, model }`, `Error(text)`) |
-| `Scheme` | `azazel-core` | `scheme()`, `read(rest, &ToolCtx)` |
+| `Scheme` | `azazel-core` | `scheme()`, `read(rest, &ToolCtx)`; optional `access(rest) -> (Access, Option<String>)`, what reading the address touches and the subject permission rules match (default: a plain read of the address) |
 | `SystemPartProvider` | `azazel-core` | `render(&AgentInfo) -> Option<String>` |
 
 ### Events in Rust

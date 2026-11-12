@@ -260,6 +260,13 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         }
         Err(_) => report.warn("git: not found on PATH; checkpoints and rewind are off"),
     }
+    match azazel_tools::schemes::gh_program() {
+        Some(gh) => report.ok(format!(
+            "gh: {}; `read` takes pr:// and issue:// addresses",
+            gh.display()
+        )),
+        None => report.ok("gh: not found on PATH; pr:// and issue:// addresses are off"),
+    }
 
     let store = Packages::new(paths);
     let packages = store.load();

@@ -44,8 +44,18 @@ A skill that breaks one of these rules is skipped, never loaded half-way, and re
 | `agent` | `coder` | The agent definition used for `fork`; see [team](team.md) |
 | `model` | none | A model, role or fallback chain (`"@slow"`, `["@slow", "@default"]`). When you start the skill with `/skill:<name>`, that prompt runs on it |
 | `hooks` | none | Command hooks active from the skill's first use until the session ends; a hook may set `once: true` to run one time per session; see [hooks](hooks.md) |
+| `allowed-tools` | none | Permission rules, as in [permissions](permissions.md): `read, shell(git diff:*)`. What they do depends on `context`; see below |
 
-`when_to_use`, `argument-hint` and `allowed-tools` are read without error but nothing acts on them in this version. Any other key is ignored.
+`when_to_use` and `argument-hint` are read without error but nothing acts on them in this version. Any other key is ignored.
+
+`allowed-tools` works as it does in Claude Code, and Claude Code's tool names (`Read`, `Edit`, `Bash(git diff:*)`, ...) are understood:
+
+- **`context: fork`:** the list is the sub-agent's tool grant. It gets only the tools the list names, and a rule with a pattern holds its tool to that pattern. The list narrows what the agent definition grants and never adds to it: `allowed-tools: read` on an agent that may read and write gives an agent that can only read.
+- **`context: inline`** (the default): each rule is an allow rule from the moment the skill is loaded until the run ends, so the agent is not asked about those calls. The rules end when the agent that loaded the skill stops, when a sub-agent finishes, and at your next prompt. `/permissions` shows them with the source `skill <name>, while <agent> works`. Deny rules, plan mode, protected paths and the push guard still apply.
+
+An entry that is not a rule (`tool` or `tool(pattern)`) is left out with a warning in the log. A list in which nothing is a rule allows nothing, so a mistyped limit on a `fork` skill gives its agent no tools rather than all of them.
+
+An inline skill's rules widen what runs without asking, so they count for built-in, user and package skills always, and for a project's own skills (also those under its `.claude/skills` and `.agents/skills`) only when the project is trusted.
 
 A skill is loaded when a task calls for it. For instructions that should apply by themselves, always or whenever an agent touches certain files, write a [rule file](rules.md) instead.
 

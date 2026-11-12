@@ -292,10 +292,16 @@ async fn read_handles_directories_images_binaries_and_schemes() {
         "spilled output"
     );
     let unknown = bench.call("read", json!({"path": "nothing://x"})).await;
-    assert_eq!(
-        unknown.text_content(),
-        "unknown scheme `nothing://`; supported: artifact"
-    );
+    // `pr` and `issue` are listed too where the `gh` program is installed.
+    let supported = unknown.text_content();
+    let supported = supported
+        .strip_prefix("unknown scheme `nothing://`; supported: ")
+        .unwrap();
+    let always: Vec<&str> = supported
+        .split(", ")
+        .filter(|scheme| !matches!(*scheme, "pr" | "issue"))
+        .collect();
+    assert_eq!(always, ["artifact", "job", "session"]);
 }
 
 #[tokio::test]

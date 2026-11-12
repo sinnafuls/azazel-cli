@@ -1,4 +1,5 @@
-//! `read`: text files with line numbers, images, directory listings and registered URL schemes.
+//! `read`: text files with line numbers, images, PDFs, notebooks, directory listings and
+//! registered URL schemes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +13,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::util::{parse_input, resolve_path};
-use crate::web::fetch::domain_subject;
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
@@ -29,6 +29,52 @@ impl ReadTool {
     pub fn new(tracker: Arc<FileTracker>, schemes: Arc<Schemes>) -> Self {
         ReadTool { tracker, schemes }
     }
+
+    /// What the scheme of the address in `input` says reading it touches, when it is an address
+    /// of a registered scheme.
+    fn scheme_access(&self, input: &Value) -> Option<(Access, Option<String>)> {
+        let (scheme, rest) = split_url(input.get("path")?.as_str()?.trim())?;
+        Some(self.schemes.get(scheme)?.access(rest))
+    }
+}
+
+/// The text of a PDF, read off the async threads: parsing a large one takes a while.
+#[cfg(feature = "pdf")]
+async fn read_pdf(path: &Path, bytes: Vec<u8>, pages: Option<&str>) -> ToolOutput {
+    let pages = match pages.map(crate::pdf::parse_pages).transpose() {
+        Ok(pages) => pages,
+        Err(error) => return ToolOutput::error(error),
+    };
+    let read = tokio::task::spawn_blocking(move || crate::pdf::read(&bytes, pages, MAX_BYTES)).await;
+    match read {
+        Ok(Ok(text)) => ToolOutput::text(text),
+        Ok(Err(error)) => ToolOutput::error(format!("{}: {error}", path.display())),
+        Err(_) => ToolOutput::error(format!("{}: the PDF could not be read", path.display())),
+    }
+}
+
+#[cfg(not(feature = "pdf"))]
+async fn read_pdf(path: &Path, _: Vec<u8>, _: Option<&str>) -> ToolOutput {
+    ToolOutput::error(format!(
+        "{}: this build of azazel cannot read PDFs",
+        path.display()
+    ))
+}
+
+/// A notebook as text plus the first image its cells produced.
+async fn notebook_output(shown: crate::notebook::Rendered) -> ToolOutput {
+    let mut content = vec![azazel_ai::Block::text(shown.text)];
+    if let Some((_, bytes)) = shown.image {
+        let decoded = tokio::task::spawn_blocking(move || image_block(&bytes, MAX_IMAGE_SIDE)).await;
+        if let Ok(Ok(block)) = decoded {
+            content.push(block);
+        }
+    }
+    ToolOutput {
+        content,
+        is_error: false,
+        details: None,
+    }
 }
 
 #[derive(Deserialize)]
@@ -36,6 +82,7 @@ struct Input {
     path: String,
     offset: Option<usize>,
     limit: Option<usize>,
+    pages: Option<String>,
 }
 
 #[async_trait]
@@ -47,7 +94,9 @@ impl Tool for ReadTool {
     fn description(&self) -> &str {
         "Read a file, list a directory, view an image, or fetch a `scheme://` resource. Text comes back \
          as `<line number><tab><text>`, up to 2000 lines per call; use `offset` (1-based line) and `limit` \
-         to page through longer files. Read a file before editing it."
+         to page through longer files. A PDF comes back as its text, 20 pages per call; `pages` picks \
+         them. A notebook (`.ipynb`) comes back cell by cell with its outputs; `offset` and `limit` \
+         count cells. Read a file before editing it."
     }
 
     fn schema(&self) -> Value {
@@ -56,25 +105,24 @@ impl Tool for ReadTool {
             "properties": {
                 "path": {"type": "string", "description": "File or directory path, or a scheme:// URL"},
                 "offset": {"type": "integer", "minimum": 1, "description": "First line to return (1-based)"},
-                "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines"}
+                "limit": {"type": "integer", "minimum": 1, "description": "Maximum number of lines"},
+                "pages": {"type": "string", "description": "For a PDF: the pages to return, such as \"3\" or \"2-6\""}
             },
             "required": ["path"]
         })
     }
 
-    /// Reading a web address is a fetch: it is asked about like `web_fetch`.
+    /// A file is a plain read. An address is whatever its scheme says: reading a web address is
+    /// a fetch, and is asked about like `web_fetch`.
     fn access(&self, input: &Value) -> Access {
-        match input.get("path").and_then(Value::as_str).and_then(domain_subject) {
-            Some(_) => Access::Net,
-            None => Access::Read,
-        }
+        self.scheme_access(input)
+            .map_or(Access::Read, |(access, _)| access)
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {
         let path = input.get("path").and_then(Value::as_str);
-        path.map(|path| domain_subject(path).unwrap_or_else(|| path.to_string()))
-            .into_iter()
-            .collect()
+        let subject = self.scheme_access(input).and_then(|(_, subject)| subject);
+        subject.or_else(|| path.map(str::to_string)).into_iter().collect()
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
@@ -82,7 +130,7 @@ impl Tool for ReadTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        if let Some((scheme, rest)) = split_url(&input.path) {
+        if let Some((scheme, rest)) = split_url(input.path.trim()) {
             return match self.schemes.get(scheme) {
                 Some(handler) => match handler.read(rest, ctx).await {
                     Ok(content) => ToolOutput {
@@ -129,6 +177,9 @@ impl Tool for ReadTool {
                 Err(e) => ToolOutput::error(format!("{}: cannot decode image: {e}", path.display())),
             };
         }
+        if bytes.starts_with(b"%PDF-") {
+            return read_pdf(&path, bytes, input.pages.as_deref()).await;
+        }
         if bytes.iter().take(8192).any(|&b| b == 0) {
             let kind = path
                 .extension()
@@ -144,6 +195,17 @@ impl Tool for ReadTool {
         #[cfg(feature = "lsp")]
         if let Some(servers) = ctx.services.get::<crate::lsp::LspManager>() {
             servers.touch(&path);
+        }
+        let is_notebook = path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("ipynb"));
+        if is_notebook
+            && let Some(shown) = crate::notebook::render(&bytes, input.offset, input.limit, MAX_BYTES)
+        {
+            return match shown {
+                Ok(shown) => notebook_output(shown).await,
+                Err(error) => ToolOutput::error(error),
+            };
         }
         let text = String::from_utf8_lossy(&bytes);
         render_text(

@@ -26,10 +26,11 @@ use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::prompt::BasePromptExt;
 use azazel_core::rules::{self, Rules, RulesExt};
 use azazel_core::side::{Side, SideCosts};
-use azazel_core::skills::{SkillsExt, standard_roots};
+use azazel_core::skills::{SkillGrantsExt, SkillsExt, standard_roots};
 use azazel_core::{
     ArtifactStore, Config, EntryKind, Event, ExtCtx, Extension, FileTracker, Headless, Level, LoadOptions,
-    Outcome, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore, StartSource, Ui,
+    Outcome, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore, StartSource,
+    ToolCaller, Ui,
 };
 use azazel_team::{Checker, GoalExt, GoalSettings, Goals, Team, TeamDeps, TeamExt};
 use azazel_tools::CoreToolsExt;
@@ -418,6 +419,7 @@ impl App {
         if !cli.skips(Discovery::Skills) {
             registry.load(&SkillsExt {
                 roots: standard_roots(&paths, compat, &packages),
+                trusted,
             })?;
         }
         registry.load(&CustomCommandsExt {
@@ -511,10 +513,30 @@ impl App {
                 packages.scripts.clone(),
             ))?;
         }
+        // A tool like any other, so it is there with `--no-extensions` too.
+        #[cfg(feature = "lua")]
+        registry.load(&azazel_lua::CodeExt::default())?;
         for extension in extensions {
             registry
                 .load(extension.as_ref())
                 .with_context(|| format!("extension `{}` failed to register", extension.id()))?;
+        }
+        // Last, so that it sees only the stops no other extension turned into another round.
+        registry.load(&SkillGrantsExt)?;
+        // Calls a script makes for an agent pass the same gate as the agent's own.
+        services.insert(Arc::new(ToolCaller::new(
+            registry.tools.clone(),
+            Arc::new(PermissionGate::new(
+                permissions.clone(),
+                registry.bus.clone(),
+                services.clone(),
+                shell.is_posix(),
+            )),
+        )));
+        if config.tools.format_on_write {
+            services.insert(Arc::new(azazel_tools::format::Formatters::new(
+                config.tools.format.clone(),
+            )));
         }
         select_tools(cli, &config, &registry)?;
         // Every process an agent starts inherits the push guard.

@@ -6,19 +6,20 @@
 
 use std::collections::BTreeMap;
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use azazel_agent::{Access, AgentHandle, UserInput};
+use azazel_agent::{Access, AgentHandle, ToolCtx, UpdateSink, UserInput};
 use azazel_ai::providers::http::http_client;
 use azazel_ai::{ProviderConfig, WireApi};
 use azazel_core::process::AgentEnv;
-use azazel_core::{Level, McpServers, Memory, Ui, UiBridge};
+use azazel_core::{Level, McpServers, Memory, PermissionState, ToolCaller, Ui, UiBridge};
 use azazel_team::{SpawnRequest, Team};
 use mlua::{FromLua, Function, Lua, LuaString, Table};
 use serde_json::{Value, json};
 
-use crate::convert::{EVENTS, from_lua, to_lua};
+use crate::convert::{EVENTS, from_lua, to_lua, tool_input};
 use crate::script::{CommandDef, Shared, ToolDef, describe};
 
 /// Seconds `azazel.exec` waits for a program unless told otherwise.
@@ -29,6 +30,8 @@ const HTTP_TIMEOUT: f64 = 30.0;
 const MEMORY_LIMIT: usize = 8;
 
 static HTTP: LazyLock<reqwest::Client> = LazyLock::new(http_client);
+/// Numbers the tool calls scripts make, for their call ids.
+static TOOL_CALLS: AtomicU64 = AtomicU64::new(0);
 
 fn runtime(message: impl std::fmt::Display) -> mlua::Error {
     mlua::Error::runtime(message)
@@ -101,6 +104,7 @@ pub(crate) fn install(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
     azazel.set("state", state(lua, shared)?)?;
     azazel.set("agent", agent(lua, shared)?)?;
     azazel.set("memory", memory(lua, shared)?)?;
+    azazel.set("tools", tools(lua, shared)?)?;
     azazel.set_readonly(true);
     lua.globals().set("azazel", azazel)?;
     ui_table(lua, shared)
@@ -513,7 +517,7 @@ fn fs(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
 }
 
 /// `azazel.json`.
-fn json_table(lua: &Lua) -> mlua::Result<Table> {
+pub(crate) fn json_table(lua: &Lua) -> mlua::Result<Table> {
     let json = lua.create_table()?;
     let encode = lua.create_function(|lua, (value, pretty): (mlua::Value, Option<bool>)| {
         let value =
@@ -588,6 +592,7 @@ fn agent(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
                 name: None,
                 model: None,
                 isolation: None,
+                tools: None,
             };
             let id = team
                 .spawn(lead.info(), request, !wait)
@@ -713,6 +718,59 @@ fn memory(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
 
     memory.set_readonly(true);
     Ok(memory)
+}
+
+/// `azazel.tools`: the harness's tools, called as the lead agent through the permission gate.
+fn tools(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
+    let tools = lua.create_table()?;
+
+    let script = shared.clone();
+    let call = lua.create_async_function(move |lua, (name, args): (String, mlua::Value)| {
+        let script = script.clone();
+        // Cancelling the call this runs in cancels the tool it waits for.
+        let cancel = script.current_cancel();
+        async move {
+            const NAME: &str = "azazel.tools.call";
+            script.running(NAME)?;
+            let caller = script
+                .services
+                .get::<ToolCaller>()
+                .ok_or_else(|| runtime(format!("{NAME}: tools cannot be called in this session")))?;
+            let (_, lead) = team(&script, NAME)?;
+            let agent = lead.info().clone();
+            let input =
+                tool_input(&lua, args).map_err(|e| runtime(format!("{NAME}: {name}: {}", describe(&e))))?;
+            let cwd = match script.services.get::<PermissionState>() {
+                Some(permissions) => permissions.cwd_of(&agent),
+                None => script.roots.project.clone(),
+            };
+            let ctx = ToolCtx {
+                agent_id: agent.id.clone(),
+                session_id: agent.session_id.clone(),
+                agent,
+                call_id: format!(
+                    "lua-{}-{}",
+                    script.id,
+                    TOOL_CALLS.fetch_add(1, Ordering::Relaxed) + 1
+                ),
+                cwd,
+                cancel,
+                update: UpdateSink::default(),
+                services: script.services.clone(),
+            };
+            let output = caller.call(&ctx, &name, input).await;
+            let text = output.text_content();
+            if output.is_error {
+                Err(runtime(format!("{NAME}: {name}: {text}")))
+            } else {
+                Ok(text)
+            }
+        }
+    })?;
+    tools.set("call", call)?;
+
+    tools.set_readonly(true);
+    Ok(tools)
 }
 
 /// `ctx.ui`: questions to the user.

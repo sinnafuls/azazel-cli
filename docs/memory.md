@@ -30,6 +30,8 @@ Memories never hold secrets by design: the tool description and the extraction p
 | `memory_forget` | `id` | Deletes the memory from whichever store holds it |
 | `semantic_search` | `query`, `collection?` (default `code`), `path_glob?`, `limit?` (default 10, at most 50) | `path:first-last` and the first 12 lines of each matching chunk |
 
+The `read` tool also takes memory addresses: `memory://` lists every memory, `memory://<id>` shows one, and `memory://search/<query>` returns the 20 best matches.
+
 `memory_search` and `semantic_search` are read-only. `memory_save` and `memory_forget` count as writes, so in `ask` and `accept-edits` mode they prompt unless you add the allow rules `memory_save` and `memory_forget` (see [permissions](permissions.md)).
 
 ## Recall
@@ -99,6 +101,16 @@ azazel memory export > memories.jsonl    # every memory, superseded ones include
 ```
 
 All of these work on the project found from the current directory (or `--cwd <dir>`), and exit with code 1 on failure.
+
+## Quick add
+
+In the interactive UI, a one-line input that starts with `# ` is remembered instead of sent:
+
+```text
+# always run clippy before committing
+```
+
+The rest of the line is saved as a `preference` of this project, and its id is shown (`remembered as 0a1b2c3d4e5f: ...`). The agent is not sent anything, but as a preference the note is part of the system prompt from then on. A line with more text below it is an ordinary prompt, so a pasted Markdown document is not mistaken for a note. Remove a note with `/memory forget <id>`.
 
 ## `/memory`
 

@@ -9,6 +9,7 @@ use azazel_core::{FileTracker, Freshness};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::format::Formatters;
 use crate::util::{display_path, parse_input, resolve_path, unified_diff, write_atomic};
 
 pub const NEVER_READ: &str = "read the file before overwriting it";
@@ -54,6 +55,43 @@ async fn with_diagnostics(ctx: &ToolCtx, path: &Path, summary: String) -> String
 #[cfg(not(feature = "lsp"))]
 async fn with_diagnostics(_: &ToolCtx, _: &Path, summary: String) -> String {
     summary
+}
+
+/// Runs the formatter for `path` when format on write is on, while the caller still holds the
+/// file's lock. Returns what the file holds afterwards and a note for the result. The formatter's
+/// version of the file is recorded as what the agent knows, so its next edit is not refused as
+/// stale; a formatter that fails costs a note and nothing else.
+async fn format_written(
+    ctx: &ToolCtx,
+    tracker: &FileTracker,
+    path: &Path,
+    written: String,
+) -> (String, Option<String>) {
+    let Some(formatters) = ctx.services.get::<Formatters>() else {
+        return (written, None);
+    };
+    let Some(ran) = formatters.run(path, ctx).await else {
+        return (written, None);
+    };
+    let note = match ran {
+        Ok(formatter) => format!("formatted with {formatter}"),
+        Err(why) => why,
+    };
+    match std::fs::read(path) {
+        Ok(bytes) if bytes != written.as_bytes() => {
+            tracker.record_write(&ctx.agent_id, path, &bytes);
+            (String::from_utf8_lossy(&bytes).into_owned(), Some(note))
+        }
+        _ => (written, Some(note)),
+    }
+}
+
+/// `summary`, then what the formatter did.
+fn with_note(summary: String, note: Option<String>) -> String {
+    match note {
+        Some(note) => format!("{summary}; {note}"),
+        None => summary,
+    }
 }
 
 fn diff_details(ctx: &ToolCtx, path: &Path, old: &str, new: &str) -> Value {
@@ -135,18 +173,20 @@ impl Tool for WriteTool {
         }
         self.tracker
             .record_write(&ctx.agent_id, &path, input.content.as_bytes());
+        let (content, formatted) = format_written(ctx, &self.tracker, &path, input.content).await;
         drop(guard);
         let verb = if old.is_some() { "replaced" } else { "created" };
         let summary = format!(
             "{verb} {} ({} bytes)",
             display_path(&ctx.cwd, &path),
-            input.content.len()
+            content.len()
         );
+        let summary = with_note(summary, formatted);
         ToolOutput::text(with_diagnostics(ctx, &path, summary).await).with_details(diff_details(
             ctx,
             &path,
             old.as_deref().unwrap_or(""),
-            &input.content,
+            &content,
         ))
     }
 }
@@ -299,6 +339,7 @@ impl Tool for EditTool {
         }
         self.tracker
             .record_write(&ctx.agent_id, &path, updated.as_bytes());
+        let (updated, formatted) = format_written(ctx, &self.tracker, &path, updated).await;
         let noun = if replaced == 1 {
             "replacement"
         } else {
@@ -306,6 +347,7 @@ impl Tool for EditTool {
         };
         drop(guard);
         let summary = format!("edited {} ({replaced} {noun})", display_path(&ctx.cwd, &path));
+        let summary = with_note(summary, formatted);
         ToolOutput::text(with_diagnostics(ctx, &path, summary).await)
             .with_details(diff_details(ctx, &path, &original, &updated))
     }

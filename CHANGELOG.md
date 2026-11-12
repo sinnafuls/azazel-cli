@@ -66,6 +66,17 @@ GitHub are its section here.
 - `/settings` has sections for appearance, editor, permissions, notifications, limits, sessions, memory,
   updates, voice and team.
 - `Ctrl+B` moves a running shell command to the background.
+- `read` reads PDFs as text, page by page (`pages: "2-6"`, 20 pages per call), and says so when a PDF is
+  scanned; it shows Jupyter notebooks cell by cell with their outputs.
+- New `read` addresses: `session://`, `session://<id>`, `job://<id>`, `memory://`, `memory://<id>`,
+  `memory://search/<query>`, and with the `gh` program installed `pr://`, `pr://<n>`, `pr://<n>/diff`,
+  `issue://`, `issue://<n>`.
+- `run_code` tool: the agent runs a Luau script that calls its other tools and gets back only what the script
+  prints and returns; every call inside passes the permission rules. Luau extensions can call tools with
+  `azazel.tools.call(name, args)`.
+- Format on write: `[tools] format_on_write = true` runs the file's formatter after `write` and `edit`;
+  `[tools.format]` sets commands per extension.
+- Quick-add memory: a one-line input starting with `# ` is saved as a project preference.
 
 ### Changed
 
@@ -80,6 +91,8 @@ GitHub are its section here.
 - `/reload` also re-reads skills, commands, agent definitions, rule files, hooks, key bindings and the theme.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
 - `tui.show_thinking` and `tui.expand_tools` take effect at startup.
+- A skill's `allowed-tools` now takes effect: it limits the sub-agent of a `context: fork` skill, and for other
+  skills allows the listed calls without a prompt until the run ends.
 
 ### Fixed
 

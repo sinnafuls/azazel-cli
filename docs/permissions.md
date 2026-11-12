@@ -13,7 +13,7 @@ Every tool call an agent makes passes one gate before it runs. The gate combines
 
 "Inside the project" means under the project root or one of `permissions.additional_dirs`, plus directories added
 with `--add-dir <DIR>` or, for the rest of the run, `/add-dir <path>` (`/dirs` lists them all; Luau extensions
-see only the configured ones). A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL and the `generate_*` tools.
+see only the configured ones). A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL or of a `pr://` or `issue://` address, and the `generate_*` tools. `run_code` itself counts as a read; each tool call its script makes is judged like a call the agent makes directly.
 
 Deny rules, the push guard, protected paths and the destructive-command check apply in every mode, `auto` included.
 
@@ -47,7 +47,7 @@ A rule is `tool` or `tool(pattern)`. The tool part is a glob over tool names, so
 |---|---|---|
 | `shell` | Ending in `:*`: a prefix, matching that command alone or followed by a space and anything. Otherwise a glob over the command. | `shell(git diff:*)`, `shell(npm run *)` |
 | `read`, `write`, `edit`, `glob`, `grep`, `lsp` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
-| `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL is matched as `web_fetch`. For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
+| `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL is matched as `web_fetch`, and so is `read` of a `pr://` or `issue://` address (host `github.com`). For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
 | Any other tool | A glob over the tool's subject, if it has one (for `screen`, the action name) | `screen`, `screen(capture)` |
 
 The `allow`, `ask` and `deny` arrays concatenate across config layers (home, project, `config.local.toml`, environment). A project's `permissions.allow` is ignored until the project is trusted; its `ask` and `deny` always apply. See [configuration](configuration.md).

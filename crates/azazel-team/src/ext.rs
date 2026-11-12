@@ -6,17 +6,18 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Services, ToolCtx};
-use azazel_ai::{Block, Message, Role};
+use azazel_ai::{Block, Message};
 use azazel_core::agents::AgentDefs;
 use azazel_core::subagent::UNAVAILABLE;
+use azazel_core::transcript::condensed;
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, EntryKind, Event, EventHandler, EventKind, ExtCtx, ExtError,
-    Extension, FileTracker, Outcome, Registrar, Scheme, SessionStore, SkillRegistry, SubagentRunner,
-    Subagents, SystemPartProvider,
+    Command, CommandHandler, CommandOutcome, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension,
+    FileTracker, Outcome, Registrar, Rule, Scheme, SessionStore, SkillRegistry, SubagentRunner, Subagents,
+    SystemPartProvider,
 };
 use tokio_util::sync::CancellationToken;
 
-use crate::team::{LEAD, MemberState, SpawnRequest, Team, activity};
+use crate::team::{LEAD, MemberState, SpawnRequest, Team};
 use crate::tools::{
     AgentListTool, AgentSendTool, AgentStopTool, AgentWaitTool, TaskTool, WorktreeApplyTool,
     WorktreeDiscardTool, roster_table,
@@ -114,34 +115,6 @@ impl SystemPartProvider for TeamPart {
 /// `agent://<id>` is an agent's latest report; `agent://<id>/transcript` what it did, condensed.
 struct AgentScheme;
 
-/// One line per tool call and the full text of what the agent said.
-fn condensed(store: &SessionStore) -> String {
-    let mut out = String::new();
-    for entry in store.entries() {
-        let EntryKind::Message { message } = entry.kind else {
-            continue;
-        };
-        match message.role {
-            Role::User => out.push_str(&format!("[prompt]\n{}\n\n", message.text().trim())),
-            Role::Assistant => {
-                for block in &message.content {
-                    match block {
-                        Block::Text { text } if !text.trim().is_empty() => {
-                            out.push_str(&format!("{}\n\n", text.trim()))
-                        }
-                        Block::ToolCall { name, input, .. } => {
-                            out.push_str(&format!("→ {}\n", activity(name, input)))
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            Role::Tool => {}
-        }
-    }
-    out.trim_end().to_string()
-}
-
 #[async_trait]
 impl Scheme for AgentScheme {
     fn scheme(&self) -> &str {
@@ -178,6 +151,28 @@ struct Runner(Arc<Services>);
 #[async_trait]
 impl SubagentRunner for Runner {
     async fn run(&self, def: &str, prompt: String, parent: &AgentInfo) -> Result<String, String> {
+        self.start(def, prompt, parent, None).await
+    }
+
+    async fn run_limited(
+        &self,
+        def: &str,
+        prompt: String,
+        parent: &AgentInfo,
+        tools: Vec<Rule>,
+    ) -> Result<String, String> {
+        self.start(def, prompt, parent, Some(tools)).await
+    }
+}
+
+impl Runner {
+    async fn start(
+        &self,
+        def: &str,
+        prompt: String,
+        parent: &AgentInfo,
+        tools: Option<Vec<Rule>>,
+    ) -> Result<String, String> {
         let team = team(&self.0).map_err(|_| UNAVAILABLE.to_string())?;
         if !team.may_spawn(parent, def) {
             return Err(UNAVAILABLE.to_string());
@@ -188,6 +183,7 @@ impl SubagentRunner for Runner {
             name: None,
             model: None,
             isolation: None,
+            tools,
         };
         let id = team.spawn(parent, request, false).await?;
         let results = team
@@ -317,6 +313,7 @@ impl CommandHandler for PlaytestCommand {
             name: None,
             model: None,
             isolation: None,
+            tools: None,
         };
         match team.spawn(lead.info(), request, true).await {
             Ok(id) => CommandOutcome::Show(format!(

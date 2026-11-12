@@ -532,6 +532,14 @@ impl Scheme for UrlScheme {
         let text = self.fetcher.fetch(&url, Format::Markdown, ctx).await?;
         Ok(vec![Block::text(text)])
     }
+
+    /// Reading a web address is a fetch of its host.
+    fn access(&self, rest: &str) -> (Access, Option<String>) {
+        match domain_subject(&format!("{}://{rest}", self.scheme)) {
+            Some(domain) => (Access::Net, Some(domain)),
+            None => (Access::Read, None),
+        }
+    }
 }
 
 #[cfg(test)]

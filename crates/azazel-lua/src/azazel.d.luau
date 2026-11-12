@@ -269,4 +269,12 @@ declare azazel: {
 		-- Best matches first. Default limit 8.
 		search: (query: string, limit: number?) -> { MemoryHit },
 	},
+
+	-- The harness's own tools and those of other extensions and MCP servers.
+	tools: {
+		-- Waits. Calls tool `name` as the lead agent and returns the text of its result. The call
+		-- passes the permission rules, the mode and the hooks like one the agent makes itself, so
+		-- it may ask the user; a refused or failed call is an error.
+		call: (name: string, args: { [string]: any }?) -> string,
+	},
 }

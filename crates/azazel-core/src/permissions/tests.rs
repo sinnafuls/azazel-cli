@@ -511,6 +511,37 @@ fn a_definitions_patterned_grants_bound_what_that_agent_may_do() {
     assert!(allowed(&verdict(&f, "shell", Access::Exec, "cargo build")));
     f.state.forget_agent("reviewer-1");
     assert!(allowed(&as_reviewer("shell", Access::Exec, "cargo build")));
+
+    // A second list narrows inside the first: a call has to fit both, and neither widens the other.
+    let rules = |texts: &[&str]| texts.iter().map(|g| g.parse().unwrap()).collect::<Vec<Rule>>();
+    f.state
+        .restrict_agent("reviewer-1", rules(&["shell(git diff:*)", "shell(git log:*)"]));
+    f.state
+        .narrow_agent("reviewer-1", rules(&["shell(git log:*)", "shell(cargo build:*)"]));
+    f.state
+        .narrow_agent("reviewer-1", rules(&["shell(git log:*)", "shell(cargo build:*)"]));
+    assert!(allowed(&as_reviewer("shell", Access::Exec, "git log -3")));
+    assert_eq!(
+        as_reviewer("shell", Access::Exec, "git diff HEAD~1"),
+        Verdict::Deny(
+            "agent `reviewer-1` may use `shell` only as: shell(git log:*), shell(cargo build:*)".into()
+        )
+    );
+    assert!(denied(&as_reviewer("shell", Access::Exec, "cargo build")));
+
+    // A rule added for a while is in force until it is removed, and only it is removed.
+    f.state.forget_agent("reviewer-1");
+    f.state.set_mode(PermissionMode::Ask);
+    assert!(!allowed(&verdict(&f, "shell", Access::Exec, "git status")));
+    let rule: Rule = "shell(git status:*)".parse().unwrap();
+    f.state
+        .add_temporary_rule(rule.clone(), RuleKind::Allow, "skill x");
+    f.state.add_temporary_rule(rule, RuleKind::Allow, "skill x");
+    assert!(allowed(&verdict(&f, "shell", Access::Exec, "git status")));
+    let before = f.state.rules().len();
+    assert_eq!(f.state.remove_rules(|rule| rule.source == "skill x"), 1);
+    assert_eq!(f.state.rules().len(), before - 1);
+    assert!(!allowed(&verdict(&f, "shell", Access::Exec, "git status")));
 }
 
 // ---------------------------------------------------------------- the gate
