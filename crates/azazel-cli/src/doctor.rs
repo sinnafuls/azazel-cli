@@ -319,9 +319,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
                     "mcp server {}: {target} (waiting for approval: azazel mcp approve {})",
                     server.name, server.name
                 )),
-                Approval::Rejected => {
-                    report.ok(format!("mcp server {}: {target} (rejected)", server.name))
-                }
+                Approval::Rejected => report.ok(format!("mcp server {}: {target} (rejected)", server.name)),
             }
         }
         for (what, why) in &loaded.problems {

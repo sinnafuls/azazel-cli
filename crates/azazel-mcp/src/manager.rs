@@ -815,7 +815,10 @@ impl McpManager {
     pub fn shutdown(&self) {
         let names: Vec<String> = self.0.read().keys().cloned().collect();
         for name in names {
-            let state = self.0.config(&name).map_or(State::Disabled, |config| resting(&config));
+            let state = self
+                .0
+                .config(&name)
+                .map_or(State::Disabled, |config| resting(&config));
             self.0.stop(&name, state);
         }
     }

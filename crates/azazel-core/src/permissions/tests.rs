@@ -794,13 +794,21 @@ fn every_destructive_command_prompts_in_auto_mode_and_under_an_allow_rule() {
         "git checkout main".to_string(),
         "cargo clean".to_string(),
     ] {
-        assert!(allowed(&verdict(&f, "shell", Access::Exec, &command)), "{command}");
+        assert!(
+            allowed(&verdict(&f, "shell", Access::Exec, &command)),
+            "{command}"
+        );
     }
     // Plan mode still refuses it outright, and a deny rule still wins.
     let plan = fixture("[permissions]\nmode = \"plan\"\n");
     assert!(denied(&verdict(&plan, "shell", Access::Exec, "git reset --hard")));
     let ruled = fixture("[permissions]\nmode = \"auto\"\ndeny = [\"shell(git reset:*)\"]\n");
-    assert!(denied(&verdict(&ruled, "shell", Access::Exec, "git reset --hard")));
+    assert!(denied(&verdict(
+        &ruled,
+        "shell",
+        Access::Exec,
+        "git reset --hard"
+    )));
 }
 
 #[test]
@@ -815,7 +823,10 @@ fn the_destructive_setting_can_refuse_or_wave_such_commands_through() {
             ),
             other => panic!("{command}: {other:?}"),
         }
-        assert!(allowed(&verdict(&allow, "shell", Access::Exec, command)), "{command}");
+        assert!(
+            allowed(&verdict(&allow, "shell", Access::Exec, command)),
+            "{command}"
+        );
     }
     assert!(allowed(&verdict(&deny, "shell", Access::Exec, "cargo build")));
     // Without `auto`, `allow` only stops the extra question: the mode still asks.
@@ -833,10 +844,15 @@ async fn a_destructive_command_is_asked_about_with_its_risk_and_refused_when_nob
         .await
         .unwrap_err();
     assert!(
-        reason.starts_with("this command discards uncommitted changes (git reset --hard); it needs the user's confirmation"),
+        reason.starts_with(
+            "this command discards uncommitted changes (git reset --hard); it needs the user's confirmation"
+        ),
         "{reason}"
     );
-    assert_eq!(before(&rig, &SHELL, json!({"command": "cargo build"})).await, Ok(None));
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build"})).await,
+        Ok(None)
+    );
 
     // A hook that waives prompts does not waive this one.
     rig.bus.on(

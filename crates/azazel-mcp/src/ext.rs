@@ -365,7 +365,8 @@ impl CommandHandler for McpCommand {
                 }
             })),
             _ => CommandOutcome::Error(
-                "usage: /mcp [list | reconnect|enable|disable|approve|reject|login|logout <server>]".to_string(),
+                "usage: /mcp [list | reconnect|enable|disable|approve|reject|login|logout <server>]"
+                    .to_string(),
             ),
         }
     }
@@ -418,7 +419,9 @@ impl Extension for McpExt {
         r.command(Command {
             name: "mcp".to_string(),
             description: "MCP servers: state, reconnect, enable or disable, approve, log in".to_string(),
-            argument_hint: Some("[reconnect|enable|disable|approve|reject|login|logout <server>]".to_string()),
+            argument_hint: Some(
+                "[reconnect|enable|disable|approve|reject|login|logout <server>]".to_string(),
+            ),
             handler: Arc::new(McpCommand(manager.clone())),
         });
         r.on(EventKind::SessionStart, Arc::new(Starter(manager.clone())));

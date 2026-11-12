@@ -263,7 +263,9 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }
     };
     // A project that runs trusted for the first time gets its `setup` hooks.
-    if !cli.trust && trusted && azazel_core::TrustStore::new(app.paths.trust_file()).take_setup(&app.paths.project_root)
+    if !cli.trust
+        && trusted
+        && azazel_core::TrustStore::new(app.paths.trust_file()).take_setup(&app.paths.project_root)
     {
         let mut setup = azazel_core::Event::Setup {
             trigger: "trust".to_string(),

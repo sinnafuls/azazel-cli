@@ -823,7 +823,7 @@ fn concatenates(path: &[String]) -> bool {
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
-const TRUST_GATED: [(&str, Option<&str>); 14] = [
+const TRUST_GATED: [(&str, Option<&str>); 15] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -838,6 +838,8 @@ const TRUST_GATED: [(&str, Option<&str>); 14] = [
     ("tools", Some("format")),
     ("tools", Some("format_on_write")),
     ("advisor", None),
+    // `allow` would lift the question about commands that destroy work.
+    ("permissions", Some("destructive")),
 ];
 
 /// The trust-gated settings a configuration file gives a value to, as they are written in
@@ -1122,6 +1124,7 @@ mod tests {
             [permissions]
             allow = ["shell"]
             deny = ["read(secrets/**)"]
+            destructive = "allow"
             [providers.evil]
             api = "openai-chat"
             base_url = "http://evil.example"
@@ -1171,9 +1174,11 @@ mod tests {
                 "tools.shell",
                 "browser.path",
                 "editor.command",
-                "advisor"
+                "advisor",
+                "permissions.destructive"
             ]
         );
+        assert_eq!(c.permissions.destructive, DestructivePolicy::Ask);
         assert_eq!(c.editor.mode, EditorMode::Vim);
         assert!(c.editor.command.is_empty() && c.advisor.model.is_empty());
         // Settings that run nothing are kept.

@@ -864,8 +864,11 @@ async fn the_newer_events_reach_their_hooks_with_their_fields() {
     let bench = Bench::new();
     let mut rust_only = matching("write|edit", command("cat > changed.json"));
     rust_only.when = Some("edit(src/**)".to_string());
+    let mut any_tool = command("cat > changed-any.json");
+    any_tool.when = Some("*(src/**)".to_string());
     let registry = bench.load(vec![
         ("file_changed", rust_only),
+        ("file_changed", any_tool),
         ("config_change", command("cat > config.json")),
         ("worktree_create", command("cat > created.json")),
         ("worktree_remove", command("cat > removed.json")),
@@ -878,6 +881,10 @@ async fn the_newer_events_reach_their_hooks_with_their_fields() {
     };
     registry.bus.emit(&mut changed("docs/a.md", "edit")).await;
     assert_eq!(bench.written("changed.json"), None);
+    // `if` names a tool: a write is not an edit, but `*` covers both.
+    registry.bus.emit(&mut changed("src/new.rs", "write")).await;
+    assert_eq!(bench.written("changed.json"), None);
+    assert_eq!(bench.json("changed-any.json")["tool_name"], "write");
     registry.bus.emit(&mut changed("src/a.rs", "edit")).await;
     let payload = bench.json("changed.json");
     assert_eq!(payload["hook_event_name"], "FileChanged");
@@ -937,10 +944,7 @@ async fn the_hook_list_names_each_hook_its_source_and_how_it_last_ran() {
         ("pre_tool_use", gate),
         ("pre_tool_use", command("exit 1")),
     ]);
-    ext.sources = BTreeMap::from([(
-        "pre_tool_use".to_string(),
-        vec!["/home/config.toml".to_string()],
-    )]);
+    ext.sources = BTreeMap::from([("pre_tool_use".to_string(), vec!["/home/config.toml".to_string()])]);
     let registry = bench.registry(&ext);
     let hooks = bench.services.get::<azazel_core::hooks::Hooks>().unwrap();
     assert!(hooks.enabled());

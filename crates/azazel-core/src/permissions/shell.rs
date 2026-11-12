@@ -238,9 +238,19 @@ fn has_flag(args: &[String], letters: &[char], long: &[&str]) -> bool {
 
 /// `/`, a drive root, the home directory, or everything directly inside one of them.
 fn root_or_home(target: &str) -> bool {
-    let target = target.trim_end_matches(['*', '.']).trim_end_matches(['/', '\\']);
-    let drive = target.len() == 2 && target.ends_with(':') && target.starts_with(|c: char| c.is_ascii_alphabetic());
-    target.is_empty() || drive || matches!(target, "~" | "$HOME" | "${HOME}" | "%USERPROFILE%" | "$env:USERPROFILE")
+    // `/*` is the contents of `/`; a bare `*` is the contents of where the command runs.
+    let target = target.strip_suffix('*').unwrap_or(target);
+    if target.is_empty() {
+        return false;
+    }
+    let base = target.trim_end_matches(['/', '\\']);
+    let drive = base.len() == 2 && base.ends_with(':') && base.starts_with(|c: char| c.is_ascii_alphabetic());
+    base.is_empty()
+        || drive
+        || matches!(
+            base,
+            "~" | "$HOME" | "${HOME}" | "%USERPROFILE%" | "$env:USERPROFILE"
+        )
 }
 
 /// `..`, `../..` and everything directly inside them.
@@ -309,7 +319,8 @@ fn destroys(words: &[String], outside: &dyn Fn(&str) -> bool) -> Option<&'static
                 }
                 "branch"
                     if has_flag(args, &['D'], &[])
-                        || (has_flag(args, &['d'], &["--delete"]) && has_flag(args, &['f'], &["--force"])) =>
+                        || (has_flag(args, &['d'], &["--delete"])
+                            && has_flag(args, &['f'], &["--force"])) =>
                 {
                     Some("deletes a branch even when it is not merged (git branch -D)")
                 }
@@ -328,7 +339,8 @@ fn destroys(words: &[String], outside: &dyn Fn(&str) -> bool) -> Option<&'static
         "terraform" | "tofu" => {
             let first = positionals(args, &["-chdir"]).next();
             (first == Some("destroy")
-                || (first == Some("apply") && args.iter().any(|arg| arg.trim_start_matches('-') == "destroy")))
+                || (first == Some("apply")
+                    && args.iter().any(|arg| arg.trim_start_matches('-') == "destroy")))
             .then_some("destroys the infrastructure Terraform manages")
         }
         "kubectl" => {
@@ -364,7 +376,10 @@ fn destroys(words: &[String], outside: &dyn Fn(&str) -> bool) -> Option<&'static
             statements
                 .any(|sql| {
                     let sql = sql.to_ascii_lowercase();
-                    sql.split_whitespace().collect::<Vec<_>>().join(" ").contains("drop database")
+                    sql.split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .contains("drop database")
                 })
                 .then_some("drops a database")
         }
@@ -624,6 +639,11 @@ mod tests {
         for command in [
             "rm -r target/tmp",
             "rm -rf ./build node_modules",
+            "rm -rf .",
+            "rm -rf *",
+            "rm -rf ./*",
+            "chmod -R 755 .",
+            "chown -R me ./data",
             "rm file.txt",
             "rm -f /tmp/one-file",
             "git reset HEAD~1",

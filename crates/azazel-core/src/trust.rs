@@ -254,7 +254,8 @@ mod tests {
         let definition = serde_json::json!({"command": "npx", "args": ["-y", "server"], "env": {"A": "1"}});
         let hash = fingerprint(&definition);
         let reordered: serde_json::Value =
-            serde_json::from_str(r#"{"env": {"A": "1"}, "args": ["-y", "server"], "command": "npx"}"#).unwrap();
+            serde_json::from_str(r#"{"env": {"A": "1"}, "args": ["-y", "server"], "command": "npx"}"#)
+                .unwrap();
         assert_eq!(fingerprint(&reordered), hash);
         let changed = fingerprint(&serde_json::json!({"command": "npx", "args": ["-y", "other"]}));
         assert_ne!(changed, hash);
@@ -288,7 +289,10 @@ mod tests {
         // Files written before servers were recorded still load.
         std::fs::write(
             paths.trust_file(),
-            format!("{{{:?}: {{\"trusted\": true, \"at\": \"2026-01-01T00:00:00Z\"}}}}", key(project)),
+            format!(
+                "{{{:?}: {{\"trusted\": true, \"at\": \"2026-01-01T00:00:00Z\"}}}}",
+                key(project)
+            ),
         )
         .unwrap();
         assert_eq!(store.decision(project), Some(true));

@@ -41,9 +41,7 @@ fn render(loaded: &Loaded, applied: Option<&dyn Fn(&str) -> bool>) -> String {
         out.push_str(&format!("{file}  not loaded: {problem}\n"));
     }
     if out.is_empty() {
-        out.push_str(
-            "this project has no rules; put Markdown files in .azazel/rules/ (see docs/rules.md)\n",
-        );
+        out.push_str("this project has no rules; put Markdown files in .azazel/rules/ (see docs/rules.md)\n");
     }
     out.trim_end().to_string()
 }
@@ -90,8 +88,8 @@ fn test(
         .file_stem()
         .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let rule =
-        rules::parse(&name, &file, Origin::guess(&file), &raw).map_err(|e| format!("{}: {e}", file.display()))?;
+    let rule = rules::parse(&name, &file, Origin::guess(&file), &raw)
+        .map_err(|e| format!("{}: {e}", file.display()))?;
     let mut lines = vec![format!("{}: {}", rule.name, rule.applies_text())];
     let mut all = true;
 
@@ -202,7 +200,11 @@ mod tests {
     fn a_rule_is_tested_against_a_path_a_text_and_a_tool() {
         let (_tmp, paths) = project();
         let rules_dir = paths.project_dir().join("rules");
-        std::fs::write(rules_dir.join("rust.md"), "---\npaths: \"src/**/*.rs\"\n---\nuse ?").unwrap();
+        std::fs::write(
+            rules_dir.join("rust.md"),
+            "---\npaths: \"src/**/*.rs\"\n---\nuse ?",
+        )
+        .unwrap();
         std::fs::write(
             rules_dir.join("pnpm.md"),
             "---\ntrigger: \"npm (install|i)\\\\b\"\nscope: tool:shell\n---\nuse pnpm",
@@ -258,7 +260,10 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("  how to cut a release\n"));
-        assert!(text.contains("cursorrules  (cursor)  always  · not applied yet"), "{text}");
+        assert!(
+            text.contains("cursorrules  (cursor)  always  · not applied yet"),
+            "{text}"
+        );
         assert!(render(&Loaded::default(), None).starts_with("this project has no rules"));
     }
 }

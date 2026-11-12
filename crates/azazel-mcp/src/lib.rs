@@ -3,11 +3,11 @@
 
 mod client;
 pub mod config;
-pub mod import;
 mod convert;
 mod elicit;
 mod ext;
 mod handler;
+pub mod import;
 mod manager;
 pub mod oauth;
 pub mod search;

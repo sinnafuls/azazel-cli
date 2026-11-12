@@ -445,7 +445,11 @@ mod tests {
             "# keys\nexport ACME_ALT=\"from home\"  # the spare\nOTHER=1\nnot a line\n1BAD=x\n",
         )
         .unwrap();
-        std::fs::write(&project, "ACME_KEY='from project'\nACME_ALT=ignored # comment\nEMPTY=\n").unwrap();
+        std::fs::write(
+            &project,
+            "ACME_KEY='from project'\nACME_ALT=ignored # comment\nEMPTY=\n",
+        )
+        .unwrap();
         let files = vec![home.clone(), project.clone(), dir.path().join("missing.env")];
 
         // The home file is asked first, whichever of the provider's variables it sets.
@@ -487,7 +491,8 @@ mod tests {
         assert!(from_files.resolve(&other).await.is_err());
         assert_eq!(from_files.source(&other), None);
 
-        let vars = parse_env_file("A=1\n B = two words \nC=\"q # not a comment\"\nD='x' trailing\nE=\"open\n");
+        let vars =
+            parse_env_file("A=1\n B = two words \nC=\"q # not a comment\"\nD='x' trailing\nE=\"open\n");
         assert_eq!(vars.len(), 4);
         assert_eq!(vars["B"], "two words");
         assert_eq!(vars["C"], "q # not a comment");

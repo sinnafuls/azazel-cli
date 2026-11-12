@@ -301,11 +301,9 @@ fn server_maps<'a>(client: Client, root: &'a Value, project: &Path) -> Vec<&'a M
             let wanted = project.to_string_lossy().replace('\\', "/");
             let projects = object(root.get("projects")).into_iter().flatten();
             for (path, settings) in projects {
-                let same = path.replace('\\', "/").trim_end_matches('/') == wanted.trim_end_matches('/');
-                let same = same
-                    || (cfg!(windows)
-                        && path.replace('\\', "/").trim_end_matches('/').to_ascii_lowercase()
-                            == wanted.trim_end_matches('/').to_ascii_lowercase());
+                let written = path.replace('\\', "/");
+                let (written, wanted) = (written.trim_end_matches('/'), wanted.trim_end_matches('/'));
+                let same = written == wanted || (cfg!(windows) && written.eq_ignore_ascii_case(wanted));
                 if same {
                     maps.extend(object(settings.get("mcpServers")));
                 }
@@ -441,7 +439,10 @@ mod tests {
         assert_eq!(by_name("docs").server.headers["Authorization"], "Bearer x");
         assert_eq!(by_name("search").server.kind.as_deref(), Some("sse"));
         assert_eq!(by_name("off").server.enabled, Some(false));
-        assert_eq!(by_name("remote").server.url.as_deref(), Some("https://wind.example/mcp"));
+        assert_eq!(
+            by_name("remote").server.url.as_deref(),
+            Some("https://wind.example/mcp")
+        );
         let gh = by_name("gh");
         assert_eq!(gh.server.kind, None);
         assert_eq!(gh.server.env["KEY"], "${GH_KEY}");
@@ -454,7 +455,11 @@ mod tests {
         );
         assert!(by_name("files").note.is_none());
         assert_eq!(scan.problems.len(), 1);
-        assert!(scan.problems[0].1.contains("`broken` is skipped"), "{:?}", scan.problems);
+        assert!(
+            scan.problems[0].1.contains("`broken` is skipped"),
+            "{:?}",
+            scan.problems
+        );
 
         // One client, and a file that is not JSON.
         write(&dirs.home.join(".cursor/mcp.json"), "{ nope");
@@ -467,7 +472,8 @@ mod tests {
 
     #[test]
     fn comments_and_trailing_commas_are_removed_but_strings_are_kept() {
-        let text = "{ \"a\": \"// not a comment, \", // gone\n \"b\": [1, 2, ], /* gone */ \"c\": \"x\\\"/*y\", }";
+        let text =
+            "{ \"a\": \"// not a comment, \", // gone\n \"b\": [1, 2, ], /* gone */ \"c\": \"x\\\"/*y\", }";
         let value: Value = serde_json::from_str(&strip_jsonc(text)).unwrap();
         assert_eq!(value["a"], "// not a comment, ");
         assert_eq!(value["b"], serde_json::json!([1, 2]));

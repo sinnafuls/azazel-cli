@@ -63,7 +63,7 @@ Hook arrays concatenate across config layers: hooks from `~/.azazel/config.toml`
 | `post_compact` | `PostCompact` | none | Cannot block |
 | `permission_request` | `PermissionRequest` | `tool_name`, `tool_input` | The call is denied. May also allow it without asking you |
 | `notification` | `Notification` | `message` | Cannot block. Fires in the terminal UI when something wants your attention |
-| `file_changed` | `FileChanged` | `file_path` (absolute), `tool_name`, `tool_input` (`{ "path": ... }`) | Cannot block. Fires after a `write` or `edit` succeeded; `matcher` and `if` select by tool and path |
+| `file_changed` | `FileChanged` | `file_path` (absolute), `tool_name`, `tool_input` (`{ "path": ... }`) | Cannot block. Fires after a `write` or `edit` succeeded. `matcher` selects by tool (`write`, `edit`) and `if` by tool and path: `edit(src/**)`, or `*(src/**)` for either tool |
 | `config_change` | `ConfigChange` | `source`: `settings` or `reload` | Cannot block. Fires after the settings menu or a reload changed the configuration |
 | `worktree_create` | `WorktreeCreate` | `worktree_path`, `agent_id` | Cannot block. Fires when the worktree of an isolated agent was made (see [team](team.md)) |
 | `worktree_remove` | `WorktreeRemove` | `worktree_path`, `agent_id` | Cannot block. Fires when that worktree was removed |
@@ -161,7 +161,7 @@ Format a file whenever an agent changed it, and install dependencies once when t
 
 ```toml
 [[hooks.file_changed]]
-if = "edit(**/*.rs)"
+if = "*(**/*.rs)"            # any tool, Rust files only
 command = "jq -r .file_path | xargs rustfmt --edition 2024"
 
 [[hooks.setup]]

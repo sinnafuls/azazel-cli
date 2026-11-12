@@ -74,11 +74,14 @@ impl Sandbox {
             .unwrap()
     }
 
+    /// The lead's requests, in order. What runs after the answer (memory extraction) asks the
+    /// model too; those requests offer no tools and are left out.
     fn requests(&self) -> Vec<Value> {
         self.read("requests.jsonl")
             .unwrap_or_default()
             .lines()
             .map(|line| serde_json::from_str::<Value>(line).unwrap()["request"].clone())
+            .filter(|request| request["tools"].as_array().is_some_and(|tools| !tools.is_empty()))
             .collect()
     }
 
@@ -86,7 +89,10 @@ impl Sandbox {
     fn transcripts(&self) -> String {
         let mut text = String::new();
         for project in std::fs::read_dir(self.path("home/projects")).unwrap().flatten() {
-            for file in std::fs::read_dir(project.path().join("sessions")).unwrap().flatten() {
+            for file in std::fs::read_dir(project.path().join("sessions"))
+                .unwrap()
+                .flatten()
+            {
                 if file.path().extension().is_some_and(|e| e == "jsonl") {
                     text.push_str(&std::fs::read_to_string(file.path()).unwrap());
                 }
@@ -170,7 +176,9 @@ fn a_stream_rule_cuts_the_reply_once_and_the_retry_carries_the_rule() {
     assert!(second.contains("not a prompt injection"));
     assert!(!second.contains("I left a TODO"), "{second}");
     let third = message_texts(&requests[2]).join("\n");
-    assert!(third.contains("<rule name=\"stream-rule-1\"") && third.contains("Do not talk about being an AI."));
+    assert!(
+        third.contains("<rule name=\"stream-rule-1\"") && third.contains("Do not talk about being an AI.")
+    );
     // The third reply says TODO again, but each rule fires once and two replies were withdrawn.
     let events = stdout(&output);
     assert_eq!(events.matches("\"type\":\"rule\"").count(), 2, "{events}");
@@ -214,10 +222,16 @@ fn rules_reach_the_agent_always_by_path_and_on_request() {
     assert!(!prompt.contains("no Markdown") && !prompt.contains("Tag, then build."));
     // The path rule comes with the first matching read, and only with the first.
     let after_first = message_texts(&requests[1]).join("\n");
-    assert_eq!(after_first.matches("Notes are plain text: no Markdown.").count(), 1);
+    assert_eq!(
+        after_first.matches("Notes are plain text: no Markdown.").count(),
+        1
+    );
     assert!(after_first.contains("<rule file="));
     let after_second = message_texts(&requests[2]).join("\n");
-    assert_eq!(after_second.matches("Notes are plain text: no Markdown.").count(), 1);
+    assert_eq!(
+        after_second.matches("Notes are plain text: no Markdown.").count(),
+        1
+    );
     let after_third = message_texts(&requests[3]).join("\n");
     assert!(after_third.contains("Tag, then build."));
 
@@ -301,7 +315,11 @@ once = true
     assert_eq!(changed["hook_event_name"], "FileChanged");
     assert_eq!(changed["tool_name"], "write");
     assert!(
-        changed["file_path"].as_str().unwrap().replace('\\', "/").ends_with("project/hello.txt"),
+        changed["file_path"]
+            .as_str()
+            .unwrap()
+            .replace('\\', "/")
+            .ends_with("project/hello.txt"),
         "{changed}"
     );
     // Two tool calls, one run of the `once` hook.
@@ -320,7 +338,9 @@ fn a_destructive_command_is_not_run_unattended_even_in_auto_mode() {
     assert!(output.status.success(), "{}", stderr(&output));
     let result = message_texts(&sandbox.requests()[1]).join("\n");
     assert!(
-        result.contains("this command deletes untracked files (git clean -f); it needs the user's confirmation"),
+        result.contains(
+            "this command deletes untracked files (git clean -f); it needs the user's confirmation"
+        ),
         "{result}"
     );
     assert_eq!(sandbox.read("project/keep.txt").as_deref(), Some("precious\n"));
@@ -373,20 +393,30 @@ fn a_key_in_the_projects_env_file_counts_only_once_the_project_is_trusted() {
         .find(|row| row["provider"] == "openai")
         .unwrap_or_else(|| panic!("no openai row in: {trusted}"));
     let source = row["source"].as_str().unwrap();
-    assert!(source.starts_with("OPENAI_API_KEY in ") && source.ends_with(".env"), "{source}");
+    assert!(
+        source.starts_with("OPENAI_API_KEY in ") && source.ends_with(".env"),
+        "{source}"
+    );
     assert!(!trusted.contains("sk-from-project"));
 
     // The home file needs no trust, and a real variable still wins over both.
     sandbox.write("home/.env", "export ANTHROPIC_API_KEY=\"sk-from-home\"\n");
     let home = status(&[]);
-    assert!(home.contains("ANTHROPIC_API_KEY in ") && !home.contains("sk-from-home"), "{home}");
+    assert!(
+        home.contains("ANTHROPIC_API_KEY in ") && !home.contains("sk-from-home"),
+        "{home}"
+    );
     let output = sandbox
         .command()
         .env("ANTHROPIC_API_KEY", "sk-real")
         .args(["auth", "status"])
         .output()
         .unwrap();
-    assert!(stdout(&output).contains("env ANTHROPIC_API_KEY"), "{}", stdout(&output));
+    assert!(
+        stdout(&output).contains("env ANTHROPIC_API_KEY"),
+        "{}",
+        stdout(&output)
+    );
 }
 
 #[cfg(feature = "mcp")]
@@ -397,7 +427,8 @@ fn a_projects_mcp_server_waits_for_approval_and_again_after_it_changes() {
     let define = |arg: &str| {
         sandbox.write(
             "project/.azazel/mcp.json",
-            &json!({ "mcpServers": { "local": { "command": "no-such-mcp-binary", "args": [arg] } } }).to_string(),
+            &json!({ "mcpServers": { "local": { "command": "no-such-mcp-binary", "args": [arg] } } })
+                .to_string(),
         );
     };
     sandbox.write(
@@ -413,7 +444,10 @@ fn a_projects_mcp_server_waits_for_approval_and_again_after_it_changes() {
     let (_, listed, _) = mcp(&["list"]);
     assert!(listed.contains("local  waiting for approval\n"), "{listed}");
     // The user's own servers never wait.
-    assert!(listed.contains("mine  failed: `no-such-mcp-binary` was not found on PATH"), "{listed}");
+    assert!(
+        listed.contains("mine  failed: `no-such-mcp-binary` was not found on PATH"),
+        "{listed}"
+    );
     assert!(listed.contains("azazel mcp approve <name>"));
     let doctor = sandbox.command().arg("doctor").output().unwrap();
     assert!(
@@ -425,7 +459,10 @@ fn a_projects_mcp_server_waits_for_approval_and_again_after_it_changes() {
     let (code, said, err) = mcp(&["approve", "local"]);
     assert_eq!((code, said.trim()), (Some(0), "approved local"), "{err}");
     let (_, listed, _) = mcp(&["list"]);
-    assert!(listed.contains("local  failed: `no-such-mcp-binary` was not found on PATH"), "{listed}");
+    assert!(
+        listed.contains("local  failed: `no-such-mcp-binary` was not found on PATH"),
+        "{listed}"
+    );
 
     // The approval was for that definition: a changed one waits again.
     define("two");
@@ -443,8 +480,16 @@ fn a_projects_mcp_server_waits_for_approval_and_again_after_it_changes() {
     assert_eq!(code, Some(1));
     assert!(err.contains("`mine` is not a server of this project"), "{err}");
     // `--trust` approves every one for that run.
-    let trusted = sandbox.command().args(["--trust", "mcp", "list"]).output().unwrap();
-    assert!(stdout(&trusted).contains("local  failed:"), "{}", stdout(&trusted));
+    let trusted = sandbox
+        .command()
+        .args(["--trust", "mcp", "list"])
+        .output()
+        .unwrap();
+    assert!(
+        stdout(&trusted).contains("local  failed:"),
+        "{}",
+        stdout(&trusted)
+    );
 }
 
 #[cfg(feature = "mcp")]
@@ -469,7 +514,10 @@ fn servers_of_another_client_are_imported_without_replacing_a_name() {
         .output()
         .unwrap();
     let said = stdout(&listed);
-    assert!(said.contains("1. search  https://search.example/mcp  (cursor, "), "{said}");
+    assert!(
+        said.contains("1. search  https://search.example/mcp  (cursor, "),
+        "{said}"
+    );
     assert!(said.contains("2. files  cursor-files --root .") && said.contains("already configured"));
     assert!(said.contains("pass --yes to import them all"));
     assert!(!said.contains("t0ken"));
@@ -486,13 +534,20 @@ fn servers_of_another_client_are_imported_without_replacing_a_name() {
     assert!(said.contains("kept `files` as it is"), "{said}");
     let written: Value = serde_json::from_str(&sandbox.read("home/mcp.json").unwrap()).unwrap();
     assert_eq!(written["mcpServers"]["files"]["command"], "my-files");
-    assert_eq!(written["mcpServers"]["search"]["url"], "https://search.example/mcp");
+    assert_eq!(
+        written["mcpServers"]["search"]["url"],
+        "https://search.example/mcp"
+    );
     assert_eq!(
         written["mcpServers"]["search"]["headers"]["Authorization"],
         "Bearer t0ken"
     );
 
-    let unknown = sandbox.command().args(["mcp", "import", "emacs"]).output().unwrap();
+    let unknown = sandbox
+        .command()
+        .args(["mcp", "import", "emacs"])
+        .output()
+        .unwrap();
     assert_eq!(unknown.status.code(), Some(1));
     assert!(stderr(&unknown).contains("unknown client `emacs`"));
 }
@@ -515,4 +570,15 @@ fn setup_hooks_run_the_first_time_a_project_runs_trusted() {
     let payload: Value = serde_json::from_str(lines[0]).unwrap();
     assert_eq!(payload["hook_event_name"], "Setup");
     assert_eq!(payload["trigger"], "trust");
+
+    // `azazel init` runs them too, and says so in the trigger.
+    let fresh = Sandbox::new();
+    fresh.write(
+        "home/config.toml",
+        "[roles]\ndefault = [\"mock/a\"]\n\n[[hooks.setup]]\ncommand = \"cat > init-setup.json\"\n",
+    );
+    let init = fresh.command().arg("init").write_stdin("").output().unwrap();
+    assert!(init.status.success(), "{}", stderr(&init));
+    let payload: Value = serde_json::from_str(&fresh.read("project/init-setup.json").unwrap()).unwrap();
+    assert_eq!(payload["trigger"], "init");
 }

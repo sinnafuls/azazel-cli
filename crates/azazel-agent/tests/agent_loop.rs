@@ -1228,7 +1228,12 @@ async fn rules_withdraw_at_most_two_replies_per_prompt() {
     );
     // The third reply stands, so the run ends instead of looping.
     assert!(
-        matches!(events.last(), Some(AgentEvent::Idle { stop: StopReason::Stop })),
+        matches!(
+            events.last(),
+            Some(AgentEvent::Idle {
+                stop: StopReason::Stop
+            })
+        ),
         "{events:?}"
     );
     assert_eq!(session.mock.requests_for("a").len(), 3);

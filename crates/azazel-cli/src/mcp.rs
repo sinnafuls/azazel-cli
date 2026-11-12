@@ -270,9 +270,12 @@ pub async fn run(action: &McpAction, paths: &Paths, trusted: bool, approve_all: 
             };
             decide(&manager, &names, true, trusted)
         }
-        McpAction::Reject { name } => {
-            decide(&manager(paths, trusted), std::slice::from_ref(name), false, trusted)
-        }
+        McpAction::Reject { name } => decide(
+            &manager(paths, trusted),
+            std::slice::from_ref(name),
+            false,
+            trusted,
+        ),
         McpAction::Import { client, yes } => run_import(paths, client.as_deref(), *yes),
         McpAction::List => {
             let manager = manager(paths, trusted);
@@ -405,7 +408,10 @@ mod tests {
         let lines = import_into(&file, &servers, &[0], &|_| true).unwrap();
         assert_eq!(lines[0], "imported `files` from cursor");
         assert!(std::fs::read_to_string(&file).unwrap().contains("theirs"));
-        assert_eq!(import_into(&file, &servers, &[], &|_| true).unwrap(), ["nothing was imported"]);
+        assert_eq!(
+            import_into(&file, &servers, &[], &|_| true).unwrap(),
+            ["nothing was imported"]
+        );
     }
 
     #[test]

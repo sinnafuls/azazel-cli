@@ -201,7 +201,7 @@ impl Rule {
     }
 
     pub fn for_agent(&self, agent: &AgentInfo) -> bool {
-        self.agents.is_empty() || self.agents.iter().any(|def| *def == agent.def)
+        self.agents.is_empty() || self.agents.contains(&agent.def)
     }
 
     /// Whether `path` (relative to the project root, forward slashes) is covered by `paths`.
@@ -721,9 +721,12 @@ impl Rules {
         }
         *done = so_far.len();
         let fresh = &so_far[from..];
+        // The pattern first: it almost never matches, and the record needs two strings to ask.
         let hit = rules.find(|rule| {
-            !state.fired.contains(&(agent.id.clone(), rule.name.clone()))
-                && rule.trigger.as_ref().is_some_and(|trigger| trigger.is_match(fresh))
+            rule.trigger
+                .as_ref()
+                .is_some_and(|trigger| trigger.is_match(fresh))
+                && !state.fired.contains(&(agent.id.clone(), rule.name.clone()))
         })?;
         state.fired.insert((agent.id.clone(), hit.name.clone()));
         state.applied.insert(hit.name.clone());
@@ -801,9 +804,9 @@ impl EventHandler for Handler {
                     };
                 }
                 let path = input.get("path").and_then(Value::as_str);
-                if let Some(path) = path.filter(|path| {
-                    FILE_TOOLS.contains(&tool.as_str()) && split_url(path).is_none()
-                }) {
+                if let Some(path) =
+                    path.filter(|path| FILE_TOOLS.contains(&tool.as_str()) && split_url(path).is_none())
+                {
                     let mut state = lock(&rules.state);
                     state.enter(&ctx.session_id);
                     if state.calls.len() >= MAX_PENDING_CALLS {
@@ -847,7 +850,9 @@ impl EventHandler for Handler {
             }
             // The summary does not keep the rules, so they are added again when next needed.
             Event::PostCompact { agent } => {
-                lock(&rules.state).attached.retain(|(owner, _)| *owner != agent.id);
+                lock(&rules.state)
+                    .attached
+                    .retain(|(owner, _)| *owner != agent.id);
             }
             // A new reply starts: scan it from its beginning.
             Event::BeforeRequest { agent, .. } => {
@@ -1098,7 +1103,10 @@ mod tests {
             "---\npaths: [\"a{\"]\n---\nx",
             "---\nalways: true\n---\n  \n",
         ] {
-            assert!(parse("r", Path::new("r.md"), Origin::Project, bad).is_err(), "{bad}");
+            assert!(
+                parse("r", Path::new("r.md"), Origin::Project, bad).is_err(),
+                "{bad}"
+            );
         }
     }
 
@@ -1136,13 +1144,25 @@ mod tests {
     fn rule_files_of_every_tool_are_found() {
         let (_tmp, paths) = project();
         let root = paths.project_root.clone();
-        write(&root, ".azazel/rules/rust/errors.md", "---\npaths: \"*.rs\"\n---\nuse ?");
-        write(&paths.home, "rules/errors.md", "shadowed by the project's name? no: rust/errors differs");
+        write(
+            &root,
+            ".azazel/rules/rust/errors.md",
+            "---\npaths: \"*.rs\"\n---\nuse ?",
+        );
+        write(
+            &paths.home,
+            "rules/errors.md",
+            "shadowed by the project's name? no: rust/errors differs",
+        );
         write(&paths.home, "rules/tone.md", "be brief");
         write(&root, ".claude/rules/tone.md", "claude's tone");
         write(&root, ".cursor/rules/ui.mdc", "---\nglobs: *.tsx\n---\ncursor ui");
         write(&root, ".cursorrules", "old cursor rules");
-        write(&root, ".windsurf/rules/go.md", "---\ntrigger: always_on\n---\nwindsurf go");
+        write(
+            &root,
+            ".windsurf/rules/go.md",
+            "---\ntrigger: always_on\n---\nwindsurf go",
+        );
         write(&root, ".windsurfrules", "old windsurf rules");
         write(&root, ".github/copilot-instructions.md", "copilot says");
         write(
@@ -1242,8 +1262,16 @@ mod tests {
     async fn a_path_rule_is_added_once_per_agent_and_again_after_a_compaction() {
         let (_tmp, paths) = project();
         let root = paths.project_root.clone();
-        write(&root, ".azazel/rules/rust.md", "---\npaths: \"**/*.rs\"\n---\nuse ?");
-        write(&root, ".azazel/rules/coder.md", "---\npaths: \"*.rs\"\nagents: coder\n---\ncoders only");
+        write(
+            &root,
+            ".azazel/rules/rust.md",
+            "---\npaths: \"**/*.rs\"\n---\nuse ?",
+        );
+        write(
+            &root,
+            ".azazel/rules/coder.md",
+            "---\npaths: \"*.rs\"\nagents: coder\n---\ncoders only",
+        );
         write(&root, "src/lib.rs", "fn main() {}");
         let rules = Arc::new(Rules::new(sources(&paths)));
         let registry = registry(&paths, rules.clone());
@@ -1251,17 +1279,26 @@ mod tests {
 
         assert!(!rules.applied("s1", "rust"));
         let first = touch(&registry, &lead, "c1", "read", "src/lib.rs").await;
-        assert!(first.contains("<rule file=") && first.contains("use ?"), "{first}");
+        assert!(
+            first.contains("<rule file=") && first.contains("use ?"),
+            "{first}"
+        );
         assert!(!first.contains("coders only"));
         assert!(rules.applied("s1", "rust") && !rules.applied("s2", "rust"));
         // Not again for the same agent, whatever the tool; not for other files.
         let again = touch(&registry, &lead, "c2", "edit", "src/lib.rs").await;
         assert_eq!(again, "content");
-        assert_eq!(touch(&registry, &lead, "c3", "read", "README.md").await, "content");
+        assert_eq!(
+            touch(&registry, &lead, "c3", "read", "README.md").await,
+            "content"
+        );
         // Another agent gets it, and the rule limited to its definition.
         let coder = agent("coder-1", "coder");
         let theirs = touch(&registry, &coder, "c4", "write", "src/lib.rs").await;
-        assert!(theirs.contains("use ?") && theirs.contains("coders only"), "{theirs}");
+        assert!(
+            theirs.contains("use ?") && theirs.contains("coders only"),
+            "{theirs}"
+        );
 
         registry
             .bus
@@ -1278,7 +1315,11 @@ mod tests {
     async fn stream_rules_fire_once_per_agent_and_tool_rules_deny_matching_calls() {
         let (_tmp, paths) = project();
         let root = paths.project_root.clone();
-        write(&root, ".azazel/rules/no-todo.md", "---\ntrigger: TODO\n---\nfinish the work");
+        write(
+            &root,
+            ".azazel/rules/no-todo.md",
+            "---\ntrigger: TODO\n---\nfinish the work",
+        );
         write(
             &root,
             ".azazel/rules/quiet.md",
@@ -1335,14 +1376,21 @@ mod tests {
                 reason: "denied by rule pnpm: use pnpm".into()
             }
         );
-        assert_eq!(registry.bus.emit(&mut call("pnpm install")).await, Outcome::Continue);
+        assert_eq!(
+            registry.bus.emit(&mut call("pnpm install")).await,
+            Outcome::Continue
+        );
         assert!(rules.applied("s1", "pnpm") && rules.applied("s1", "no-todo"));
     }
 
     #[tokio::test]
     async fn a_match_that_straddles_two_fragments_is_found_and_old_text_is_not_rescanned() {
         let (_tmp, paths) = project();
-        write(&paths.project_root, ".azazel/rules/r.md", "---\ntrigger: for(bid)+den\n---\nno");
+        write(
+            &paths.project_root,
+            ".azazel/rules/r.md",
+            "---\ntrigger: for(bid)+den\n---\nno",
+        );
         let rules = Rules::new(sources(&paths));
         let lead = agent("lead", "lead");
         let mut text = "x".repeat(4000);
@@ -1364,7 +1412,11 @@ mod tests {
         let (_tmp, paths) = project();
         let root = paths.project_root.clone();
         write(&root, ".azazel/rules/tone.md", "be brief");
-        write(&root, ".azazel/rules/coder.md", "---\nagents: coder\n---\ncoders only");
+        write(
+            &root,
+            ".azazel/rules/coder.md",
+            "---\nagents: coder\n---\ncoders only",
+        );
         write(
             &root,
             ".azazel/rules/release.md",
@@ -1402,11 +1454,17 @@ mod tests {
             Block::Text { text } => text.clone(),
             _ => String::new(),
         };
-        assert_eq!(text(scheme.read("release", &ctx).await.unwrap()), "tag, then build");
+        assert_eq!(
+            text(scheme.read("release", &ctx).await.unwrap()),
+            "tag, then build"
+        );
         assert!(rules.applied("s1", "release"));
         assert!(text(scheme.read("", &ctx).await.unwrap()).contains("release: on request (rule://release)"));
         let missing = scheme.read("nope", &ctx).await.unwrap_err();
-        assert!(missing.contains("no rule named `nope`") && missing.contains("tone"), "{missing}");
+        assert!(
+            missing.contains("no rule named `nope`") && missing.contains("tone"),
+            "{missing}"
+        );
 
         // Edits are picked up by a reload.
         write(&root, ".azazel/rules/tone.md", "be very brief");

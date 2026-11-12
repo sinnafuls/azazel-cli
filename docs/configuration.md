@@ -175,7 +175,8 @@ back. A project needs a trust decision when it has any of:
 - `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
 
-Gated settings: `hooks`, `providers`, `permissions.allow`, `lsp`, `verify.commands`, `tools.shell`, `browser.path`.
+Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
+`tools.shell`, `browser.path`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`; remove the project's entry there to be asked again.

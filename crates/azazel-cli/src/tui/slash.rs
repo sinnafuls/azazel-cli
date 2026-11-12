@@ -56,7 +56,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "Let agents work in another directory too: /add-dir <path>",
     ),
     ("dirs", "List the directories agents may work in"),
-    ("rules", "List the rule files and whether each has applied in this session"),
+    (
+        "rules",
+        "List the rule files and whether each has applied in this session",
+    ),
     (
         "hooks",
         "List the hooks, where they come from and how each last ran",

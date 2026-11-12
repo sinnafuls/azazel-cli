@@ -143,7 +143,11 @@ impl Hooks {
         let skills = self.0.skills.read().unwrap_or_else(PoisonError::into_inner);
         let mut hooks: Vec<&Arc<Hook>> = self.0.config.iter().collect();
         hooks.sort_by_key(|hook| HookEvent::ALL.iter().position(|event| *event == hook.event));
-        hooks.into_iter().chain(skills.iter()).map(|hook| hook.info()).collect()
+        hooks
+            .into_iter()
+            .chain(skills.iter())
+            .map(|hook| hook.info())
+            .collect()
     }
 }
 
