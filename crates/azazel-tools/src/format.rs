@@ -149,10 +149,7 @@ impl Formatters {
             _ = ctx.cancel.cancelled() => return Some(Err(format!("{name} was cancelled"))),
         };
         Some(match finished {
-            Err(_) => Err(format!(
-                "{name} did not finish within {} s",
-                TIMEOUT.as_secs()
-            )),
+            Err(_) => Err(format!("{name} did not finish within {} s", TIMEOUT.as_secs())),
             Ok(Err(e)) => Err(format!("{name} could not be started: {e}")),
             Ok(Ok(output)) if output.status.success() => Ok(name),
             Ok(Ok(output)) => {

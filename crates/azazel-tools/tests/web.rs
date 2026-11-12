@@ -905,7 +905,10 @@ fn reading_a_web_address_counts_as_network_access_to_its_host() {
     // The web schemes say what reading one of their addresses touches.
     let schemes = Arc::new(azazel_core::Schemes::default());
     let fetcher = Arc::new(azazel_tools::web::Fetcher::new().unwrap());
-    schemes.add("web", Arc::new(azazel_tools::web::UrlScheme::http(fetcher.clone())));
+    schemes.add(
+        "web",
+        Arc::new(azazel_tools::web::UrlScheme::http(fetcher.clone())),
+    );
     schemes.add("web", Arc::new(azazel_tools::web::UrlScheme::https(fetcher)));
     let read = azazel_tools::ReadTool::new(Arc::default(), schemes);
     let url = json!({ "path": "https://Docs.rs/tokio?search=x" });

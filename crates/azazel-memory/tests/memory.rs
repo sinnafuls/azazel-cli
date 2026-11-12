@@ -813,10 +813,17 @@ async fn memory_addresses_list_what_is_remembered_show_one_memory_and_search() {
         one.starts_with(&format!("id: {tabs}\nkind: convention\nscope: project\nsaved: ")),
         "{one}"
     );
-    assert!(one.ends_with("\ntags: style\n\nIndent with tabs, never spaces"), "{one}");
+    assert!(
+        one.ends_with("\ntags: style\n\nIndent with tabs, never spaces"),
+        "{one}"
+    );
 
     // The query may be written as in a URL.
-    for query in ["search/short answers", "search/short%20answers", "search/short+answers/"] {
+    for query in [
+        "search/short answers",
+        "search/short%20answers",
+        "search/short+answers/",
+    ] {
         assert_eq!(
             address(&registry, query).await.unwrap(),
             format!("{terse} [preference, global] The user prefers short answers"),

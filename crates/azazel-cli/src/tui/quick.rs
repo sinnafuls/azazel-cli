@@ -13,7 +13,9 @@ pub(super) fn memory_note(entered: &str) -> Option<&str> {
     if line.contains('\n') {
         return None;
     }
-    line.strip_prefix("# ").map(str::trim).filter(|note| !note.is_empty())
+    line.strip_prefix("# ")
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
 }
 
 /// Saves `note` as a memory of this project and says under which id.
@@ -41,7 +43,10 @@ mod tests {
     #[test]
     fn only_a_single_line_that_starts_with_hash_space_is_a_note() {
         assert_eq!(memory_note("# use tabs here"), Some("use tabs here"));
-        assert_eq!(memory_note("  #   always run clippy  \n"), Some("always run clippy"));
+        assert_eq!(
+            memory_note("  #   always run clippy  \n"),
+            Some("always run clippy")
+        );
         for prompt in [
             "#",
             "# ",

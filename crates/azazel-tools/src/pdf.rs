@@ -10,7 +10,8 @@ pub const NO_TEXT: &str = "this PDF has no extractable text (it is probably scan
 
 /// The pages a call asks for: `"3"` is one page, `"2-6"` a range; both ends are 1-based.
 pub fn parse_pages(text: &str) -> Result<(u32, u32), String> {
-    let invalid = || format!("pages `{text}`: expected a page number such as \"3\" or a range such as \"2-6\"");
+    let invalid =
+        || format!("pages `{text}`: expected a page number such as \"3\" or a range such as \"2-6\"");
     let number = |part: &str| part.trim().parse::<u32>().ok().filter(|n| *n >= 1);
     let (first, last) = match text.split_once('-') {
         Some((first, last)) => (number(first), number(last)),
@@ -141,7 +142,10 @@ pub(crate) mod tests {
         assert_eq!(parse_pages("3"), Ok((3, 3)));
         assert_eq!(parse_pages(" 2 - 6 "), Ok((2, 6)));
         for bad in ["", "0", "6-2", "a", "1-", "-3", "1,2"] {
-            assert!(parse_pages(bad).unwrap_err().contains("expected a page number"), "{bad}");
+            assert!(
+                parse_pages(bad).unwrap_err().contains("expected a page number"),
+                "{bad}"
+            );
         }
     }
 
@@ -174,14 +178,23 @@ pub(crate) mod tests {
         let first = read(&pdf, None, usize::MAX).unwrap();
         assert!(first.starts_with("--- page 1 ---\nText of page 1\n"), "{first}");
         assert!(first.contains("--- page 20 ---") && !first.contains("--- page 21 ---"));
-        assert!(first.ends_with("\n[pages 1-20 of 45; continue with pages=\"21-40\"]"), "{first}");
+        assert!(
+            first.ends_with("\n[pages 1-20 of 45; continue with pages=\"21-40\"]"),
+            "{first}"
+        );
         let asked = read(&pdf, Some((30, 60)), usize::MAX).unwrap();
         assert!(asked.ends_with("\n[pages 30-45 of 45]"), "{asked}");
         let wide = read(&pdf, Some((1, 30)), usize::MAX).unwrap();
-        assert!(wide.ends_with("\n[pages 1-20 of 45; continue with pages=\"21-40\"]"), "{wide}");
+        assert!(
+            wide.ends_with("\n[pages 1-20 of 45; continue with pages=\"21-40\"]"),
+            "{wide}"
+        );
         // The size bound ends a call early, and the footer still says where to go on.
         let small = read(&pdf, None, 60).unwrap();
-        assert!(small.ends_with("\n[pages 1-2 of 45; continue with pages=\"3-22\"]"), "{small}");
+        assert!(
+            small.ends_with("\n[pages 1-2 of 45; continue with pages=\"3-22\"]"),
+            "{small}"
+        );
     }
 
     #[test]

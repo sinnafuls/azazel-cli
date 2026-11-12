@@ -133,8 +133,10 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         sandbox.results(),
-        ["a.txt: 3, b.txt: 1; shell ran: false (shell: permission required for shell: re-run with --mode \
-          auto or add an allow rule)"]
+        [
+            "a.txt: 3, b.txt: 1; shell ran: false (shell: permission required for shell: re-run with --mode \
+          auto or add an allow rule)"
+        ]
     );
 
     // The model is told which tools a script can call, and the tool does not depend on the
@@ -160,7 +162,8 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
 #[test]
 fn a_pdf_is_read_as_text_page_by_page() {
     let sandbox = Sandbox::new();
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("../azazel-tools/tests/fixtures/read/three-pages.pdf");
+    let fixture =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../azazel-tools/tests/fixtures/read/three-pages.pdf");
     std::fs::copy(fixture, sandbox.project().join("doc.pdf")).unwrap();
     let script = calls(&[
         ("read", json!({ "path": "doc.pdf" })),
@@ -233,11 +236,7 @@ fn read_takes_the_addresses_of_sessions_jobs_and_memories() {
     let output = sandbox.azazel(&again, &[]);
     assert!(output.status.success(), "{}", stderr(&output));
     let results = sandbox.results();
-    assert!(
-        results[0].contains(&format!("\n{first_id}  ")),
-        "{}",
-        results[0]
-    );
+    assert!(results[0].contains(&format!("\n{first_id}  ")), "{}", results[0]);
     assert!(
         results[1].starts_with("[prompt]\ngo\n\n→ read session://\n→ read job://"),
         "{}",
@@ -267,7 +266,10 @@ fn format_on_write_runs_the_formatter_and_the_next_edit_is_not_stale() {
     let sandbox = Sandbox::new();
     let formatter = fake_formatter(sandbox.dir.path());
     let script = calls(&[
-        ("write", json!({ "path": "notes.txt", "content": "messy   text\n" })),
+        (
+            "write",
+            json!({ "path": "notes.txt", "content": "messy   text\n" }),
+        ),
         (
             "edit",
             json!({ "path": "notes.txt", "edits": [{ "old": "formatted", "new": "by hand" }] }),
@@ -296,7 +298,10 @@ fn format_on_write_runs_the_formatter_and_the_next_edit_is_not_stale() {
 
     // Off by default: the same write is left as the agent wrote it.
     let plain = sandbox.azazel(
-        &calls(&[("write", json!({ "path": "other.txt", "content": "messy   text\n" }))]),
+        &calls(&[(
+            "write",
+            json!({ "path": "other.txt", "content": "messy   text\n" }),
+        )]),
         &["--mode", "auto", "--set", &setting],
     );
     assert!(plain.status.success(), "{}", stderr(&plain));

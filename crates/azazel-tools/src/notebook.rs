@@ -82,7 +82,10 @@ fn outputs(cell: &Value, number: usize) -> CellOutput {
     };
     let list = cell.get("outputs").and_then(Value::as_array);
     for output in list.into_iter().flatten() {
-        let kind = output.get("output_type").and_then(Value::as_str).unwrap_or_default();
+        let kind = output
+            .get("output_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
         match kind {
             "stream" => {
                 let text = joined(output.get("text"));
@@ -135,7 +138,9 @@ fn outputs(cell: &Value, number: usize) -> CellOutput {
                 if !text.trim().is_empty() {
                     found.lines.push(cut(text.trim_end(), MAX_OUTPUT_CHARS, "output"));
                 } else if found.images.is_empty() && !others.is_empty() {
-                    found.lines.push(format!("[output not shown: {}]", others.join(", ")));
+                    found
+                        .lines
+                        .push(format!("[output not shown: {}]", others.join(", ")));
                 }
             }
         }
@@ -173,10 +178,7 @@ pub fn render(
     let mut last = first - 1;
     for (index, cell) in cells.iter().enumerate().skip(first - 1).take(limit) {
         let number = index + 1;
-        let kind = cell
-            .get("cell_type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown");
+        let kind = cell.get("cell_type").and_then(Value::as_str).unwrap_or("unknown");
         let source = joined(cell.get("source").or_else(|| cell.get("input")));
         let mut block = format!(
             "# cell {number} [{kind}]\n{}\n",
@@ -218,7 +220,8 @@ mod tests {
     use super::*;
 
     /// A 1x1 PNG.
-    pub(crate) const PIXEL: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    pub(crate) const PIXEL: &str =
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
     fn notebook() -> Vec<u8> {
         let long = "x".repeat(MAX_OUTPUT_CHARS + 30);
@@ -274,7 +277,9 @@ mod tests {
 
     #[test]
     fn offset_and_limit_count_cells() {
-        let part = render(&notebook(), Some(2), Some(1), usize::MAX).unwrap().unwrap();
+        let part = render(&notebook(), Some(2), Some(1), usize::MAX)
+            .unwrap()
+            .unwrap();
         assert!(part.text.starts_with("# cell 2 [code]\n"), "{}", part.text);
         assert!(
             part.text.ends_with("\n[cells 2-2 of 4; continue with offset=3]"),
@@ -284,7 +289,9 @@ mod tests {
         let tail = render(&notebook(), Some(4), None, usize::MAX).unwrap().unwrap();
         assert_eq!(tail.text, "# cell 4 [code]\nx = 1\n[cells 4-4 of 4]");
         assert!(tail.image.is_none());
-        let past = render(&notebook(), Some(5), None, usize::MAX).unwrap().unwrap_err();
+        let past = render(&notebook(), Some(5), None, usize::MAX)
+            .unwrap()
+            .unwrap_err();
         assert_eq!(past, "offset 5 is past the end of the notebook (4 cells)");
         // The size bound ends a call early and names the cell to go on from.
         let small = render(&notebook(), None, None, 40).unwrap().unwrap();

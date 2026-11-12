@@ -465,7 +465,8 @@ fn a_definitions_patterned_grants_bound_what_that_agent_may_do() {
     f.state.set_mode(PermissionMode::Ask);
     assert!(!allowed(&verdict(&f, "shell", Access::Exec, "git status")));
     let rule: Rule = "shell(git status:*)".parse().unwrap();
-    f.state.add_temporary_rule(rule.clone(), RuleKind::Allow, "skill x");
+    f.state
+        .add_temporary_rule(rule.clone(), RuleKind::Allow, "skill x");
     f.state.add_temporary_rule(rule, RuleKind::Allow, "skill x");
     assert!(allowed(&verdict(&f, "shell", Access::Exec, "git status")));
     let before = f.state.rules().len();

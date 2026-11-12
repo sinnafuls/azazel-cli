@@ -323,7 +323,10 @@ mod tests {
         assert_eq!(prs.arguments("12").unwrap(), ["pr", "view", "12", "--comments"]);
         assert_eq!(prs.arguments("12/diff").unwrap(), ["pr", "diff", "12"]);
         assert_eq!(issues.arguments("/").unwrap(), ["issue", "list", "--limit", "30"]);
-        assert_eq!(issues.arguments("7").unwrap(), ["issue", "view", "7", "--comments"]);
+        assert_eq!(
+            issues.arguments("7").unwrap(),
+            ["issue", "view", "7", "--comments"]
+        );
         assert_eq!(
             prs.arguments("12/files").unwrap_err(),
             "pr://12/files: expected pr://, pr://<number> or pr://<number>/diff"

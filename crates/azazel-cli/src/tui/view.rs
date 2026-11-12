@@ -145,6 +145,10 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "web_fetch" => field("url"),
         "web_search" | "memory_search" | "semantic_search" | "tool_search" => field("query"),
         "skill" => field("name"),
+        "run_code" => field("code").map(|code| {
+            let lines = code.trim().lines().count();
+            format!("Luau script, {lines} line{}", if lines == 1 { "" } else { "s" })
+        }),
         "job" => Some(format!(
             "{} {}",
             field("action").unwrap_or_default(),
@@ -325,6 +329,10 @@ mod tests {
         assert_eq!(
             tool_summary("edit", &json!({"path": "src/a.rs", "edits": []})),
             "src/a.rs"
+        );
+        assert_eq!(
+            tool_summary("run_code", &json!({"code": "\nlocal a = 1\nreturn a\n"})),
+            "Luau script, 2 lines"
         );
         assert_eq!(
             tool_summary("grep", &json!({"pattern": "fn main", "path": "src"})),

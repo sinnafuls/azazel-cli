@@ -105,11 +105,15 @@ async fn a_pdf_reads_as_text_with_page_separators_and_pages_picks_some() {
     );
 
     let bad = bench
-        .call("read", json!({"path": fixture("three-pages.pdf"), "pages": "two"}))
+        .call(
+            "read",
+            json!({"path": fixture("three-pages.pdf"), "pages": "two"}),
+        )
         .await;
     assert!(bad.is_error);
     assert!(
-        bad.text_content().starts_with("pages `two`: expected a page number"),
+        bad.text_content()
+            .starts_with("pages `two`: expected a page number"),
         "{}",
         bad.text_content()
     );
@@ -146,7 +150,10 @@ async fn a_notebook_shows_code_output_and_an_image_note_and_returns_the_first_im
          [image output: cell 3 image 1, image/png, 70 bytes]\n<Figure size 1x1>"
     );
     assert!(
-        matches!(shown.content.as_slice(), [Block::Text { .. }, Block::Image { .. }]),
+        matches!(
+            shown.content.as_slice(),
+            [Block::Text { .. }, Block::Image { .. }]
+        ),
         "{:?}",
         shown.content
     );
@@ -220,7 +227,10 @@ async fn session_addresses_describe_the_open_session_and_condense_another() {
     bench.registry.services.insert(open.clone());
 
     let described = bench.read("session://").await.text_content();
-    assert!(described.starts_with(&format!("id: {}\nfile: ", open.id())), "{described}");
+    assert!(
+        described.starts_with(&format!("id: {}\nfile: ", open.id())),
+        "{described}"
+    );
     assert!(
         described.contains("messages: 1 from the user, 0 from the agent, 0 tool results"),
         "{described}"
@@ -298,10 +308,10 @@ async fn github_addresses_count_as_network_access_to_github() {
 
     // A malformed address is refused before `gh` is started.
     let bench = bench();
-    bench
-        .registry
-        .schemes
-        .add("test", Arc::new(GhScheme::pull_requests(PathBuf::from("azazel-no-such-gh"))));
+    bench.registry.schemes.add(
+        "test",
+        Arc::new(GhScheme::pull_requests(PathBuf::from("azazel-no-such-gh"))),
+    );
     let refused = bench.read("pr://12/files").await;
     assert!(refused.is_error);
     assert_eq!(

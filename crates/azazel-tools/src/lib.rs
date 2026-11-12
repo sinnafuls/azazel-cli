@@ -1,9 +1,9 @@
 //! Built-in tools: file access, search, shell, jobs, todos, user questions, web, LSP and skills,
 //! and the addresses `read` resolves for sessions, jobs and GitHub.
 
+pub mod format;
 #[cfg(feature = "lsp")]
 pub mod lsp;
-pub mod format;
 pub mod misc;
 pub mod notebook;
 #[cfg(feature = "pdf")]

@@ -115,7 +115,8 @@ impl Tool for ReadTool {
     /// A file is a plain read. An address is whatever its scheme says: reading a web address is
     /// a fetch, and is asked about like `web_fetch`.
     fn access(&self, input: &Value) -> Access {
-        self.scheme_access(input).map_or(Access::Read, |(access, _)| access)
+        self.scheme_access(input)
+            .map_or(Access::Read, |(access, _)| access)
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {

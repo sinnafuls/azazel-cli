@@ -1070,7 +1070,10 @@ mod tests {
         // Claude Code tool names are mapped; what is not a rule is left out.
         assert_eq!(
             allowed_rules(&f.skill).unwrap(),
-            ["shell(git status:*)".parse::<Rule>().unwrap(), "read".parse().unwrap()]
+            [
+                "shell(git status:*)".parse::<Rule>().unwrap(),
+                "read".parse().unwrap()
+            ]
         );
 
         f.allow("lead", false);

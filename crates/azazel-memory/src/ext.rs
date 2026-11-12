@@ -305,7 +305,9 @@ impl Scheme for MemoryScheme {
         } else {
             let rows = self.all().await?;
             let row = rows.iter().find(|row| row.id == rest).ok_or_else(|| {
-                format!("no memory has the id `{rest}`; memory:// lists them, memory://search/<query> searches")
+                format!(
+                    "no memory has the id `{rest}`; memory:// lists them, memory://search/<query> searches"
+                )
             })?;
             let mut text = format!(
                 "id: {}\nkind: {}\nscope: {}\nsaved: {}\n",

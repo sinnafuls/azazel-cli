@@ -234,7 +234,9 @@ mod tests {
             async fn after(&self, _: &AgentInfo, _: &dyn Tool, _: &str, _: &mut ToolOutput) {}
         }
         let open = ToolCaller::new(caller.tools.clone(), Arc::new(Open));
-        let panicked = open.call(&ctx("lead", "c4"), "echo", json!({"panic": true})).await;
+        let panicked = open
+            .call(&ctx("lead", "c4"), "echo", json!({"panic": true}))
+            .await;
         assert!(panicked.is_error);
         assert_eq!(panicked.text_content(), "tool `echo` panicked");
     }
@@ -246,7 +248,12 @@ mod tests {
         caller.scope_agent("scout-1", Arc::new(only_echo));
         let refused = caller.call(&ctx("scout-1", "c1"), "secret", json!({})).await;
         assert_eq!(refused.text_content(), "unknown tool `secret`");
-        assert!(!caller.call(&ctx("scout-1", "c2"), "echo", json!({})).await.is_error);
+        assert!(
+            !caller
+                .call(&ctx("scout-1", "c2"), "echo", json!({}))
+                .await
+                .is_error
+        );
         // Another agent is not affected, and neither is this one once it is forgotten.
         assert_eq!(
             caller

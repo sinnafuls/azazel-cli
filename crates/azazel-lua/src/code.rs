@@ -118,7 +118,11 @@ fn signature(tool: &dyn Tool) -> String {
         .into_iter()
         .flatten()
         .map(|(name, property)| {
-            let mark = if required.contains(&name.as_str()) { "" } else { "?" };
+            let mark = if required.contains(&name.as_str()) {
+                ""
+            } else {
+                "?"
+            };
             format!("{name}{mark}: {}", type_name(property))
         })
         .collect();
@@ -157,7 +161,9 @@ fn describe_tools(tools: &[Arc<dyn Tool>]) -> String {
             names.truncate(end);
             names.push('…');
         }
-        out.push_str(&format!("Also callable, with the arguments their own descriptions give: {names}\n"));
+        out.push_str(&format!(
+            "Also callable, with the arguments their own descriptions give: {names}\n"
+        ));
     }
     out.push_str(
         "Any other tool you have is callable by name in the same way; a name that is not an identifier \
@@ -372,7 +378,9 @@ async fn execute(run: Arc<Run>, code: String) -> Result<String, String> {
     let mut out = std::mem::take(&mut *locked(&run.printed));
     let dropped = run.dropped.load(Ordering::Relaxed);
     if dropped > 0 {
-        out.push_str(&format!("[{dropped} more bytes of printed output were dropped]\n"));
+        out.push_str(&format!(
+            "[{dropped} more bytes of printed output were dropped]\n"
+        ));
     }
     match returned {
         Ok(values) => {
@@ -402,7 +410,11 @@ impl RunCodeTool {
         let stored = ctx
             .services
             .get::<ArtifactStore>()
-            .and_then(|store| store.save(&format!("{}-code.txt", ctx.call_id), text.as_bytes()).ok())
+            .and_then(|store| {
+                store
+                    .save(&format!("{}-code.txt", ctx.call_id), text.as_bytes())
+                    .ok()
+            })
             .and_then(|path| path.file_stem().map(|stem| stem.to_string_lossy().into_owned()));
         let mut end = max;
         while !text.is_char_boundary(end) {
@@ -564,7 +576,10 @@ mod tests {
         ];
         let listed = describe_tools(&tools);
         assert!(listed.contains("\n- read{  }: Read a file\n"), "{listed}");
-        assert!(!listed.contains("- task") && !listed.contains("- run_code"), "{listed}");
+        assert!(
+            !listed.contains("- task") && !listed.contains("- run_code"),
+            "{listed}"
+        );
         assert!(!listed.contains("Also callable"), "{listed}");
 
         // Past the budget the tools are still named, so the model knows they are there.
@@ -576,7 +591,9 @@ mod tests {
         assert!(listed.len() < LISTING_CHARS + 2600, "{}", listed.len());
         assert!(listed.contains("\n- mcp__server__tool_0{  }: xxx"), "{listed}");
         assert!(
-            listed.contains("Also callable, with the arguments their own descriptions give: mcp__server__tool_"),
+            listed.contains(
+                "Also callable, with the arguments their own descriptions give: mcp__server__tool_"
+            ),
             "{listed}"
         );
         assert!(listed.contains("mcp__server__tool_119"), "{listed}");

@@ -123,10 +123,7 @@ impl Bench {
             ),
             seen: seen.clone(),
         };
-        services.insert(Arc::new(ToolCaller::new(
-            registry.tools.clone(),
-            Arc::new(gate),
-        )));
+        services.insert(Arc::new(ToolCaller::new(registry.tools.clone(), Arc::new(gate))));
         Bench {
             _dir: dir,
             paths,
@@ -213,7 +210,8 @@ async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json(
     let text = output.text_content();
     assert!(text.starts_with("checking\t2\ttrue\n{"), "{text}");
     assert!(text.ends_with("}\ndone"), "{text}");
-    let json: Value = serde_json::from_str(&text["checking\t2\ttrue\n".len()..text.len() - "\ndone".len()]).unwrap();
+    let json: Value =
+        serde_json::from_str(&text["checking\t2\ttrue\n".len()..text.len() - "\ndone".len()]).unwrap();
     assert_eq!(json, json!({"total": 3, "names": ["a", "b"]}));
 
     let silent = bench.run("local x = 1").await;
@@ -228,7 +226,11 @@ async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json(
     );
     let broken = bench.run("local = 3").await;
     assert!(broken.is_error);
-    assert!(broken.text_content().starts_with("run_code:1: "), "{}", broken.text_content());
+    assert!(
+        broken.text_content().starts_with("run_code:1: "),
+        "{}",
+        broken.text_content()
+    );
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -302,7 +304,11 @@ async fn a_busy_loop_stops_at_the_time_limit_while_waiting_for_tools_does_not_co
         .run(&format!("return tools.shell({{ command = {sleep:?} }})"))
         .await;
     assert!(!waited.is_error, "{}", waited.text_content());
-    assert!(waited.text_content().contains("slept"), "{}", waited.text_content());
+    assert!(
+        waited.text_content().contains("slept"),
+        "{}",
+        waited.text_content()
+    );
     assert!(started.elapsed() >= Duration::from_secs(1));
 }
 
