@@ -46,6 +46,16 @@ pub enum SkillsAction {
     Remove { name: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum AuthAction {
+    /// Where each provider's credential comes from, without printing it
+    Status {
+        /// One JSON object per provider
+        #[arg(long)]
+        json: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Sub {
     /// Choose the default model and create this project's config file
@@ -62,6 +72,27 @@ pub enum Sub {
     },
     /// Forget the stored key or login of a provider
     Logout { provider: String },
+    /// Credentials of the providers
+    Auth {
+        #[command(subcommand)]
+        action: AuthAction,
+    },
+    /// List the models of the providers you have a credential for
+    Models {
+        /// Only models whose name matches this, fuzzily
+        query: Option<String>,
+        /// Only this provider's models
+        #[arg(long, value_name = "ID")]
+        provider: Option<String>,
+        /// Every model in the catalogue, credential or not
+        #[arg(long)]
+        all: bool,
+        /// One JSON object per model
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print a completion script for a shell
+    Completions { shell: clap_complete::Shell },
     /// Install the newest release from GitHub over this binary
     Update {
         /// Only report whether a newer release exists
@@ -190,9 +221,14 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Sub>,
 
-    /// Run one prompt without the interactive UI and print the result
-    #[arg(short = 'p', long = "print", value_name = "PROMPT")]
-    pub print: Option<String>,
+    /// Run the prompt without the interactive UI and print the result
+    #[arg(short = 'p', long = "print")]
+    pub print: bool,
+
+    /// The prompt: the first message of the session, or with -p the whole run; `--` before it
+    /// when it starts like a subcommand
+    #[arg(value_name = "PROMPT")]
+    pub prompt: Vec<String>,
 
     /// Model to use, as provider/model[:thinking] or @role; repeat to add fallbacks
     #[arg(long = "model", value_name = "SPEC", global = true)]
@@ -211,12 +247,103 @@ pub struct Cli {
     pub output: OutputFormat,
 
     /// Continue the most recent session of this project
-    #[arg(short = 'c', long = "continue")]
+    #[arg(short = 'c', long = "continue", conflicts_with_all = ["session", "fork"])]
     pub resume_latest: bool,
 
-    /// Resume the session with this id (a unique prefix is enough)
-    #[arg(short = 'r', long, value_name = "ID")]
-    pub resume: Option<String>,
+    /// Open a session: a path to its .jsonl file, or its id (a unique prefix is enough)
+    #[arg(
+        short = 'r',
+        long = "session",
+        alias = "resume",
+        value_name = "PATH|ID",
+        conflicts_with = "fork"
+    )]
+    pub session: Option<String>,
+
+    /// Continue a copy of a session, given like --session, leaving the original as it is
+    #[arg(long, value_name = "PATH|ID")]
+    pub fork: Option<String>,
+
+    /// Name the session
+    #[arg(long, value_name = "NAME")]
+    pub name: Option<String>,
+
+    /// Keep this run's sessions in DIR instead of the project's own directory
+    #[arg(long = "session-dir", value_name = "DIR", global = true)]
+    pub session_dir: Option<PathBuf>,
+
+    /// Keep nothing of this run: no session file, no checkpoints
+    #[arg(long = "no-session")]
+    pub no_session: bool,
+
+    /// Let agents work in this directory too; repeat for more
+    #[arg(long = "add-dir", value_name = "DIR", global = true)]
+    pub add_dir: Vec<PathBuf>,
+
+    /// Change one setting for this run, as in config.toml: --set limits.max_turns=20
+    #[arg(long = "set", value_name = "TABLE.KEY=VALUE", global = true)]
+    pub set: Vec<String>,
+
+    /// Offer only these tools (comma-separated; globs such as mcp__github__* work)
+    #[arg(
+        long,
+        value_name = "NAMES",
+        value_delimiter = ',',
+        conflicts_with = "no_tools"
+    )]
+    pub tools: Option<Vec<String>>,
+
+    /// Offer no tools at all
+    #[arg(long = "no-tools")]
+    pub no_tools: bool,
+
+    /// Never offer these tools (comma-separated; globs work)
+    #[arg(long = "disallowed-tools", value_name = "NAMES", value_delimiter = ',')]
+    pub disallowed_tools: Vec<String>,
+
+    /// Replace the lead's built-in instructions with this text, or with a file's as @FILE
+    #[arg(long = "system-prompt", value_name = "TEXT|@FILE")]
+    pub system_prompt: Option<String>,
+
+    /// Add this text, or a file's as @FILE, to the lead's instructions
+    #[arg(long = "append-system-prompt", value_name = "TEXT|@FILE")]
+    pub append_system_prompt: Option<String>,
+
+    /// Load no Luau extensions
+    #[arg(long = "no-extensions")]
+    pub no_extensions: bool,
+
+    /// Load no skills
+    #[arg(long = "no-skills")]
+    pub no_skills: bool,
+
+    /// Run no hooks
+    #[arg(long = "no-hooks")]
+    pub no_hooks: bool,
+
+    /// Read no AGENTS.md or CLAUDE.md files
+    #[arg(long = "no-context-files")]
+    pub no_context_files: bool,
+
+    /// Connect to no MCP servers
+    #[arg(long = "no-mcp")]
+    pub no_mcp: bool,
+
+    /// Use no memory
+    #[arg(long = "no-memory")]
+    pub no_memory: bool,
+
+    /// All of the --no-* switches above
+    #[arg(long)]
+    pub bare: bool,
+
+    /// Requests the lead may make per prompt
+    #[arg(long = "max-turns", value_name = "N", global = true)]
+    pub max_turns: Option<u32>,
+
+    /// Stop every agent once the run has spent this much
+    #[arg(long = "max-cost", value_name = "USD")]
+    pub max_cost: Option<f64>,
 
     /// Work in this directory instead of the current one
     #[arg(long, value_name = "DIR", global = true)]
@@ -233,4 +360,40 @@ pub struct Cli {
     /// Write debug-level logs
     #[arg(long)]
     pub debug: bool,
+}
+
+impl Cli {
+    /// The prompt as one text; empty when none was given.
+    pub fn prompt_text(&self) -> String {
+        self.prompt.join(" ")
+    }
+
+    /// Whether this run opens the interactive UI.
+    pub fn interactive(&self) -> bool {
+        !self.print && self.command.is_none()
+    }
+
+    /// Whether a discovery switch (`--no-<what>` or `--bare`) is on.
+    pub fn skips(&self, what: Discovery) -> bool {
+        self.bare
+            || match what {
+                Discovery::Extensions => self.no_extensions,
+                Discovery::Skills => self.no_skills,
+                Discovery::Hooks => self.no_hooks,
+                Discovery::ContextFiles => self.no_context_files,
+                Discovery::Mcp => self.no_mcp,
+                Discovery::Memory => self.no_memory,
+            }
+    }
+}
+
+/// What the `--no-*` switches turn off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Discovery {
+    Extensions,
+    Skills,
+    Hooks,
+    ContextFiles,
+    Mcp,
+    Memory,
 }

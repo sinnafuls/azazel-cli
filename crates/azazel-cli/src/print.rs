@@ -37,11 +37,19 @@ fn with_piped_stdin(prompt: &str) -> String {
     if stdin.lock().read_to_string(&mut piped).is_err() || piped.trim().is_empty() {
         return prompt.to_string();
     }
+    if prompt.trim().is_empty() {
+        return piped;
+    }
     format!("{prompt}\n\n{piped}")
 }
 
 pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat) -> u8 {
     let prompt = with_piped_stdin(prompt);
+    if prompt.trim().is_empty() {
+        eprintln!("azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input");
+        app.finish(active).await;
+        return EXIT_USAGE;
+    }
     app.start(if active.resumed {
         StartSource::Resume
     } else {

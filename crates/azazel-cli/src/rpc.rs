@@ -41,7 +41,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, UserInput};
-use azazel_ai::{Block, ModelSpec};
+use azazel_ai::Block;
 use azazel_core::{
     ApprovalDecision, ApprovalRequest, Level, PermissionMode, PlanDecision, StartSource, Ui, UiBridge,
     UiError,
@@ -301,11 +301,15 @@ impl Session {
                     .get("chain")
                     .and_then(Value::as_array)
                     .ok_or("`chain` must be a list of model names")?;
-                let mut chain = Vec::with_capacity(names.len());
-                for name in names {
-                    let name = name.as_str().ok_or("`chain` must be a list of model names")?;
-                    chain.push(name.parse::<ModelSpec>().map_err(|e| format!("{name}: {e}"))?);
-                }
+                let names = names
+                    .iter()
+                    .map(|name| name.as_str().map(str::to_string))
+                    .collect::<Option<Vec<String>>>()
+                    .ok_or("`chain` must be a list of model names")?;
+                let chain = self
+                    .app
+                    .model_specs(&names)
+                    .map_err(|e| e.trim_start_matches("--model ").to_string())?;
                 let router = &self.app.router;
                 let mut usable = router.resolve(&chain);
                 usable.retain(|model| router.provider(&model.provider).is_some());

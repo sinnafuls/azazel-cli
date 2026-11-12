@@ -296,7 +296,29 @@ pub trait CommandSource: Send + Sync {
 pub struct ToolRegistry {
     tools: RwLock<Vec<(String, Arc<dyn Tool>)>>,
     sources: RwLock<Vec<(String, Arc<dyn ToolSource>)>>,
-    disabled: RwLock<Vec<String>>,
+    selection: RwLock<Selection>,
+}
+
+/// Which tool names are offered: those the allowed patterns match (every name when there are
+/// none), minus those a disabled pattern matches. Patterns are globs (`mcp__github__*`).
+#[derive(Default)]
+struct Selection {
+    allowed: Option<globset::GlobSet>,
+    disabled: globset::GlobSet,
+}
+
+impl Selection {
+    fn offers(&self, name: &str) -> bool {
+        self.allowed.as_ref().is_none_or(|allowed| allowed.is_match(name)) && !self.disabled.is_match(name)
+    }
+}
+
+fn glob_set(patterns: &[String]) -> Result<globset::GlobSet, String> {
+    let mut set = globset::GlobSetBuilder::new();
+    for pattern in patterns {
+        set.add(globset::Glob::new(pattern).map_err(|e| format!("tool pattern `{pattern}`: {e}"))?);
+    }
+    set.build().map_err(|e| e.to_string())
 }
 
 impl ToolRegistry {
@@ -315,8 +337,38 @@ impl ToolRegistry {
             .push((owner.to_string(), source));
     }
 
-    pub fn set_disabled(&self, names: Vec<String>) {
-        *self.disabled.write().unwrap_or_else(PoisonError::into_inner) = names;
+    /// Offers only the tools `allowed` matches (all when `None`), minus those `disabled` matches.
+    pub fn select(&self, allowed: Option<&[String]>, disabled: &[String]) -> Result<(), String> {
+        let selection = Selection {
+            allowed: allowed.map(glob_set).transpose()?,
+            disabled: glob_set(disabled)?,
+        };
+        *self.selection.write().unwrap_or_else(PoisonError::into_inner) = selection;
+        Ok(())
+    }
+
+    /// Names of every registered tool and every tool a source offers now, before selection.
+    pub fn all_names(&self, agent: &AgentInfo) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .tools
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(_, tool)| tool.name().to_string())
+            .collect();
+        let sources: Vec<Arc<dyn ToolSource>> = self
+            .sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(_, s)| s.clone())
+            .collect();
+        for source in sources {
+            names.extend(source.tools(agent).iter().map(|tool| tool.name().to_string()));
+        }
+        names.sort();
+        names.dedup();
+        names
     }
 
     pub fn remove_owner(&self, owner: &str) {
@@ -337,11 +389,11 @@ impl ToolRegistry {
 
 impl ToolSource for ToolRegistry {
     fn tools(&self, agent: &AgentInfo) -> Vec<Arc<dyn Tool>> {
-        let disabled = self.disabled.read().unwrap_or_else(PoisonError::into_inner);
+        let selection = self.selection.read().unwrap_or_else(PoisonError::into_inner);
         let mut out: Vec<Arc<dyn Tool>> = Vec::new();
         let mut add = |tool: Arc<dyn Tool>| {
             let name = tool.name();
-            if !disabled.iter().any(|d| d == name) && !out.iter().any(|t| t.name() == name) {
+            if selection.offers(name) && !out.iter().any(|t| t.name() == name) {
                 out.push(tool);
             }
         };
@@ -837,8 +889,12 @@ mod tests {
         assert_eq!(registry.bus.emit(&mut tool_call()).await, Outcome::Continue);
         assert_eq!(*seen.lock().unwrap(), ["two"]);
 
-        registry.tools.set_disabled(vec!["shared".into()]);
+        registry.tools.select(None, &["shared".into()]).unwrap();
         assert_eq!(names(&registry), ["beta"]);
         assert!(registry.tools.get(&agent(), "shared").is_none());
+        registry.tools.select(Some(&["s*".into()]), &[]).unwrap();
+        assert_eq!(names(&registry), ["shared"]);
+        assert_eq!(registry.tools.all_names(&agent()), ["beta", "shared"]);
+        assert!(registry.tools.select(Some(&["[".into()]), &[]).is_err());
     }
 }

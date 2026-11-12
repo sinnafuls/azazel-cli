@@ -236,16 +236,34 @@ impl Extension for CustomCommandsExt {
     }
 }
 
-/// Size above which a mentioned file is not inlined.
+/// Size above which a mentioned text file is not inlined.
 const MAX_MENTION_BYTES: u64 = 256 * 1024;
+/// Size above which a mentioned image is not attached.
+const MAX_MENTION_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+/// Images attached from mentions in one prompt.
+pub const MAX_MENTION_IMAGES: usize = 8;
+
+/// A prompt after its `@path` mentions were expanded.
+#[derive(Debug, Default)]
+pub struct Mentions {
+    /// The prompt with each mentioned text file appended in a `<file>` block.
+    pub text: String,
+    /// Path and bytes of every inlined text file, so the caller can record them as read.
+    pub files: Vec<(PathBuf, Vec<u8>)>,
+    /// Each mentioned image, as given in the prompt, with its bytes. Decoding is left to the
+    /// caller because it is CPU-bound.
+    pub images: Vec<(String, Vec<u8>)>,
+}
 
 static MENTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)@([^\s@]+)").expect("static regex"));
 
-/// A prompt with the files it mentions as `@path` appended in `<file>` blocks. Mentions that do not
-/// name a readable text file are left as they are. Also returns each inlined file's path and bytes
-/// so the caller can record them as read.
-pub fn expand_mentions(text: &str, cwd: &Path) -> (String, Vec<(PathBuf, Vec<u8>)>) {
+/// Expands the `@path` mentions of a prompt: text files are appended in `<file>` blocks, images
+/// (at most [`MAX_MENTION_IMAGES`]) are returned to be attached. Mentions that name neither are left
+/// as they are.
+pub fn expand_mentions(text: &str, cwd: &Path) -> Mentions {
     let mut files: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut seen: Vec<PathBuf> = Vec::new();
     let mut out = text.to_string();
     for caps in MENTION.captures_iter(text) {
         let mention = caps[1].trim_end_matches([',', '.', ';', ':', ')', '!', '?']);
@@ -254,16 +272,26 @@ pub fn expand_mentions(text: &str, cwd: &Path) -> (String, Vec<(PathBuf, Vec<u8>
         } else {
             cwd.join(mention)
         };
-        if files.iter().any(|(seen, _)| seen == &path) {
+        if seen.contains(&path) {
             continue;
         }
         let Ok(meta) = std::fs::metadata(&path) else {
             continue;
         };
-        if !meta.is_file() || meta.len() > MAX_MENTION_BYTES {
+        if !meta.is_file() || meta.len() > MAX_MENTION_IMAGE_BYTES {
             continue;
         }
         let Ok(bytes) = std::fs::read(&path) else { continue };
+        seen.push(path.clone());
+        if crate::media::image_mime(&bytes).is_some() {
+            if images.len() < MAX_MENTION_IMAGES {
+                images.push((mention.to_string(), bytes));
+            }
+            continue;
+        }
+        if meta.len() > MAX_MENTION_BYTES {
+            continue;
+        }
         let Ok(content) = std::str::from_utf8(&bytes) else {
             continue;
         };
@@ -273,7 +301,11 @@ pub fn expand_mentions(text: &str, cwd: &Path) -> (String, Vec<(PathBuf, Vec<u8>
         ));
         files.push((path, bytes));
     }
-    (out, files)
+    Mentions {
+        text: out,
+        files,
+        images,
+    }
 }
 
 #[cfg(test)]
@@ -351,19 +383,36 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("src")).unwrap();
         std::fs::write(dir.path().join("src/a.rs"), "fn a() {}\n").unwrap();
         std::fs::write(dir.path().join("blob.bin"), [0xff, 0xfe, 0x00]).unwrap();
+        let mut png = Vec::new();
+        image::RgbaImage::new(2, 2)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        for n in 0..=MAX_MENTION_IMAGES {
+            std::fs::write(dir.path().join(format!("shot{n}.png")), &png).unwrap();
+        }
 
-        let prompt = "Compare @src/a.rs, with @src/a.rs and @missing.rs; mail me@example.com about @blob.bin";
-        let (text, files) = expand_mentions(prompt, dir.path());
+        let prompt = "Compare @src/a.rs, with @src/a.rs and @missing.rs; mail me@example.com about @blob.bin, @shot0.png";
+        let found = expand_mentions(prompt, dir.path());
         assert_eq!(
-            text,
+            found.text,
             format!("{prompt}\n\n<file path=\"src/a.rs\">\nfn a() {{}}\n</file>")
         );
         assert_eq!(
-            files,
+            found.files,
             vec![(dir.path().join("src/a.rs"), b"fn a() {}\n".to_vec())]
         );
+        assert_eq!(found.images, vec![("shot0.png".to_string(), png.clone())]);
 
-        let (unchanged, none) = expand_mentions("no mentions here", dir.path());
-        assert_eq!((unchanged.as_str(), none.len()), ("no mentions here", 0));
+        let many: Vec<String> = (0..=MAX_MENTION_IMAGES)
+            .map(|n| format!("@shot{n}.png"))
+            .collect();
+        let capped = expand_mentions(&many.join(" "), dir.path());
+        assert_eq!(capped.images.len(), MAX_MENTION_IMAGES);
+
+        let none = expand_mentions("no mentions here", dir.path());
+        assert_eq!(
+            (none.text.as_str(), none.files.len(), none.images.len()),
+            ("no mentions here", 0, 0)
+        );
     }
 }

@@ -190,7 +190,7 @@ fn named_theme(app: &App, name: &str) -> (Theme, Option<String>) {
     }
 }
 
-pub async fn run(app: Arc<App>, active: Active) -> u8 {
+pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) -> u8 {
     let (request_tx, requests) = mpsc::unbounded_channel();
     app.registry
         .services
@@ -272,8 +272,12 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
         }
         crate::update::check_in_background(&tui.app.paths);
     }
-    // A first run has nothing to answer with: go straight to signing in or adding a key.
-    if !tui.app.has_model(&tui.active.lead.status().chain) {
+    if let Some(prompt) = first_prompt {
+        // Sent as if typed: without a model it is kept in the editor while settings open.
+        tui.editor.set_text(&prompt);
+        tui.submit(false).await;
+    } else if !tui.app.has_model(&tui.active.lead.status().chain) {
+        // A first run has nothing to answer with: go straight to signing in or adding a key.
         tui.info(
             "Welcome! azazel needs a model before it can work. Sign in with a Claude or ChatGPT \
              subscription, or add an API key, then pick the default model. You can come back \
@@ -1547,13 +1551,11 @@ impl Tui {
     }
 
     fn set_model(&mut self, specs: &[&str]) {
-        let mut chain = Vec::new();
-        for spec in specs {
-            match spec.parse::<ModelSpec>() {
-                Ok(parsed) => chain.push(parsed),
-                Err(e) => return self.fail(&e.to_string()),
-            }
-        }
+        let texts: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
+        let chain = match self.app.model_specs(&texts) {
+            Ok(chain) => chain,
+            Err(e) => return self.fail(e.trim_start_matches("--model ")),
+        };
         if self.app.router.resolve(&chain).is_empty() {
             return self.fail("that selection resolves to no model");
         }

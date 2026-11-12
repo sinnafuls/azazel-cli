@@ -188,5 +188,6 @@ if (-not $NoPath) {
 
 $version = & $target --version
 Write-Host "$version is ready: run ``azazel`` in a project directory to start"
+Write-Host "tab completion: add  azazel completions powershell | Out-String | Invoke-Expression  to `$PROFILE"
 Write-Host "update with ``azazel update``; remove with: & `"$(Join-Path $Dir 'install.ps1')`" -Uninstall"
 }

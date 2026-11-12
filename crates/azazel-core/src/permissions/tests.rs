@@ -236,6 +236,15 @@ fn the_decision_table() {
         };
         assert!(ok, "{mode} {tool}({subject}): expected {expected}, got {v:?}");
     }
+
+    // A directory added while running widens the roots like a configured one.
+    f.state.set_mode(PermissionMode::Ask);
+    let elsewhere = f.paths.project_root.parent().unwrap().join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    assert!(f.state.add_root(&elsewhere));
+    assert!(!f.state.add_root(&elsewhere.join("nested")));
+    assert!(allowed(&verdict(&f, "read", Read, &outside)));
+    assert_eq!(f.state.roots().len(), 3);
 }
 
 #[test]

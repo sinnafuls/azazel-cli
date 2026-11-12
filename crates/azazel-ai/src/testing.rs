@@ -180,6 +180,9 @@ pub type MockScript = BTreeMap<String, Vec<MockStep>>;
 pub struct MockProvider {
     queues: Mutex<HashMap<String, VecDeque<MockStep>>>,
     requests: Mutex<Vec<(String, Request)>>,
+    /// Every request is also appended here as one JSON line `{"model", "request"}`, so a test
+    /// driving the binary can see what was sent.
+    record: Option<std::path::PathBuf>,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -204,6 +207,12 @@ impl MockProvider {
         let script: MockScript =
             serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         Ok(Self::from_script(script))
+    }
+
+    /// Also writes every request to `file`, one JSON line each.
+    pub fn recording_to(mut self, file: std::path::PathBuf) -> Self {
+        self.record = Some(file);
+        self
     }
 
     /// Appends a step to the queue of `mock/<model>`.
@@ -246,6 +255,18 @@ impl Provider for MockProvider {
         cancel: CancellationToken,
     ) -> Result<EventStream, AiError> {
         locked(&self.requests).push((model.id.clone(), req.clone()));
+        if let Some(file) = &self.record {
+            use std::io::Write;
+            let line = serde_json::json!({ "model": model.id, "request": req });
+            let written = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(file)
+                .and_then(|mut out| writeln!(out, "{line}"));
+            if let Err(e) = written {
+                tracing::warn!("could not record the mock request in {}: {e}", file.display());
+            }
+        }
         let step = locked(&self.queues)
             .get_mut(&model.id)
             .and_then(VecDeque::pop_front);

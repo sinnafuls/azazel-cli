@@ -153,6 +153,10 @@ impl State {
         if !self.extracting.load(Ordering::Relaxed) {
             return;
         }
+        if azazel_core::limits::reached(&ctx.services) {
+            tracing::info!("memory extraction skipped: the run's cost limit is reached");
+            return;
+        }
         let (Some(router), Some(session)) =
             (ctx.services.get::<Router>(), ctx.services.get::<SessionStore>())
         else {

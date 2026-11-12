@@ -12,6 +12,22 @@ GitHub are its section here.
   `[tools]` and `[update]`. Settings that name a program to run are ignored in an untrusted project.
 - Session lists come from an index kept beside the session files, so pickers open without reading every
   session again; sessions are listed most recently used first.
+- The prompt can follow the flags without `-p`: `azazel fix the tests` opens the UI and starts on it, and
+  `azazel -p fix the tests` no longer needs quotes.
+- `@image.png` in a prompt attaches the image (up to 8 per prompt).
+- Model names may be partial everywhere you type one (`--model fable`, `/model haiku:high`); `azazel models`
+  lists the models you can use.
+- Launch flags: `--session <path|id>`, `--fork`, `--name`, `--session-dir`, `--no-session`, `--add-dir`,
+  `--set table.key=value`, `--tools`, `--no-tools`, `--disallowed-tools`, `--system-prompt`,
+  `--append-system-prompt`, `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`,
+  `--no-memory`, `--bare`, `--max-turns` and `--max-cost`.
+- A cost cap: past `[limits] max_cost_usd` (or `--max-cost`) no agent makes another request, and a warning is
+  shown once at `warn_cost_usd`.
+- `azazel auth status`, `azazel completions <shell>`, and `/add-dir` and `/dirs` in the terminal UI.
+
+### Changed
+
+- `-r` is now `--session` and also takes a path to a session file; `--resume` still works.
 
 ## [0.2.0] - 2026-11-12
 

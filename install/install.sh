@@ -191,6 +191,7 @@ if [ "$modify_path" -eq 1 ] && ! on_path "$dir"; then
 fi
 
 say "$("$dir/azazel" --version) is ready: run \`azazel\` in a project directory to start"
+say "tab completion: add  eval \"\$(azazel completions bash)\"  to ~/.bashrc (or zsh, fish: azazel completions --help)"
 if [ -f "$share_dir/install.sh" ]; then
     say "update with \`azazel update\`; remove with: $share_dir/install.sh --uninstall"
 fi

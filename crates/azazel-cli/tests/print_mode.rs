@@ -203,6 +203,6 @@ fn failures_exit_non_zero_with_a_message() {
         .args(["-p", "hi", "--mode", "yolo"])
         .output()
         .unwrap();
-    assert_eq!(bad_mode.status.code(), Some(1));
+    assert_eq!(bad_mode.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&bad_mode.stderr).contains("unknown mode `yolo`"));
 }

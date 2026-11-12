@@ -878,6 +878,24 @@ fn env_key_path(name: &str) -> Option<Vec<String>> {
         .then_some(path)
 }
 
+/// Adds `key=value` (`limits.max_cost_usd=5`) to a table of overrides. The value is a TOML
+/// literal when it parses as one, else a string; the key needs a table and a name.
+pub fn set_override(overrides: &mut Table, assignment: &str) -> Result<(), String> {
+    let (key, raw) = assignment
+        .split_once('=')
+        .ok_or_else(|| format!("`{assignment}`: expected table.key=value"))?;
+    let path: Vec<String> = key.trim().split('.').map(str::to_string).collect();
+    if path.len() < 2 || path.iter().any(String::is_empty) {
+        return Err(format!("`{key}`: expected table.key"));
+    }
+    merge(
+        overrides,
+        nest(&path, parse_env_value(raw.trim())),
+        &mut Vec::new(),
+    );
+    Ok(())
+}
+
 /// A TOML literal when the text is one (`true`, `3`, `["a"]`), otherwise a string.
 fn parse_env_value(raw: &str) -> Value {
     match toml::from_str::<Table>(&format!("v = {raw}")) {
@@ -1053,6 +1071,35 @@ mod tests {
         options.env = vec![("AZAZEL_TEAM__MAX_PARALEL".into(), "6".into())];
         let error = Config::load(&f.paths, &options).unwrap_err().to_string();
         assert!(error.starts_with("AZAZEL_TEAM__MAX_PARALEL:"), "{error}");
+    }
+
+    #[test]
+    fn set_override_builds_nested_keys_from_literals_and_strings() {
+        let mut overrides = Table::new();
+        set_override(&mut overrides, "limits.max_cost_usd=5").unwrap();
+        set_override(&mut overrides, "limits.max_turns = 9").unwrap();
+        set_override(&mut overrides, "tui.theme=light").unwrap();
+        set_override(&mut overrides, "tools.format.rs=rustfmt --edition 2024").unwrap();
+        assert_eq!(overrides["limits"]["max_cost_usd"].as_integer(), Some(5));
+        assert_eq!(overrides["limits"]["max_turns"].as_integer(), Some(9));
+        assert_eq!(overrides["tui"]["theme"].as_str(), Some("light"));
+        assert_eq!(
+            overrides["tools"]["format"]["rs"].as_str(),
+            Some("rustfmt --edition 2024")
+        );
+        for bad in ["limits", "limits.=1", "=1", ".x=1"] {
+            assert!(set_override(&mut overrides, bad).is_err(), "{bad}");
+        }
+
+        let f = fixture("[limits]\nmax_turns = 3\n", "", "");
+        let mut options = trusted();
+        options.overrides = overrides;
+        let c = Config::load(&f.paths, &options).unwrap().config;
+        assert_eq!((c.limits.max_cost_usd, c.limits.max_turns), (5.0, 9));
+        assert_eq!(c.tui.theme, "light");
+
+        set_override(&mut options.overrides, "limits.max_turnz=1").unwrap();
+        assert!(Config::load(&f.paths, &options).is_err());
     }
 
     #[test]

@@ -188,22 +188,42 @@ In an untrusted project:
 
 | Flag | Meaning |
 |---|---|
-| `-p`, `--print <PROMPT>` | Run one prompt without the UI and print the result |
-| `--model <SPEC>` | `provider/model[:thinking]` or `@role`; repeat to add fallbacks. Concrete models become this run's `default` role |
+| `PROMPT...` | Words after the flags: the first message of the session, or with `-p` the whole run. Put `--` before a prompt that starts with a subcommand's name |
+| `-p`, `--print` | Run the prompt without the UI and print the result |
+| `--model <SPEC>` | `provider/model[:thinking]`, `@role`, or part of a model's name (`fable`); repeat to add fallbacks. Concrete models become this run's `default` role |
 | `--thinking <LEVEL>` | `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--mode <MODE>` | Permission mode: `plan`, `ask`, `accept-edits`, `auto` |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
-| `-r`, `--resume <ID>` | Resume the session with this id; a unique prefix is enough |
+| `-r`, `--session <PATH\|ID>` | Open a session by its file or its id (a unique prefix is enough); `--resume` is the old name |
+| `--fork <PATH\|ID>` | Continue in a copy of a session, leaving the original as it is |
+| `--name <NAME>` | Name the session |
+| `--session-dir <DIR>` | Keep this run's sessions in `DIR` |
+| `--no-session` | Keep nothing of the run: no session file, no checkpoints |
+| `--add-dir <DIR>` | Let agents work in another directory too; repeatable |
+| `--set <TABLE.KEY=VALUE>` | Change one setting for this run, as written in `config.toml` (`--set limits.max_turns=20`); repeatable |
+| `--tools <NAMES>` | Offer only these tools, comma-separated; globs such as `mcp__github__*` work |
+| `--no-tools` | Offer no tools |
+| `--disallowed-tools <NAMES>` | Never offer these tools, on top of `[tools] disabled` |
+| `--system-prompt <TEXT\|@FILE>` | Replace the lead's built-in instructions (its identity and rules); sub-agents keep theirs |
+| `--append-system-prompt <TEXT\|@FILE>` | Add text to the lead's instructions, after the context files |
+| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run |
+| `--bare` | All six `--no-*` switches |
+| `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
+| `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
 | `--trust` | Trust this project's configuration for this run |
 | `--api-key <KEY>` | Key for the provider of the first `--model`, for this run only |
 | `--debug` | Write debug-level logs to `~/.azazel/logs/azazel.log` |
 | `--version`, `--help` | Print the version or the usage |
 
-`--model`, `--thinking`, `--mode`, `--output`, `--cwd` and `--trust` may also follow a subcommand, as in
-`azazel goal "make the tests pass" --mode auto`.
+`--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set` and
+`--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
-Subcommands: `init`, `doctor`, `login`, `logout`, `update` ([getting started](getting-started.md)), `goal`
+A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`) exits
+with status 2.
+
+Subcommands: `init`, `doctor`, `login`, `logout`, `update`, `completions` ([getting started](getting-started.md)),
+`models`, `auth status` ([models and logins](models-and-logins.md)), `goal`
 ([goals](goals.md)), `mcp` ([MCP](mcp.md)), `pkg`, `skills` ([packages](packages.md)), `memory`, `index`, `rag`
 ([memory](memory.md)), `ext types` ([extensions](extensions.md)) and `rpc` ([RPC mode](rpc.md)).

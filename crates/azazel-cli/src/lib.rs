@@ -9,6 +9,7 @@ pub mod login;
 pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
+pub mod models;
 pub mod pkg;
 pub mod print;
 pub mod rpc;
@@ -154,7 +155,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if cfg!(windows) {
         update::remove_retired();
     }
-    let interactive = cli.print.is_none() && cli.command.is_none();
+    let interactive = cli.interactive();
+    if cli.print && cli.prompt.is_empty() && std::io::stdin().is_terminal() {
+        eprintln!("azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input");
+        return print::EXIT_USAGE;
+    }
     if interactive && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
         eprintln!("azazel: the interactive UI needs a terminal; pass -p \"prompt\" to run without one");
         return print::EXIT_USAGE;
@@ -167,6 +172,39 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return login::login(provider.as_deref(), *key, &paths).await;
         }
         Some(Sub::Logout { provider }) => return login::logout(provider, &paths),
+        Some(Sub::Completions { shell }) => {
+            let mut command = <Cli as clap::CommandFactory>::command();
+            clap_complete::generate(*shell, &mut command, "azazel", &mut std::io::stdout());
+            return print::EXIT_OK;
+        }
+        Some(Sub::Models {
+            query,
+            provider,
+            all,
+            json,
+        }) => {
+            let Some((config, providers, credentials)) = provider_setup(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            let catalog = azazel_ai::Catalog::load(Some(&paths.models_cache()), &config.models);
+            return models::run_models(
+                &catalog,
+                &providers,
+                &credentials,
+                query.as_deref(),
+                provider.as_deref(),
+                *all,
+                *json,
+            );
+        }
+        Some(Sub::Auth {
+            action: cli::AuthAction::Status { json },
+        }) => {
+            let Some((_, providers, credentials)) = provider_setup(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            return models::run_auth_status(&providers, &credentials, *json);
+        }
         Some(Sub::Update { check }) => return update::run(&paths, *check).await,
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),
         Some(Sub::Skills { action }) => return pkg::run_skills(action, &paths),
@@ -197,7 +235,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Ok(app) => app,
         Err(e) => {
             eprintln!("azazel: {e:#}");
-            return print::EXIT_FAILED;
+            return if e.downcast_ref::<app::UsageError>().is_some() {
+                print::EXIT_USAGE
+            } else {
+                print::EXIT_FAILED
+            };
         }
     };
     let opened = match app.requested_session(&cli) {
@@ -211,6 +253,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return print::EXIT_FAILED;
         }
     };
+    if let Some(name) = cli.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        active.session.append(azazel_core::EntryKind::SessionInfo {
+            name: name.to_string(),
+        });
+    }
     if let Some((objective, max_iterations, max_cost, max_minutes)) = goal {
         return goal_mode(
             &app,
@@ -226,10 +273,55 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if cli.command == Some(Sub::Rpc) {
         return rpc::run(Arc::new(app), active).await;
     }
-    match &cli.print {
-        Some(prompt) => print::run(&app, &active, prompt, cli.output).await,
-        None => tui::run(Arc::new(app), active).await,
+    let prompt = cli.prompt_text();
+    if cli.print {
+        print::run(&app, &active, &prompt, cli.output).await
+    } else {
+        tui::run(
+            Arc::new(app),
+            active,
+            (!prompt.trim().is_empty()).then_some(prompt),
+        )
+        .await
     }
+}
+
+/// The configuration, providers and credentials, for commands that only look at providers.
+fn provider_setup(
+    cli: &Cli,
+    paths: &Paths,
+    trusted: bool,
+) -> Option<(
+    Config,
+    Vec<azazel_ai::providers::presets::ProviderConfig>,
+    azazel_ai::Credentials,
+)> {
+    let loaded = app::config_overrides(cli).and_then(|overrides| {
+        Config::load(
+            paths,
+            &LoadOptions {
+                trusted,
+                overrides,
+                env: std::env::vars().collect(),
+            },
+        )
+        .map_err(Into::into)
+    });
+    let config = match loaded {
+        Ok(loaded) => loaded.config,
+        Err(e) => {
+            eprintln!("azazel: {e:#}");
+            return None;
+        }
+    };
+    let providers = match models::providers(&config) {
+        Ok(providers) => providers,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            return None;
+        }
+    };
+    Some((config, providers, azazel_ai::Credentials::new(paths.auth_file())))
 }
 
 /// `azazel goal`: sets the objective, lets the lead work until the goal is settled, and reports

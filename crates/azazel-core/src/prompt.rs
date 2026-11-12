@@ -166,12 +166,29 @@ impl SystemPartProvider for Environment {
     }
 }
 
+/// Text rendered for the lead only (`depth` 0), or for every other agent only.
+struct ForLead {
+    text: String,
+    lead: bool,
+}
+
+#[async_trait]
+impl SystemPartProvider for ForLead {
+    async fn render(&self, agent: &AgentInfo) -> Option<String> {
+        ((agent.depth == 0) == self.lead).then(|| self.text.clone())
+    }
+}
+
 /// Registers the parts every session has: the lead identity, the rules and the environment.
 pub struct BasePromptExt {
     pub cwd: PathBuf,
     pub project_root: PathBuf,
     /// Name of the shell agents' commands run in.
     pub shell: String,
+    /// Replaces the lead's identity and rules (`--system-prompt`); sub-agents keep the rules.
+    pub system: Option<String>,
+    /// Added to the lead's prompt after the context files (`--append-system-prompt`).
+    pub append: Option<String>,
 }
 
 impl crate::ext::Extension for BasePromptExt {
@@ -180,8 +197,37 @@ impl crate::ext::Extension for BasePromptExt {
     }
 
     fn register(&self, r: &mut crate::ext::Registrar) -> Result<(), crate::ext::ExtError> {
-        r.system_part("identity", Arc::new(LeadIdentity));
-        r.system_part("rules", Arc::new(StaticPart(RULES.to_string())));
+        match &self.system {
+            Some(text) => {
+                r.system_part(
+                    "identity",
+                    Arc::new(ForLead {
+                        text: text.clone(),
+                        lead: true,
+                    }),
+                );
+                r.system_part(
+                    "rules",
+                    Arc::new(ForLead {
+                        text: RULES.to_string(),
+                        lead: false,
+                    }),
+                );
+            }
+            None => {
+                r.system_part("identity", Arc::new(LeadIdentity));
+                r.system_part("rules", Arc::new(StaticPart(RULES.to_string())));
+            }
+        }
+        if let Some(text) = &self.append {
+            r.system_part(
+                "appended",
+                Arc::new(ForLead {
+                    text: text.clone(),
+                    lead: true,
+                }),
+            );
+        }
         r.system_part(
             "environment",
             Arc::new(Environment {

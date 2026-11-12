@@ -11,7 +11,9 @@ Every tool call an agent makes passes one gate before it runs. The gate combines
 | `accept-edits` | As `ask`, plus file writes inside the project | Commands, network, writes outside the project | |
 | `auto` | Everything | Only what an `ask` rule or a protected path forces | |
 
-"Inside the project" means under the project root or one of `permissions.additional_dirs`. A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL and the `generate_*` tools.
+"Inside the project" means under the project root or one of `permissions.additional_dirs`, plus directories added
+with `--add-dir <DIR>` or, for the rest of the run, `/add-dir <path>` (`/dirs` lists them all; Luau extensions
+see only the configured ones). A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL and the `generate_*` tools.
 
 Deny rules, the push guard and protected paths apply in every mode, `auto` included.
 

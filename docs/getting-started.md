@@ -125,13 +125,19 @@ Type a request and press `Enter`:
 All keys and commands are listed in [the terminal UI](tui.md). To continue where you left off next time, run
 `azazel -c`.
 
+Words after `azazel` are sent as the first message: `azazel fix the failing test` opens the UI and starts on it.
+Quote the prompt or put `--` before it when it contains something that looks like a flag or starts with a
+subcommand's name (`azazel -- init the repository`).
+
 ## Print mode
 
-`-p` runs one prompt without the UI and prints the final answer. Anything piped on standard input is appended to
-the prompt.
+`-p` runs the prompt without the UI and prints the final answer. The prompt is every word after the flags, quoted
+or not. Anything piped on standard input is appended to it; with no prompt, the piped text is the prompt.
+`@path` works here too: text files are inlined and images (up to 8) are attached.
 
 ```sh
-azazel -p "summarise the changes in the last commit"
+azazel -p summarise the changes in the last commit
+azazel -p "what is wrong in @screenshot.png"
 git diff | azazel -p "review this diff"
 azazel -p "fix the failing test" --mode auto
 azazel -p "list the TODO comments" --output json
@@ -143,6 +149,8 @@ azazel -p "list the TODO comments" --output json
 | `--output json` | Print one JSON event per line, each tagged with the `agent` that emitted it |
 | `--mode <mode>` | Permission mode for the run: `plan`, `ask`, `accept-edits`, `auto` |
 | `--trust` | Trust the project's configuration for this run |
+| `--max-cost <USD>` | Stop once the run has spent this much |
+| `--tools`, `--system-prompt`, `--bare`, ... | See [command-line flags](configuration.md#command-line-flags) |
 
 Nobody is there to approve a tool call in print mode, so a call that would prompt is denied with
 `permission required for <tool>: re-run with --mode auto or add an allow rule`. A project that needs trust and
@@ -152,11 +160,22 @@ has no recorded decision runs untrusted unless you pass `--trust`.
 |---|---|
 | 0 | The agent finished |
 | 1 | The run failed (for example no model: `no model configured: run "azazel init" or pass --model provider/id`) |
-| 2 | Usage error |
+| 2 | Usage error: a missing prompt, an unknown tool, an ambiguous model name |
 | 130 | Interrupted with `Ctrl+C` |
 
 For driving azazel from another program, see [RPC mode](rpc.md). For runs that only end when the work is
 verified, see [goals](goals.md).
+
+## Tab completion
+
+`azazel completions <bash|zsh|fish|powershell|elvish>` prints a completion script. To load it in every new shell:
+
+| Shell | Add to |
+|---|---|
+| bash | `eval "$(azazel completions bash)"` in `~/.bashrc` |
+| zsh | `eval "$(azazel completions zsh)"` in `~/.zshrc` |
+| fish | `azazel completions fish \| source` in `~/.config/fish/config.fish` |
+| PowerShell | `azazel completions powershell \| Out-String \| Invoke-Expression` in `$PROFILE` |
 
 ## Where things are stored
 

@@ -3,9 +3,11 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
+use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
+use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::{Deserialize, Serialize};
 
-use crate::types::ThinkingLevel;
+use crate::types::{ModelRef, ThinkingLevel};
 
 /// USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -215,6 +217,61 @@ impl Catalog {
         models
     }
 
+    /// The model a short or partial name means, among the models of `providers`: an exact id
+    /// first, else the single best fuzzy match of `provider/id`. A trailing `:level` sets the
+    /// thinking level. `Err` holds the best candidates when several match equally well, and is
+    /// empty when nothing matches.
+    pub fn find(&self, query: &str, providers: &[String]) -> Result<ModelRef, Vec<ModelRef>> {
+        let query = query.trim();
+        let (name, thinking) = match query.rsplit_once(':') {
+            Some((name, suffix)) if !name.is_empty() => match suffix.parse::<ThinkingLevel>() {
+                Ok(level) => (name, Some(level)),
+                Err(_) => (query, None),
+            },
+            _ => (query, None),
+        };
+        let reference = |model: &ModelInfo| ModelRef {
+            provider: model.provider.clone(),
+            model: model.id.clone(),
+            thinking,
+        };
+        let mut candidates: Vec<&ModelInfo> = self
+            .models
+            .values()
+            .filter(|m| providers.contains(&m.provider))
+            .collect();
+        candidates.sort_by_key(|m| m.key());
+        let exact: Vec<&ModelInfo> = candidates
+            .iter()
+            .copied()
+            .filter(|m| m.id.eq_ignore_ascii_case(name))
+            .collect();
+        match exact.as_slice() {
+            [one] => return Ok(reference(one)),
+            [] => {}
+            many => return Err(many.iter().map(|m| reference(m)).collect()),
+        }
+        let pattern = Pattern::new(name, CaseMatching::Ignore, Normalization::Smart, AtomKind::Fuzzy);
+        let mut matcher = Matcher::new(Config::DEFAULT);
+        let mut buf = Vec::new();
+        let mut scored: Vec<(u32, &ModelInfo)> = candidates
+            .into_iter()
+            .filter_map(|m| {
+                let key = m.key();
+                pattern
+                    .score(Utf32Str::new(&key, &mut buf), &mut matcher)
+                    .map(|score| (score, m))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.key().cmp(&b.1.key())));
+        match scored.as_slice() {
+            [] => Err(Vec::new()),
+            [(_, only)] => Ok(reference(only)),
+            [(best, model), (next, _), ..] if best > next => Ok(reference(model)),
+            tied => Err(tied.iter().take(5).map(|(_, m)| reference(m)).collect()),
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.models.len()
     }
@@ -250,6 +307,46 @@ mod tests {
     #[test]
     fn embedded_snapshot_parses() {
         serde_json::from_str::<CatalogFile>(include_str!("../catalog/models.json")).unwrap();
+    }
+
+    #[test]
+    fn find_takes_an_exact_id_or_one_clear_fuzzy_match_and_lists_ties() {
+        let mut catalog = Catalog::default();
+        catalog.merge(
+            [
+                ("anthropic", "claude-fable-5"),
+                ("anthropic", "claude-fable-5-1"),
+                ("anthropic", "claude-sonnet-5"),
+                ("openai", "gpt-6-sol"),
+                ("other", "claude-fable-5"),
+            ]
+            .map(|(p, id)| ModelInfo::unknown(p, id)),
+        );
+        let usable = ["anthropic".to_string(), "openai".to_string()];
+        let key = |r: ModelRef| r.to_string();
+        assert_eq!(
+            catalog.find("claude-fable-5", &usable).map(key),
+            Ok("anthropic/claude-fable-5".into())
+        );
+        assert_eq!(
+            catalog.find("sonnet", &usable).map(key),
+            Ok("anthropic/claude-sonnet-5".into())
+        );
+        assert_eq!(
+            catalog.find("SOL:high", &usable).map(key),
+            Ok("openai/gpt-6-sol:high".into())
+        );
+        let tied = catalog.find("fable", &usable).unwrap_err();
+        assert_eq!(
+            tied.into_iter().map(key).collect::<Vec<_>>(),
+            ["anthropic/claude-fable-5", "anthropic/claude-fable-5-1"]
+        );
+        assert_eq!(catalog.find("nothing-like-it", &usable), Err(Vec::new()));
+        // Providers that cannot be used are not searched.
+        assert_eq!(
+            catalog.find("claude-fable-5", &["other".to_string()]).map(key),
+            Ok("other/claude-fable-5".into())
+        );
     }
 
     #[test]

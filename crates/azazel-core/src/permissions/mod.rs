@@ -246,7 +246,7 @@ pub struct PermissionState {
     agent_grants: RwLock<HashMap<String, Vec<Rule>>>,
     project_root: PathBuf,
     /// The project root and `additional_dirs`.
-    roots: Vec<PathBuf>,
+    roots: RwLock<Vec<PathBuf>>,
     cwd: PathBuf,
     home: PathBuf,
     user_home: Option<PathBuf>,
@@ -307,7 +307,7 @@ impl PermissionState {
             agent_cwds: RwLock::default(),
             agent_grants: RwLock::default(),
             project_root: canonical(&paths.project_root),
-            roots,
+            roots: RwLock::new(roots),
             cwd: paths.cwd.clone(),
             home: canonical(&paths.home),
             user_home: std::env::home_dir(),
@@ -472,9 +472,24 @@ impl PermissionState {
         }
     }
 
+    /// The directories agents may work in: the project root, then the extra ones.
+    pub fn roots(&self) -> Vec<PathBuf> {
+        read(&self.roots).clone()
+    }
+
+    /// Lets agents work in `dir` too, for the rest of the process. False when it already could.
+    pub fn add_root(&self, dir: &Path) -> bool {
+        let dir = canonical(dir);
+        if self.inside_roots(&dir) {
+            return false;
+        }
+        write(&self.roots).push(dir);
+        true
+    }
+
     fn inside_roots(&self, path: &Path) -> bool {
         let path = normal(path);
-        self.roots.iter().any(|root| {
+        read(&self.roots).iter().any(|root| {
             let root = normal(root);
             let (path, root) = if cfg!(windows) {
                 (path.to_ascii_lowercase(), root.to_ascii_lowercase())

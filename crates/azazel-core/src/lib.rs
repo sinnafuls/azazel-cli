@@ -11,6 +11,7 @@ pub mod context;
 pub mod ext;
 pub mod frontmatter;
 pub mod hooks;
+pub mod limits;
 pub mod media;
 pub mod memory;
 pub mod packages;

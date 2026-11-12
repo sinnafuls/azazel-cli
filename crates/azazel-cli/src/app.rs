@@ -13,8 +13,11 @@ use azazel_ai::{Block, Catalog, Credentials, ModelSpec, Provider, RetryPolicy, R
 use azazel_core::agents;
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, command_roots, expand_mentions};
+use azazel_core::config::set_override;
 use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
+use azazel_core::limits::{LimitsExt, Spend};
+use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::packages::Packages;
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::permissions::shell::guard_env;
@@ -28,7 +31,7 @@ use azazel_core::{
 use azazel_team::{Checker, GoalExt, GoalSettings, Goals, Team, TeamDeps, TeamExt};
 use azazel_tools::CoreToolsExt;
 
-use crate::cli::Cli;
+use crate::cli::{Cli, Discovery};
 
 pub const NO_MODEL: &str = "no model configured: run \"azazel init\" or pass --model provider/id";
 
@@ -48,6 +51,8 @@ pub struct App {
     /// What a new session's lead starts with.
     pub chain: Vec<ModelSpec>,
     pub thinking: ThinkingLevel,
+    /// A `--no-session` run: its transcripts are deleted when it ends.
+    ephemeral: bool,
     /// The session mode changes are recorded in.
     current: Arc<RwLock<Option<Arc<SessionStore>>>>,
 }
@@ -69,29 +74,107 @@ pub enum Open {
     Store(Arc<SessionStore>),
 }
 
-/// The chain the lead starts with: `--model` flags, else the `default` role.
-fn lead_chain(cli: &Cli) -> Result<Vec<ModelSpec>> {
-    if cli.model.is_empty() {
-        return Ok(vec![ModelSpec::Role("lead".to_string())]);
+/// A mistake in how azazel was called; the run exits with status 2.
+#[derive(Debug)]
+pub struct UsageError(pub String);
+
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
     }
-    cli.model
-        .iter()
-        .map(|spec| {
-            spec.parse::<ModelSpec>()
-                .map_err(|e| anyhow!("--model {spec}: {e}"))
-        })
-        .collect()
 }
 
-fn config_overrides(cli: &Cli) -> Result<toml::Table> {
+impl std::error::Error for UsageError {}
+
+pub(crate) fn config_overrides(cli: &Cli) -> Result<toml::Table> {
     let mut overrides = toml::Table::new();
+    for assignment in &cli.set {
+        set_override(&mut overrides, assignment).map_err(|e| UsageError(format!("--set {e}")))?;
+    }
+    let mut assign = |text: String| set_override(&mut overrides, &text).map_err(|e| anyhow!(e));
     if let Some(mode) = &cli.mode {
-        let mode: PermissionMode = mode.parse().map_err(|e: String| anyhow!("--mode: {e}"))?;
-        let mut permissions = toml::Table::new();
-        permissions.insert("mode".to_string(), toml::Value::String(mode.to_string()));
-        overrides.insert("permissions".to_string(), toml::Value::Table(permissions));
+        let mode: PermissionMode = mode
+            .parse()
+            .map_err(|e: String| UsageError(format!("--mode: {e}")))?;
+        assign(format!("permissions.mode=\"{mode}\""))?;
+    }
+    if let Some(turns) = cli.max_turns {
+        assign(format!("limits.max_turns={turns}"))?;
+    }
+    if let Some(cost) = cli.max_cost {
+        if !cost.is_finite() || cost < 0.0 {
+            return Err(UsageError("--max-cost must be a positive amount".to_string()).into());
+        }
+        assign(format!("limits.max_cost_usd={cost:?}"))?;
     }
     Ok(overrides)
+}
+
+/// Provider ids `--model` may name, and the ones it may pick from when the name is partial:
+/// those that need no key or have one. Providers that are not HTTP endpoints (cloud SDKs, scripts,
+/// extensions) find their own credentials and count as usable.
+pub fn known_and_usable(
+    provider_ids: Vec<String>,
+    endpoints: &[presets::ProviderConfig],
+    credentials: &Credentials,
+    everyone: bool,
+) -> (Vec<String>, Vec<String>) {
+    let usable = provider_ids
+        .iter()
+        .filter(|id| {
+            everyone
+                || endpoints
+                    .iter()
+                    .find(|p| p.id == **id)
+                    .is_none_or(|p| crate::models::usable(credentials, p))
+        })
+        .cloned()
+        .collect();
+    (provider_ids, usable)
+}
+
+/// `--tools`, `--no-tools` and `--disallowed-tools` on top of `[tools] disabled`. A plain name
+/// (not a glob) that no tool has is a usage error; MCP tools (`mcp__...`) connect later and are
+/// not checked.
+fn select_tools(cli: &Cli, config: &Config, registry: &Registry) -> Result<()> {
+    let allowed = if cli.no_tools {
+        Some(Vec::new())
+    } else {
+        cli.tools.clone()
+    };
+    let mut disabled = config.tools.disabled.clone();
+    disabled.extend(cli.disallowed_tools.iter().cloned());
+    let lead = AgentInfo {
+        id: "lead".into(),
+        def: "lead".into(),
+        parent: None,
+        depth: 0,
+        session_id: String::new(),
+    };
+    let known = registry.tools.all_names(&lead);
+    for name in allowed.iter().flatten().chain(&cli.disallowed_tools) {
+        let plain = !name.contains(['*', '?', '[', '{']);
+        if plain && !name.starts_with("mcp__") && !known.contains(name) {
+            return Err(UsageError(format!(
+                "no tool named `{name}`; the tools are: {}",
+                known.join(", ")
+            ))
+            .into());
+        }
+    }
+    registry
+        .tools
+        .select(allowed.as_deref(), &disabled)
+        .map_err(|e| UsageError(e).into())
+}
+
+/// Text given inline, or read from the file named after an `@`.
+fn text_or_file(flag: &str, value: &str, cwd: &std::path::Path) -> Result<String> {
+    match value.strip_prefix('@') {
+        Some(file) => std::fs::read_to_string(cwd.join(file))
+            .map_err(|e| UsageError(format!("{flag} @{file}: {e}")).into()),
+        None => Ok(value.to_string()),
+    }
 }
 
 /// The scripted provider, when this is a test build and a script is given.
@@ -100,8 +183,11 @@ fn mock_provider(config: &mut Config) -> Result<Option<Arc<dyn Provider>>> {
     let Some(script) = std::env::var_os("AZAZEL_MOCK_SCRIPT") else {
         return Ok(None);
     };
-    let provider = azazel_ai::testing::MockProvider::from_script_file(std::path::Path::new(&script))
+    let mut provider = azazel_ai::testing::MockProvider::from_script_file(std::path::Path::new(&script))
         .map_err(|e| anyhow!("AZAZEL_MOCK_SCRIPT: {e}"))?;
+    if let Some(record) = std::env::var_os("AZAZEL_MOCK_REQUESTS") {
+        provider = provider.recording_to(PathBuf::from(record));
+    }
     // Scripted runs need no configuration: the lead answers from the `lead` queue.
     config
         .roles
@@ -153,10 +239,21 @@ pub fn discover_paths(cli: &Cli) -> Result<Paths> {
     if !cwd.is_dir() {
         bail!("{} is not a directory", cwd.display());
     }
-    Ok(Paths::discover(
-        &cwd,
-        std::env::var("AZAZEL_HOME").ok().as_deref(),
-    ))
+    let mut paths = Paths::discover(&cwd, std::env::var("AZAZEL_HOME").ok().as_deref());
+    paths.sessions_override = if cli.no_session {
+        Some(ephemeral_dir(&paths))
+    } else {
+        cli.session_dir.as_ref().map(|dir| paths.cwd.join(dir))
+    };
+    Ok(paths)
+}
+
+/// Where a `--no-session` run keeps its transcripts until it ends.
+fn ephemeral_dir(paths: &Paths) -> PathBuf {
+    paths
+        .cache_dir()
+        .join("ephemeral")
+        .join(std::process::id().to_string())
 }
 
 impl App {
@@ -171,21 +268,21 @@ impl App {
             overrides: config_overrides(cli)?,
             env: std::env::vars().collect(),
         };
-        let loaded = Config::load(&paths, &options)?;
+        let mut loaded = Config::load(&paths, &options)?;
+        // Directories from the command line add to those of the configuration.
+        loaded
+            .config
+            .permissions
+            .additional_dirs
+            .extend(cli.add_dir.iter().map(|dir| paths.cwd.join(dir)));
+        if cli.no_session {
+            loaded.config.checkpoints.enabled = false;
+        }
         let permissions = Arc::new(PermissionState::new(&paths, &loaded).map_err(|e| anyhow!(e))?);
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;
 
         let credentials = Arc::new(Credentials::new(paths.auth_file()));
-        let chain = lead_chain(cli)?;
-        // Models named on the command line are this run's `default` role, so that the roles
-        // built on it (`smol`, `verify`, …) and the agents using them have a model too.
-        if !cli.model.is_empty() && chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
-            config.roles.insert("default".to_string(), chain.clone());
-        }
-        if let (Some(key), Some(ModelSpec::Model(model))) = (&cli.api_key, chain.first()) {
-            credentials.set_flag_key(&model.provider, key.clone());
-        }
         let thinking = match &cli.thinking {
             Some(level) => level
                 .parse::<ThinkingLevel>()
@@ -211,6 +308,20 @@ impl App {
             cwd: paths.cwd.clone(),
             project_root: paths.project_root.clone(),
             shell: shell.name().to_string(),
+            system: cli
+                .system_prompt
+                .as_deref()
+                .map(|value| text_or_file("--system-prompt", value, &paths.cwd))
+                .transpose()?,
+            append: cli
+                .append_system_prompt
+                .as_deref()
+                .map(|value| text_or_file("--append-system-prompt", value, &paths.cwd))
+                .transpose()?,
+        })?;
+        registry.load(&LimitsExt {
+            max_cost_usd: config.limits.max_cost_usd,
+            warn_cost_usd: config.limits.warn_cost_usd,
         })?;
         registry.load(&CoreToolsExt {
             shell: shell.clone(),
@@ -238,13 +349,17 @@ impl App {
         registry.load(&PermissionsExt {
             state: permissions.clone(),
         })?;
-        registry.load(&ContextExt {
-            paths: paths.clone(),
-            claude_compat: compat,
-        })?;
-        registry.load(&SkillsExt {
-            roots: standard_roots(&paths, compat, &packages),
-        })?;
+        if !cli.skips(Discovery::ContextFiles) {
+            registry.load(&ContextExt {
+                paths: paths.clone(),
+                claude_compat: compat,
+            })?;
+        }
+        if !cli.skips(Discovery::Skills) {
+            registry.load(&SkillsExt {
+                roots: standard_roots(&paths, compat, &packages),
+            })?;
+        }
         registry.load(&CustomCommandsExt {
             roots: command_roots(&paths, compat, &packages),
             shell: shell.clone(),
@@ -282,7 +397,7 @@ impl App {
             shell: shell.clone(),
             paths: paths.clone(),
             claude_compat: compat,
-            disabled: std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some(),
+            disabled: cli.skips(Discovery::Hooks) || std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some(),
             trusted,
         })?;
         #[cfg(feature = "browser")]
@@ -298,42 +413,46 @@ impl App {
             media: Arc::new(azazel_media::Media::from_config(&config, &paths, credentials.clone()).await),
         })?;
         #[cfg(feature = "memory")]
-        if config.memory.enabled {
+        if config.memory.enabled && !cli.skips(Discovery::Memory) {
             let memory = azazel_memory::MemoryExt::open(&paths, &config, credentials.clone())
                 .map_err(|e| anyhow!("memory: {e} (set `[memory] enabled = false` to start without it)"))?;
             registry.load(&memory)?;
         }
         #[cfg(feature = "mcp")]
-        registry.load(&azazel_mcp::McpExt {
-            manager: mcp_manager(
-                &paths,
-                trusted,
-                &config,
-                services.clone(),
-                credentials.clone(),
-                &packages.mcp_files,
-            ),
-        })?;
+        if !cli.skips(Discovery::Mcp) {
+            registry.load(&azazel_mcp::McpExt {
+                manager: mcp_manager(
+                    &paths,
+                    trusted,
+                    &config,
+                    services.clone(),
+                    credentials.clone(),
+                    &packages.mcp_files,
+                ),
+            })?;
+        }
         // After MCP so scripts can add servers, and before the router so they can add providers.
         #[cfg(feature = "lua")]
-        registry.load(&azazel_lua::LuaExt::new(
-            paths.clone(),
-            trusted,
-            credentials.clone(),
-            config
-                .permissions
-                .additional_dirs
-                .iter()
-                .map(|dir| paths.project_root.join(dir))
-                .collect(),
-            packages.scripts.clone(),
-        ))?;
+        if !cli.skips(Discovery::Extensions) {
+            registry.load(&azazel_lua::LuaExt::new(
+                paths.clone(),
+                trusted,
+                credentials.clone(),
+                config
+                    .permissions
+                    .additional_dirs
+                    .iter()
+                    .map(|dir| paths.project_root.join(dir))
+                    .collect(),
+                packages.scripts.clone(),
+            ))?;
+        }
         for extension in extensions {
             registry
                 .load(extension.as_ref())
                 .with_context(|| format!("extension `{}` failed to register", extension.id()))?;
         }
-        registry.tools.set_disabled(config.tools.disabled.clone());
+        select_tools(cli, &config, &registry)?;
         // Every process an agent starts inherits the push guard.
         if let Some(env) = services.get::<AgentEnv>() {
             env.set(guard_env(&|name| std::env::var(name).ok()));
@@ -341,6 +460,7 @@ impl App {
 
         let client = http_client();
         let resolved = presets::resolve(&config.providers).map_err(|e| anyhow!(e))?;
+        let endpoints = resolved.clone();
         let catalog = Catalog::load(Some(&paths.models_cache()), &config.models);
         // A provider that only a login can reach has no entry in the embedded catalogue; it is
         // asked for its models in the background, and the answer is kept for the next session.
@@ -395,15 +515,34 @@ impl App {
         }
         providers.extend(registry.providers());
         providers.extend(mock_provider(&mut config)?);
+        let provider_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
         let policy = RetryPolicy {
             max_attempts: config.retry.max_attempts.max(1),
             cooldown: Duration::from_secs(config.retry.cooldown_secs),
             ..RetryPolicy::default()
         };
         let router = Arc::new(Router::new(providers, catalog, config.roles.clone(), policy));
+        // Models named on the command line are this run's `default` role, so that the roles
+        // built on it (`smol`, `verify`, ...) and the agents using them have a model too.
+        let chain = if cli.model.is_empty() {
+            vec![ModelSpec::Role("lead".to_string())]
+        } else {
+            let (known, usable) =
+                known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
+            let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
+                .map_err(UsageError)?;
+            if chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
+                config.roles.insert("default".to_string(), chain.clone());
+                router.set_role("default", chain.clone());
+            }
+            chain
+        };
+        if let (Some(key), Some(ModelSpec::Model(model))) = (&cli.api_key, chain.first()) {
+            credentials.set_flag_key(&model.provider, key.clone());
+        }
         // Extensions that need a model of their own (MCP sampling) find the router here.
         services.insert(router.clone());
-        services.insert(Arc::new(Team::new(TeamDeps {
+        let team = Arc::new(Team::new(TeamDeps {
             tools: registry.tools.clone(),
             hooks: registry.agent_hooks(),
             prompt: registry.prompt.clone(),
@@ -418,10 +557,19 @@ impl App {
             max_result_bytes: config.tools.max_result_bytes,
             compaction: (&config.compaction).into(),
             posix_shell: shell.is_posix(),
-        })));
+        }));
+        services.insert(team.clone());
+        // What the run has spent, for the cost cap: every agent of the team, the lead included.
+        let members = Arc::downgrade(&team);
+        services.insert(Arc::new(Spend(Arc::new(move || {
+            members
+                .upgrade()
+                .map(|team| team.list().iter().filter_map(|m| m.cost_usd).sum())
+                .unwrap_or(0.0)
+        }))));
         // The interactive UI starts anyway and walks the user through choosing a model; every
         // other mode needs one before it can do anything.
-        let interactive = cli.print.is_none() && cli.command.is_none();
+        let interactive = cli.interactive();
         if !interactive && router.resolve(&chain).is_empty() {
             bail!(NO_MODEL);
         }
@@ -448,6 +596,7 @@ impl App {
             shell,
             chain,
             thinking,
+            ephemeral: cli.no_session,
             current,
         })
     }
@@ -455,16 +604,12 @@ impl App {
     /// The session the command line asks for: `--resume <id>`, `--continue`, or a new one.
     pub fn requested_session(&self, cli: &Cli) -> Result<Open> {
         let dir = self.paths.sessions_dir();
-        if let Some(wanted) = &cli.resume {
-            let matches: Vec<_> = SessionStore::list(&dir)
-                .into_iter()
-                .filter(|s| s.id.starts_with(wanted))
-                .collect();
-            return match matches.as_slice() {
-                [one] => Ok(Open::File(one.path.clone())),
-                [] => bail!("no session with id `{wanted}` in this project"),
-                many => bail!("`{wanted}` matches {} sessions; give more of the id", many.len()),
-            };
+        if let Some(wanted) = &cli.session {
+            return Ok(Open::File(self.find_session(wanted)?));
+        }
+        if let Some(wanted) = &cli.fork {
+            let original = SessionStore::open(&self.find_session(wanted)?)?;
+            return Ok(Open::Store(Arc::new(original.fork(&dir, None)?)));
         }
         if cli.resume_latest {
             return match SessionStore::list(&dir).first() {
@@ -473,6 +618,43 @@ impl App {
             };
         }
         Ok(Open::New)
+    }
+
+    /// Model names as typed (`fable`, `@smol`, `anthropic/claude-fable-5:high`) turned into a chain,
+    /// the way `--model` resolves them.
+    pub fn model_specs(&self, texts: &[String]) -> Result<Vec<ModelSpec>, String> {
+        let endpoints = presets::resolve(&self.config.providers)?;
+        let (known, usable) = known_and_usable(
+            self.router
+                .provider_ids()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            &endpoints,
+            &self.credentials,
+            false,
+        );
+        crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)
+    }
+
+    /// A session given as a path to its file, or as its id (a unique prefix) in this project.
+    pub fn find_session(&self, wanted: &str) -> Result<PathBuf> {
+        let path = self.paths.cwd.join(wanted);
+        if wanted.ends_with(".jsonl") || path.is_file() {
+            if !path.is_file() {
+                bail!("no session file {}", path.display());
+            }
+            return Ok(path);
+        }
+        let matches: Vec<_> = SessionStore::list(&self.paths.sessions_dir())
+            .into_iter()
+            .filter(|s| s.id.starts_with(wanted))
+            .collect();
+        match matches.as_slice() {
+            [one] => Ok(one.path.clone()),
+            [] => bail!("no session with id `{wanted}` in this project"),
+            many => bail!("`{wanted}` matches {} sessions; give more of the id", many.len()),
+        }
     }
 
     /// Whether `chain` names a model this process can use: a configured one whose provider needs
@@ -545,7 +727,7 @@ impl App {
                 .get::<ArtifactStore>()
                 .map(|store| store as Arc<dyn ArtifactSink>),
             limits: Limits {
-                max_turns: None,
+                max_turns: (self.config.limits.max_turns > 0).then_some(self.config.limits.max_turns),
                 max_result_bytes: self.config.tools.max_result_bytes,
             },
             compaction: (&self.config.compaction).into(),
@@ -586,10 +768,18 @@ impl App {
         let Event::UserPrompt { text, mut images } = event else {
             return Err("an extension replaced the prompt event".to_string());
         };
-        let (text, mentioned) = expand_mentions(&text, &self.paths.cwd);
+        let mentions = expand_mentions(&text, &self.paths.cwd);
         if let Some(tracker) = self.registry.services.get::<FileTracker>() {
-            for (path, bytes) in &mentioned {
+            for (path, bytes) in &mentions.files {
                 tracker.record(&active.lead.id, path, bytes);
+            }
+        }
+        let text = mentions.text;
+        for (name, bytes) in mentions.images {
+            match tokio::task::spawn_blocking(move || image_block(&bytes, MAX_IMAGE_SIDE)).await {
+                Ok(Ok(block)) => images.push(block),
+                Ok(Err(why)) => self.notify(Level::Warn, &format!("@{name} is not attached: {why}")),
+                Err(e) => self.notify(Level::Warn, &format!("@{name} is not attached: {e}")),
             }
         }
         let follows = active.session.leaf().unwrap_or_default();
@@ -627,6 +817,9 @@ impl App {
         #[cfg(feature = "mcp")]
         if let Some(mcp) = self.registry.services.get::<azazel_mcp::McpManager>() {
             mcp.shutdown();
+        }
+        if self.ephemeral {
+            let _ = std::fs::remove_dir_all(ephemeral_dir(&self.paths));
         }
     }
 

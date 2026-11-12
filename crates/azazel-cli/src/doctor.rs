@@ -225,6 +225,24 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             report.ok(format!("role {role}: {}", chain.join(", ")));
         }
     }
+    if config.limits.max_cost_usd > 0.0 {
+        let catalog = Catalog::load(Some(&paths.models_cache()), &config.models);
+        let unpriced: Vec<String> = router
+            .resolve(&[ModelSpec::Role("default".to_string())])
+            .iter()
+            .filter(|model| catalog.get(&model.provider, &model.model).cost.is_none())
+            .map(ToString::to_string)
+            .collect();
+        if unpriced.is_empty() {
+            report.ok(format!("cost limit: ${:.2} per run", config.limits.max_cost_usd));
+        } else {
+            report.warn(format!(
+                "cost limit: ${:.2} is set, but {} has no known price and never counts towards it",
+                config.limits.max_cost_usd,
+                unpriced.join(", ")
+            ));
+        }
+    }
 
     let shell = Shell::resolve(&config.tools.shell);
     report.ok(format!("shell: {} ({})", shell.name(), shell.program.display()));

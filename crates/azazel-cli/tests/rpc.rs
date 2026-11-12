@@ -187,7 +187,14 @@ fn commands_change_the_session_and_mistakes_are_answered() {
     );
     assert_eq!(model["data"]["models"], json!(["mock/other", "mock/lead"]));
     let (_, no_model) = client.ask(4, json!({ "type": "set_model", "chain": ["nowhere/m"] }));
-    assert_eq!(no_model["error"], "none of these models is configured");
+    // A name of no known provider is looked up loosely and matches nothing.
+    assert!(
+        no_model["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("nowhere/m: no model"),
+        "{no_model}"
+    );
     let (_, state) = client.ask(5, json!({ "type": "get_state" }));
     assert_eq!(state["data"]["mode"], "auto");
     assert_eq!(state["data"]["chain"], json!(["mock/other", "@default"]));

@@ -24,6 +24,7 @@ blake3.workspace = true
 bytes.workspace = true
 futures.workspace = true
 gcp_auth = { workspace = true, optional = true }
+nucleo-matcher.workspace = true
 rand.workspace = true
 reqwest.workspace = true
 serde.workspace = true

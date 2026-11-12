@@ -53,12 +53,28 @@ You may define further roles and use them anywhere a spec is accepted. When a ch
 |---|---|
 | `azazel init` | Asks for a provider and model, writes `roles.default` to `~/.azazel/config.toml` |
 | `/settings` → "Choose the default model" | Same, from inside the TUI; takes effect at once |
-| `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks |
+| `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `/model` or `Ctrl+L` | Picker over roles and the models of providers that have a credential |
-| `/model <spec> [fallback …]` | Sets the lead's chain for this session |
+| `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
 | `model:` in an agent definition, `[agents.<name>] model` | Per-agent chain (see [team](team.md)) |
 
 When every `--model` is a concrete model, that chain also becomes this run's `default` role, so the roles and agents built on `@default` follow it.
+
+On the command line, in `/model` and in the RPC `set_model` command a model may be named loosely. Each name is
+resolved in this order:
+
+1. `@role` names a role.
+2. `provider/id` with a provider azazel knows is taken as written, listed in the catalogue or not (local servers
+   name their own models).
+3. A model id, among the providers that need no key or have one (all providers when `--api-key` is given).
+4. The single best fuzzy match of `provider/id` among the same models, so `fable` or `haiku:high` work.
+
+When several models match equally well, the run stops with status 2 and names up to five of them. Configuration
+files stay strict: they need `provider/id` or `@role`.
+
+`azazel models [QUERY] [--provider ID] [--all] [--json]` lists the models of the providers you have a credential
+for, one per line with context window, output limit, vision, thinking and price per million tokens (`--all`
+lists the whole catalogue).
 
 ```sh
 azazel --model anthropic/claude-sonnet-4-5 --model ollama/<local-model> -p "summarise src/"
@@ -304,6 +320,10 @@ For each request the provider's credential is the first of:
 An environment key therefore wins over a stored sign-in for the same provider. `azazel doctor` shows where each provider's credential comes from, never the secret.
 
 `auth.json` is written with mode `0600` on Unix, by temp file and rename under a lock file (`auth.json.lock`), so several azazel processes can share it. Sign-in tokens are refreshed automatically when they have less than five minutes left.
+
+`azazel auth status [--json]` lists each provider that has a credential and where it comes from (`--api-key`, an
+environment variable, `api_key_command`, the configuration, or `auth.json`), and for logins the account and when
+the token expires. Keys and tokens are never printed.
 
 ## Logging in and out
 

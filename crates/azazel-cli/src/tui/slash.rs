@@ -22,7 +22,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("help", "List commands"),
     (
         "model",
-        "Pick the model, or set it: /model provider/id [fallback …]",
+        "Pick the model, or set it: /model <name> [fallback …] (part of a name is enough)",
     ),
     ("thinking", "Pick the thinking level, or set it: /thinking high"),
     ("mode", "Pick the permission mode, or set it: /mode auto"),
@@ -51,6 +51,11 @@ const BUILTIN: &[(&str, &str)] = &[
         "permissions",
         "List the permission rules in effect and where they come from",
     ),
+    (
+        "add-dir",
+        "Let agents work in another directory too: /add-dir <path>",
+    ),
+    ("dirs", "List the directories agents may work in"),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
     ("quit", "Exit"),
@@ -158,6 +163,33 @@ impl Tui {
             "keys" => self.show_keys(),
             "rewind" => self.open_rewind().await,
             "permissions" => self.show_permissions(),
+            "dirs" => {
+                let roots: Vec<String> = self
+                    .app
+                    .permissions
+                    .roots()
+                    .iter()
+                    .map(|root| root.display().to_string())
+                    .collect();
+                self.info(&format!("agents may work in:\n{}", roots.join("\n")));
+            }
+            "add-dir" if args.is_empty() => self.fail("usage: /add-dir <path>"),
+            "add-dir" => {
+                let dir = azazel_core::paths::canonical(&self.app.paths.cwd.join(args.trim()));
+                if !dir.is_dir() {
+                    self.fail(&format!("{} is not a directory", dir.display()));
+                } else if self.app.permissions.add_root(&dir) {
+                    self.info(&format!(
+                        "agents may now work in {} too, until azazel exits",
+                        dir.display()
+                    ));
+                } else {
+                    self.info(&format!(
+                        "{} is already a directory agents work in",
+                        dir.display()
+                    ));
+                }
+            }
             "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
             "doctor" => {
                 let report = doctor::examine(&self.app.paths, self.app.trusted).await;

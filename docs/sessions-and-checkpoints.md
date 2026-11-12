@@ -52,14 +52,20 @@ and left in place.
 
 ```sh
 azazel -c                      # continue the most recent session of this project
-azazel -r 0193a5                # resume by session id; a unique prefix is enough
-azazel -c -p "now add tests"    # both work with print mode too
+azazel -r 0193a5                # by session id; a unique prefix is enough
+azazel --session ./saved.jsonl  # by file, from anywhere
+azazel --fork 0193a5 try another way   # continue in a copy, the original stays as it is
+azazel -c -p "now add tests"    # all of them work with print mode too
 ```
 
 | Flag | Behaviour |
 |---|---|
 | `-c`, `--continue` | Opens the newest session. Fails with `this project has no session to continue` when there is none |
-| `-r`, `--resume <ID>` | Opens the session whose id starts with `<ID>`. Fails when none or more than one matches |
+| `-r`, `--session <PATH\|ID>` | Opens a session file, or the session whose id starts with `<ID>`. Fails when none or more than one matches. `--resume` is the old name |
+| `--fork <PATH\|ID>` | Copies the session (its current branch) into a new one, whose header names the original, and opens the copy |
+| `--name <NAME>` | Names the session, as `/name` would |
+| `--session-dir <DIR>` | Keeps this run's sessions, and its sub-agents' transcripts, in `DIR` instead of the project's directory |
+| `--no-session` | Writes the transcript to a temporary directory that is deleted when azazel exits, and turns checkpoints off |
 
 The session id is the part of the file name after the underscore; `/export` without a path also puts it in the
 name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages. The

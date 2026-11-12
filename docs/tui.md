@@ -190,10 +190,12 @@ Models, permissions and setup:
 
 | Command | Description |
 |---|---|
-| `/model [provider/id [fallback …]]` | Pick the model, or set a chain; `@role` names work too |
+| `/model [name [fallback …]]` | Pick the model, or set a chain; part of a name or `@role` works too |
 | `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `/mode [mode]` | Pick or set the permission mode |
 | `/permissions` | List the permission rules in effect and where they come from |
+| `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
+| `/dirs` | List the directories agents may work in |
 | `/settings` | Sign in, add API keys and choose the default model |
 | `/login [provider]` | Sign in to a provider or store its API key |
 | `/logout <provider>` | Forget the stored key or login of a provider |
