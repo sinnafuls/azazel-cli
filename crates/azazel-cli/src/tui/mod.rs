@@ -48,12 +48,13 @@ pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
 use overlay::{Action, Outcome, Overlay, ask_items};
+pub(crate) use slash::{REWIND_NOTE, is_note};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
 const MAX_COMPLETION_FILES: usize = 20_000;
 const COMPLETION_ROWS: usize = 8;
 /// How the note about a `!command` the user ran starts in the agent's context.
-const SHELL_NOTE: &str = "I ran `";
+pub(crate) const SHELL_NOTE: &str = "I ran `";
 
 /// Puts the terminal into raw mode and restores it when dropped, however the UI ends.
 struct TerminalGuard {

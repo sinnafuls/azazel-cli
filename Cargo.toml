@@ -6,6 +6,7 @@ members = [
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
     "examples/custom-distro",
+    "examples/client-demo",
 ]
 
 [workspace.package]
@@ -30,6 +31,8 @@ azazel-browser = { path = "crates/azazel-browser" }
 azazel-media = { path = "crates/azazel-media" }
 azazel-tui = { path = "crates/azazel-tui" }
 azazel-cli = { path = "crates/azazel-cli" }
+azazel-protocol = { path = "crates/azazel-protocol" }
+azazel-client = { path = "crates/azazel-client" }
 
 # Async runtime and streams
 tokio = { version = "1.54", features = [
@@ -64,6 +67,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "1.2"
 serde_yaml_ng = "0.10"
+schemars = "1.2"
 
 # Errors and CLI
 thiserror = "2"

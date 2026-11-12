@@ -744,11 +744,13 @@ dependencies = [
  "azazel-ai",
  "azazel-browser",
  "azazel-cli",
+ "azazel-client",
  "azazel-core",
  "azazel-lua",
  "azazel-mcp",
  "azazel-media",
  "azazel-memory",
+ "azazel-protocol",
  "azazel-team",
  "azazel-tools",
  "azazel-tui",
@@ -776,6 +778,17 @@ dependencies = [
  "tracing-subscriber",
  "which",
  "wiremock",
+]
+
+[[package]]
+name = "azazel-client"
+version = "0.2.0"
+dependencies = [
+ "azazel-protocol",
+ "futures",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
 ]
 
 [[package]]
@@ -903,6 +916,15 @@ dependencies = [
  "tracing",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "azazel-protocol"
+version = "0.2.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1308,6 +1330,15 @@ name = "clap_lex"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
+
+[[package]]
+name = "client-demo"
+version = "0.2.0"
+dependencies = [
+ "azazel-client",
+ "serde_json",
+ "tokio",
+]
 
 [[package]]
 name = "clipboard-win"
@@ -6590,6 +6621,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "azazel-ai",
+ "azazel-protocol",
  "reqwest",
  "serde_json",
  "sha2 0.11.1",

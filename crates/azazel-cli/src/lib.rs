@@ -16,6 +16,7 @@ pub mod memory;
 pub mod models;
 pub mod pkg;
 pub mod print;
+pub mod retry;
 pub mod routing;
 pub mod rpc;
 pub mod rules;

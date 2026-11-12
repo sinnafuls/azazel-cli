@@ -1,0 +1,2079 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "azazel RPC protocol",
+  "description": "Protocol 1 of `azazel rpc`. Each line is one JSON object: a Request from the client, or a Frame from azazel.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/Request"
+    },
+    {
+      "$ref": "#/$defs/Frame"
+    }
+  ],
+  "$defs": {
+    "Request": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "Any JSON value of the client's choosing; `null` when left out.",
+          "default": null
+        }
+      },
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "text": {
+              "type": "string"
+            },
+            "images": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Image"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "description": "Starts work on the input. While the lead is busy it is queued."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "steer"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "description": "Hands the working lead input before its next model request."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "follow_up"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "text"
+          ],
+          "description": "Queues input for when the lead would go idle."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "abort"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Stops the lead's current work."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_state"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Answers with the session's [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_model"
+            },
+            "chain": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "chain"
+          ],
+          "description": "Changes the lead's model chain, e.g. `[\"provider/model\", \"@role\"]`. Answers with\n[`Models`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_mode"
+            },
+            "mode": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "mode"
+          ],
+          "description": "Changes the permission mode: `plan`, `ask`, `accept-edits` or `auto`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "agent_send"
+            },
+            "to": {
+              "type": "string"
+            },
+            "message": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "message"
+          ],
+          "description": "Messages a sub-agent by id, or `all`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "agent_stop"
+            },
+            "agent": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ],
+          "description": "Stops a sub-agent and the agents it started, or `all`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approval_response"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/Decision"
+            },
+            "feedback": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "decision"
+          ],
+          "description": "Answers an `approval_request`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ui_response"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "value": {
+              "default": null
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "description": "Answers a `ui_request`; a `null` value dismisses it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "new_session"
+            },
+            "name": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Leaves the open session and starts a new one. Answers with [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "resume_session"
+            },
+            "session_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Leaves the open session and opens a saved one, by `session_id` (a unique prefix is enough)\nor by the `path` of its file. Answers with [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fork_session"
+            },
+            "entry_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Continues in a copy of the open session, cut at `entry_id` when it is given. Answers\nwith [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_sessions"
+            },
+            "query": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The saved sessions of this project, most recently used first; with `query`, those whose\nmessages contain it. Answers with a list of [`SessionRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_messages"
+            },
+            "leaf": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The messages from the start of the session to `leaf` (the current leaf when left out).\nAnswers with a list of [`MessageRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_tree"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Every entry of the session file. Answers with a list of [`TreeRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_leaf"
+            },
+            "entry_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entry_id"
+          ],
+          "description": "Continues the conversation from another entry of the tree. Answers with [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_name"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Names the session."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_thinking"
+            },
+            "level": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "level"
+          ],
+          "description": "Changes the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_tier"
+            },
+            "tier": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "tier"
+          ],
+          "description": "Changes the service tier: `priority`, `standard` or `economy`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "compact"
+            },
+            "instructions": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Summarises the conversation so far to free context."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "retry"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Goes back to before the last prompt and sends it again; the earlier attempt stays in the\nfile as a branch."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "rewind"
+            },
+            "entry_id": {
+              "type": "string"
+            },
+            "what": {
+              "$ref": "#/$defs/RewindWhat",
+              "default": "both"
+            }
+          },
+          "required": [
+            "type",
+            "entry_id"
+          ],
+          "description": "Goes back to a checkpoint. `entry_id` names a `checkpoint` entry of the tree, or the\nprompt that followed it."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "shell"
+            },
+            "command": {
+              "type": "string"
+            },
+            "share": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "type",
+            "command"
+          ],
+          "description": "Runs a command in the user's shell, outside the permission rules. With `share` (the\ndefault) the lead is told what was run and what it printed. Answers with [`ShellResult`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "export"
+            },
+            "format": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ExportFormat"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Writes the open session to a file. The format comes from `format`, else from the file\nname, else it is Markdown; the default file is `azazel-session-<id>.<ext>` in the\nworking directory. Answers with [`Exported`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "btw"
+            },
+            "question": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "question"
+          ],
+          "description": "Asks a question on the side, without interrupting the lead. The answer arrives as\n`btw_delta` frames and then, whole, in the response as [`BtwAnswer`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_models"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The models that can be used. Answers with a list of [`ModelRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_usage"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "What is known of each provider account's usage windows. Answers with a list of\n[`AccountUsage`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run_command"
+            },
+            "name": {
+              "type": "string"
+            },
+            "args": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Runs a slash command by name (without the slash). Answers with [`CommandResult`]."
+        }
+      ],
+      "description": "One line from the client: a command and the id its response repeats."
+    },
+    "Image": {
+      "type": "object",
+      "properties": {
+        "mime": {
+          "type": "string",
+          "description": "For example `image/png`."
+        },
+        "data": {
+          "type": "string",
+          "description": "The bytes, base64-encoded."
+        }
+      },
+      "required": [
+        "mime",
+        "data"
+      ],
+      "description": "An image sent with a prompt."
+    },
+    "Decision": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "allow",
+          "description": "Allow this call once."
+        },
+        {
+          "type": "string",
+          "const": "always",
+          "description": "Allow it and remember the request's `rule`."
+        },
+        {
+          "type": "string",
+          "const": "deny",
+          "description": "Refuse; `feedback` is passed to the model."
+        }
+      ],
+      "description": "The answer to an `approval_request`."
+    },
+    "RewindWhat": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "both"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "code",
+          "description": "The project files only."
+        },
+        {
+          "type": "string",
+          "const": "conversation",
+          "description": "The conversation only."
+        }
+      ],
+      "description": "What `rewind` takes back."
+    },
+    "ExportFormat": {
+      "type": "string",
+      "enum": [
+        "markdown",
+        "html",
+        "jsonl"
+      ],
+      "description": "The file format of `export`."
+    },
+    "Frame": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "hello"
+            },
+            "protocol": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "protocol",
+            "version"
+          ],
+          "description": "The first line: which protocol and which azazel answer."
+        },
+        {
+          "$ref": "#/$defs/Response",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "response"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "agent_start"
+            },
+            "agent": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "turn_start"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "turn": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "turn"
+          ],
+          "description": "`turn` counts the lead's model requests from 1 within each prompt."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "message_start"
+            },
+            "agent": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stream"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "event": {
+              "$ref": "#/$defs/StreamEvent"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "event"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "message_end"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "message": true
+          },
+          "required": [
+            "type",
+            "agent",
+            "message"
+          ],
+          "description": "The complete assistant message: `role`, `content` blocks and `meta`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_start"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "call_id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            },
+            "input": true
+          },
+          "required": [
+            "type",
+            "agent",
+            "call_id",
+            "name",
+            "input"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_update"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "call_id": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "call_id",
+            "text"
+          ],
+          "description": "Progress output of a running tool."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_end"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "call_id": {
+              "type": "string"
+            },
+            "output": {
+              "$ref": "#/$defs/ToolOutput"
+            },
+            "duration_ms": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "call_id",
+            "output",
+            "duration_ms"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "turn_end"
+            },
+            "agent": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "retry"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "attempt": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "model": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "attempt",
+            "model"
+          ],
+          "description": "The message in progress was discarded and the same model is asked again."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fallback"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "from",
+            "to"
+          ],
+          "description": "The chain moved on to its next model."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "account"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "provider": {
+              "type": "string"
+            },
+            "from": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string"
+            },
+            "until": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "limit": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "provider",
+            "from",
+            "to",
+            "until",
+            "limit"
+          ],
+          "description": "The provider's account `from` ran out of allowance until `until` (Unix seconds);\nrequests now use account `to`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tier_dropped"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "model": {
+              "type": "string"
+            },
+            "tier": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "model",
+            "tier"
+          ],
+          "description": "The model refused the service tier and is asked without one from now on."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "rule"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "name"
+          ],
+          "description": "A stream rule matched; the message in progress was discarded and the request is sent\nagain."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "compaction"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "tokens_before": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "tokens_after": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "tokens_before",
+            "tokens_after"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "idle"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "stop": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "stop"
+          ],
+          "description": "The work a prompt started is over. `stop` is `stop`, `length`, `tool_use`, `error` or\n`aborted`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "failed"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "error": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent",
+            "error"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "roster"
+            },
+            "members": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Member"
+              }
+            }
+          },
+          "required": [
+            "type",
+            "members"
+          ],
+          "description": "Sent whenever a sub-agent appears or changes state."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "approval_request"
+            },
+            "request_id": {
+              "type": "string"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "tool": {
+              "type": "string"
+            },
+            "access": {
+              "type": "string",
+              "description": "`read`, `write`, `exec` or `net`."
+            },
+            "subjects": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "description": "What permission rules are matched against: paths, commands, `domain:<host>`."
+            },
+            "input": true,
+            "rule": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The allow rule that `always` would add."
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A remark to show, such as a cost warning."
+            }
+          },
+          "required": [
+            "type",
+            "request_id",
+            "agent",
+            "tool",
+            "access",
+            "subjects",
+            "input"
+          ],
+          "description": "A tool call needs the user's permission. The agent waits for the matching\n`approval_response`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "ui_request"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "ask"
+                },
+                "question": {
+                  "type": "string"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "multi": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "kind",
+                "question",
+                "options",
+                "multi"
+              ],
+              "description": "Expects a list of the chosen options, or one string when there are no options."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "confirm"
+                },
+                "prompt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "prompt"
+              ],
+              "description": "Expects `true` or `false`."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "select"
+                },
+                "prompt": {
+                  "type": "string"
+                },
+                "options": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "prompt",
+                "options"
+              ],
+              "description": "Expects the index of the chosen option; the option's text is accepted too."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "input"
+                },
+                "prompt": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "prompt"
+              ],
+              "description": "Expects a string."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "plan"
+                },
+                "path": {
+                  "type": "string"
+                },
+                "plan": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "path",
+                "plan"
+              ],
+              "description": "Expects `true` to approve the plan, or a string of feedback to revise it."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "notify"
+                },
+                "level": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "level",
+                "text"
+              ],
+              "description": "Expects no answer. `level` is `info`, `warn` or `error`."
+            }
+          ],
+          "description": "An agent or extension asks the user something."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "btw_delta"
+            },
+            "id": true,
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "id",
+            "delta"
+          ],
+          "description": "A piece of the answer to the `btw` command with this `id`."
+        }
+      ],
+      "description": "One line from azazel. `type` names the frame; frames of an agent carry its id as `agent`\n(`lead` for the main agent)."
+    },
+    "Response": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "description": "The `id` of the command; `null` for a line that was not a command.",
+          "default": null
+        },
+        "success": {
+          "type": "boolean"
+        },
+        "data": {
+          "default": null
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "success"
+      ],
+      "description": "The answer to one command. `data` is present when `success` is true, `error` when it is not."
+    },
+    "StreamEvent": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "start"
+            }
+          },
+          "required": [
+            "type"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "text_delta"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "index",
+            "delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "thinking_delta"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "index",
+            "delta"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_call_start"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "id": {
+              "type": "string"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "index",
+            "id",
+            "name"
+          ]
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "tool_call_delta"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "delta": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "index",
+            "delta"
+          ],
+          "description": "`delta` is a raw fragment of the call's JSON arguments."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "block_end"
+            },
+            "index": {
+              "type": "integer",
+              "format": "uint64",
+              "minimum": 0
+            },
+            "block": true
+          },
+          "required": [
+            "type",
+            "index",
+            "block"
+          ],
+          "description": "The finished content block at `index`."
+        }
+      ],
+      "description": "A part of the message the model is writing. Deltas are for display; `message_end` carries\nthe complete message."
+    },
+    "ToolOutput": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "type": "array",
+          "items": true,
+          "description": "`text` and `image` blocks."
+        },
+        "is_error": {
+          "type": "boolean"
+        },
+        "details": {
+          "description": "Structured data for display (diffs, exit codes); the model never sees it."
+        }
+      },
+      "required": [
+        "content",
+        "is_error"
+      ],
+      "description": "What a tool returned."
+    },
+    "Member": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "def": {
+          "type": "string",
+          "description": "The agent definition it runs as; `lead` for the main agent."
+        },
+        "parent": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depth": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "state": {
+          "type": "string",
+          "description": "`queued`, `running`, `waiting for approval`, `idle`, `done`, `failed` or `stopped`."
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        }
+      },
+      "required": [
+        "id",
+        "def",
+        "depth",
+        "state",
+        "elapsed_ms",
+        "tokens"
+      ],
+      "description": "One agent of the roster."
+    },
+    "State": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The session's name, once it has one.",
+          "default": null
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "description": "The permission mode."
+        },
+        "busy": {
+          "type": "boolean",
+          "description": "Whether the lead is working."
+        },
+        "turn": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The lead's request number within the current prompt; 0 before the first."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The model that answered most recently."
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The lead's model chain as given, e.g. `[\"@default\"]`."
+        },
+        "thinking": {
+          "type": "string"
+        },
+        "tier": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The service tier, when one is on.",
+          "default": null
+        },
+        "context_tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "context_window": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage",
+          "description": "Totals of the lead."
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Member"
+          },
+          "description": "The roster."
+        }
+      },
+      "required": [
+        "session_id",
+        "cwd",
+        "mode",
+        "busy",
+        "turn",
+        "chain",
+        "thinking",
+        "context_tokens",
+        "context_window",
+        "usage",
+        "agents"
+      ],
+      "description": "The session as `get_state` and the session commands report it."
+    },
+    "Usage": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "output": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "cache_read": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "cache_write": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "reasoning": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "default": 0
+        },
+        "cost_usd": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double",
+          "description": "Absent when no price is known for the model."
+        }
+      },
+      "description": "Token and cost totals."
+    },
+    "Models": {
+      "type": "object",
+      "properties": {
+        "models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": [
+        "models"
+      ],
+      "description": "The data of `set_model`: the usable models the chain resolves to."
+    },
+    "SessionRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string",
+          "description": "The session file."
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "type": "string",
+          "description": "When it was created and when its last entry was written, RFC 3339."
+        },
+        "updated": {
+          "type": "string"
+        },
+        "first_prompt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The first message you sent."
+        },
+        "messages": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "prompts": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "matches": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "With a `query`: the lines that matched."
+        }
+      },
+      "required": [
+        "id",
+        "path",
+        "created",
+        "updated",
+        "messages",
+        "prompts",
+        "pinned",
+        "usage"
+      ],
+      "description": "One saved session."
+    },
+    "MessageRow": {
+      "type": "object",
+      "properties": {
+        "entry_id": {
+          "type": "string"
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "message": {
+          "description": "`role` (`user`, `assistant`, `tool`), `content` blocks and, for replies, `meta`."
+        }
+      },
+      "required": [
+        "entry_id",
+        "timestamp",
+        "message"
+      ],
+      "description": "One message of a branch."
+    },
+    "TreeRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "parent_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestamp": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "`message`, `checkpoint`, `model_change`, `compaction`, `label`, ..."
+        },
+        "role": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a message: `user`, `assistant` or `tool`."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a message: the start of its text. For a `label` or a `session_info`: the label or\nthe name."
+        },
+        "target_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "For a `label`: the entry it labels. For a `checkpoint`: the entry it was taken after."
+        },
+        "current": {
+          "type": "boolean",
+          "description": "Whether the entry is on the branch that ends at the current leaf."
+        }
+      },
+      "required": [
+        "id",
+        "timestamp",
+        "kind",
+        "current"
+      ],
+      "description": "One entry of the session file."
+    },
+    "ModelRow": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "`provider/id`."
+        },
+        "context_window": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "max_output": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "vision": {
+          "type": "boolean"
+        },
+        "reasoning": {
+          "type": "boolean"
+        },
+        "cost": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelCost"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "USD per million tokens."
+        }
+      },
+      "required": [
+        "model",
+        "context_window",
+        "max_output",
+        "vision",
+        "reasoning"
+      ],
+      "description": "One model of `list_models`."
+    },
+    "ModelCost": {
+      "type": "object",
+      "properties": {
+        "input": {
+          "type": "number",
+          "format": "double"
+        },
+        "output": {
+          "type": "number",
+          "format": "double"
+        }
+      },
+      "required": [
+        "input",
+        "output"
+      ]
+    },
+    "AccountUsage": {
+      "type": "object",
+      "properties": {
+        "provider": {
+          "type": "string"
+        },
+        "account": {
+          "type": "string"
+        },
+        "windows": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Window"
+          }
+        },
+        "blocked_until": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Unix seconds until which the account is out of allowance."
+        }
+      },
+      "required": [
+        "provider",
+        "account",
+        "windows"
+      ],
+      "description": "The usage windows of one provider account."
+    },
+    "Window": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "`5h`, `7d`, `7d-opus`, `overage`."
+        },
+        "used": {
+          "type": "number",
+          "format": "float",
+          "description": "The share that is used, 0.0 to 1.0."
+        },
+        "resets_at": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Unix seconds."
+        },
+        "status": {
+          "type": "string",
+          "description": "`allowed`, `allowed_warning`, `rejected`, or whatever else the provider said."
+        }
+      },
+      "required": [
+        "name",
+        "used",
+        "status"
+      ],
+      "description": "One usage window of an account, as the provider last reported it."
+    },
+    "ShellResult": {
+      "type": "object",
+      "properties": {
+        "output": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "`exit code: 0`, `killed`, or why the command could not start."
+        }
+      },
+      "required": [
+        "output",
+        "status"
+      ],
+      "description": "The data of `shell`."
+    },
+    "Exported": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "description": "The data of `export`."
+    },
+    "BtwAnswer": {
+      "type": "object",
+      "properties": {
+        "answer": {
+          "type": "string"
+        },
+        "model": {
+          "type": "string",
+          "description": "The model that answered."
+        },
+        "dropped_tools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tools the model tried to use anyway; those calls were dropped."
+        }
+      },
+      "required": [
+        "answer",
+        "model"
+      ],
+      "description": "The data of `btw`."
+    },
+    "CommandResult": {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "done"
+            }
+          },
+          "required": [
+            "outcome"
+          ],
+          "description": "The command finished with nothing to show."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "show"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "text"
+          ],
+          "description": "The command produced this text for the user."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "outcome": {
+              "type": "string",
+              "const": "prompt"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "outcome",
+            "text"
+          ],
+          "description": "The command sent this text to the lead as a prompt."
+        }
+      ],
+      "description": "The data of `run_command`."
+    }
+  }
+}
