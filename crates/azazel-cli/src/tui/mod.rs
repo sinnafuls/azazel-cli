@@ -573,6 +573,9 @@ impl Tui {
             PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &format!("⏵⏵ {mode}")),
             PermissionMode::Auto => theme.paint(Role::ModeAuto, &format!("⏵⏵ {mode}")),
         }];
+        if self.app.coordinator.is_on() {
+            left.push(theme.paint(Role::Accent, "coordinator"));
+        }
         if let Some(branch) = &self.branch {
             left.push(muted(&format!("⑂ {branch}")));
         }

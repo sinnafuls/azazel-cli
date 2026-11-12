@@ -1,0 +1,189 @@
+//! Wiring for coordinator mode, the advisor and typed results: what the command line and the
+//! configuration ask for, handed to the team crate, which does the work.
+
+use std::path::Path;
+use std::sync::Arc;
+
+use azazel_agent::Services;
+use azazel_core::config::AdvisorWhen;
+use azazel_core::side::Side;
+use azazel_core::{Config, EntryKind, ExtError, Registry, SessionStore};
+use azazel_team::coordinator::{entry, recorded};
+use azazel_team::{Advisor, AdvisorExt, AdvisorSettings, Coordinator, CoordinatorExt, Typed};
+
+use crate::app::UsageError;
+use crate::cli::Cli;
+
+/// Registers coordinator mode and the advisor. Call before the goal extension is loaded: the
+/// advisor's review of a stop then comes before a goal's own check, which keeps the last word.
+pub fn load(registry: &Registry, config: &Config, cli: &Cli) -> Result<Arc<Coordinator>, ExtError> {
+    let coordinator = Arc::new(Coordinator::new(config.team.coordinator || cli.coordinator));
+    registry.load(&CoordinatorExt {
+        coordinator: coordinator.clone(),
+    })?;
+    registry.load(&AdvisorExt {
+        advisor: Arc::new(Advisor::new(AdvisorSettings {
+            chain: config.advisor.model.clone(),
+            on_stop: config.advisor.when == AdvisorWhen::Stop,
+        })),
+    })?;
+    Ok(coordinator)
+}
+
+/// The schema `--json-schema` names: JSON given inline, or the file that holds it.
+pub fn result_schema(value: &str, cwd: &Path) -> Result<Arc<Typed>, UsageError> {
+    let text = if value.trim_start().starts_with('{') {
+        value.to_string()
+    } else {
+        std::fs::read_to_string(cwd.join(value))
+            .map_err(|e| UsageError(format!("--json-schema {value}: {e}")))?
+    };
+    let schema = serde_json::from_str(&text)
+        .map_err(|e| UsageError(format!("--json-schema: the schema is not valid JSON: {e}")))?;
+    Typed::new(schema)
+        .map(Arc::new)
+        .map_err(|why| UsageError(format!("--json-schema: {why}")))
+}
+
+/// Puts coordinator mode to what `session` was left in, or leaves it as it is when the session
+/// never recorded one; `forced` (`--coordinator`) turns it on whatever the session says. A
+/// session that is opened in another mode than it records gets the new one written down, so that
+/// resuming it finds the mode again.
+pub fn open_session(coordinator: &Coordinator, session: &SessionStore, forced: bool) {
+    let before = recorded(&session.branch(None));
+    let on = forced || before.unwrap_or_else(|| coordinator.is_on());
+    coordinator.restore(on);
+    if before.unwrap_or(false) != on {
+        session.append(EntryKind::ModeChange { mode: entry(on) });
+    }
+}
+
+/// What requests on the side (the advisor, side questions) cost, one line per purpose, for
+/// `/cost`. `None` when there were none.
+pub fn side_cost_lines(services: &Services) -> Option<String> {
+    let costs = services.get::<Side>()?.costs.by_purpose();
+    if costs.is_empty() {
+        return None;
+    }
+    let mut out = String::from("on the side, not counted above:");
+    for (purpose, usage) in costs {
+        let cost = match usage.cost_usd {
+            Some(cost) => format!("${cost:.4}"),
+            None => "cost unknown".to_string(),
+        };
+        out.push_str(&format!(
+            "\n  {purpose}: input {} · output {} · {cost}",
+            usage.input, usage.output
+        ));
+    }
+    Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use azazel_ai::{Catalog, RetryPolicy, Router, Usage};
+    use azazel_core::side::SideCosts;
+    use azazel_core::{ExtCtx, PromptBuilder};
+
+    use super::*;
+
+    #[test]
+    fn a_schema_is_read_inline_or_from_a_file_and_mistakes_are_usage_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("schema.json"), r#"{"type": "array"}"#).unwrap();
+        let inline = result_schema(r#" {"type": "object"}"#, dir.path()).unwrap();
+        assert_eq!(inline.schema()["type"], "object");
+        let file = result_schema("schema.json", dir.path()).unwrap();
+        assert_eq!(file.schema()["type"], "array");
+
+        let error = |value: &str| result_schema(value, dir.path()).unwrap_err().0;
+        assert!(error("missing.json").starts_with("--json-schema missing.json: "));
+        assert!(error("{not json").starts_with("--json-schema: the schema is not valid JSON: "));
+        assert!(error(r#"{"type": "nonsense"}"#).starts_with("--json-schema: "));
+        std::fs::write(dir.path().join("list.json"), "[1]").unwrap();
+        assert_eq!(
+            error("list.json"),
+            "--json-schema: a JSON Schema must be an object"
+        );
+    }
+
+    #[test]
+    fn a_session_keeps_its_coordinator_mode_and_a_new_mode_is_written_down() {
+        let dir = tempfile::tempdir().unwrap();
+        let modes = |session: &SessionStore| -> Vec<String> {
+            session
+                .branch(None)
+                .into_iter()
+                .filter_map(|entry| match entry.kind {
+                    EntryKind::ModeChange { mode } => Some(mode),
+                    _ => None,
+                })
+                .collect()
+        };
+        // A new session in a run where the mode is off records nothing.
+        let coordinator = Coordinator::new(false);
+        let plain = SessionStore::create(dir.path(), dir.path(), None).unwrap();
+        open_session(&coordinator, &plain, false);
+        assert!(!coordinator.is_on() && modes(&plain).is_empty());
+
+        // `--coordinator` turns it on and the session remembers.
+        open_session(&coordinator, &plain, true);
+        assert!(coordinator.is_on());
+        assert_eq!(modes(&plain), ["coordinator:on"]);
+
+        // Another run, where the mode is off by default, finds it on in that session...
+        let later = Coordinator::new(false);
+        let reopened = SessionStore::open(&plain.path()).unwrap();
+        open_session(&later, &reopened, false);
+        assert!(later.is_on());
+        assert_eq!(modes(&reopened), ["coordinator:on"]);
+
+        // ...and a session that was switched off stays off where the default is on.
+        reopened.append(EntryKind::ModeChange { mode: entry(false) });
+        let default_on = Coordinator::new(true);
+        open_session(&default_on, &reopened, false);
+        assert!(!default_on.is_on());
+        assert_eq!(modes(&reopened), ["coordinator:on", "coordinator:off"]);
+    }
+
+    #[test]
+    fn side_costs_are_listed_by_purpose() {
+        let services = Services::new();
+        assert_eq!(side_cost_lines(&services), None);
+        let registry = Registry::new(ExtCtx {
+            services: Arc::new(Services::new()),
+            cwd: std::path::PathBuf::from("."),
+            session_id: String::new(),
+        });
+        let costs = Arc::new(SideCosts::default());
+        services.insert(Arc::new(Side {
+            router: Arc::new(Router::new(
+                Vec::new(),
+                Catalog::default(),
+                Default::default(),
+                RetryPolicy::default(),
+            )),
+            prompt: Arc::new(PromptBuilder::default()),
+            tools: registry.tools.clone(),
+            costs: costs.clone(),
+        }));
+        assert_eq!(side_cost_lines(&services), None);
+        costs.add(
+            "advisor",
+            &Usage {
+                input: 1200,
+                output: 40,
+                cost_usd: Some(0.0123),
+                ..Usage::default()
+            },
+        );
+        costs.add("btw", &Usage::default());
+        assert_eq!(
+            side_cost_lines(&services).as_deref(),
+            Some(
+                "on the side, not counted above:\n  advisor: input 1200 · output 40 · $0.0123\n  btw: input 0 · \
+                 output 0 · cost unknown"
+            )
+        );
+    }
+}

@@ -254,19 +254,23 @@ impl Provider for MockProvider {
         req: &Request,
         cancel: CancellationToken,
     ) -> Result<EventStream, AiError> {
-        locked(&self.requests).push((model.id.clone(), req.clone()));
+        let mut requests = locked(&self.requests);
+        requests.push((model.id.clone(), req.clone()));
         if let Some(file) = &self.record {
             use std::io::Write;
-            let line = serde_json::json!({ "model": model.id, "request": req });
+            // One write, under the lock: the lines of agents asking at the same time must not
+            // run into each other.
+            let line = format!("{}\n", serde_json::json!({ "model": model.id, "request": req }));
             let written = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
                 .open(file)
-                .and_then(|mut out| writeln!(out, "{line}"));
+                .and_then(|mut out| out.write_all(line.as_bytes()));
             if let Err(e) = written {
                 tracing::warn!("could not record the mock request in {}: {e}", file.display());
             }
         }
+        drop(requests);
         let step = locked(&self.queues)
             .get_mut(&model.id)
             .and_then(VecDeque::pop_front);

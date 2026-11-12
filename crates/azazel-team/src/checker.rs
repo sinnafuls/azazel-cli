@@ -262,6 +262,7 @@ impl Checker {
             model: None,
             isolation: None,
             tools: None,
+            schema: None,
         };
         let id = match team.spawn(parent, request, false).await {
             Ok(id) => id,

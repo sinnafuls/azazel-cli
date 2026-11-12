@@ -93,6 +93,7 @@ removed lines are filled with a background colour.
 | Segment | Shown when | Content |
 |---|---|---|
 | mode | always | The permission mode: `ask`, `⏸ plan`, `⏵⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
+| `coordinator` | [coordinator mode](team.md#coordinator-mode) is on | The lead plans and delegates only |
 | `⑂ branch` | the project is a git repository | The checked-out branch |
 | directory | always | The working directory, with `~` for your home directory |
 | `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 % |
@@ -256,7 +257,7 @@ Session and display:
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
-| `/cost` | Requests, tokens and money spent in this session |
+| `/cost` | Requests, tokens and money spent in this session, and what requests on the side (the advisor) cost |
 | `/context` | How full the context window is, message count, tools offered |
 | `/theme [name]` | Pick or set the colour theme |
 | `/keys` | List key bindings |
@@ -303,6 +304,8 @@ Team and goals ([team](team.md), [goals](goals.md), [screen and playtesting](scr
 | `/goal <objective>` | Set an objective the agent works on until it is verified; also `/goal status\|pause\|resume\|drop` |
 | `/verify [what should be true]` | Run the project's checks and a verifier agent on the work so far |
 | `/playtest <launch command> [-- <what to test>]` | Have a playtester run a build, play it and report defects |
+| `/coordinator [on\|off]` | Have the lead only plan and delegate; alone, shows the mode ([coordinator mode](team.md#coordinator-mode)) |
+| `/advise [question]` | Ask the [advisor](team.md#advisor), a second model, about the work so far; only you see the answer |
 
 Skills, extensions and services:
 

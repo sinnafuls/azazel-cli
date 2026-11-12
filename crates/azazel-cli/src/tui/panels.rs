@@ -316,11 +316,13 @@ impl Tui {
         let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
         let mut offered = 0;
         for tool in &listing {
-            let mark = if tool.offered {
+            let mark = if !tool.offered {
+                " (disabled)"
+            } else if self.app.coordinator.is_on() && !azazel_team::coordinator::offers(&tool.name) {
+                " (withheld in coordinator mode)"
+            } else {
                 offered += 1;
                 ""
-            } else {
-                " (disabled)"
             };
             groups
                 .entry(tool_group(&tool.name, &tool.owner))

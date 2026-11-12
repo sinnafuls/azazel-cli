@@ -714,6 +714,10 @@ impl Tui {
             Some(tier) => format!("{cost}\n{}", crate::routing::tier_cost_note(tier)),
             None => cost,
         };
+        let cost = match crate::orchestration::side_cost_lines(&self.app.registry.services) {
+            Some(side) => format!("{cost}\n{side}"),
+            None => cost,
+        };
         self.info(&format!(
             "requests: {}\ninput: {} · output: {} · cache read: {} · cache write: {} · reasoning: {}\ncost: {cost}",
             status.requests,

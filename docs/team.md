@@ -5,7 +5,7 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 ## How it works
 
 - The lead (id `lead`) starts sub-agents with the `task` tool. Each one is created from an **agent definition** and sees only the prompt written for it.
-- A sub-agent's last message is its **report**. That report is all its parent sees of the work.
+- A sub-agent's last message is its **report**. That report is all its parent sees of the work. An agent asked for a [typed result](#typed-results) reports a JSON value instead.
 - Ids are `<definition>-<n>` (`scout-1`, `scout-2`, …) unless the caller gives a `name`.
 - At most `team.max_parallel` sub-agents run at once; the rest are `queued`.
 - States: `queued`, `running`, `waiting for approval`, `done`, `failed`, `stopped`.
@@ -71,8 +71,9 @@ already been applied. Report the files you created and the commands you ran.
 | `skills` | [Skills](skills-and-commands.md) whose text is appended to the system prompt | none |
 | `spawns` | Definitions this agent may itself start | none |
 | `isolation` | `none` or `worktree` | `none` |
+| `output-schema` | A JSON Schema (a YAML mapping, or JSON in a string) the agent's result must match; see [typed results](#typed-results) | none |
 
-`disallowedTools`, `maxTurns` and `permissionMode` are accepted as aliases. Other keys are ignored.
+`disallowedTools`, `maxTurns`, `permissionMode` and `outputSchema` are accepted as aliases. Other keys are ignored.
 
 ### Where definitions live
 
@@ -105,7 +106,7 @@ thinking = "high"
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `task` | `agents: [{agent, prompt, name?, model?, isolation?}]`, `wait?` (default `true`) | Starts every listed agent; they run in parallel. With `wait` it returns all reports (each cut at 8000 characters, with a pointer to `agent://<id>`). With `wait: false` it returns the ids at once and each result arrives later as an `<agent-result>` message. If one agent cannot be started, none are. Cancelling a waiting call stops the agents it started. |
+| `task` | `agents: [{agent, prompt, name?, model?, isolation?, schema?}]`, `wait?` (default `true`) | Starts every listed agent; they run in parallel. With `wait` it returns all reports (each cut at 8000 characters, with a pointer to `agent://<id>`). With `wait: false` it returns the ids at once and each result arrives later as an `<agent-result>` message. If one agent cannot be started, none are. Cancelling a waiting call stops the agents it started. |
 | `agent_send` | `to` (an id, `parent`, or `all`), `message` | A working agent sees the message before its next step. A finished one is revived with it, keeping its context. |
 | `agent_stop` | `id`, `reason?` | Stops the agent and every agent it started. |
 | `agent_wait` | `ids?`, `timeout_secs?` (default 600) | Returns when one of the caller's agents has a new result, or a message for the caller arrives. |
@@ -121,8 +122,98 @@ The `read` tool accepts two URLs:
 
 | URL | Content |
 |---|---|
-| `agent://<id>` | The agent's latest report, in full |
+| `agent://<id>` | The agent's latest report, in full; for a [typed result](#typed-results), the JSON value alone |
 | `agent://<id>/transcript` | A condensed transcript: prompts, everything the agent said, one line per tool call |
+
+## Typed results
+
+An agent normally reports in prose. When the caller needs data, it gives the agent a JSON Schema and gets back
+a value that matches it.
+
+```json
+{ "agents": [{
+    "agent": "scout",
+    "prompt": "List every file under src/ that calls parse_config.",
+    "schema": {
+      "type": "object",
+      "properties": { "files": { "type": "array", "items": { "type": "string" } } },
+      "required": ["files"]
+    }
+}] }
+```
+
+- The schema comes from the `schema` of the `task` entry, or from `output-schema` in the agent's definition.
+  The caller's schema wins.
+- Such an agent gets a `report` tool that no other agent sees, whatever its definition grants, and is told to
+  finish by calling it. `report` takes `result` and checks it against the schema. A value that does not match
+  is refused with the list of violations, so the agent can correct it and call again. The last value that
+  matched is the result.
+- The agent's report is that value as JSON. The `task` result shows it in a fenced `json` block, and
+  `agent://<id>` returns the JSON alone, so it parses.
+- An agent that stops without a report is reminded, up to three times. If it still has not reported, it
+  fails with `ended without a report`.
+- A schema that is not valid JSON Schema fails the `task` call before any agent starts. A schema may not
+  refer to a file or a URL (`$ref` to somewhere else): nothing is fetched for a schema.
+
+Print mode uses the same mechanism for the lead:
+
+```sh
+azazel -p --json-schema schema.json "which crates depend on serde?"
+azazel -p --json-schema '{"type":"object","properties":{"crates":{"type":"array"}},"required":["crates"]}' "..."
+```
+
+`--json-schema` takes a file or the schema itself. The lead gets the `report` tool; standard output is exactly
+the reported JSON on one line, and the exit status is `0`. A run that ends without a matching report prints
+nothing on standard output and exits `1`. A schema that cannot be read or is not a JSON Schema exits `2`. With
+`--output json` the events are printed as usual and only the exit status changes.
+
+## Coordinator mode
+
+In coordinator mode the lead plans and delegates and does none of the work itself. It is offered the
+orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `skill`, the memory tools, `semantic_search`,
+`web_search` and `web_fetch`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
+`job`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
+plan first, delegate independent pieces in one `task` call, read every report critically, and verify through
+agents. Sub-agents are not affected.
+
+| Way | Effect |
+|---|---|
+| `/coordinator on`, `/coordinator off` | Switches the mode for the open session; `/coordinator` shows it |
+| `--coordinator` | Starts the run in coordinator mode |
+| `[team] coordinator = true` | Makes it the default for new sessions |
+
+The status line shows `coordinator` while the mode is on. The mode is recorded in the session, so resuming a
+session brings it back, whatever the default is. It is off by default: it changes how every prompt is worked.
+
+## Advisor
+
+The advisor is a second model that looks over the lead's work. It is off by default, because every review is
+one more request.
+
+```toml
+[advisor]
+model = ["openai/<model-id>"]   # a chain: the first that answers
+when = "stop"                   # "off" (default) or "stop"
+```
+
+With `when = "stop"`, each time the lead is about to finish a prompt the advisor is sent what you asked in
+that run, the lead's last message and the diff since the prompt's [checkpoint](sessions-and-checkpoints.md)
+(cut at 30 KB). It answers `OK`, or it gives advice.
+
+- `OK`: the lead stops as it would have.
+- Advice: the lead gets it as `<advisor>...</advisor>`, with a line saying a second model reviewed the work,
+  and takes one more round. That round is not reviewed again.
+- No answer within 120 seconds, or an error: the lead stops without advice and a warning is logged.
+
+The advisor has no tools and no part in the conversation: it sees only that brief, and its answer is not
+stored in the session except as the advice the lead received. A [goal](goals.md)'s own check still runs after
+the extra round and has the last word. Only the lead is reviewed, not sub-agents.
+
+`/advise [question]` asks the advisor on demand, about the work so far or about your question. Only you see
+the answer; the lead does not. It works with `when = "off"` too, as long as a model is set.
+
+What the advisor costs is counted in the run's spend (so `--max-cost` covers it) and listed as `advisor` by
+`/cost`. `[advisor]` is a [gated setting](configuration.md#trust): a project you have not trusted cannot set it.
 
 ## Worktree isolation
 
@@ -156,7 +247,8 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 | `/stop <id\|all>` | Stops an agent and the agents it started |
 | `Esc` | Aborts the lead only. Agents a waiting `task` call started stop with it; agents started with `wait: false` keep running. |
 
-`/playtest` starts a `playtester` directly; see [screen and playtesting](screen-and-playtesting.md). In print mode's JSON output and in [RPC mode](rpc.md) every event carries the id of the agent it came from.
+`/coordinator` and `/advise` are described under [coordinator mode](#coordinator-mode) and
+[advisor](#advisor). `/playtest` starts a `playtester` directly; see [screen and playtesting](screen-and-playtesting.md). In print mode's JSON output and in [RPC mode](rpc.md) every event carries the id of the agent it came from.
 
 ## Limits
 
@@ -164,6 +256,7 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 [team]
 max_parallel = 4   # sub-agents working at the same time
 max_depth = 2      # levels of agents below the lead
+coordinator = false  # true: the lead only plans and delegates (coordinator mode)
 ```
 
 With `max_depth = 2`, an agent started by the lead may start agents of its own (if its definition lists `spawns`), and those may not start any. An agent revived by a message runs even when every slot is taken.
