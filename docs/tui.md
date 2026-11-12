@@ -95,6 +95,7 @@ removed lines are filled with a background colour.
 | Segment | Shown when | Content |
 |---|---|---|
 | mode | always | The permission mode: `ask`, `⏸ plan`, `⏵⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
+| `coordinator` | [coordinator mode](team.md#coordinator-mode) is on | The lead plans and delegates only |
 | `⑂ branch` | the project is a git repository | The checked-out branch |
 | directory | always | The working directory, with `~` for your home directory |
 | `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 % |
@@ -266,7 +267,7 @@ Session and display:
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
-| `/cost` | Requests, tokens and money spent in this session, with what side questions and commit drafts cost |
+| `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
@@ -319,6 +320,8 @@ Team and goals ([team](team.md), [goals](goals.md), [screen and playtesting](scr
 | `/review [ref]` | Have a reviewer read the uncommitted changes, or the commits since `ref`, and report findings to the lead |
 | `/security-review [ref]` | The same review, limited to security and guided by the `security-review` skill |
 | `/task <agent> [name=<id>] <prompt>` | Start any agent yourself; its report goes to the lead. `/task` alone lists the agents |
+| `/coordinator [on\|off]` | Have the lead only plan and delegate; alone, shows the mode ([coordinator mode](team.md#coordinator-mode)) |
+| `/advise [question]` | Ask the [advisor](team.md#advisor), a second model, about the work so far; only you see the answer |
 
 Skills, extensions and services:
 

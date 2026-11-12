@@ -79,7 +79,7 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
     let mut queued = crate::tui::queue_from_env();
     let mut interrupt = std::pin::pin!(tokio::signal::ctrl_c());
     let mut interrupted = false;
-    let code = loop {
+    let mut code = loop {
         let event = tokio::select! {
             event = events.recv() => event,
             // Sub-agents' events go out tagged with their own ids.
@@ -157,8 +157,20 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
             _ => {}
         }
     };
-    if format == OutputFormat::Text && code == EXIT_OK {
-        let _ = writeln!(stdout, "{answer}");
+    // A typed run prints the value it reported and nothing else; without one it has failed.
+    let reported = app.report.as_ref().map(|report| report.value());
+    match reported {
+        Some(Some(value)) if code == EXIT_OK && format == OutputFormat::Text => {
+            let _ = writeln!(stdout, "{value}");
+        }
+        Some(None) if code == EXIT_OK => {
+            eprintln!("azazel: the run ended without a result that matches --json-schema");
+            code = EXIT_FAILED;
+        }
+        None if format == OutputFormat::Text && code == EXIT_OK => {
+            let _ = writeln!(stdout, "{answer}");
+        }
+        _ => {}
     }
     let _ = stdout.flush();
     #[cfg(feature = "test-support")]

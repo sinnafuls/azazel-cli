@@ -93,6 +93,9 @@ grep-matcher = "0.1"
 similar = "3"
 nucleo-matcher = "0.3"
 
+# Typed results: no remote or file references in a schema a model wrote
+jsonschema = { version = "0.61", default-features = false }
+
 # Storage, hashing, ids, time, paths
 rusqlite = { version = "0.41", features = ["bundled"] }
 blake3 = "1.8"

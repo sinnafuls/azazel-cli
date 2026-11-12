@@ -593,6 +593,7 @@ fn agent(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
                 model: None,
                 isolation: None,
                 tools: None,
+                schema: None,
             };
             let id = team
                 .spawn(lead.info(), request, !wait)

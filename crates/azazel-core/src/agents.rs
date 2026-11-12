@@ -66,6 +66,9 @@ pub struct AgentDef {
     /// Definitions this agent may spawn itself.
     pub spawns: Vec<String>,
     pub isolation: Isolation,
+    /// `output-schema`: a JSON Schema the agent's result must match. The agent then hands in a
+    /// value through `report` instead of prose.
+    pub output_schema: Option<Value>,
     /// The system prompt.
     pub body: String,
     pub source: DefSource,
@@ -218,6 +221,25 @@ fn entries(key: &str, value: &Value) -> Result<Vec<String>, String> {
             shown(other)
         )),
     }
+}
+
+/// A result schema: a mapping, or a string holding one as JSON. An empty value is no schema.
+fn result_schema(key: &str, value: &Value) -> Result<Option<Value>, String> {
+    let schema = match value {
+        Value::Null => return Ok(None),
+        Value::String(text) if text.trim().is_empty() => return Ok(None),
+        Value::String(text) => {
+            serde_json::from_str::<Value>(text).map_err(|e| format!("{key}: not valid JSON: {e}"))?
+        }
+        other => other.clone(),
+    };
+    if !schema.is_object() {
+        return Err(format!(
+            "{key}: expected a JSON Schema (a mapping), got `{}`",
+            shown(&schema)
+        ));
+    }
+    Ok(Some(schema))
 }
 
 /// The azazel tool a Claude Code tool name stands for; other names are kept as written.
@@ -415,6 +437,10 @@ pub fn parse_def(file: &Path, text: &str, source: DefSource) -> Result<AgentDef,
         .map(|(key, value)| choice(key, value, "none", "worktree"))
         .transpose()?
         .unwrap_or(false);
+    let output_schema = field(&meta, &["output-schema", "outputSchema"])
+        .map(|(key, value)| result_schema(key, value))
+        .transpose()?
+        .flatten();
 
     Ok(AgentDef {
         name,
@@ -432,6 +458,7 @@ pub fn parse_def(file: &Path, text: &str, source: DefSource) -> Result<AgentDef,
         } else {
             Isolation::None
         },
+        output_schema,
         body: body.trim().to_string(),
         source,
         path: (source != DefSource::Builtin).then(|| file.to_path_buf()),
@@ -577,6 +604,7 @@ System prompt body.
                 skills: strings(&["code-review"]),
                 spawns: Vec::new(),
                 isolation: Isolation::None,
+                output_schema: None,
                 body: "System prompt body.".into(),
                 source: DefSource::Project,
                 path: Some(file.to_path_buf()),
@@ -602,6 +630,7 @@ System prompt body.
                 skills: Vec::new(),
                 spawns: Vec::new(),
                 isolation: Isolation::None,
+                output_schema: None,
                 body: "Body".into(),
                 source: DefSource::Home,
                 path: Some(PathBuf::from("agent.md")),
@@ -610,6 +639,36 @@ System prompt body.
         let explicit = parse("mode: inherit\nisolation: worktree", DefSource::Home).unwrap();
         assert!(!explicit.plan_mode);
         assert_eq!(explicit.isolation, Isolation::Worktree);
+    }
+
+    #[test]
+    fn an_output_schema_is_a_mapping_or_json_text() {
+        let nested = parse(
+            "output-schema:\n  type: object\n  properties:\n    files:\n      type: array\n  required: [files]",
+            DefSource::Home,
+        )
+        .unwrap();
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": { "files": { "type": "array" } },
+            "required": ["files"]
+        });
+        assert_eq!(nested.output_schema, Some(schema.clone()));
+        let text = parse(&format!("outputSchema: '{schema}'"), DefSource::Home).unwrap();
+        assert_eq!(text.output_schema, Some(schema));
+        assert_eq!(
+            parse("output-schema:", DefSource::Home).unwrap().output_schema,
+            None
+        );
+
+        assert_eq!(
+            parse("output-schema: [1, 2]", DefSource::Home),
+            Err("output-schema: expected a JSON Schema (a mapping), got `[1,2]`".to_string())
+        );
+        assert!(
+            parse("output-schema: '{not json'", DefSource::Home)
+                .is_err_and(|e| e.starts_with("output-schema: not valid JSON: "))
+        );
     }
 
     #[test]

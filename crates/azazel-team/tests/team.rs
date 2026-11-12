@@ -79,6 +79,9 @@ const WORKER: &str =
     "---\nname: worker\ndescription: Naps on request.\ntools: nap\n---\nYou nap when told to.\n";
 const EDITOR: &str =
     "---\nname: editor\ndescription: Edits files.\ntools: read, edit, write, nap\n---\nYou edit.\n";
+/// Its result is typed by the definition itself.
+const COUNTER: &str = "---\nname: counter\ndescription: Counts things.\ntools: nap\noutput-schema:\n  type: object\n  \
+                       properties:\n    count:\n      type: integer\n  required: [count]\n---\nYou count.\n";
 const FRAGILE: &str = "---\nname: fragile\ndescription: Has a fallback model.\nmodel: [\"mock/a\", \"mock/b\"]\n\
                        tools: nap\n---\nYou answer.\n";
 
@@ -107,7 +110,12 @@ impl Bench {
         let project = dir.path().join("project");
         let agents = project.join(".azazel/agents");
         std::fs::create_dir_all(&agents).unwrap();
-        for (name, text) in [("worker", WORKER), ("editor", EDITOR), ("fragile", FRAGILE)] {
+        for (name, text) in [
+            ("worker", WORKER),
+            ("editor", EDITOR),
+            ("fragile", FRAGILE),
+            ("counter", COUNTER),
+        ] {
             std::fs::write(agents.join(format!("{name}.md")), text).unwrap();
         }
         std::fs::write(project.join("f.txt"), "one\n").unwrap();
@@ -725,4 +733,151 @@ async fn the_user_starts_a_reviewer_or_any_agent_and_the_lead_gets_the_report() 
             .unwrap_err()
             .starts_with("usage: /task")
     );
+}
+
+fn tool_names(request: &azazel_ai::Request) -> Vec<String> {
+    let mut names: Vec<String> = request.tools.iter().map(|tool| tool.name.clone()).collect();
+    names.sort();
+    names
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typed_agent_corrects_a_refused_report_and_its_result_is_json() {
+    let mut bench = Bench::new(4, false).await;
+    let schema = json!({
+        "type": "object",
+        "properties": { "count": { "type": "integer" } },
+        "required": ["count"],
+        "additionalProperties": false
+    });
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "count the files", "model": "mock/w", "schema": schema }] }),
+    );
+    bench.lead_calls("t2", "read", json!({ "path": "agent://worker-1" }));
+    bench.mock.push("lead", MockStep::text("three files"));
+    bench.mock.push(
+        "w",
+        MockStep::tools("", &[("r1", "report", json!({ "result": { "count": "three" } }))]),
+    );
+    bench.mock.push(
+        "w",
+        MockStep::tools("", &[("r2", "report", json!({ "result": { "count": 3 } }))]),
+    );
+    bench.mock.push("w", MockStep::text("reported"));
+    let calls = bench.run("how many files?").await;
+
+    // The caller gets the value in a fenced block; `agent://` gives the value alone.
+    assert!(!calls[0].1, "{}", calls[0].2);
+    assert!(calls[0].2.starts_with("## worker-1 (done, "), "{}", calls[0].2);
+    assert!(
+        calls[0].2.ends_with("```json\n{\n  \"count\": 3\n}\n```"),
+        "{}",
+        calls[0].2
+    );
+    assert!(calls[1].2.contains("\"count\": 3"), "{}", calls[1].2);
+    assert!(!calls[1].2.contains("```"), "{}", calls[1].2);
+    let result = bench.team.result("worker-1").unwrap();
+    assert_eq!(result.state, MemberState::Done);
+    assert_eq!(result.json.as_deref(), Some("{\n  \"count\": 3\n}"));
+
+    // Only the typed agent is offered `report`, whatever its definition grants, and it is told
+    // to finish with it.
+    let requests = bench.mock.requests_for("w");
+    assert_eq!(requests.len(), 3);
+    assert_eq!(tool_names(&requests[0]), ["agent_send", "nap", "report"]);
+    let report = requests[0]
+        .tools
+        .iter()
+        .find(|tool| tool.name == "report")
+        .unwrap();
+    assert_eq!(report.schema["properties"]["result"], schema);
+    let identity = &requests[0].system[0].text;
+    assert!(identity.contains("finish by calling `report`"), "{identity}");
+    assert!(
+        !identity.contains("Your last message is your report"),
+        "{identity}"
+    );
+    assert!(!tool_names(&bench.mock.requests_for("lead")[0]).contains(&"report".to_string()));
+
+    // The refused report came back with what was wrong.
+    let refused = serde_json::to_string(requests[1].messages.last().unwrap()).unwrap();
+    assert!(
+        refused.contains("the result does not match the schema"),
+        "{refused}"
+    );
+    assert!(refused.contains("- /count: "), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_typed_agent_that_never_reports_fails_after_three_reminders() {
+    let mut bench = Bench::new(4, false).await;
+    // `counter` owes a typed result by its definition.
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "counter", "prompt": "count the files", "model": "mock/w" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("it did not report"));
+    for _ in 0..4 {
+        bench.mock.push("w", MockStep::text("there are three files"));
+    }
+    let calls = bench.run("how many files?").await;
+    assert!(calls[0].2.starts_with("## counter-1 (failed, "), "{}", calls[0].2);
+    assert!(
+        calls[0]
+            .2
+            .ends_with("The agent ended without a report. Its last message:\nthere are three files"),
+        "{}",
+        calls[0].2
+    );
+    assert_eq!(
+        bench.state("counter-1"),
+        MemberState::Failed("ended without a report".to_string())
+    );
+    assert_eq!(bench.team.result("counter-1").unwrap().json, None);
+
+    let requests = bench.mock.requests_for("w");
+    assert_eq!(requests.len(), 4);
+    assert_eq!(bench.mock.remaining("w"), 0);
+    let texts = user_texts(&requests[3].messages);
+    assert_eq!(texts.len(), 4, "{texts:?}");
+    for (n, reminder) in texts[1..].iter().enumerate() {
+        assert!(
+            reminder.starts_with("You have not handed in your result. Call `report`"),
+            "{reminder}"
+        );
+        assert!(
+            reminder.ends_with(&format!("(Reminder {} of 3.)", n + 1)),
+            "{reminder}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_schema_that_cannot_be_used_starts_no_agent() {
+    let mut bench = Bench::new(4, false).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "count", "schema": { "type": "nonsense" } }] }),
+    );
+    bench.lead_calls(
+        "t2",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "count", "schema": "an object" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("no luck"));
+    let calls = bench.run("count").await;
+    assert!(calls[0].1 && calls[1].1);
+    assert!(
+        calls[0]
+            .2
+            .starts_with("the result schema for `worker` cannot be used: "),
+        "{}",
+        calls[0].2
+    );
+    assert_eq!(calls[1].2, "the schema for `worker` must be a JSON Schema object");
+    assert_eq!(bench.team.list().len(), 1);
 }

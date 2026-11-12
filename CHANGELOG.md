@@ -99,6 +99,16 @@ GitHub are its section here.
 - `/diff` shows uncommitted changes file by file in the viewer; `/diff turn` and `/diff session` show what
   changed since your last prompt or since the session began.
 - `/commit [hint]` drafts a commit message, lets you edit it and commits as you. It never amends or pushes.
+- Typed results: give an agent a `schema` in a `task` call, or `output-schema` in its definition, and it hands
+  back JSON that matches. The value is checked, a mismatch is sent back for correction, and `agent://<id>`
+  returns the JSON.
+- `azazel -p --json-schema <FILE|JSON>` prints only JSON that matches the schema and exits 1 when the run
+  produced none.
+- Coordinator mode (`--coordinator`, `/coordinator on|off`, `[team] coordinator`): the lead plans and delegates
+  and has no tool that edits files or runs commands. A session remembers the mode.
+- Advisor (`[advisor] model`, `when = "stop"`): a second model reviews the lead's work before it stops and can
+  send it back for one more round. `/advise [question]` asks it on demand.
+- `azazel doctor` reports the advisor and coordinator settings.
 - `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
   `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
   configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
@@ -115,7 +125,8 @@ GitHub are its section here.
 - `Alt+Enter` messages are held by the UI and sent as real prompts (files attached, checkpoint, hooks).
 - `/reload` also re-reads skills, commands, agent definitions, rule files, hooks, key bindings and the theme.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
-- `/cost` also lists what side questions and commit drafts cost.
+- `/cost` also lists what side questions, commit drafts and the advisor cost.
+- `/tools` marks tools withheld in coordinator mode.
 - A reopened session comes back on the model and thinking level it last used (`[session] restore_model`);
   `--model` and `--thinking` win.
 - Naming, pinning or labelling a session no longer counts as using it.

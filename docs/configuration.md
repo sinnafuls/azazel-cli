@@ -121,6 +121,9 @@ thinking = "low"
 | | `micro_threshold` | `0.6` | Fraction of the window at which old tool results are elided |
 | `[team]` | `max_parallel` | `4` | Sub-agents running at once; see [team](team.md) |
 | | `max_depth` | `2` | How deep agents may spawn agents |
+| | `coordinator` | `false` | The lead only plans and delegates; see [coordinator mode](team.md#coordinator-mode) |
+| `[advisor]` | `model` | `[]` | Chain of the second model that reviews the lead's work; empty means no advisor; see [advisor](team.md#advisor) |
+| | `when` | `"off"` | `stop` reviews each time the lead is about to finish; `off` leaves the advisor to `/advise` |
 | `[verify]` | `commands` | `[]` | Check commands; empty means auto-detect; see [goals](goals.md) |
 | | `agent` | `true` | Run the verifier agent after the commands pass |
 | | `timeout_secs` | `900` | Time limit per command |
@@ -194,7 +197,7 @@ back. A project needs a trust decision when it has any of:
 - a project skill with `hooks` in its frontmatter
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
-`tools.shell`, `browser.path`, `editor.command`, `voice.record_command`, `voice.stt_command`, `voice.play_command`.
+`tools.shell`, `browser.path`, `editor.command`, `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it
@@ -244,6 +247,8 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--bare` | All six `--no-*` switches |
 | `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
+| `--coordinator` | Start in [coordinator mode](team.md#coordinator-mode): the lead plans and delegates |
+| `--json-schema <FILE\|JSON>` | With `-p`: the run must end in JSON that matches this schema, and only that JSON is printed; see [typed results](team.md#typed-results) |
 | `--tier <TIER>` | [Service tier](models-and-logins.md#service-tiers) of the requests: `priority`, `standard`, `economy` |
 | `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
@@ -253,7 +258,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--version`, `--help` | Print the version or the usage |
 
 `--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
-`--tier`, `--preset` and `--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+`--tier`, `--preset`, `--coordinator` and `--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
 unknown tier or preset) exits with status 2.

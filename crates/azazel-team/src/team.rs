@@ -17,9 +17,11 @@ use azazel_core::{
     ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionMode,
     PermissionState, PromptBuilder, Rule, SessionStore, ToolCaller, ToolRegistry,
 };
+use serde_json::Value;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 
+use crate::report::{NO_REPORT, REPORT_TOOL, ReportTool, Typed};
 use crate::worktree::{self, ApplyError, Worktree};
 
 /// Tools that manage other agents. A sub-agent gets them only as far as its definition allows.
@@ -125,13 +127,20 @@ pub struct SpawnRequest {
     /// Narrows the agent to these tools, within what its definition grants (a skill's
     /// `allowed-tools`). `None` leaves the definition's grant as it is.
     pub tools: Option<Vec<Rule>>,
+    /// A JSON Schema the agent's result must match; it then reports a value through `report`
+    /// instead of prose. `None` uses the definition's `output-schema`, if it has one.
+    pub schema: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finished {
     pub id: String,
     pub state: MemberState,
+    /// What the agent hands back, as its caller reads it: its last message, or for a typed
+    /// result the value in a fenced block, followed by what happened in its worktree.
     pub report: String,
+    /// The value of a typed result alone, as JSON text.
+    pub json: Option<String>,
     pub elapsed: Duration,
 }
 
@@ -183,9 +192,12 @@ struct Member {
     model: Option<Vec<ModelSpec>>,
     /// The tool grant of the request that started it.
     grant: Option<Vec<Rule>>,
+    /// The typed result it owes, when it was asked for one.
+    typed: Option<Arc<Typed>>,
     state: MemberState,
     handle: Option<AgentHandle>,
     report: Option<String>,
+    json: Option<String>,
     transcript: PathBuf,
     started: Instant,
     finished: Option<Instant>,
@@ -214,6 +226,7 @@ impl Member {
             id: self.info.id.clone(),
             state: self.state.clone(),
             report: self.report.clone().unwrap_or_default(),
+            json: self.json.clone(),
             elapsed: self.elapsed(),
         }
     }
@@ -233,6 +246,8 @@ struct Inner {
     gate: Arc<dyn Gate>,
     members: Mutex<Vec<Member>>,
     lead: RwLock<Option<Lead>>,
+    /// The typed result the lead owes (print mode's `--json-schema`).
+    lead_report: RwLock<Option<Arc<Typed>>>,
     lead_mail: AtomicBool,
     /// `(caller, the ids it waits for)` of every `agent_wait` in progress; `None` is all children.
     waiters: Mutex<Vec<(String, Option<Vec<String>>)>>,
@@ -243,12 +258,14 @@ struct Inner {
 
 /// The tools one sub-agent may use: what its definition grants, minus what it disallows and what
 /// the request that started it leaves out, with the orchestration tools limited to what its place
-/// in the team permits.
+/// in the team permits. An agent that owes a typed result is offered `report` whatever it is
+/// granted.
 struct MemberTools {
     registry: Arc<ToolRegistry>,
     def: Arc<AgentDef>,
     grant: Option<Vec<Rule>>,
     can_spawn: bool,
+    typed: Option<Arc<Typed>>,
 }
 
 impl ToolSource for MemberTools {
@@ -256,6 +273,10 @@ impl ToolSource for MemberTools {
         let mut tools = self.registry.tools(agent);
         tools.retain(|tool| {
             let name = tool.name();
+            // The agent's own `report` takes the place of any other tool of that name.
+            if name == REPORT_TOOL && self.typed.is_some() {
+                return false;
+            }
             if ORCHESTRATION_TOOLS.contains(&name) {
                 return name == "agent_send" || (self.can_spawn && !name.starts_with("worktree_"));
             }
@@ -268,6 +289,9 @@ impl ToolSource for MemberTools {
             };
             granted(&self.def.tools) && granted(&self.grant)
         });
+        if let Some(typed) = &self.typed {
+            tools.push(Arc::new(ReportTool(typed.clone())));
+        }
         tools
     }
 }
@@ -350,7 +374,7 @@ impl Inner {
     /// Creates the agent behind member `id`.
     async fn build(&self, id: &str) -> Result<AgentHandle, String> {
         let deps = &self.deps;
-        let (info, def, model, grant, worktree, transcript) = {
+        let (info, def, model, grant, typed, worktree, transcript) = {
             let members = self.members();
             let member = members
                 .iter()
@@ -361,6 +385,7 @@ impl Inner {
                 member.def.clone(),
                 member.model.clone(),
                 member.grant.clone(),
+                member.typed.clone(),
                 member.worktree.clone(),
                 member.transcript.clone(),
             )
@@ -402,6 +427,7 @@ impl Inner {
             def: def.clone(),
             grant,
             can_spawn,
+            typed,
         });
         // What the agent reaches through a script is what it is offered itself.
         if let Some(caller) = deps.services.get::<ToolCaller>() {
@@ -473,8 +499,9 @@ impl Inner {
         }
     }
 
-    /// Records the end of a piece of work of member `id` and hands the result on.
-    async fn finish(&self, id: &str, state: MemberState, report: String) {
+    /// Records the end of a piece of work of member `id` and hands the result on. `json` is the
+    /// value of a typed result; `report` then shows it.
+    async fn finish(&self, id: &str, state: MemberState, report: String, json: Option<String>) {
         let worktree = self
             .members()
             .iter()
@@ -508,6 +535,7 @@ impl Inner {
             };
             member.state = state;
             member.report = Some(report);
+            member.json = json;
             member.finished = Some(Instant::now());
             member.runs += 1;
             if worktree.is_some() {
@@ -554,11 +582,11 @@ impl Inner {
     /// The life of one sub-agent: wait for a slot, start, then follow what it does until it is
     /// shut down.
     async fn run_member(self: Arc<Self>, id: String, prompt: String) {
-        let Some(stop) = self
+        let Some((stop, typed)) = self
             .members()
             .iter()
             .find(|m| m.info.id == id)
-            .map(|m| m.stop.clone())
+            .map(|m| (m.stop.clone(), m.typed.clone()))
         else {
             return;
         };
@@ -568,12 +596,21 @@ impl Inner {
         };
         let Some(slot) = slot else {
             return self
-                .finish(&id, MemberState::Stopped, "stopped before it started".to_string())
+                .finish(
+                    &id,
+                    MemberState::Stopped,
+                    "stopped before it started".to_string(),
+                    None,
+                )
                 .await;
         };
         let handle = match self.build(&id).await {
             Ok(handle) => handle,
-            Err(why) => return self.finish(&id, MemberState::Failed(why.clone()), why).await,
+            Err(why) => {
+                return self
+                    .finish(&id, MemberState::Failed(why.clone()), why, None)
+                    .await;
+            }
         };
         let mut events = handle.subscribe();
         self.update(&id, |member| {
@@ -598,6 +635,12 @@ impl Inner {
                         slot = self.semaphore.clone().try_acquire_owned().ok();
                     }
                     said.clear();
+                    // Picked up again with a message: the earlier result no longer stands.
+                    if let Some(typed) = &typed
+                        && self.members().iter().any(|m| m.info.id == id && m.runs > 0)
+                    {
+                        typed.reset();
+                    }
                     self.update(&id, |member| {
                         member.mail = false;
                         member.finished = None;
@@ -627,16 +670,33 @@ impl Inner {
                 AgentEvent::Idle { stop: reason } => {
                     slot = None;
                     let stopped = reason == StopReason::Aborted || self.stop_requested(&id);
-                    let state = if stopped {
-                        MemberState::Stopped
-                    } else {
-                        MemberState::Done
+                    let said = std::mem::take(&mut said);
+                    let json = typed.as_ref().and_then(|typed| typed.json());
+                    let (state, report) = match (&json, stopped) {
+                        (Some(json), _) => {
+                            let state = if stopped {
+                                MemberState::Stopped
+                            } else {
+                                MemberState::Done
+                            };
+                            (state, format!("```json\n{json}\n```"))
+                        }
+                        (None, true) => (MemberState::Stopped, said),
+                        (None, false) if typed.is_some() => {
+                            let mut report = format!("The agent {NO_REPORT}.");
+                            if !said.trim().is_empty() {
+                                report.push_str(&format!(" Its last message:\n{said}"));
+                            }
+                            (MemberState::Failed(NO_REPORT.to_string()), report)
+                        }
+                        (None, false) => (MemberState::Done, said),
                     };
-                    self.finish(&id, state, std::mem::take(&mut said)).await;
+                    self.finish(&id, state, report, json).await;
                 }
                 AgentEvent::Failed { error } => {
                     slot = None;
-                    self.finish(&id, MemberState::Failed(error.clone()), error).await;
+                    self.finish(&id, MemberState::Failed(error.clone()), error, None)
+                        .await;
                 }
                 _ => {}
             }
@@ -709,6 +769,7 @@ impl Team {
                 gate: Arc::new(gate),
                 members: Mutex::default(),
                 lead: RwLock::default(),
+                lead_report: RwLock::default(),
                 lead_mail: AtomicBool::new(false),
                 waiters: Mutex::default(),
                 semaphore,
@@ -725,6 +786,32 @@ impl Team {
 
     pub fn defs(&self) -> &AgentDefs {
         &self.inner.deps.defs
+    }
+
+    /// Makes the lead owe a typed result (print mode's `--json-schema`).
+    pub fn expect_lead_report(&self, typed: Arc<Typed>) {
+        *self
+            .inner
+            .lead_report
+            .write()
+            .unwrap_or_else(PoisonError::into_inner) = Some(typed);
+    }
+
+    /// The typed result agent `id` owes, if it was asked for one.
+    pub fn typed(&self, id: &str) -> Option<Arc<Typed>> {
+        if id == LEAD {
+            return self
+                .inner
+                .lead_report
+                .read()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone();
+        }
+        self.inner
+            .members()
+            .iter()
+            .find(|member| member.info.id == id)
+            .and_then(|member| member.typed.clone())
     }
 
     /// Changes of the roster and everything sub-agents do, from now on.
@@ -786,6 +873,12 @@ impl Team {
                 parent.id, request.def
             ));
         }
+        let typed = match request.schema.or_else(|| def.output_schema.clone()) {
+            Some(schema) => Some(Arc::new(Typed::new(schema).map_err(|why| {
+                format!("the result schema for `{}` cannot be used: {why}", def.name)
+            })?)),
+            None => None,
+        };
         let mut event = Event::AgentSpawn {
             parent: parent.clone(),
             def: def.name.clone(),
@@ -852,9 +945,11 @@ impl Team {
             def,
             model: request.model,
             grant: request.tools,
+            typed,
             state: MemberState::Queued,
             handle: None,
             report: None,
+            json: None,
             transcript,
             started: Instant::now(),
             finished: None,

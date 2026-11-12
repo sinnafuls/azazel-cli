@@ -16,6 +16,7 @@ pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
 pub mod models;
+pub mod orchestration;
 pub mod pkg;
 pub mod print;
 pub mod routing;

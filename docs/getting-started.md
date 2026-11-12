@@ -153,6 +153,7 @@ azazel -p "list the TODO comments" --output json
 | `--mode <mode>` | Permission mode for the run: `plan`, `ask`, `accept-edits`, `auto` |
 | `--trust` | Trust the project's configuration for this run |
 | `--max-cost <USD>` | Stop once the run has spent this much |
+| `--json-schema <FILE\|JSON>` | Print only JSON that matches this schema; exit 1 when the run produced none (see [typed results](team.md#typed-results)) |
 | `--tools`, `--system-prompt`, `--bare`, ... | See [command-line flags](configuration.md#command-line-flags) |
 
 Nobody is there to approve a tool call in print mode, so a call that would prompt is denied with

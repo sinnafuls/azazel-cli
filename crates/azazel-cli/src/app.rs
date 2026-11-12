@@ -2,6 +2,7 @@
 //! sessions on top of them. Every mode starts here.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, PoisonError, RwLock};
 use std::time::Duration;
 
@@ -32,7 +33,9 @@ use azazel_core::{
     Outcome, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore, StartSource,
     ToolCaller, Ui,
 };
-use azazel_team::{Checker, GoalExt, GoalSettings, Goals, Team, TeamDeps, TeamExt};
+use azazel_team::{
+    Advisor, Checker, Coordinator, GoalExt, GoalSettings, Goals, LeadTools, Team, TeamDeps, TeamExt, Typed,
+};
 use azazel_tools::CoreToolsExt;
 
 use crate::cli::{Cli, Discovery};
@@ -59,6 +62,14 @@ pub struct App {
     pub load_options: LoadOptions,
     /// Hooks are off for this run (`--no-hooks`, `AZAZEL_HOOKS_DISABLED`).
     pub hooks_disabled: bool,
+    /// Whether the lead only plans and delegates (`/coordinator`).
+    pub coordinator: Arc<Coordinator>,
+    /// The typed result this run owes (`--json-schema`).
+    pub report: Option<Arc<Typed>>,
+    /// What the lead is offered: every tool, fewer in coordinator mode, `report` for a typed run.
+    lead_tools: Arc<LeadTools>,
+    /// `--coordinator` was given and no session has been opened yet.
+    coordinator_forced: AtomicBool,
     /// A `--no-session` run: its transcripts are deleted when it ends.
     ephemeral: bool,
     /// `--model` and `--thinking` were given: they win over what a reopened session last used.
@@ -439,6 +450,7 @@ impl App {
         );
         agent_defs.apply_overrides(&config.agents);
         let agent_defs = Arc::new(agent_defs);
+        let coordinator = crate::orchestration::load(&registry, &config, cli)?;
         registry.load(&TeamExt {
             defs: agent_defs.clone(),
             max_depth: config.team.max_depth,
@@ -653,6 +665,23 @@ impl App {
             posix_shell: shell.is_posix(),
         }));
         services.insert(team.clone());
+        let report = cli
+            .json_schema
+            .as_deref()
+            .map(|value| crate::orchestration::result_schema(value, &paths.cwd))
+            .transpose()?;
+        if let Some(typed) = &report {
+            team.expect_lead_report(typed.clone());
+        }
+        let lead_tools = Arc::new(LeadTools::new(
+            registry.tools.clone(),
+            coordinator.clone(),
+            report.clone(),
+        ));
+        // A script run for the lead reaches what the lead is offered, and no more.
+        if let Some(caller) = services.get::<ToolCaller>() {
+            caller.scope_agent("lead", lead_tools.clone());
+        }
         let side_costs = Arc::new(SideCosts::default());
         services.insert(Arc::new(Side {
             router: router.clone(),
@@ -686,6 +715,14 @@ impl App {
                 });
             }
         }));
+        let recorder = current.clone();
+        coordinator.on_change(Arc::new(move |on| {
+            if let Some(session) = recorder.read().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                session.append(EntryKind::ModeChange {
+                    mode: azazel_team::coordinator::entry(on),
+                });
+            }
+        }));
 
         Ok(App {
             paths,
@@ -701,6 +738,10 @@ impl App {
             thinking,
             load_options: options,
             hooks_disabled,
+            coordinator,
+            report,
+            lead_tools,
+            coordinator_forced: AtomicBool::new(cli.coordinator),
             ephemeral: cli.no_session,
             model_flag: !cli.model.is_empty(),
             thinking_flag: cli.thinking.is_some(),
@@ -863,6 +904,11 @@ impl App {
             crate::accounts::restore(&session, &self.credentials);
         }
         let session_id = session.id();
+        crate::orchestration::open_session(
+            &self.coordinator,
+            &session,
+            self.coordinator_forced.swap(false, Ordering::SeqCst),
+        );
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Some(session.clone());
         // Extensions that need the transcript (hooks) find the open session here.
         self.registry.services.insert(session.clone());
@@ -890,7 +936,7 @@ impl App {
         let lead = Agent::spawn(AgentConfig {
             system: self.registry.prompt.render(&info).await,
             info,
-            tools: self.registry.tools.clone(),
+            tools: self.lead_tools.clone(),
             chain,
             thinking,
             router: self.router.clone(),
@@ -920,6 +966,9 @@ impl App {
         }))));
         if let Some(goals) = services.get::<Goals>() {
             goals.attach(lead.clone(), session.clone(), checkpoints.clone());
+        }
+        if let Some(advisor) = services.get::<Advisor>() {
+            advisor.attach(&lead, session.clone(), checkpoints.clone());
         }
         Ok(Active {
             session,

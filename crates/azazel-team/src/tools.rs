@@ -76,6 +76,7 @@ struct TaskAgent {
     name: Option<String>,
     model: Option<OneOrMany>,
     isolation: Option<String>,
+    schema: Option<Value>,
 }
 
 fn yes() -> bool {
@@ -115,6 +116,12 @@ fn spawn_request(agent: TaskAgent) -> Result<SpawnRequest, String> {
     if agent.prompt.trim().is_empty() {
         return Err(format!("the prompt for `{}` is empty", agent.agent));
     }
+    if agent.schema.as_ref().is_some_and(|schema| !schema.is_object()) {
+        return Err(format!(
+            "the schema for `{}` must be a JSON Schema object",
+            agent.agent
+        ));
+    }
     Ok(SpawnRequest {
         def: agent.agent,
         prompt: agent.prompt,
@@ -122,6 +129,7 @@ fn spawn_request(agent: TaskAgent) -> Result<SpawnRequest, String> {
         model,
         isolation,
         tools: None,
+        schema: agent.schema,
     })
 }
 
@@ -138,7 +146,8 @@ impl Tool for TaskTool {
          prompt, so each prompt must stand on its own: the goal, the paths that matter, constraints, and what \
          to report back. All agents of one call run in parallel. With `wait` (the default) the call returns \
          every agent's report; with `wait: false` it returns their ids at once and each report arrives later \
-         as a message."
+         as a message. Give an agent a `schema` when you need its result as data: it then reports a JSON \
+         value that matches the schema instead of prose."
     }
 
     fn schema(&self) -> Value {
@@ -158,7 +167,11 @@ impl Tool for TaskTool {
                                 "description": "Model or fallback chain, overriding the definition",
                                 "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
                             },
-                            "isolation": { "type": "string", "enum": ["none", "worktree"] }
+                            "isolation": { "type": "string", "enum": ["none", "worktree"] },
+                            "schema": {
+                                "type": "object",
+                                "description": "JSON Schema the agent's result must match; the result is then JSON"
+                            }
                         },
                         "required": ["agent", "prompt"]
                     }

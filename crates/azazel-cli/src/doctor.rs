@@ -5,6 +5,7 @@ use std::time::Duration;
 use azazel_ai::providers::presets;
 use azazel_ai::{Catalog, ModelSpec, RetryPolicy, Router};
 use azazel_core::checkpoint::Checkpoints;
+use azazel_core::config::AdvisorWhen;
 use azazel_core::packages::Packages;
 use azazel_core::process::Shell;
 use azazel_core::skills::{discover, standard_roots};
@@ -242,6 +243,26 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
                 unpriced.join(", ")
             ));
         }
+    }
+
+    let advisor: Vec<String> = router
+        .resolve(&config.advisor.model)
+        .iter()
+        .map(ToString::to_string)
+        .collect();
+    match (config.advisor.when, advisor.is_empty()) {
+        (AdvisorWhen::Stop, true) => report.warn(
+            "advisor: `when = \"stop\"` is set, but [advisor] model names no model; nothing is reviewed",
+        ),
+        (AdvisorWhen::Stop, false) => report.ok(format!(
+            "advisor: {} reviews the lead's work each time it is about to stop",
+            advisor.join(", ")
+        )),
+        (AdvisorWhen::Off, false) => report.ok(format!("advisor: {} answers /advise", advisor.join(", "))),
+        (AdvisorWhen::Off, true) => {}
+    }
+    if config.team.coordinator {
+        report.ok("coordinator mode: on for new sessions (the lead plans and delegates)");
     }
 
     let shell = Shell::resolve(&config.tools.shell);

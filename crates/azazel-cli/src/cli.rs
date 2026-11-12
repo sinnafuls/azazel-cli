@@ -483,6 +483,15 @@ pub struct Cli {
     #[arg(long, value_name = "TIER", global = true)]
     pub tier: Option<String>,
 
+    /// Coordinator mode: the lead plans and delegates, and gets no tool that edits or runs commands
+    #[arg(long, global = true)]
+    pub coordinator: bool,
+
+    /// With -p: the run must end in JSON that matches this schema (a file, or the schema itself);
+    /// only that JSON is printed
+    #[arg(long = "json-schema", value_name = "FILE|JSON", requires = "print")]
+    pub json_schema: Option<String>,
+
     /// Use the models of a saved preset ([presets.<name>]) for this run
     #[arg(long, value_name = "NAME", global = true)]
     pub preset: Option<String>,

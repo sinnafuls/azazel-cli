@@ -17,6 +17,7 @@ use azazel_core::{
 };
 use tokio_util::sync::CancellationToken;
 
+use crate::report::{REPORT_TOOL, Reminder};
 use crate::team::{LEAD, MemberState, SpawnRequest, Team};
 use crate::tools::{
     AgentListTool, AgentSendTool, AgentStopTool, AgentWaitTool, TaskTool, WorktreeApplyTool,
@@ -54,14 +55,22 @@ impl SystemPartProvider for MemberIdentity {
             }
         }
         let parent = agent.parent.as_deref().unwrap_or(LEAD);
-        text.push_str(&format!(
-            "\n\nYou are agent `{}`, working for `{parent}`. Your last message is your report, and the report \
-             is all `{parent}` sees of your work: make it complete and self-contained.",
-            agent.id
-        ));
-        let worktree = self
-            .services
-            .get::<Team>()
+        let team = self.services.get::<Team>();
+        if team.as_ref().is_some_and(|team| team.typed(&agent.id).is_some()) {
+            text.push_str(&format!(
+                "\n\nYou are agent `{}`, working for `{parent}`. Your result is data, not prose: finish by \
+                 calling `{REPORT_TOOL}` with a value that matches its schema. That value is all `{parent}` \
+                 sees of your work, so put everything it needs into it.",
+                agent.id
+            ));
+        } else {
+            text.push_str(&format!(
+                "\n\nYou are agent `{}`, working for `{parent}`. Your last message is your report, and the \
+                 report is all `{parent}` sees of your work: make it complete and self-contained.",
+                agent.id
+            ));
+        }
+        let worktree = team
             .and_then(|team| team.member(&agent.id))
             .and_then(|(_, dir)| dir);
         if let Some(dir) = worktree {
@@ -72,6 +81,23 @@ impl SystemPartProvider for MemberIdentity {
             ));
         }
         Some(text)
+    }
+}
+
+/// Tells a lead that owes a typed result (print mode's `--json-schema`) how to hand it in.
+struct LeadReport(Arc<Services>);
+
+#[async_trait]
+impl SystemPartProvider for LeadReport {
+    async fn render(&self, agent: &AgentInfo) -> Option<String> {
+        if agent.depth > 0 {
+            return None;
+        }
+        self.0.get::<Team>()?.typed(&agent.id)?;
+        Some(format!(
+            "The result of this run is data, not prose: finish by calling `{REPORT_TOOL}` with a value that \
+             matches its schema. Only that value is printed."
+        ))
     }
 }
 
@@ -115,7 +141,8 @@ impl SystemPartProvider for TeamPart {
     }
 }
 
-/// `agent://<id>` is an agent's latest report; `agent://<id>/transcript` what it did, condensed.
+/// `agent://<id>` is an agent's latest report (for a typed result, the JSON value);
+/// `agent://<id>/transcript` what it did, condensed.
 struct AgentScheme;
 
 #[async_trait]
@@ -132,7 +159,8 @@ impl Scheme for AgentScheme {
             .ok_or_else(|| format!("no agent named `{id}`"))?;
         match part {
             "" => match team.result(id) {
-                Some(result) => Ok(vec![Block::text(result.report)]),
+                // A typed result is read as the value alone, so it parses.
+                Some(result) => Ok(vec![Block::text(result.json.unwrap_or(result.report))]),
                 None => Err(format!(
                     "agent `{id}` has not reported yet; agent://{id}/transcript shows its progress"
                 )),
@@ -187,6 +215,7 @@ impl Runner {
             model: None,
             isolation: None,
             tools,
+            schema: None,
         };
         let id = team.spawn(parent, request, false).await?;
         let results = team
@@ -317,6 +346,7 @@ impl CommandHandler for PlaytestCommand {
             model: None,
             isolation: None,
             tools: None,
+            schema: None,
         };
         match team.spawn(lead.info(), request, true).await {
             Ok(id) => CommandOutcome::Show(format!(
@@ -488,6 +518,7 @@ impl CommandHandler for ReviewCommand {
             model: None,
             isolation: None,
             tools: None,
+            schema: None,
         };
         start_for_user(ctx, request).await
     }
@@ -515,6 +546,7 @@ fn task_request(args: &str) -> Result<SpawnRequest, String> {
         model: None,
         isolation: None,
         tools: None,
+        schema: None,
     })
 }
 
@@ -610,6 +642,7 @@ impl Extension for TeamExt {
                 services: services.clone(),
             }),
         );
+        r.system_part("identity", Arc::new(LeadReport(services.clone())));
         r.system_part(
             "team",
             Arc::new(TeamPart {
@@ -662,6 +695,7 @@ impl Extension for TeamExt {
             argument_hint: Some("<agent> [name=<id>] <prompt>".to_string()),
             handler: Arc::new(TaskCommand(self.defs.clone())),
         });
+        r.on(EventKind::Stop, Arc::new(Reminder));
         r.on(EventKind::Context, Arc::new(StaleFiles));
         r.on(EventKind::PermissionRequest, Arc::new(ApprovalWatch));
         Ok(())
