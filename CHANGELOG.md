@@ -138,6 +138,8 @@ GitHub are its section here.
 ### Fixed
 
 - On Windows, a multi-line paste no longer sends the prompt at its first line break.
+- An MCP server that fails the moment it is started (a missing program) is reported as failed instead of
+  staying `connecting`.
 - The approval prompt for a destructive command starts on "Deny", so a stray Enter cannot approve it.
 
 ## [0.2.0] - 2026-11-12

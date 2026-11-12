@@ -354,15 +354,18 @@ impl Inner {
         self.read().get(name).map(|entry| entry.config.clone())
     }
 
-    /// Starts (or restarts) the task that keeps `name` connected.
+    /// Starts (or restarts) the task that keeps `name` connected. The task is started while the
+    /// entry is locked and already `Connecting`, so its first change of state (a server that fails
+    /// at once) cannot be overwritten.
     fn spawn(self: &Arc<Self>, name: &str) {
-        let task = tokio::spawn(supervise(Arc::downgrade(self), name.to_string()));
+        let me = Arc::downgrade(self);
         self.update(name, |entry| {
-            if let Some(previous) = entry.task.replace(task) {
+            if let Some(previous) = entry.task.take() {
                 previous.abort();
             }
             entry.live = None;
             entry.state = State::Connecting;
+            entry.task = Some(tokio::spawn(supervise(me, name.to_string())));
         });
     }
 
