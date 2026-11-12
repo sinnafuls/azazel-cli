@@ -217,6 +217,12 @@ async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json(
     let silent = bench.run("local x = 1").await;
     assert_eq!(silent.text_content(), "(the script printed and returned nothing)");
 
+    // Nothing in the VM reaches the disk or a process: files go through `tools`.
+    let reach = bench
+        .run("return type(require) .. ' ' .. type(io) .. ' ' .. type(os.execute) .. ' ' .. type(azazel)")
+        .await;
+    assert_eq!(reach.text_content(), "nil nil nil nil");
+
     // What was printed before a failure is kept, and a syntax error names the line.
     let failed = bench.run("print('step 1')\nerror('no such thing')").await;
     assert!(failed.is_error);

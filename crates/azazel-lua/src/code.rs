@@ -286,6 +286,8 @@ return setmetatable({}, {
 
 /// The globals of a script: `tools`, `print` and `json`.
 fn install(lua: &Lua, run: &Arc<Run>) -> mlua::Result<()> {
+    // Luau's `require` reads source files from disk; a script reaches files through `tools` only.
+    lua.globals().raw_set("require", mlua::Nil)?;
     let state = run.clone();
     let call = lua.create_async_function(move |lua, (name, args): (String, mlua::Value)| {
         let state = state.clone();

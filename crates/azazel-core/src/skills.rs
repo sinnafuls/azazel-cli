@@ -267,12 +267,14 @@ pub fn invocation_text(skill: &Skill, args: &str) -> String {
     format!("Skill directory: {}\n\n{body}", skill.dir.display())
 }
 
-/// A skill's `allowed-tools` as permission rules, or `None` when it names none. Skills written
+/// A skill's `allowed-tools` as permission rules, or `None` when it lists nothing. Skills written
 /// for Claude Code name its tools (`Read`, `Bash(git diff:*)`); those become azazel's. An entry
-/// that is not a rule is left out.
+/// that is not a rule is left out, so a list in which nothing is a rule allows nothing: a
+/// mistyped limit must not turn into no limit.
 pub fn allowed_rules(skill: &Skill) -> Option<Vec<Rule>> {
+    let listed = skill.allowed_tools.as_ref().filter(|list| !list.is_empty())?;
     let mut rules: Vec<Rule> = Vec::new();
-    for entry in skill.allowed_tools.as_ref()? {
+    for entry in listed {
         match entry.parse::<Rule>() {
             Ok(mut rule) => {
                 rule.tool = crate::agents::compat_tool(&rule.tool).to_string();
@@ -286,7 +288,7 @@ pub fn allowed_rules(skill: &Skill) -> Option<Vec<Rule>> {
             ),
         }
     }
-    (!rules.is_empty()).then_some(rules)
+    Some(rules)
 }
 
 /// The agent a user's prompt goes to.
@@ -1075,6 +1077,12 @@ mod tests {
                 "read".parse().unwrap()
             ]
         );
+
+        let mut mistyped = f.skill.clone();
+        mistyped.allowed_tools = Some(vec!["shell(".to_string()]);
+        assert_eq!(allowed_rules(&mistyped), Some(Vec::new()));
+        mistyped.allowed_tools = Some(Vec::new());
+        assert_eq!(allowed_rules(&mistyped), None);
 
         f.allow("lead", false);
         f.allow("lead", false);

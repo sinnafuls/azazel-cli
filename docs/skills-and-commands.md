@@ -53,6 +53,8 @@ A skill that breaks one of these rules is skipped, never loaded half-way, and re
 - **`context: fork`:** the list is the sub-agent's tool grant. It gets only the tools the list names, and a rule with a pattern holds its tool to that pattern. The list narrows what the agent definition grants and never adds to it: `allowed-tools: read` on an agent that may read and write gives an agent that can only read.
 - **`context: inline`** (the default): each rule is an allow rule from the moment the skill is loaded until the run ends, so the agent is not asked about those calls. The rules end when the agent that loaded the skill stops, when a sub-agent finishes, and at your next prompt. `/permissions` shows them with the source `skill <name>, while <agent> works`. Deny rules, plan mode, protected paths and the push guard still apply.
 
+An entry that is not a rule (`tool` or `tool(pattern)`) is left out with a warning in the log. A list in which nothing is a rule allows nothing, so a mistyped limit on a `fork` skill gives its agent no tools rather than all of them.
+
 An inline skill's rules widen what runs without asking, so they count for built-in, user and package skills always, and for a project's own skills (also those under its `.claude/skills` and `.agents/skills`) only when the project is trusted.
 
 With `context: fork`, an agent that may not start the named agent (for example a sub-agent without `spawns`) follows the instructions itself instead.
