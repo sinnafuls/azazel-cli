@@ -64,26 +64,32 @@ impl Typed {
 
     /// What is wrong with `value`, one line per violation; empty when it matches.
     fn violations(&self, value: &Value) -> Vec<String> {
-        self.validator
-            .iter_errors(value)
+        let mut errors = self.validator.iter_errors(value);
+        let mut violations: Vec<String> = errors
+            .by_ref()
             .take(MAX_VIOLATIONS)
             .map(|error| {
                 let at = error.instance_path().to_string();
                 let at = if at.is_empty() { "(the value)" } else { at.as_str() };
                 format!("{at}: {error}")
             })
-            .collect()
+            .collect();
+        if errors.next().is_some() {
+            violations.push("(there are more violations than are listed)".to_string());
+        }
+        violations
     }
 
     /// Takes `value` as the result when it matches the schema; otherwise returns the violations.
     /// A later report replaces an earlier one.
     pub fn submit(&self, value: Value) -> Result<(), Vec<String>> {
         let mut violations = self.violations(&value);
-        // Models sometimes send the value as a string of JSON; that is the value they mean.
+        // Models sometimes send an object or a list as a string of JSON. That is the value they
+        // mean, and what is wrong inside it is what they need to hear.
         let value = match &value {
             Value::String(text) if !violations.is_empty() => match serde_json::from_str::<Value>(text) {
-                Ok(parsed) if self.violations(&parsed).is_empty() => {
-                    violations.clear();
+                Ok(parsed) if parsed.is_object() || parsed.is_array() => {
+                    violations = self.violations(&parsed);
                     parsed
                 }
                 _ => value,
@@ -145,11 +151,19 @@ impl Tool for ReportTool {
     }
 
     fn schema(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": { "result": self.0.schema() },
-            "required": ["result"]
-        })
+        let mut result = self.0.schema().clone();
+        let mut schema = json!({ "type": "object", "required": ["result"] });
+        // The value sits one level down. What the schema defines for its own references moves
+        // to the top with it, where `#/$defs/...` still finds it.
+        if let Some(inner) = result.as_object_mut() {
+            for key in ["$schema", "$defs", "definitions"] {
+                if let Some(moved) = inner.remove(key) {
+                    schema[key] = moved;
+                }
+            }
+        }
+        schema["properties"] = json!({ "result": result });
+        schema
     }
 
     fn access(&self, _: &Value) -> Access {
@@ -272,10 +286,54 @@ mod tests {
         let typed = typed();
         assert_eq!(typed.submit(json!("{\"files\": [], \"count\": 2}")), Ok(()));
         assert_eq!(typed.value(), Some(json!({ "files": [], "count": 2 })));
+        // What is wrong is said about the value inside the string, not about the string.
+        let inside = typed
+            .submit(json!("{\"files\": [], \"count\": \"two\"}"))
+            .unwrap_err();
+        assert!(
+            inside.len() == 1 && inside[0].starts_with("/count: "),
+            "{inside:?}"
+        );
         // Where the schema wants a string, a string stays one.
-        let text = Typed::new(json!({ "type": "string" })).unwrap();
+        let text = Typed::new(json!({ "type": "string", "maxLength": 8 })).unwrap();
         assert_eq!(text.submit(json!("{\"a\": 1}")), Ok(()));
         assert_eq!(text.value(), Some(json!("{\"a\": 1}")));
+        let long = text.submit(json!("[1, 2, 3, 4]")).unwrap_err();
+        assert!(long[0].starts_with("(the value): "), "{long:?}");
+    }
+
+    #[test]
+    fn a_long_list_of_violations_says_that_it_was_cut() {
+        let numbers = Typed::new(json!({ "type": "array", "items": { "type": "integer" } })).unwrap();
+        let words: Vec<String> = (0..30).map(|n| format!("w{n}")).collect();
+        let violations = numbers.submit(json!(words)).unwrap_err();
+        assert_eq!(violations.len(), MAX_VIOLATIONS + 1);
+        assert_eq!(
+            violations.last().unwrap(),
+            "(there are more violations than are listed)"
+        );
+    }
+
+    #[test]
+    fn the_schemas_own_definitions_stay_reachable_in_the_tool_schema() {
+        let schema = json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object",
+            "properties": { "owner": { "$ref": "#/$defs/person" } },
+            "required": ["owner"],
+            "$defs": { "person": { "type": "object", "required": ["name"] } }
+        });
+        let tool = ReportTool(Arc::new(Typed::new(schema).unwrap()));
+        let offered = tool.schema();
+        assert_eq!(offered["$defs"]["person"]["required"], json!(["name"]));
+        assert_eq!(offered["properties"]["result"].get("$defs"), None);
+        assert_eq!(offered["properties"]["result"].get("$schema"), None);
+        // The schema the model is shown means what the validator checks.
+        let shown = jsonschema::validator_for(&offered).unwrap();
+        assert!(shown.is_valid(&json!({ "result": { "owner": { "name": "ann" } } })));
+        assert!(!shown.is_valid(&json!({ "result": { "owner": {} } })));
+        assert!(tool.0.submit(json!({ "owner": {} })).is_err());
+        assert_eq!(tool.0.submit(json!({ "owner": { "name": "ann" } })), Ok(()));
     }
 
     #[test]

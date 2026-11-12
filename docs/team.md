@@ -152,8 +152,8 @@ a value that matches it.
   `agent://<id>` returns the JSON alone, so it parses.
 - An agent that stops without a report is reminded, up to three times. If it still has not reported, it
   fails with `ended without a report`.
-- A schema that is not valid JSON Schema fails the `task` call before any agent starts. A schema may not
-  refer to a file or a URL (`$ref` to somewhere else): nothing is fetched for a schema.
+- A schema that is not valid JSON Schema fails the `task` call before any agent starts. References inside
+  the schema (`#/$defs/...`) work. A schema may not refer to a file or a URL: nothing is fetched for a schema.
 
 Print mode uses the same mechanism for the lead:
 
