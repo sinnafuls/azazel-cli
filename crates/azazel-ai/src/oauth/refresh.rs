@@ -25,14 +25,22 @@ fn fields(extra: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// The access token of `provider`'s stored login and the account fields kept with it, refreshed
-/// first when the token is about to expire.
+/// The access token of the login stored under `key` (an account of `provider`) and the account
+/// fields kept with it, refreshed first when the token is about to expire.
 pub(crate) async fn fresh_login(
     credentials: &Credentials,
     provider: &ProviderConfig,
+    key: &str,
 ) -> Result<(String, BTreeMap<String, String>), AiError> {
     let id = &provider.id;
-    let expired = || AiError::Auth(format!("login for {id} has expired: run `azazel login {id}`"));
+    let expired = || {
+        AiError::Auth(match key.strip_prefix(id.as_str()).and_then(|rest| rest.strip_prefix('#')) {
+            Some(label) => {
+                format!("login for {id} (account {label}) has expired: run `azazel login {id} --as {label}`")
+            }
+            None => format!("login for {id} has expired: run `azazel login {id}`"),
+        })
+    };
     // The stored login when its access token is good for at least `margin` more milliseconds.
     let usable = |entry: Option<&Credential>, margin: u64| match entry {
         Some(Credential::OAuth {
@@ -44,7 +52,7 @@ pub(crate) async fn fresh_login(
         _ => None,
     };
     let margin = REFRESH_MARGIN.as_millis() as u64;
-    if let Some(login) = usable(credentials.load().get(id), margin) {
+    if let Some(login) = usable(credentials.load().get(key), margin) {
         return Ok(login);
     }
 
@@ -58,7 +66,7 @@ pub(crate) async fn fresh_login(
         ))
     })?;
     let mut entries = credentials.load();
-    let stored = entries.get(id);
+    let stored = entries.get(key);
     if let Some(login) = usable(stored, margin) {
         return Ok(login);
     }
@@ -124,7 +132,7 @@ pub(crate) async fn fresh_login(
                 Credential::OAuth { access, extra, .. } => (access.clone(), fields(extra)),
                 Credential::ApiKey { key } => (key.clone(), BTreeMap::new()),
             };
-            entries.insert(id.clone(), renewed);
+            entries.insert(key.to_string(), renewed);
             credentials.write_entries(&entries).map_err(|e| {
                 AiError::Auth(format!(
                     "could not write {}: {e}",

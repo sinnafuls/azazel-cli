@@ -14,7 +14,8 @@ use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, Usage, WireApi};
 use crate::wire::openai_chat::{
-    self, ErrorInfo, STREAM_ENDED, data_url, parse_arguments, request_headers, system_text, temperature,
+    self, ErrorInfo, STREAM_ENDED, data_url, parse_arguments, request_headers, service_tier, system_text,
+    temperature,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
 use crate::wire::{Decoder, apply_extra_body};
@@ -50,6 +51,9 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     }
     if let Some(key) = &req.cache_key {
         body.insert("prompt_cache_key".into(), json!(key));
+    }
+    if let Some(tier) = service_tier(req) {
+        body.insert("service_tier".into(), json!(tier));
     }
     if let ThinkingParam::Effort(effort) = thinking_param(provider.api, model, req.thinking) {
         body.insert("reasoning".into(), json!({"effort": effort, "summary": "auto"}));

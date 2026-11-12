@@ -12,12 +12,12 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
 use crate::catalog::{Cost, ModelInfo};
-use crate::credentials::Auth;
+use crate::credentials::{Auth, now_ms};
 use crate::error::AiError;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{
-    AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Usage, WireApi,
+    AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Tier, Usage, WireApi,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
 use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
@@ -78,9 +78,22 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     {
         body.insert("temperature".into(), temperature(value));
     }
+    if let Some(tier) = service_tier(req) {
+        body.insert("service_tier".into(), json!(tier));
+    }
     let mut body = Value::Object(body);
     apply_extra_body(&mut body, provider);
     body
+}
+
+/// The `service_tier` member for the tier a request asks for: priority processing, or the cheaper
+/// flex processing. The standard tier is the API's default and is not named.
+pub(super) fn service_tier(req: &Request) -> Option<&'static str> {
+    match req.tier? {
+        Tier::Priority => Some("priority"),
+        Tier::Economy => Some("flex"),
+        Tier::Standard => None,
+    }
 }
 
 /// Anthropic models cache a prompt only up to a marked block. One mark on the last text of the
@@ -604,6 +617,8 @@ pub(super) struct ErrorInfo {
     /// Lower-cased `code`, `type` and `error_type` values, each followed by a space.
     tags: String,
     message: String,
+    /// When a used-up allowance is back, in Unix seconds (the ChatGPT backend says so).
+    resets_at: Option<u64>,
 }
 
 impl ErrorInfo {
@@ -613,6 +628,7 @@ impl ErrorInfo {
             status: None,
             tags: String::new(),
             message: String::new(),
+            resets_at: None,
         };
         match error {
             Value::Object(fields) => {
@@ -638,6 +654,14 @@ impl ErrorInfo {
                     Some(message) => info.message = message.to_string(),
                     None => info.message = error.to_string(),
                 }
+                // Sent as a number or as its digits in a string.
+                let seconds = |name: &str| match fields.get(name)? {
+                    Value::Number(number) => number.as_u64(),
+                    Value::String(text) => text.trim().parse().ok(),
+                    _ => None,
+                };
+                info.resets_at = seconds("resets_at")
+                    .or_else(|| seconds("resets_in_seconds").map(|left| now_ms() / 1000 + left));
             }
             Value::String(message) => info.message = message.clone(),
             other => info.message = other.to_string(),
@@ -678,6 +702,13 @@ impl ErrorInfo {
         if tagged("overloaded") || (status.is_none_or(|s| s >= 500) && message.contains("overloaded")) {
             return Some(AiError::Overloaded);
         }
+        // A ChatGPT subscription whose usage window is full: another account or model may answer.
+        if tagged("usage_limit_reached") {
+            return Some(AiError::Quota {
+                resets_at: self.resets_at,
+                message: self.message.clone(),
+            });
+        }
         // Retrying cannot help until the account is topped up; `Auth` moves on to the next model.
         if status == Some(402)
             || tagged("insufficient_quota")
@@ -698,6 +729,7 @@ impl ErrorInfo {
             status,
             tags,
             message,
+            ..
         } = self;
         if let Some(status) = status {
             return match status {

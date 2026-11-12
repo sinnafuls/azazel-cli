@@ -1081,6 +1081,7 @@ mod tests {
             max_output: Some(2000),
             temperature: Some(0.5),
             cache_key: None,
+            tier: None,
         }
     }
 

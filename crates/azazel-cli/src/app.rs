@@ -282,7 +282,16 @@ impl App {
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;
 
-        let credentials = Arc::new(Credentials::new(paths.auth_file()));
+        if let Some(name) = &cli.preset {
+            crate::routing::launch_preset(&mut config, name)
+                .map_err(|e| UsageError(format!("--preset: {e}")))?;
+        }
+        let tier = match &cli.tier {
+            Some(tier) => crate::routing::parse_tier(tier).map_err(|e| UsageError(format!("--tier: {e}")))?,
+            None => None,
+        };
+
+        let credentials = Arc::new(Credentials::new(paths.auth_file()).configured(&config.providers));
         let thinking = match &cli.thinking {
             Some(level) => level
                 .parse::<ThinkingLevel>()
@@ -344,6 +353,15 @@ impl App {
         registry.load(&crate::settings::SettingsExt {
             providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
             credentials: credentials.clone(),
+            home_config: paths.home_config(),
+        })?;
+        registry.load(&crate::accounts::AccountsExt {
+            providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
+            credentials: credentials.clone(),
+            home_config: paths.home_config(),
+        })?;
+        registry.load(&crate::routing::RoutingExt {
+            presets: config.presets.clone(),
             home_config: paths.home_config(),
         })?;
         registry.load(&PermissionsExt {
@@ -521,7 +539,10 @@ impl App {
             cooldown: Duration::from_secs(config.retry.cooldown_secs),
             ..RetryPolicy::default()
         };
-        let router = Arc::new(Router::new(providers, catalog, config.roles.clone(), policy));
+        let router = Arc::new(
+            Router::new(providers, catalog, config.roles.clone(), policy).with_accounts(credentials.clone()),
+        );
+        router.set_tier(tier);
         // Models named on the command line are this run's `default` role, so that the roles
         // built on it (`smol`, `verify`, ...) and the agents using them have a model too.
         let chain = if cli.model.is_empty() {
@@ -685,6 +706,9 @@ impl App {
             Open::File(path) => (Arc::new(SessionStore::open(&path)?), true),
             Open::Store(store) => (store, true),
         };
+        if resumed {
+            crate::accounts::restore(&session, &self.credentials);
+        }
         let session_id = session.id();
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Some(session.clone());
         // Extensions that need the transcript (hooks) find the open session here.

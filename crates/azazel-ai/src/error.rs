@@ -15,6 +15,14 @@ pub enum AiError {
         #[serde(default, with = "opt_secs")]
         retry_after: Option<Duration>,
     },
+    /// The account's usage allowance is used up. Asking again on the same account does not help
+    /// before `resets_at` (Unix seconds), but another account or model may answer.
+    #[error("usage limit reached: {message}")]
+    Quota {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<u64>,
+        message: String,
+    },
     #[error("provider overloaded")]
     Overloaded,
     #[error("the request exceeds the model's context window")]
@@ -35,9 +43,11 @@ impl AiError {
         match self {
             AiError::Network(_) | AiError::Overloaded | AiError::RateLimit { .. } => true,
             AiError::Server { status, .. } => *status >= 500,
-            AiError::Auth(_) | AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Aborted => {
-                false
-            }
+            AiError::Auth(_)
+            | AiError::Quota { .. }
+            | AiError::ContextOverflow
+            | AiError::InvalidRequest(_)
+            | AiError::Aborted => false,
         }
     }
 }
@@ -84,6 +94,13 @@ mod tests {
                 },
                 serde_json::json!({"kind": "server", "detail": {"status": 502, "body": "bad gateway"}}),
             ),
+            (
+                AiError::Quota {
+                    resets_at: Some(1_800_000_000),
+                    message: "weekly limit".into(),
+                },
+                serde_json::json!({"kind": "quota", "detail": {"resets_at": 1_800_000_000u64, "message": "weekly limit"}}),
+            ),
         ];
         for (error, json) in cases {
             assert_eq!(serde_json::to_value(&error).unwrap(), json);
@@ -110,5 +127,12 @@ mod tests {
         );
         assert!(!AiError::ContextOverflow.is_retryable());
         assert!(!AiError::Auth(String::new()).is_retryable());
+        assert!(
+            !AiError::Quota {
+                resets_at: None,
+                message: String::new()
+            }
+            .is_retryable()
+        );
     }
 }

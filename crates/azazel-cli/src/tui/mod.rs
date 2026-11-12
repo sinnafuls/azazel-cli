@@ -519,10 +519,14 @@ impl Tui {
         } else {
             model
         };
+        let tier = match self.app.router.tier() {
+            Some(tier) => format!("{} · ", crate::routing::tier_word(tier)),
+            None => String::new(),
+        };
         let right = format!(
             "{} {}{}",
             theme.paint(Role::Accent, "⬢"),
-            muted(&format!("{model} · ")),
+            muted(&format!("{model} · {tier}")),
             theme.paint(Role::Thinking, &status.thinking.to_string()),
         );
         status::render(&left, &right, width, theme)
@@ -717,6 +721,16 @@ impl Tui {
             }
             AgentEvent::Fallback { from, to } => {
                 self.info(&format!("{from} is unavailable; falling back to {to}"))
+            }
+            AgentEvent::Account {
+                provider,
+                from,
+                to,
+                until,
+                limit,
+            } => self.info(&crate::accounts::switch_line(&provider, &from, &to, until, &limit)),
+            AgentEvent::TierDropped { model, tier } => {
+                self.info(&crate::routing::tier_dropped_line(&model, tier))
             }
             AgentEvent::ToolStart { call_id, name, input } => {
                 self.tools.push(RunningTool {

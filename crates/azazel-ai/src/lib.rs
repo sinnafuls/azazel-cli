@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod credentials;
 pub mod error;
+pub mod limits;
 pub mod models_file;
 pub mod oauth;
 pub mod provider;
@@ -17,8 +18,9 @@ pub mod types;
 pub mod wire;
 
 pub use catalog::{Catalog, Cost, ModelInfo, ModelOverride};
-pub use credentials::{Auth, Credential, Credentials};
+pub use credentials::{Account, Auth, Credential, Credentials, DEFAULT_ACCOUNT};
 pub use error::AiError;
+pub use limits::{AccountLimits, LimitStore, Window};
 pub use models_file::ModelsFile;
 pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
@@ -27,5 +29,5 @@ pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request, Role,
-    StopReason, SystemPart, ThinkingLevel, ToolSpec, Usage, WireApi,
+    StopReason, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
 };

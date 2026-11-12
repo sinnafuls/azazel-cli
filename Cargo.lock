@@ -739,6 +739,7 @@ dependencies = [
  "futures",
  "ignore",
  "image",
+ "jiff",
  "mimalloc",
  "reqwest",
  "serde",

@@ -1,6 +1,6 @@
 //! Commands an agent accepts and the events it emits.
 
-use azazel_ai::{Block, Message, ModelRef, ModelSpec, StopReason, StreamEvent, ThinkingLevel};
+use azazel_ai::{Block, Message, ModelRef, ModelSpec, StopReason, StreamEvent, ThinkingLevel, Tier};
 use serde::{Serialize, Serializer, ser::SerializeStruct};
 use serde_json::Value;
 
@@ -95,6 +95,20 @@ pub enum AgentEvent {
     Fallback {
         from: ModelRef,
         to: ModelRef,
+    },
+    /// Account `from` of `provider` is out of allowance until `until` (Unix seconds); requests
+    /// now use account `to`. `limit` names what ran out (`5-hour limit`).
+    Account {
+        provider: String,
+        from: String,
+        to: String,
+        until: u64,
+        limit: String,
+    },
+    /// `model` refused the service tier and is asked without one from now on.
+    TierDropped {
+        model: ModelRef,
+        tier: Tier,
     },
     Compaction {
         tokens_before: u64,

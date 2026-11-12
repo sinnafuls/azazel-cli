@@ -1,5 +1,6 @@
 //! The `azazel` command-line harness: argument parsing, run modes and the embedding [`Builder`].
 
+pub mod accounts;
 pub mod app;
 pub mod cli;
 pub mod doctor;
@@ -12,6 +13,7 @@ pub mod memory;
 pub mod models;
 pub mod pkg;
 pub mod print;
+pub mod routing;
 pub mod rpc;
 pub mod settings;
 mod tui;
@@ -168,10 +170,12 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     let goal = match &cli.command {
         Some(Sub::Init) => return init::run(&paths).await,
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
-        Some(Sub::Login { provider, key }) => {
-            return login::login(provider.as_deref(), *key, &paths).await;
+        Some(Sub::Login { provider, key, label }) => {
+            return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
         }
-        Some(Sub::Logout { provider }) => return login::logout(provider, &paths),
+        Some(Sub::Logout { provider, account }) => {
+            return login::logout(provider, account.as_deref(), &paths);
+        }
         Some(Sub::Completions { shell }) => {
             let mut command = <Cli as clap::CommandFactory>::command();
             clap_complete::generate(*shell, &mut command, "azazel", &mut std::io::stdout());
@@ -321,7 +325,8 @@ fn provider_setup(
             return None;
         }
     };
-    Some((config, providers, azazel_ai::Credentials::new(paths.auth_file())))
+    let credentials = azazel_ai::Credentials::new(paths.auth_file()).configured(&config.providers);
+    Some((config, providers, credentials))
 }
 
 /// `azazel goal`: sets the objective, lets the lead work until the goal is settled, and reports

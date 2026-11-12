@@ -28,7 +28,7 @@ fn open(paths: &Paths, trusted: bool) -> Result<Arc<MemoryStore>, String> {
         env: std::env::vars().collect(),
     };
     let config = Config::load(paths, &options).map_err(|e| e.to_string())?.config;
-    let credentials = Arc::new(Credentials::new(paths.auth_file()));
+    let credentials = Arc::new(Credentials::new(paths.auth_file()).configured(&config.providers));
     Ok(MemoryExt::open(paths, &config, credentials)?.store())
 }
 

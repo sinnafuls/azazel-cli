@@ -210,6 +210,10 @@ pub struct ProviderSettings {
     /// `[providers.<id>.oauth]`: sign in with an authorisation server instead of a key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub oauth: Option<OAuthSettings>,
+    /// The label of the stored account to use when a session selects none; the default account
+    /// when unset. See `Credentials::prefer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
 }
 
 /// Looks an environment variable up; the process environment in production.

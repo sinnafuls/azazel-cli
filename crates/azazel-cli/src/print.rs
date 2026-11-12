@@ -119,6 +119,22 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
                 eprintln!("{error}");
                 break EXIT_FAILED;
             }
+            // Both change what the rest of the run costs or runs on, so they are said even here.
+            AgentEvent::Account {
+                provider,
+                from,
+                to,
+                until,
+                limit,
+            } if format == OutputFormat::Text => {
+                eprintln!(
+                    "{}",
+                    crate::accounts::switch_line(&provider, &from, &to, until, &limit)
+                );
+            }
+            AgentEvent::TierDropped { model, tier } if format == OutputFormat::Text => {
+                eprintln!("{}", crate::routing::tier_dropped_line(&model, tier));
+            }
             _ => {}
         }
     };

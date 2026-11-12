@@ -1,7 +1,7 @@
 //! Resolves fallback chains and drives retries, cooldowns and fallback across providers.
 
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -9,10 +9,13 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog::{Catalog, ModelInfo};
+use crate::credentials::Credentials;
 use crate::error::AiError;
+use crate::limits::LimitStore;
 use crate::provider::Provider;
+use crate::providers::http::blocked_until;
 use crate::stream::EventStream;
-use crate::types::{ModelRef, ModelSpec, Request};
+use crate::types::{ModelRef, ModelSpec, Request, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
@@ -53,6 +56,19 @@ pub enum RouteEvent {
         to: ModelRef,
         error: AiError,
     },
+    /// Account `from` of `provider` is out of allowance until `until` (Unix seconds); the same
+    /// model is asked again on account `to`.
+    Account {
+        provider: String,
+        from: String,
+        to: String,
+        until: u64,
+        /// What ran out, as a person calls it: `5-hour limit`, or `usage limit` when the
+        /// provider did not say.
+        limit: String,
+    },
+    /// `model` refused the service tier; it is asked again, and from now on, without one.
+    TierDropped { model: ModelRef, tier: Tier },
 }
 
 /// Per-request routing state: failures counted so far and an optional event sink. Keep one for the
@@ -109,6 +125,24 @@ pub struct Router {
     /// What each provider's model list said, asked once per process when the catalogue does not
     /// know a model (a subscription backend serves models no snapshot lists).
     listed: tokio::sync::Mutex<HashMap<String, Option<Arc<Vec<ModelInfo>>>>>,
+    /// The stored accounts requests are made with; without it no account is ever switched.
+    accounts: Option<Arc<Credentials>>,
+    limits: Arc<LimitStore>,
+    /// The service tier agents ask for on their own requests.
+    tier: RwLock<Option<Tier>>,
+    /// Models that refused a tier; they are asked without one for the rest of the process.
+    tierless: Mutex<HashSet<String>>,
+}
+
+/// Whether `error` is a model saying it does not take the service tier of the request.
+fn refuses_tier(error: &AiError) -> bool {
+    let AiError::InvalidRequest(message) = error else {
+        return false;
+    };
+    let message = message.to_ascii_lowercase();
+    ["service_tier", "service tier", "speed", "fast mode"]
+        .iter()
+        .any(|needle| message.contains(needle))
 }
 
 impl Router {
@@ -125,7 +159,43 @@ impl Router {
             policy,
             cooldowns: Mutex::default(),
             listed: tokio::sync::Mutex::default(),
+            accounts: None,
+            limits: Arc::default(),
+            tier: RwLock::default(),
+            tierless: Mutex::default(),
         }
+    }
+
+    /// Lets the router move work to another stored account of a provider when the one in use
+    /// runs out of allowance. The limit store becomes the one the credentials feed.
+    pub fn with_accounts(mut self, credentials: Arc<Credentials>) -> Self {
+        self.limits = credentials.limits().clone();
+        self.accounts = Some(credentials);
+        self
+    }
+
+    /// What the providers reported about each account's usage windows, and which accounts are
+    /// out of allowance.
+    pub fn limits(&self) -> Arc<LimitStore> {
+        self.limits.clone()
+    }
+
+    /// The service tier agents put on their requests; `None` is the provider's default.
+    pub fn tier(&self) -> Option<Tier> {
+        *self.tier.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Sets the tier for requests from now on. The standard tier is the same as none.
+    pub fn set_tier(&self, tier: Option<Tier>) {
+        *self.tier.write().unwrap_or_else(PoisonError::into_inner) = tier.filter(|t| *t != Tier::Standard);
+    }
+
+    /// Whether `model` refused a service tier earlier and is now asked without one.
+    pub fn is_tierless(&self, model: &ModelRef) -> bool {
+        self.tierless
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&model.key())
     }
 
     pub fn catalog(&self) -> &Catalog {
@@ -268,24 +338,51 @@ impl Router {
             return Err(error);
         };
         let info = self.model_info_discovered(model).await;
-        let req: Cow<'_, Request> = match model.thinking {
-            Some(level) if level != req.thinking => Cow::Owned(Request {
-                thinking: level,
+        let thinking = model.thinking.unwrap_or(req.thinking);
+        let tier = req.tier.filter(|_| !self.is_tierless(model));
+        let mut req: Cow<'_, Request> = match thinking != req.thinking || tier != req.tier {
+            true => Cow::Owned(Request {
+                thinking,
+                tier,
                 ..req.clone()
             }),
-            _ => Cow::Borrowed(req),
+            false => Cow::Borrowed(req),
         };
         loop {
             if cancel.is_cancelled() {
                 return Err(AiError::Aborted);
             }
+            // Read before the request: by the time it fails, another agent may have moved the
+            // provider to a different account.
+            let account = self
+                .accounts
+                .as_ref()
+                .and_then(|accounts| accounts.selected(&model.provider));
             let error = match provider.stream(&info, &req, cancel.clone()).await {
                 Ok(stream) => return Ok(stream),
+                Err(e) if req.tier.is_some() && refuses_tier(&e) => {
+                    if let Some(tier) = req.to_mut().tier.take() {
+                        self.tierless
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .insert(model.key());
+                        state.emit(RouteEvent::TierDropped {
+                            model: model.clone(),
+                            tier,
+                        });
+                    }
+                    continue;
+                }
                 Err(e @ (AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Aborted)) => {
                     return Err(e);
                 }
                 Err(e) => e,
             };
+            if let Some(account) = account
+                && self.next_account(&model.provider, &account, &error, state)
+            {
+                continue;
+            }
             let attempt = state.record(model, &error, self.policy.max_attempts);
             if attempt >= self.policy.max_attempts {
                 return Err(error);
@@ -304,9 +401,62 @@ impl Router {
         }
     }
 
+    /// After `error` on stored account `account` of `provider`: when the error means the account
+    /// is out of allowance, marks it so and selects another account that is not. Returns whether
+    /// the same model should be asked again at once. An account is switched for no other reason.
+    fn next_account(&self, provider: &str, account: &str, error: &AiError, state: &RouteState) -> bool {
+        let Some(accounts) = &self.accounts else {
+            return false;
+        };
+        let Some(until) = blocked_until(error) else {
+            return false;
+        };
+        // A key from the environment or the configuration answers the same whatever is selected.
+        if !accounts.uses_store(provider) {
+            return false;
+        }
+        self.limits.block(provider, account, until);
+        let open = |label: &str| self.limits.blocked_until(provider, label).is_none();
+        // Another agent's request ran into the same limit first and already moved on.
+        if accounts
+            .selected(provider)
+            .is_some_and(|now| now != account && open(&now))
+        {
+            return true;
+        }
+        let Some(next) = accounts
+            .accounts(provider)
+            .into_iter()
+            .map(|other| other.label)
+            .find(|label| label != account && open(label))
+        else {
+            return false;
+        };
+        accounts.select(provider, &next);
+        state.emit(RouteEvent::Account {
+            provider: provider.to_string(),
+            from: account.to_string(),
+            to: next,
+            until,
+            limit: match self.limits.exhausted(provider, account) {
+                Some(window) => window.label(),
+                None => "usage limit".to_string(),
+            },
+        });
+        true
+    }
+
     /// Records a failure that arrived after streaming had begun; call [`Router::stream_with`] again
     /// with the same `state` to retry or fall back. Returns true when the same model will be retried.
     pub fn report_stream_failure(&self, model: &ModelRef, error: &AiError, state: &mut RouteState) -> bool {
+        if let Some(account) = self
+            .accounts
+            .as_ref()
+            .and_then(|accounts| accounts.selected(&model.provider))
+            && self.next_account(&model.provider, &account, error, state)
+        {
+            return true;
+        }
         let attempt = state.record(model, error, self.policy.max_attempts);
         if attempt < self.policy.max_attempts {
             state.emit(RouteEvent::Retry {
@@ -476,6 +626,7 @@ mod tests {
             events.push(match e {
                 RouteEvent::Retry { attempt, .. } => format!("retry {attempt}"),
                 RouteEvent::Fallback { from, to, .. } => format!("fallback {from} -> {to}"),
+                other => format!("{other:?}"),
             });
         }
         assert_eq!(events, ["retry 1", "retry 2", "fallback mock/a -> mock/b"]);
@@ -634,5 +785,267 @@ mod tests {
             _ = tokio::time::sleep(Duration::from_millis(20)) => cancel.cancel(),
         }
         assert!(matches!(call.await, Err(AiError::Aborted)));
+    }
+
+    /// A provider whose answer depends on the stored account the request is made with: the
+    /// accounts whose key is in `spent` are out of allowance.
+    struct Accounted {
+        credentials: Arc<Credentials>,
+        config: crate::providers::presets::ProviderConfig,
+        spent: Mutex<Vec<(&'static str, AiError)>>,
+        keys: Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for Accounted {
+        fn id(&self) -> &str {
+            &self.config.id
+        }
+
+        async fn stream(
+            &self,
+            model: &ModelInfo,
+            _: &Request,
+            _: CancellationToken,
+        ) -> Result<EventStream, AiError> {
+            let crate::credentials::Auth::ApiKey(key) = self.credentials.resolve(&self.config).await? else {
+                panic!("the test accounts are keys");
+            };
+            self.keys.lock().unwrap().push(format!("{}:{key}", model.id));
+            if let Some((_, error)) = self.spent.lock().unwrap().iter().find(|(spent, _)| *spent == key) {
+                return Err(error.clone());
+            }
+            let message = crate::types::Message::assistant(
+                vec![crate::types::Block::text(format!("from {key}"))],
+                crate::types::AssistantMeta {
+                    provider: self.config.id.clone(),
+                    model: model.id.clone(),
+                    api: crate::types::WireApi::OpenAiChat,
+                    usage: Default::default(),
+                    stop: crate::types::StopReason::Stop,
+                    response_id: None,
+                    duration_ms: 0,
+                },
+            );
+            Ok(Box::pin(futures::stream::iter([StreamEvent::Done { message }])))
+        }
+
+        async fn list_models(&self) -> Result<Vec<ModelInfo>, AiError> {
+            Ok(Vec::new())
+        }
+    }
+
+    fn quota() -> AiError {
+        AiError::Quota {
+            resets_at: None,
+            message: "the 5-hour limit is used up".into(),
+        }
+    }
+
+    /// A router over one provider with the accounts `default` (key `k-default`) and `work`
+    /// (key `k-work`), and over the scripted `mock` provider as a fallback.
+    fn two_accounts(
+        dir: &std::path::Path,
+        spent: Vec<(&'static str, AiError)>,
+    ) -> (Router, Arc<Accounted>, Arc<MockProvider>) {
+        use crate::credentials::{Credential, account_key};
+        let credentials = Arc::new(Credentials::with_env(
+            dir.join("auth.json"),
+            Arc::new(|_: &str| None),
+        ));
+        for label in ["default", "work"] {
+            let key = format!("k-{label}");
+            credentials
+                .store(&account_key("acme", label), Credential::ApiKey { key })
+                .unwrap();
+        }
+        let accounted = Arc::new(Accounted {
+            credentials: credentials.clone(),
+            config: crate::providers::presets::ProviderConfig {
+                requires_key: true,
+                ..crate::providers::presets::ProviderConfig::new(
+                    "acme",
+                    crate::types::WireApi::OpenAiChat,
+                    "http://x",
+                )
+            },
+            spent: Mutex::new(spent),
+            keys: Mutex::default(),
+        });
+        let mock = Arc::new(MockProvider::new());
+        let router = Router::new(
+            vec![accounted.clone(), mock.clone()],
+            Catalog::default(),
+            BTreeMap::new(),
+            policy(),
+        )
+        .with_accounts(credentials);
+        (router, accounted, mock)
+    }
+
+    #[tokio::test]
+    async fn a_used_up_account_hands_over_to_the_next_and_the_same_model_is_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, accounted, mock) = two_accounts(dir.path(), vec![("k-default", quota())]);
+        mock.push("b", MockStep::text("never"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let c = chain(&["acme/a", "mock/b"]);
+
+        let (model, stream) = r
+            .stream_with(
+                &c,
+                &Request::default(),
+                CancellationToken::new(),
+                &mut RouteState::with_events(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "acme/a");
+        assert_eq!(final_text(stream).await, "from k-work");
+        assert_eq!(*accounted.keys.lock().unwrap(), ["a:k-default", "a:k-work"]);
+        match rx.try_recv().unwrap() {
+            RouteEvent::Account {
+                provider,
+                from,
+                to,
+                until,
+                limit,
+            } => {
+                assert_eq!((provider.as_str(), from.as_str(), to.as_str()), ("acme", "default", "work"));
+                // No reset time was given: the account is left alone for a quarter of an hour.
+                let wait = until - crate::credentials::now_ms() / 1000;
+                assert!((890..=900).contains(&wait), "{wait}");
+                assert_eq!(limit, "usage limit");
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(rx.try_recv().is_err());
+        assert!(r.limits().blocked_until("acme", "default").is_some());
+        assert_eq!(r.limits().blocked_until("acme", "work"), None);
+
+        // Work stays on the account it moved to.
+        let (_, stream) = r
+            .stream(&c, &Request::default(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "from k-work");
+        assert_eq!(accounted.keys.lock().unwrap().len(), 3);
+        assert!(mock.requests_for("b").is_empty());
+    }
+
+    #[tokio::test]
+    async fn with_every_account_used_up_the_chain_falls_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, accounted, mock) =
+            two_accounts(dir.path(), vec![("k-default", quota()), ("k-work", quota())]);
+        mock.push("b", MockStep::text("from b"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let (model, stream) = r
+            .stream_with(
+                &chain(&["acme/a", "mock/b"]),
+                &Request::default(),
+                CancellationToken::new(),
+                &mut RouteState::with_events(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/b");
+        assert_eq!(final_text(stream).await, "from b");
+        // Each account was asked once; a used-up allowance is not retried.
+        assert_eq!(*accounted.keys.lock().unwrap(), ["a:k-default", "a:k-work"]);
+        let events: Vec<RouteEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(matches!(events[0], RouteEvent::Account { .. }), "{events:?}");
+        assert!(
+            matches!(&events[1], RouteEvent::Fallback { error: AiError::Quota { .. }, .. }),
+            "{events:?}"
+        );
+        assert_eq!(events.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_rate_limit_retries_on_the_same_account() {
+        let dir = tempfile::tempdir().unwrap();
+        let short = AiError::RateLimit {
+            retry_after: Some(Duration::from_millis(1)),
+        };
+        let (r, accounted, _) = two_accounts(dir.path(), vec![("k-default", short)]);
+        let result = r
+            .stream(&chain(&["acme/a"]), &Request::default(), CancellationToken::new())
+            .await;
+        assert!(matches!(result, Err(AiError::RateLimit { .. })));
+        assert_eq!(
+            *accounted.keys.lock().unwrap(),
+            ["a:k-default", "a:k-default", "a:k-default"]
+        );
+        assert_eq!(r.limits().blocked_until("acme", "default"), None);
+
+        // A wait of more than a minute is a used-up allowance in all but name.
+        let dir = tempfile::tempdir().unwrap();
+        let long = AiError::RateLimit {
+            retry_after: Some(Duration::from_secs(3 * 3600)),
+        };
+        let (r, accounted, _) = two_accounts(dir.path(), vec![("k-default", long)]);
+        let (_, stream) = r
+            .stream(&chain(&["acme/a"]), &Request::default(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "from k-work");
+        assert_eq!(*accounted.keys.lock().unwrap(), ["a:k-default", "a:k-work"]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_tier_is_dropped_for_that_model_and_the_request_is_sent_again() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push(
+            "a",
+            MockStep::fail(AiError::InvalidRequest(
+                "HTTP 400: Unsupported parameter: 'service_tier'".into(),
+            )),
+        );
+        mock.push("a", MockStep::text("standard"));
+        mock.push("a", MockStep::text("again"));
+        mock.push("b", MockStep::text("fast"));
+        let r = router(mock.clone(), &[]);
+        r.set_tier(Some(Tier::Standard));
+        assert_eq!(r.tier(), None);
+        r.set_tier(Some(Tier::Priority));
+        let req = Request {
+            tier: r.tier(),
+            ..Request::default()
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let (_, stream) = r
+            .stream_with(
+                &chain(&["mock/a"]),
+                &req,
+                CancellationToken::new(),
+                &mut RouteState::with_events(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "standard");
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(RouteEvent::TierDropped { tier: Tier::Priority, .. })
+        ));
+        for model in ["mock/a", "mock/b"] {
+            let (_, stream) = r
+                .stream(&chain(&[model]), &req, CancellationToken::new())
+                .await
+                .unwrap();
+            drop(stream);
+        }
+        let tiers: Vec<Option<Tier>> = mock.requests().iter().map(|(_, sent)| sent.tier).collect();
+        assert_eq!(tiers, [Some(Tier::Priority), None, None, Some(Tier::Priority)]);
+        assert!(r.is_tierless(&ModelRef::new("mock", "a")));
+
+        // Without a tier on the request, the same words are an ordinary invalid request.
+        mock.push("c", MockStep::fail(AiError::InvalidRequest("bad speed".into())));
+        let plain = r
+            .stream(&chain(&["mock/c"]), &Request::default(), CancellationToken::new())
+            .await;
+        assert!(matches!(plain, Err(AiError::InvalidRequest(_))));
     }
 }
