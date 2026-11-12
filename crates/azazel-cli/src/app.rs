@@ -686,7 +686,7 @@ impl App {
         services.insert(Arc::new(Side {
             router: router.clone(),
             prompt: registry.prompt.clone(),
-            tools: registry.tools.clone(),
+            tools: lead_tools.clone(),
             costs: side_costs.clone(),
         }));
         // What the run has spent, for the cost cap: every agent of the team, the lead included,

@@ -5,15 +5,14 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use azazel_agent::AgentInfo;
 use azazel_agent::tool::tool_spec;
+use azazel_agent::{AgentInfo, ToolSource};
 use azazel_ai::{
     AiError, Block, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, ThinkingLevel, Usage,
 };
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
-use crate::ext::ToolRegistry;
 use crate::prompt::PromptBuilder;
 
 /// How a side question is framed for the model when it is asked with the lead's prompt.
@@ -77,7 +76,9 @@ pub struct SideAnswer {
 pub struct Side {
     pub router: Arc<Router>,
     pub prompt: Arc<PromptBuilder>,
-    pub tools: Arc<ToolRegistry>,
+    /// The tools of the agent the request is framed for: for the lead, what it is offered now
+    /// (coordinator mode withholds some), so the request matches the cached prefix.
+    pub tools: Arc<dyn ToolSource>,
     pub costs: Arc<SideCosts>,
 }
 
@@ -122,7 +123,7 @@ impl Side {
     async fn request(&self, question: &SideQuestion<'_>) -> Request {
         let mut messages = question.context.clone();
         let (system, tools, text) = if question.framed {
-            let tools = azazel_agent::ToolSource::tools(self.tools.as_ref(), question.agent);
+            let tools = self.tools.tools(question.agent);
             (
                 self.prompt.render(question.agent).await,
                 tools.iter().map(|tool| tool_spec(tool.as_ref())).collect(),
@@ -204,7 +205,7 @@ mod tests {
         Side {
             router: Arc::new(router),
             prompt,
-            tools: Arc::new(ToolRegistry::default()),
+            tools: Arc::new(crate::ext::ToolRegistry::default()),
             costs: Arc::new(SideCosts::default()),
         }
     }

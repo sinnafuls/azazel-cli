@@ -155,3 +155,39 @@ fn a_side_question_is_answered_while_the_lead_works_and_leaves_no_trace() {
         .collect();
     assert_eq!(said, ["write the migration", "the migration is written"]);
 }
+
+#[test]
+fn in_coordinator_mode_a_side_question_carries_the_tools_the_lead_is_offered() {
+    let sandbox = Sandbox::new();
+    let script = json!({ "lead": [
+        { "delay_ms": 1500, "reply": { "text": "planned" } },
+        { "reply": { "text": "Nothing yet." } }
+    ] });
+    let output = sandbox
+        .azazel(&script)
+        .env("AZAZEL_TEST_BTW", "what is done?")
+        .args(["-p", "plan the work", "--output", "json", "--coordinator"])
+        .args(["--set", "session.auto_name=false", "--no-memory"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let requests = sandbox.requests();
+    assert_eq!(requests.len(), 2);
+    let names = |request: &Value| -> Vec<String> {
+        request["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|tool| tool["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let lead = names(&requests[0]);
+    assert!(lead.contains(&"task".to_string()), "{lead:?}");
+    assert!(!lead.contains(&"write".to_string()), "{lead:?}");
+    // Same tools as the lead's request, so the side request reuses its cached prefix.
+    assert_eq!(names(&requests[1]), lead);
+}
