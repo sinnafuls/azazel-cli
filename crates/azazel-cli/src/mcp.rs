@@ -1,4 +1,7 @@
-//! `azazel mcp …`: list, add, remove, approve and import MCP servers, and log in to remote ones.
+//! `azazel mcp …`: list, add, remove, approve and import MCP servers, log in to remote ones, and
+//! serve azazel as one.
+
+pub mod serve;
 
 use std::collections::BTreeMap;
 use std::io::{IsTerminal, Write};
@@ -277,6 +280,8 @@ pub async fn run(action: &McpAction, paths: &Paths, trusted: bool, approve_all: 
             trusted,
         ),
         McpAction::Import { client, yes } => run_import(paths, client.as_deref(), *yes),
+        // Handled before this is called: it needs more than the paths.
+        McpAction::Serve => Err("`mcp serve` is not available here".to_string()),
         McpAction::List => {
             let manager = manager(paths, trusted);
             manager.start();

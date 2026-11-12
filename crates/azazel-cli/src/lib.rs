@@ -6,6 +6,7 @@ pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
+pub mod headless;
 pub mod hooks;
 pub mod init;
 pub mod login;
@@ -96,7 +97,7 @@ fn init_logging(paths: &Paths, debug: bool) -> Option<tracing_appender::non_bloc
 
 /// Whether this run may execute what the project's configuration asks for. A project that has
 /// such configuration and no recorded decision is asked about once, when a person is present.
-fn project_trust(cli: &Cli, paths: &Paths, interactive: bool) -> bool {
+pub(crate) fn project_trust(cli: &Cli, paths: &Paths, interactive: bool) -> bool {
     if cli.trust {
         return true;
     }
@@ -236,6 +237,10 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Update { check }) => return update::run(&paths, *check).await,
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),
         Some(Sub::Skills { action }) => return pkg::run_skills(action, &paths),
+        #[cfg(feature = "mcp")]
+        Some(Sub::Mcp {
+            action: cli::McpAction::Serve,
+        }) => return mcp::serve::run(extensions).await,
         #[cfg(feature = "mcp")]
         Some(Sub::Mcp { action }) => return mcp::run(action, &paths, trusted, cli.trust).await,
         #[cfg(feature = "memory")]
