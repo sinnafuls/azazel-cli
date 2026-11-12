@@ -121,6 +121,7 @@ fn spawn_request(agent: TaskAgent) -> Result<SpawnRequest, String> {
         name: agent.name,
         model,
         isolation,
+        tools: None,
     })
 }
 

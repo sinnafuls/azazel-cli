@@ -211,6 +211,7 @@ impl Tui {
             match skills.get(skill_name).filter(|skill| skill.user_invocable) {
                 Some(skill) => {
                     skills.mark_used(&skill);
+                    azazel_core::skills::allow_for_prompt(&self.app.registry.services, &skill);
                     self.prompt_on(invocation_text(&skill, args), skill.model.clone())
                         .await;
                 }

@@ -3,15 +3,18 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput};
 use azazel_ai::{Block, ModelSpec};
 use serde_json::{Value, json};
 
+use crate::ext::{Event, EventHandler, EventKind, ExtCtx, Outcome};
 use crate::frontmatter;
-use crate::paths::Paths;
+use crate::paths::{Paths, canonical};
+use crate::permissions::{PermissionState, Rule, RuleKind};
 use crate::prompt::SystemPartProvider;
 use crate::scheme::Scheme;
 use crate::subagent::Subagents;
@@ -264,6 +267,186 @@ pub fn invocation_text(skill: &Skill, args: &str) -> String {
     format!("Skill directory: {}\n\n{body}", skill.dir.display())
 }
 
+/// A skill's `allowed-tools` as permission rules, or `None` when it names none. Skills written
+/// for Claude Code name its tools (`Read`, `Bash(git diff:*)`); those become azazel's. An entry
+/// that is not a rule is left out.
+pub fn allowed_rules(skill: &Skill) -> Option<Vec<Rule>> {
+    let mut rules: Vec<Rule> = Vec::new();
+    for entry in skill.allowed_tools.as_ref()? {
+        match entry.parse::<Rule>() {
+            Ok(mut rule) => {
+                rule.tool = crate::agents::compat_tool(&rule.tool).to_string();
+                if !rules.contains(&rule) {
+                    rules.push(rule);
+                }
+            }
+            Err(_) => tracing::warn!(
+                "skill {}: `{entry}` in allowed-tools is not `tool` or `tool(pattern)`",
+                skill.name
+            ),
+        }
+    }
+    (!rules.is_empty()).then_some(rules)
+}
+
+/// The agent a user's prompt goes to.
+const LEAD: &str = "lead";
+
+struct Grant {
+    agent: String,
+    /// The prompt count of the run it belongs to.
+    run: u64,
+    rule: Rule,
+    /// What the rule's source reads in the permission state.
+    source: String,
+}
+
+/// What loaded skills allow. Each `allowed-tools` entry of a skill loaded into an agent's own
+/// context is an allow rule for the rest of that agent's run, and is taken away when the run
+/// ends. Registered as a service by [`SkillsExt`].
+pub struct SkillGrants {
+    /// Whether the project is trusted. Its own skills allow nothing when it is not: a file in a
+    /// repository must not be able to waive the user's approval.
+    trusted: bool,
+    /// Counts the user's prompts.
+    run: AtomicU64,
+    grants: Mutex<Vec<Grant>>,
+}
+
+impl SkillGrants {
+    pub fn new(trusted: bool) -> SkillGrants {
+        SkillGrants {
+            trusted,
+            run: AtomicU64::new(0),
+            grants: Mutex::default(),
+        }
+    }
+
+    fn from_project(skill: &Skill, permissions: &PermissionState) -> bool {
+        match skill.source {
+            SkillSource::Project => true,
+            // `.claude/skills` exists both under the home directory and in the project.
+            SkillSource::Compat => permissions
+                .roots()
+                .first()
+                .is_some_and(|root| canonical(&skill.dir).starts_with(root)),
+            SkillSource::Builtin | SkillSource::Home | SkillSource::Package(_) => false,
+        }
+    }
+
+    /// Allows what `skill` lists for the run of `agent`: the run in progress, or with
+    /// `next_prompt` the run the user's next prompt starts (a skill the user invoked).
+    pub fn allow(&self, services: &Services, skill: &Skill, agent: &str, next_prompt: bool) {
+        let (Some(rules), Some(permissions)) = (allowed_rules(skill), services.get::<PermissionState>())
+        else {
+            return;
+        };
+        if !self.trusted && Self::from_project(skill, &permissions) {
+            tracing::warn!(
+                "allowed-tools of skill {} is ignored: the project is not trusted",
+                skill.name
+            );
+            return;
+        }
+        let run = self.run.load(Ordering::SeqCst) + u64::from(next_prompt);
+        let source = format!("skill {}, while {agent} works", skill.name);
+        let mut grants = self.grants.lock().unwrap_or_else(PoisonError::into_inner);
+        for rule in rules {
+            permissions.add_temporary_rule(rule.clone(), RuleKind::Allow, &source);
+            match grants
+                .iter_mut()
+                .find(|grant| grant.source == source && grant.rule == rule)
+            {
+                Some(known) => known.run = run,
+                None => grants.push(Grant {
+                    agent: agent.to_string(),
+                    run,
+                    rule,
+                    source: source.clone(),
+                }),
+            }
+        }
+    }
+
+    /// Takes away the grants `gone` picks.
+    fn end(&self, services: &Services, gone: impl Fn(&Grant) -> bool) {
+        let ended: Vec<Grant> = {
+            let mut grants = self.grants.lock().unwrap_or_else(PoisonError::into_inner);
+            let (ended, kept) = std::mem::take(&mut *grants).into_iter().partition(|g| gone(g));
+            *grants = kept;
+            ended
+        };
+        if ended.is_empty() {
+            return;
+        }
+        if let Some(permissions) = services.get::<PermissionState>() {
+            permissions.remove_rules(|rule| {
+                rule.kind == RuleKind::Allow
+                    && ended
+                        .iter()
+                        .any(|grant| grant.source == rule.source && grant.rule == rule.rule)
+            });
+        }
+    }
+}
+
+/// Call when the user invokes `skill` themselves: what it allows holds for the run of the prompt
+/// that carries it.
+pub fn allow_for_prompt(services: &Services, skill: &Skill) {
+    if let Some(grants) = services.get::<SkillGrants>() {
+        grants.allow(services, skill, LEAD, true);
+    }
+}
+
+struct GrantsHandler;
+
+#[async_trait]
+impl EventHandler for GrantsHandler {
+    async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
+        let Some(grants) = ctx.services.get::<SkillGrants>() else {
+            return Outcome::Continue;
+        };
+        match event {
+            // A new prompt is a new run: what an earlier one was allowed is over, also when that
+            // run was interrupted and never reached its stop.
+            Event::UserPrompt { .. } => {
+                let run = grants.run.fetch_add(1, Ordering::SeqCst) + 1;
+                grants.end(&ctx.services, |grant| grant.agent == LEAD && grant.run < run);
+            }
+            Event::Stop { agent, .. } | Event::AgentEnd { agent, .. } => {
+                grants.end(&ctx.services, |grant| grant.agent == agent.id);
+            }
+            Event::SessionStart { .. } | Event::SessionEnd => grants.end(&ctx.services, |_| true),
+            _ => {}
+        }
+        Outcome::Continue
+    }
+}
+
+/// Ends what skills allowed when the run that loaded them ends. Load it after every other
+/// extension: a handler that keeps an agent going blocks the `Stop` event before it gets here, so
+/// this one sees only the stops that are final.
+pub struct SkillGrantsExt;
+
+impl crate::ext::Extension for SkillGrantsExt {
+    fn id(&self) -> &str {
+        "skill-grants"
+    }
+
+    fn register(&self, r: &mut crate::ext::Registrar) -> Result<(), crate::ext::ExtError> {
+        for kind in [
+            EventKind::UserPrompt,
+            EventKind::Stop,
+            EventKind::AgentEnd,
+            EventKind::SessionStart,
+            EventKind::SessionEnd,
+        ] {
+            r.on(kind, Arc::new(GrantsHandler));
+        }
+        Ok(())
+    }
+}
+
 type InvokeWatcher = Arc<dyn Fn(&Skill) + Send + Sync>;
 
 /// The session's skills. Registered as a service.
@@ -471,12 +654,20 @@ impl Tool for SkillTool {
             && let Some(runner) = ctx.services.get::<Subagents>()
         {
             let def = skill.agent.as_deref().unwrap_or("coder");
-            match runner.0.run(def, text.clone(), &ctx.agent).await {
+            // What the skill allows is all its agent gets, inside what the definition grants.
+            let report = match allowed_rules(&skill) {
+                Some(tools) => runner.0.run_limited(def, text.clone(), &ctx.agent, tools).await,
+                None => runner.0.run(def, text.clone(), &ctx.agent).await,
+            };
+            match report {
                 Ok(report) => return ToolOutput::text(report),
                 // An agent that may not start others follows the skill itself.
                 Err(error) if error == crate::subagent::UNAVAILABLE => {}
                 Err(error) => return ToolOutput::error(error),
             }
+        }
+        if let Some(grants) = ctx.services.get::<SkillGrants>() {
+            grants.allow(&ctx.services, &skill, &ctx.agent.id, false);
         }
         ToolOutput::text(text)
     }
@@ -568,6 +759,8 @@ impl crate::ext::CommandHandler for ListSkills {
 pub struct SkillsExt {
     /// Lowest precedence first.
     pub roots: Vec<SkillRoot>,
+    /// Whether the project is trusted; `allowed-tools` of its own skills counts only when it is.
+    pub trusted: bool,
 }
 
 impl crate::ext::Extension for SkillsExt {
@@ -583,6 +776,7 @@ impl crate::ext::Extension for SkillsExt {
         for root in &self.roots {
             registry.add_root(root.clone());
         }
+        r.service(Arc::new(SkillGrants::new(self.trusted)));
         r.system_part("skills", Arc::new(SkillsPart(registry.clone())));
         r.tool(Arc::new(SkillTool::new(registry.clone())));
         r.scheme(Arc::new(SkillScheme(registry.clone())));
@@ -789,5 +983,155 @@ mod tests {
         registry.mark_used(&alpha);
         registry.mark_used(&alpha);
         assert_eq!(*seen.lock().unwrap(), ["alpha"]);
+    }
+
+    /// A project whose permission state is a service, and a skill of `source` that allows two
+    /// things.
+    struct Granting {
+        _tmp: tempfile::TempDir,
+        services: Arc<Services>,
+        permissions: Arc<PermissionState>,
+        skill: Skill,
+    }
+
+    fn granting(source: SkillSource, trusted: bool) -> Granting {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(project.join(".azazel")).unwrap();
+        let home = tmp.path().join("home");
+        let paths = Paths::discover(&project, Some(&home.to_string_lossy()));
+        let loaded = crate::config::Config::load(&paths, &crate::config::LoadOptions::default()).unwrap();
+        let permissions = Arc::new(PermissionState::new(&paths, &loaded).unwrap());
+        let services = Arc::new(Services::new());
+        services.insert(permissions.clone());
+        services.insert(Arc::new(SkillGrants::new(trusted)));
+        let dir = write_skill(
+            &project.join(".azazel/skills"),
+            "deploy",
+            "name: deploy\ndescription: ship it\nallowed-tools: Bash(git status:*), Read, not a rule(",
+            "Deploy.",
+        );
+        let text = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        let skill = parse_skill(&dir.join("SKILL.md"), &text, source).unwrap();
+        Granting {
+            _tmp: tmp,
+            services,
+            permissions,
+            skill,
+        }
+    }
+
+    impl Granting {
+        /// The allow rules skills have added, as `rule (source)`.
+        fn granted(&self) -> Vec<String> {
+            self.permissions
+                .rules()
+                .iter()
+                .filter(|rule| rule.source.starts_with("skill "))
+                .map(|rule| format!("{} ({})", rule.rule, rule.source))
+                .collect()
+        }
+
+        fn allow(&self, agent: &str, next_prompt: bool) {
+            let grants = self.services.get::<SkillGrants>().unwrap();
+            grants.allow(&self.services, &self.skill, agent, next_prompt);
+        }
+
+        async fn happens(&self, mut event: Event) {
+            let ctx = ExtCtx {
+                services: self.services.clone(),
+                cwd: PathBuf::from("."),
+                session_id: "s".into(),
+            };
+            GrantsHandler.handle(&mut event, &ctx).await;
+        }
+    }
+
+    fn agent(id: &str) -> AgentInfo {
+        AgentInfo {
+            id: id.into(),
+            def: id.into(),
+            parent: None,
+            depth: 0,
+            session_id: "s".into(),
+        }
+    }
+
+    fn prompt() -> Event {
+        Event::UserPrompt {
+            text: "go".into(),
+            images: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn what_a_loaded_skill_allows_lasts_until_the_agents_run_ends() {
+        let f = granting(SkillSource::Home, false);
+        // Claude Code tool names are mapped; what is not a rule is left out.
+        assert_eq!(
+            allowed_rules(&f.skill).unwrap(),
+            ["shell(git status:*)".parse::<Rule>().unwrap(), "read".parse().unwrap()]
+        );
+
+        f.allow("lead", false);
+        f.allow("lead", false);
+        f.allow("coder-1", false);
+        assert_eq!(
+            f.granted(),
+            [
+                "shell(git status:*) (skill deploy, while lead works)",
+                "read (skill deploy, while lead works)",
+                "shell(git status:*) (skill deploy, while coder-1 works)",
+                "read (skill deploy, while coder-1 works)",
+            ]
+        );
+
+        // The sub-agent finishing ends its own grants only; the lead stopping ends the lead's.
+        f.happens(Event::AgentEnd {
+            agent: agent("coder-1"),
+            status: "done".into(),
+        })
+        .await;
+        assert_eq!(f.granted().len(), 2);
+        f.happens(Event::Stop {
+            agent: agent("lead"),
+            stop_hook_active: false,
+        })
+        .await;
+        assert_eq!(f.granted(), [] as [String; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_skill_the_user_invokes_allows_for_the_prompt_that_follows_and_no_longer() {
+        let f = granting(SkillSource::Home, false);
+        // A grant left behind by a run that was interrupted ends with the next prompt.
+        f.allow("lead", false);
+        f.happens(prompt()).await;
+        assert_eq!(f.granted(), [] as [String; 0]);
+
+        allow_for_prompt(&f.services, &f.skill);
+        f.happens(prompt()).await;
+        assert_eq!(f.granted().len(), 2);
+        f.happens(prompt()).await;
+        assert_eq!(f.granted(), [] as [String; 0]);
+
+        f.allow("lead", false);
+        f.happens(Event::SessionEnd).await;
+        assert_eq!(f.granted(), [] as [String; 0]);
+    }
+
+    #[tokio::test]
+    async fn a_projects_own_skill_allows_nothing_until_the_project_is_trusted() {
+        let untrusted = granting(SkillSource::Project, false);
+        untrusted.allow("lead", false);
+        assert_eq!(untrusted.granted(), [] as [String; 0]);
+        // A `.claude/skills`-style skill counts as the project's when it lives inside it.
+        let compat = granting(SkillSource::Compat, false);
+        compat.allow("lead", false);
+        assert_eq!(compat.granted(), [] as [String; 0]);
+
+        let trusted = granting(SkillSource::Project, true);
+        trusted.allow("lead", false);
+        assert_eq!(trusted.granted().len(), 2);
     }
 }

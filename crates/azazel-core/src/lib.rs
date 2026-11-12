@@ -23,7 +23,9 @@ pub mod scheme;
 pub mod session;
 pub mod skills;
 pub mod subagent;
+pub mod toolcall;
 pub mod tracker;
+pub mod transcript;
 pub mod trust;
 pub mod ui;
 
@@ -41,8 +43,9 @@ pub use permissions::{PermissionState, Rule, RuleKind};
 pub use prompt::{PromptBuilder, SystemPartProvider};
 pub use scheme::{Scheme, Schemes};
 pub use session::{Entry, EntryKind, SessionStore, SessionSummary};
-pub use skills::{Skill, SkillRegistry, SkillRoot, SkillSource};
+pub use skills::{Skill, SkillGrants, SkillGrantsExt, SkillRegistry, SkillRoot, SkillSource};
 pub use subagent::{SubagentRunner, Subagents};
+pub use toolcall::ToolCaller;
 pub use tracker::{FileTracker, Freshness};
 pub use trust::TrustStore;
 pub use ui::{

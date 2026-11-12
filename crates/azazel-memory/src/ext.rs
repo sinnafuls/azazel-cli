@@ -1,5 +1,6 @@
 //! What memory adds to a session: the memory tools and `semantic_search`, the `memory` part of the
-//! system prompt, recall on every prompt, automatic extraction, index upkeep and `/memory`.
+//! system prompt, the `memory://` addresses, recall on every prompt, automatic extraction, index
+//! upkeep and `/memory`.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -8,11 +9,12 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_agent::AgentInfo;
-use azazel_ai::{Credentials, Router};
+use azazel_agent::{AgentInfo, ToolCtx};
+use azazel_ai::{Block, Credentials, Router};
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Config, Event, EventHandler, EventKind, ExtCtx, ExtError,
-    Extension, Memory, MemoryApi, MemoryHit, Outcome, Paths, Registrar, SessionStore, SystemPartProvider,
+    Extension, Memory, MemoryApi, MemoryHit, Outcome, Paths, Registrar, Scheme, SessionStore,
+    SystemPartProvider,
 };
 use serde_json::Value;
 
@@ -22,6 +24,8 @@ use crate::tools::{ForgetTool, SaveTool, SearchTool, SemanticSearchTool, describ
 
 /// Memories looked up for each prompt.
 const RECALL_LIMIT: usize = 5;
+/// Memories `memory://search/<query>` returns.
+const SCHEME_HITS: usize = 20;
 /// How long after an agent's write the file is re-indexed.
 const REINDEX_DELAY: Duration = Duration::from_secs(2);
 /// The longest an extraction may take; a session's end waits for it.
@@ -233,6 +237,90 @@ impl SystemPartProvider for MemoryPart {
     }
 }
 
+/// `memory://` lists what is remembered, `memory://<id>` shows one memory and
+/// `memory://search/<query>` the memories that match a query.
+struct MemoryScheme(Arc<MemoryStore>);
+
+impl MemoryScheme {
+    async fn all(&self) -> Result<Vec<MemoryRow>, String> {
+        let mut rows = self.0.list(Scope::Project).await?;
+        rows.append(&mut self.0.list(Scope::Global).await?);
+        Ok(rows)
+    }
+}
+
+/// `text` with `%20`-style escapes and `+` turned back into the characters they stand for.
+fn unescaped(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let escaped = (bytes[i] == b'%')
+            .then(|| text.get(i + 1..i + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(byte) => {
+                out.push(byte);
+                i += 3;
+            }
+            None => {
+                out.push(if bytes[i] == b'+' { b' ' } else { bytes[i] });
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+#[async_trait]
+impl Scheme for MemoryScheme {
+    fn scheme(&self) -> &str {
+        "memory"
+    }
+
+    async fn read(&self, rest: &str, _: &ToolCtx) -> Result<Vec<Block>, String> {
+        let rest = rest.trim().trim_end_matches('/');
+        let text = if rest.is_empty() {
+            let rows = self.all().await?;
+            if rows.is_empty() {
+                "nothing is remembered yet".to_string()
+            } else {
+                rows.iter().map(describe).collect::<Vec<_>>().join("\n")
+            }
+        } else if let Some(query) = rest.strip_prefix("search/") {
+            let query = unescaped(query);
+            if query.trim().is_empty() {
+                return Err("memory://search/: give the words to search for after the slash".to_string());
+            }
+            let hits = self.0.search(&query, SCHEME_HITS, None).await?;
+            if hits.is_empty() {
+                format!("no memory matches `{}`", query.trim())
+            } else {
+                hits.iter().map(describe).collect::<Vec<_>>().join("\n")
+            }
+        } else {
+            let rows = self.all().await?;
+            let row = rows.iter().find(|row| row.id == rest).ok_or_else(|| {
+                format!("no memory has the id `{rest}`; memory:// lists them, memory://search/<query> searches")
+            })?;
+            let mut text = format!(
+                "id: {}\nkind: {}\nscope: {}\nsaved: {}\n",
+                row.id,
+                row.kind,
+                row.scope.as_str(),
+                row.created_at
+            );
+            if !row.tags.is_empty() {
+                text.push_str(&format!("tags: {}\n", row.tags.join(", ")));
+            }
+            text.push_str(&format!("\n{}", row.text));
+            text
+        };
+        Ok(vec![Block::text(text)])
+    }
+}
+
 struct MemoryCommand(Arc<State>);
 
 impl MemoryCommand {
@@ -351,6 +439,7 @@ impl Extension for MemoryExt {
         r.tool(Arc::new(SearchTool(store.clone())));
         r.tool(Arc::new(ForgetTool(store.clone())));
         r.tool(Arc::new(SemanticSearchTool(store.clone())));
+        r.scheme(Arc::new(MemoryScheme(store.clone())));
         r.system_part("memory", Arc::new(MemoryPart(store)));
         r.command(Command {
             name: "memory".to_string(),

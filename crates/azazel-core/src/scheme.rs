@@ -3,7 +3,7 @@
 use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use azazel_agent::ToolCtx;
+use azazel_agent::{Access, ToolCtx};
 use azazel_ai::Block;
 
 #[async_trait]
@@ -12,6 +12,12 @@ pub trait Scheme: Send + Sync {
     fn scheme(&self) -> &str;
     /// `rest` is everything after `scheme://`.
     async fn read(&self, rest: &str, ctx: &ToolCtx) -> Result<Vec<Block>, String>;
+    /// What reading `rest` touches, and the subject permission rules are matched against; `None`
+    /// leaves the address itself as the subject. A scheme that reaches the network answers
+    /// `(Access::Net, Some("domain:<host>"))`, and is then asked about like `web_fetch`.
+    fn access(&self, _rest: &str) -> (Access, Option<String>) {
+        (Access::Read, None)
+    }
 }
 
 /// Registered schemes; available to tools as a service.

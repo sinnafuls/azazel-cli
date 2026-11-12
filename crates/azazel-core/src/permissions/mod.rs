@@ -242,8 +242,9 @@ pub struct PermissionState {
     agent_modes: RwLock<HashMap<String, PermissionMode>>,
     rules: RwLock<Vec<SourcedRule>>,
     agent_cwds: RwLock<HashMap<String, PathBuf>>,
-    /// Tool grants of agents whose definition narrows a tool to a pattern.
-    agent_grants: RwLock<HashMap<String, Vec<Rule>>>,
+    /// Tool grants of agents whose definition, or the request that started them, narrows a tool
+    /// to a pattern. A call has to fit every list.
+    agent_grants: RwLock<HashMap<String, Vec<Vec<Rule>>>>,
     project_root: PathBuf,
     /// The project root and `additional_dirs`.
     roots: RwLock<Vec<PathBuf>>,
@@ -362,7 +363,41 @@ impl PermissionState {
     /// calls whose every subject matches it. Tools granted without a pattern, and tools no grant
     /// names, are not affected here.
     pub fn restrict_agent(&self, agent: &str, grants: Vec<Rule>) {
-        write(&self.agent_grants).insert(agent.to_string(), grants);
+        write(&self.agent_grants).insert(agent.to_string(), vec![grants]);
+    }
+
+    /// Limits `agent` further, to what `grants` allows on top of the limits it already has (a
+    /// skill's `allowed-tools` inside what the agent's definition grants).
+    pub fn narrow_agent(&self, agent: &str, grants: Vec<Rule>) {
+        let mut all = write(&self.agent_grants);
+        let lists = all.entry(agent.to_string()).or_default();
+        if !lists.contains(&grants) {
+            lists.push(grants);
+        }
+    }
+
+    /// Adds a rule that is in force until [`PermissionState::remove_rules`] takes it away, such
+    /// as what a loaded skill allows for the rest of a run. `source` says where it comes from.
+    pub fn add_temporary_rule(&self, rule: Rule, kind: RuleKind, source: &str) {
+        let mut rules = write(&self.rules);
+        let known = rules
+            .iter()
+            .any(|r| r.kind == kind && r.rule == rule && r.source == source);
+        if !known {
+            rules.push(SourcedRule {
+                rule,
+                kind,
+                source: source.to_string(),
+            });
+        }
+    }
+
+    /// Removes the rules `gone` picks and returns how many there were.
+    pub fn remove_rules(&self, gone: impl Fn(&SourcedRule) -> bool) -> usize {
+        let mut rules = write(&self.rules);
+        let before = rules.len();
+        rules.retain(|rule| !gone(rule));
+        before - rules.len()
     }
 
     pub fn forget_agent(&self, agent: &str) {
@@ -371,12 +406,17 @@ impl PermissionState {
         write(&self.agent_grants).remove(agent);
     }
 
-    /// `Err` when the agent's definition restricts this tool to patterns the call does not fit.
+    /// `Err` when the agent's grants restrict this tool to patterns the call does not fit.
     fn within_grants(&self, call: &Call<'_>, ctx: &MatchCtx<'_>) -> Result<(), String> {
-        let grants = read(&self.agent_grants);
-        let Some(grants) = grants.get(&call.agent.id) else {
-            return Ok(());
-        };
+        let lists = read(&self.agent_grants);
+        lists
+            .get(&call.agent.id)
+            .into_iter()
+            .flatten()
+            .try_for_each(|grants| Self::within(grants, call, ctx))
+    }
+
+    fn within(grants: &[Rule], call: &Call<'_>, ctx: &MatchCtx<'_>) -> Result<(), String> {
         let mine: Vec<&Rule> = grants
             .iter()
             .filter(|grant| grant.matches_tool(call.tool))

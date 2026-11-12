@@ -40,6 +40,27 @@ pub(crate) fn from_lua(lua: &Lua, value: mlua::Value) -> mlua::Result<Value> {
     lua.from_value(value)
 }
 
+/// The arguments a script passes to a tool, as the JSON object the tool takes: a table, or
+/// nothing for a tool without arguments.
+pub(crate) fn tool_input(lua: &Lua, args: mlua::Value) -> mlua::Result<Value> {
+    let empty = || Value::Object(serde_json::Map::new());
+    match args {
+        mlua::Value::Nil => Ok(empty()),
+        mlua::Value::Table(_) => match from_lua(lua, args)? {
+            Value::Object(fields) => Ok(Value::Object(fields)),
+            // An empty table has no keys to tell an object from a list by.
+            Value::Array(items) if items.is_empty() => Ok(empty()),
+            _ => Err(mlua::Error::runtime(
+                "the arguments must be a table of named values, such as { path = \"src/main.rs\" }",
+            )),
+        },
+        other => Err(mlua::Error::runtime(format!(
+            "the arguments are a {}; pass one table of named values",
+            other.type_name()
+        ))),
+    }
+}
+
 pub(crate) fn level_name(level: Level) -> &'static str {
     match level {
         Level::Info => "info",

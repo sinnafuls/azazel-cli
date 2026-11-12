@@ -12,11 +12,11 @@ use azazel_agent::{
 };
 use azazel_ai::{ModelSpec, Router, StopReason, ThinkingLevel};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
+use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionMode,
-    PermissionState, PromptBuilder, SessionStore, ToolRegistry,
+    PermissionState, PromptBuilder, Rule, SessionStore, ToolCaller, ToolRegistry,
 };
-use serde_json::Value;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
 use tokio_util::sync::CancellationToken;
 
@@ -122,6 +122,9 @@ pub struct SpawnRequest {
     pub name: Option<String>,
     pub model: Option<Vec<ModelSpec>>,
     pub isolation: Option<Isolation>,
+    /// Narrows the agent to these tools, within what its definition grants (a skill's
+    /// `allowed-tools`). `None` leaves the definition's grant as it is.
+    pub tools: Option<Vec<Rule>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -178,6 +181,8 @@ struct Member {
     info: AgentInfo,
     def: Arc<AgentDef>,
     model: Option<Vec<ModelSpec>>,
+    /// The tool grant of the request that started it.
+    grant: Option<Vec<Rule>>,
     state: MemberState,
     handle: Option<AgentHandle>,
     report: Option<String>,
@@ -236,11 +241,13 @@ struct Inner {
     changed: Notify,
 }
 
-/// The tools one sub-agent may use: what its definition grants, minus what it disallows, with the
-/// orchestration tools limited to what its place in the team permits.
+/// The tools one sub-agent may use: what its definition grants, minus what it disallows and what
+/// the request that started it leaves out, with the orchestration tools limited to what its place
+/// in the team permits.
 struct MemberTools {
     registry: Arc<ToolRegistry>,
     def: Arc<AgentDef>,
+    grant: Option<Vec<Rule>>,
     can_spawn: bool,
 }
 
@@ -255,27 +262,13 @@ impl ToolSource for MemberTools {
             if self.def.disallowed_tools.iter().any(|denied| denied == name) {
                 return false;
             }
-            match &self.def.tools {
+            let granted = |grants: &Option<Vec<Rule>>| match grants {
                 None => true,
                 Some(grants) => grants.iter().any(|grant| grant.matches_tool(name)),
-            }
+            };
+            granted(&self.def.tools) && granted(&self.grant)
         });
         tools
-    }
-}
-
-/// What a running tool call is about, for the roster.
-pub(crate) fn activity(name: &str, input: &Value) -> String {
-    let detail = ["command", "path", "pattern", "query", "url", "prompt", "to"]
-        .iter()
-        .find_map(|key| input.get(key).and_then(Value::as_str))
-        .and_then(|text| text.lines().next())
-        .unwrap_or_default();
-    let detail: String = detail.chars().take(60).collect();
-    if detail.is_empty() {
-        name.to_string()
-    } else {
-        format!("{name} {detail}")
     }
 }
 
@@ -346,7 +339,7 @@ impl Inner {
     /// Creates the agent behind member `id`.
     async fn build(&self, id: &str) -> Result<AgentHandle, String> {
         let deps = &self.deps;
-        let (info, def, model, worktree, transcript) = {
+        let (info, def, model, grant, worktree, transcript) = {
             let members = self.members();
             let member = members
                 .iter()
@@ -356,6 +349,7 @@ impl Inner {
                 member.info.clone(),
                 member.def.clone(),
                 member.model.clone(),
+                member.grant.clone(),
                 member.worktree.clone(),
                 member.transcript.clone(),
             )
@@ -384,19 +378,28 @@ impl Inner {
         if let Some(grants) = &def.tools {
             deps.permissions.restrict_agent(id, grants.clone());
         }
+        if let Some(grants) = &grant {
+            deps.permissions.narrow_agent(id, grants.clone());
+        }
         let lead_session = self.lead().map(|(_, session)| session.path());
         let sink = SessionStore::create_at(&transcript, id, &cwd, lead_session.as_deref())
             .map_err(|e| format!("cannot write {}: {e}", transcript.display()))?;
         let can_spawn = !def.spawns.is_empty() && info.depth < deps.max_depth;
         let system = deps.prompt.render(&info).await;
+        let tools = Arc::new(MemberTools {
+            registry: deps.tools.clone(),
+            def: def.clone(),
+            grant,
+            can_spawn,
+        });
+        // What the agent reaches through a script is what it is offered itself.
+        if let Some(caller) = deps.services.get::<ToolCaller>() {
+            caller.scope_agent(id, tools.clone());
+        }
         Ok(Agent::spawn(AgentConfig {
             info,
             system,
-            tools: Arc::new(MemberTools {
-                registry: deps.tools.clone(),
-                def: def.clone(),
-                can_spawn,
-            }),
+            tools,
             chain,
             thinking: def.thinking.unwrap_or(ThinkingLevel::Off),
             router: deps.router.clone(),
@@ -735,6 +738,9 @@ impl Team {
                 handle.shutdown().await;
             }
             self.inner.deps.permissions.forget_agent(&member.info.id);
+            if let Some(caller) = self.inner.deps.services.get::<ToolCaller>() {
+                caller.forget_agent(&member.info.id);
+            }
             if let Some(worktree) = &member.worktree
                 && let Err(e) = worktree::remove(&self.inner.deps.paths.project_root, worktree).await
             {
@@ -829,6 +835,7 @@ impl Team {
             info,
             def,
             model: request.model,
+            grant: request.tools,
             state: MemberState::Queued,
             handle: None,
             report: None,

@@ -684,7 +684,7 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
         "agent agent.list agent.send agent.spawn agent.stop command ctx.agent_id ctx.cwd ctx.session_id \
          ctx.ui ctx.ui.confirm ctx.ui.input ctx.ui.select exec fs fs.data_dir fs.exists fs.list fs.read \
          fs.write http json json.decode json.encode mcp memory memory.save memory.search notify on provider \
-         send shortcut state state.get state.set status tool widget"
+         send shortcut state state.get state.set status tool tools tools.call widget"
     );
     let declarations = type_declarations();
     assert!(declarations.contains("declare azazel: {"));

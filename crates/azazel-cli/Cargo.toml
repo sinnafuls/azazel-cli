@@ -25,6 +25,7 @@ default = [
     "screen",
     "media",
     "lsp",
+    "pdf",
     "bedrock",
     "vertex",
 ]
@@ -35,6 +36,7 @@ browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
 lsp = ["azazel-tools/lsp"]
+pdf = ["azazel-tools/pdf"]
 bedrock = ["azazel-ai/bedrock"]
 vertex = ["azazel-ai/vertex"]
 test-support = ["azazel-ai/test-support"]

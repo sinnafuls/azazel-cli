@@ -185,7 +185,7 @@ fn entries(key: &str, value: &Value) -> Result<Vec<String>, String> {
 }
 
 /// The azazel tool a Claude Code tool name stands for; other names are kept as written.
-fn compat_tool(name: &str) -> &str {
+pub(crate) fn compat_tool(name: &str) -> &str {
     match name {
         "Read" => "read",
         "Write" => "write",
