@@ -70,7 +70,8 @@ same way: the title in the rule above, the keys in the rule below. In a picker: 
 and `Esc` cancels; the selected row is marked `→` and highlighted, and a list too long to show ends with its
 position (`(7/20)`). Searchable pickers (models, sessions, prompt history) filter as you type; in the others,
 digits `1`-`9` choose a row directly. Some pickers have keys of their own that act on the selected row (`m` in
-the agent hub, `Ctrl+F` in the model picker, `d` in `/permissions`); the rule below names them. Where an overlay
+the agent hub, `Ctrl+F` in the model picker, `d` in `/permissions`, `Ctrl+R` `Ctrl+D` `Ctrl+P` `Tab` in the
+session picker, `Alt+L` in `/tree`); the rule below names them, or a line above the list where they are many. Where an overlay
 asks for text (feedback on a denied call, changes to a plan), `Ctrl+G` opens your editor for it.
 
 ### Tool cards
@@ -119,7 +120,7 @@ When the terminal is too narrow for both sides, the model is shortened first, th
 | `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L` | `model_picker` | Pick the model |
-| `Ctrl+R` | `history_search` | Search earlier prompts and put one back in the input |
+| `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
 | `Ctrl+V` | `paste_image` | Attach the clipboard image to the next prompt |
 | `Tab` | `complete` | Open or accept completion |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
@@ -138,7 +139,8 @@ follows the selected agent's work in the transcript, `m` messages it, `s` stops 
 Editing keys in the input: arrows, `Home`/`End`, `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+Left`/`Ctrl+Right` or
 `Alt+B`/`Alt+F` (word), `Ctrl+W` and `Ctrl+Backspace` (delete word back), `Alt+D` and `Ctrl+Delete` (delete word
 forward), `Ctrl+U` (delete to line start), `Ctrl+K` (delete to line end), `Ctrl+Z` (undo), `Ctrl+Shift+Z` (redo).
-`Up` on the first line and `Down` on the last walk through earlier prompts.
+`Up` on the first line and `Down` on the last walk through earlier prompts, those of earlier sessions of the
+project included; see [prompt history](sessions-and-checkpoints.md#prompt-history).
 
 What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
 one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
@@ -248,9 +250,15 @@ Session and display:
 |---|---|
 | `/help` | List every command |
 | `/new` | Start a new session |
-| `/resume` | Reopen an earlier session of this project |
-| `/tree` | Go back to an earlier point of this session |
+| `/resume` | Reopen an earlier session of this project, on the model and thinking level it last used; its keys rename, delete, pin and preview sessions |
+| `/name [text]` | Name this session; without text, have a name suggested |
+| `/session` | What this session is: file, id, name, messages, branch points, tokens and cost, model, checkpoints, agents |
+| `/search <text>` | Find sessions of this project by what was said in them; choosing a line resumes its session |
+| `/tree` | Go back to an earlier point of this session; `Alt+L` labels an entry, `Ctrl+L` and `Ctrl+U` filter |
 | `/fork` | Continue from here in a copy of this session |
+| `/retry` | Send your last prompt again from where it was sent; the first attempt stays as a branch |
+| `/handoff [what matters]` | Continue in a new session that starts from a brief of this one |
+| `/consult [question]` | Ask a saved session a question without resuming it |
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
 | `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
@@ -267,8 +275,8 @@ Session and display:
 | `/keys` | List key bindings |
 | `/quit`, `/exit` | Exit |
 
-`/resume`, `/tree`, `/fork`, `/rewind`, `/compact` and `/export` are covered in
-[sessions and checkpoints](sessions-and-checkpoints.md).
+`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/handoff`, `/consult`, `/rewind`,
+`/compact` and `/export` are covered in [sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
 

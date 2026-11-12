@@ -61,6 +61,9 @@ pub struct App {
     pub hooks_disabled: bool,
     /// A `--no-session` run: its transcripts are deleted when it ends.
     ephemeral: bool,
+    /// `--model` and `--thinking` were given: they win over what a reopened session last used.
+    model_flag: bool,
+    thinking_flag: bool,
     /// The session mode changes are recorded in.
     current: Arc<RwLock<Option<Arc<SessionStore>>>>,
 }
@@ -72,6 +75,8 @@ pub struct Active {
     pub checkpoints: Arc<Checkpoints>,
     /// Whether the session existed before it was opened.
     pub resumed: bool,
+    /// Something about how it was opened that the user should be told.
+    pub notice: Option<String>,
 }
 
 pub enum Open {
@@ -697,6 +702,8 @@ impl App {
             load_options: options,
             hooks_disabled,
             ephemeral: cli.no_session,
+            model_flag: !cli.model.is_empty(),
+            thinking_flag: cli.thinking.is_some(),
             current,
         })
     }
@@ -709,7 +716,8 @@ impl App {
         }
         if let Some(wanted) = &cli.fork {
             let original = SessionStore::open(&self.find_session(wanted)?)?;
-            return Ok(Open::Store(Arc::new(original.fork(&dir, None)?)));
+            // Read back from its file, like any session that was not open in this process.
+            return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
         if cli.resume_latest {
             return match SessionStore::list(&dir).first() {
@@ -771,8 +779,69 @@ impl App {
         })
     }
 
-    /// Opens a session and starts its lead agent on `chain`.
+    /// Whether what this run does is kept on disk (it is not with `--no-session`).
+    pub fn keeps_sessions(&self) -> bool {
+        !self.ephemeral
+    }
+
+    /// Writes the model and thinking level chosen on the command line into the session, so that
+    /// reopening it later comes back on them.
+    pub fn record_flags(&self, session: &SessionStore) {
+        if self.model_flag && session.last_chain(None).as_ref() != Some(&self.chain) {
+            session.append(EntryKind::ModelChange {
+                chain: self.chain.clone(),
+            });
+        }
+        let level = self.thinking.to_string();
+        if self.thinking_flag && session.last_thinking(None).as_ref() != Some(&level) {
+            session.append(EntryKind::ThinkingChange { level });
+        }
+    }
+
+    /// What a session read from its file starts on: the model chain and thinking level it last
+    /// switched to, unless the command line chose them or `[session] restore_model` is off. A
+    /// chain that can no longer be used gives way to `chain`, with a notice.
+    fn as_left(
+        &self,
+        session: &SessionStore,
+        chain: Vec<ModelSpec>,
+        thinking: ThinkingLevel,
+    ) -> (Vec<ModelSpec>, ThinkingLevel, Option<String>) {
+        if !self.config.session.restore_model {
+            return (chain, thinking, None);
+        }
+        let names = |chain: &[ModelSpec]| {
+            chain
+                .iter()
+                .map(ModelSpec::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let last = session.last_chain(None).filter(|_| !self.model_flag);
+        let (chain, notice) = match last {
+            Some(last) if self.has_model(&last) => (last, None),
+            Some(last) => {
+                let notice = format!(
+                    "this session last used {}, which cannot be used now; it goes on with {}",
+                    names(&last),
+                    names(&chain)
+                );
+                (chain, Some(notice))
+            }
+            None => (chain, None),
+        };
+        let thinking = session
+            .last_thinking(None)
+            .filter(|_| !self.thinking_flag)
+            .and_then(|level| level.parse().ok())
+            .unwrap_or(thinking);
+        (chain, thinking, notice)
+    }
+
+    /// Opens a session and starts its lead agent on `chain`. A session read from its file comes
+    /// back on the model and thinking level it last used instead (see [`App::as_left`]).
     pub async fn open(&self, how: Open, chain: Vec<ModelSpec>, thinking: ThinkingLevel) -> Result<Active> {
+        let from_file = matches!(how, Open::File(_));
         let (session, resumed) = match how {
             Open::New => (
                 Arc::new(SessionStore::create(
@@ -784,6 +853,11 @@ impl App {
             ),
             Open::File(path) => (Arc::new(SessionStore::open(&path)?), true),
             Open::Store(store) => (store, true),
+        };
+        let (chain, thinking, notice) = if from_file {
+            self.as_left(&session, chain, thinking)
+        } else {
+            (chain, thinking, None)
         };
         if resumed {
             crate::accounts::restore(&session, &self.credentials);
@@ -852,6 +926,7 @@ impl App {
             lead,
             checkpoints,
             resumed,
+            notice,
         })
     }
 

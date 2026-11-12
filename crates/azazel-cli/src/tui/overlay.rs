@@ -3,12 +3,14 @@
 use std::path::PathBuf;
 
 use azazel_core::permissions::{Rule, RuleKind, SourcedRule};
+use azazel_core::session::SessionSummary;
 use azazel_core::{ApprovalDecision, PlanDecision, UiError};
 use azazel_tui::components::composer;
 use azazel_tui::{Editor, KeyCombo, Line, Role, SelectItem, SelectList, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::bridge::Reply;
+use super::sessions::{PickFor, SideRun, TreeFilter};
 
 /// A point the session can be rewound to.
 #[derive(Debug, Clone)]
@@ -56,9 +58,36 @@ pub enum Action {
     Thinking,
     Mode,
     Theme(Vec<String>),
+    /// The session file of each row; choosing one resumes it.
     Resume(Vec<PathBuf>),
-    /// `(entry id, is a user message, text)` per row.
-    Tree(Vec<(String, bool, String)>),
+    /// A session picker (`/resume`, `/consult`): the session of each row, and what the picker
+    /// is for.
+    Sessions {
+        rows: Vec<SessionSummary>,
+        purpose: PickFor,
+        named_only: bool,
+    },
+    /// A new name being typed for a session of a picker, which opens again afterwards.
+    SessionRename(Box<SessionSummary>, PickFor, bool),
+    /// Whether to delete a session of a picker.
+    SessionDelete(Box<SessionSummary>, PickFor, bool),
+    /// A question being typed for a saved session.
+    ConsultQuestion(Box<SessionSummary>),
+    /// A request outside the conversation whose reply is arriving.
+    Side(SideRun),
+    /// The answer to a question asked on the side: close, copy, or read it full screen.
+    SideAnswer {
+        title: String,
+        question: String,
+        answer: String,
+    },
+    /// `(entry id, is a user message, text)` per row, and which entries are listed.
+    Tree(Vec<(String, bool, String)>, TreeFilter),
+    /// A label being typed for an entry of the tree.
+    TreeLabel {
+        entry: String,
+        filter: TreeFilter,
+    },
     History(Vec<String>),
     Rewind(Vec<RewindPoint>),
     RewindWhat(RewindPoint),
@@ -112,6 +141,7 @@ impl Action {
             Action::Plan { reply } | Action::PlanFeedback { reply } => {
                 drop(reply.send(Err(UiError::Cancelled)))
             }
+            Action::Side(run) => run.cancel(),
             _ => {}
         }
     }
@@ -152,7 +182,8 @@ pub struct Overlay {
     pub action: Action,
     /// Keys that act on the selected row without closing the overlay, each with the word the
     /// hint line shows for it (`ctrl+d`, `delete`). They win over typing into a filter, so a
-    /// filterable list should use chords.
+    /// filterable list should use chords. A key with no word stays out of the hint line: an
+    /// overlay with more keys than the line holds names them in its body.
     pub keys: Vec<(KeyCombo, &'static str)>,
 }
 
@@ -403,7 +434,7 @@ impl Overlay {
             }
         };
         let mut hint = hint.to_string();
-        for (combo, what) in &self.keys {
+        for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
             hint.push_str(&format!(" · {} {what}", key_label(combo)));
         }
         hint.push_str(" · esc cancel");

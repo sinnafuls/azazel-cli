@@ -30,7 +30,7 @@ fn session_dirs(paths: &Paths, all_projects: bool) -> Vec<PathBuf> {
 }
 
 /// `2026-11-12 14:05`, in local time; the text as it is when it does not parse.
-fn local_time(timestamp: &str) -> String {
+pub(crate) fn local_time(timestamp: &str) -> String {
     timestamp
         .parse::<jiff::Timestamp>()
         .map(|t| {

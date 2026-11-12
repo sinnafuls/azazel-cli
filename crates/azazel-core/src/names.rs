@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use azazel_agent::AgentInfo;
 use azazel_ai::{ModelSpec, Role};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
@@ -85,36 +86,40 @@ impl EventHandler for NameOnFirstStop {
         }
         let agent = agent.clone();
         *pending = Some(tokio::spawn(async move {
-            let Some(question) = naming_question(&session) else {
-                return;
-            };
-            let mut ignore = |_: &str| {};
-            let asked = side.ask(
-                SideQuestion {
-                    agent: &agent,
-                    context: Vec::new(),
-                    question,
-                    chain: vec![ModelSpec::Role(NAMER_ROLE.to_string())],
-                    purpose: "naming",
-                    framed: false,
-                },
-                &mut ignore,
-                CancellationToken::new(),
-            );
-            match tokio::time::timeout(NAMING_LIMIT, asked).await {
-                Ok(Ok(answer)) => {
-                    // Named by hand while the namer was thinking: the hand wins.
-                    if let Some(name) = clean_title(&answer.text)
-                        && session.name().is_none()
-                    {
-                        session.append(EntryKind::SessionInfo { name });
-                    }
+            match suggest(&side, &agent, &session).await {
+                // Named by hand while the namer was thinking: the hand wins.
+                Ok(name) if session.name().is_none() => {
+                    session.append(EntryKind::SessionInfo { name });
                 }
-                Ok(Err(why)) => tracing::debug!("the session was not named: {why}"),
-                Err(_) => tracing::debug!("the session was not named: the namer took too long"),
+                Ok(_) => {}
+                Err(why) => tracing::debug!("the session was not named: {why}"),
             }
         }));
         Outcome::Continue
+    }
+}
+
+/// Asks the namer for a title for `session`, from its first prompt and reply. `Err` says why
+/// there is none.
+pub async fn suggest(side: &Side, agent: &AgentInfo, session: &SessionStore) -> Result<String, String> {
+    let question = naming_question(session).ok_or("the session has no prompt to name it after yet")?;
+    let mut ignore = |_: &str| {};
+    let asked = side.ask(
+        SideQuestion {
+            agent,
+            context: Vec::new(),
+            question,
+            chain: vec![ModelSpec::Role(NAMER_ROLE.to_string())],
+            purpose: "naming",
+            framed: false,
+        },
+        &mut ignore,
+        CancellationToken::new(),
+    );
+    match tokio::time::timeout(NAMING_LIMIT, asked).await {
+        Ok(Ok(answer)) => clean_title(&answer.text).ok_or_else(|| "the namer gave no title".to_string()),
+        Ok(Err(why)) => Err(why),
+        Err(_) => Err("the namer took too long".to_string()),
     }
 }
 

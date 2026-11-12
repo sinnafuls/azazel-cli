@@ -28,6 +28,17 @@ GitHub are its section here.
 - `azazel sessions list|search|delete|prune|export` and `azazel export`; exports can be Markdown, HTML (one
   file, no scripts) or JSON lines, and `/export` picks the format from the file name.
 - `[session] retention_days` deletes old unpinned sessions in the background.
+- `/name` names the session, or has a name suggested; the name shows in the welcome line.
+- `/session` shows what the open session holds: messages, branches, tokens and cost, model, checkpoints,
+  agents.
+- `/resume` keys: `Ctrl+R` rename, `Ctrl+D` delete, `Ctrl+P` pin, `Ctrl+N` named only, `Tab` preview. Pinned
+  sessions are listed first.
+- `/tree`: `Alt+L` labels an entry, `Ctrl+L` lists labelled entries, `Ctrl+U` lists your prompts.
+- `/retry` (`F5`) sends your last prompt again; the first attempt stays as a branch.
+- `/handoff [focus]` continues in a new session that starts from a brief of this one.
+- `/search <text>` finds sessions by what was said in them and resumes the one you choose.
+- `/consult [question]` asks a saved session a question without resuming it.
+- Prompt history is kept per project across sessions: Up/Down and `Ctrl+R` reach earlier sessions' prompts.
 - `azazel stats`: sessions, prompts, tokens and cost per day, model, project and tool.
 - `azazel changelog` and `/changelog`; the first start after an update says how many changes it brought.
 - Several accounts per provider: `azazel login <provider> --as <label>`, `azazel logout <provider> --account
@@ -105,6 +116,9 @@ GitHub are its section here.
 - `/reload` also re-reads skills, commands, agent definitions, rule files, hooks, key bindings and the theme.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
 - `/cost` also lists what side questions and commit drafts cost.
+- A reopened session comes back on the model and thinking level it last used (`[session] restore_model`);
+  `--model` and `--thinking` win.
+- Naming, pinning or labelling a session no longer counts as using it.
 - `Shift+Enter` adds a line in text prompts such as the commit message and feedback inputs.
 - `tui.show_thinking` and `tui.expand_tools` take effect at startup.
 - A skill's `allowed-tools` now takes effect: it limits the sub-agent of a `context: fork` skill, and for other

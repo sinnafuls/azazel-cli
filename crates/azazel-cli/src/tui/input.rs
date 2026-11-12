@@ -371,6 +371,7 @@ impl Tui {
         };
         self.notice = None;
         self.prompts.push(text.clone());
+        self.remember(&text);
         let lines = view::user_prompt(&text, self.width(), &self.theme);
         self.say(lines);
         if let Err(reason) = sent {
