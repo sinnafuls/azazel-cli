@@ -471,6 +471,21 @@ pub struct Registry {
 /// (a script host reloading its scripts).
 pub struct RegistryHandle(pub std::sync::Weak<Registry>);
 
+/// Tells extensions that the configuration changed: `source` is `settings` for the settings
+/// menu and `reload` for a reload. Does nothing where the registry is not published.
+pub async fn config_changed(services: &Services, source: &str) {
+    let Some(registry) = services
+        .get::<RegistryHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let mut event = Event::ConfigChange {
+        source: source.to_string(),
+    };
+    registry.bus.emit(&mut event).await;
+}
+
 /// Lets an extension add MCP servers without depending on the MCP client.
 pub trait McpRegistrar: Send + Sync {
     /// Adds a server and starts connecting to it. `entry` has the shape of an `mcp.json` entry.

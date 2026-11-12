@@ -43,9 +43,11 @@ A skill that breaks one of these rules is skipped, never loaded half-way, and re
 | `context` | `inline` | `inline` returns the instructions to the agent that asked. `fork` runs them in a sub-agent and returns its report |
 | `agent` | `coder` | The agent definition used for `fork`; see [team](team.md) |
 | `model` | none | A model, role or fallback chain (`"@slow"`, `["@slow", "@default"]`). When you start the skill with `/skill:<name>`, that prompt runs on it |
-| `hooks` | none | Command hooks active from the skill's first use until the session ends; see [hooks](hooks.md) |
+| `hooks` | none | Command hooks active from the skill's first use until the session ends; a hook may set `once: true` to run one time per session; see [hooks](hooks.md) |
 
 `when_to_use`, `argument-hint` and `allowed-tools` are read without error but nothing acts on them in this version. Any other key is ignored.
+
+A skill is loaded when a task calls for it. For instructions that should apply by themselves, always or whenever an agent touches certain files, write a [rule file](rules.md) instead.
 
 With `context: fork`, an agent that may not start the named agent (for example a sub-agent without `spawns`) follows the instructions itself instead.
 

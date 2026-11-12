@@ -56,6 +56,11 @@ const BUILTIN: &[(&str, &str)] = &[
         "Let agents work in another directory too: /add-dir <path>",
     ),
     ("dirs", "List the directories agents may work in"),
+    ("rules", "List the rule files and whether each has applied in this session"),
+    (
+        "hooks",
+        "List the hooks, where they come from and how each last ran",
+    ),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
     ("quit", "Exit"),
@@ -190,6 +195,11 @@ impl Tui {
                     ));
                 }
             }
+            "rules" => {
+                let report = crate::rules::session_report(&self.app, &self.active.session.id());
+                self.info(&report);
+            }
+            "hooks" => self.info(&crate::hooks::report(&self.app)),
             "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
             "doctor" => {
                 let report = doctor::examine(&self.app.paths, self.app.trusted).await;

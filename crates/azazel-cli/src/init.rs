@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets::{self, ProviderConfig};
-use azazel_ai::{Catalog, Credentials, Provider};
+use azazel_ai::{Catalog, Provider};
 use azazel_core::{Config, LoadOptions, Paths};
 use toml_edit::{Array, DocumentMut, Item, Table};
 
@@ -140,7 +140,7 @@ async fn global(paths: &Paths, input: &mut impl BufRead) -> Result<String> {
         env: std::env::vars().collect(),
     };
     let config = Config::load(paths, &options)?.config;
-    let credentials = Arc::new(Credentials::new(paths.auth_file()));
+    let credentials = Arc::new(crate::app::credentials(paths, false));
     let client = http_client();
     let connect =
         |config: &ProviderConfig| HttpProvider::new(config.clone(), client.clone(), credentials.clone());

@@ -379,6 +379,9 @@ impl CommandHandler for Settings {
                 Err(why) => ui.0.notify(Level::Error, &why),
             }
         }
+        if !done.is_empty() {
+            azazel_core::ext::config_changed(&ctx.services, "settings").await;
+        }
         match done.is_empty() {
             true => CommandOutcome::Done,
             false => CommandOutcome::Show(format!("settings changed:\n- {}", done.join("\n- "))),

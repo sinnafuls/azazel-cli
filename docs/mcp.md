@@ -12,8 +12,8 @@ Servers are read from these files, later ones winning when two define the same n
 |---|---|---|
 | 1 | the `mcp.json` of installed [packages](packages.md) | when the package's code is enabled |
 | 2 | `~/.azazel/mcp.json` | always |
-| 3 | `<project>/.mcp.json` | when the project is trusted |
-| 4 | `<project>/.azazel/mcp.json` | when the project is trusted |
+| 3 | `<project>/.mcp.json` | when the project is trusted; each server also needs [your approval](#approving-a-projects-servers) |
+| 4 | `<project>/.azazel/mcp.json` | when the project is trusted; each server also needs your approval |
 
 An entry in a later file replaces the whole entry of the same name. Each file holds an `mcpServers` object:
 
@@ -64,7 +64,7 @@ Keys Azazel does not know are ignored, so a file shared with other MCP clients l
 | `http` | Streamable HTTP to `url` |
 | `sse` | Tries streamable HTTP first; when the server refuses it, falls back to the legacy SSE transport |
 
-Servers start connecting in the background when a session starts. The first request of the session waits at most `startup_wait_ms` for them; servers that come up later add their tools to a later request. A server that fails or disconnects is retried after 1, 2, 4, 8 and 16 seconds and then marked `failed` (a connection that lasted 30 seconds starts the count over). States shown by the tools below: `ready`, `connecting`, `not started`, `disabled`, `needs login`, `failed: <why>`.
+Servers start connecting in the background when a session starts. The first request of the session waits at most `startup_wait_ms` for them; servers that come up later add their tools to a later request. A server that fails or disconnects is retried after 1, 2, 4, 8 and 16 seconds and then marked `failed` (a connection that lasted 30 seconds starts the count over). States shown by the tools below: `ready`, `connecting`, `not started`, `disabled`, `waiting for approval`, `rejected`, `needs login`, `failed: <why>`.
 
 ## Managing servers
 
@@ -76,6 +76,8 @@ azazel mcp add fs --project -- npx -y some-server # write to <project>/.azazel/m
 azazel mcp remove fs
 azazel mcp login docs
 azazel mcp logout docs
+azazel mcp approve fs                             # let a server this project defines start
+azazel mcp import cursor                          # copy the servers another client has
 ```
 
 | Command | Does |
@@ -85,8 +87,26 @@ azazel mcp logout docs
 | `azazel mcp add <name> [--project] --url <url> [--header NAME=VALUE]...` | Adds an HTTP server |
 | `azazel mcp remove <name>` | Removes the entry from the first of `<project>/.azazel/mcp.json`, `<project>/.mcp.json`, `~/.azazel/mcp.json` that has it |
 | `azazel mcp login <name>` / `logout <name>` | OAuth login for an HTTP server; see below |
+| `azazel mcp approve <name>...` / `approve --all` / `reject <name>` | Decides whether a server the project defines may start; see [approving a project's servers](#approving-a-projects-servers) |
+| `azazel mcp import [client] [--yes]` | Copies the servers another client is configured with into `~/.azazel/mcp.json`; see [importing](#importing-from-other-clients) |
 
-In the terminal UI, `/mcp` opens a list of servers; picking one offers `reconnect`, `disable`, `login` and `logout` (or `enable` for a disabled one). The same actions can be typed: `/mcp list`, `/mcp reconnect <server>`, `/mcp enable <server>`, `/mcp disable <server>`, `/mcp login <server>`, `/mcp logout <server>`. Enabling or disabling writes `enabled` into the file that defines the server.
+In the terminal UI, `/mcp` opens a list of servers; picking one offers `reconnect`, `disable`, `login` and `logout` (or `enable` for a disabled one). The same actions can be typed: `/mcp list`, `/mcp reconnect <server>`, `/mcp enable <server>`, `/mcp disable <server>`, `/mcp approve <server>`, `/mcp reject <server>`, `/mcp login <server>`, `/mcp logout <server>`. Enabling or disabling writes `enabled` into the file that defines the server.
+
+### Importing from other clients
+
+`azazel mcp import` reads the MCP configuration of other clients, lists the servers it finds, and adds the ones you choose to `~/.azazel/mcp.json`.
+
+| Client | Files read |
+|---|---|
+| `claude-desktop` | `claude_desktop_config.json` in `%APPDATA%\Claude`, `~/Library/Application Support/Claude` or `~/.config/Claude` |
+| `claude-code` | `~/.claude.json`: its own servers and those it keeps for this project |
+| `cursor` | `~/.cursor/mcp.json` and `<project>/.cursor/mcp.json` |
+| `vscode` | `mcp.json` in the user folder of VS Code (`%APPDATA%\Code\User`, `~/Library/Application Support/Code/User` or `~/.config/Code/User`) and `<project>/.vscode/mcp.json` |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+
+Without a client name all five are read. In a terminal you are asked which servers to import (`all`, numbers such as `1,3`, or Enter for none); `--yes` imports every one. A name that `~/.azazel/mcp.json` already has is never replaced without asking, and with `--yes` it is left as it is. The listing shows the command line or address only; environment values and headers are copied but not printed.
+
+`${env:NAME}` becomes `${NAME}`. Variables azazel does not fill in, such as `${workspaceFolder}` and `${input:...}`, are copied as written and named in the listing so you can edit the entry afterwards. A project's `.mcp.json` needs no import: azazel reads it where it is.
 
 ## Tools
 
@@ -145,5 +165,16 @@ defer_threshold = 40    # above this many MCP tools, use tool_search
 ## Trust
 
 A server entry is a command to run, so project files (`.mcp.json`, `.azazel/mcp.json`) load only in a trusted project. The terminal UI asks once per project; `-p`, `goal` and `rpc` runs use the recorded answer, or `--trust` for that run. `azazel mcp add --project` in an untrusted project writes the entry and reminds you that it will not start until the project is trusted. `~/.azazel/mcp.json` is yours and always loads.
+
+### Approving a project's servers
+
+Trusting a project does not start whatever servers it defines, now or later. Each server in a project file needs your approval, and the approval holds for the definition as it was when you gave it: `~/.azazel/trust.json` keeps the server's name, a hash of its entry and your decision. A server that is new, or whose entry changed in any way, is `waiting for approval` and does not start.
+
+- The terminal UI asks at the start of a session, with one list of the waiting servers: tick the ones that may start. The others are recorded as rejected and you are not asked about them again until they change.
+- Headless runs (`-p`, `goal`) leave waiting servers off. `azazel mcp list` and `azazel doctor` name them.
+- `azazel mcp approve <name>...`, `azazel mcp approve --all` and `azazel mcp reject <name>` decide from the shell; `/mcp approve <server>` and `/mcp reject <server>` decide in a session, where an approved server starts at once.
+- `--trust` approves every project server for that run and records nothing.
+
+Servers in `~/.azazel/mcp.json`, in installed packages and from extensions are not subject to this.
 
 Luau extensions can add servers with `azazel.mcp{...}`; see [extensions](extensions.md). To write a server of your own, load the built-in `mcp-builder` skill; see [skills and commands](skills-and-commands.md).

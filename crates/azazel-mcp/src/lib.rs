@@ -3,6 +3,7 @@
 
 mod client;
 pub mod config;
+pub mod import;
 mod convert;
 mod elicit;
 mod ext;

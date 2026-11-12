@@ -572,6 +572,20 @@ pub fn load(sources: &Sources) -> Loaded {
     loaded
 }
 
+/// `path` as written by someone working in `cwd`, relative to the (canonical) project root with
+/// forward slashes: what the globs of a rule are matched against. A path outside the project
+/// stays absolute.
+pub fn project_relative(project_root: &Path, cwd: &Path, path: &str) -> String {
+    let path = path.trim();
+    let full = match (path.strip_prefix("~/"), std::env::home_dir()) {
+        (Some(rest), Some(home)) => home.join(rest),
+        _ => cwd.join(path),
+    };
+    let full = canonical(&full);
+    let shown = full.strip_prefix(project_root).unwrap_or(&full);
+    shown.to_string_lossy().replace('\\', "/")
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
@@ -672,22 +686,9 @@ impl Rules {
             .collect()
     }
 
-    /// `path` as written by an agent, relative to the project root with forward slashes; the
-    /// absolute path when it lies outside the project.
-    fn project_relative(&self, path: &str, cwd: &Path) -> String {
-        let path = path.trim();
-        let full = match (path.strip_prefix("~/"), std::env::home_dir()) {
-            (Some(rest), Some(home)) => home.join(rest),
-            _ => cwd.join(path),
-        };
-        let full = canonical(&full);
-        let shown = full.strip_prefix(&self.project_root).unwrap_or(&full);
-        shown.to_string_lossy().replace('\\', "/")
-    }
-
-    /// The path rules that cover `path`, for `azazel rules test` and `/rules`.
+    /// The path rules that cover `path`, written as an agent in `cwd` would write it.
     pub fn for_path(&self, path: &str, cwd: &Path) -> Vec<Arc<Rule>> {
-        let relative = self.project_relative(path, cwd);
+        let relative = project_relative(&self.project_root, cwd, path);
         self.loaded()
             .rules
             .iter()

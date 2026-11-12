@@ -312,17 +312,35 @@ For each request the provider's credential is the first of:
 
 1. `--api-key <KEY>`: applies to the provider of the first `--model`, for this run only.
 2. The provider's environment variables, in order.
-3. `api_key_command`.
-4. `api_key`, a key written in the configuration.
-5. The entry in `~/.azazel/auth.json`: a stored API key or a sign-in.
-6. Nothing: keyless providers are called unauthenticated; any other fails with ``no credentials for <id>: set <ENV> or run `azazel login <id>` ``.
+3. The same variables in `~/.azazel/.env`, then in the project's `.env` (at the project root).
+4. `api_key_command`.
+5. `api_key`, a key written in the configuration.
+6. The entry in `~/.azazel/auth.json`: a stored API key or a sign-in.
+7. Nothing: keyless providers are called unauthenticated; any other fails with ``no credentials for <id>: set <ENV> or run `azazel login <id>` ``.
 
 An environment key therefore wins over a stored sign-in for the same provider. `azazel doctor` shows where each provider's credential comes from, never the secret.
+
+### Keys in `.env` files
+
+A `.env` file holds `NAME=value` lines; `export NAME=value`, quoted values and `#` comments are understood.
+
+```sh
+# ~/.azazel/.env
+ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY="sk-..."
+```
+
+- Only the variables a provider names as its key are taken from the file. Everything else in it is ignored.
+- The values are used for requests to that provider and nothing else: they are not put into azazel's environment, so the commands agents run, hooks and MCP servers do not see them.
+- The project's `.env` is read only when the project is trusted (or with `--trust`): a file in a repository you just cloned must not decide which account your requests go to.
+- A variable set in the real environment wins over both files.
+
+`azazel doctor` and `azazel auth status` show the file as the source: `OPENAI_API_KEY in /work/app/.env`.
 
 `auth.json` is written with mode `0600` on Unix, by temp file and rename under a lock file (`auth.json.lock`), so several azazel processes can share it. Sign-in tokens are refreshed automatically when they have less than five minutes left.
 
 `azazel auth status [--json]` lists each provider that has a credential and where it comes from (`--api-key`, an
-environment variable, `api_key_command`, the configuration, or `auth.json`), and for logins the account and when
+environment variable, a `.env` file, `api_key_command`, the configuration, or `auth.json`), and for logins the account and when
 the token expires. Keys and tokens are never printed.
 
 ## Logging in and out

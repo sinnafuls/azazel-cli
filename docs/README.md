@@ -10,7 +10,7 @@ New here? Read [getting started](getting-started.md) first.
 | [The terminal UI](tui.md) | Layout, keys, input prefixes, every slash command, themes |
 | [Configuration](configuration.md) | Config files, load order, every setting, trust, command-line flags |
 | [Models and logins](models-and-logins.md) | Providers, roles and fallback chains, thinking levels, API keys, subscription and cloud sign-in |
-| [Permissions](permissions.md) | Permission modes, rules, the approval prompt, the git push guard, plan mode |
+| [Permissions](permissions.md) | Permission modes, rules, the approval prompt, destructive commands, the git push guard, plan mode |
 | [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, compaction, `/rewind` |
 
 ## Working as a team
@@ -37,6 +37,7 @@ New here? Read [getting started](getting-started.md) first.
 |---|---|
 | [MCP](mcp.md) | Connecting MCP servers |
 | [Hooks](hooks.md) | Running commands on tool calls and other events |
+| [Rules](rules.md) | Rule files that apply always, by path or on request; stream rules; other tools' rule files |
 | [Extensions](extensions.md) | Luau scripts and Rust extensions |
 | [Skills and commands](skills-and-commands.md) | Skills, built-in skills, custom slash commands |
 | [Packages](packages.md) | Installing bundles of skills, agents, commands and extensions |

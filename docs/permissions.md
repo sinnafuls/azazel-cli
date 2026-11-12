@@ -1,6 +1,6 @@
 # Permissions
 
-Every tool call an agent makes passes one gate before it runs. The gate combines a session-wide permission mode, allow/ask/deny rules from config, a fixed list of protected paths, a guard that stops agents from pushing, and your answer when it has to ask. There is no OS-level sandbox: containment is this gate, [checkpoints](sessions-and-checkpoints.md) and [worktree isolation](team.md#worktree-isolation).
+Every tool call an agent makes passes one gate before it runs. The gate combines a session-wide permission mode, allow/ask/deny rules from config, a fixed list of protected paths, a list of destructive commands, a guard that stops agents from pushing, and your answer when it has to ask. There is no OS-level sandbox: containment is this gate, [checkpoints](sessions-and-checkpoints.md) and [worktree isolation](team.md#worktree-isolation).
 
 ## Modes
 
@@ -9,13 +9,13 @@ Every tool call an agent makes passes one gate before it runs. The gate combines
 | `plan` | Read-only tools; `write`/`edit` under `.azazel/plans/`; `plan_submit` | nothing | Every other write, command and network call |
 | `ask` (default) | Read-only tools on paths inside the project | Everything else | |
 | `accept-edits` | As `ask`, plus file writes inside the project | Commands, network, writes outside the project | |
-| `auto` | Everything | Only what an `ask` rule or a protected path forces | |
+| `auto` | Everything | Only what an `ask` rule, a protected path or a destructive command forces | |
 
 "Inside the project" means under the project root or one of `permissions.additional_dirs`, plus directories added
 with `--add-dir <DIR>` or, for the rest of the run, `/add-dir <path>` (`/dirs` lists them all; Luau extensions
 see only the configured ones). A read outside those roots asks in `ask` and `accept-edits`. Commands are `shell`, `browser`, `screen` and MCP tools that are not marked read-only; network calls are `web_search`, `web_fetch`, `read` of a URL and the `generate_*` tools.
 
-Deny rules, the push guard and protected paths apply in every mode, `auto` included.
+Deny rules, the push guard, protected paths and the destructive-command check apply in every mode, `auto` included.
 
 ### Switching
 
@@ -78,6 +78,8 @@ In this order; the first step that settles the call wins.
 9. A hook waived the prompt: allowed.
 10. `permission_request` hooks may settle it. Otherwise you are asked.
 
+A [destructive command](#destructive-commands) that steps 6 to 9 would allow goes to step 10 instead.
+
 ## Protected paths
 
 File-writing tools always ask before touching:
@@ -88,6 +90,47 @@ File-writing tools always ask before touching:
 - shell profiles: `.bashrc`, `.bash_profile`, `.zshrc`, `.zprofile`, `.profile`, `profile.ps1`, `Microsoft.PowerShell_profile.ps1`.
 
 These prompts have no "always allow" choice, and no allow rule or `auto` mode removes them.
+
+## Destructive commands
+
+Some commands destroy work that no checkpoint or `git` history brings back. A `shell` call that contains one is asked about in every mode, `auto` included, and no allow rule or hook waives the question. The prompt names the risk and has no "always allow" choice.
+
+| Command | Why |
+|---|---|
+| `rm -r` on `/`, `~`, `..`, or a path outside the project and its extra directories | Deletes a directory tree outside the project |
+| `git reset --hard` | Discards uncommitted changes |
+| `git clean -f` | Deletes untracked files |
+| `git checkout -- .`, `git checkout .`, `git restore .` | Discards uncommitted changes |
+| `git branch -D` (or `-d --force`) | Deletes a branch that is not merged |
+| `git stash drop`, `git stash clear` | Deletes stashed changes |
+| `dd of=/dev/...` | Writes over a device |
+| `mkfs`, `mkfs.<type>` | Formats a file system |
+| `chmod -R`, `chown -R` on `/` or `~` | Changes permissions or owners of everything |
+| `terraform destroy`, `terraform apply -destroy` | Destroys managed infrastructure |
+| `kubectl delete namespace` | Deletes a namespace and everything in it |
+| `docker system prune -a` | Removes every unused image, container and network |
+| `drop database` in a `psql` or `mysql` `-c`/`-e` argument | Drops a database |
+
+The check looks at the parsed command words, so it finds these inside pipelines, `&&` lists, subshells and `sh -c` scripts, and it is not fooled by a command that merely mentions one (`echo git reset --hard`). `rm -r` inside the project, for example `rm -r target/tmp`, is ordinary work. A command line that cannot be parsed is split roughly and checked the same way.
+
+```toml
+[permissions]
+destructive = "ask"     # ask (default), allow or deny
+```
+
+| Value | Effect |
+|---|---|
+| `ask` | You are asked, whatever the mode and the allow rules say |
+| `allow` | No extra question: the mode and rules decide as for any other command |
+| `deny` | The call is refused and the model is told why |
+
+With nobody to ask (print mode, `azazel goal`) `ask` refuses the call:
+
+```text
+this command discards uncommitted changes (git reset --hard); it needs the user's confirmation and nobody is here to give it (`[permissions] destructive = "allow"` runs such commands unattended)
+```
+
+Deny rules and plan mode still come first: a deny rule refuses the command outright, and plan mode refuses every command.
 
 ## The approval prompt
 
