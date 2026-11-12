@@ -3,6 +3,7 @@
 pub mod app;
 pub mod cli;
 pub mod doctor;
+pub mod export;
 pub mod init;
 pub mod login;
 #[cfg(feature = "mcp")]
@@ -13,6 +14,7 @@ pub mod models;
 pub mod pkg;
 pub mod print;
 pub mod rpc;
+pub mod sessions;
 pub mod settings;
 mod tui;
 pub mod update;
@@ -172,6 +174,14 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return login::login(provider.as_deref(), *key, &paths).await;
         }
         Some(Sub::Logout { provider }) => return login::logout(provider, &paths),
+        Some(Sub::Sessions { action }) => return sessions::run(action, &paths),
+        Some(Sub::Export {
+            session,
+            format,
+            file,
+        }) => {
+            return sessions::export(&paths, session.as_deref(), *format, file.as_deref());
+        }
         Some(Sub::Completions { shell }) => {
             let mut command = <Cli as clap::CommandFactory>::command();
             clap_complete::generate(*shell, &mut command, "azazel", &mut std::io::stdout());
@@ -253,6 +263,9 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return print::EXIT_FAILED;
         }
     };
+    if !cli.no_session {
+        sessions::prune_in_background(&app.paths, app.config.session.retention_days, active.session.id());
+    }
     if let Some(name) = cli.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         active.session.append(azazel_core::EntryKind::SessionInfo {
             name: name.to_string(),

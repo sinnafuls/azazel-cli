@@ -24,6 +24,10 @@ GitHub are its section here.
 - A cost cap: past `[limits] max_cost_usd` (or `--max-cost`) no agent makes another request, and a warning is
   shown once at `warn_cost_usd`.
 - `azazel auth status`, `azazel completions <shell>`, and `/add-dir` and `/dirs` in the terminal UI.
+- Sessions name themselves after the first reply (a short title from the `smol` role); `--name` sets one.
+- `azazel sessions list|search|delete|prune|export` and `azazel export`; exports can be Markdown, HTML (one
+  file, no scripts) or JSON lines, and `/export` picks the format from the file name.
+- `[session] retention_days` deletes old unpinned sessions in the background.
 
 ### Changed
 

@@ -72,6 +72,18 @@ name of the file it writes. A resumed session opens at its last entry and the UI
 model and permission mode come from the current flags and [configuration](configuration.md), not from the
 session.
 
+## Names
+
+A session gets a name in one of three ways:
+
+- `--name <NAME>` on the command line.
+- Automatically: after the lead's first reply in a session that has no name, the `smol` role is asked for a title
+  of at most six words, from the first prompt and the first reply. It has 10 seconds and no tools. Turn this off
+  with `[session] auto_name = false`.
+- A name given by hand is never replaced by the automatic one.
+
+Names are stored as `session_info` entries and show in session lists and exports.
+
 ## Session commands
 
 All of these need the agent to be idle (press `Esc` first), except `/compact` and `/export`.
@@ -82,13 +94,36 @@ All of these need the agent to be idle (press `Esc` first), except `/compact` an
 | `/resume` | Lists the project's other sessions by first prompt, time and message count; type to filter, `Enter` opens one |
 | `/tree` | Lists every prompt and reply of this session, newest first; `•` marks the current branch. Choosing one of your prompts goes back to before it and puts its text in the input; choosing a reply continues from it |
 | `/fork` | Copies the current branch into a new session file and switches to it. The original is unchanged |
-| `/export [path]` | Writes the conversation as Markdown to `path` (relative to the working directory), or to `azazel-session-<id>.md` |
+| `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |
 | `/compact [what to keep]` | Summarises the conversation now; the optional text is passed to the summariser as extra instructions |
 
 `/tree` moves within the conversation only; files on disk are not changed. Use `/rewind` to move files as well.
 
-The export holds your prompts, the assistant's text and one line per tool call. Tool output and thinking are left
-out, and compacted history appears under the heading `Earlier (summarised)`.
+## From the shell
+
+| Command | What it does |
+|---|---|
+| `azazel sessions list [--all-projects] [--json]` | One line per session: id, last used, name or first prompt, messages, cost, pinned |
+| `azazel sessions search <text> [--all-projects] [--json]` | Sessions whose messages contain the text (case-insensitive), as `date · name · matching line` |
+| `azazel sessions delete <PATH\|ID> [--yes]` | Deletes the session file and its sub-agents' transcripts. Asks first; without a terminal it needs `--yes` |
+| `azazel sessions prune [--older-than 30d] [--all-projects] [--dry-run]` | Deletes unpinned sessions not used for that long (`h`, `d` or `w`) |
+| `azazel sessions export [PATH\|ID] [--format F] [-o FILE]` | Same as `azazel export` |
+| `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output |
+
+Export formats:
+
+| Format | Holds |
+|---|---|
+| Markdown | Your prompts, the assistant's text and one line per tool call |
+| HTML | One file with its own styles and no scripts: messages, tool calls with their output (diffs coloured) and thinking folded under `<details>`, images inline |
+| JSON lines | The branch's entries exactly as stored in the session file |
+
+With `[session] retention_days = N` (0, the default, keeps everything), sessions of the project not used for `N`
+days are deleted in the background when azazel starts, at most once a day. Pinned sessions and the open one are
+kept.
+
+A Markdown export holds your prompts, the assistant's text and one line per tool call; tool output and thinking are
+left out. Compacted history appears under the heading `Earlier (summarised)` in Markdown and HTML.
 
 ## Compaction
 

@@ -60,6 +60,7 @@ crossterm.workspace = true
 futures.workspace = true
 ignore.workspace = true
 image.workspace = true
+jiff.workspace = true
 mimalloc.workspace = true
 reqwest.workspace = true
 serde.workspace = true

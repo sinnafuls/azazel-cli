@@ -6,7 +6,7 @@ mod bridge;
 mod overlay;
 mod slash;
 mod team;
-mod view;
+pub(crate) mod view;
 
 use std::collections::VecDeque;
 use std::io::{self, Write};

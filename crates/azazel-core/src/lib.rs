@@ -14,6 +14,7 @@ pub mod hooks;
 pub mod limits;
 pub mod media;
 pub mod memory;
+pub mod names;
 pub mod packages;
 pub mod paths;
 pub mod permissions;

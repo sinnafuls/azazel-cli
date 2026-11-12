@@ -175,7 +175,7 @@ Session and display:
 | `/fork` | Continue from here in a copy of this session |
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
-| `/export [path]` | Write the conversation to a Markdown file |
+| `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session |
 | `/context` | How full the context window is, message count, tools offered |

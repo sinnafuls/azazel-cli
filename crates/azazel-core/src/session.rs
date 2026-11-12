@@ -386,6 +386,79 @@ impl SessionStore {
         })
     }
 
+    /// Deletes a session: its file and the folder of its sub-agents' transcripts.
+    pub fn delete(summary: &SessionSummary) -> io::Result<()> {
+        std::fs::remove_file(&summary.path)?;
+        if let Some(dir) = summary.path.parent() {
+            let folder = dir.join(&summary.id);
+            if folder.is_dir() {
+                std::fs::remove_dir_all(folder)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The unpinned sessions in `dir` last used before `cutoff`; deleted unless `dry_run`.
+    /// `keep` (the open session, by id) is never touched.
+    pub fn prune(
+        dir: &Path,
+        cutoff: jiff::Timestamp,
+        keep: Option<&str>,
+        dry_run: bool,
+    ) -> Vec<SessionSummary> {
+        let old: Vec<SessionSummary> = SessionStore::list(dir)
+            .into_iter()
+            .filter(|s| !s.pinned && Some(s.id.as_str()) != keep)
+            .filter(|s| {
+                s.updated
+                    .parse::<jiff::Timestamp>()
+                    .is_ok_and(|updated| updated < cutoff)
+            })
+            .collect();
+        if dry_run {
+            return old;
+        }
+        old.into_iter()
+            .filter(|s| match SessionStore::delete(s) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::warn!("could not delete {}: {e}", s.path.display());
+                    false
+                }
+            })
+            .collect()
+    }
+
+    /// Sessions in `dir` whose messages contain `query` (case-insensitive), most recently used
+    /// first, each with its matching lines (at most `per_session`).
+    pub fn search(dir: &Path, query: &str, per_session: usize) -> Vec<(SessionSummary, Vec<String>)> {
+        let needle = query.to_lowercase();
+        if needle.trim().is_empty() {
+            return Vec::new();
+        }
+        SessionStore::list(dir)
+            .into_iter()
+            .filter_map(|summary| {
+                let (_, entries) = read_file(&summary.path).ok()?;
+                let lines: Vec<String> = entries
+                    .iter()
+                    .filter_map(|entry| match &entry.kind {
+                        EntryKind::Message { message } => Some(message.text()),
+                        _ => None,
+                    })
+                    .flat_map(|text| {
+                        text.lines()
+                            .filter(|line| line.to_lowercase().contains(&needle))
+                            .map(|line| line.trim().to_string())
+                            .collect::<Vec<_>>()
+                    })
+                    .take(per_session)
+                    .collect();
+                (!lines.is_empty()).then_some((summary, lines))
+            })
+            .collect()
+    }
+
     /// Sessions in `dir`, most recently used first. Summaries come from the directory's index
     /// where a file is unchanged since it was summarised; the index is rewritten when anything
     /// changed.
@@ -748,6 +821,42 @@ mod tests {
             (Some("first session prompt"), 2)
         );
         assert!(SessionStore::list(&dir.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn prune_keeps_pinned_recent_and_open_sessions_and_search_finds_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let make = |text: &str| {
+            let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+            store.message(&Message::user(text));
+            std::fs::create_dir_all(dir.path().join(store.id()).join("agents")).unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            store
+        };
+        let old = make("old work on the Parser");
+        let pinned = make("pinned work");
+        pinned.append(EntryKind::Pin { pinned: true });
+        let open = make("open work");
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let cutoff = jiff::Timestamp::now();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let recent = make("recent parser fix\nsecond line");
+
+        let found = SessionStore::search(dir.path(), "PARSER", 3);
+        let ids: Vec<String> = found.iter().map(|(s, _)| s.id.clone()).collect();
+        assert_eq!(ids, [recent.id(), old.id()]);
+        assert_eq!(found[0].1, ["recent parser fix"]);
+        assert!(SessionStore::search(dir.path(), "  ", 3).is_empty());
+
+        let would = SessionStore::prune(dir.path(), cutoff, Some(&open.id()), true);
+        assert_eq!(would.iter().map(|s| s.id.clone()).collect::<Vec<_>>(), [old.id()]);
+        assert!(old.path().is_file());
+        let gone = SessionStore::prune(dir.path(), cutoff, Some(&open.id()), false);
+        assert_eq!(gone.len(), 1);
+        assert!(!old.path().exists() && !dir.path().join(old.id()).exists());
+        let left: Vec<String> = SessionStore::list(dir.path()).into_iter().map(|s| s.id).collect();
+        assert_eq!(left.len(), 3);
+        assert!(left.contains(&pinned.id()) && left.contains(&open.id()) && left.contains(&recent.id()));
     }
 
     #[test]

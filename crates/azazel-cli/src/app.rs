@@ -18,6 +18,7 @@ use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
 use azazel_core::limits::{LimitsExt, Spend};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
+use azazel_core::names::{Namer, SessionNamesExt};
 use azazel_core::packages::Packages;
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::permissions::shell::guard_env;
@@ -319,6 +320,9 @@ impl App {
                 .as_deref()
                 .map(|value| text_or_file("--append-system-prompt", value, &paths.cwd))
                 .transpose()?,
+        })?;
+        registry.load(&SessionNamesExt {
+            auto_name: config.session.auto_name,
         })?;
         registry.load(&LimitsExt {
             max_cost_usd: config.limits.max_cost_usd,
@@ -819,6 +823,10 @@ impl App {
 
     /// Ends the last session: tells extensions, stops the lead and background jobs.
     pub async fn finish(&self, active: &Active) {
+        // A name being chosen in the background is written before the session closes.
+        if let Some(namer) = self.registry.services.get::<Namer>() {
+            namer.settle().await;
+        }
         self.registry.bus.emit(&mut Event::SessionEnd).await;
         self.close(active).await;
         if let Some(jobs) = self.registry.services.get::<azazel_tools::Jobs>() {

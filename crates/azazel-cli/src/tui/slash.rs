@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use azazel_agent::{AgentCmd, ToolSource, UserInput};
 use azazel_ai::providers::presets;
-use azazel_ai::{Block, ModelSpec, Role as MessageRole, ThinkingLevel};
+use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::permissions::RuleKind;
 use azazel_core::skills::invocation_text;
 use azazel_core::{EntryKind, PermissionMode, SessionStore, StartSource};
@@ -39,7 +39,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ("context", "How full the context window is"),
     (
         "export",
-        "Write the conversation to a Markdown file: /export [path]",
+        "Write the conversation to a file: /export [path.md|.html|.jsonl]",
     ),
     ("theme", "Pick the colour theme, or set it: /theme light"),
     ("keys", "List key bindings"),
@@ -669,44 +669,18 @@ impl Tui {
     }
 
     fn export(&mut self, args: &str) {
+        use crate::export::{Format, default_file_name, render};
         let session = &self.active.session;
         let path = if args.is_empty() {
             self.app
                 .paths
                 .cwd
-                .join(format!("azazel-session-{}.md", session.id()))
+                .join(default_file_name(session, Format::Markdown))
         } else {
             self.app.paths.cwd.join(args)
         };
-        let mut out = format!(
-            "# {}\n",
-            session
-                .name()
-                .unwrap_or_else(|| format!("Session {}", session.id()))
-        );
-        for entry in session.build_context(None) {
-            let heading = match entry.message.role {
-                _ if entry.summary => "Earlier (summarised)",
-                MessageRole::User => "You",
-                MessageRole::Assistant => "Assistant",
-                MessageRole::Tool => continue,
-            };
-            let mut body = String::new();
-            for block in &entry.message.content {
-                match block {
-                    Block::Text { text } => body.push_str(text),
-                    Block::ToolCall { name, input, .. } => {
-                        body.push_str(&format!("\n- `{name}` {}\n", view::tool_summary(name, input)))
-                    }
-                    Block::Image { .. } => body.push_str("\n[image]\n"),
-                    Block::Thinking { .. } | Block::ToolResult { .. } | Block::Opaque { .. } => {}
-                }
-            }
-            if !body.trim().is_empty() {
-                out.push_str(&format!("\n## {heading}\n\n{}\n", body.trim()));
-            }
-        }
-        match std::fs::write(&path, out) {
+        let format = Format::from_path(&path).unwrap_or(Format::Markdown);
+        match std::fs::write(&path, render(session, format)) {
             Ok(()) => self.info(&format!("exported to {}", path.display())),
             Err(e) => self.fail(&format!("could not write {}: {e}", path.display())),
         }

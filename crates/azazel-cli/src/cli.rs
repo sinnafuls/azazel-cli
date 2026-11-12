@@ -46,6 +46,59 @@ pub enum SkillsAction {
     Remove { name: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SessionsAction {
+    /// The sessions of this project, most recently used first
+    List {
+        /// Of every project
+        #[arg(long)]
+        all_projects: bool,
+        /// One JSON object per session
+        #[arg(long)]
+        json: bool,
+    },
+    /// Sessions whose messages contain a text (case-insensitive)
+    Search {
+        query: String,
+        /// In every project
+        #[arg(long)]
+        all_projects: bool,
+        /// One JSON object per matching line
+        #[arg(long)]
+        json: bool,
+    },
+    /// Delete a session: its file and its sub-agents' transcripts
+    Delete {
+        /// A path to its file, or its id (a unique prefix is enough)
+        session: String,
+        /// Do not ask first
+        #[arg(long, short = 'y')]
+        yes: bool,
+    },
+    /// Delete the unpinned sessions not used for a while
+    Prune {
+        /// How long unused: 30d, 12h, 2w
+        #[arg(long, value_name = "AGE", default_value = "30d")]
+        older_than: String,
+        /// In every project
+        #[arg(long)]
+        all_projects: bool,
+        /// Only list what would be deleted
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Write a session to a file (the latest of this project when no id is given)
+    Export {
+        session: Option<String>,
+        /// markdown, html or jsonl; else taken from the file name, else markdown
+        #[arg(long, value_enum)]
+        format: Option<crate::export::Format>,
+        /// The file to write, or - for standard output
+        #[arg(short = 'o', long = "output-file", value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 pub enum AuthAction {
     /// Where each provider's credential comes from, without printing it
@@ -93,6 +146,22 @@ pub enum Sub {
     },
     /// Print a completion script for a shell
     Completions { shell: clap_complete::Shell },
+    /// List, search, delete, prune and export sessions
+    Sessions {
+        #[command(subcommand)]
+        action: SessionsAction,
+    },
+    /// Write a session to a file: Markdown, HTML or JSON lines
+    Export {
+        /// A path to its file, or its id; the latest session of this project when left out
+        session: Option<String>,
+        /// markdown, html or jsonl; else taken from the file name, else markdown
+        #[arg(long, value_enum)]
+        format: Option<crate::export::Format>,
+        /// The file to write, or - for standard output
+        #[arg(short = 'o', long = "output-file", value_name = "FILE")]
+        file: Option<PathBuf>,
+    },
     /// Install the newest release from GitHub over this binary
     Update {
         /// Only report whether a newer release exists
