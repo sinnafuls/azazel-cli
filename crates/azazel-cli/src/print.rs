@@ -62,6 +62,13 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
         app.finish(active).await;
         return EXIT_FAILED;
     }
+    // Tests ask a side question while the lead works on the prompt.
+    #[cfg(feature = "test-support")]
+    let side_question = crate::side::ask_from_env(
+        app.registry.services.clone(),
+        active.session.clone(),
+        active.lead.clone(),
+    );
     let lead = active.lead.id.clone();
     let team = app.registry.services.get::<Team>();
     let mut team_events = team.as_ref().map(|team| team.subscribe());
@@ -154,6 +161,10 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
         let _ = writeln!(stdout, "{answer}");
     }
     let _ = stdout.flush();
+    #[cfg(feature = "test-support")]
+    if let Some(asked) = side_question {
+        let _ = asked.await;
+    }
     app.finish(active).await;
     code
 }

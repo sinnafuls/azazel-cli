@@ -18,8 +18,8 @@ use azazel_core::agents::{DefSource, discover};
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
 use azazel_core::{
-    Config, ExtCtx, Extension, Headless, LoadOptions, Paths, PermissionGate, PermissionState, Registrar,
-    Registry, SessionStore, Ui,
+    CommandOutcome, Config, ExtCtx, Extension, Headless, LoadOptions, Paths, PermissionGate, PermissionState,
+    Registrar, Registry, SessionStore, Ui,
 };
 use azazel_team::{BUILTIN_AGENTS, MemberState, Team, TeamDeps, TeamEvent, TeamExt};
 use azazel_tools::CoreToolsExt;
@@ -85,6 +85,7 @@ const FRAGILE: &str = "---\nname: fragile\ndescription: Has a fallback model.\nm
 struct Bench {
     dir: tempfile::TempDir,
     team: Arc<Team>,
+    registry: Arc<Registry>,
     mock: Arc<MockProvider>,
     lead: AgentHandle,
     events: UnboundedReceiver<AgentEvent>,
@@ -175,12 +176,12 @@ impl Bench {
             base_delay: Duration::from_millis(1),
             ..RetryPolicy::default()
         };
-        let router = Arc::new(Router::new(
-            providers,
-            Catalog::default(),
-            BTreeMap::new(),
-            policy,
-        ));
+        // The built-in agents the commands start run on roles of their own.
+        let roles = ["reviewer", "scout"]
+            .into_iter()
+            .map(|role| (role.to_string(), vec![format!("mock/{role}").parse().unwrap()]))
+            .collect::<BTreeMap<_, _>>();
+        let router = Arc::new(Router::new(providers, Catalog::default(), roles, policy));
         let team = Arc::new(Team::new(TeamDeps {
             tools: registry.tools.clone(),
             hooks: registry.agent_hooks(),
@@ -236,6 +237,7 @@ impl Bench {
         Bench {
             dir,
             team,
+            registry,
             mock,
             lead,
             events,
@@ -280,6 +282,16 @@ impl Bench {
                 AgentEvent::Failed { error } => panic!("the lead failed: {error}"),
                 _ => {}
             }
+        }
+    }
+
+    /// Runs a slash command the way the UI does and returns what it says.
+    async fn command(&self, name: &str, args: &str) -> Result<String, String> {
+        let command = self.registry.command(name).unwrap();
+        match command.handler.run(args, &self.registry.bus.ctx()).await {
+            CommandOutcome::Show(text) => Ok(text),
+            CommandOutcome::Error(why) => Err(why),
+            _ => panic!("/{name} neither showed nor failed"),
         }
     }
 
@@ -634,5 +646,83 @@ async fn an_isolated_agents_work_lands_in_the_main_tree_when_applied() {
     assert_eq!(
         (calls[0].1, calls[0].2.as_str()),
         (true, "isolation: worktree requires a git repository")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_user_starts_a_reviewer_or_any_agent_and_the_lead_gets_the_report() {
+    let mut bench = Bench::new(4, true).await;
+    // Nothing changed yet, and a ref that is none: no agent is started for either.
+    let clean = bench.command("review", "").await.unwrap();
+    assert!(clean.contains("no uncommitted changes"), "{clean}");
+    let unknown = bench.command("review", "no-such-branch").await.unwrap_err();
+    assert!(unknown.contains("is not a commit, branch or tag"), "{unknown}");
+    assert!(
+        bench
+            .command("review", "--output=x")
+            .await
+            .unwrap_err()
+            .starts_with("usage: /review")
+    );
+    assert_eq!(bench.team.list().len(), 1);
+
+    std::fs::write(bench.project().join("f.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(bench.project().join("new.txt"), "fresh\n").unwrap();
+    bench
+        .mock
+        .push("reviewer", MockStep::text("approve: nothing found"));
+    bench.mock.push("lead", MockStep::text("the review is in"));
+    let started = bench.command("review", "").await.unwrap();
+    assert_eq!(
+        started,
+        "started reviewer-1; its report goes to the lead when it is done"
+    );
+    bench.until_idle().await;
+    let task = user_texts(&bench.mock.requests_for("reviewer")[0].messages).join("\n");
+    assert!(task.contains("Run `git diff HEAD`"), "{task}");
+    assert!(task.contains("- new.txt\n"), "{task}");
+    assert!(task.contains("Do not edit, create or delete any file"), "{task}");
+    let told = user_texts(&bench.mock.requests_for("lead")[0].messages).join("\n");
+    assert!(told.contains("approve: nothing found"), "{told}");
+
+    // The commits since a ref are reviewed with the three-dot diff.
+    bench.mock.push("reviewer", MockStep::text("approve"));
+    bench.mock.push("lead", MockStep::text("noted"));
+    bench.command("review", "HEAD").await.unwrap();
+    bench.until_idle().await;
+    let task = user_texts(&bench.mock.requests_for("reviewer")[1].messages).join("\n");
+    assert!(task.contains("Run `git diff HEAD...HEAD`"), "{task}");
+
+    // `/task` starts any definition, under a name when one is given.
+    let listing = bench.command("task", "").await.unwrap();
+    assert!(
+        listing.contains("scout: ") && listing.contains("worker: Naps on request."),
+        "{listing}"
+    );
+    bench.mock.push("scout", MockStep::text("f.txt holds two lines"));
+    bench.mock.push("lead", MockStep::text("thanks"));
+    let started = bench
+        .command("task", "scout name=finder what is in f.txt?")
+        .await
+        .unwrap();
+    assert!(started.starts_with("started finder;"), "{started}");
+    bench.until_idle().await;
+    let task = user_texts(&bench.mock.requests_for("scout")[0].messages).join("\n");
+    assert!(task.contains("what is in f.txt?"), "{task}");
+    assert_eq!(bench.state("finder"), MemberState::Done);
+    let told = user_texts(&bench.mock.requests_for("lead")[2].messages).join("\n");
+    assert!(told.contains("f.txt holds two lines"), "{told}");
+
+    let missing = bench.command("task", "ghost do it").await.unwrap_err();
+    assert!(
+        missing.starts_with("no agent definition named `ghost`"),
+        "{missing}"
+    );
+    assert!(
+        bench
+            .command("task", "scout")
+            .await
+            .unwrap_err()
+            .starts_with("usage: /task")
     );
 }

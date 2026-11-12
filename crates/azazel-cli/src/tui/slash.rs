@@ -97,6 +97,18 @@ const BUILTIN: &[(&str, &str)] = &[
         "hooks",
         "List the hooks, where they come from and how each last ran",
     ),
+    (
+        "btw",
+        "Ask a question on the side while the agent works: /btw <question>",
+    ),
+    (
+        "diff",
+        "Show the uncommitted changes; /diff turn or /diff session for changes since a checkpoint",
+    ),
+    (
+        "commit",
+        "Commit with a drafted message you can edit: /commit [what to say]",
+    ),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
     #[cfg(feature = "voice")]
@@ -259,6 +271,9 @@ impl Tui {
                 self.info(&report);
             }
             "hooks" => self.info(&crate::hooks::report(&self.app)),
+            "btw" => self.btw_command(args),
+            "diff" => self.diff_command(args).await,
+            "commit" => self.commit_command(args).await,
             "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
             "doctor" => {
                 let report = doctor::examine(&self.app.paths, self.app.trusted).await;
@@ -721,6 +736,10 @@ impl Tui {
         };
         let cost = match self.app.router.tier() {
             Some(tier) => format!("{cost}\n{}", crate::routing::tier_cost_note(tier)),
+            None => cost,
+        };
+        let cost = match crate::side::cost_report(&self.app.registry.services) {
+            Some(side) => format!("{cost}\n{side}"),
             None => cost,
         };
         self.info(&format!(

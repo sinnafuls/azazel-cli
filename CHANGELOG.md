@@ -80,6 +80,14 @@ GitHub are its section here.
 - Voice input: `Ctrl+Space` or `/voice` records from the microphone, a second press transcribes and puts the
   words in the input, `Esc` cancels; the input rule shows the recording time and a level meter.
 - Spoken replies: `/speak on|off|stop` reads the final reply of each run aloud; `Esc` or typing stops it.
+- `/btw <question>` asks about the session on the side while the agent works. The answer appears in a panel
+  where you can copy it, send it to the agent or ask a follow-up; nothing is added to the session.
+- `/review [ref]` and `/security-review [ref]` start a reviewer on your uncommitted changes, or on the commits
+  since a branch, tag or commit.
+- `/task <agent> [name=<id>] <prompt>` starts any agent yourself; its report goes to the lead.
+- `/diff` shows uncommitted changes file by file in the viewer; `/diff turn` and `/diff session` show what
+  changed since your last prompt or since the session began.
+- `/commit [hint]` drafts a commit message, lets you edit it and commits as you. It never amends or pushes.
 - `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
   `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
   configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
@@ -96,6 +104,8 @@ GitHub are its section here.
 - `Alt+Enter` messages are held by the UI and sent as real prompts (files attached, checkpoint, hooks).
 - `/reload` also re-reads skills, commands, agent definitions, rule files, hooks, key bindings and the theme.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
+- `/cost` also lists what side questions and commit drafts cost.
+- `Shift+Enter` adds a line in text prompts such as the commit message and feedback inputs.
 - `tui.show_thinking` and `tui.expand_tools` take effect at startup.
 - A skill's `allowed-tools` now takes effect: it limits the sub-agent of a `context: fork` skill, and for other
   skills allows the listed calls without a prompt until the run ends.

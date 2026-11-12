@@ -418,6 +418,9 @@ impl Tui {
         if let Some(overlay) = &mut self.overlay {
             return overlay.on_paste(pasted);
         }
+        if let Some(panel) = &mut self.btw {
+            return panel.on_paste(pasted);
+        }
         let home = std::env::home_dir();
         match dropped_files(pasted, home.as_deref()) {
             Some(files) => self.drop_files(&files),

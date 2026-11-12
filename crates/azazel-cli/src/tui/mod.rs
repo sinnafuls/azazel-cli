@@ -3,7 +3,9 @@
 //! of the screen, the input and the status line.
 
 mod bridge;
+mod btw;
 mod clip;
+mod gitcmd;
 mod input;
 mod overlay;
 mod pager;
@@ -164,6 +166,10 @@ enum Internal {
     Setting { path: String, value: toml::Value },
     #[cfg(feature = "voice")]
     Voice(voice::Done),
+    /// Text of a side question's answer, or its end.
+    Btw(btw::Update),
+    /// A commit message was drafted, or could not be.
+    CommitDraft(gitcmd::Draft),
 }
 
 pub struct Tui {
@@ -208,6 +214,10 @@ pub struct Tui {
     stream: StreamView,
     tools: Vec<RunningTool>,
     overlay: Option<Overlay>,
+    /// Overlays of the UI's own that wait until nothing else asks for the user.
+    deferred: VecDeque<Overlay>,
+    /// The side question (`/btw`) being answered; it stands in for the input.
+    btw: Option<btw::Panel>,
     waiting: VecDeque<UiRequest>,
     completion: Option<Completion>,
     files: Option<Vec<String>>,
@@ -337,6 +347,8 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         stream: StreamView::default(),
         tools: Vec::new(),
         overlay: None,
+        deferred: VecDeque::new(),
+        btw: None,
         waiting: VecDeque::new(),
         completion: None,
         files: None,
@@ -551,7 +563,11 @@ impl Tui {
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
                 _ = ticker.tick(),
-                    if self.busy || self.agents_active() || self.overlay.is_some() || self.voice_animates() => {}
+                    if self.busy
+                        || self.agents_active()
+                        || self.overlay.is_some()
+                        || self.btw.is_some()
+                        || self.voice_animates() => {}
             }
         }
     }
@@ -707,6 +723,10 @@ impl Tui {
         let mut cursor;
         if let Some(overlay) = &self.overlay {
             let (lines, at) = overlay.render(width, height.saturating_sub(2).max(4), &self.theme);
+            cursor = at;
+            bottom.extend(lines);
+        } else if let Some(panel) = &mut self.btw {
+            let (lines, at) = panel.render(width, height.saturating_sub(2).max(4), &self.theme);
             cursor = at;
             bottom.extend(lines);
         } else {
@@ -942,6 +962,8 @@ impl Tui {
                 share,
             } => (command, output, status, share),
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
+            Internal::Btw(update) => return self.on_btw(update),
+            Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -973,6 +995,9 @@ impl Tui {
     // ------------------------------------------------------------ requests from agents
 
     fn show_next_request(&mut self) {
+        if self.overlay.is_none() {
+            self.overlay = self.deferred.pop_front();
+        }
         while self.overlay.is_none() {
             let Some(request) = self.waiting.pop_front() else {
                 return;
@@ -1200,6 +1225,9 @@ impl Tui {
                 self.finish_overlay(overlay, outcome).await;
             }
             return;
+        }
+        if self.btw.is_some() {
+            return self.btw_key(key).await;
         }
         if let Some(completion) = &mut self.completion {
             match key.code {
@@ -1694,6 +1722,9 @@ impl Tui {
                 if let Some(action) = actions.get(choice) {
                     self.other_command("mcp", &format!("{action} {server}")).await;
                 }
+            }
+            action @ (Action::CommitStage(_) | Action::Commit { .. }) => {
+                self.finish_commit(action, choice, typed)
             }
             action @ (Action::CopyCode(_)
             | Action::Jobs(_)
