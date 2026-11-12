@@ -154,7 +154,30 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 | `/agents` | Lists the session's agents, every definition with its source, and invalid definition files |
 | `/msg <id\|all> <text>` | Sends a message as you |
 | `/stop <id\|all>` | Stops an agent and the agents it started |
+| `/task <agent> [name=<id>] <prompt>` | Starts an agent from any definition yourself; `/task` alone lists the definitions |
+| `/review [ref]`, `/security-review [ref]` | Starts a `reviewer` on the uncommitted changes, or on the commits since `ref` |
 | `Esc` | Aborts the lead only. Agents a waiting `task` call started stop with it; agents started with `wait: false` keep running. |
+
+### Starting agents yourself
+
+The lead decides when to delegate, but you can start an agent without asking it:
+
+```text
+❯ /task scout where is the retry policy configured?
+❯ /task coder name=fixer make the flaky upload test deterministic
+❯ /review
+❯ /review main
+❯ /security-review
+```
+
+- `/task <agent> [name=<id>] <prompt>` starts the named definition with your prompt. The agent appears in the
+  roster like any other, and its report is sent to the lead when it finishes, so the lead can act on it.
+- `/review` starts the `reviewer` on the uncommitted changes: it is told to run `git diff HEAD` and is given the
+  names of new, untracked files to read. `/review <ref>` reviews the commits since a branch, tag or commit with
+  `git diff <ref>...HEAD`. The reviewer reports findings with `file:line`, a severity and a fix, and may not edit
+  anything. With nothing to review, no agent is started.
+- `/security-review [ref]` starts the same reviewer with the built-in `security-review` skill added to its task,
+  and limits the review to security.
 
 `/playtest` starts a `playtester` directly; see [screen and playtesting](screen-and-playtesting.md). In print mode's JSON output and in [RPC mode](rpc.md) every event carries the id of the agent it came from.
 

@@ -87,6 +87,13 @@ pub enum Action {
     PermissionAdd,
     /// Where a new rule goes: this session, or saved for the project.
     PermissionScope(Rule, RuleKind),
+    /// `/commit` with nothing staged: stage everything, or cancel.
+    CommitStage(Box<super::gitcmd::Pending>),
+    /// The commit message being edited, for the repository at `top`.
+    Commit {
+        top: PathBuf,
+        stage_all: bool,
+    },
 }
 
 impl Action {
@@ -305,9 +312,14 @@ impl Overlay {
                 }
                 Outcome::Pending
             }
-            Kind::Input { editor, .. } => {
+            Kind::Input { editor, secret } => {
                 if key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT) {
                     return Outcome::Text(editor.text().to_string());
+                }
+                // A commit message or feedback may run over several lines.
+                if key.code == KeyCode::Enter && !*secret {
+                    editor.insert_newline();
+                    return Outcome::Pending;
                 }
                 editor.handle_key(key);
                 Outcome::Pending
@@ -433,6 +445,27 @@ mod tests {
 
     fn items(labels: &[&str]) -> Vec<SelectItem> {
         labels.iter().map(|l| SelectItem::new(*l, "")).collect()
+    }
+
+    #[test]
+    fn shift_enter_adds_a_line_to_an_input_but_not_to_a_secret() {
+        let shift_enter = KeyEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..key(KeyCode::Enter)
+        };
+        let mut input = Overlay::input("Commit message", Vec::new(), Action::Mode);
+        input.on_paste("Fix the parser");
+        assert!(matches!(input.on_key(&shift_enter), Outcome::Pending));
+        input.on_paste("It dropped the last token.");
+        let typed = input.on_key(&key(KeyCode::Enter));
+        assert!(
+            matches!(&typed, Outcome::Text(text) if text == "Fix the parser\nIt dropped the last token.")
+        );
+
+        let mut secret = Overlay::secret("Key", Vec::new(), Action::Mode);
+        secret.on_paste("sk-1");
+        assert!(matches!(secret.on_key(&shift_enter), Outcome::Pending));
+        assert!(matches!(secret.on_key(&key(KeyCode::Enter)), Outcome::Text(text) if text == "sk-1"));
     }
 
     #[test]

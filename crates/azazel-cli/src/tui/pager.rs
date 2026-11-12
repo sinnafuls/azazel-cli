@@ -33,9 +33,7 @@ pub enum Source {
         input: Value,
         output: ToolOutput,
     },
-    /// The unified diff of one file. `[` and `]` jump between these.
-    // Nothing in the transcript is a diff of its own; this is here for `/diff`.
-    #[allow(dead_code)]
+    /// The unified diff of one file (`/diff`). `[` and `]` jump between these.
     Diff { file: String, text: String },
     /// A line of muted text: something the UI says, not the conversation.
     Note(String),

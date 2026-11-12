@@ -1,6 +1,6 @@
 //! What the team adds to a session: its tools, the `agent://` scheme, the prompt parts that tell
-//! agents who they are and whom they can delegate to, and the `/agents`, `/msg` and `/stop`
-//! commands.
+//! agents who they are and whom they can delegate to, and the `/agents`, `/msg`, `/stop`, `/task`,
+//! `/review`, `/security-review` and `/playtest` commands.
 
 use std::sync::Arc;
 
@@ -22,6 +22,9 @@ use crate::tools::{
     AgentListTool, AgentSendTool, AgentStopTool, AgentWaitTool, TaskTool, WorktreeApplyTool,
     WorktreeDiscardTool, roster_table,
 };
+
+/// New files `/review` names one by one; more than this and the reviewer finds them itself.
+const MAX_UNTRACKED_NAMED: usize = 50;
 
 fn team(services: &Services) -> Result<Arc<Team>, String> {
     services
@@ -324,6 +327,217 @@ impl CommandHandler for PlaytestCommand {
     }
 }
 
+/// A commit, branch or tag as `/review` accepts it: one word that git cannot take for an option.
+fn usable_ref(reference: &str) -> bool {
+    !reference.is_empty()
+        && !reference.starts_with('-')
+        && reference
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/-~^@{}".contains(c))
+}
+
+/// The task `/review [ref]` gives the reviewer: which diff to read, what to report, and that it
+/// changes nothing. `untracked` are new files the diff does not show; `security` is the body of the
+/// `security-review` skill for `/security-review`.
+fn review_task(reference: Option<&str>, untracked: &[String], security: Option<&str>) -> String {
+    let what = if security.is_some() {
+        "Review for security defects"
+    } else {
+        "Review"
+    };
+    let mut task = match reference {
+        Some(reference) => format!(
+            "{what} the commits on this branch since `{reference}`.\n\n\
+             Run `git diff {reference}...HEAD` to read the change; `git log --oneline {reference}..HEAD` \
+             lists its commits."
+        ),
+        None => format!(
+            "{what} the uncommitted changes in this working tree.\n\n\
+             Run `git diff HEAD` to read the change to tracked files, staged or not."
+        ),
+    };
+    if !untracked.is_empty() {
+        task.push_str("\nThese files are new and not in that diff; read each in full:\n");
+        for file in untracked {
+            task.push_str(&format!("- {file}\n"));
+        }
+    }
+    task.push_str(
+        "\n\nReport findings only, the most severe first. Give each one its `file:line`, a severity \
+         (`blocker`, `should-fix` or `nit`), what is wrong and why it matters, and a concrete fix. \
+         Do not edit, create or delete any file, and run nothing but `git diff`, `git log` and \
+         `git show`.",
+    );
+    if let Some(skill) = security {
+        task.push_str(&format!(
+            "\n\nLimit the review to security: leave out style and maintainability. Work by this \
+             skill.\n\n# Skill: security-review\n{}",
+            skill.trim()
+        ));
+    }
+    task
+}
+
+/// Runs git in `cwd`; its output when it succeeded.
+async fn git(cwd: &std::path::Path, args: &[&str]) -> Option<String> {
+    let output = tokio::process::Command::new("git")
+        .args(["-c", "core.quotepath=false"])
+        .args(args)
+        .current_dir(cwd)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Starts `request` for the lead on the user's behalf; the report goes to the lead.
+async fn start_for_user(ctx: &ExtCtx, request: SpawnRequest) -> CommandOutcome {
+    let team = match team(&ctx.services) {
+        Ok(team) => team,
+        Err(why) => return CommandOutcome::Error(why),
+    };
+    let Some(lead) = team.lead() else {
+        return CommandOutcome::Error("there is no session to report to".to_string());
+    };
+    match team.spawn(lead.info(), request, true).await {
+        Ok(id) => CommandOutcome::Show(format!(
+            "started {id}; its report goes to the lead when it is done"
+        )),
+        Err(why) => CommandOutcome::Error(why),
+    }
+}
+
+/// `/review [ref]` and `/security-review [ref]`: a reviewer reads the uncommitted changes, or the
+/// commits since `ref`, and reports to the lead.
+struct ReviewCommand {
+    security: bool,
+}
+
+#[async_trait]
+impl CommandHandler for ReviewCommand {
+    async fn run(&self, args: &str, ctx: &ExtCtx) -> CommandOutcome {
+        let name = if self.security {
+            "security-review"
+        } else {
+            "review"
+        };
+        let reference = args.trim();
+        if !reference.is_empty() && !usable_ref(reference) {
+            return CommandOutcome::Error(format!(
+                "usage: /{name} [ref], where ref is a commit, branch or tag"
+            ));
+        }
+        if git(&ctx.cwd, &["rev-parse", "--is-inside-work-tree"])
+            .await
+            .is_none()
+        {
+            return CommandOutcome::Error(format!("/{name} needs a git repository"));
+        }
+        let mut untracked = Vec::new();
+        let reference = if reference.is_empty() {
+            let status = git(&ctx.cwd, &["status", "--porcelain"])
+                .await
+                .unwrap_or_default();
+            if status.trim().is_empty() {
+                return CommandOutcome::Show(format!(
+                    "there are no uncommitted changes to review; /{name} <ref> reviews the commits since a ref"
+                ));
+            }
+            untracked = git(&ctx.cwd, &["ls-files", "--others", "--exclude-standard"])
+                .await
+                .unwrap_or_default()
+                .lines()
+                .take(MAX_UNTRACKED_NAMED)
+                .map(str::to_string)
+                .collect();
+            None
+        } else {
+            let commit = format!("{reference}^{{commit}}");
+            if git(&ctx.cwd, &["rev-parse", "--verify", "--quiet", &commit])
+                .await
+                .is_none()
+            {
+                return CommandOutcome::Error(format!(
+                    "`{reference}` is not a commit, branch or tag of this repository"
+                ));
+            }
+            Some(reference)
+        };
+        let skill = self
+            .security
+            .then(|| ctx.services.get::<SkillRegistry>())
+            .flatten()
+            .and_then(|skills| skills.get("security-review"));
+        if self.security && skill.is_none() {
+            return CommandOutcome::Error(
+                "the security-review skill is not loaded in this session".to_string(),
+            );
+        }
+        let request = SpawnRequest {
+            def: "reviewer".to_string(),
+            prompt: review_task(
+                reference,
+                &untracked,
+                skill.as_ref().map(|skill| skill.body.as_str()),
+            ),
+            name: None,
+            model: None,
+            isolation: None,
+            tools: None,
+        };
+        start_for_user(ctx, request).await
+    }
+}
+
+/// `/task <agent> [name=<id>] <prompt>` as a request; `Err` is the usage.
+fn task_request(args: &str) -> Result<SpawnRequest, String> {
+    let usage = || "usage: /task <agent> [name=<id>] <prompt>; /task alone lists the agents".to_string();
+    let (def, rest) = args.trim().split_once(char::is_whitespace).ok_or_else(usage)?;
+    let rest = rest.trim_start();
+    let (name, prompt) = match rest.strip_prefix("name=") {
+        Some(named) => {
+            let (name, prompt) = named.split_once(char::is_whitespace).ok_or_else(usage)?;
+            (Some(name.to_string()), prompt.trim())
+        }
+        None => (None, rest.trim()),
+    };
+    if prompt.is_empty() || name.as_deref() == Some("") {
+        return Err(usage());
+    }
+    Ok(SpawnRequest {
+        def: def.to_string(),
+        prompt: prompt.to_string(),
+        name,
+        model: None,
+        isolation: None,
+        tools: None,
+    })
+}
+
+/// `/task`: the user starts any defined agent; its report goes to the lead.
+struct TaskCommand(Arc<AgentDefs>);
+
+#[async_trait]
+impl CommandHandler for TaskCommand {
+    async fn run(&self, args: &str, ctx: &ExtCtx) -> CommandOutcome {
+        if args.trim().is_empty() {
+            let mut out = String::from("Agents you can start with /task <agent> [name=<id>] <prompt>:\n");
+            for def in self.0.list() {
+                out.push_str(&format!("{}: {}\n", def.name, def.description));
+            }
+            return CommandOutcome::Show(out);
+        }
+        match task_request(args) {
+            Ok(request) => start_for_user(ctx, request).await,
+            Err(usage) => CommandOutcome::Error(usage),
+        }
+    }
+}
+
 /// Tells an agent, before its next request, which files it read were changed by another agent.
 struct StaleFiles;
 
@@ -429,6 +643,25 @@ impl Extension for TeamExt {
             argument_hint: Some("<launch command> [-- <what to test>]".to_string()),
             handler: Arc::new(PlaytestCommand),
         });
+        r.command(Command {
+            name: "review".to_string(),
+            description: "Have a reviewer read the uncommitted changes, or the commits since a ref"
+                .to_string(),
+            argument_hint: Some("[ref]".to_string()),
+            handler: Arc::new(ReviewCommand { security: false }),
+        });
+        r.command(Command {
+            name: "security-review".to_string(),
+            description: "Have a reviewer look for security defects in the same changes".to_string(),
+            argument_hint: Some("[ref]".to_string()),
+            handler: Arc::new(ReviewCommand { security: true }),
+        });
+        r.command(Command {
+            name: "task".to_string(),
+            description: "Start an agent yourself; its report goes to the lead".to_string(),
+            argument_hint: Some("<agent> [name=<id>] <prompt>".to_string()),
+            handler: Arc::new(TaskCommand(self.defs.clone())),
+        });
         r.on(EventKind::Context, Arc::new(StaleFiles));
         r.on(EventKind::PermissionRequest, Arc::new(ApprovalWatch));
         Ok(())
@@ -470,6 +703,58 @@ mod tests {
 
         for empty in ["", "   ", " -- only a focus"] {
             assert!(playtest_task(empty, cwd).is_err_and(|usage| usage.starts_with("usage: /playtest")));
+        }
+    }
+
+    #[test]
+    fn the_review_task_names_the_diff_to_read_and_forbids_edits() {
+        let uncommitted = review_task(None, &["src/new.rs".to_string()], None);
+        assert!(uncommitted.starts_with("Review the uncommitted changes"));
+        assert!(uncommitted.contains("Run `git diff HEAD`"));
+        assert!(uncommitted.contains("- src/new.rs\n"));
+        assert!(uncommitted.contains("`file:line`") && uncommitted.contains("Do not edit"));
+
+        let since = review_task(Some("main"), &[], None);
+        assert!(since.contains("Run `git diff main...HEAD`"));
+        assert!(since.contains("`git log --oneline main..HEAD`"));
+        assert!(!since.contains("not in that diff"));
+
+        let security = review_task(None, &[], Some("Find injection.\n"));
+        assert!(security.starts_with("Review for security defects the uncommitted changes"));
+        assert!(security.ends_with("# Skill: security-review\nFind injection."));
+
+        for good in [
+            "main",
+            "origin/main",
+            "v1.2.0",
+            "HEAD~3",
+            "a1b2c3d",
+            "@{upstream}",
+        ] {
+            assert!(usable_ref(good), "{good}");
+        }
+        for bad in ["", "--output=x", "main; rm -rf .", "a b", "$(id)", "`id`"] {
+            assert!(!usable_ref(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_task_line_is_an_agent_an_optional_name_and_a_prompt() {
+        let plain = task_request("scout  find the parser entry points ").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            (plain.def.as_str(), plain.name.as_deref(), plain.prompt.as_str()),
+            ("scout", None, "find the parser entry points")
+        );
+        let named = task_request("coder name=fixer fix name=value parsing").unwrap_or_else(|e| panic!("{e}"));
+        assert_eq!(
+            (named.def.as_str(), named.name.as_deref(), named.prompt.as_str()),
+            ("coder", Some("fixer"), "fix name=value parsing")
+        );
+        for incomplete in ["scout", "scout   ", "scout name=x", "scout name= do it"] {
+            assert!(
+                task_request(incomplete).is_err_and(|usage| usage.starts_with("usage: /task")),
+                "{incomplete}"
+            );
         }
     }
 }

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use azazel_agent::AgentInfo;
 use azazel_agent::tool::tool_spec;
-use azazel_ai::{AiError, Message, ModelRef, ModelSpec, Request, Router, StreamEvent, ThinkingLevel, Usage};
+use azazel_ai::{
+    AiError, Block, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, ThinkingLevel, Usage,
+};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
@@ -147,12 +149,29 @@ impl Side {
     }
 }
 
+/// A conversation as a side request can send it. While tools run, the newest reply still has
+/// calls without results, which no provider accepts: those calls are left out, and so is what
+/// the reply thought on the way to them. Any earlier message is returned as it is.
+pub fn settled(mut context: Vec<Message>) -> Vec<Message> {
+    let Some(last) = context.last_mut() else {
+        return context;
+    };
+    if last.role != Role::Assistant || last.tool_calls().next().is_none() {
+        return context;
+    }
+    last.content.retain(|block| matches!(block, Block::Text { .. }));
+    if last.text().trim().is_empty() {
+        context.pop();
+    }
+    context
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use azazel_ai::testing::{MockProvider, MockStep};
-    use azazel_ai::{Catalog, ModelRef, Provider, RetryPolicy, Role};
+    use azazel_ai::{Catalog, ModelRef, Provider, RetryPolicy};
     use serde_json::json;
 
     use super::*;
@@ -271,5 +290,37 @@ mod tests {
             .ask(ask("again"), &mut |_| {}, CancellationToken::new())
             .await;
         assert!(failed.unwrap_err().contains("overloaded"));
+    }
+
+    #[test]
+    fn a_reply_whose_tools_still_run_is_sent_without_its_calls() {
+        let call = |id: &str| Block::ToolCall {
+            id: id.into(),
+            name: "shell".into(),
+            input: json!({}),
+            signature: None,
+        };
+        let reply = |content: Vec<Block>| Message {
+            role: Role::Assistant,
+            ..Message::user_blocks(content)
+        };
+        let done = vec![
+            Message::user("go"),
+            reply(vec![call("c1")]),
+            Message::tool(vec![Block::tool_result("c1", "ok", false)]),
+        ];
+        assert_eq!(settled(done.clone()), done);
+
+        let mut running = done.clone();
+        running.push(reply(vec![Block::text("Running the tests."), call("c2")]));
+        let sent = settled(running);
+        assert_eq!(sent.len(), 4);
+        assert_eq!(sent[3].content, vec![Block::text("Running the tests.")]);
+
+        // Nothing but calls: the whole reply is left out.
+        let mut silent = done.clone();
+        silent.push(reply(vec![call("c2")]));
+        assert_eq!(settled(silent), done);
+        assert_eq!(settled(Vec::new()), Vec::new());
     }
 }

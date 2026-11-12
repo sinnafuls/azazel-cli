@@ -256,7 +256,10 @@ Session and display:
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
-| `/cost` | Requests, tokens and money spent in this session |
+| `/cost` | Requests, tokens and money spent in this session, with what side questions and commit drafts cost |
+| `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
+| `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
+| `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/context` | How full the context window is, message count, tools offered |
 | `/theme [name]` | Pick or set the colour theme |
 | `/keys` | List key bindings |
@@ -303,6 +306,9 @@ Team and goals ([team](team.md), [goals](goals.md), [screen and playtesting](scr
 | `/goal <objective>` | Set an objective the agent works on until it is verified; also `/goal status\|pause\|resume\|drop` |
 | `/verify [what should be true]` | Run the project's checks and a verifier agent on the work so far |
 | `/playtest <launch command> [-- <what to test>]` | Have a playtester run a build, play it and report defects |
+| `/review [ref]` | Have a reviewer read the uncommitted changes, or the commits since `ref`, and report findings to the lead |
+| `/security-review [ref]` | The same review, limited to security and guided by the `security-review` skill |
+| `/task <agent> [name=<id>] <prompt>` | Start any agent yourself; its report goes to the lead. `/task` alone lists the agents |
 
 Skills, extensions and services:
 
@@ -323,6 +329,57 @@ completion as well. `/memory` is absent when memory is disabled in the configura
 
 `/copy` uses the system clipboard. Over SSH, or when that fails, it asks the terminal to copy instead (OSC 52,
 passed through tmux when azazel runs inside it); the terminal must allow programs to set the clipboard.
+
+## Side questions
+
+`/btw <question>` asks the model something about the session without interrupting it: "which file did you
+change first?", "why two parsers?". It works while the agent is busy. The question goes out as a request of its
+own, with the same system prompt and tools as the lead's (so the provider's prompt cache is reused) and the
+conversation as it stands. The model is told to answer once, from what it already knows, without tools. Nothing
+is written to the session, and the agent never sees the exchange unless you send it. The cost is counted in the
+session's spend and listed by `/cost` under `btw`.
+
+The answer streams into a panel that takes the place of the input until you close it:
+
+| Key | Effect |
+|---|---|
+| `Esc` | Close the panel; a request still running is cancelled |
+| `c` | Copy the answer as Markdown |
+| `s` | Send the question and its answer to the agent: as a steering message while it works, as a prompt when it is idle |
+| `f` | Ask a follow-up. The exchange so far goes along with it, and still stays out of the session |
+| `↑` `↓`, `PgUp` `PgDn`, `Home` `End` | Scroll a long answer |
+
+If the model answers with a tool call anyway, the call is dropped and the panel says
+`the model tried to use <tool>; ask in the main conversation`. An approval or a question from the agent is shown
+over the panel and the panel returns afterwards.
+
+## Diffs and commits
+
+`/diff` shows what changed in the [transcript viewer](#transcript-viewer), one item per file, so `[` and `]`
+jump between files and `y` copies the diff of the file under the cursor:
+
+| Command | Shows |
+|---|---|
+| `/diff` | The working tree against `HEAD`: staged and unstaged changes, and untracked files as additions |
+| `/diff turn` | What changed since the checkpoint taken before your last prompt |
+| `/diff session` | What changed since the session's first prompt |
+
+`/diff turn` and `/diff session` compare [checkpoints](sessions-and-checkpoints.md), so they also work outside a
+git repository and include what shell commands changed. Plain `/diff` needs a git repository.
+
+`/commit [what to say]` makes a commit as you:
+
+1. It reads `git status`, the staged diff and the last ten commit subjects. When nothing is staged it asks
+   whether to stage everything (`git add -A`); stage a part yourself with `!git add <path>` first to commit only
+   that.
+2. The `smol` role drafts a message in the style of the recent subjects. Anything you write after `/commit` is
+   passed to it as a hint. The draft costs a small request, listed by `/cost` under `commit`.
+3. The message opens in an input. Edit it; `Shift+Enter` adds a line and `Ctrl+G` opens it in your editor.
+   `Enter` commits, `Esc` or an empty message cancels.
+4. `git commit` runs with your identity, hooks and signing. Its output is shown, and the agent is told about the
+   commit the way it is told about a `!command`.
+
+`/commit` never amends and never pushes. When there is nothing to commit it says so.
 
 ## Transcript viewer
 
