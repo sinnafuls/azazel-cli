@@ -2,7 +2,7 @@
 name: playtester
 description: Use to run a game or app build, play it the way a user would, and get back the defects with the captured frames that show them.
 tools: shell, job, screen, browser, read
-model: "@vision"
+model: "@playtester"
 max-turns: 80
 spawns: []
 ---

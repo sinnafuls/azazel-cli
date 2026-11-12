@@ -14,19 +14,39 @@ pub enum ThinkingParam {
 }
 
 /// `Off` when the model does not reason or the level is `Off`. Budget APIs get a token budget that
-/// always leaves at least 1024 output tokens; effort APIs get `minimal|low|medium|high`.
+/// always leaves at least 1024 output tokens; effort APIs get the nearest effort name they know.
 pub fn thinking_param(api: WireApi, model: &ModelInfo, level: ThinkingLevel) -> ThinkingParam {
     if !model.reasoning || level == ThinkingLevel::Off {
         return ThinkingParam::Off;
     }
     match api {
-        WireApi::OpenAiResponses | WireApi::OpenAiChat => ThinkingParam::Effort(match level {
+        WireApi::OpenAiResponses
+        | WireApi::OpenAiChat
+        | WireApi::AzureOpenAiResponses
+        | WireApi::AzureOpenAiChat => ThinkingParam::Effort(match level {
             ThinkingLevel::Off | ThinkingLevel::Minimal => "minimal",
             ThinkingLevel::Low => "low",
             ThinkingLevel::Medium => "medium",
             ThinkingLevel::High | ThinkingLevel::Xhigh | ThinkingLevel::Max => "high",
         }),
-        WireApi::AnthropicMessages | WireApi::GoogleGenerative | WireApi::BedrockConverse => {
+        // OpenRouter translates its own effort names for whichever model answers.
+        WireApi::OpenRouter => ThinkingParam::Effort(match level {
+            ThinkingLevel::Off | ThinkingLevel::Minimal => "minimal",
+            ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High => "high",
+            ThinkingLevel::Xhigh | ThinkingLevel::Max => "xhigh",
+        }),
+        WireApi::OllamaChat => ThinkingParam::Effort(match level {
+            ThinkingLevel::Off | ThinkingLevel::Minimal | ThinkingLevel::Low => "low",
+            ThinkingLevel::Medium => "medium",
+            ThinkingLevel::High | ThinkingLevel::Xhigh => "high",
+            ThinkingLevel::Max => "max",
+        }),
+        WireApi::AnthropicMessages
+        | WireApi::GoogleGenerative
+        | WireApi::GoogleGeminiCli
+        | WireApi::BedrockConverse => {
             let ceiling = model.max_output.saturating_sub(1024).max(1024);
             let budget = match level {
                 ThinkingLevel::Off | ThinkingLevel::Minimal => 1024,
@@ -85,7 +105,7 @@ mod tests {
     }
 
     #[test]
-    fn effort_apis_cap_at_high() {
+    fn effort_apis_use_the_names_they_know() {
         let m = model(true, 64_000);
         assert_eq!(
             thinking_param(WireApi::OpenAiChat, &m, ThinkingLevel::Low),
@@ -94,6 +114,22 @@ mod tests {
         assert_eq!(
             thinking_param(WireApi::OpenAiResponses, &m, ThinkingLevel::Max),
             ThinkingParam::Effort("high")
+        );
+        assert_eq!(
+            thinking_param(WireApi::AzureOpenAiChat, &m, ThinkingLevel::Xhigh),
+            ThinkingParam::Effort("high")
+        );
+        assert_eq!(
+            thinking_param(WireApi::OpenRouter, &m, ThinkingLevel::Max),
+            ThinkingParam::Effort("xhigh")
+        );
+        assert_eq!(
+            thinking_param(WireApi::OllamaChat, &m, ThinkingLevel::Minimal),
+            ThinkingParam::Effort("low")
+        );
+        assert_eq!(
+            thinking_param(WireApi::OllamaChat, &m, ThinkingLevel::Max),
+            ThinkingParam::Effort("max")
         );
     }
 }

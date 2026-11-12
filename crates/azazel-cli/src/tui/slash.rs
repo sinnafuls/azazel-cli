@@ -588,11 +588,15 @@ impl Tui {
 
     fn clear_screen(&mut self) {
         self.transcript.clear();
+        self.after_card = false;
         let _ = self.renderer.suspend();
         let out = self.renderer.get_mut();
         // Screen, scrollback, then home.
         let _ = out.write_all(b"\x1b[2J\x1b[3J\x1b[H");
         let _ = out.flush();
+        // The live region starts over at the top of an empty screen and fills it again.
+        let (_, rows) = self.renderer.size();
+        self.floor.reset(rows);
     }
 
     fn show_cost(&mut self) {

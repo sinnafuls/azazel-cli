@@ -281,10 +281,9 @@ fn catalog() -> Result<()> {
         response.json::<Value>().await
     })?;
 
-    let presets = azazel_ai::providers::presets::presets();
-    let sources = presets
-        .iter()
-        .map(|provider| (provider.id.as_str(), provider.id.as_str()))
+    // Each built-in provider says what it is called in the source; several may share one.
+    let sources = azazel_ai::providers::presets::catalog_sources()
+        .into_iter()
         .chain(CLOUD_SOURCES);
     let mut models: Vec<ModelInfo> = Vec::new();
     for (source_name, provider) in sources {
@@ -353,7 +352,13 @@ fn model_info(provider: &str, entry: &Value) -> Option<ModelInfo> {
         }),
         _ => None,
     };
+    let name = entry
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty() && *name != id)
+        .map(str::to_string);
     Some(ModelInfo {
+        name,
         context_window: limit("context").unwrap_or(unknown.context_window),
         max_output: limit("output")
             .and_then(|n| u32::try_from(n).ok())

@@ -3,7 +3,7 @@ name: verifier
 description: Use when work is claimed complete and you need an independent check, with commands actually run, of whether the stated objective is met.
 tools: read, glob, grep, shell
 disallowed-tools: write, edit
-model: "@verify"
+model: "@verifier"
 max-turns: 80
 spawns: []
 ---

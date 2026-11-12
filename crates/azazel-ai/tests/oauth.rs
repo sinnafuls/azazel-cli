@@ -373,16 +373,9 @@ async fn the_device_flow_waits_longer_after_slow_down_and_stops_when_told() {
 
 fn provider(oauth: Option<OAuthSettings>) -> ProviderConfig {
     ProviderConfig {
-        id: "gateway".into(),
-        api: WireApi::OpenAiChat,
-        base_url: "http://gateway.invalid/v1".into(),
-        api_key_env: Vec::new(),
-        api_key_command: None,
-        headers: BTreeMap::new(),
-        oauth_headers: BTreeMap::new(),
         requires_key: true,
-        auth_style: Default::default(),
         oauth,
+        ..ProviderConfig::new("gateway", WireApi::OpenAiChat, "http://gateway.invalid/v1")
     }
 }
 

@@ -1,5 +1,6 @@
-//! The interactive terminal UI: the transcript scrolls into the terminal's own scrollback and a
-//! small live region at the bottom holds the streaming reply, running tools, the input and status.
+//! The interactive terminal UI: the transcript scrolls into the terminal's own scrollback, and a
+//! live region below it holds the streaming reply and running tools on top and, on the last rows
+//! of the screen, the input and the status line.
 
 mod bridge;
 mod overlay;
@@ -21,10 +22,12 @@ use azazel_core::{
 };
 use azazel_team::{Goals, Team, TeamEvent};
 use azazel_tools::{TodoStatus, TodoStore};
-use azazel_tui::components::{format_tokens, markdown, spinner, status, todo, tool_card};
+use azazel_tui::components::{
+    composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
+};
 use azazel_tui::{
-    ColorDepth, Editor, Frame, Keymap, Line, Renderer, Role, SelectItem, SelectList, Spinner,
-    StreamingMarkdown, Theme, TodoState, disable_enhanced_keys, enable_enhanced_keys, text,
+    ColorDepth, Composer, Editor, Floor, Frame, Keymap, Line, Renderer, Role, SelectItem, SelectList,
+    Spinner, StreamingMarkdown, Theme, TodoState, disable_enhanced_keys, enable_enhanced_keys, text,
 };
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -78,6 +81,8 @@ struct StreamView {
     markdown: StreamingMarkdown,
     thinking: String,
     saw_text: bool,
+    /// The blank row that sets this message apart in the transcript has been written.
+    opened: bool,
 }
 
 struct RunningTool {
@@ -116,8 +121,15 @@ pub struct Tui {
     theme: Theme,
     keymap: Keymap,
     editor: Editor,
+    /// Keeps the input and the status line on the last rows of the screen.
+    floor: Floor,
     /// Transcript lines waiting to be written above the live region.
     transcript: Vec<Line>,
+    /// The last thing written to the transcript is a tool card, so the next card joins it
+    /// without a blank row between them.
+    after_card: bool,
+    /// The checked-out branch, for the status line.
+    branch: Option<String>,
     stream: StreamView,
     tools: Vec<RunningTool>,
     overlay: Option<Overlay>,
@@ -201,6 +213,7 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
         key_problem = Some(format!("{}: {e}", app.paths.keybindings_file().display()));
     }
     let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+    let branch = azazel_core::prompt::git_branch(&app.paths.project_root);
     let events = active.lead.subscribe();
     let resumed = active.resumed;
     let team = app.registry.services.get::<Team>();
@@ -216,7 +229,10 @@ pub async fn run(app: Arc<App>, active: Active) -> u8 {
         theme,
         keymap,
         editor: Editor::new(),
+        floor: Floor::new(height),
         transcript: Vec::new(),
+        after_card: false,
+        branch,
         stream: StreamView::default(),
         tools: Vec::new(),
         overlay: None,
@@ -278,7 +294,19 @@ impl Tui {
     }
 
     fn say(&mut self, lines: Vec<Line>) {
+        if !lines.is_empty() {
+            self.after_card = false;
+            self.transcript.extend(lines);
+        }
+    }
+
+    /// Writes a tool card to the transcript: a blank row above, unless it follows another card.
+    fn say_card(&mut self, lines: Vec<Line>) {
+        if !self.after_card {
+            self.transcript.push(String::new());
+        }
         self.transcript.extend(lines);
+        self.after_card = true;
     }
 
     fn info(&mut self, message: &str) {
@@ -414,37 +442,38 @@ impl Tui {
         }
     }
 
+    /// Draws a frame. Blank rows between what is in flight and the input keep the live region
+    /// tall enough for the input to stay on the last rows of the screen; the transcript grows
+    /// into them.
     fn draw(&mut self) -> io::Result<()> {
         let history = std::mem::take(&mut self.transcript);
-        let (viewport, cursor) = self.viewport();
+        let (_, rows) = self.renderer.size();
+        let (mut viewport, pinned, cursor) = self.viewport();
+        let filler = self.floor.pad(history.len(), viewport.len() + pinned.len(), rows);
+        viewport.resize(viewport.len() + filler, String::new());
+        let offset = viewport.len() as u16;
+        viewport.extend(pinned);
         self.renderer.render(Frame {
             history,
             viewport,
-            cursor,
+            cursor: cursor.map(|(row, column)| (row + offset, column)),
         })
     }
 
+    /// Session facts on the left, the model and its thinking level against the right edge.
     fn status_line(&self, width: usize) -> Line {
+        let theme = &self.theme;
+        let muted = |text: &str| theme.paint(Role::Muted, text);
         let status = self.active.lead.status();
-        let mut segments = vec![self.app.permissions.mode().to_string(), self.model_label()];
-        if let Some(percent) = (status.context_tokens * 100).checked_div(status.context_window) {
-            segments.push(format!("ctx {percent}%"));
-        }
-        if let Some(cost) = status.usage.cost_usd {
-            segments.push(format!("${cost:.2}"));
-        }
-        let goal = self
-            .app
-            .registry
-            .services
-            .get::<Goals>()
-            .and_then(|goals| goals.current());
-        if let Some(goal) = goal.filter(|goal| goal.status.is_open()) {
-            segments.push(format!(
-                "goal {} · attempt {}",
-                goal.status.label(),
-                goal.iteration + 1
-            ));
+        let mode = self.app.permissions.mode();
+        let mut left = vec![match mode {
+            PermissionMode::Plan => theme.paint(Role::ModePlan, &format!("⏸ {mode}")),
+            PermissionMode::Ask => muted(&mode.to_string()),
+            PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &format!("⏵⏵ {mode}")),
+            PermissionMode::Auto => theme.paint(Role::ModeAuto, &format!("⏵⏵ {mode}")),
+        }];
+        if let Some(branch) = &self.branch {
+            left.push(muted(&format!("⑂ {branch}")));
         }
         let cwd = &self.app.paths.cwd;
         let shown = match std::env::home_dir()
@@ -454,23 +483,78 @@ impl Tui {
             Some(rest) => format!("~/{}", rest.to_string_lossy().replace('\\', "/")),
             None => cwd.display().to_string(),
         };
-        segments.push(shown);
-        status::render(&segments, width, &self.theme)
+        left.push(muted(&shown));
+        if let Some(percent) = (status.context_tokens * 100).checked_div(status.context_window) {
+            let role = status::context_role(percent).unwrap_or(Role::Muted);
+            left.push(theme.paint(role, &format!("◫ {percent}%")));
+        }
+        if let Some(cost) = status.usage.cost_usd {
+            left.push(muted(&format!("${cost:.2}")));
+        }
+        match self.active_agents() {
+            0 => {}
+            1 => left.push(theme.paint(Role::Accent, "⇶ 1 agent")),
+            n => left.push(theme.paint(Role::Accent, &format!("⇶ {n} agents"))),
+        }
+        let goal = self
+            .app
+            .registry
+            .services
+            .get::<Goals>()
+            .and_then(|goals| goals.current());
+        if let Some(goal) = goal.filter(|goal| goal.status.is_open()) {
+            left.push(theme.paint(
+                Role::Accent,
+                &format!("⚑ goal {}, attempt {}", goal.status.label(), goal.iteration + 1),
+            ));
+        }
+
+        let model = self.model_label();
+        let model = if model.is_empty() {
+            "no model".to_string()
+        } else {
+            model
+        };
+        let right = format!(
+            "{} {}{}",
+            theme.paint(Role::Accent, "⬢"),
+            muted(&format!("{model} · ")),
+            theme.paint(Role::Thinking, &status.thinking.to_string()),
+        );
+        status::render(&left, &right, width, theme)
     }
 
-    fn activity_line(&self, width: usize) -> Line {
-        let frame = Spinner::frame(Spinner::tick_at(self.busy_since.elapsed()));
+    /// What the lead is doing, for the rule above the input; nothing while it is idle.
+    fn activity(&self) -> Option<String> {
+        if !self.busy {
+            return None;
+        }
         let what = match self.tools.last() {
             Some(tool) => format!("running {}", tool.name),
             None if !self.stream.thinking.is_empty() && !self.stream.saw_text => "thinking".to_string(),
             None => "working".to_string(),
         };
-        let elapsed = azazel_tui::components::format_elapsed(self.busy_since.elapsed());
-        let line = format!(
-            "{} {what} · {elapsed} · esc to interrupt",
-            self.theme.paint(Role::Accent, frame)
-        );
-        text::truncate(&line, width, "…")
+        let elapsed = format_elapsed(self.busy_since.elapsed());
+        Some(format!(
+            "{} {}",
+            self.theme.paint(Role::Accent, Spinner::now()),
+            self.theme
+                .paint(Role::Muted, &format!("{what} · {elapsed} · esc to interrupt")),
+        ))
+    }
+
+    /// The colour of the rules around the input: it tells a `!` shell command and the
+    /// permission modes apart.
+    fn rule_role(&self) -> Role {
+        if self.editor.text().starts_with('!') {
+            return Role::Bash;
+        }
+        match self.app.permissions.mode() {
+            PermissionMode::Plan => Role::ModePlan,
+            PermissionMode::Ask => Role::Border,
+            PermissionMode::AcceptEdits => Role::ModeEdits,
+            PermissionMode::Auto => Role::ModeAuto,
+        }
     }
 
     fn todo_lines(&self, width: usize) -> Vec<Line> {
@@ -495,12 +579,14 @@ impl Tui {
         todo::render(&rows, width, &self.theme)
     }
 
-    /// The live region: what is in flight on top, the input (or an overlay) and status below.
-    fn viewport(&mut self) -> (Vec<Line>, Option<(u16, u16)>) {
+    /// The live region in two parts: what is in flight, which follows the transcript, and what
+    /// stays at the bottom of the screen (roster, todo list, the input or an overlay, status).
+    /// The cursor is a position in the second part.
+    fn viewport(&mut self) -> (Vec<Line>, Vec<Line>, Option<(u16, u16)>) {
         let (columns, rows) = self.renderer.size();
         let (width, height) = (usize::from(columns), usize::from(rows));
         let mut bottom: Vec<Line> = Vec::new();
-        let cursor;
+        let mut cursor;
         if let Some(overlay) = &self.overlay {
             let (lines, at) = overlay.render(width, height.saturating_sub(2).max(4), &self.theme);
             cursor = at;
@@ -516,23 +602,56 @@ impl Tui {
                 let label = format!("[{} image(s) attached to the next prompt]", self.images.len());
                 bottom.push(self.theme.paint(Role::Muted, &label));
             }
-            let (lines, (row, column)) = self.editor.render(width, &self.theme, "› ");
+            let rule = self.rule_role();
+            let activity = self.activity();
+            let composer = Composer {
+                prompt: "❯ ",
+                prompt_role: if rule == Role::Border { Role::Accent } else { rule },
+                placeholder: if self.busy {
+                    "Steer the agent, alt+enter queues a follow-up"
+                } else {
+                    "Ask anything, / for commands, @ for files"
+                },
+                rule,
+                status: activity.as_deref(),
+                max_rows: composer::max_rows(height),
+            };
+            let (lines, (row, column)) = composer::render(&self.editor, &composer, width, &self.theme);
             cursor = Some((bottom.len() as u16 + row, column));
             bottom.extend(lines);
         }
         bottom.push(self.status_line(width));
 
+        // Agents at work and the todo list sit right above the input, under one blank row that
+        // sets everything pinned to the bottom apart from the transcript. They give way when
+        // the screen is too small for them.
+        let mut pinned = self.roster_lines(width);
+        pinned.extend(self.todo_lines(width));
+        let mut room = height.saturating_sub(bottom.len());
+        if pinned.len() + 1 > room {
+            pinned.drain(..(pinned.len() + 1 - room).min(pinned.len()));
+        }
+        if room > pinned.len() {
+            pinned.insert(0, String::new());
+        }
+        room -= pinned.len();
+        cursor = cursor.map(|(row, column)| (row + pinned.len() as u16, column));
+        pinned.extend(bottom);
+
         let mut top: Vec<Line> = Vec::new();
         if self.busy {
             top.extend(self.stream.markdown.tail(width, &self.theme));
             if self.show_thinking && !self.stream.thinking.is_empty() {
-                let wrapped = view::notice(&self.stream.thinking, width, &self.theme);
+                let wrapped = view::thinking(&self.stream.thinking, width, &self.theme);
                 let from = wrapped.len().saturating_sub(4);
                 top.extend(wrapped.into_iter().skip(from));
             }
+            if !self.tools.is_empty() && !self.after_card {
+                top.push(String::new());
+            }
             for tool in &self.tools {
                 let summary = view::tool_summary(&tool.name, &tool.input);
-                top.extend(tool_card::render(
+                top.extend(tool_card::running(
                     &tool.name,
                     &summary,
                     &tool.tail,
@@ -541,19 +660,12 @@ impl Tui {
                     &self.theme,
                 ));
             }
-            top.push(self.activity_line(width));
         }
-        top.extend(self.roster_lines(width));
-        top.extend(self.todo_lines(width));
-
         // The live region never outgrows the screen: what is in flight gives way first.
-        let room = height.saturating_sub(bottom.len());
         if top.len() > room {
             top.drain(..top.len() - room);
         }
-        let offset = top.len() as u16;
-        top.extend(bottom);
-        (top, cursor.map(|(row, column)| (row + offset, column)))
+        (top, pinned, cursor)
     }
 
     // ------------------------------------------------------------ agent events
@@ -567,6 +679,7 @@ impl Tui {
             }
             AgentEvent::MessageStart => self.stream = StreamView::default(),
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
+                self.open_reply();
                 self.stream.saw_text = true;
                 self.stream.markdown.push(&delta);
                 let finished = self.stream.markdown.take_finished(width, &self.theme);
@@ -581,12 +694,13 @@ impl Tui {
             }) => {
                 let thinking = std::mem::take(&mut self.stream.thinking);
                 if self.show_thinking && !thinking.trim().is_empty() {
-                    let lines = view::notice(thinking.trim(), width, &self.theme);
+                    let lines = view::thinking(thinking.trim(), width, &self.theme);
                     self.say(lines);
                 }
             }
             AgentEvent::MessageEnd { message } => {
                 if !self.stream.saw_text && !message.text().trim().is_empty() {
+                    self.open_reply();
                     self.stream.markdown.push(&message.text());
                 }
                 let rest = self.stream.markdown.finish(width, &self.theme);
@@ -632,7 +746,7 @@ impl Tui {
                         width,
                         &self.theme,
                     );
-                    self.say(lines);
+                    self.say_card(lines);
                 }
             }
             AgentEvent::Compaction {
@@ -659,10 +773,19 @@ impl Tui {
         }
     }
 
+    /// Sets a reply apart from what precedes it with one blank row, once per message.
+    fn open_reply(&mut self) {
+        if !std::mem::replace(&mut self.stream.opened, true) {
+            self.say(vec![String::new()]);
+        }
+    }
+
     fn end_of_run(&mut self) {
         self.busy = false;
         self.tools.clear();
         self.stream = StreamView::default();
+        // The agent may have switched branches.
+        self.branch = azazel_core::prompt::git_branch(&self.app.paths.project_root);
         if let Some(chain) = self.restore_chain.take() {
             self.active.lead.send(AgentCmd::SetModel(chain));
         }
@@ -685,6 +808,7 @@ impl Tui {
             }
         };
         self.notice = None;
+        self.branch = azazel_core::prompt::git_branch(&self.app.paths.project_root);
         let shown: Vec<&str> = output.lines().collect();
         let from = shown.len().saturating_sub(40);
         let mut display = shown[from..].join("\n");
@@ -874,7 +998,10 @@ impl Tui {
                     self.refresh_completion();
                 }
             },
-            Event::Resize(width, height) => self.renderer.resize(width, height),
+            Event::Resize(width, height) => {
+                self.renderer.resize(width, height);
+                self.floor.resize(height);
+            }
             _ => {}
         }
     }

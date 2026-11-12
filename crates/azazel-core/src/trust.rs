@@ -75,6 +75,10 @@ pub fn needs_trust(paths: &Paths, claude_compat: bool) -> Vec<String> {
     if has_entries(&project.join("extensions")) {
         reasons.push("extensions in .azazel/extensions/".to_string());
     }
+    // It can add providers, base URLs and key commands.
+    if project.join("models.yml").is_file() {
+        reasons.push("providers and models in .azazel/models.yml".to_string());
+    }
     for (file, label) in [
         (project.join("mcp.json"), ".azazel/mcp.json"),
         (paths.project_root.join(".mcp.json"), ".mcp.json"),

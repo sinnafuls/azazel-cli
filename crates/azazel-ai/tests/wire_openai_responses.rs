@@ -10,18 +10,7 @@ use azazel_ai::{
 use serde_json::{Value, json};
 
 fn provider() -> ProviderConfig {
-    ProviderConfig {
-        id: "mock".into(),
-        api: WireApi::OpenAiResponses,
-        base_url: "http://localhost:9/v1".into(),
-        api_key_env: Vec::new(),
-        api_key_command: None,
-        headers: BTreeMap::new(),
-        oauth_headers: BTreeMap::new(),
-        requires_key: false,
-        auth_style: Default::default(),
-        oauth: None,
-    }
+    ProviderConfig::new("mock", WireApi::OpenAiResponses, "http://localhost:9/v1")
 }
 
 fn model(reasoning: bool) -> ModelInfo {

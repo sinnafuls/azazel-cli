@@ -4,6 +4,7 @@
 pub mod catalog;
 pub mod credentials;
 pub mod error;
+pub mod models_file;
 pub mod oauth;
 pub mod provider;
 pub mod providers;
@@ -18,9 +19,10 @@ pub mod wire;
 pub use catalog::{Catalog, Cost, ModelInfo, ModelOverride};
 pub use credentials::{Auth, Credential, Credentials};
 pub use error::AiError;
+pub use models_file::ModelsFile;
 pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
-pub use providers::presets::{ProviderConfig, ProviderSettings};
+pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
 pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
 pub use stream::{EventStream, StreamEvent};
 pub use types::{

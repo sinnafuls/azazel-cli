@@ -4,7 +4,7 @@
 
 use std::num::NonZeroU16;
 
-use azazel_tui::render::{Frame, Renderer};
+use azazel_tui::render::{Floor, Frame, Renderer};
 
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap()
@@ -320,6 +320,93 @@ fn suspend_erases_the_viewport_and_the_next_frame_redraws_it() {
     term.parser.process(b"child output\r\n");
     term.render(frame(&[], &["a", "b"]));
     assert_eq!(term.used_rows(), ["h", "child output", "a", "b"]);
+}
+
+/// Draws a frame the way an application with a bottom-anchored input does: blank rows between
+/// what follows the transcript (`top`) and what stays at the bottom (`bottom`).
+fn anchored(term: &mut Harness, floor: &mut Floor, history: &[&str], top: &[&str], bottom: &[&str]) {
+    let (_, height) = term.renderer.size();
+    let filler = floor.pad(history.len(), top.len() + bottom.len(), height);
+    let mut viewport = lines(top);
+    viewport.resize(top.len() + filler, String::new());
+    viewport.extend(lines(bottom));
+    term.render(Frame {
+        history: lines(history),
+        viewport,
+        cursor: None,
+    });
+}
+
+#[test]
+fn floor_pins_the_last_rows_while_the_transcript_fills_the_gap() {
+    let mut term = Harness::new(20, 6);
+    // The program starts below whatever the shell left on screen.
+    term.parser.process(b"$ ls\r\nfile\r\n$ app\r\n");
+    let mut floor = Floor::new(6);
+    let chrome = ["rule", ">", "status"];
+
+    // The first frame fills the screen: the input is on the last rows at once and the shell's
+    // lines have scrolled away.
+    anchored(&mut term, &mut floor, &["banner"], &[], &chrome);
+    assert_eq!(term.screen(), ["banner", "", "", "rule", ">", "status"]);
+
+    // New transcript lines take rows from the gap; the input does not move.
+    anchored(&mut term, &mut floor, &["you: hi"], &[], &chrome);
+    assert_eq!(term.screen(), ["banner", "you: hi", "", "rule", ">", "status"]);
+    anchored(&mut term, &mut floor, &[], &["streaming"], &chrome);
+    assert_eq!(
+        term.screen(),
+        ["banner", "you: hi", "streaming", "rule", ">", "status"]
+    );
+
+    // With the gap used up the transcript scrolls, as it always did.
+    anchored(&mut term, &mut floor, &["a", "b"], &[], &chrome);
+    assert_eq!(term.screen(), ["you: hi", "a", "b", "rule", ">", "status"]);
+
+    // A region that grew keeps its height when its content shrinks again, so the input stays
+    // put, and the next transcript line fills the row that was freed.
+    anchored(&mut term, &mut floor, &[], &["card"], &chrome);
+    assert_eq!(term.screen(), ["a", "b", "card", "rule", ">", "status"]);
+    anchored(&mut term, &mut floor, &[], &[], &chrome);
+    assert_eq!(term.screen(), ["a", "b", "", "rule", ">", "status"]);
+    anchored(&mut term, &mut floor, &["c"], &[], &chrome);
+    assert_eq!(term.screen(), ["a", "b", "c", "rule", ">", "status"]);
+
+    // Nothing was lost or doubled on the way into the scrollback.
+    term.parser.screen_mut().set_scrollback(5);
+    assert_eq!(term.screen(), ["$ ls", "file", "$ app", "banner", "you: hi", "a"]);
+    term.parser.screen_mut().set_scrollback(0);
+
+    // Leaving erases the region: the shell's prompt lands right under the transcript.
+    term.renderer.suspend().unwrap();
+    term.flush();
+    assert_eq!(term.screen(), ["a", "b", "c", "", "", ""]);
+    assert_eq!(term.parser.screen().cursor_position(), (3, 0));
+}
+
+#[test]
+fn floor_follows_the_screen() {
+    let mut floor = Floor::new(10);
+    assert_eq!(floor.pad(0, 3, 10), 7);
+    assert_eq!(floor.rows(), 10);
+
+    // A shorter screen caps the region; a taller one leaves it as it is.
+    floor.resize(5);
+    assert_eq!(floor.pad(0, 3, 5), 2);
+    floor.resize(30);
+    assert_eq!(floor.pad(0, 3, 30), 2);
+
+    // Content taller than the screen needs no padding and does not raise the floor past it.
+    assert_eq!(floor.pad(0, 9, 30), 0);
+    assert_eq!(floor.pad(0, 40, 30), 0);
+    assert_eq!(floor.rows(), 30);
+    // More history than there are rows left cannot take the floor below the content.
+    assert_eq!(floor.pad(100, 3, 30), 0);
+    assert_eq!(floor.rows(), 3);
+
+    // After the screen was cleared the region fills it again.
+    floor.reset(8);
+    assert_eq!(floor.pad(1, 3, 8), 4);
 }
 
 #[test]

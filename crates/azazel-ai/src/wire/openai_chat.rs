@@ -1,24 +1,26 @@
 //! OpenAI Chat Completions wire format: `POST {base_url}/chat/completions`.
 //!
-//! OpenRouter, Groq, DeepSeek, xAI, Mistral, Ollama, LM Studio and llama.cpp speak this format too,
-//! so requests stay within the common subset and the decoder tolerates their deviations.
+//! Most hosted and local model servers speak this format too, so requests stay within the common
+//! subset and the decoder tolerates their deviations. Two hosts get what only they understand:
+//! OpenRouter (API `openrouter`) a `reasoning` object and cache breakpoints for Anthropic models,
+//! and GitHub Copilot the headers that say who started the turn.
 
 use std::borrow::Cow;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
 use crate::catalog::{Cost, ModelInfo};
 use crate::credentials::Auth;
 use crate::error::AiError;
-use crate::providers::presets::{AuthStyle, ProviderConfig};
+use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Usage, WireApi,
 };
-use crate::wire::Decoder;
 use crate::wire::thinking::{ThinkingParam, thinking_param};
+use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
 
 pub(super) const STREAM_ENDED: &str = "stream ended before the response was complete";
 
@@ -26,9 +28,14 @@ const TOOL_IMAGES_LABEL: &str = "Images returned by the tool calls above:";
 const IMAGE_ONLY_RESULT: &str = "(the result is the image attached below)";
 
 pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Value {
+    let openrouter = provider.api == WireApi::OpenRouter;
     let mut body = Map::new();
     body.insert("model".into(), json!(model.id));
-    body.insert("messages".into(), Value::Array(messages(req)));
+    let mut messages = messages(req);
+    if openrouter && model.id.starts_with("anthropic/") {
+        mark_cache_breakpoint(&mut messages);
+    }
+    body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), json!(true));
     body.insert("stream_options".into(), json!({"include_usage": true}));
     if !req.tools.is_empty() {
@@ -55,8 +62,15 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
         ThinkingParam::Effort(effort) => Some(effort),
         ThinkingParam::Off | ThinkingParam::Budget(_) => None,
     };
-    if let Some(effort) = effort {
-        body.insert("reasoning_effort".into(), json!(effort));
+    match effort {
+        // OpenRouter turns its own object into whatever the model behind it takes.
+        Some(effort) if openrouter => {
+            body.insert("reasoning".into(), json!({"effort": effort}));
+        }
+        Some(effort) => {
+            body.insert("reasoning_effort".into(), json!(effort));
+        }
+        None => {}
     }
     // Servers reject a sampling temperature on a request that asks for reasoning.
     if let Some(value) = req.temperature
@@ -64,7 +78,38 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     {
         body.insert("temperature".into(), temperature(value));
     }
-    Value::Object(body)
+    let mut body = Value::Object(body);
+    apply_extra_body(&mut body, provider);
+    body
+}
+
+/// Anthropic models cache a prompt only up to a marked block. One mark on the last text of the
+/// conversation makes everything before it a cached prefix on the next request.
+fn mark_cache_breakpoint(messages: &mut [Value]) {
+    let mark = || json!({"type": "ephemeral"});
+    for message in messages.iter_mut().rev() {
+        let Some(content) = message.get_mut("content") else {
+            continue;
+        };
+        match content {
+            Value::String(text) if !text.is_empty() => {
+                let text = std::mem::take(text);
+                *content = json!([{"type": "text", "text": text, "cache_control": mark()}]);
+                return;
+            }
+            Value::Array(parts) => {
+                let last_text = parts
+                    .iter_mut()
+                    .rev()
+                    .find(|part| part.get("type").and_then(Value::as_str) == Some("text"));
+                if let Some(Value::Object(part)) = last_text {
+                    part.insert("cache_control".into(), mark());
+                    return;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn build_request(
@@ -77,13 +122,44 @@ pub fn build_request(
     client
         .post(format!("{}/chat/completions", provider.base_url))
         .json(&build_body(provider, model, req))
-        .headers(request_headers(provider, auth))
+        .headers(chat_headers(provider, req, auth))
+}
+
+/// [`request_headers`], plus what GitHub Copilot needs to know about the turn: whether a person
+/// or the agent started it (which decides how it is billed), and whether it carries images.
+pub(super) fn chat_headers(provider: &ProviderConfig, req: &Request, auth: &Auth) -> HeaderMap {
+    let mut headers = request_headers(provider, auth);
+    if provider.base_url.contains("githubcopilot.com") {
+        let by_user = req.messages.last().is_none_or(|last| last.role == Role::User);
+        let initiator = if by_user { "user" } else { "agent" };
+        headers.insert(
+            HeaderName::from_static("x-initiator"),
+            HeaderValue::from_static(initiator),
+        );
+        let has_image = |blocks: &[Block]| {
+            blocks.iter().any(|block| match block {
+                Block::Image { .. } => true,
+                Block::ToolResult { content, .. } => {
+                    content.iter().any(|inner| matches!(inner, Block::Image { .. }))
+                }
+                _ => false,
+            })
+        };
+        if req.messages.iter().any(|message| has_image(&message.content)) {
+            headers.insert(
+                HeaderName::from_static("copilot-vision-request"),
+                HeaderValue::from_static("true"),
+            );
+        }
+    }
+    headers
 }
 
 pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder> {
     Box::new(ChatDecoder {
         provider: provider.id.clone(),
         model: model.id.clone(),
+        api: provider.api,
         started: false,
         finished: false,
         response_id: None,
@@ -130,53 +206,10 @@ pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
 }
 
 /// The credential, as a bearer token or in the `api-key` header the provider is configured for,
-/// plus the provider's configured headers. The configured headers are inserted last so they
-/// replace anything set here.
+/// plus the provider's configured headers, which replace anything set here.
 pub(super) fn request_headers(provider: &ProviderConfig, auth: &Auth) -> HeaderMap {
     let mut headers = HeaderMap::new();
-    let token = match auth {
-        Auth::None => None,
-        Auth::ApiKey(key) => Some(key),
-        Auth::OAuth { access, .. } => Some(access),
-    };
-    if let Some(token) = token {
-        let (name, value) = match provider.auth_style {
-            AuthStyle::Bearer => (AUTHORIZATION, format!("Bearer {token}")),
-            AuthStyle::ApiKey => (HeaderName::from_static("api-key"), token.clone()),
-        };
-        match HeaderValue::from_str(&value) {
-            Ok(mut value) => {
-                value.set_sensitive(true);
-                headers.insert(name, value);
-            }
-            Err(_) => tracing::warn!(
-                provider = %provider.id,
-                "credential has characters that cannot be sent in a header; sending none"
-            ),
-        }
-    }
-    for (name, value) in &provider.headers {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                headers.insert(name, value);
-            }
-            _ => tracing::warn!(provider = %provider.id, header = %name, "ignoring invalid header"),
-        }
-    }
-    for (name, value) in auth.login_headers(provider) {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(&value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                headers.insert(name, value);
-            }
-            _ => tracing::warn!(provider = %provider.id, header = %name, "ignoring invalid header"),
-        }
-    }
+    add_headers(&mut headers, provider, auth, KeyHeader::Bearer);
     headers
 }
 
@@ -413,17 +446,47 @@ fn model_info(provider: &ProviderConfig, entry: &Value) -> Option<ModelInfo> {
     }
     let id = non_empty(entry.get("id")).or_else(|| non_empty(entry.get("slug")))?;
     let mut info = ModelInfo::unknown(&provider.id, id);
+    info.name = ["name", "display_name"]
+        .into_iter()
+        .find_map(|field| non_empty(entry.get(field)))
+        .filter(|name| *name != id)
+        .map(str::to_string);
     let positive = |value: Option<&Value>| value.and_then(Value::as_u64).filter(|n| *n > 0);
-    let first = |names: &[&str]| names.iter().find_map(|name| positive(entry.get(*name)));
+    // The first of these places that holds a positive number. The names are the ones servers
+    // are seen to use: OpenAI's and OpenRouter's, vLLM's `max_model_len`, GitHub Copilot's
+    // `capabilities.limits`, the `limit` object of gateways that mirror models.dev, Venice's
+    // `model_spec`, and the context a llama.cpp server runs its model with (before the one it
+    // was trained with).
+    let first = |pointers: &[&str]| pointers.iter().find_map(|at| positive(entry.pointer(at)));
 
-    let window = first(&["context_length", "context_window", "max_context_length"])
-        .or_else(|| positive(entry.pointer("/top_provider/context_length")));
+    let window = first(&[
+        "/context_length",
+        "/context_window",
+        "/max_context_length",
+        "/max_model_len",
+        "/top_provider/context_length",
+        "/limit/context",
+        "/capabilities/limits/max_context_window_tokens",
+        "/model_spec/availableContextTokens",
+        "/meta/n_ctx",
+        "/meta/n_ctx_train",
+    ]);
     if let Some(window) = window {
         info.context_window = window;
     }
-    let limit = first(&["max_completion_tokens", "max_output_tokens"])
-        .or_else(|| positive(entry.pointer("/top_provider/max_completion_tokens")));
+    let limit = first(&[
+        "/max_completion_tokens",
+        "/max_output_tokens",
+        "/max_output_length",
+        "/max_tokens",
+        "/top_provider/max_completion_tokens",
+        "/limit/output",
+        "/capabilities/limits/max_output_tokens",
+        "/model_spec/maxCompletionTokens",
+    ]);
     if let Some(limit) = limit {
+        // A model cannot write more than its window holds, whatever its list says.
+        let limit = limit.min(info.context_window);
         info.max_output = u32::try_from(limit).unwrap_or(u32::MAX);
     } else if entry.get("slug").is_some() {
         // The ChatGPT backend names no output limit; cap it at 128000.
@@ -442,16 +505,29 @@ fn model_info(provider: &ProviderConfig, entry: &Value) -> Option<ModelInfo> {
                     .any(|item| wanted.contains(&item))
             })
     };
+    // A capability is a `true`, or an object that says `supported: true`.
+    let flagged = |pointer: &str| {
+        entry.pointer(pointer).is_some_and(|flag| {
+            flag.as_bool() == Some(true) || flag.get("supported").and_then(Value::as_bool) == Some(true)
+        })
+    };
     if lists("/architecture/input_modalities", &["image"])
         || lists("/input_modalities", &["image"])
-        || entry.pointer("/capabilities/vision").and_then(Value::as_bool) == Some(true)
+        || lists("/modalities/input", &["image"])
+        || lists("/capabilities", &["vision"])
+        || flagged("/capabilities/vision")
+        || flagged("/capabilities/supports/vision")
+        || flagged("/model_spec/capabilities/supportsVision")
     {
         info.vision = true;
     }
     if lists(
         "/supported_parameters",
         &["reasoning", "reasoning_effort", "include_reasoning"],
-    ) || reasoning_level(entry).is_some()
+    ) || lists("/capabilities", &["reasoning"])
+        || flagged("/capabilities/reasoning")
+        || flagged("/model_spec/capabilities/supportsReasoning")
+        || reasoning_level(entry).is_some()
     {
         info.reasoning = true;
     }
@@ -662,7 +738,7 @@ impl ErrorInfo {
 static NEXT_CALL_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Id for a tool call the server sent without one; unique for the life of the process.
-fn next_call_id() -> String {
+pub(super) fn next_call_id() -> String {
     format!("call_{}", NEXT_CALL_ID.fetch_add(1, Ordering::Relaxed))
 }
 
@@ -712,6 +788,7 @@ struct Entry {
 struct ChatDecoder {
     provider: String,
     model: String,
+    api: WireApi,
     started: bool,
     finished: bool,
     response_id: Option<String>,
@@ -754,8 +831,26 @@ fn parse_usage(usage: &Value) -> Usage {
         cache_read,
         cache_write,
         reasoning: count("/completion_tokens_details/reasoning_tokens").unwrap_or(0),
-        cost_usd: None,
+        cost_usd: reported_cost(usage),
     }
+}
+
+/// What the response cost in USD, where a gateway bills per response and says so (`usage.cost`
+/// on OpenRouter and the gateways modelled on it). With the user's own upstream key the gateway
+/// reports only its fee there and the upstream charge beside it.
+fn reported_cost(usage: &Value) -> Option<f64> {
+    let amount = |pointer: &str| {
+        usage
+            .pointer(pointer)
+            .and_then(Value::as_f64)
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+    };
+    let cost = amount("/cost")?;
+    let upstream = match usage.get("is_byok").and_then(Value::as_bool) {
+        Some(true) => amount("/cost_details/upstream_inference_cost").unwrap_or(0.0),
+        _ => 0.0,
+    };
+    Some(cost + upstream)
 }
 
 impl ChatDecoder {
@@ -770,7 +865,7 @@ impl ChatDecoder {
         AssistantMeta {
             provider: self.provider.clone(),
             model: self.model.clone(),
-            api: WireApi::OpenAiChat,
+            api: self.api,
             usage: self.usage,
             stop,
             response_id: self.response_id.clone(),

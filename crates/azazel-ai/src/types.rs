@@ -261,9 +261,40 @@ pub enum WireApi {
     GoogleGenerative,
     #[serde(rename = "bedrock-converse")]
     BedrockConverse,
+    /// Ollama's own chat endpoint, `{base_url}/api/chat`, answered as JSON lines.
+    #[serde(rename = "ollama-chat")]
+    OllamaChat,
+    /// Chat Completions as OpenRouter extends it: a `reasoning` object, cache breakpoints for
+    /// the models that take them, and the price of the response in its usage.
+    #[serde(rename = "openrouter")]
+    OpenRouter,
+    /// The Responses format at an Azure OpenAI resource, where the model is a deployment.
+    #[serde(rename = "azure-openai-responses")]
+    AzureOpenAiResponses,
+    /// Chat Completions at an Azure OpenAI resource, addressed by deployment.
+    #[serde(rename = "azure-openai-chat")]
+    AzureOpenAiChat,
+    /// Google Cloud Code Assist, the endpoint behind a Gemini CLI sign-in: the Generative
+    /// Language format inside a project envelope.
+    #[serde(rename = "google-gemini-cli")]
+    GoogleGeminiCli,
 }
 
 impl WireApi {
+    /// Every wire API, in the order they are documented.
+    pub const ALL: [WireApi; 10] = [
+        WireApi::AnthropicMessages,
+        WireApi::OpenAiResponses,
+        WireApi::OpenAiChat,
+        WireApi::GoogleGenerative,
+        WireApi::BedrockConverse,
+        WireApi::OllamaChat,
+        WireApi::OpenRouter,
+        WireApi::AzureOpenAiResponses,
+        WireApi::AzureOpenAiChat,
+        WireApi::GoogleGeminiCli,
+    ];
+
     pub fn as_str(self) -> &'static str {
         match self {
             WireApi::AnthropicMessages => "anthropic-messages",
@@ -271,6 +302,11 @@ impl WireApi {
             WireApi::OpenAiChat => "openai-chat",
             WireApi::GoogleGenerative => "google-generative",
             WireApi::BedrockConverse => "bedrock-converse",
+            WireApi::OllamaChat => "ollama-chat",
+            WireApi::OpenRouter => "openrouter",
+            WireApi::AzureOpenAiResponses => "azure-openai-responses",
+            WireApi::AzureOpenAiChat => "azure-openai-chat",
+            WireApi::GoogleGeminiCli => "google-gemini-cli",
         }
     }
 
@@ -278,7 +314,23 @@ impl WireApi {
     pub fn requires_alternation(self) -> bool {
         matches!(
             self,
-            WireApi::AnthropicMessages | WireApi::GoogleGenerative | WireApi::BedrockConverse
+            WireApi::AnthropicMessages
+                | WireApi::GoogleGenerative
+                | WireApi::BedrockConverse
+                | WireApi::GoogleGeminiCli
+        )
+    }
+
+    /// Whether requests are written in one of the OpenAI formats, which share their headers,
+    /// model list and error shapes.
+    pub fn is_openai_format(self) -> bool {
+        matches!(
+            self,
+            WireApi::OpenAiResponses
+                | WireApi::OpenAiChat
+                | WireApi::OpenRouter
+                | WireApi::AzureOpenAiResponses
+                | WireApi::AzureOpenAiChat
         )
     }
 }

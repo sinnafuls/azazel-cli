@@ -4,14 +4,16 @@ use std::time::Duration;
 
 use azazel_agent::ToolOutput;
 use azazel_ai::{Block, Message, Role as MessageRole};
-use azazel_tui::components::{diff, format_elapsed, markdown};
-use azazel_tui::{Line, RESET, Role, Theme, text};
+use azazel_tui::components::{diff, format_duration, markdown, tool_card};
+use azazel_tui::{Card, CardState, Line, Role, Theme, text};
 use serde_json::Value;
 
-/// Output lines shown under a finished tool call unless expanded.
+/// Output lines shown in the card of a finished tool call unless expanded.
 const COLLAPSED_LINES: usize = 3;
 const EXPANDED_LINES: usize = 40;
 const COLLAPSED_DIFF_LINES: usize = 16;
+/// How the result of a call that was interrupted or refused, rather than failed, starts.
+const NOT_RUN: [&str; 2] = ["aborted by user", "the user denied this call"];
 
 /// `text` wrapped to `width` and painted with `role`.
 pub fn styled(text_in: &str, role: Role, width: usize, theme: &Theme) -> Vec<Line> {
@@ -111,21 +113,25 @@ fn two_tone(row: &str, theme: &Theme) -> String {
     out
 }
 
-/// A user prompt: `› ` on the first row, aligned continuation rows, a blank row above.
+/// A user prompt: a blank row, then the text on a band that spans the whole width.
 pub fn user_prompt(prompt: &str, width: usize, theme: &Theme) -> Vec<Line> {
-    let marker = theme.paint(Role::Accent, "›");
     let mut lines = vec![String::new()];
-    let mut first = true;
+    let inner = width.saturating_sub(2).max(1);
     for raw in text::sanitize(prompt).lines() {
-        for row in text::wrap(raw, width.saturating_sub(2).max(1)) {
-            lines.push(if std::mem::take(&mut first) {
-                format!("{marker} {row}")
-            } else {
-                format!("  {row}")
-            });
+        for row in text::wrap(raw, inner) {
+            lines.push(theme.band(Role::UserBg, Role::UserText, &format!(" {row}"), width));
         }
     }
-    lines.push(String::new());
+    lines
+}
+
+/// The model's reasoning, set apart from what it says.
+pub fn thinking(text_in: &str, width: usize, theme: &Theme) -> Vec<Line> {
+    let style = format!("\x1b[3m{}", theme.fg(Role::Thinking));
+    let mut lines = Vec::new();
+    for raw in text::sanitize(text_in).lines() {
+        lines.extend(text::wrap(&format!("{style}{raw}"), width));
+    }
     lines
 }
 
@@ -180,7 +186,32 @@ fn output_text(output: &ToolOutput) -> String {
     out
 }
 
-/// A finished tool call: a status line, then its diff or the start of its output.
+/// A diff without the two lines that name its file, which the header of the card already does.
+/// A diff that covers several files keeps them all.
+fn without_file_header(diff: &str) -> &str {
+    let mut rest = diff;
+    for marker in ["--- ", "+++ "] {
+        match rest.strip_prefix(marker).and_then(|named| named.split_once('\n')) {
+            Some((_, after)) => rest = after,
+            None => return diff,
+        }
+    }
+    if rest.contains("\n+++ ") { diff } else { rest }
+}
+
+/// What a command printed, without the last line when that only repeats its exit code.
+fn without_exit_line(said: &str) -> &str {
+    let trimmed = said.trim_end();
+    let (body, last) = trimmed.rsplit_once('\n').unwrap_or(("", trimmed));
+    if last.starts_with("exit code:") {
+        body
+    } else {
+        said
+    }
+}
+
+/// A finished tool call as a card: its diff or the start of its output inside, how long it took
+/// and how it ended in the bottom border.
 pub fn tool_done(
     name: &str,
     input: &Value,
@@ -190,64 +221,76 @@ pub fn tool_done(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line> {
-    let bullet = theme.paint(
-        if output.is_error {
-            Role::Error
-        } else {
-            Role::Success
-        },
-        "●",
-    );
-    let time = theme.paint(Role::Muted, &format_elapsed(elapsed));
-    let fixed = 2 + text::width(name) + 2 + text::width(&time);
-    let summary = text::truncate(&tool_summary(name, input), width.saturating_sub(fixed + 1), "…");
-    let mut lines = vec![format!(
-        "{bullet} {}{name}{RESET} {summary}  {time}",
-        theme.fg(Role::Accent)
-    )];
-
-    let indent = "  ";
-    let inner = width.saturating_sub(indent.len()).max(1);
-    let diff_text = output
-        .details
-        .as_ref()
+    let said = output_text(output);
+    let state = if !output.is_error {
+        CardState::Success
+    } else if NOT_RUN.iter().any(|start| said.starts_with(start)) {
+        CardState::Warning
+    } else {
+        CardState::Error
+    };
+    let inner = tool_card::inner_width(width).max(1);
+    let details = output.details.as_ref();
+    let diff_text = details
         .and_then(|d| d.get("diff"))
         .and_then(Value::as_str)
+        .map(without_file_header)
         .unwrap_or_default();
-    let (body, limit, role): (Vec<Line>, usize, Option<Role>) = if !diff_text.is_empty() && !output.is_error {
+    let (mut body, limit): (Vec<Line>, usize) = if !diff_text.is_empty() && !output.is_error {
         let limit = if expanded {
             usize::MAX
         } else {
             COLLAPSED_DIFF_LINES
         };
-        (diff::render_unified(diff_text, inner, theme), limit, None)
+        (diff::render_unified(diff_text, inner, theme), limit)
     } else {
         let limit = if expanded || output.is_error {
             EXPANDED_LINES
         } else {
             COLLAPSED_LINES
         };
-        let role = if output.is_error { Role::Error } else { Role::Muted };
-        let raw: Vec<Line> = text::sanitize(&output_text(output))
+        let role = match state {
+            CardState::Error => Role::Error,
+            CardState::Warning => Role::Warning,
+            _ => Role::Muted,
+        };
+        // The border of the card says how a command ended; its output need not repeat it.
+        let exit = details.and_then(|d| d.get("exit_code")).and_then(Value::as_i64);
+        let said = if exit.is_some() {
+            without_exit_line(&said)
+        } else {
+            &said
+        };
+        let rows = text::sanitize(said)
             .lines()
-            .map(|l| text::truncate(l, inner, "…"))
+            .map(|l| theme.paint(role, &text::truncate(l, inner, "…")))
             .collect();
-        (raw, limit, Some(role))
+        (rows, limit)
     };
     let hidden = body.len().saturating_sub(limit);
-    for row in body.into_iter().take(limit) {
-        lines.push(match role {
-            Some(role) => format!("{indent}{}", theme.paint(role, &row)),
-            None => format!("{indent}{row}"),
-        });
-    }
+    body.truncate(limit);
     if hidden > 0 {
-        lines.push(format!(
-            "{indent}{}",
-            theme.paint(Role::Muted, &format!("… {hidden} more lines (ctrl+o expands)"))
-        ));
+        let more = format!("… {hidden} more lines (ctrl+o to expand)");
+        body.push(theme.paint(Role::Muted, &more));
     }
-    lines
+
+    let mut facts = vec![format_duration(elapsed)];
+    if details.and_then(|d| d.get("timed_out")).and_then(Value::as_bool) == Some(true) {
+        facts.push("timed out".to_string());
+    } else if let Some(code) = details.and_then(|d| d.get("exit_code")).and_then(Value::as_i64) {
+        facts.push(format!("exit {code}"));
+    }
+    tool_card::render(
+        &Card {
+            state,
+            name,
+            summary: &tool_summary(name, input),
+            body: &body,
+            facts: &facts,
+        },
+        width,
+        theme,
+    )
 }
 
 /// A stored message as transcript lines, for showing where a resumed session left off.
@@ -300,43 +343,72 @@ mod tests {
     }
 
     #[test]
-    fn user_prompt_wraps_under_the_marker() {
+    fn user_prompt_is_a_band_across_the_width() {
         let theme = Theme::dark();
-        let lines = plain(&user_prompt("one two three four", 10, &theme));
-        assert_eq!(lines, ["", "› one two", "  three", "  four", ""]);
+        let lines = user_prompt("one two three four", 10, &theme);
+        assert_eq!(plain(&lines), ["", " one two  ", " three    ", " four     "]);
+        for line in &lines[1..] {
+            assert!(line.starts_with(&theme.bg(Role::UserBg)), "{line:?}");
+        }
+    }
+
+    /// The rows of a card without its side borders and padding.
+    fn inside(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                let row = row.strip_prefix("│ ").unwrap_or(row);
+                row.strip_suffix(" │").unwrap_or(row).trim_end().to_string()
+            })
+            .collect()
     }
 
     #[test]
-    fn finished_tool_shows_a_bounded_body() {
+    fn finished_tool_is_a_card_with_a_bounded_body() {
         let theme = Theme::dark();
         let long = ToolOutput::text(
             (1..=10)
                 .map(|i| format!("line {i}"))
                 .collect::<Vec<_>>()
                 .join("\n"),
-        );
+        )
+        .with_details(json!({"exit_code": 0, "timed_out": false}));
         let input = json!({"command": "seq 10"});
         let collapsed = plain(&tool_done(
             "shell",
             &input,
             &long,
-            Duration::from_secs(2),
+            Duration::from_millis(2040),
             false,
-            60,
+            44,
             &theme,
         ));
-        assert_eq!(collapsed[0], "● shell seq 10  2s");
+        assert!(collapsed[0].starts_with("╭─── ✔ shell seq 10 ─"), "{collapsed:?}");
+        assert!(collapsed[0].ends_with('╮'));
         assert_eq!(
-            &collapsed[1..],
-            [
-                "  line 1",
-                "  line 2",
-                "  line 3",
-                "  … 7 more lines (ctrl+o expands)"
-            ]
+            inside(&collapsed[1..5]),
+            ["line 1", "line 2", "line 3", "… 7 more lines (ctrl+o to expand)"]
         );
-        let expanded = tool_done("shell", &input, &long, Duration::from_secs(2), true, 60, &theme);
-        assert_eq!(expanded.len(), 11);
+        assert!(collapsed[5].starts_with("╰── 2.0s · exit 0 ─"), "{collapsed:?}");
+        assert_eq!(collapsed.len(), 6);
+        for row in &collapsed {
+            assert_eq!(text::width(row), 44, "{row:?}");
+        }
+        let expanded = tool_done("shell", &input, &long, Duration::from_secs(2), true, 44, &theme);
+        assert_eq!(expanded.len(), 12);
+
+        // The exit code is in the border, so the line of output that repeats it is left out.
+        let ran = ToolOutput::text("built\nexit code: 3").with_details(json!({"exit_code": 3}));
+        let shown = plain(&tool_done(
+            "shell",
+            &input,
+            &ran,
+            Duration::ZERO,
+            false,
+            44,
+            &theme,
+        ));
+        assert_eq!(inside(&shown[1..shown.len() - 1]), ["built"]);
+        assert!(shown[2].starts_with("╰── 0ms · exit 3 ─"), "{shown:?}");
 
         let failed = ToolOutput::error("boom\nwhy");
         let shown = plain(&tool_done(
@@ -345,10 +417,25 @@ mod tests {
             &failed,
             Duration::ZERO,
             false,
-            60,
+            44,
             &theme,
         ));
-        assert_eq!(&shown[1..], ["  boom", "  why"]);
+        assert!(shown[0].starts_with("╭─── ✘ shell"), "{shown:?}");
+        assert_eq!(inside(&shown[1..3]), ["boom", "why"]);
+        assert!(shown[3].starts_with("╰── 0ms ─"), "{shown:?}");
+
+        // Interrupted or refused is not the same as failed.
+        let aborted = ToolOutput::error("aborted by user");
+        let shown = plain(&tool_done(
+            "shell",
+            &input,
+            &aborted,
+            Duration::ZERO,
+            false,
+            44,
+            &theme,
+        ));
+        assert!(shown[0].starts_with("╭─── ⚠ shell"), "{shown:?}");
 
         let edited = ToolOutput::text("edited a.rs")
             .with_details(json!({"diff": "--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n"}));
@@ -358,16 +445,20 @@ mod tests {
             &edited,
             Duration::ZERO,
             false,
-            60,
+            44,
             &theme,
         ));
-        assert!(
-            shown.iter().any(|l| l.trim_start().starts_with("-old")),
-            "{shown:?}"
-        );
+        let rows = inside(&shown);
+        assert!(rows.contains(&"1 -old".to_string()), "{rows:?}");
+        assert!(rows.contains(&"1 +new".to_string()), "{rows:?}");
         assert!(!shown.iter().any(|l| l.contains("edited a.rs")));
+        // The card's header names the file; the diff does not repeat it.
+        assert!(shown[0].starts_with("╭─── ✔ edit a.rs ─"), "{shown:?}");
+        assert_eq!(rows[1], "@@ -1 +1 @@");
+        let two_files = "--- a/a\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n--- a/b\n+++ b/b\n@@ -1 +1 @@\n-x\n+y\n";
+        assert_eq!(without_file_header(two_files), two_files);
         for line in &shown {
-            assert!(text::width(line) <= 60);
+            assert_eq!(text::width(line), 44);
         }
     }
 }

@@ -1,31 +1,104 @@
 # The terminal UI
 
 Running `azazel` with no subcommand and no `-p` opens the interactive UI. It is inline, not full-screen: finished
-output is written once into your terminal's own scrollback, and only a small live region at the bottom is redrawn.
-This page lists the layout, keys, input prefixes, slash commands and themes. The UI needs a real terminal; without
+output is written once into your terminal's own scrollback, and only the live region below it is redrawn. This
+page lists the layout, keys, input prefixes, slash commands and themes. The UI needs a real terminal; without
 one, use [print mode](getting-started.md#print-mode) or [RPC mode](rpc.md).
 
 ## Layout
+
+```text
+ fix the failing test
+
+I'll run the tests first.
+
+╭─── ✔ shell cargo test ───────────────────────────────────────────────────╮
+│ test result: FAILED. 11 passed; 1 failed                                 │
+│ … 14 more lines (ctrl+o to expand)                                       │
+╰── 1.4s · exit 101 ───────────────────────────────────────────────────────╯
+╭─── ⠹ edit src/lib.rs ────────────────────────────────────────────────────╮
+╰── 0s ────────────────────────────────────────────────────────────────────╯
+
+── ⠹ running edit · 12s · esc to interrupt ─────────────────────────────────
+❯ Steer the agent, alt+enter queues a follow-up
+────────────────────────────────────────────────────────────────────────────
+ask · ⑂ main · ~/src/app · ◫ 12% · $0.04          ⬢ provider/model · medium
+```
+
+The input and the status line sit on the last rows of the terminal from the first frame on. When azazel starts,
+what the terminal showed before scrolls up into the scrollback, as after `clear`. The transcript then grows from
+the top of the screen down towards the input; once it reaches it, older lines scroll away as in any terminal.
+Leaving azazel puts the shell prompt right under the transcript.
 
 The live region, top to bottom:
 
 | Part | Shown when | Content |
 |---|---|---|
 | Streaming reply | the agent is working | The unfinished tail of the current reply; finished blocks move to scrollback |
-| Thinking | thinking is shown (`Ctrl+T`) | The last lines of the model's reasoning |
-| Tool cards | a tool is running | Tool name, a one-line summary of its input, the last 5 output lines, elapsed time |
-| Activity line | the agent is working | Spinner, `working` / `thinking` / `running <tool>`, elapsed time, `esc to interrupt` |
+| Thinking | thinking is shown (`Ctrl+T`) | The last lines of the model's reasoning, in italics |
+| Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time |
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
-| Input | always | The editor, with its completion list, notices and an attached-image count above it |
-| Status line | always | `mode · model · ctx N% · $cost · goal state · directory` (parts appear when known) |
+| Input | always | The editor between two rules, with its completion list, notices and an attached-image count above it |
+| Status line | always | Session facts on the left, the model on the right |
 
-Questions from agents, approval prompts, plan reviews and pickers replace the input until answered. In a picker:
-`Up`/`Down` move, `Enter` chooses and `Esc` cancels. Searchable pickers (models, sessions, prompt history) filter
-as you type; in the others, digits `1`-`9` choose a row directly.
+Your own messages appear in the transcript on a band that spans the terminal's width.
 
-A finished tool call shows 3 lines of output (16 lines of a diff). `Ctrl+O` expands tool calls that finish from
-then on.
+### Input
+
+The input sits between two full-width rules, with `❯` in front of the first row. An empty input shows a hint
+(`Ask anything, / for commands, @ for files`). The input grows with what you type up to 30 % of the terminal's
+height (at least 5 rows) and scrolls beyond that; the rules then say how much is out of view (`↑ 3 more`).
+
+While the agent is working, the rule above the input carries the working indicator: a spinner, `working` /
+`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`.
+
+The colour of the rules tells you what `Enter` will do:
+
+| Rules | Meaning |
+|---|---|
+| border colour | Permission mode `ask` |
+| `mode_plan` colour | Permission mode `plan` |
+| `mode_edits` colour | Permission mode `accept-edits` |
+| `mode_auto` colour | Permission mode `auto` |
+| `bash` colour (pink) | The input starts with `!`: it runs as a shell command |
+
+Questions from agents, approval prompts, plan reviews and pickers replace the input until answered, framed the
+same way: the title in the rule above, the keys in the rule below. In a picker: `Up`/`Down` move, `Enter` chooses
+and `Esc` cancels; the selected row is marked `→` and highlighted, and a list too long to show ends with its
+position (`(7/20)`). Searchable pickers (models, sessions, prompt history) filter as you type; in the others,
+digits `1`-`9` choose a row directly.
+
+### Tool cards
+
+Every tool call is a framed card. The header names the tool and what it is about; the bottom border carries how
+long the call took and, for `shell`, the exit code. The frame and the icon show the state:
+
+| Icon | Frame | State |
+|---|---|---|
+| spinner | accent | Running |
+| `✔` | muted | Finished |
+| `⚠` | warning | Interrupted, or refused by you |
+| `✘` | error | Failed |
+
+A finished card shows 3 lines of output, or 16 lines of a diff; `… N more lines (ctrl+o to expand)` counts the
+rest. `Ctrl+O` expands tool calls that finish from then on. Diffs have a line-number gutter, and added and
+removed lines are filled with a background colour.
+
+### Status line
+
+| Segment | Shown when | Content |
+|---|---|---|
+| mode | always | The permission mode: `ask`, `⏸ plan`, `⏵⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
+| `⑂ branch` | the project is a git repository | The checked-out branch |
+| directory | always | The working directory, with `~` for your home directory |
+| `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 % |
+| `$cost` | the model's prices are known | Money spent in this session |
+| `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
+| `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
+| `⬢ model · level` | always, against the right edge | The model answering and the thinking level |
+
+When the terminal is too narrow for both sides, the model is shortened first, then left out.
 
 ## Keys
 
@@ -85,8 +158,8 @@ reported reliably. Where `Shift+Enter` does not arrive, use `Ctrl+J`.
 Example:
 
 ```text
-› compare @src/config.rs with @docs/configuration.md
-› !git status
+❯ compare @src/config.rs with @docs/configuration.md
+❯ !git status
 ```
 
 ## Slash commands
@@ -166,8 +239,8 @@ theme = "light"
 
 `/theme` opens a picker and `/theme <name>` switches for the running session.
 
-A custom theme is a file `~/.azazel/themes/<name>.toml` that maps roles to colours. Roles left out keep the
-`dark` colour.
+A custom theme is a file `~/.azazel/themes/<name>.toml` that maps roles to colours. Every role is optional: a role
+left out keeps the colour of `dark`, or of `light` when the file sets a light `code_bg`.
 
 ```toml
 # ~/.azazel/themes/dusk.toml
@@ -179,9 +252,29 @@ warning = "bright_yellow"
 error = 203
 border = "#586070"
 code_bg = "#1e222a"
-diff_add = "#7ec699"
-diff_del = "#f07178"
+user_bg = "#2b304a"
+diff_add_bg = "#225c2b"
+diff_del_bg = "#7a2936"
 ```
+
+| Role | Used for |
+|---|---|
+| `text` | Ordinary text |
+| `muted` | Notices, hints, details, the status line |
+| `accent` | Headings, the `❯` prompt, spinners, the frame of a running tool card |
+| `success`, `warning`, `error` | State icons, warnings and errors, the frames of interrupted and failed tool cards |
+| `border` | The rules around the input and overlays, quote bars, table lines |
+| `border_muted` | The frame of a finished tool card |
+| `code_bg` | Background of code blocks |
+| `user_bg`, `user_text` | The band behind your own messages and the text on it |
+| `selected_bg` | Background of the selected row in pickers and completion lists |
+| `diff_add`, `diff_del` | The `+` and `-` signs of a diff |
+| `diff_add_bg`, `diff_del_bg` | Background of added and removed diff lines |
+| `thinking` | The model's reasoning and the thinking level in the status line |
+| `bash` | The input rules while a `!` shell command is typed |
+| `mode_plan`, `mode_edits`, `mode_auto` | The input rules and the status-line mode in `plan`, `accept-edits` and `auto` |
+
+A colour is one of:
 
 | Value | Meaning |
 |---|---|

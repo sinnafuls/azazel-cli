@@ -1099,6 +1099,8 @@ fn parse_models_keeps_generative_models_and_fills_reported_limits() {
                 "supportedGenerationMethods": ["embedContent"]
             },
             {"name": "models/mock-lite", "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-mock-flash", "displayName": "gemini-mock-flash",
+             "supportedGenerationMethods": ["streamGenerateContent"]},
             {"displayName": "nameless", "supportedGenerationMethods": ["generateContent"]},
             {"name": "models/mock-no-methods"}
         ],
@@ -1109,13 +1111,28 @@ fn parse_models_keeps_generative_models_and_fills_reported_limits() {
         models,
         vec![
             ModelInfo {
+                name: Some("Mock Pro".into()),
                 context_window: 1_048_576,
                 max_output: 65_536,
                 reasoning: true,
                 ..ModelInfo::unknown("mock", "mock-pro")
             },
             ModelInfo::unknown("mock", "mock-lite"),
+            // The list does not say which models take images; the Gemini family does.
+            ModelInfo {
+                vision: true,
+                ..ModelInfo::unknown("mock", "gemini-mock-flash")
+            },
         ]
     );
     assert!(google::parse_models(&provider(), &json!({"error": {"code": 403}})).is_empty());
+
+    // The list is paged: the token of one page asks for the next.
+    assert_eq!(google::next_page_token(&listing), Some("next"));
+    assert_eq!(google::next_page_token(&json!({"models": []})), None);
+    let client = reqwest::Client::new();
+    let next = google::models_page_request(&client, &provider(), &Auth::None, Some("a b/c"))
+        .build()
+        .unwrap();
+    assert_eq!(next.url().query(), Some("pageSize=1000&pageToken=a%20b%2Fc"));
 }

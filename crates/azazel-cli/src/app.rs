@@ -72,7 +72,7 @@ pub enum Open {
 /// The chain the lead starts with: `--model` flags, else the `default` role.
 fn lead_chain(cli: &Cli) -> Result<Vec<ModelSpec>> {
     if cli.model.is_empty() {
-        return Ok(vec![ModelSpec::Role("default".to_string())]);
+        return Ok(vec![ModelSpec::Role("lead".to_string())]);
     }
     cli.model
         .iter()
@@ -341,6 +341,7 @@ impl App {
 
         let client = http_client();
         let resolved = presets::resolve(&config.providers).map_err(|e| anyhow!(e))?;
+        let catalog = Catalog::load(Some(&paths.models_cache()), &config.models);
         // A provider that only a login can reach has no entry in the embedded catalogue; it is
         // asked for its models in the background, and the answer is kept for the next session.
         for login in resolved
@@ -364,9 +365,16 @@ impl App {
                 }
             });
         }
+        // A provider lists what its endpoint reports plus the models the configuration
+        // (`models.yml`, `[models]`) names for it.
         let mut providers: Vec<Arc<dyn Provider>> = resolved
             .into_iter()
-            .map(|p| Arc::new(HttpProvider::new(p, client.clone(), credentials.clone())) as Arc<dyn Provider>)
+            .map(|p| {
+                let declared = catalog.declared(&config.models, &p.id);
+                let provider =
+                    HttpProvider::new(p, client.clone(), credentials.clone()).with_declared(declared);
+                Arc::new(provider) as Arc<dyn Provider>
+            })
             .collect();
         #[cfg(feature = "bedrock")]
         {
@@ -387,7 +395,6 @@ impl App {
         }
         providers.extend(registry.providers());
         providers.extend(mock_provider(&mut config)?);
-        let catalog = Catalog::load(Some(&paths.models_cache()), &config.models);
         let policy = RetryPolicy {
             max_attempts: config.retry.max_attempts.max(1),
             cooldown: Duration::from_secs(config.retry.cooldown_secs),
@@ -480,15 +487,6 @@ impl App {
                 None => true,
             }
         })
-    }
-
-    /// Makes `model` the default for this process and for every later session: written to the
-    /// home config as `roles.default`, and given to the router so the roles built on it resolve.
-    pub fn set_default_model(&self, model: &str) -> Result<()> {
-        let spec: ModelSpec = model.parse().map_err(|e| anyhow!("{model}: {e}"))?;
-        crate::init::write_default_role(&self.paths.home_config(), model)?;
-        self.router.set_role("default", vec![spec]);
-        Ok(())
     }
 
     /// Opens a session and starts its lead agent on `chain`.

@@ -5,7 +5,9 @@
 //! row with what was drawn last time and only the changed range is rewritten.
 //!
 //! The absolute position of the region is unknown and never queried. The renderer only remembers
-//! on which row of the region it left the terminal cursor and moves relative to that.
+//! on which row of the region it left the terminal cursor and moves relative to that. A caller
+//! that wants the last rows of the region to stay on the last rows of the screen keeps the region
+//! tall enough with a [`Floor`].
 
 use std::io;
 
@@ -23,6 +25,51 @@ pub struct Frame {
     pub viewport: Vec<Line>,
     /// Where to show the terminal cursor as `(row within viewport, column)`; `None` hides it.
     pub cursor: Option<(u16, u16)>,
+}
+
+/// Keeps the bottom of the live region on the last row of the screen without asking the terminal
+/// where the cursor is.
+///
+/// The floor is the number of rows the region must occupy. It starts at the height of the screen,
+/// so the first frame fills the screen and whatever the terminal showed before scrolls away. A
+/// frame with fewer rows of its own is padded with blank rows (the caller decides where they go);
+/// each history line written above the region takes one row from the floor, so the transcript
+/// grows into the padding while the rows at the bottom stay where they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Floor {
+    rows: usize,
+}
+
+impl Floor {
+    /// A floor for a region that has not been drawn yet on a screen `height` rows tall.
+    pub fn new(height: u16) -> Floor {
+        Floor {
+            rows: usize::from(height.max(1)),
+        }
+    }
+
+    /// Rows the region occupies after the last [`Floor::pad`].
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// The screen was cleared or the region erased with the cursor at the top: fill it again.
+    pub fn reset(&mut self, height: u16) {
+        *self = Floor::new(height);
+    }
+
+    /// The screen is `height` rows tall from now on.
+    pub fn resize(&mut self, height: u16) {
+        self.rows = self.rows.min(usize::from(height.max(1)));
+    }
+
+    /// Accounts for a frame that writes `history` lines above a region with `content` rows of
+    /// its own, and returns how many blank rows the region needs besides them.
+    pub fn pad(&mut self, history: usize, content: usize, height: u16) -> usize {
+        let height = usize::from(height.max(1));
+        self.rows = self.rows.saturating_sub(history).max(content).min(height);
+        self.rows.saturating_sub(content)
+    }
 }
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";

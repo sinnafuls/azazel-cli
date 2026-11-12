@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use azazel_core::{ApprovalDecision, PlanDecision, UiError};
+use azazel_tui::components::composer;
 use azazel_tui::{Editor, Line, Role, SelectItem, SelectList, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -281,17 +282,11 @@ impl Overlay {
 
     /// The overlay's rows, at most `max_rows`, and the cursor position within them when it has one.
     pub fn render(&self, width: usize, max_rows: usize, theme: &Theme) -> (Vec<Line>, Option<(u16, u16)>) {
-        let heading = format!("── {} ", self.title);
-        let rule = "─".repeat(width.saturating_sub(text::width(&heading)));
-        let mut lines = vec![text::truncate(
-            &format!(
-                "{}{}",
-                theme.paint(Role::Accent, &heading),
-                theme.paint(Role::Border, &rule)
-            ),
-            width,
-            "",
-        )];
+        // Framed like the input it stands in for: the title rides the rule above, the key hints
+        // the rule below.
+        let title = theme.paint(Role::Accent, &self.title);
+        let mut lines = vec![composer::rule(width, Some(&title), None, Role::Border, theme)];
+        let prompt = theme.paint(Role::Accent, "❯ ");
         let mut body: Vec<Line> = Vec::new();
         for raw in &self.body {
             if raw.is_empty() {
@@ -330,9 +325,10 @@ impl Overlay {
                 editor,
                 secret: false,
             } => {
-                let (rows, (row, column)) = editor.render(width, theme, "› ");
-                cursor = Some((lines.len() as u16 + row, column));
-                lines.extend(rows);
+                let room = max_rows.saturating_sub(lines.len() + 1).max(1);
+                let view = editor.view(width, room, theme, &prompt);
+                cursor = Some((lines.len() as u16 + view.cursor.0, view.cursor.1));
+                lines.extend(view.lines);
                 "enter confirm · esc cancel"
             }
             Kind::Input { editor, secret: true } => {
@@ -340,11 +336,12 @@ impl Overlay {
                 let dots = editor.text().chars().count().min(width.saturating_sub(3));
                 let before = editor.text()[..editor.cursor()].chars().count().min(dots);
                 cursor = Some((lines.len() as u16, (2 + before) as u16));
-                lines.push(format!("› {}", "•".repeat(dots)));
+                lines.push(format!("{prompt}{}", "•".repeat(dots)));
                 "hidden while you type · enter confirm · esc cancel"
             }
         };
-        lines.push(theme.paint(Role::Muted, &text::truncate(hint, width, "…")));
+        let hint = theme.paint(Role::Muted, hint);
+        lines.push(composer::rule(width, Some(&hint), None, Role::Border, theme));
         (lines, cursor)
     }
 }
@@ -436,8 +433,14 @@ mod tests {
         assert!(lines.len() <= 20, "{}", lines.len());
         assert!(lines.iter().all(|l| text::width(l) <= 40));
         let (row, column) = cursor.unwrap();
-        assert!(text::strip_ansi(&lines[row as usize]).starts_with('›'));
+        assert!(text::strip_ansi(&lines[row as usize]).starts_with('❯'));
         assert_eq!(column, 2);
-        assert!(text::strip_ansi(&lines.join("\n")).contains("more lines"));
+        let shown = text::strip_ansi(&lines.join("\n"));
+        assert!(shown.contains("more lines"));
+        // The title rides the rule above and the key hints the rule below.
+        assert!(shown.starts_with("── Feedback ─"), "{shown}");
+        let last = text::strip_ansi(&lines[lines.len() - 1]);
+        assert!(last.starts_with("── enter confirm · esc cancel ─"), "{last}");
+        assert_eq!(text::width(&last), 40);
     }
 }

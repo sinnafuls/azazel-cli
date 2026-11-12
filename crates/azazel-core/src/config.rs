@@ -293,6 +293,19 @@ impl Default for Config {
             ("verify".to_string(), role(&["default"])),
             ("memory".to_string(), role(&["smol"])),
             ("vision".to_string(), role(&["default"])),
+            // The lead agent, and one role per built-in agent definition, so each can be given
+            // its own model; unset, they fall back to the general roles above.
+            ("lead".to_string(), role(&["default"])),
+            ("scout".to_string(), role(&["smol"])),
+            ("planner".to_string(), role(&["plan"])),
+            ("coder".to_string(), role(&["default"])),
+            ("tester".to_string(), role(&["default"])),
+            ("reviewer".to_string(), role(&["slow"])),
+            ("verifier".to_string(), role(&["verify"])),
+            ("researcher".to_string(), role(&["default"])),
+            ("designer".to_string(), role(&["default"])),
+            ("artist".to_string(), role(&["default"])),
+            ("playtester".to_string(), role(&["vision"])),
         ]);
         Config {
             roles,
@@ -382,23 +395,88 @@ pub struct LoadOptions {
     pub env: Vec<(String, String)>,
 }
 
+/// One `models.yml` that was found and read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelsLayer {
+    pub path: PathBuf,
+    /// How many providers it configures and how many models it describes.
+    pub providers: usize,
+    pub models: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct LoadedConfig {
     pub config: Config,
     pub layers: Vec<Layer>,
+    /// The `models.yml` files that contributed providers and models.
+    pub models_files: Vec<ModelsLayer>,
     /// Project settings skipped because the project is not trusted, as `file: key`.
     pub ignored: Vec<String>,
 }
 
+/// Reads a file that may be absent.
+fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(ConfigError::File {
+            file: path.to_path_buf(),
+            message: e.to_string(),
+        }),
+    }
+}
+
+/// The providers and models of a `models.yml` as the `[providers]` and `[models]` tables of a
+/// config layer, and what the file held.
+fn parse_models_file(path: &Path, text: &str) -> Result<(Table, ModelsLayer), ConfigError> {
+    let fail = |message: String| ConfigError::File {
+        file: path.to_path_buf(),
+        message,
+    };
+    let file = azazel_ai::models_file::parse(text).map_err(fail)?;
+    let mut table = Table::new();
+    let as_table = |value: Result<Value, toml::ser::Error>| {
+        value.map_err(|e| fail(format!("a value cannot be kept: {e}")))
+    };
+    if !file.providers.is_empty() {
+        table.insert(
+            "providers".to_string(),
+            as_table(Value::try_from(&file.providers))?,
+        );
+    }
+    if !file.models.is_empty() {
+        table.insert("models".to_string(), as_table(Value::try_from(&file.models))?);
+    }
+    validate(&table).map_err(fail)?;
+    let layer = ModelsLayer {
+        path: path.to_path_buf(),
+        providers: file.providers.len(),
+        models: file.models.len(),
+    };
+    Ok((table, layer))
+}
+
 impl Config {
-    /// Later layers win: defaults, home, project, project-local, environment, flags.
+    /// Later layers win: defaults, home, project, project-local, environment, flags. In the home
+    /// and the project directory a `models.yml` sits just below the `config.toml` beside it, so
+    /// its providers and models are overridden table by table, key by key, like any layer's.
     pub fn load(paths: &Paths, options: &LoadOptions) -> Result<LoadedConfig, ConfigError> {
+        let models_file = azazel_ai::models_file::FILE_NAME;
         let files = [
-            (LayerKind::Home, paths.home_config()),
-            (LayerKind::Project, paths.project_config()),
-            (LayerKind::ProjectLocal, paths.project_local_config()),
+            (
+                LayerKind::Home,
+                paths.home_config(),
+                Some(paths.home.join(models_file)),
+            ),
+            (
+                LayerKind::Project,
+                paths.project_config(),
+                Some(paths.project_dir().join(models_file)),
+            ),
+            (LayerKind::ProjectLocal, paths.project_local_config(), None),
         ];
         let mut layers = Vec::new();
+        let mut models_files = Vec::new();
         let mut ignored = Vec::new();
         // Built-in role fallbacks sit below every file, so setting one role keeps the others.
         let mut merged = Table::new();
@@ -413,24 +491,39 @@ impl Config {
             })
             .collect();
         merged.insert("roles".to_string(), Value::Table(roles));
-        for (kind, path) in files {
+        // The last file to mention each provider, to name when the merged provider is unusable.
+        let mut mentioned: BTreeMap<String, PathBuf> = BTreeMap::new();
+        let mut note = |table: &Table, file: &Path| {
+            let ids = table.get("providers").and_then(Value::as_table);
+            for id in ids.into_iter().flat_map(|providers| providers.keys()) {
+                mentioned.insert(id.clone(), file.to_path_buf());
+            }
+        };
+        for (kind, path, models) in files {
             if path == paths.home_config() && kind != LayerKind::Home {
                 continue;
             }
-            let text = match std::fs::read_to_string(&path) {
-                Ok(text) => text,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(e) => {
-                    return Err(ConfigError::File {
-                        file: path,
-                        message: e.to_string(),
-                    });
+            if let Some(models) = models
+                && let Some(text) = read_optional(&models)?
+            {
+                // A project's file can name endpoints and key commands, like its `[providers]`.
+                if kind != LayerKind::Home && !options.trusted {
+                    ignored.push(format!("{}: the whole file", models.display()));
+                } else {
+                    let (table, layer) = parse_models_file(&models, &text)?;
+                    note(&table, &models);
+                    merge(&mut merged, table, &mut Vec::new());
+                    models_files.push(layer);
                 }
+            }
+            let Some(text) = read_optional(&path)? else {
+                continue;
             };
             let mut table = parse_layer(&path, &text)?;
             if kind != LayerKind::Home && !options.trusted {
                 strip_untrusted(&mut table, &path, &mut ignored);
             }
+            note(&table, &path);
             merge(&mut merged, table.clone(), &mut Vec::new());
             layers.push(Layer { kind, path, table });
         }
@@ -454,9 +547,31 @@ impl Config {
             source_name: "merged configuration".to_string(),
             message,
         })?;
+        // A provider that is not built in exists only once some layer gives it an API and an
+        // address; the layers may share that between them.
+        for (id, settings) in &config.providers {
+            if azazel_ai::providers::presets::is_builtin(id)
+                || (settings.api.is_some() && settings.base_url.is_some())
+            {
+                continue;
+            }
+            let message =
+                format!("providers.{id}: not a built-in provider, so it needs both `api` and `base_url`");
+            return Err(match mentioned.get(id) {
+                Some(file) => ConfigError::File {
+                    file: file.clone(),
+                    message,
+                },
+                None => ConfigError::Override {
+                    source_name: "merged configuration".to_string(),
+                    message,
+                },
+            });
+        }
         Ok(LoadedConfig {
             config,
             layers,
+            models_files,
             ignored,
         })
     }
@@ -816,5 +931,131 @@ mod tests {
         let c = Config::load(&f.paths, &trusted()).unwrap().config;
         assert_eq!(c.permissions.allow, ["read", "shell"]);
         assert!(c.providers.contains_key("evil") && c.hooks.contains_key("session_start"));
+    }
+
+    fn models_yml(f: &Fixture, home: &str, project: &str) {
+        let name = azazel_ai::models_file::FILE_NAME;
+        for (path, text) in [
+            (f.paths.home.join(name), home),
+            (f.paths.project_dir().join(name), project),
+        ] {
+            if !text.is_empty() {
+                std::fs::write(path, text).unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn models_yml_sits_below_the_config_toml_beside_it_and_the_project_above_the_home() {
+        let f = fixture(
+            r#"
+            [providers.gateway]
+            base_url = "https://toml-home.example/v1"
+            [models."gateway/big"]
+            max_output = 1000
+            "#,
+            r#"
+            [providers.gateway.headers]
+            X-From = "project-toml"
+            "#,
+            "",
+        );
+        models_yml(
+            &f,
+            r#"
+providers:
+  gateway:
+    name: Team gateway
+    api: openai-chat
+    base_url: https://yaml-home.example/v1
+    api_key_env: GATEWAY_KEY
+    headers: { X-From: home-yaml, X-Team: platform }
+    models:
+      - id: big
+        context_window: 200000
+        max_output: 32000
+        vision: true
+      - id: small
+"#,
+            r#"
+providers:
+  gateway:
+    api_key_env: PROJECT_KEY
+    discovery: off
+    models:
+      - id: big
+        context_window: 400000
+"#,
+        );
+        let loaded = Config::load(&f.paths, &trusted()).unwrap();
+        let gateway = &loaded.config.providers["gateway"];
+        // Each key comes from the highest layer that sets it.
+        assert_eq!(gateway.name.as_deref(), Some("Team gateway"));
+        assert_eq!(gateway.api, Some(azazel_ai::WireApi::OpenAiChat));
+        assert_eq!(gateway.base_url.as_deref(), Some("https://toml-home.example/v1"));
+        assert_eq!(gateway.api_key_env.as_deref(), Some("PROJECT_KEY"));
+        assert_eq!(gateway.discovery, Some(azazel_ai::Discovery::Off));
+        assert_eq!(gateway.headers["X-From"], "project-toml");
+        assert_eq!(gateway.headers["X-Team"], "platform");
+
+        let big = &loaded.config.models["gateway/big"];
+        assert_eq!(
+            (big.context_window, big.max_output, big.vision),
+            (Some(400_000), Some(1000), Some(true))
+        );
+        assert!(loaded.config.models.contains_key("gateway/small"));
+
+        let read: Vec<(&str, usize, usize)> = loaded
+            .models_files
+            .iter()
+            .map(|layer| {
+                let dir = layer.path.parent().unwrap().file_name().unwrap();
+                (dir.to_str().unwrap(), layer.providers, layer.models)
+            })
+            .collect();
+        assert_eq!(read, [("home", 1, 2), (".azazel", 1, 1)]);
+        // The provider resolves, with the preset list around it.
+        let resolved = azazel_ai::providers::presets::resolve(&loaded.config.providers).unwrap();
+        assert!(
+            resolved
+                .iter()
+                .any(|p| p.id == "gateway" && p.name == "Team gateway")
+        );
+    }
+
+    #[test]
+    fn a_mistake_in_models_yml_names_the_file_and_the_key() {
+        let f = fixture("", "", "");
+        models_yml(
+            &f,
+            "providers:\n  gateway:\n    api: openai-chat\n    base_url: http://x\n    models:\n      - id: m\n        context_window: many\n",
+            "",
+        );
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(
+            error.contains("models.yml") && error.contains("providers.gateway.models[0].context_window"),
+            "{error}"
+        );
+
+        // A provider that no layer completes is reported against the last file that names it.
+        let f = fixture("[providers.gateway]\napi = \"openai-chat\"\n", "", "");
+        models_yml(&f, "", "providers:\n  gateway:\n    name: Half a gateway\n");
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(
+            error.contains("models.yml") && error.contains("providers.gateway") && error.contains("base_url"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn an_untrusted_project_models_yml_is_not_read_at_all() {
+        let f = fixture("", "", "");
+        // Not even valid: an untrusted file is never parsed.
+        models_yml(&f, "", "providers:\n  evil:\n    api: nonsense\n");
+        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
+        assert!(loaded.config.providers.is_empty() && loaded.models_files.is_empty());
+        assert_eq!(loaded.ignored.len(), 1);
+        assert!(loaded.ignored[0].contains("models.yml"), "{:?}", loaded.ignored);
+        assert!(Config::load(&f.paths, &trusted()).is_err());
     }
 }

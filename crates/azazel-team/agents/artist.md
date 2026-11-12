@@ -2,7 +2,7 @@
 name: artist
 description: Use to produce images, sprites, video, 3D models or audio for a game or app from a brief, saved as files in the project.
 tools: generate_image, generate_video, generate_3d, generate_audio, sprite_sheet, read, write, shell
-model: "@default"
+model: "@artist"
 max-turns: 100
 spawns: []
 ---

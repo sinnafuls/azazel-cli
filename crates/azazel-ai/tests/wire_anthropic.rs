@@ -16,16 +16,8 @@ const ADAPTIVE_MODEL: &str = "claude-mock-5-1";
 
 fn provider() -> ProviderConfig {
     ProviderConfig {
-        id: "mock".to_string(),
-        api: WireApi::AnthropicMessages,
-        base_url: "https://mock.invalid".to_string(),
-        api_key_env: Vec::new(),
-        api_key_command: None,
-        headers: BTreeMap::new(),
-        oauth_headers: BTreeMap::new(),
         requires_key: true,
-        auth_style: Default::default(),
-        oauth: None,
+        ..ProviderConfig::new("mock", WireApi::AnthropicMessages, "https://mock.invalid")
     }
 }
 
@@ -1224,13 +1216,11 @@ fn parse_models_reads_limits_and_capabilities_and_defaults_the_rest() {
     let models = anthropic::parse_models(&provider(), &body);
 
     let large = ModelInfo {
-        provider: "mock".to_string(),
-        id: "mock-large".to_string(),
         context_window: 1_000_000,
         max_output: 128_000,
         vision: true,
         reasoning: true,
-        cost: None,
+        ..ModelInfo::unknown("mock", "mock-large")
     };
     let text = ModelInfo {
         context_window: 200_000,

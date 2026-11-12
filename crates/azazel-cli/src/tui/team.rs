@@ -28,13 +28,19 @@ pub(super) async fn next_event(events: &mut Option<broadcast::Receiver<TeamEvent
 }
 
 impl Tui {
-    /// Whether a sub-agent is at work, so that the roster's clocks need redrawing.
-    pub(super) fn agents_active(&self) -> bool {
-        self.team.as_ref().is_some_and(|team| {
+    /// How many sub-agents are queued, working or waiting for an approval.
+    pub(super) fn active_agents(&self) -> usize {
+        self.team.as_ref().map_or(0, |team| {
             team.list()
                 .iter()
-                .any(|member| member.id != LEAD && member.state.is_active())
+                .filter(|member| member.id != LEAD && member.state.is_active())
+                .count()
         })
+    }
+
+    /// Whether a sub-agent is at work, so that the roster's clocks need redrawing.
+    pub(super) fn agents_active(&self) -> bool {
+        self.active_agents() > 0
     }
 
     /// One line per sub-agent that is queued, working or waiting for an approval.
@@ -114,7 +120,7 @@ impl Tui {
                         width,
                         &self.theme,
                     );
-                    self.say(lines);
+                    self.say_card(lines);
                 }
             }
             AgentEvent::Idle { .. } => self.info(&format!("[{id}] finished")),

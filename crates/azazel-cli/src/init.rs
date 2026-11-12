@@ -36,17 +36,25 @@ fn default_role_is_set(config: &Path) -> Result<bool> {
         .is_some())
 }
 
-/// Sets `roles.default` in the config file at `config`, leaving everything else as written.
-pub fn write_default_role(config: &Path, model: &str) -> Result<()> {
+/// Sets `roles.<role>` to `model` in the config file at `config`, or removes it when `model` is
+/// `None`, leaving everything else as written.
+pub fn write_role(config: &Path, role: &str, model: Option<&str>) -> Result<()> {
     let mut doc = read_document(config)?;
     let roles = doc
         .entry("roles")
         .or_insert(Item::Table(Table::new()))
         .as_table_like_mut()
         .ok_or_else(|| anyhow!("`roles` in {} is not a table", config.display()))?;
-    let mut chain = Array::new();
-    chain.push(model);
-    roles.insert("default", toml_edit::value(chain));
+    match model {
+        Some(model) => {
+            let mut chain = Array::new();
+            chain.push(model);
+            roles.insert(role, toml_edit::value(chain));
+        }
+        None => {
+            roles.remove(role);
+        }
+    }
     if let Some(dir) = config.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
@@ -151,7 +159,7 @@ async fn global(paths: &Paths, input: &mut impl BufRead) -> Result<String> {
         bail!("{chosen} offers no models");
     }
     let model = format!("{chosen}/{}", choose("Default model", &models, input)?);
-    write_default_role(&home_config, &model)?;
+    write_role(&home_config, "default", Some(&model))?;
     Ok(format!(
         "wrote roles.default = [\"{model}\"] to {}",
         home_config.display()
@@ -211,7 +219,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("home").join("config.toml");
         assert!(!default_role_is_set(&config).unwrap());
-        write_default_role(&config, "mock/a").unwrap();
+        write_role(&config, "default", Some("mock/a")).unwrap();
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             "[roles]\ndefault = [\"mock/a\"]\n"
@@ -222,7 +230,7 @@ mod tests {
             "# mine\n[roles]\nsmol = [\"mock/s\"] # small\n\n[tui]\ntheme = \"light\"\n",
         )
         .unwrap();
-        write_default_role(&config, "mock/b").unwrap();
+        write_role(&config, "default", Some("mock/b")).unwrap();
         assert_eq!(
             std::fs::read_to_string(&config).unwrap(),
             "# mine\n[roles]\nsmol = [\"mock/s\"] # small\ndefault = [\"mock/b\"]\n\n[tui]\ntheme = \"light\"\n"
@@ -231,7 +239,7 @@ mod tests {
 
         std::fs::write(&config, "roles = 3\n").unwrap();
         assert!(
-            write_default_role(&config, "mock/c")
+            write_role(&config, "default", Some("mock/c"))
                 .unwrap_err()
                 .to_string()
                 .contains("not a table")

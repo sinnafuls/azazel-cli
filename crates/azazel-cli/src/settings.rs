@@ -9,7 +9,8 @@ use crate::login::{forget_key, sign_in_from_ui, store_key};
 use async_trait::async_trait;
 use azazel_ai::{Credentials, ModelSpec, ProviderConfig, Router};
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, ExtCtx, ExtError, Extension, Level, Registrar, Ui, UiError,
+    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, Registrar, Ui,
+    UiError,
 };
 
 /// How long a provider may take to list its models before the built-in catalogue is used.
@@ -58,9 +59,34 @@ enum Item {
     Subscription,
     ApiKey,
     DefaultModel,
+    Roles,
     SignOut,
     Done,
 }
+
+/// The roles a person can give a model, in the order the menu lists them, with what each is for.
+/// The lead and every built-in agent have a role of their own, which falls back to a general one
+/// until it is set.
+const ROLES: [(&str, &str); 18] = [
+    ("lead", "the agent you talk to"),
+    ("scout", "fast read-only exploration"),
+    ("planner", "writes implementation plans"),
+    ("coder", "implements changes"),
+    ("tester", "writes and runs tests"),
+    ("reviewer", "reviews diffs"),
+    ("verifier", "checks a goal is really met"),
+    ("researcher", "web research"),
+    ("designer", "user interface work"),
+    ("artist", "images, video, 3D and audio"),
+    ("playtester", "plays builds and reports defects"),
+    ("default", "everything without a model of its own"),
+    ("smol", "small, quick jobs: summaries, memory"),
+    ("slow", "the most capable model, for hard reviews"),
+    ("plan", "planning"),
+    ("verify", "verification"),
+    ("vision", "work that needs to see images"),
+    ("memory", "extracting memories"),
+];
 
 impl Settings {
     /// Who the providers' credentials come from, one line per provider that has one.
@@ -104,6 +130,10 @@ impl Settings {
                     default.as_deref().unwrap_or("none")
                 ),
             ),
+            (
+                Item::Roles,
+                "Models for the lead and each agent (coder, scout, reviewer, ...)".to_string(),
+            ),
         ];
         let stored = self.credentials.load();
         if !stored.is_empty() {
@@ -119,7 +149,7 @@ impl Settings {
             .iter()
             .map(|p| match subscription_name(&p.id) {
                 Some(name) => format!("{name} ({})", p.id),
-                None => p.id.clone(),
+                None => format!("{} ({})", p.name, p.id),
             })
             .collect();
         let Ok(index) = ui.0.select("Sign in with which account?", &labels).await else {
@@ -159,11 +189,12 @@ impl Settings {
 
     /// Lets the user pick a model of `only` (or of a provider they choose), then makes it the
     /// default for this session and later ones.
-    async fn default_model_of(
+    async fn model_for(
         &self,
         ui: &Arc<Ui>,
         router: &Router,
         only: Option<&str>,
+        role: &str,
     ) -> Result<Option<String>, String> {
         let provider = match only {
             Some(id) => id.to_string(),
@@ -212,17 +243,65 @@ impl Settings {
         }
         ids.sort();
         ids.dedup();
-        let Ok(index) = ui.0.select(&format!("Default model ({provider})"), &ids).await else {
+        let Ok(index) = ui.0.select(&format!("Model for {role} ({provider})"), &ids).await else {
             return Ok(None);
         };
         let model = format!("{provider}/{}", ids[index]);
         let spec: ModelSpec = model.parse().map_err(|e| format!("{model}: {e}"))?;
-        crate::init::write_default_role(&self.home_config, &model).map_err(|e| format!("{e:#}"))?;
-        router.set_role("default", vec![spec]);
+        crate::init::write_role(&self.home_config, role, Some(&model)).map_err(|e| format!("{e:#}"))?;
+        router.set_role(role, vec![spec]);
+        let what = match role {
+            "default" => "the default model".to_string(),
+            role => format!("the {role} model"),
+        };
         Ok(Some(format!(
-            "the default model is now {model} (saved in {})",
+            "{what} is now {model} (saved in {})",
             self.home_config.display()
         )))
+    }
+
+    /// Lets the person pick a role and give it a model, or put it back on its fallback.
+    async fn roles(&self, ui: &Arc<Ui>, router: &Router) -> Result<Option<String>, String> {
+        let configured = router.roles();
+        let labels: Vec<String> = ROLES
+            .iter()
+            .map(|(role, what)| {
+                let model = router
+                    .resolve(&[ModelSpec::Role(role.to_string())])
+                    .first()
+                    .map(|m| m.to_string())
+                    .unwrap_or_else(|| "no model".to_string());
+                let via = match configured.get(*role) {
+                    Some(chain) if chain.iter().any(|spec| matches!(spec, ModelSpec::Model(_))) => {
+                        String::new()
+                    }
+                    Some(chain) => format!(" (via {})", chain_label(chain)),
+                    None => String::new(),
+                };
+                format!("{role:<11} {model}{via} - {what}")
+            })
+            .collect();
+        let Ok(index) = ui.0.select("Which role?", &labels).await else {
+            return Ok(None);
+        };
+        let role = ROLES[index].0;
+        let fallback = Config::default().roles.get(role).cloned();
+        let mut actions = vec!["Choose a model".to_string()];
+        if let Some(chain) = &fallback {
+            actions.push(format!("Use the fallback ({})", chain_label(chain)));
+        }
+        let Ok(action) = ui.0.select(&format!("Model for {role}"), &actions).await else {
+            return Ok(None);
+        };
+        match (action, fallback) {
+            (1, Some(chain)) => {
+                crate::init::write_role(&self.home_config, role, None).map_err(|e| format!("{e:#}"))?;
+                let label = chain_label(&chain);
+                router.set_role(role, chain);
+                Ok(Some(format!("{role} now follows {label}")))
+            }
+            _ => self.model_for(ui, router, None, role).await,
+        }
     }
 
     async fn sign_out(&self, ui: &Arc<Ui>) -> Result<Option<String>, String> {
@@ -266,7 +345,11 @@ impl CommandHandler for Settings {
                 Item::Subscription => self.subscription(&ui).await,
                 Item::ApiKey => self.api_key(&ui).await,
                 Item::DefaultModel => match router.as_deref() {
-                    Some(router) => self.default_model_of(&ui, router, None).await,
+                    Some(router) => self.model_for(&ui, router, None, "default").await,
+                    None => Err("no model router in this session".to_string()),
+                },
+                Item::Roles => match router.as_deref() {
+                    Some(router) => self.roles(&ui, router).await,
                     None => Err("no model router in this session".to_string()),
                 },
                 Item::SignOut => self.sign_out(&ui).await,
@@ -282,7 +365,7 @@ impl CommandHandler for Settings {
                         && !provider.is_empty()
                         && self.default_model(Some(router)).is_none()
                     {
-                        match self.default_model_of(&ui, router, Some(&provider)).await {
+                        match self.model_for(&ui, router, Some(&provider), "default").await {
                             Ok(Some(line)) => {
                                 ui.0.notify(Level::Info, &line);
                                 done.push(line);
@@ -343,7 +426,17 @@ mod tests {
             .iter()
             .map(|p| p.id.as_str())
             .collect();
-        assert_eq!(logins, ["anthropic", "openai-codex"]);
+        assert_eq!(
+            logins,
+            [
+                "anthropic",
+                "github-copilot",
+                "google-gemini-cli",
+                "openai-codex",
+                "openrouter",
+                "xai-oauth"
+            ]
+        );
 
         let keys: Vec<&str> = key_providers(&providers).iter().map(|p| p.id.as_str()).collect();
         // A subscription-only backend takes no key; a local server needs none.

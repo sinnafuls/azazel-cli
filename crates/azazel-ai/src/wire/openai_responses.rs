@@ -13,11 +13,11 @@ use crate::error::AiError;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, Usage, WireApi};
-use crate::wire::Decoder;
 use crate::wire::openai_chat::{
     self, ErrorInfo, STREAM_ENDED, data_url, parse_arguments, request_headers, system_text, temperature,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
+use crate::wire::{Decoder, apply_extra_body};
 
 pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Value {
     let mut body = Map::new();
@@ -62,7 +62,9 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
         // Reasoning models reject a sampling temperature.
         body.insert("temperature".into(), temperature(value));
     }
-    Value::Object(body)
+    let mut body = Value::Object(body);
+    apply_extra_body(&mut body, provider);
+    body
 }
 
 pub fn build_request(
@@ -82,6 +84,7 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
     Box::new(ResponsesDecoder {
         provider: provider.id.clone(),
         model: model.id.clone(),
+        api: provider.api,
         started: false,
         finished: false,
         response_id: None,
@@ -308,6 +311,7 @@ impl Item {
 struct ResponsesDecoder {
     provider: String,
     model: String,
+    api: WireApi,
     started: bool,
     finished: bool,
     response_id: Option<String>,
@@ -429,7 +433,7 @@ impl ResponsesDecoder {
         AssistantMeta {
             provider: self.provider.clone(),
             model: self.model.clone(),
-            api: WireApi::OpenAiResponses,
+            api: self.api,
             usage: self.usage,
             stop,
             response_id: self.response_id.clone(),

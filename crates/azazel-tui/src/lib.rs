@@ -10,12 +10,14 @@ pub mod render;
 pub mod text;
 pub mod theme;
 
-pub use components::editor::Editor;
+pub use components::composer::Composer;
+pub use components::editor::{Editor, EditorView};
 pub use components::markdown::StreamingMarkdown;
 pub use components::roster::{RosterRow, RosterState};
 pub use components::select::{SelectItem, SelectList};
 pub use components::spinner::Spinner;
 pub use components::todo::TodoState;
+pub use components::tool_card::{Card, CardState};
 pub use keys::{KeyCombo, KeyError, Keymap, disable_enhanced_keys, enable_enhanced_keys};
-pub use render::{Frame, Line, Renderer};
+pub use render::{Floor, Frame, Line, Renderer};
 pub use theme::{Color, ColorDepth, RESET, Role, Theme, ThemeError};

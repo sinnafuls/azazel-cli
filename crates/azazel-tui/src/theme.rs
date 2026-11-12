@@ -15,15 +15,40 @@ pub enum Role {
     Success,
     Warning,
     Error,
+    /// Rules around the input and overlays, quote bars, table lines.
     Border,
     /// Background of code blocks.
     CodeBg,
     DiffAdd,
     DiffDel,
+    /// Background of the band a user message is shown on.
+    UserBg,
+    /// Text on [`Role::UserBg`].
+    UserText,
+    /// Background of the selected row of a list.
+    SelectedBg,
+    /// Frames that should stay quiet, such as the card of a finished tool call.
+    BorderMuted,
+    /// Background of an added diff line.
+    DiffAddBg,
+    /// Background of a removed diff line.
+    DiffDelBg,
+    /// The model's reasoning.
+    Thinking,
+    /// Input rules while a `!` shell command is being typed.
+    Bash,
+    /// Input rules in permission mode `plan`.
+    ModePlan,
+    /// Input rules in permission mode `accept-edits`.
+    ModeEdits,
+    /// Input rules in permission mode `auto`.
+    ModeAuto,
 }
 
+const ROLE_COUNT: usize = 21;
+
 impl Role {
-    pub const ALL: [Role; 10] = [
+    pub const ALL: [Role; ROLE_COUNT] = [
         Role::Text,
         Role::Muted,
         Role::Accent,
@@ -34,6 +59,17 @@ impl Role {
         Role::CodeBg,
         Role::DiffAdd,
         Role::DiffDel,
+        Role::UserBg,
+        Role::UserText,
+        Role::SelectedBg,
+        Role::BorderMuted,
+        Role::DiffAddBg,
+        Role::DiffDelBg,
+        Role::Thinking,
+        Role::Bash,
+        Role::ModePlan,
+        Role::ModeEdits,
+        Role::ModeAuto,
     ];
 
     /// The key naming this role in a theme file.
@@ -49,11 +85,30 @@ impl Role {
             Role::CodeBg => "code_bg",
             Role::DiffAdd => "diff_add",
             Role::DiffDel => "diff_del",
+            Role::UserBg => "user_bg",
+            Role::UserText => "user_text",
+            Role::SelectedBg => "selected_bg",
+            Role::BorderMuted => "border_muted",
+            Role::DiffAddBg => "diff_add_bg",
+            Role::DiffDelBg => "diff_del_bg",
+            Role::Thinking => "thinking",
+            Role::Bash => "bash",
+            Role::ModePlan => "mode_plan",
+            Role::ModeEdits => "mode_edits",
+            Role::ModeAuto => "mode_auto",
         }
     }
 
     pub fn from_name(name: &str) -> Option<Role> {
         Role::ALL.into_iter().find(|role| role.name() == name)
+    }
+
+    /// Whether the role colours the background of a cell rather than its text.
+    pub fn is_background(self) -> bool {
+        matches!(
+            self,
+            Role::CodeBg | Role::UserBg | Role::SelectedBg | Role::DiffAddBg | Role::DiffDelBg
+        )
     }
 
     fn index(self) -> usize {
@@ -224,24 +279,36 @@ pub enum ThemeError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
-    colors: [Color; 10],
+    colors: [Color; ROLE_COUNT],
     depth: ColorDepth,
 }
 
 impl Theme {
+    /// Violet accent and indigo rules on the terminal's own dark background.
     pub fn dark() -> Theme {
         Theme {
             colors: [
-                Color::Default,
-                Color::Rgb(127, 132, 142),
-                Color::Rgb(110, 168, 254),
-                Color::Rgb(126, 198, 153),
-                Color::Rgb(229, 192, 123),
-                Color::Rgb(240, 113, 120),
-                Color::Rgb(88, 96, 112),
-                Color::Rgb(30, 34, 42),
-                Color::Rgb(126, 198, 153),
-                Color::Rgb(240, 113, 120),
+                Color::Default,            // text
+                Color::Rgb(138, 143, 163), // muted
+                Color::Rgb(180, 142, 245), // accent
+                Color::Rgb(126, 198, 153), // success
+                Color::Rgb(229, 192, 123), // warning
+                Color::Rgb(240, 113, 120), // error
+                Color::Rgb(107, 116, 168), // border
+                Color::Rgb(30, 34, 42),    // code_bg
+                Color::Rgb(126, 198, 153), // diff_add
+                Color::Rgb(240, 113, 120), // diff_del
+                Color::Rgb(43, 48, 74),    // user_bg
+                Color::Rgb(229, 231, 245), // user_text
+                Color::Rgb(52, 56, 82),    // selected_bg
+                Color::Rgb(74, 80, 100),   // border_muted
+                Color::Rgb(34, 92, 43),    // diff_add_bg
+                Color::Rgb(122, 41, 54),   // diff_del_bg
+                Color::Rgb(150, 142, 190), // thinking
+                Color::Rgb(253, 93, 177),  // bash
+                Color::Rgb(97, 175, 239),  // mode_plan
+                Color::Rgb(126, 198, 153), // mode_edits
+                Color::Rgb(240, 160, 80),  // mode_auto
             ],
             depth: ColorDepth::TrueColor,
         }
@@ -250,28 +317,41 @@ impl Theme {
     pub fn light() -> Theme {
         Theme {
             colors: [
-                Color::Default,
-                Color::Rgb(110, 119, 129),
-                Color::Rgb(9, 105, 218),
-                Color::Rgb(26, 127, 55),
-                Color::Rgb(154, 103, 0),
-                Color::Rgb(207, 34, 46),
-                Color::Rgb(175, 184, 193),
-                Color::Rgb(240, 242, 245),
-                Color::Rgb(26, 127, 55),
-                Color::Rgb(207, 34, 46),
+                Color::Default,            // text
+                Color::Rgb(110, 119, 129), // muted
+                Color::Rgb(111, 66, 193),  // accent
+                Color::Rgb(26, 127, 55),   // success
+                Color::Rgb(154, 103, 0),   // warning
+                Color::Rgb(207, 34, 46),   // error
+                Color::Rgb(140, 149, 190), // border
+                Color::Rgb(240, 242, 245), // code_bg
+                Color::Rgb(26, 127, 55),   // diff_add
+                Color::Rgb(207, 34, 46),   // diff_del
+                Color::Rgb(230, 233, 247), // user_bg
+                Color::Rgb(31, 35, 53),    // user_text
+                Color::Rgb(221, 226, 242), // selected_bg
+                Color::Rgb(200, 206, 216), // border_muted
+                Color::Rgb(218, 251, 225), // diff_add_bg
+                Color::Rgb(255, 235, 233), // diff_del_bg
+                Color::Rgb(110, 100, 150), // thinking
+                Color::Rgb(191, 57, 137),  // bash
+                Color::Rgb(9, 105, 218),   // mode_plan
+                Color::Rgb(26, 127, 55),   // mode_edits
+                Color::Rgb(188, 76, 0),    // mode_auto
             ],
             depth: ColorDepth::TrueColor,
         }
     }
 
     /// Parses a theme file: a flat table of role name to colour (`"#rrggbb"`, an integer 0-255
-    /// or an ANSI colour name). Roles that are absent keep the colour of [`Theme::dark`].
+    /// or an ANSI colour name). Roles that are absent keep the colour of [`Theme::dark`], or of
+    /// [`Theme::light`] when the file sets a light `code_bg`, so a file written before a role
+    /// existed still gets colours that suit its background.
     pub fn from_toml(source: &str) -> Result<Theme, ThemeError> {
         let table: toml::Table = source
             .parse()
             .map_err(|e: toml::de::Error| ThemeError::Parse(e.to_string()))?;
-        let mut theme = Theme::dark();
+        let mut set: Vec<(Role, Color)> = Vec::with_capacity(table.len());
         for (key, value) in &table {
             let role = Role::from_name(key).ok_or_else(|| ThemeError::UnknownKey(key.clone()))?;
             let invalid = |reason: String| ThemeError::InvalidColor {
@@ -288,6 +368,13 @@ impl Theme {
                     return Err(invalid(format!("expected a string or an integer, found {found}")));
                 }
             };
+            set.push((role, color));
+        }
+        let light = set
+            .iter()
+            .any(|(role, color)| *role == Role::CodeBg && is_light_color(*color));
+        let mut theme = if light { Theme::light() } else { Theme::dark() };
+        for (role, color) in set {
             theme.colors[role.index()] = color;
         }
         Ok(theme)
@@ -313,9 +400,7 @@ impl Theme {
 
     /// Whether the theme is meant for a light terminal background, judged by its code background.
     pub fn is_light(&self) -> bool {
-        self.color(Role::CodeBg)
-            .to_rgb()
-            .is_some_and(|(r, g, b)| 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) > 128_000)
+        is_light_color(self.color(Role::CodeBg))
     }
 
     /// SGR sequence selecting `color` as the foreground at this theme's colour depth.
@@ -338,19 +423,28 @@ impl Theme {
         self.bg_color(self.color(role))
     }
 
-    /// Wraps `text` in the role's colour (as a background for [`Role::CodeBg`], as a foreground
-    /// otherwise) followed by [`RESET`]. Text is returned unchanged when it is empty or the role
-    /// uses the terminal default.
+    /// Wraps `text` in the role's colour (as a background for the roles that are backgrounds,
+    /// as a foreground otherwise) followed by [`RESET`]. Text is returned unchanged when it is
+    /// empty or the role uses the terminal default.
     pub fn paint(&self, role: Role, text: &str) -> String {
         if text.is_empty() || self.color(role) == Color::Default {
             return text.to_string();
         }
-        let prefix = if role == Role::CodeBg {
+        let prefix = if role.is_background() {
             self.bg(role)
         } else {
             self.fg(role)
         };
         format!("{prefix}{text}{RESET}")
+    }
+
+    /// A full-width band: `text` on the background `bg` in the foreground `fg`, padded with
+    /// spaces to `width` columns. `text` must not reset styles itself. Text wider than `width`
+    /// is cut.
+    pub fn band(&self, bg: Role, fg: Role, text: &str, width: usize) -> String {
+        let text = crate::text::truncate(text, width, "");
+        let padded = crate::text::pad_right(text.strip_suffix(RESET).unwrap_or(&text), width);
+        format!("{}{}{padded}{RESET}", self.bg(bg), self.fg(fg))
     }
 
     fn sgr(&self, color: Color, background: bool) -> String {
@@ -372,6 +466,12 @@ impl Theme {
         out.push('m');
         out
     }
+}
+
+fn is_light_color(color: Color) -> bool {
+    color
+        .to_rgb()
+        .is_some_and(|(r, g, b)| 299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) > 128_000)
 }
 
 impl Default for Theme {
@@ -492,6 +592,46 @@ mod tests {
             assert_eq!(theme.color(role), dark.color(role), "{role:?} should inherit");
         }
         assert_eq!(Theme::from_toml(""), Ok(dark));
+    }
+
+    #[test]
+    fn toml_with_a_light_code_background_inherits_from_light() {
+        let theme = Theme::from_toml("code_bg = \"#f5f5f5\"\naccent = \"#102030\"\n").expect("valid theme");
+        let light = Theme::light();
+        assert_eq!(theme.color(Role::Accent), Color::Rgb(16, 32, 48));
+        for role in [Role::UserBg, Role::DiffAddBg, Role::SelectedBg, Role::Muted] {
+            assert_eq!(theme.color(role), light.color(role), "{role:?} should inherit");
+        }
+    }
+
+    #[test]
+    fn background_roles_paint_the_background() {
+        let mut theme = Theme::dark();
+        for role in Role::ALL {
+            theme.set_color(role, Color::Indexed(200));
+            let painted = theme.paint(role, "x");
+            let expected = if role.is_background() {
+                "\x1b[48;5;200mx\x1b[0m"
+            } else {
+                "\x1b[38;5;200mx\x1b[0m"
+            };
+            assert_eq!(painted, expected, "{role:?}");
+        }
+    }
+
+    #[test]
+    fn band_fills_the_width() {
+        let mut theme = Theme::dark();
+        theme.set_color(Role::UserBg, Color::Indexed(236));
+        theme.set_color(Role::UserText, Color::Indexed(15));
+        assert_eq!(
+            theme.band(Role::UserBg, Role::UserText, " hi", 6),
+            "\x1b[48;5;236m\x1b[97m hi   \x1b[0m"
+        );
+        assert_eq!(
+            crate::text::width(&theme.band(Role::UserBg, Role::UserText, "too long", 4)),
+            4
+        );
     }
 
     #[test]

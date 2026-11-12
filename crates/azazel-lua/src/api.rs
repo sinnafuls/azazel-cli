@@ -233,16 +233,10 @@ fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<
         let api_key_env: Option<String> = optional(&spec, NAME, "api_key_env")?;
         let headers: Option<BTreeMap<String, String>> = optional(&spec, NAME, "headers")?;
         script.pending().providers.push(ProviderConfig {
-            id,
-            api,
-            base_url: base_url.trim_end_matches('/').to_string(),
             requires_key: api_key_env.is_some(),
-            auth_style: Default::default(),
-            oauth: None,
             api_key_env: api_key_env.into_iter().collect(),
-            api_key_command: None,
- headers: headers.unwrap_or_default(),
- oauth_headers: BTreeMap::new(),
+            headers: headers.unwrap_or_default(),
+            ..ProviderConfig::new(id, api, base_url.trim_end_matches('/'))
         });
         Ok(())
     })?;

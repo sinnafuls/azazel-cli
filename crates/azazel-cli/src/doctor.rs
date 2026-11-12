@@ -89,6 +89,14 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             for layer in &loaded.layers {
                 report.ok(format!("config: loaded {}", layer.path.display()));
             }
+            for file in &loaded.models_files {
+                report.ok(format!(
+                    "models: loaded {} ({} providers, {} models)",
+                    file.path.display(),
+                    file.providers,
+                    file.models
+                ));
+            }
             for skipped in &loaded.ignored {
                 report.warn(format!(
                     "config: skipped because the project is not trusted: {skipped}"
@@ -119,15 +127,35 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     let credentials = Credentials::new(paths.auth_file());
     match presets::resolve(&config.providers) {
         Ok(providers) => {
-            let (mut with_key, mut local, mut without) = (0, Vec::new(), 0);
+            let (mut with_key, mut local, mut without) = (0, Vec::new(), Vec::new());
             for provider in &providers {
-                match credentials.source(provider) {
-                    Some(source) => {
+                let id = provider.id.as_str();
+                let endpoint = format!("{} at {}", provider.api, provider.base_url);
+                // A provider the configuration adds is always shown: it is there on purpose.
+                let added = !presets::is_builtin(id);
+                match (credentials.source(provider), provider.unset_variable()) {
+                    (Some(source), Some(variable)) => {
                         with_key += 1;
-                        report.ok(format!("provider {}: credential from {source}", provider.id));
+                        report.warn(format!(
+                            "provider {id}: credential from {source}, but its address needs {variable} set"
+                        ));
                     }
-                    None if !provider.requires_key => local.push(provider.id.as_str()),
-                    None => without += 1,
+                    (Some(source), None) => {
+                        with_key += 1;
+                        report.ok(format!("provider {id}: credential from {source} ({endpoint})"));
+                    }
+                    (None, _) if !provider.requires_key && added => {
+                        report.ok(format!("provider {id}: no key needed ({endpoint})"));
+                    }
+                    (None, _) if !provider.requires_key => local.push(id),
+                    (None, _) if added => {
+                        let how = match provider.api_key_env.first() {
+                            Some(variable) => format!("set {variable}"),
+                            None => format!("run `azazel login {id}`"),
+                        };
+                        report.warn(format!("provider {id}: no credential, {how} ({endpoint})"));
+                    }
+                    (None, _) => without.push(id),
                 }
             }
             if !local.is_empty() {
@@ -138,8 +166,13 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             }
             if with_key == 0 {
                 report.warn("providers: no API key found; only local servers can be used");
-            } else if without > 0 {
-                report.ok(format!("providers: {without} more without a credential"));
+            }
+            if !without.is_empty() {
+                report.ok(format!(
+                    "providers without a credential ({}): {}",
+                    without.len(),
+                    without.join(", ")
+                ));
             }
         }
         Err(e) => report.error(format!("providers: {e}")),

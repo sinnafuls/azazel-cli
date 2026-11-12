@@ -8,7 +8,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use super::one_line;
 use crate::render::Line;
 use crate::text;
-use crate::theme::{Role, Theme};
+use crate::theme::{RESET, Role, Theme};
 
 /// Page size used before the list has been rendered.
 const DEFAULT_PAGE: usize = 10;
@@ -122,8 +122,9 @@ impl SelectList {
         self.selected().and_then(|index| self.items.get(index))
     }
 
-    /// Renders at most `max_rows` lines. When the matches do not fit, the window scrolls just far
-    /// enough to keep the selection visible and the last row shows `position/total`.
+    /// Renders at most `max_rows` lines. The selected row is marked `→ ` and filled with the
+    /// selection background across the width. When the matches do not fit, the window scrolls
+    /// just far enough to keep the selection visible and the last row shows `(position/total)`.
     pub fn render(&self, width: usize, max_rows: usize, theme: &Theme) -> Vec<Line> {
         if max_rows == 0 {
             return Vec::new();
@@ -157,19 +158,32 @@ impl SelectList {
             let item = &self.items[index];
             let label = one_line(&item.label);
             let detail = one_line(&item.detail);
-            let mut line = if position == self.cursor {
-                format!("{}\x1b[1m{label}\x1b[22m", theme.paint(Role::Accent, "❯ "))
+            if position == self.cursor {
+                let mut line = format!(
+                    "{}{}→ {}\x1b[1m{label}\x1b[22m",
+                    theme.bg(Role::SelectedBg),
+                    theme.fg(Role::Accent),
+                    theme.fg(Role::Text),
+                );
+                if !detail.is_empty() {
+                    line.push_str("  ");
+                    line.push_str(&theme.fg(Role::Muted));
+                    line.push_str(&detail);
+                }
+                let cut = text::truncate(&line, width, "…");
+                let open = cut.strip_suffix(RESET).unwrap_or(&cut);
+                lines.push(format!("{}{RESET}", text::pad_right(open, width)));
             } else {
-                format!("  {label}")
-            };
-            if !detail.is_empty() {
-                line.push_str("  ");
-                line.push_str(&theme.paint(Role::Muted, &detail));
+                let mut line = format!("  {label}");
+                if !detail.is_empty() {
+                    line.push_str("  ");
+                    line.push_str(&theme.paint(Role::Muted, &detail));
+                }
+                lines.push(text::truncate(&line, width, "…"));
             }
-            lines.push(text::truncate(&line, width, "…"));
         }
         if counter {
-            let position = format!("  {}/{total}", self.cursor + 1);
+            let position = format!("  ({}/{total})", self.cursor + 1);
             lines.push(text::truncate(&theme.paint(Role::Muted, &position), width, ""));
         }
         lines
@@ -209,8 +223,12 @@ mod tests {
         SelectList::new(labels.iter().map(|label| SelectItem::new(*label, "")).collect())
     }
 
+    /// The rows as text, without the padding that fills the selected row.
     fn plain(lines: &[Line]) -> Vec<String> {
-        lines.iter().map(|l| text::strip_ansi(l)).collect()
+        lines
+            .iter()
+            .map(|l| text::strip_ansi(l).trim_end().to_string())
+            .collect()
     }
 
     #[test]
@@ -319,16 +337,21 @@ mod tests {
             SelectItem::new("/model", "choose the model"),
             SelectItem::new("/mode", "permission mode"),
         ]);
-        let lines = select.render(40, 10, &Theme::dark());
+        let theme = Theme::dark();
+        let lines = select.render(40, 10, &theme);
         assert_eq!(
             plain(&lines),
-            ["❯ /model  choose the model", "  /mode  permission mode"]
+            ["→ /model  choose the model", "  /mode  permission mode"]
         );
+        // The selected row is a band across the whole width; the others are not.
+        assert!(lines[0].starts_with(&theme.bg(Role::SelectedBg)));
+        assert_eq!(text::width(&lines[0]), 40);
+        assert!(!lines[1].contains(&theme.bg(Role::SelectedBg)));
 
-        let narrow = select.render(12, 10, &Theme::dark());
-        assert_eq!(plain(&narrow), ["❯ /model  c…", "  /mode  pe…"]);
+        let narrow = select.render(12, 10, &theme);
+        assert_eq!(plain(&narrow), ["→ /model  c…", "  /mode  pe…"]);
         for width in 0..30 {
-            for line in select.render(width, 10, &Theme::dark()) {
+            for line in select.render(width, 10, &theme) {
                 assert!(text::width(&line) <= width, "width {width}: {line:?}");
             }
         }
@@ -343,7 +366,7 @@ mod tests {
         let lines = plain(&select.render(30, 5, &Theme::dark()));
         assert_eq!(
             lines,
-            ["❯ item-00", "  item-01", "  item-02", "  item-03", "  1/20"]
+            ["→ item-00", "  item-01", "  item-02", "  item-03", "  (1/20)"]
         );
 
         for _ in 0..6 {
@@ -352,7 +375,7 @@ mod tests {
         let lines = plain(&select.render(30, 5, &Theme::dark()));
         assert_eq!(
             lines,
-            ["  item-03", "  item-04", "  item-05", "❯ item-06", "  7/20"]
+            ["  item-03", "  item-04", "  item-05", "→ item-06", "  (7/20)"]
         );
 
         // Moving back up scrolls only when the selection would leave the window.
@@ -360,21 +383,21 @@ mod tests {
         let lines = plain(&select.render(30, 5, &Theme::dark()));
         assert_eq!(
             lines,
-            ["  item-03", "  item-04", "❯ item-05", "  item-06", "  6/20"]
+            ["  item-03", "  item-04", "→ item-05", "  item-06", "  (6/20)"]
         );
         select.page_up();
         select.page_up();
         let lines = plain(&select.render(30, 5, &Theme::dark()));
         assert_eq!(
             lines,
-            ["❯ item-00", "  item-01", "  item-02", "  item-03", "  1/20"]
+            ["→ item-00", "  item-01", "  item-02", "  item-03", "  (1/20)"]
         );
 
         select.move_up();
         let lines = plain(&select.render(30, 5, &Theme::dark()));
         assert_eq!(
             lines,
-            ["  item-16", "  item-17", "  item-18", "❯ item-19", "  20/20"]
+            ["  item-16", "  item-17", "  item-18", "→ item-19", "  (20/20)"]
         );
     }
 

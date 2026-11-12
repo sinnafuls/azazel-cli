@@ -5,6 +5,8 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::types::ThinkingLevel;
+
 /// USD per million tokens.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,12 +23,18 @@ pub struct Cost {
 pub struct ModelInfo {
     pub provider: String,
     pub id: String,
+    /// What the model is called in lists, when that is more than its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub context_window: u64,
     pub max_output: u32,
     #[serde(default)]
     pub vision: bool,
     #[serde(default)]
     pub reasoning: bool,
+    /// The thinking levels the model accepts; empty means every level.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_levels: Vec<ThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Cost>,
 }
@@ -37,10 +45,12 @@ impl ModelInfo {
         ModelInfo {
             provider: provider.to_string(),
             id: id.to_string(),
+            name: None,
             context_window: 128_000,
             max_output: 8192,
             vision: false,
             reasoning: false,
+            thinking_levels: Vec::new(),
             cost: None,
         }
     }
@@ -48,16 +58,51 @@ impl ModelInfo {
     pub fn key(&self) -> String {
         format!("{}/{}", self.provider, self.id)
     }
+
+    /// The level a request for `wanted` is made at: `wanted` itself when the model accepts it,
+    /// otherwise the nearest accepted level below it, otherwise the lowest one above. `Off`
+    /// stays `Off`: a model is never made to think by asking it not to.
+    pub fn thinking_level(&self, wanted: ThinkingLevel) -> ThinkingLevel {
+        if self.thinking_levels.is_empty()
+            || wanted == ThinkingLevel::Off
+            || self.thinking_levels.contains(&wanted)
+        {
+            return wanted;
+        }
+        let accepted = || {
+            self.thinking_levels
+                .iter()
+                .copied()
+                .filter(|l| *l != ThinkingLevel::Off)
+        };
+        accepted()
+            .filter(|level| *level < wanted)
+            .max()
+            .or_else(|| accepted().min())
+            .unwrap_or(ThinkingLevel::Off)
+    }
 }
 
-/// A `[models."provider/id"]` config table.
+/// A `[models."provider/id"]` config table, or one entry of a provider's `models:` list in
+/// `models.yml`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context_window: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vision: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning: Option<bool>,
+    /// The thinking levels the model accepts. Naming any makes the model a reasoning one unless
+    /// `reasoning` says otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_levels: Option<Vec<ThinkingLevel>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cost: Option<Cost>,
 }
 
@@ -116,6 +161,9 @@ impl Catalog {
                 .models
                 .entry(key.clone())
                 .or_insert_with(|| ModelInfo::unknown(provider, id));
+            if let Some(v) = &o.name {
+                model.name = Some(v.clone());
+            }
             if let Some(v) = o.context_window {
                 model.context_window = v;
             }
@@ -125,6 +173,10 @@ impl Catalog {
             if let Some(v) = o.vision {
                 model.vision = v;
             }
+            if let Some(levels) = &o.thinking_levels {
+                model.thinking_levels = levels.clone();
+                model.reasoning = levels.iter().any(|level| *level != ThinkingLevel::Off);
+            }
             if let Some(v) = o.reasoning {
                 model.reasoning = v;
             }
@@ -132,6 +184,17 @@ impl Catalog {
                 model.cost = Some(v);
             }
         }
+    }
+
+    /// The models the configuration names for `provider`, as the catalogue now describes them:
+    /// what a provider lists besides whatever its own endpoint reports.
+    pub fn declared(&self, overrides: &BTreeMap<String, ModelOverride>, provider: &str) -> Vec<ModelInfo> {
+        overrides
+            .keys()
+            .filter_map(|key| key.split_once('/'))
+            .filter(|(named, _)| *named == provider)
+            .map(|(_, id)| self.get(provider, id))
+            .collect()
     }
 
     pub fn get(&self, provider: &str, id: &str) -> ModelInfo {
@@ -232,5 +295,43 @@ mod tests {
         assert_eq!((a.context_window, a.max_output, a.vision), (1000, 77, true));
         let new = catalog.get("mock", "new");
         assert_eq!((new.context_window, new.reasoning), (128_000, true));
+    }
+
+    #[test]
+    fn a_configured_model_gets_its_name_and_thinking_levels_and_is_listed_for_its_provider() {
+        use ThinkingLevel::{High, Low, Max, Medium, Minimal, Off, Xhigh};
+        let overrides = BTreeMap::from([
+            (
+                "mock/thinker".to_string(),
+                ModelOverride {
+                    name: Some("Thinker".into()),
+                    thinking_levels: Some(vec![Low, High]),
+                    ..Default::default()
+                },
+            ),
+            ("other/x".to_string(), ModelOverride::default()),
+        ]);
+        let mut catalog = Catalog::default();
+        catalog.apply_overrides(&overrides);
+
+        let thinker = catalog.get("mock", "thinker");
+        assert_eq!(thinker.name.as_deref(), Some("Thinker"));
+        // Naming levels says the model reasons.
+        assert!(thinker.reasoning);
+        // A level it does not take becomes the nearest one below, else the lowest above.
+        let asked: Vec<ThinkingLevel> = [Off, Minimal, Low, Medium, High, Xhigh, Max]
+            .into_iter()
+            .map(|level| thinker.thinking_level(level))
+            .collect();
+        assert_eq!(asked, [Off, Low, Low, Low, High, High, High]);
+        // A model that names no levels takes them all.
+        assert_eq!(catalog.get("other", "x").thinking_level(Xhigh), Xhigh);
+
+        let declared: Vec<String> = catalog
+            .declared(&overrides, "mock")
+            .into_iter()
+            .map(|model| model.key())
+            .collect();
+        assert_eq!(declared, ["mock/thinker"]);
     }
 }

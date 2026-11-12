@@ -11,11 +11,13 @@ Later layers win:
 | Order | Source | Notes |
 |---|---|---|
 | 1 | Built-in defaults | The values in the tables below |
-| 2 | `~/.azazel/config.toml` | Your settings for every project |
-| 3 | `<project>/.azazel/config.toml` | Shared project settings, meant to be committed |
-| 4 | `<project>/.azazel/config.local.toml` | Your settings for this project; `Always allow` rules are saved here |
-| 5 | `AZAZEL_<TABLE>__<KEY>` environment variables | See below |
-| 6 | Command-line flags | `--mode` sets `permissions.mode` |
+| 2 | `~/.azazel/models.yml` | Providers and their models only; see [models.yml](models-and-logins.md#modelsyml) |
+| 3 | `~/.azazel/config.toml` | Your settings for every project |
+| 4 | `<project>/.azazel/models.yml` | Providers and models for this project; read only when the project is trusted |
+| 5 | `<project>/.azazel/config.toml` | Shared project settings, meant to be committed |
+| 6 | `<project>/.azazel/config.local.toml` | Your settings for this project; `Always allow` rules are saved here |
+| 7 | `AZAZEL_<TABLE>__<KEY>` environment variables | See below |
+| 8 | Command-line flags | `--mode` sets `permissions.mode` |
 
 The home directory is `~/.azazel`, or the value of `AZAZEL_HOME`. The project root is the nearest ancestor of the
 working directory that contains `.azazel/` or `.git`; without one, it is the working directory.
@@ -26,6 +28,8 @@ Merge rules:
 - `permissions.allow`, `permissions.ask`, `permissions.deny` and every `hooks.<event>` array concatenate across layers.
 - Every other value, including other arrays, replaces the one below it.
 - An unknown table or key is a load error that names the file. Nothing is ignored silently.
+- A `models.yml` contributes `[providers]` and `[models]` and merges like any other layer; a mistake in it is
+  a load error that names the file and the key (`providers.<id>.models[0].cost`).
 
 `azazel doctor` shows which files were loaded.
 
@@ -71,17 +75,24 @@ thinking = "low"
 | | `smol`, `slow`, `verify`, `vision` | `["@default"]` | Chains for cheap work, hard work, the checker and image input |
 | | `plan` | `["@slow"]` | Chain for planning |
 | | `memory` | `["@smol"]` | Chain for memory extraction |
-| `[providers.<id>]` | `api` | preset | `anthropic-messages`, `openai-responses`, `openai-chat`, `google-generative` or `bedrock-converse` |
-| | `base_url` | preset | Endpoint. A new provider id needs both `api` and `base_url` |
+| | `lead`, and one per built-in agent | see [roles](models-and-logins.md#roles) | The lead's chain and each agent's, so each can have its own model |
+| `[providers.<id>]` | `name` | preset, else the id | What the provider is called in menus |
+| | `api` | preset | A [wire API](models-and-logins.md#wire-apis): `anthropic-messages`, `openai-responses`, `openai-chat`, `openrouter`, `google-generative`, `google-gemini-cli`, `ollama-chat`, `azure-openai-responses`, `azure-openai-chat` |
+| | `base_url` | preset | Endpoint; may contain `${VAR}` and `${VAR:-default}`. A new provider id needs both `api` and `base_url` |
 | | `api_key_env` | preset | Environment variable holding the key |
 | | `api_key_command` | unset | Shell command whose output is the key |
-| | `headers` | `{}` | Extra headers on every request |
-| | `auth` | `bearer` | `bearer`, or `api-key` for an `api-key:` header (Azure resource keys) |
+| | `api_key` | unset | The key itself |
+| | `headers` | preset | Extra headers on every request; values may contain `${VAR}` |
+| | `auth` | `auto` | `auto` (what the wire API prescribes), `bearer`, or `api-key` for an `api-key:` header (Azure resource keys) |
+| | `discovery` | preset, else `auto` | How models are listed: `auto`, `ollama`, `lm-studio` or `off` |
+| | `extra_body` | `{}` | Members written into every request body (routing preferences, vendor switches) |
 | | `region`, `profile` | unset | AWS settings, for `bedrock` |
 | | `project`, `location` | unset | Google Cloud settings, for `vertex` |
-| | `oauth`, `oauth_headers` | unset | A sign-in instead of a key; see [models and logins](models-and-logins.md) |
-| `[models."<provider>/<id>"]` | `context_window`, `max_output` | catalogue | Token limits; unknown models get 128000 and 8192 |
+| | `oauth`, `oauth_headers` | preset | A sign-in instead of a key; see [models and logins](models-and-logins.md) |
+| `[models."<provider>/<id>"]` | `name` | catalogue | Display name |
+| | `context_window`, `max_output` | catalogue | Token limits; unknown models get 128000 and 8192 |
 | | `vision`, `reasoning` | catalogue | Capabilities; unknown models get `false` |
+| | `thinking_levels` | every level | The thinking levels the model accepts, for example `["low", "medium", "high"]` |
 | | `cost` | catalogue | `{ input, output, cache_read, cache_write }` in USD per million tokens |
 | `[agents.<name>]` | `model` | definition | Chain (a list) replacing the agent definition's; see [team](team.md) |
 | | `thinking` | definition | Thinking level replacing the definition's |
@@ -152,6 +163,7 @@ back. A project needs a trust decision when it has any of:
 - files in `.azazel/extensions/`
 - `.azazel/mcp.json` or `.mcp.json`
 - one of the gated settings in `.azazel/config.toml` or `.azazel/config.local.toml`
+- `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `lsp`, `verify.commands`, `tools.shell`, `browser.path`.
@@ -164,6 +176,7 @@ Print mode, RPC mode and the subcommands never ask: they treat an undecided proj
 In an untrusted project:
 
 - gated settings in the two project config files are dropped; everything else in them still applies
+- the project's `models.yml` is not read
 - project extensions, project MCP servers and skill hooks are not loaded
 - `` !`command` `` lines in custom commands are left as text
 - context files, skills, agent definitions and custom commands still load

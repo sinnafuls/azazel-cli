@@ -1,6 +1,6 @@
 //! Activity spinner.
 
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Time between spinner frames. A redraw timer is only needed while a spinner is visible.
 pub const INTERVAL: Duration = Duration::from_millis(80);
@@ -21,6 +21,13 @@ impl Spinner {
     /// The tick reached after `elapsed` time.
     pub fn tick_at(elapsed: Duration) -> u64 {
         u64::try_from(elapsed.as_millis() / INTERVAL.as_millis()).unwrap_or(u64::MAX)
+    }
+
+    /// The glyph to draw now. It follows the wall clock, so every spinner drawn in one frame
+    /// shows the same glyph and all of them advance together.
+    pub fn now() -> &'static str {
+        let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+        Spinner::frame(Spinner::tick_at(since_epoch))
     }
 }
 
@@ -47,5 +54,10 @@ mod tests {
         assert_eq!(Spinner::tick_at(Duration::from_millis(79)), 0);
         assert_eq!(Spinner::tick_at(Duration::from_millis(80)), 1);
         assert_eq!(Spinner::tick_at(Duration::from_millis(805)), 10);
+    }
+
+    #[test]
+    fn the_shared_clock_yields_a_frame() {
+        assert!(FRAMES.contains(&Spinner::now()));
     }
 }

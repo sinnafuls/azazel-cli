@@ -1,7 +1,7 @@
 ---
 name: designer
 description: Use for user interface work such as layouts, components, styling and visual polish, when the result must be checked in a real browser.
-model: "@default"
+model: "@designer"
 max-turns: 150
 skills: [frontend-design]
 spawns: [scout]

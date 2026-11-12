@@ -2,7 +2,11 @@
 
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
+mod cloud_code;
+mod discovery;
 pub mod http;
+mod logins;
 pub mod presets;
+mod table;
 #[cfg(feature = "vertex")]
 pub mod vertex;

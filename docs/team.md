@@ -17,16 +17,25 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 
 | Name | Model role | Tools | Turn limit | Purpose |
 |---|---|---|---|---|
-| `scout` | `@smol` | `read`, `glob`, `grep`, `semantic_search`, `web_search`, `web_fetch` | 40 | Fast read-only exploration: where something lives, how it works |
-| `planner` | `@plan` | scout's tools, plus `write` and `edit` limited to `.azazel/plans/**` | 80 | Writes an implementation plan file before code is touched |
-| `coder` | `@default` | all; may spawn `scout` | 150 | Implements a scoped change and proves it by building and testing |
-| `tester` | `@default` | all | 120 | Writes and runs tests, reports precise failures |
-| `reviewer` | `@slow` | `read`, `glob`, `grep`, `shell` limited to `git diff`, `git log`, `git show` | 80 | Independent review of a diff |
-| `verifier` | `@verify` | `read`, `glob`, `grep`, `shell`; `write` and `edit` disallowed | 80 | Checks a claim of completion by running commands (see [goals](goals.md)) |
-| `researcher` | `@default` | `web_search`, `web_fetch`, `browser`, `read` | 80 | Research outside the repository, with sources |
-| `designer` | `@default` | all; skill `frontend-design`; may spawn `scout` | 150 | UI work checked in a real browser |
-| `artist` | `@default` | `generate_image`, `generate_video`, `generate_3d`, `generate_audio`, `sprite_sheet`, `read`, `write`, `shell` | 100 | Produces image, video, 3D and audio assets |
-| `playtester` | `@vision` | `shell`, `job`, `screen`, `browser`, `read` | 80 | Runs and plays a build, reports defects with frames |
+| `scout` | `@scout` → `@smol` | `read`, `glob`, `grep`, `semantic_search`, `web_search`, `web_fetch` | 40 | Fast read-only exploration: where something lives, how it works |
+| `planner` | `@planner` → `@plan` | scout's tools, plus `write` and `edit` limited to `.azazel/plans/**` | 80 | Writes an implementation plan file before code is touched |
+| `coder` | `@coder` → `@default` | all; may spawn `scout` | 150 | Implements a scoped change and proves it by building and testing |
+| `tester` | `@tester` → `@default` | all | 120 | Writes and runs tests, reports precise failures |
+| `reviewer` | `@reviewer` → `@slow` | `read`, `glob`, `grep`, `shell` limited to `git diff`, `git log`, `git show` | 80 | Independent review of a diff |
+| `verifier` | `@verifier` → `@verify` | `read`, `glob`, `grep`, `shell`; `write` and `edit` disallowed | 80 | Checks a claim of completion by running commands (see [goals](goals.md)) |
+| `researcher` | `@researcher` → `@default` | `web_search`, `web_fetch`, `browser`, `read` | 80 | Research outside the repository, with sources |
+| `designer` | `@designer` → `@default` | all; skill `frontend-design`; may spawn `scout` | 150 | UI work checked in a real browser |
+| `artist` | `@artist` → `@default` | `generate_image`, `generate_video`, `generate_3d`, `generate_audio`, `sprite_sheet`, `read`, `write`, `shell` | 100 | Produces image, video, 3D and audio assets |
+| `playtester` | `@playtester` → `@vision` | `shell`, `job`, `screen`, `browser`, `read` | 80 | Runs and plays a build, reports defects with frames |
+
+Every built-in agent has a role of its own, named after it, which falls back to the general role shown after the arrow until you set it. The lead uses the role `lead`, which falls back to `default`. Give any of them a model in `/settings` → *Models for the lead and each agent*, or in `config.toml`:
+
+```toml
+[roles]
+lead = ["anthropic/<model-id>"]
+coder = ["openai/<model-id>", "@default"]
+scout = ["ollama/<local-model>"]
+```
 
 Roles are explained in [models and logins](models-and-logins.md#roles). The lead is told each definition's name and description and decides when to delegate; you can also just ask ("use three scouts to map `src/`, `tests/` and `docs/`").
 

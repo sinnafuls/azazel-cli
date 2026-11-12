@@ -105,6 +105,45 @@ impl SseParser {
     }
 }
 
+/// Splits a byte stream of newline-delimited JSON into its lines, each as a record with no event
+/// name. Chunks may split a line or a UTF-8 sequence anywhere; blank lines are skipped.
+#[derive(Debug, Default)]
+pub struct JsonLines {
+    buf: Vec<u8>,
+}
+
+impl JsonLines {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, chunk: &[u8]) -> Vec<SseRecord> {
+        self.buf.extend_from_slice(chunk);
+        let mut records = Vec::new();
+        let mut start = 0;
+        while let Some(rel) = self.buf[start..].iter().position(|&b| b == b'\n') {
+            records.extend(record(&self.buf[start..start + rel]));
+            start += rel + 1;
+        }
+        self.buf.drain(..start);
+        records
+    }
+
+    /// Call at end of stream: yields a last line that had no newline after it.
+    pub fn finish(&mut self) -> Option<SseRecord> {
+        record(&std::mem::take(&mut self.buf))
+    }
+}
+
+fn record(line: &[u8]) -> Option<SseRecord> {
+    let text = String::from_utf8_lossy(line);
+    let text = text.trim();
+    (!text.is_empty()).then(|| SseRecord {
+        event: None,
+        data: text.to_string(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

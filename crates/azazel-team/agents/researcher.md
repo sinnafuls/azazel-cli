@@ -2,7 +2,7 @@
 name: researcher
 description: Use when the answer lies outside the repository, such as library behaviour, API references, standards or current facts, and every claim must come with its source.
 tools: web_search, web_fetch, browser, read
-model: "@default"
+model: "@researcher"
 max-turns: 80
 spawns: []
 ---

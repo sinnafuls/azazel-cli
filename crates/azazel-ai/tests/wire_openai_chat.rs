@@ -10,18 +10,7 @@ use azazel_ai::{
 use serde_json::{Value, json};
 
 fn provider() -> ProviderConfig {
-    ProviderConfig {
-        id: "mock".into(),
-        api: WireApi::OpenAiChat,
-        base_url: "http://localhost:9/v1".into(),
-        api_key_env: Vec::new(),
-        api_key_command: None,
-        headers: BTreeMap::new(),
-        oauth_headers: BTreeMap::new(),
-        requires_key: false,
-        auth_style: Default::default(),
-        oauth: None,
-    }
+    ProviderConfig::new("mock", WireApi::OpenAiChat, "http://localhost:9/v1")
 }
 
 fn model(reasoning: bool) -> ModelInfo {
@@ -1079,8 +1068,6 @@ fn parse_models_fills_reported_fields_and_defaults_the_rest() {
     assert_eq!(
         models[1],
         ModelInfo {
-            provider: "mock".into(),
-            id: "vendor/mock-rich".into(),
             context_window: 200_000,
             max_output: 64_000,
             vision: true,
@@ -1091,6 +1078,7 @@ fn parse_models_fills_reported_fields_and_defaults_the_rest() {
                 cache_read: 0.3,
                 cache_write: 3.75,
             }),
+            ..ModelInfo::unknown("mock", "vendor/mock-rich")
         }
     );
     assert_eq!(
@@ -1100,6 +1088,60 @@ fn parse_models_fills_reported_fields_and_defaults_the_rest() {
     assert_eq!((models[3].context_window, models[3].vision), (40_000, true));
     assert_eq!(models[3].max_output, ModelInfo::unknown("mock", "x").max_output);
     assert_eq!(models[4].cost, None);
+}
+
+#[test]
+fn parse_models_reads_the_shapes_other_servers_use_for_the_same_facts() {
+    let body = json!({"data": [
+        // vLLM: the window is `max_model_len`.
+        {"id": "served", "max_model_len": 32768},
+        // llama.cpp: the window the model runs with, before the one it was trained with.
+        {"id": "local.gguf", "meta": {"n_ctx": 8192, "n_ctx_train": 131072}},
+        // GitHub Copilot.
+        {"id": "copilot-model", "name": "Copilot Model", "capabilities": {
+            "limits": {"max_context_window_tokens": 128000, "max_output_tokens": 16384},
+            "supports": {"vision": true, "tool_calls": true},
+        }},
+        // A gateway that mirrors models.dev.
+        {"id": "mirrored", "modalities": {"input": ["text", "image"], "output": ["text"]},
+         "capabilities": {"reasoning": {"supported": true}},
+         "limit": {"context": 200000, "output": 32000}},
+        // Capabilities as a list of names, and an output limit larger than the window.
+        {"id": "listed", "display_name": "Listed", "context_window": 1000,
+         "max_output_tokens": 5000, "capabilities": ["chat", "reasoning", "vision"]},
+        // `max_tokens` beside a window is the output limit.
+        {"id": "gatewayed", "context_length": 1048576, "max_tokens": 65536,
+         "capabilities": {"reasoning": true}},
+    ]});
+    let models = openai_chat::parse_models(&provider(), &body);
+    let facts: Vec<(&str, u64, u32, bool, bool)> = models
+        .iter()
+        .map(|m| {
+            (
+                m.id.as_str(),
+                m.context_window,
+                m.max_output,
+                m.vision,
+                m.reasoning,
+            )
+        })
+        .collect();
+    assert_eq!(
+        facts,
+        [
+            ("served", 32_768, 8192, false, false),
+            ("local.gguf", 8192, 8192, false, false),
+            ("copilot-model", 128_000, 16_384, true, false),
+            ("mirrored", 200_000, 32_000, true, true),
+            ("listed", 1000, 1000, true, true),
+            ("gatewayed", 1_048_576, 65_536, false, true),
+        ]
+    );
+    assert_eq!(models[2].name.as_deref(), Some("Copilot Model"));
+    assert_eq!(models[4].name.as_deref(), Some("Listed"));
+    // A name that only repeats the id is not kept.
+    let same = openai_chat::parse_models(&provider(), &json!([{"id": "x", "name": "x"}]));
+    assert_eq!(same[0].name, None);
 }
 
 #[test]

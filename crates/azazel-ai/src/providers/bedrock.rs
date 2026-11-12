@@ -28,7 +28,7 @@ use crate::catalog::{Cost, ModelInfo};
 use crate::error::AiError;
 use crate::provider::Provider;
 use crate::providers::http::prepare;
-use crate::providers::presets::{AuthStyle, BEDROCK, ProviderConfig};
+use crate::providers::presets::{BEDROCK, ProviderConfig};
 use crate::stream::{EventStream, StreamEvent};
 use crate::types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Usage, WireApi,
@@ -612,16 +612,8 @@ impl BedrockProvider {
             region: chosen(region),
             profile: chosen(profile),
             config: ProviderConfig {
-                id: BEDROCK.to_string(),
-                api: WireApi::BedrockConverse,
-                base_url: String::new(),
-                api_key_env: Vec::new(),
-                api_key_command: None,
-                headers: BTreeMap::new(),
-                oauth_headers: BTreeMap::new(),
                 requires_key: true,
-                auth_style: AuthStyle::Bearer,
-                oauth: None,
+                ..ProviderConfig::new(BEDROCK, WireApi::BedrockConverse, String::new())
             },
             client: OnceCell::new(),
         }

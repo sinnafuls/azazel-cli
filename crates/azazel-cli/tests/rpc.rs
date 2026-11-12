@@ -114,7 +114,7 @@ fn a_prompt_runs_through_an_approval_to_idle() {
         (&data["mode"], &data["busy"], &data["turn"]),
         (&json!("ask"), &json!(false), &json!(0))
     );
-    assert_eq!(data["chain"], json!(["@default"]));
+    assert_eq!(data["chain"], json!(["@lead"]));
 
     // The prompt is accepted at once; the work shows up as events.
     let (_, accepted) = client.ask(2, json!({ "type": "prompt", "text": "create hello" }));

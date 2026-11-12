@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
 
 use crate::catalog::ModelInfo;
@@ -21,8 +21,8 @@ use crate::types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, SystemPart, ThinkingLevel,
     ToolSpec, Usage, WireApi,
 };
-use crate::wire::Decoder;
 use crate::wire::thinking::{ThinkingParam, thinking_param};
+use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
 
 /// Latest stable API version. It removed the sampling parameters (`temperature`, `top_p`, `top_k`).
 const API_VERSION: &str = "2026-10-21";
@@ -95,7 +95,9 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
         .map(|m| json!({"role": m.role, "content": m.content}))
         .collect();
     body.insert("messages".to_string(), Value::Array(messages));
-    Value::Object(body)
+    let mut body = Value::Object(body);
+    apply_extra_body(&mut body, provider);
+    body
 }
 
 pub fn build_request(
@@ -217,42 +219,7 @@ fn headers(provider: &ProviderConfig, auth: &Auth, json_body: bool) -> HeaderMap
     if json_body {
         map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
     }
-    let secret = match auth {
-        Auth::None => None,
-        Auth::ApiKey(key) => Some((HeaderName::from_static("x-api-key"), key.clone())),
-        Auth::OAuth { access, .. } => Some((AUTHORIZATION, format!("Bearer {access}"))),
-    };
-    if let Some((name, value)) = secret {
-        match HeaderValue::from_str(&value) {
-            Ok(mut value) => {
-                value.set_sensitive(true);
-                map.insert(name, value);
-            }
-            Err(_) => tracing::warn!(provider = %provider.id, "credential is not a valid header value"),
-        }
-    }
-    for (name, value) in &provider.headers {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                map.insert(name, value);
-            }
-            _ => tracing::warn!(provider = %provider.id, header = %name, "ignoring invalid header"),
-        }
-    }
-    for (name, value) in auth.login_headers(provider) {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(&value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                map.insert(name, value);
-            }
-            _ => tracing::warn!(provider = %provider.id, header = %name, "ignoring invalid header"),
-        }
-    }
+    add_headers(&mut map, provider, auth, KeyHeader::XApiKey);
     map
 }
 

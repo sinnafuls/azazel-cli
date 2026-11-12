@@ -3,6 +3,8 @@
 //! The cursor is a byte offset that always sits on a grapheme-cluster boundary, so one key press
 //! moves over or deletes what the user sees as one character.
 
+use std::cell::Cell;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -28,6 +30,18 @@ enum Run {
     Deleting,
 }
 
+/// The visible part of an editor's content, as returned by [`Editor::view`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorView {
+    pub lines: Vec<Line>,
+    /// The cursor as `(row, column)` within `lines`.
+    pub cursor: (u16, u16),
+    /// Rows of content scrolled out above the first line.
+    pub above: usize,
+    /// Rows of content below the last line.
+    pub below: usize,
+}
+
 #[derive(Default)]
 pub struct Editor {
     text: String,
@@ -43,6 +57,8 @@ pub struct Editor {
     draft: String,
     /// Display column that vertical movement tries to keep.
     preferred_col: Option<usize>,
+    /// First row shown by the last [`Editor::view`]; moved only as far as the cursor demands.
+    scroll: Cell<usize>,
 }
 
 impl Editor {
@@ -178,7 +194,15 @@ impl Editor {
     /// Soft-wraps the content to `width` columns. `prompt` leads the first row and later rows are
     /// indented to line up with it. Returns the rows and the cursor as `(row, column)` in them.
     pub fn render(&self, width: usize, theme: &Theme, prompt: &str) -> (Vec<Line>, (u16, u16)) {
+        let view = self.view(width, usize::MAX, theme, prompt);
+        (view.lines, view.cursor)
+    }
+
+    /// Like [`Editor::render`], but shows at most `max_rows` rows: a window on the content that
+    /// scrolls just far enough to keep the cursor in it.
+    pub fn view(&self, width: usize, max_rows: usize, theme: &Theme, prompt: &str) -> EditorView {
         let width = width.max(1);
+        let max_rows = max_rows.max(1);
         let prompt_width = text::width(prompt);
         let (prompt, prompt_width) = if prompt_width >= width {
             ("", 0)
@@ -217,10 +241,22 @@ impl Editor {
             offset += line.len() + 1;
         }
 
+        let total = rows.len();
+        let shown = total.min(max_rows);
+        let mut first = self.scroll.get().min(total - shown);
+        if cursor.0 < first {
+            first = cursor.0;
+        } else if cursor.0 >= first + shown {
+            first = cursor.0 + 1 - shown;
+        }
+        self.scroll.set(first);
+
         let indent = " ".repeat(prompt_width);
         let lines = rows
             .iter()
             .enumerate()
+            .skip(first)
+            .take(shown)
             .map(|(i, row)| {
                 let lead = if i == 0 { prompt } else { indent.as_str() };
                 let line = format!("{lead}{}", theme.paint(Role::Text, row));
@@ -232,7 +268,12 @@ impl Editor {
             })
             .collect();
         let to_u16 = |n: usize| u16::try_from(n).unwrap_or(u16::MAX);
-        (lines, (to_u16(cursor.0), to_u16(prompt_width + cursor.1)))
+        EditorView {
+            lines,
+            cursor: (to_u16(cursor.0 - first), to_u16(prompt_width + cursor.1)),
+            above: first,
+            below: total - first - shown,
+        }
     }
 
     fn control_key(&mut self, c: char, shift: bool) -> bool {

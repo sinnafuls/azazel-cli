@@ -23,16 +23,9 @@ const CHAT_STREAM: &str = concat!(
 
 fn provider(server: &MockServer, dir: &std::path::Path, key: Option<&'static str>) -> HttpProvider {
     let config = ProviderConfig {
-        id: "acme".into(),
-        api: WireApi::OpenAiChat,
-        base_url: server.uri(),
         api_key_env: vec!["ACME_KEY".into()],
-        api_key_command: None,
-        headers: BTreeMap::new(),
-        oauth_headers: BTreeMap::new(),
         requires_key: key.is_some(),
-        auth_style: Default::default(),
-        oauth: None,
+        ..ProviderConfig::new("acme", WireApi::OpenAiChat, server.uri())
     };
     let credentials = Credentials::with_env(
         dir.join("auth.json"),

@@ -1,6 +1,7 @@
 //! Components turn state into [`Line`](crate::render::Line)s for a given width and theme. None of
 //! them writes to the terminal, and every line they return fits the width they were given.
 
+pub mod composer;
 pub mod diff;
 pub mod editor;
 pub mod markdown;
@@ -25,6 +26,19 @@ pub fn format_elapsed(elapsed: Duration) -> String {
         format!("{}m{:02}s", secs / 60, secs % 60)
     } else {
         format!("{}h{:02}m", secs / 3600, secs % 3600 / 60)
+    }
+}
+
+/// How long something took, with more precision the shorter it was: `85ms`, `1.4s`, `42s`,
+/// `3m05s`.
+pub fn format_duration(elapsed: Duration) -> String {
+    let millis = elapsed.as_millis();
+    if millis < 1000 {
+        format!("{millis}ms")
+    } else if millis < 10_000 {
+        format!("{}.{}s", millis / 1000, millis % 1000 / 100)
+    } else {
+        format_elapsed(elapsed)
     }
 }
 
@@ -66,6 +80,16 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(3599)), "59m59s");
         assert_eq!(format_elapsed(Duration::from_secs(3600)), "1h00m");
         assert_eq!(format_elapsed(Duration::from_secs(3725)), "1h02m");
+    }
+
+    #[test]
+    fn durations_are_more_precise_the_shorter_they_are() {
+        assert_eq!(format_duration(Duration::ZERO), "0ms");
+        assert_eq!(format_duration(Duration::from_millis(85)), "85ms");
+        assert_eq!(format_duration(Duration::from_millis(1449)), "1.4s");
+        assert_eq!(format_duration(Duration::from_millis(9999)), "9.9s");
+        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
+        assert_eq!(format_duration(Duration::from_secs(185)), "3m05s");
     }
 
     #[test]

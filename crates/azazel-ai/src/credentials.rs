@@ -117,7 +117,8 @@ impl Credentials {
         locked(&self.flag_keys).insert(provider.to_string(), key);
     }
 
-    /// Order: command-line key, environment, `api_key_command`, `auth.json`.
+    /// Order: command-line key, environment, `api_key_command`, a key written in the
+    /// configuration, `auth.json`.
     pub async fn resolve(&self, provider: &ProviderConfig) -> Result<Auth, AiError> {
         if let Some(key) = locked(&self.flag_keys).get(&provider.id) {
             return Ok(Auth::ApiKey(key.clone()));
@@ -136,6 +137,9 @@ impl Credentials {
                 }
             };
             return Ok(Auth::ApiKey(key));
+        }
+        if let Some(key) = &provider.api_key {
+            return Ok(Auth::ApiKey(key.clone()));
         }
         match self.load().remove(&provider.id) {
             Some(Credential::ApiKey { key }) => Ok(Auth::ApiKey(key)),
@@ -179,6 +183,9 @@ impl Credentials {
         if provider.api_key_command.is_some() {
             return Some("api_key_command".to_string());
         }
+        if provider.api_key.is_some() {
+            return Some("api_key in the configuration".to_string());
+        }
         match self.load().get(&provider.id) {
             Some(Credential::ApiKey { .. }) => Some("auth.json (api key)".to_string()),
             Some(Credential::OAuth { .. }) => Some("auth.json (login)".to_string()),
@@ -189,6 +196,16 @@ impl Credentials {
     /// All entries; empty when the file is missing or unreadable.
     pub fn load(&self) -> BTreeMap<String, Credential> {
         read_auth_file(&self.auth_file)
+    }
+
+    /// Keeps `field` beside the stored login of `provider`, where the next request finds it
+    /// among the login's account fields. Nothing happens when there is no login.
+    pub fn set_login_field(&self, provider: &str, field: &str, value: &str) -> io::Result<()> {
+        self.modify(|entries| {
+            if let Some(Credential::OAuth { extra, .. }) = entries.get_mut(provider) {
+                extra.insert(field.to_string(), serde_json::Value::String(value.to_string()));
+            }
+        })
     }
 
     pub fn store(&self, id: &str, credential: Credential) -> io::Result<()> {
@@ -326,16 +343,9 @@ mod tests {
 
     fn provider(requires_key: bool) -> ProviderConfig {
         ProviderConfig {
-            id: "acme".into(),
-            api: WireApi::OpenAiChat,
-            base_url: "http://x".into(),
             api_key_env: vec!["ACME_KEY".into(), "ACME_ALT".into()],
-            api_key_command: None,
-            headers: BTreeMap::new(),
-            oauth_headers: BTreeMap::new(),
             requires_key,
-            auth_style: Default::default(),
-            oauth: None,
+            ..ProviderConfig::new("acme", WireApi::OpenAiChat, "http://x")
         }
     }
 

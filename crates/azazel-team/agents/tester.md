@@ -1,7 +1,7 @@
 ---
 name: tester
 description: Use to write or extend tests for a piece of behaviour, run them, and get back precise failures with their output.
-model: "@default"
+model: "@tester"
 max-turns: 120
 spawns: []
 ---

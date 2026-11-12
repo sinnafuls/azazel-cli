@@ -2,7 +2,7 @@
 name: reviewer
 description: Use after code changes to get an independent review of the diff for correctness, security and maintainability before the work is called done.
 tools: read, glob, grep, shell(git diff:*), shell(git log:*), shell(git show:*)
-model: "@slow"
+model: "@reviewer"
 max-turns: 80
 spawns: []
 ---

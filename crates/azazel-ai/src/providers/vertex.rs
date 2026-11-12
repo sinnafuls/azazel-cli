@@ -16,7 +16,7 @@ use crate::credentials::Auth;
 use crate::error::AiError;
 use crate::provider::Provider;
 use crate::providers::http::{event_stream, prepare, send_request};
-use crate::providers::presets::{AuthStyle, ProviderConfig, VERTEX};
+use crate::providers::presets::{ProviderConfig, VERTEX};
 use crate::stream::EventStream;
 use crate::types::{Request, WireApi};
 use crate::wire;
@@ -163,16 +163,8 @@ impl Provider for VertexProvider {
             (WireApi::GoogleGenerative, "google")
         };
         let config = ProviderConfig {
-            id: VERTEX.to_string(),
-            api,
-            base_url: self.publisher_url(&project, publisher),
-            api_key_env: Vec::new(),
-            api_key_command: None,
-            headers: BTreeMap::new(),
-            oauth_headers: BTreeMap::new(),
             requires_key: true,
-            auth_style: AuthStyle::Bearer,
-            oauth: None,
+            ..ProviderConfig::new(VERTEX, api, self.publisher_url(&project, publisher))
         };
         let target = Target {
             provider: VERTEX,

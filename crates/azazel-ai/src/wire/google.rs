@@ -3,12 +3,11 @@
 //! The API has no block boundaries and no end-of-stream record: every SSE record is a
 //! `GenerateContentResponse` chunk, and completion is a `finishReason` followed by the stream closing.
 
-use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+use reqwest::header::HeaderMap;
 use serde_json::{Map, Number, Value, json};
 
 use crate::catalog::ModelInfo;
@@ -17,8 +16,8 @@ use crate::error::AiError;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, ThinkingLevel, Usage, WireApi};
-use crate::wire::Decoder;
 use crate::wire::thinking::{ThinkingParam, thinking_param};
+use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
 
 /// Documented placeholder that makes the API skip signature validation for a function call it did
 /// not produce itself (history from another model).
@@ -78,7 +77,9 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
         body.insert("generationConfig".into(), Value::Object(config));
     }
 
-    Value::Object(body)
+    let mut body = Value::Object(body);
+    apply_extra_body(&mut body, provider);
+    body
 }
 
 pub fn build_request(
@@ -100,6 +101,7 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
     Box::new(GoogleDecoder {
         provider: provider.id.clone(),
         model: model.id.clone(),
+        api: provider.api,
         started: false,
         finished: false,
         blocks: Vec::new(),
@@ -121,10 +123,38 @@ pub fn models_request(
     provider: &ProviderConfig,
     auth: &Auth,
 ) -> reqwest::RequestBuilder {
+    models_page_request(client, provider, auth, None)
+}
+
+/// One page of the model list; `page` is the token the page before it ended with.
+pub fn models_page_request(
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    auth: &Auth,
+    page: Option<&str>,
+) -> reqwest::RequestBuilder {
     // 1000 is the largest page the endpoint returns.
-    client
-        .get(format!("{}/models?pageSize=1000", provider.base_url))
-        .headers(headers(provider, auth))
+    let mut url = format!("{}/models?pageSize=1000", provider.base_url);
+    if let Some(token) = page {
+        url.push_str("&pageToken=");
+        // Tokens are opaque; anything outside the unreserved set is escaped.
+        for byte in token.bytes() {
+            match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                    url.push(char::from(byte))
+                }
+                other => url.push_str(&format!("%{other:02X}")),
+            }
+        }
+    }
+    client.get(url).headers(headers(provider, auth))
+}
+
+/// The token that asks for the page after `body`, when there is one.
+pub fn next_page_token(body: &Value) -> Option<&str> {
+    body.get("nextPageToken")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
 }
 
 pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
@@ -145,6 +175,11 @@ pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
                 return None;
             }
             let mut info = ModelInfo::unknown(&provider.id, id);
+            info.name = entry
+                .get("displayName")
+                .and_then(Value::as_str)
+                .filter(|display| !display.is_empty() && *display != id)
+                .map(str::to_string);
             if let Some(limit) = entry.get("inputTokenLimit").and_then(Value::as_u64) {
                 info.context_window = limit;
             }
@@ -155,53 +190,18 @@ pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
             if let Some(thinking) = entry.get("thinking").and_then(Value::as_bool) {
                 info.reasoning = thinking;
             }
+            // The list does not say what a model reads; the Gemini family all take images, and
+            // the rest say so in their name when they do.
+            info.vision = ["gemini", "vision", "image"].iter().any(|mark| id.contains(mark));
             Some(info)
         })
         .collect()
 }
 
 /// Credential header first, then the configured headers, which replace it on a name clash.
-fn headers(provider: &ProviderConfig, auth: &Auth) -> HeaderMap {
+pub(super) fn headers(provider: &ProviderConfig, auth: &Auth) -> HeaderMap {
     let mut map = HeaderMap::new();
-    let credential = match auth {
-        Auth::None => None,
-        Auth::ApiKey(key) => Some(("x-goog-api-key", Cow::Borrowed(key.as_str()))),
-        Auth::OAuth { access, .. } => Some(("authorization", Cow::Owned(format!("Bearer {access}")))),
-    };
-    if let Some((name, value)) = credential {
-        match HeaderValue::from_str(&value) {
-            Ok(mut value) => {
-                value.set_sensitive(true);
-                map.insert(name, value);
-            }
-            Err(_) => tracing::warn!(
-                "provider `{}`: the credential cannot be sent as an HTTP header",
-                provider.id
-            ),
-        }
-    }
-    for (name, value) in &provider.headers {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                map.insert(name, value);
-            }
-            _ => tracing::warn!("provider `{}`: ignoring invalid header `{name}`", provider.id),
-        }
-    }
-    for (name, value) in auth.login_headers(provider) {
-        match (
-            HeaderName::from_bytes(name.as_bytes()),
-            HeaderValue::from_str(&value),
-        ) {
-            (Ok(name), Ok(value)) => {
-                map.insert(name, value);
-            }
-            _ => tracing::warn!("provider `{}`: ignoring invalid header `{name}`", provider.id),
-        }
-    }
+    add_headers(&mut map, provider, auth, KeyHeader::XGoogApiKey);
     map
 }
 
@@ -538,6 +538,7 @@ enum Open {
 struct GoogleDecoder {
     provider: String,
     model: String,
+    api: WireApi,
     started: bool,
     finished: bool,
     blocks: Vec<Block>,
@@ -677,7 +678,7 @@ impl GoogleDecoder {
             AssistantMeta {
                 provider: std::mem::take(&mut self.provider),
                 model: std::mem::take(&mut self.model),
-                api: WireApi::GoogleGenerative,
+                api: self.api,
                 usage: self.usage,
                 stop,
                 response_id: self.response_id.take(),
@@ -711,6 +712,12 @@ impl Decoder for GoogleDecoder {
                 return out;
             }
         };
+        // Cloud Code Assist wraps each chunk: `{"response": {...}}`.
+        if self.api == WireApi::GoogleGeminiCli
+            && let Some(inner) = chunk.get_mut("response").filter(|inner| inner.is_object())
+        {
+            chunk = inner.take();
+        }
         self.start(&mut out);
 
         if let Some(error) = error_object(&chunk) {
