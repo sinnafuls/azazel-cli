@@ -87,11 +87,12 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `fallback` | `from`, `to` |
 | `account` | `provider`, `from`, `to`, `until` (Unix seconds), `limit`: the provider's account `from` ran out of allowance and requests now use `to` |
 | `tier_dropped` | `model`, `tier`: the model refused the service tier and is asked without one from now on |
+| `rule` | `name`: a [stream rule](rules.md#stream-rules) matched; the message in progress was discarded and the request is sent again |
 | `compaction` | `tokens_before`, `tokens_after` |
 | `idle` | `stop`: `stop`, `length`, `tool_use`, `error` or `aborted` |
 | `failed` | `error` |
 
-One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. Stream deltas are for display; `message_end` carries the authoritative message.
+One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. A request whose reply a rule withdrew has `rule` where `message_end` would be. Stream deltas are for display; `message_end` carries the authoritative message.
 
 Three more event types come from the session rather than an agent.
 

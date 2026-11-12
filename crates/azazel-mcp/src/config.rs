@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
-use azazel_core::Paths;
+use azazel_core::trust::fingerprint;
+use azazel_core::{Paths, TrustStore};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -68,6 +69,19 @@ pub enum Transport {
     },
 }
 
+/// Whether a server may start. A server that a project defines needs the user's approval, once
+/// for each version of its definition.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Approval {
+    /// Not a project's server, or approved.
+    #[default]
+    Granted,
+    /// New, or changed since it was approved; nobody has decided yet.
+    Waiting,
+    /// The user said no.
+    Rejected,
+}
+
 /// A server entry after merging and variable expansion.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerConfig {
@@ -78,6 +92,9 @@ pub struct ServerConfig {
     pub enabled: bool,
     /// The file the entry came from.
     pub source: PathBuf,
+    /// A hash of the entry as written; an approval holds for one fingerprint.
+    pub fingerprint: String,
+    pub approval: Approval,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -97,6 +114,30 @@ pub fn config_files(paths: &Paths, trusted: bool) -> Vec<PathBuf> {
         files.push(paths.project_dir().join("mcp.json"));
     }
     files
+}
+
+/// The files in which a project defines servers.
+pub fn project_files(paths: &Paths) -> [PathBuf; 2] {
+    [
+        paths.project_root.join(".mcp.json"),
+        paths.project_dir().join("mcp.json"),
+    ]
+}
+
+/// Marks the servers the project defines as approved, waiting or rejected, as the trust file
+/// says; `approve_all` (a `--trust` run) approves them all for this run.
+pub fn apply_approvals(loaded: &mut Loaded, paths: &Paths, store: &TrustStore, approve_all: bool) {
+    let project = project_files(paths);
+    for server in &mut loaded.servers {
+        if approve_all || !project.contains(&server.source) {
+            continue;
+        }
+        server.approval = match store.server(&paths.project_root, &server.name, &server.fingerprint) {
+            Some(true) => Approval::Granted,
+            Some(false) => Approval::Rejected,
+            None => Approval::Waiting,
+        };
+    }
 }
 
 static VARIABLE: LazyLock<Option<Regex>> =
@@ -141,11 +182,13 @@ fn read_servers(file: &Path) -> Result<Map<String, Value>, String> {
 
 fn resolve(
     name: &str,
-    raw: RawServer,
+    entry: Value,
     source: &Path,
     base: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ServerConfig, String> {
+    let fingerprint = fingerprint(&entry);
+    let raw: RawServer = serde_json::from_value(entry).map_err(|e| e.to_string())?;
     let unset = |variable: String| format!("${{{variable}}} is not set");
     let one = |text: &str| expand(text, env).map_err(unset);
     let map = |pairs: &BTreeMap<String, String>| -> Result<BTreeMap<String, String>, String> {
@@ -194,6 +237,8 @@ fn resolve(
         oauth,
         enabled: raw.enabled.unwrap_or(true),
         source: source.to_path_buf(),
+        fingerprint,
+        approval: Approval::Granted,
     })
 }
 
@@ -207,8 +252,7 @@ pub fn server_from_entry(
     base: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ServerConfig, String> {
-    let raw: RawServer = serde_json::from_value(entry).map_err(|e| e.to_string())?;
-    resolve(name, raw, Path::new(EXTENSION_SOURCE), base, env)
+    resolve(name, entry, Path::new(EXTENSION_SOURCE), base, env)
 }
 
 /// Reads `files` in order; an entry in a later file replaces one of the same name. Relative `cwd`
@@ -227,15 +271,19 @@ pub fn load(files: &[PathBuf], base: &Path, env: &dyn Fn(&str) -> Option<String>
         }
     }
     for (name, (entry, source)) in merged {
-        let resolved = serde_json::from_value::<RawServer>(entry)
-            .map_err(|e| e.to_string())
-            .and_then(|raw| resolve(&name, raw, source, base, env));
-        match resolved {
+        match resolve(&name, entry, source, base, env) {
             Ok(server) => loaded.servers.push(server),
             Err(problem) => loaded.problems.push((name, problem)),
         }
     }
     loaded
+}
+
+/// The names of the servers `file` defines; none when it is missing or unreadable.
+pub fn defined(file: &Path) -> Vec<String> {
+    read_servers(file)
+        .map(|servers| servers.keys().cloned().collect())
+        .unwrap_or_default()
 }
 
 /// Rewrites the `mcpServers` object of `file` with `change`, keeping the file's other keys.

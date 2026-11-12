@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use azazel_ai::providers::presets;
-use azazel_ai::{Catalog, Credentials, ModelSpec, RetryPolicy, Router};
+use azazel_ai::{Catalog, ModelSpec, RetryPolicy, Router};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::packages::Packages;
 use azazel_core::process::Shell;
@@ -124,7 +124,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         )),
     }
 
-    let credentials = Credentials::new(paths.auth_file()).configured(&config.providers);
+    let credentials = crate::app::credentials(paths, trusted).configured(&config.providers);
     match presets::resolve(&config.providers) {
         Ok(providers) => {
             let (mut with_key, mut local, mut without) = (0, Vec::new(), Vec::new());
@@ -286,19 +286,41 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             invalid.error
         ));
     }
+    {
+        use azazel_core::rules::{Sources, load};
+        let rules = load(&Sources {
+            paths: paths.clone(),
+            files: true,
+            claude_compat: config.compat.claude,
+            compat: config.rules.compat,
+            stream_rules: config.stream_rules.clone(),
+        });
+        report.ok(format!("rules: {} found", rules.rules.len()));
+        for (file, problem) in &rules.problems {
+            report.warn(format!("rule skipped: {file}: {problem}"));
+        }
+    }
     #[cfg(feature = "mcp")]
     {
-        use azazel_mcp::config::{Transport, config_files, load};
+        use azazel_mcp::config::{Approval, Transport, apply_approvals, config_files, load};
         let mut files = packages.mcp_files.clone();
         files.extend(config_files(paths, trusted));
-        let loaded = load(&files, &paths.project_root, &|name| std::env::var(name).ok());
+        let mut loaded = load(&files, &paths.project_root, &|name| std::env::var(name).ok());
+        apply_approvals(&mut loaded, paths, &TrustStore::new(paths.trust_file()), false);
         for server in &loaded.servers {
             let target = match &server.transport {
                 Transport::Stdio { command, .. } => command,
                 Transport::Http { url, .. } => url,
             };
             let state = if server.enabled { "enabled" } else { "disabled" };
-            report.ok(format!("mcp server {}: {target} ({state})", server.name));
+            match server.approval {
+                Approval::Granted => report.ok(format!("mcp server {}: {target} ({state})", server.name)),
+                Approval::Waiting => report.warn(format!(
+                    "mcp server {}: {target} (waiting for approval: azazel mcp approve {})",
+                    server.name, server.name
+                )),
+                Approval::Rejected => report.ok(format!("mcp server {}: {target} (rejected)", server.name)),
+            }
         }
         for (what, why) in &loaded.problems {
             report.warn(format!("mcp {what}: not loaded, {why}"));

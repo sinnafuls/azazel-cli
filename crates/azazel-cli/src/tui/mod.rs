@@ -737,6 +737,13 @@ impl Tui {
             AgentEvent::TierDropped { model, tier } => {
                 self.info(&crate::routing::tier_dropped_line(&model, tier))
             }
+            AgentEvent::Rule { name } => {
+                // What already scrolled away stays on screen; the rest of the reply is dropped.
+                let rest = self.stream.markdown.finish(width, &self.theme);
+                self.say(rest);
+                self.stream = StreamView::default();
+                self.info(&format!("rule {name} stopped the reply; retrying"));
+            }
             AgentEvent::ToolStart { call_id, name, input } => {
                 self.tools.push(RunningTool {
                     call_id,

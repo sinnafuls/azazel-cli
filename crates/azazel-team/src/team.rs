@@ -279,6 +279,17 @@ pub(crate) fn activity(name: &str, input: &Value) -> String {
     }
 }
 
+/// Removes the worktree of an isolated agent and tells extensions it is gone.
+async fn remove_worktree(deps: &TeamDeps, agent_id: &str, worktree: &Worktree) -> Result<(), String> {
+    worktree::remove(&deps.paths.project_root, worktree).await?;
+    let mut removed = Event::WorktreeRemove {
+        agent_id: agent_id.to_string(),
+        path: worktree.path.clone(),
+    };
+    deps.bus.emit(&mut removed).await;
+    Ok(())
+}
+
 fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 48
@@ -481,7 +492,7 @@ impl Inner {
             }
             patch = saved;
             keep_worktree = keep;
-            if !keep && let Err(e) = worktree::remove(&self.deps.paths.project_root, worktree).await {
+            if !keep && let Err(e) = remove_worktree(&self.deps, id, worktree).await {
                 tracing::warn!("could not remove the worktree of {id}: {e}");
             }
         }
@@ -736,7 +747,7 @@ impl Team {
             }
             self.inner.deps.permissions.forget_agent(&member.info.id);
             if let Some(worktree) = &member.worktree
-                && let Err(e) = worktree::remove(&self.inner.deps.paths.project_root, worktree).await
+                && let Err(e) = remove_worktree(&self.inner.deps, &member.info.id, worktree).await
             {
                 tracing::warn!("could not remove the worktree of {}: {e}", member.info.id);
             }
@@ -808,10 +819,15 @@ impl Team {
                     .filter(char::is_ascii_alphanumeric)
                     .take(8)
                     .collect();
-                Some(
+                let worktree =
                     worktree::create(&deps.paths.project_root, &deps.paths.worktrees_dir(), &short, &id)
-                        .await?,
-                )
+                        .await?;
+                let mut created = Event::WorktreeCreate {
+                    agent_id: id.clone(),
+                    path: worktree.path.clone(),
+                };
+                deps.bus.emit(&mut created).await;
+                Some(worktree)
             }
         };
         let info = AgentInfo {
@@ -1173,7 +1189,7 @@ impl Team {
         let root = &self.inner.deps.paths.project_root;
         match worktree::apply(root, &patch).await {
             Ok(()) => {
-                worktree::remove(root, &worktree).await?;
+                remove_worktree(&self.inner.deps, id, &worktree).await?;
                 self.inner.update(id, |member| {
                     member.worktree = None;
                     member.patch = None;
@@ -1198,7 +1214,7 @@ impl Team {
         if active {
             return Err(format!("agent `{id}` is still working; stop it first"));
         }
-        worktree::remove(&self.inner.deps.paths.project_root, &worktree).await?;
+        remove_worktree(&self.inner.deps, id, &worktree).await?;
         self.inner.update(id, |member| {
             member.worktree = None;
             member.patch = None;

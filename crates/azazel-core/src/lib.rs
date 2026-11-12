@@ -20,6 +20,7 @@ pub mod paths;
 pub mod permissions;
 pub mod process;
 pub mod prompt;
+pub mod rules;
 pub mod scheme;
 pub mod session;
 pub mod side;

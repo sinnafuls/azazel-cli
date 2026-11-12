@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_ai::{Block, Credentials};
-use azazel_core::{Level, Ui};
+use azazel_core::{Level, TrustStore, Ui};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CancelledNotificationParam, ClientRequest,
     GetPromptRequestParams, JsonObject, ProgressToken, Prompt, ReadResourceRequestParams, ServerResult,
@@ -22,7 +22,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::client::{self, ConnectError};
-use crate::config::{self, Loaded, ServerConfig, Transport};
+use crate::config::{self, Approval, Loaded, ServerConfig, Transport};
 use crate::handler::{self, Handler};
 use crate::{convert, oauth, search};
 
@@ -42,6 +42,10 @@ const LOGIN_WAIT: Duration = Duration::from_secs(300);
 pub enum State {
     /// `enabled: false` in its entry.
     Disabled,
+    /// A project's server that is new or has changed; it starts once the user approves it.
+    WaitingApproval,
+    /// A project's server the user decided not to run.
+    Rejected,
     /// Not started yet.
     Idle,
     Connecting,
@@ -55,6 +59,8 @@ impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             State::Disabled => f.write_str("disabled"),
+            State::WaitingApproval => f.write_str("waiting for approval"),
+            State::Rejected => f.write_str("rejected"),
             State::Idle => f.write_str("not started"),
             State::Connecting => f.write_str("connecting"),
             State::Ready => f.write_str("ready"),
@@ -188,6 +194,20 @@ pub(crate) struct Inner {
     changed: Notify,
     started: AtomicBool,
     waited: AtomicBool,
+    /// Where decisions about the project's servers are kept, and for which project.
+    approvals: std::sync::OnceLock<(TrustStore, PathBuf, Vec<PathBuf>)>,
+    /// Whether the user was asked about the servers that wait for approval.
+    asked: AtomicBool,
+}
+
+/// The state a server is in before anything connects.
+fn resting(config: &ServerConfig) -> State {
+    match (config.enabled, config.approval) {
+        (false, _) => State::Disabled,
+        (true, Approval::Granted) => State::Idle,
+        (true, Approval::Waiting) => State::WaitingApproval,
+        (true, Approval::Rejected) => State::Rejected,
+    }
 }
 
 impl Drop for Inner {
@@ -540,11 +560,7 @@ impl McpManager {
             .servers
             .into_iter()
             .map(|config| {
-                let state = if config.enabled {
-                    State::Idle
-                } else {
-                    State::Disabled
-                };
+                let state = resting(&config);
                 (
                     config.name.clone(),
                     Entry {
@@ -570,7 +586,96 @@ impl McpManager {
             changed: Notify::new(),
             started: AtomicBool::new(false),
             waited: AtomicBool::new(false),
+            approvals: std::sync::OnceLock::new(),
+            asked: AtomicBool::new(false),
         }))
+    }
+
+    /// Decisions about the servers `project` defines (in `files`) are kept in `store` from now on.
+    pub fn record_approvals(&self, store: TrustStore, project: PathBuf, files: Vec<PathBuf>) {
+        let _ = self.0.approvals.set((store, project, files));
+    }
+
+    /// The project's servers that wait for the user's approval.
+    pub fn waiting(&self) -> Vec<ServerStatus> {
+        self.status()
+            .into_iter()
+            .filter(|server| server.state == State::WaitingApproval)
+            .collect()
+    }
+
+    /// Approves or rejects servers the project defines. The decisions are kept with the project's
+    /// trust, for the definitions as they are now; an approved server starts connecting when the
+    /// session's servers have been started. `Err` names a server that is not known or not the
+    /// project's to decide about; `Ok(false)` that the decisions hold for this run only, because
+    /// the project has no stored trust decision to keep them with.
+    pub fn decide(&self, decisions: &[(String, bool)]) -> Result<bool, String> {
+        let mut records = Vec::new();
+        for (name, approved) in decisions {
+            let config = self.known(name)?;
+            let ours = self
+                .0
+                .approvals
+                .get()
+                .is_some_and(|(_, _, files)| files.contains(&config.source));
+            if !ours && config.approval == Approval::Granted {
+                return Err(format!(
+                    "`{name}` is not a server of this project; only those need approval"
+                ));
+            }
+            records.push((name.clone(), config.fingerprint.clone(), *approved));
+        }
+        let saved = match self.0.approvals.get() {
+            Some((store, project, _)) => store.set_servers(project, &records).unwrap_or_else(|e| {
+                tracing::warn!("could not save the decision about MCP servers: {e}");
+                false
+            }),
+            None => false,
+        };
+        for (name, _, approved) in records {
+            let approval = if approved {
+                Approval::Granted
+            } else {
+                Approval::Rejected
+            };
+            self.0.update(&name, |entry| entry.config.approval = approval);
+            let state = self.0.config(&name).map(|config| resting(&config));
+            match state {
+                Some(State::Idle) if self.0.started.load(Ordering::SeqCst) => self.0.spawn(&name),
+                Some(state) => self.0.stop(&name, state),
+                None => {}
+            }
+        }
+        Ok(saved)
+    }
+
+    /// Asks the user, once per process, which of the waiting servers may start. Nobody to ask
+    /// leaves them waiting.
+    pub(crate) async fn ask_approvals(&self) {
+        let waiting = self.waiting();
+        if waiting.is_empty() || self.0.asked.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(ui) = self.0.services.get::<Ui>() else {
+            return;
+        };
+        let options: Vec<String> = waiting
+            .iter()
+            .map(|server| format!("{}: {}", server.name, server.target))
+            .collect();
+        let question = "This project defines MCP servers that are new or have changed. Each one is a program \
+                        or an address the project chose. Which may start?";
+        let Ok(chosen) = ui.0.ask(question, &options, true).await else {
+            return;
+        };
+        let decisions: Vec<(String, bool)> = waiting
+            .iter()
+            .zip(&options)
+            .map(|(server, option)| (server.name.clone(), chosen.contains(option)))
+            .collect();
+        if let Err(why) = self.decide(&decisions) {
+            tracing::warn!("MCP server approval: {why}");
+        }
     }
 
     /// The directory relative `cwd` values of servers are taken from: the project root.
@@ -582,11 +687,7 @@ impl McpManager {
     /// same name. It starts connecting at once when the session's servers have been started.
     pub fn add(&self, config: ServerConfig) -> Result<(), String> {
         let name = config.name.clone();
-        let state = if config.enabled {
-            State::Idle
-        } else {
-            State::Disabled
-        };
+        let state = resting(&config);
         {
             let mut servers = self.0.write();
             if let Some(existing) = servers.get(&name) {
@@ -627,7 +728,7 @@ impl McpManager {
             .0
             .read()
             .iter()
-            .filter(|(_, entry)| entry.config.enabled)
+            .filter(|(_, entry)| resting(&entry.config) == State::Idle)
             .map(|(name, _)| name.clone())
             .collect();
         for name in names {
@@ -687,11 +788,13 @@ impl McpManager {
 
     /// Drops the connection to `name`, if any, and connects again from scratch.
     pub fn reconnect(&self, name: &str) -> Result<(), String> {
-        if !self.known(name)?.enabled {
-            return Err(format!("MCP server `{name}` is disabled"));
+        match resting(&self.known(name)?) {
+            State::Idle => {
+                self.0.spawn(name);
+                Ok(())
+            }
+            state => Err(format!("MCP server `{name}` is {state}")),
         }
-        self.0.spawn(name);
-        Ok(())
     }
 
     /// Enables or disables `name`, in its config file and in this session.
@@ -699,10 +802,11 @@ impl McpManager {
         let source = self.known(name)?.source;
         config::set_enabled(&source, name, enabled).map_err(|e| format!("{}: {e}", source.display()))?;
         self.0.update(name, |entry| entry.config.enabled = enabled);
-        if enabled {
-            self.0.spawn(name);
-        } else {
-            self.0.stop(name, State::Disabled);
+        // Enabling does not approve: a project's server still waits for that.
+        match self.0.config(name).map(|config| resting(&config)) {
+            Some(State::Idle) => self.0.spawn(name),
+            Some(state) => self.0.stop(name, state),
+            None => {}
         }
         Ok(())
     }
@@ -711,11 +815,10 @@ impl McpManager {
     pub fn shutdown(&self) {
         let names: Vec<String> = self.0.read().keys().cloned().collect();
         for name in names {
-            let state = if self.0.config(&name).is_some_and(|config| config.enabled) {
-                State::Idle
-            } else {
-                State::Disabled
-            };
+            let state = self
+                .0
+                .config(&name)
+                .map_or(State::Disabled, |config| resting(&config));
             self.0.stop(&name, state);
         }
     }

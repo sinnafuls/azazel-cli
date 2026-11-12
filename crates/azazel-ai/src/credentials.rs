@@ -136,9 +136,52 @@ pub enum Credential {
 
 type EnvFn = dyn Fn(&str) -> Option<String> + Send + Sync;
 
+/// `NAME=value` lines of a `.env` file: `export` prefixes, quotes and `#` comments are
+/// understood; anything else on a line is ignored.
+fn parse_env_file(text: &str) -> HashMap<String, String> {
+    let mut vars = HashMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        let line = line.strip_prefix("export ").map_or(line, str::trim_start);
+        let Some((name, value)) = line.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        let valid = !name.is_empty()
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !valid {
+            continue;
+        }
+        let value = value.trim();
+        let value = if let Some(rest) = value.strip_prefix('"') {
+            match rest.split_once('"') {
+                Some((quoted, _)) => quoted.replace("\\n", "\n"),
+                None => continue,
+            }
+        } else if let Some(rest) = value.strip_prefix('\'') {
+            match rest.split_once('\'') {
+                Some((quoted, _)) => quoted.to_string(),
+                None => continue,
+            }
+        } else {
+            // An unquoted value ends at a comment.
+            value.split(" #").next().unwrap_or_default().trim().to_string()
+        };
+        if !value.is_empty() {
+            vars.insert(name.to_string(), value);
+        }
+    }
+    vars
+}
+
 pub struct Credentials {
     auth_file: PathBuf,
     env: Arc<EnvFn>,
+    /// `.env` files keys are also looked up in, in order.
+    env_files: Vec<PathBuf>,
+    /// What those files hold, read when a key is first looked for.
+    env_file_vars: OnceLock<Vec<(PathBuf, HashMap<String, String>)>>,
     flag_keys: Mutex<HashMap<String, String>>,
     command_keys: Mutex<HashMap<String, String>>,
     /// Held by the one task that is refreshing a login.
@@ -179,6 +222,8 @@ impl Credentials {
         Credentials {
             auth_file,
             env,
+            env_files: Vec::new(),
+            env_file_vars: OnceLock::new(),
             flag_keys: Mutex::default(),
             command_keys: Mutex::default(),
             refreshing: tokio::sync::Mutex::default(),
@@ -269,6 +314,34 @@ impl Credentials {
             .map(|known| known.label)
     }
 
+    /// Also looks keys up in these `.env` files, in order, after the real environment. Only the
+    /// variables a provider names as its key are ever taken from them, and nothing in them is
+    /// put into the environment of this process or its children.
+    pub fn with_env_files(mut self, files: Vec<PathBuf>) -> Self {
+        self.env_files = files;
+        self
+    }
+
+    /// The first of the provider's key variables that a `.env` file sets: its name, the file and
+    /// the value.
+    fn env_file_key<'a>(&'a self, provider: &'a ProviderConfig) -> Option<(&'a str, &'a Path, &'a str)> {
+        let files = self.env_file_vars.get_or_init(|| {
+            self.env_files
+                .iter()
+                .filter_map(|file| {
+                    let text = std::fs::read_to_string(file).ok()?;
+                    Some((file.clone(), parse_env_file(&text)))
+                })
+                .collect()
+        });
+        files.iter().find_map(|(file, vars)| {
+            provider.api_key_env.iter().find_map(|name| {
+                vars.get(name)
+                    .map(|value| (name.as_str(), file.as_path(), value.as_str()))
+            })
+        })
+    }
+
     pub fn auth_file(&self) -> &Path {
         &self.auth_file
     }
@@ -278,8 +351,8 @@ impl Credentials {
         locked(&self.flag_keys).insert(provider.to_string(), key);
     }
 
-    /// Order: command-line key, environment, `api_key_command`, a key written in the
-    /// configuration, `auth.json`.
+    /// Order: command-line key, environment, `.env` files, `api_key_command`, a key written in
+    /// the configuration, `auth.json`.
     pub async fn resolve(&self, provider: &ProviderConfig) -> Result<Auth, AiError> {
         self.resolve_account(provider).await.map(|(auth, _)| auth)
     }
@@ -330,6 +403,9 @@ impl Credentials {
         if let Some(key) = provider.api_key_env.iter().find_map(|name| (self.env)(name)) {
             return Ok(Some(Auth::ApiKey(key)));
         }
+        if let Some((_, _, key)) = self.env_file_key(provider) {
+            return Ok(Some(Auth::ApiKey(key.to_string())));
+        }
         if let Some(command) = &provider.api_key_command {
             let cached = locked(&self.command_keys).get(&provider.id).cloned();
             let key = match cached {
@@ -361,6 +437,9 @@ impl Credentials {
             .find(|name| (self.env)(name).is_some())
         {
             return Some(format!("env {name}"));
+        }
+        if let Some((name, file, _)) = self.env_file_key(provider) {
+            return Some(format!("{name} in {}", file.display()));
         }
         if provider.api_key_command.is_some() {
             return Some("api_key_command".to_string());
@@ -553,6 +632,70 @@ mod tests {
             dir.join("auth.json"),
             Arc::new(move |name| env.iter().find(|(k, _)| *k == name).map(|(_, v)| v.to_string())),
         )
+    }
+
+    #[tokio::test]
+    async fn keys_come_from_env_files_after_the_environment_and_in_file_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home.env");
+        let project = dir.path().join("project.env");
+        std::fs::write(
+            &home,
+            "# keys\nexport ACME_ALT=\"from home\"  # the spare\nOTHER=1\nnot a line\n1BAD=x\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &project,
+            "ACME_KEY='from project'\nACME_ALT=ignored # comment\nEMPTY=\n",
+        )
+        .unwrap();
+        let files = vec![home.clone(), project.clone(), dir.path().join("missing.env")];
+
+        // The home file is asked first, whichever of the provider's variables it sets.
+        let from_files = creds(dir.path(), &[]).with_env_files(files.clone());
+        assert_eq!(
+            from_files.resolve(&provider(true)).await.unwrap(),
+            Auth::ApiKey("from home".into())
+        );
+        assert_eq!(
+            from_files.source(&provider(true)),
+            Some(format!("ACME_ALT in {}", home.display()))
+        );
+        let project_only = creds(dir.path(), &[]).with_env_files(vec![project.clone()]);
+        assert_eq!(
+            project_only.resolve(&provider(true)).await.unwrap(),
+            Auth::ApiKey("from project".into())
+        );
+
+        // The real environment wins; a key command and a stored key come after the files.
+        let with_env = creds(dir.path(), &[("ACME_KEY", "from-env")]).with_env_files(files.clone());
+        assert_eq!(
+            with_env.resolve(&provider(true)).await.unwrap(),
+            Auth::ApiKey("from-env".into())
+        );
+        assert_eq!(with_env.source(&provider(true)).as_deref(), Some("env ACME_KEY"));
+        let mut with_command = provider(true);
+        with_command.api_key_command = Some("echo from-command".into());
+        assert_eq!(
+            from_files.resolve(&with_command).await.unwrap(),
+            Auth::ApiKey("from home".into())
+        );
+
+        // A provider that names none of the file's variables gets nothing from it.
+        let other = ProviderConfig {
+            api_key_env: vec!["UNRELATED".into()],
+            requires_key: true,
+            ..ProviderConfig::new("other", WireApi::OpenAiChat, "http://x")
+        };
+        assert!(from_files.resolve(&other).await.is_err());
+        assert_eq!(from_files.source(&other), None);
+
+        let vars =
+            parse_env_file("A=1\n B = two words \nC=\"q # not a comment\"\nD='x' trailing\nE=\"open\n");
+        assert_eq!(vars.len(), 4);
+        assert_eq!(vars["B"], "two words");
+        assert_eq!(vars["C"], "q # not a comment");
+        assert_eq!(vars["D"], "x");
     }
 
     #[tokio::test]

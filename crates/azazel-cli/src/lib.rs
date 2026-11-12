@@ -6,6 +6,7 @@ pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
+pub mod hooks;
 pub mod init;
 pub mod login;
 #[cfg(feature = "mcp")]
@@ -17,6 +18,7 @@ pub mod pkg;
 pub mod print;
 pub mod routing;
 pub mod rpc;
+pub mod rules;
 pub mod sessions;
 pub mod settings;
 pub mod stats;
@@ -172,7 +174,14 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     }
     let trusted = project_trust(&cli, &paths, interactive);
     let goal = match &cli.command {
-        Some(Sub::Init) => return init::run(&paths).await,
+        Some(Sub::Init) => {
+            let code = init::run(&paths).await;
+            if code == print::EXIT_OK {
+                hooks::run_setup(&paths, trusted, "init").await;
+            }
+            return code;
+        }
+        Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
         Some(Sub::Login { provider, key, label }) => {
             return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
@@ -227,7 +236,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),
         Some(Sub::Skills { action }) => return pkg::run_skills(action, &paths),
         #[cfg(feature = "mcp")]
-        Some(Sub::Mcp { action }) => return mcp::run(action, &paths, trusted).await,
+        Some(Sub::Mcp { action }) => return mcp::run(action, &paths, trusted, cli.trust).await,
         #[cfg(feature = "memory")]
         Some(Sub::Memory { action }) => {
             return memory::run(memory::Command::Memory(action), &paths, trusted).await;
@@ -273,6 +282,16 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     };
     if !cli.no_session {
         sessions::prune_in_background(&app.paths, app.config.session.retention_days, active.session.id());
+    }
+    // A project that runs trusted for the first time gets its `setup` hooks.
+    if !cli.trust
+        && trusted
+        && azazel_core::TrustStore::new(app.paths.trust_file()).take_setup(&app.paths.project_root)
+    {
+        let mut setup = azazel_core::Event::Setup {
+            trigger: "trust".to_string(),
+        };
+        app.registry.bus.emit(&mut setup).await;
     }
     if let Some(name) = cli.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         active.session.append(azazel_core::EntryKind::SessionInfo {
@@ -342,7 +361,7 @@ fn provider_setup(
             return None;
         }
     };
-    let credentials = azazel_ai::Credentials::new(paths.auth_file()).configured(&config.providers);
+    let credentials = app::credentials(paths, trusted).configured(&config.providers);
     Some((config, providers, credentials))
 }
 

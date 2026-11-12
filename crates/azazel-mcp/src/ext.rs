@@ -293,6 +293,16 @@ pub fn status_report(manager: &McpManager) -> String {
     for (what, why) in manager.problems() {
         out.push_str(&format!("{what}  not loaded: {why}\n"));
     }
+    if manager
+        .status()
+        .iter()
+        .any(|server| matches!(server.state, State::WaitingApproval | State::Rejected))
+    {
+        out.push_str(
+            "a server this project defines starts once you approve it: `azazel mcp approve <name>`, or \
+             /mcp approve <name> in a session\n",
+        );
+    }
     if out.is_empty() {
         out.push_str("no MCP servers are configured; add one with `azazel mcp add <name> -- <command>`\n");
     }
@@ -322,6 +332,16 @@ impl CommandHandler for McpCommand {
                     .set_enabled(name, false)
                     .map(|()| format!("{name} is disabled")),
             ),
+            ["approve", name] => done(
+                self.0
+                    .decide(&[(name.to_string(), true)])
+                    .map(|_| format!("{name} is approved")),
+            ),
+            ["reject", name] => done(
+                self.0
+                    .decide(&[(name.to_string(), false)])
+                    .map(|_| format!("{name} is rejected and will not start")),
+            ),
             ["login", name] => {
                 let ui = ctx.services.get::<Ui>();
                 let show = move |url: &str| match &ui {
@@ -345,7 +365,8 @@ impl CommandHandler for McpCommand {
                 }
             })),
             _ => CommandOutcome::Error(
-                "usage: /mcp [list | reconnect|enable|disable|login|logout <server>]".to_string(),
+                "usage: /mcp [list | reconnect|enable|disable|approve|reject|login|logout <server>]"
+                    .to_string(),
             ),
         }
     }
@@ -358,6 +379,9 @@ struct Starter(McpManager);
 impl EventHandler for Starter {
     async fn handle(&self, _: &mut Event, _: &ExtCtx) -> Outcome {
         self.0.start();
+        // Asked beside the session, not before it: the question needs the UI to be running.
+        let manager = self.0.clone();
+        tokio::spawn(async move { manager.ask_approvals().await });
         Outcome::Continue
     }
 }
@@ -394,8 +418,10 @@ impl Extension for McpExt {
         r.command_source(Arc::new(manager.clone()));
         r.command(Command {
             name: "mcp".to_string(),
-            description: "MCP servers: state, reconnect, enable or disable, log in".to_string(),
-            argument_hint: Some("[reconnect|enable|disable|login|logout <server>]".to_string()),
+            description: "MCP servers: state, reconnect, enable or disable, approve, log in".to_string(),
+            argument_hint: Some(
+                "[reconnect|enable|disable|approve|reject|login|logout <server>]".to_string(),
+            ),
             handler: Arc::new(McpCommand(manager.clone())),
         });
         r.on(EventKind::SessionStart, Arc::new(Starter(manager.clone())));

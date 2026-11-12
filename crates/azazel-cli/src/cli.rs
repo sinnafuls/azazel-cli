@@ -227,6 +227,11 @@ pub enum Sub {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// Show the rule files of this project and test one
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
     /// Serve one session to another program: JSON lines on standard input and output
     Rpc,
     /// Show, search and forget what is remembered about this project
@@ -305,6 +310,43 @@ pub enum McpAction {
     Login { name: String },
     /// Forget the stored login of a remote server
     Logout { name: String },
+    /// Let servers this project defines start, now and in later sessions
+    Approve {
+        /// The servers; with --all, every one that waits for approval
+        names: Vec<String>,
+        #[arg(long)]
+        all: bool,
+    },
+    /// Keep a server this project defines from starting
+    Reject { name: String },
+    /// Copy the servers another client is configured with into ~/.azazel/mcp.json
+    Import {
+        /// claude-desktop, claude-code, cursor, vscode or windsurf; all of them when left out
+        client: Option<String>,
+        /// Import every server found without asking; names already configured are left alone
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RulesAction {
+    /// Show every rule, where it comes from and when it applies
+    List,
+    /// Say whether a rule file would apply to a path, a text or a tool
+    Test {
+        /// The rule file
+        rule: PathBuf,
+        /// Match the rule's trigger against this file's text; `-` reads standard input
+        #[arg(long, value_name = "FILE|-")]
+        text: Option<String>,
+        /// Match the rule's paths against this path
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Say whether the rule checks calls to this tool
+        #[arg(long, value_name = "NAME")]
+        tool: Option<String>,
+    },
 }
 
 #[derive(Debug, Parser)]
@@ -413,7 +455,7 @@ pub struct Cli {
     #[arg(long = "no-hooks")]
     pub no_hooks: bool,
 
-    /// Read no AGENTS.md or CLAUDE.md files
+    /// Read no AGENTS.md or CLAUDE.md files and no rule files
     #[arg(long = "no-context-files")]
     pub no_context_files: bool,
 

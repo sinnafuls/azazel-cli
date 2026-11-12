@@ -206,6 +206,8 @@ Models, permissions and setup:
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
 | `/doctor` | Check the installation and this project's setup |
+| `/rules` | List the rule files, when each applies and whether it has in this session; see [rules](rules.md) |
+| `/hooks` | List the hooks, where they come from and how each last ran; see [hooks](hooks.md) |
 
 Team and goals ([team](team.md), [goals](goals.md), [screen and playtesting](screen-and-playtesting.md)):
 
@@ -226,7 +228,7 @@ Skills, extensions and services:
 | `/skill:<name> [args]` | Run a skill; see [skills and commands](skills-and-commands.md) |
 | `/ext` | List loaded extensions and Luau scripts, with the errors of disabled scripts |
 | `/reload` | Drop all Luau extension state and load the scripts again; see [extensions](extensions.md) |
-| `/mcp` | MCP servers and their state; also `/mcp reconnect\|enable\|disable\|login\|logout <server>`; see [MCP](mcp.md) |
+| `/mcp` | MCP servers and their state; also `/mcp reconnect\|enable\|disable\|approve\|reject\|login\|logout <server>`; see [MCP](mcp.md) |
 | `/mcp:<server>:<prompt>` | Run a prompt offered by an MCP server |
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |

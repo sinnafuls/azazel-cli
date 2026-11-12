@@ -39,6 +39,32 @@ GitHub are its section here.
 - Service tiers: `/fast`, `/slow` and `--tier` ask OpenAI models for priority or flex processing and Claude
   models for fast mode; the status line shows the tier.
 - Model presets: `/preset`, `/preset <name>`, `/preset save <name>` and `--preset <name>`.
+- Rule files in `.azazel/rules/` and `~/.azazel/rules/` that apply always, when an agent touches matching files,
+  or on request through `rule://<name>`; the rule files of Cursor, Windsurf, Copilot, Gemini, Cline and
+  `.claude/rules/` are read too (`[rules] compat`).
+- Stream rules: a `trigger` in a rule file or `[[stream_rules]]` in the config stops a reply as it is written and
+  asks again with the rule.
+- `/rules`, `azazel rules list` and `azazel rules test`.
+- Hook options `once` and `wake`, and hook events `file_changed`, `config_change`, `worktree_create`,
+  `worktree_remove` and `setup`; `/hooks` lists every hook, where it comes from and how it last ran.
+- Commands that destroy work (`git reset --hard`, `rm -r` outside the project and others) are asked about in
+  every mode; `[permissions] destructive` sets `ask`, `allow` or `deny`.
+- API keys are read from `~/.azazel/.env` and, in a trusted project, from the project's `.env`.
+- `azazel mcp import` copies servers from Claude Desktop, Claude Code, Cursor, VS Code and Windsurf;
+  `azazel mcp approve` and `azazel mcp reject` decide about a project's servers.
+- Rule files in `.azazel/rules/` and `~/.azazel/rules/` that apply always, when an agent touches matching files,
+  or on request through `rule://<name>`; the rule files of Cursor, Windsurf, Copilot, Gemini, Cline and
+  `.claude/rules/` are read too (`[rules] compat`).
+- Stream rules: a `trigger` in a rule file or `[[stream_rules]]` in the config stops a reply as it is written and
+  asks again with the rule.
+- `/rules`, `azazel rules list` and `azazel rules test`.
+- Hook options `once` and `wake`, and hook events `file_changed`, `config_change`, `worktree_create`,
+  `worktree_remove` and `setup`; `/hooks` lists every hook, where it comes from and how it last ran.
+- Commands that destroy work (`git reset --hard`, `rm -r` outside the project and others) are asked about in
+  every mode; `[permissions] destructive` sets `ask`, `allow` or `deny`.
+- API keys are read from `~/.azazel/.env` and, in a trusted project, from the project's `.env`.
+- `azazel mcp import` copies servers from Claude Desktop, Claude Code, Cursor, VS Code and Windsurf;
+  `azazel mcp approve` and `azazel mcp reject` decide about a project's servers.
 
 ### Changed
 
@@ -46,6 +72,12 @@ GitHub are its section here.
 - A used-up Anthropic or ChatGPT subscription window is reported as a usage limit with its reset time, not as
   an authentication failure.
 - `/login` and `/logout` take an optional account label; `azazel auth status` lists each provider's accounts.
+- MCP servers a project defines wait for your approval, once per version of their definition. Projects you
+  already trust will ask once.
+- `--no-context-files` also leaves out rule files.
+- MCP servers a project defines wait for your approval, once per version of their definition. Projects you
+  already trust will ask once.
+- `--no-context-files` also leaves out rule files.
 
 ## [0.2.0] - 2026-11-12
 

@@ -8,7 +8,7 @@ use mlua::{Lua, LuaSerdeExt, Table};
 use serde_json::{Value, json};
 
 /// The events a script can handle, by the name it uses for them.
-pub(crate) static EVENTS: [(&str, EventKind); 15] = [
+pub(crate) static EVENTS: [(&str, EventKind); 20] = [
     ("session_start", EventKind::SessionStart),
     ("session_end", EventKind::SessionEnd),
     ("user_prompt", EventKind::UserPrompt),
@@ -24,6 +24,11 @@ pub(crate) static EVENTS: [(&str, EventKind); 15] = [
     ("post_compact", EventKind::PostCompact),
     ("stop", EventKind::Stop),
     ("notification", EventKind::Notification),
+    ("file_changed", EventKind::FileChanged),
+    ("config_change", EventKind::ConfigChange),
+    ("worktree_create", EventKind::WorktreeCreate),
+    ("worktree_remove", EventKind::WorktreeRemove),
+    ("setup", EventKind::Setup),
 ];
 
 /// A JSON value as a Luau value: objects and arrays become tables, `null` becomes `nil`.
@@ -64,7 +69,11 @@ pub(crate) fn agent_of(event: &Event) -> Option<&AgentInfo> {
         Event::SessionStart { .. }
         | Event::SessionEnd
         | Event::UserPrompt { .. }
-        | Event::Notification { .. } => None,
+        | Event::Notification { .. }
+        | Event::ConfigChange { .. }
+        | Event::WorktreeCreate { .. }
+        | Event::WorktreeRemove { .. }
+        | Event::Setup { .. } => None,
         Event::AgentSpawn { parent, .. } => Some(parent),
         Event::BeforeAgentStart { agent, .. }
         | Event::TurnStart { agent }
@@ -77,6 +86,7 @@ pub(crate) fn agent_of(event: &Event) -> Option<&AgentInfo> {
         | Event::PreCompact { agent, .. }
         | Event::PostCompact { agent }
         | Event::Stop { agent, .. }
+        | Event::FileChanged { agent, .. }
         | Event::PermissionRequest { agent, .. } => Some(agent),
     }
 }
@@ -143,6 +153,14 @@ pub(crate) fn event_table(lua: &Lua, name: &str, event: &Event) -> mlua::Result<
             stop_hook_active,
         } => json!({ "agent": agent_json(agent), "stop_hook_active": stop_hook_active }),
         Event::Notification { level, text } => json!({ "level": level_name(*level), "text": text }),
+        Event::FileChanged { agent, path, tool } => {
+            json!({ "agent": agent_json(agent), "path": path.display().to_string(), "tool": tool })
+        }
+        Event::ConfigChange { source } => json!({ "source": source }),
+        Event::WorktreeCreate { agent_id, path } | Event::WorktreeRemove { agent_id, path } => {
+            json!({ "agent_id": agent_id, "path": path.display().to_string() })
+        }
+        Event::Setup { trigger } => json!({ "trigger": trigger }),
     };
     let mlua::Value::Table(table) = to_lua(lua, &fields)? else {
         return Err(mlua::Error::runtime("an event did not convert to a table"));

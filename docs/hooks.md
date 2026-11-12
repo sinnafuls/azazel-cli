@@ -32,6 +32,8 @@ Hook arrays concatenate across config layers: hooks from `~/.azazel/config.toml`
 | `model` | `@smol` | Model or role for type `prompt` |
 | `timeout` | `60` | Seconds. A command's process tree is killed at the timeout |
 | `async` | `false` | `true`: start the hook and do not wait; its result is ignored |
+| `once` | `false` | `true`: run at most one time per session |
+| `wake` | `false` | With `async = true`: when the hook finishes, give what it printed to the lead agent; see [wake](#hooks-that-report-back-later) |
 
 ### Hook types
 
@@ -61,6 +63,11 @@ Hook arrays concatenate across config layers: hooks from `~/.azazel/config.toml`
 | `post_compact` | `PostCompact` | none | Cannot block |
 | `permission_request` | `PermissionRequest` | `tool_name`, `tool_input` | The call is denied. May also allow it without asking you |
 | `notification` | `Notification` | `message` | Cannot block. Fires in the terminal UI when something wants your attention |
+| `file_changed` | `FileChanged` | `file_path` (absolute), `tool_name`, `tool_input` (`{ "path": ... }`) | Cannot block. Fires after a `write` or `edit` succeeded. `matcher` selects by tool (`write`, `edit`) and `if` by tool and path: `edit(src/**)`, or `*(src/**)` for either tool |
+| `config_change` | `ConfigChange` | `source`: `settings` or `reload` | Cannot block. Fires after the settings menu or a reload changed the configuration |
+| `worktree_create` | `WorktreeCreate` | `worktree_path`, `agent_id` | Cannot block. Fires when the worktree of an isolated agent was made (see [team](team.md)) |
+| `worktree_remove` | `WorktreeRemove` | `worktree_path`, `agent_id` | Cannot block. Fires when that worktree was removed |
+| `setup` | `Setup` | `trigger`: `init` or `trust` | Cannot block. Fires when `azazel init` finished, and the first time a project runs trusted |
 
 Every hook also receives `session_id`, `transcript_path`, `cwd`, `agent_id` (`lead` or a sub-agent id) and `permission_mode`. `tool_response` is `{ "content": "<text>", "is_error": bool, "details"?: ... }`.
 
@@ -150,6 +157,39 @@ timeout = 600
 
 A `stop` hook that blocks makes the agent take another turn and then fires again, this time with `stop_hook_active: true`. Let the agent stop at some point, or it will loop.
 
+Format a file whenever an agent changed it, and install dependencies once when the project is set up:
+
+```toml
+[[hooks.file_changed]]
+if = "*(**/*.rs)"            # any tool, Rust files only
+command = "jq -r .file_path | xargs rustfmt --edition 2024"
+
+[[hooks.setup]]
+command = "npm ci"
+timeout = 600
+```
+
+## Hooks that report back later
+
+An `async` hook is not waited for, so normally its result is lost. With `wake = true` its output goes to the lead agent when it finishes: what it printed (or `additionalContext`, or the reason when it exits 2), wrapped in `<hook-result event="...">`. While the lead is working the text arrives as a steer message before its next request; when the lead is idle it starts a new run. A hook that prints nothing wakes nobody.
+
+```toml
+[[hooks.post_tool_use]]
+matcher = "write|edit"
+command = "cargo clippy --quiet 2>&1 | tail -20"
+async = true
+wake = true
+timeout = 300
+```
+
+`wake` without `async` is a mistake and the hook is not loaded: a hook that is waited for answers directly.
+
+`once = true` suits hooks that should not repeat, such as a reminder on the first `stop` of a session or a one-time check before the first tool call. The count starts over when another session is opened.
+
+## Seeing what is configured
+
+`/hooks` lists every loaded hook by event: what it runs, its matcher and `if`, its options, the file it comes from (or the skill), and how its last run ended and how long it took (`ok`, `blocked: <reason>`, `failed: <why>`, `allowed`, `asked`). Hooks that are loaded but will not run are marked with the reason: hooks switched off for the run (`--no-hooks`), or project hooks in a project that is not trusted.
+
 ## Environment
 
 Command hooks inherit your environment plus:
@@ -192,7 +232,7 @@ hooks:
 
 Differences from config hooks:
 
-- Events are named as in `hook_event_name` (`PreToolUse`, `Stop`, ...). Only `command` hooks are accepted.
+- Events are named as in `hook_event_name` (`PreToolUse`, `Stop`, ...). Only `command` hooks are accepted. Of the options, `timeout` and `once` are understood.
 - `matcher` and the `tool_name` on stdin use these names for built-in tools: `Bash` (`shell`), `Read`, `Write`, `Edit`, `Glob`, `Grep`, `WebFetch` (`web_fetch`), `WebSearch` (`web_search`), `Task` (`task`). Other tools keep their own names.
 - The environment adds `AZAZEL_SKILL_DIR` and `CLAUDE_SKILL_DIR` (the directory holding `SKILL.md`) and, for skills of a package, `CLAUDE_PLUGIN_ROOT`.
 - They run after the config hooks of the same event.

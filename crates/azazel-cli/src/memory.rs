@@ -4,7 +4,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use azazel_ai::Credentials;
 use azazel_core::{Config, LoadOptions, Paths};
 use azazel_memory::{MemoryExt, MemoryRow, MemoryStore, Scope};
 
@@ -28,7 +27,7 @@ fn open(paths: &Paths, trusted: bool) -> Result<Arc<MemoryStore>, String> {
         env: std::env::vars().collect(),
     };
     let config = Config::load(paths, &options).map_err(|e| e.to_string())?.config;
-    let credentials = Arc::new(Credentials::new(paths.auth_file()).configured(&config.providers));
+    let credentials = Arc::new(crate::app::credentials(paths, trusted).configured(&config.providers));
     Ok(MemoryExt::open(paths, &config, credentials)?.store())
 }
 

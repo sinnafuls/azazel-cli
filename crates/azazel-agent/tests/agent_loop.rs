@@ -1129,3 +1129,113 @@ async fn append_adds_context_without_starting_a_turn() {
     assert_eq!(texts, ["ran `ls`:\nsrc\ntests", "what did ls show?"]);
     assert_eq!(session.recorder.messages.lock().unwrap().len(), 3);
 }
+
+/// Withdraws a reply that says `forbidden`, and counts how often it did.
+#[derive(Default)]
+struct WordRule {
+    stops: std::sync::atomic::AtomicU32,
+    /// Stop every matching reply, not only the first.
+    every_time: bool,
+}
+
+#[async_trait]
+impl AgentHooks for WordRule {
+    fn stream_text(&self, _: &AgentInfo, so_far: &str) -> Option<String> {
+        let first = self.stops.load(std::sync::atomic::Ordering::SeqCst) == 0;
+        if !so_far.contains("forbidden") || !(first || self.every_time) {
+            return None;
+        }
+        self.stops.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some("<rule name=\"no-forbidden\" reason=\"matched\">\nnever say that word\n</rule>".to_string())
+    }
+}
+
+#[tokio::test]
+async fn a_stream_rule_withdraws_the_reply_and_the_request_is_sent_again_with_the_rule() {
+    let hooks = Arc::new(WordRule::default());
+    let mut session = start(Setup {
+        hooks: hooks.clone(),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::text("this is forbidden text"));
+    session.mock.push("a", MockStep::text("this is fine"));
+    let events = session.run("go").await;
+
+    assert_eq!(
+        kinds(&events),
+        [
+            "agent_start",
+            "turn_start 1",
+            "message_start",
+            "rule",
+            "turn_end",
+            "turn_start 2",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "idle"
+        ]
+    );
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Rule { name } if name == "no-forbidden")),
+        "{events:?}"
+    );
+    // The second request carries the prompt and the rule, and nothing of the withdrawn reply.
+    let requests = session.mock.requests_for("a");
+    assert_eq!(requests.len(), 2);
+    let texts: Vec<String> = requests[1].messages.iter().map(Message::text).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert_eq!(texts[0], "go");
+    assert!(texts[1].contains("never say that word"), "{texts:?}");
+    // Nor is it stored: the prompt, the rule note and the final answer.
+    let stored: Vec<(Role, String)> = session
+        .recorder
+        .messages
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|m| (m.role, m.text()))
+        .collect();
+    assert_eq!(stored.len(), 3, "{stored:?}");
+    assert!(stored.iter().all(|(_, text)| !text.contains("forbidden text")));
+    assert_eq!(stored[2], (Role::Assistant, "this is fine".to_string()));
+    assert_eq!(hooks.stops.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn rules_withdraw_at_most_two_replies_per_prompt() {
+    let hooks = Arc::new(WordRule {
+        every_time: true,
+        ..WordRule::default()
+    });
+    let mut session = start(Setup {
+        hooks: hooks.clone(),
+        ..Setup::default()
+    });
+    for _ in 0..3 {
+        session.mock.push("a", MockStep::text("forbidden again"));
+    }
+    let events = session.run("go").await;
+
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| matches!(e, AgentEvent::Rule { .. }))
+            .count(),
+        2
+    );
+    // The third reply stands, so the run ends instead of looping.
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::Idle {
+                stop: StopReason::Stop
+            })
+        ),
+        "{events:?}"
+    );
+    assert_eq!(session.mock.requests_for("a").len(), 3);
+    assert_eq!(hooks.stops.load(std::sync::atomic::Ordering::SeqCst), 2);
+}

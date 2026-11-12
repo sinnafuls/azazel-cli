@@ -26,6 +26,26 @@ use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource,
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
 pub const ABORTED_TEXT: &str = "aborted by user";
 
+/// Replies a rule may withdraw per prompt; after that the reply stands, so two rules that
+/// contradict each other cannot keep an agent going forever.
+const MAX_RULE_STOPS: u32 = 2;
+
+/// What one request produced.
+enum Reply {
+    Message(Message),
+    /// A stream rule matched; the note to add before asking again.
+    Withdrawn(String),
+}
+
+/// The `name` attribute of the tag a rule note opens with (`<rule name="no-todo" …>`).
+fn rule_name(note: &str) -> String {
+    note.lines()
+        .next()
+        .and_then(|line| line.split_once("name=\""))
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map_or_else(|| "stream rule".to_string(), |(name, _)| name.to_string())
+}
+
 /// How long an aborted tool gets to clean up before its task is dropped.
 const ABORT_GRACE: Duration = Duration::from_secs(2);
 
@@ -385,6 +405,7 @@ impl Actor {
         let mut stop_hook_active = false;
         let mut overflowed = false;
         let mut final_report = false;
+        let mut rule_stops = 0u32;
         loop {
             if cancel.is_cancelled() {
                 return Ok(StopReason::Aborted);
@@ -415,8 +436,18 @@ impl Actor {
                 .drive(self.core.build_request(thinking, !final_report))
                 .await;
 
-            let message = match self.stream_message(&chain, &request, cancel).await {
-                Ok(message) => message,
+            let watched = rule_stops < MAX_RULE_STOPS;
+            let message = match self.stream_message(&chain, &request, cancel, watched).await {
+                Ok(Reply::Message(message)) => message,
+                Ok(Reply::Withdrawn(note)) => {
+                    rule_stops += 1;
+                    self.core.emit(AgentEvent::Rule {
+                        name: rule_name(&note),
+                    });
+                    self.core.push(Message::user(note));
+                    self.core.emit(AgentEvent::TurnEnd);
+                    continue;
+                }
                 Err(AiError::Aborted) => {
                     self.core.emit(AgentEvent::TurnEnd);
                     return Ok(StopReason::Aborted);
@@ -492,31 +523,53 @@ impl Actor {
         }
     }
 
-    /// One assistant message, re-entering the router when a stream fails part-way.
+    /// One assistant message, re-entering the router when a stream fails part-way. With `watched`
+    /// the hooks see the reply as it grows and may withdraw it.
     async fn stream_message(
         &mut self,
         chain: &[ModelSpec],
         request: &Request,
         cancel: &CancellationToken,
-    ) -> Result<Message, AiError> {
+        watched: bool,
+    ) -> Result<Reply, AiError> {
         let (route_tx, mut route_rx) = mpsc::unbounded_channel();
         let mut route = RouteState::with_events(route_tx);
         let router = self.core.router.clone();
         loop {
+            // Its own token, so a withdrawn reply ends this request without ending the prompt.
+            let request_cancel = cancel.child_token();
             let started = self
                 .inbox
-                .drive(router.stream_with(chain, request, cancel.clone(), &mut route))
+                .drive(router.stream_with(chain, request, request_cancel.clone(), &mut route))
                 .await;
             self.core.forward_route_events(&mut route_rx);
             let (model, mut stream) = started?;
             locked(&self.core.status).model = Some(model.clone());
             self.core.emit(AgentEvent::MessageStart);
 
+            let (mut text, mut thinking) = (String::new(), String::new());
             let (error, partial) = loop {
                 match self.inbox.drive(stream.next()).await {
-                    Some(StreamEvent::Done { message }) => return Ok(message),
+                    Some(StreamEvent::Done { message }) => return Ok(Reply::Message(message)),
                     Some(StreamEvent::Error { error, partial }) => break (error, partial),
-                    Some(event) => self.core.emit(AgentEvent::Stream(event)),
+                    Some(event) => {
+                        let note = match &event {
+                            StreamEvent::TextDelta { delta, .. } if watched => {
+                                text.push_str(delta);
+                                self.core.hooks.stream_text(&self.core.info, &text)
+                            }
+                            StreamEvent::ThinkingDelta { delta, .. } if watched => {
+                                thinking.push_str(delta);
+                                self.core.hooks.stream_thinking(&self.core.info, &thinking)
+                            }
+                            _ => None,
+                        };
+                        self.core.emit(AgentEvent::Stream(event));
+                        if let Some(note) = note {
+                            request_cancel.cancel();
+                            return Ok(Reply::Withdrawn(note));
+                        }
+                    }
                     None => {
                         break (
                             AiError::Network("stream ended without a terminal event".to_string()),

@@ -24,6 +24,7 @@ use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::permissions::shell::guard_env;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::prompt::BasePromptExt;
+use azazel_core::rules::{self, Rules, RulesExt};
 use azazel_core::side::{Side, SideCosts};
 use azazel_core::skills::{SkillsExt, standard_roots};
 use azazel_core::{
@@ -213,10 +214,14 @@ pub fn mcp_manager(
     services: Arc<Services>,
     credentials: Arc<Credentials>,
     package_files: &[PathBuf],
+    approve_all: bool,
 ) -> azazel_mcp::McpManager {
     let mut files = package_files.to_vec();
     files.extend(azazel_mcp::config::config_files(paths, trusted));
-    let loaded = azazel_mcp::config::load(&files, &paths.project_root, &|name| std::env::var(name).ok());
+    let mut loaded = azazel_mcp::config::load(&files, &paths.project_root, &|name| std::env::var(name).ok());
+    // Each server the project defines waits for the user's word; `--trust` gives it for this run.
+    let trust = azazel_core::TrustStore::new(paths.trust_file());
+    azazel_mcp::config::apply_approvals(&mut loaded, paths, &trust, approve_all);
     let mut roots = vec![paths.project_root.clone()];
     roots.extend(
         config
@@ -229,7 +234,23 @@ pub fn mcp_manager(
         startup_wait: Duration::from_millis(config.mcp.startup_wait_ms),
         defer_threshold: config.mcp.defer_threshold,
     };
-    azazel_mcp::McpManager::new(loaded, services, roots, credentials, options)
+    let manager = azazel_mcp::McpManager::new(loaded, services, roots, credentials, options);
+    manager.record_approvals(
+        trust,
+        paths.project_root.clone(),
+        azazel_mcp::config::project_files(paths).to_vec(),
+    );
+    manager
+}
+
+/// The credential store of this run: `auth.json`, plus keys from `~/.azazel/.env` and, in a
+/// trusted project, from the project's `.env`.
+pub fn credentials(paths: &Paths, trusted: bool) -> Credentials {
+    let mut files = vec![paths.home.join(".env")];
+    if trusted {
+        files.push(paths.project_root.join(".env"));
+    }
+    Credentials::new(paths.auth_file()).with_env_files(files)
 }
 
 /// Where the command line says to work.
@@ -281,6 +302,7 @@ impl App {
             loaded.config.checkpoints.enabled = false;
         }
         let permissions = Arc::new(PermissionState::new(&paths, &loaded).map_err(|e| anyhow!(e))?);
+        let hook_sources = azazel_core::hooks::hook_sources(&loaded.layers);
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;
 
@@ -293,7 +315,7 @@ impl App {
             None => None,
         };
 
-        let credentials = Arc::new(Credentials::new(paths.auth_file()).configured(&config.providers));
+        let credentials = Arc::new(credentials(&paths, trusted).configured(&config.providers));
         let thinking = match &cli.thinking {
             Some(level) => level
                 .parse::<ThinkingLevel>()
@@ -372,10 +394,20 @@ impl App {
         registry.load(&PermissionsExt {
             state: permissions.clone(),
         })?;
+        // Rule files count as context files; `[[stream_rules]]` are settings and always apply.
+        let rules = Arc::new(Rules::new(rules::Sources {
+            paths: paths.clone(),
+            files: !cli.skips(Discovery::ContextFiles),
+            claude_compat: compat,
+            compat: config.rules.compat,
+            stream_rules: config.stream_rules.clone(),
+        }));
+        registry.load(&RulesExt { rules: rules.clone() })?;
         if !cli.skips(Discovery::ContextFiles) {
             registry.load(&ContextExt {
                 paths: paths.clone(),
                 claude_compat: compat,
+                rules: Some(rules),
             })?;
         }
         if !cli.skips(Discovery::Skills) {
@@ -422,6 +454,7 @@ impl App {
             claude_compat: compat,
             disabled: cli.skips(Discovery::Hooks) || std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some(),
             trusted,
+            sources: hook_sources,
         })?;
         #[cfg(feature = "browser")]
         registry.load(&azazel_browser::BrowserExt {
@@ -451,6 +484,7 @@ impl App {
                     services.clone(),
                     credentials.clone(),
                     &packages.mcp_files,
+                    cli.trust,
                 ),
             })?;
         }
@@ -773,6 +807,12 @@ impl App {
         if let Some(team) = services.get::<Team>() {
             team.attach(lead.clone(), session.clone());
         }
+        // A `wake` hook's output reaches this session's lead: a steer message while it works,
+        // a prompt of its own when it is idle.
+        let woken = lead.clone();
+        services.insert(Arc::new(azazel_core::hooks::Wake(Arc::new(move |text| {
+            woken.steer(UserInput::text(text));
+        }))));
         if let Some(goals) = services.get::<Goals>() {
             goals.attach(lead.clone(), session.clone(), checkpoints.clone());
         }

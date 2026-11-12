@@ -93,6 +93,10 @@ type PreCompactEvent = { name: "pre_compact", agent: AgentInfo, manual: boolean 
 type PostCompactEvent = { name: "post_compact", agent: AgentInfo }
 type StopEvent = { name: "stop", agent: AgentInfo, stop_hook_active: boolean }
 type NotificationEvent = { name: "notification", level: Level, text: string }
+type FileChangedEvent = { name: "file_changed", agent: AgentInfo, path: string, tool: string }
+type ConfigChangeEvent = { name: "config_change", source: string }
+type WorktreeEvent = { name: "worktree_create" | "worktree_remove", agent_id: string, path: string }
+type SetupEvent = { name: "setup", trigger: string }
 
 -- A handler returns nil, a `Block`, or a table with the fields to replace. A handler that raises
 -- an error, or whose own code runs for more than 5 seconds, disables its script.
@@ -120,6 +124,10 @@ type On =
 	& ((event: "post_compact", handler: (ev: PostCompactEvent, ctx: Ctx) -> ()) -> ())
 	& ((event: "stop", handler: (ev: StopEvent, ctx: Ctx) -> Block?) -> ())
 	& ((event: "notification", handler: (ev: NotificationEvent, ctx: Ctx) -> ()) -> ())
+	& ((event: "file_changed", handler: (ev: FileChangedEvent, ctx: Ctx) -> ()) -> ())
+	& ((event: "config_change", handler: (ev: ConfigChangeEvent, ctx: Ctx) -> ()) -> ())
+	& ((event: "worktree_create" | "worktree_remove", handler: (ev: WorktreeEvent, ctx: Ctx) -> ()) -> ())
+	& ((event: "setup", handler: (ev: SetupEvent, ctx: Ctx) -> ()) -> ())
 
 type ExecResult = {
 	-- nil when the program was ended by a signal.

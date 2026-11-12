@@ -1,5 +1,5 @@
-//! Breaking a shell command line into its simple commands, and the guard that keeps agents from
-//! pushing.
+//! Breaking a shell command line into its simple commands, the guard that keeps agents from
+//! pushing, and the list of commands that destroy work.
 
 use std::sync::LazyLock;
 
@@ -226,6 +226,195 @@ fn is_push(words: &[String]) -> bool {
     }
 }
 
+/// A flag cluster (`-rf`) that contains one of `letters`, or one of the long forms.
+fn has_flag(args: &[String], letters: &[char], long: &[&str]) -> bool {
+    args.iter().any(|arg| {
+        long.contains(&arg.as_str())
+            || (arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg.chars().skip(1).any(|c| letters.contains(&c)))
+    })
+}
+
+/// `/`, a drive root, the home directory, or everything directly inside one of them.
+fn root_or_home(target: &str) -> bool {
+    // `/*` is the contents of `/`; a bare `*` is the contents of where the command runs.
+    let target = target.strip_suffix('*').unwrap_or(target);
+    if target.is_empty() {
+        return false;
+    }
+    let base = target.trim_end_matches(['/', '\\']);
+    let drive = base.len() == 2 && base.ends_with(':') && base.starts_with(|c: char| c.is_ascii_alphabetic());
+    base.is_empty()
+        || drive
+        || matches!(
+            base,
+            "~" | "$HOME" | "${HOME}" | "%USERPROFILE%" | "$env:USERPROFILE"
+        )
+}
+
+/// `..`, `../..` and everything directly inside them.
+fn parent_dir(target: &str) -> bool {
+    let target = target.trim_end_matches('*').trim_end_matches(['/', '\\']);
+    !target.is_empty() && target.split(['/', '\\']).all(|part| part == "..")
+}
+
+/// What one simple command destroys, in words that follow "this command".
+fn destroys(words: &[String], outside: &dyn Fn(&str) -> bool) -> Option<&'static str> {
+    let (first, args) = words.split_first()?;
+    let name = program(first).to_ascii_lowercase();
+    // What follows the options: `--` ends them.
+    let targets = || {
+        let mut options_over = false;
+        args.iter().map(String::as_str).filter(move |arg| {
+            if options_over {
+                return true;
+            }
+            if *arg == "--" {
+                options_over = true;
+                return false;
+            }
+            !arg.starts_with('-')
+        })
+    };
+    match name.as_str() {
+        "rm" => {
+            if !has_flag(args, &['r', 'R'], &["--recursive"]) {
+                return None;
+            }
+            let mut found = None;
+            for target in targets() {
+                if root_or_home(target) {
+                    return Some("deletes everything under / or your home directory (rm -r)");
+                }
+                if parent_dir(target) {
+                    found = Some("deletes the directory above the one it runs in (rm -r)");
+                } else if found.is_none() && !target.contains('$') && outside(target) {
+                    found = Some("deletes a directory tree outside the project (rm -r)");
+                }
+            }
+            found
+        }
+        "git" => {
+            let mut words = positionals(args, &["-C", "-c", "--git-dir", "--work-tree", "--namespace"]);
+            let subcommand = words.next()?;
+            let rest: Vec<&str> = words.collect();
+            let whole_tree = || rest.iter().any(|arg| matches!(*arg, "." | ":/" | "*"));
+            match subcommand {
+                "reset" if args.iter().any(|arg| arg == "--hard") => {
+                    Some("discards uncommitted changes (git reset --hard)")
+                }
+                "clean"
+                    if has_flag(args, &['f'], &["--force"]) && !has_flag(args, &['n'], &["--dry-run"]) =>
+                {
+                    Some("deletes untracked files (git clean -f)")
+                }
+                "checkout" if whole_tree() => Some("discards uncommitted changes (git checkout .)"),
+                "restore"
+                    if whole_tree()
+                        && (!has_flag(args, &['S'], &["--staged"])
+                            || has_flag(args, &['W'], &["--worktree"])) =>
+                {
+                    Some("discards uncommitted changes (git restore .)")
+                }
+                "branch"
+                    if has_flag(args, &['D'], &[])
+                        || (has_flag(args, &['d'], &["--delete"])
+                            && has_flag(args, &['f'], &["--force"])) =>
+                {
+                    Some("deletes a branch even when it is not merged (git branch -D)")
+                }
+                "stash" if matches!(rest.first(), Some(&("drop" | "clear"))) => {
+                    Some("deletes stashed changes (git stash drop or clear)")
+                }
+                _ => None,
+            }
+        }
+        "dd" => args
+            .iter()
+            .any(|arg| arg.starts_with("of=/dev/"))
+            .then_some("writes over a device (dd of=/dev/…)"),
+        "chmod" | "chown" => (has_flag(args, &['R'], &["--recursive"]) && targets().any(root_or_home))
+            .then_some("changes permissions or owners of everything under / or your home directory"),
+        "terraform" | "tofu" => {
+            let first = positionals(args, &["-chdir"]).next();
+            (first == Some("destroy")
+                || (first == Some("apply")
+                    && args.iter().any(|arg| arg.trim_start_matches('-') == "destroy")))
+            .then_some("destroys the infrastructure Terraform manages")
+        }
+        "kubectl" => {
+            let mut words = positionals(args, &["-n", "--namespace", "--context", "--kubeconfig"]);
+            (words.next() == Some("delete")
+                && matches!(words.next(), Some("namespace" | "namespaces" | "ns")))
+            .then_some("deletes a Kubernetes namespace and everything in it")
+        }
+        "docker" | "podman" => {
+            let mut words = positionals(args, &["-H", "--host", "--context"]);
+            (words.next() == Some("system")
+                && words.next() == Some("prune")
+                && has_flag(args, &['a'], &["--all"]))
+            .then_some("removes every unused image, container and network (docker system prune -a)")
+        }
+        "psql" | "mysql" | "mariadb" => {
+            let mut statements = args.iter().enumerate().filter_map(|(at, arg)| {
+                ["--command=", "--execute="]
+                    .iter()
+                    .find_map(|long| arg.strip_prefix(long))
+                    .or_else(|| {
+                        matches!(arg.as_str(), "-c" | "-e" | "--command" | "--execute")
+                            .then(|| args.get(at + 1).map(String::as_str))
+                            .flatten()
+                    })
+                    .or_else(|| {
+                        ["-c", "-e"]
+                            .iter()
+                            .find_map(|short| arg.strip_prefix(short))
+                            .filter(|rest| !rest.is_empty())
+                    })
+            });
+            statements
+                .any(|sql| {
+                    let sql = sql.to_ascii_lowercase();
+                    sql.split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .contains("drop database")
+                })
+                .then_some("drops a database")
+        }
+        name if name.starts_with("mkfs") => Some("formats a file system (mkfs)"),
+        _ => None,
+    }
+}
+
+/// What `command` would destroy, in words that follow "this command"; `None` for a command that
+/// is not one of the known destructive ones. `outside` says whether a path, as written, lies
+/// outside the directories agents work in.
+///
+/// Recognised: `rm -r` on `/`, `~`, `..` or a path outside the project; `git reset --hard`,
+/// `clean -f`, `checkout .`, `restore .`, `branch -D`, `stash drop|clear`; `dd of=/dev/…`;
+/// `mkfs`; `chmod -R` and `chown -R` on `/` or `~`; `terraform destroy`; `kubectl delete
+/// namespace`; `docker system prune -a`; `drop database` given to `psql` or `mysql`.
+pub fn destructive(
+    command: &str,
+    analysis: &ShellAnalysis,
+    outside: &dyn Fn(&str) -> bool,
+) -> Option<&'static str> {
+    if analysis.parsed {
+        return analysis
+            .commands
+            .iter()
+            .find_map(|simple| destroys(&simple.words, outside));
+    }
+    // Not parsed (PowerShell, or a syntax error): split roughly and look at the same words.
+    command.split([';', '|', '&', '\n']).find_map(|part| {
+        let words = strip_wrappers(part.split_whitespace().map(str::to_string).collect());
+        let words: Vec<String> = words.iter().map(|word| unquote(word)).collect();
+        destroys(&words, outside)
+    })
+}
+
 const BLOCKED_KEY: &str = "url.azazel-push-blocked://denied/.pushInsteadOf";
 const PUSH_URL_PREFIXES: [&str; 6] = ["https://", "http://", "ssh://", "git://", "git@", "file://"];
 
@@ -380,6 +569,119 @@ mod tests {
         assert!(check("cd repo; git -C . push"));
         assert!(!check("git status; echo push"));
         assert!(!check("Write-Output 'pushing'"));
+    }
+
+    fn risk(command: &str) -> Option<&'static str> {
+        // Paths that start with `/` or `..` count as outside the project.
+        let outside = |path: &str| path.starts_with('/') || path.starts_with("..");
+        destructive(command, &analyze(command, true), &outside)
+    }
+
+    #[test]
+    fn destructive_commands_are_recognised_in_every_position() {
+        for command in [
+            "rm -rf /",
+            "rm -rf /*",
+            "rm -r ~",
+            "rm -fr ~/",
+            "rm --recursive $HOME",
+            "rm -rf ..",
+            "rm -rf ../*",
+            "rm -rf /var/lib/app",
+            "rm -rf build ../other-project",
+            "sudo rm -rf -- /etc",
+            "git reset --hard",
+            "git reset --hard HEAD~3",
+            "git -C repo reset --hard origin/main",
+            "git clean -fd",
+            "git clean -xdf",
+            "git clean --force",
+            "git checkout -- .",
+            "git checkout .",
+            "git restore .",
+            "git restore --staged --worktree .",
+            "git branch -D feature",
+            "git branch --delete --force feature",
+            "git stash drop",
+            "git stash clear",
+            "dd if=/dev/zero of=/dev/sda bs=1M",
+            "mkfs.ext4 /dev/sdb1",
+            "mkfs -t ext4 /dev/sdb1",
+            "chmod -R 777 /",
+            "chown -R me ~",
+            "terraform destroy",
+            "terraform apply -destroy -auto-approve",
+            "kubectl delete namespace staging",
+            "kubectl -n x delete ns staging",
+            "docker system prune -a",
+            "docker system prune -af --volumes",
+            "psql -c 'DROP DATABASE app'",
+            "psql --command='drop   database app'",
+            "mysql -e \"drop database app\"",
+            "cargo build && git reset --hard",
+            "echo $(git clean -f)",
+            "bash -c 'git stash clear'",
+        ] {
+            assert!(risk(command).is_some(), "should be destructive: {command}");
+        }
+        assert_eq!(
+            risk("git reset --hard"),
+            Some("discards uncommitted changes (git reset --hard)")
+        );
+        assert_eq!(
+            risk("rm -rf build /"),
+            Some("deletes everything under / or your home directory (rm -r)")
+        );
+    }
+
+    #[test]
+    fn ordinary_commands_are_not_destructive() {
+        for command in [
+            "rm -r target/tmp",
+            "rm -rf ./build node_modules",
+            "rm -rf .",
+            "rm -rf *",
+            "rm -rf ./*",
+            "chmod -R 755 .",
+            "chown -R me ./data",
+            "rm file.txt",
+            "rm -f /tmp/one-file",
+            "git reset HEAD~1",
+            "git reset --soft HEAD~1",
+            "git clean -n",
+            "git clean -nfd",
+            "git checkout main",
+            "git checkout -- src/lib.rs",
+            "git restore src/lib.rs",
+            "git restore --staged .",
+            "git branch -d merged",
+            "git stash",
+            "git stash pop",
+            "git log --grep 'reset --hard'",
+            "dd if=in.img of=out.img",
+            "chmod -R 755 scripts",
+            "chmod 600 ~/.ssh/id_ed25519",
+            "terraform plan -destroy",
+            "kubectl delete pod web-1",
+            "kubectl get namespace",
+            "docker system prune",
+            "docker image prune -a",
+            "psql -c 'select 1'",
+            "echo git reset --hard",
+            "echo 'drop database app'",
+        ] {
+            assert_eq!(risk(command), None, "should be ordinary: {command}");
+        }
+    }
+
+    #[test]
+    fn unparsed_commands_are_checked_word_by_word() {
+        let risk = |command: &str| destructive(command, &analyze(command, false), &|_| false);
+        assert!(risk("git reset --hard; Write-Output done").is_some());
+        assert!(risk("cd repo; git clean -fdx").is_some());
+        assert!(risk("rm -r C:\\").is_some());
+        assert_eq!(risk("Write-Output 'git reset --hard'"), None);
+        assert_eq!(risk("Get-ChildItem | Remove-Item"), None);
     }
 
     #[test]

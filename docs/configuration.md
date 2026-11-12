@@ -108,6 +108,7 @@ thinking = "low"
 | `[permissions]` | `mode` | `"ask"` | `plan`, `ask`, `accept-edits` or `auto`; see [permissions](permissions.md) |
 | | `allow`, `ask`, `deny` | `[]` | Rules such as `"shell(cargo build:*)"` |
 | | `additional_dirs` | `[]` | Directories outside the project agents may work in (relative to the project root) |
+| | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`) needs in every mode: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
 | | `max_files` | `100000` | Checkpoints turn off for projects with more files than this |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
@@ -130,10 +131,18 @@ thinking = "low"
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
+| | `once` | `false` | Run at most one time per session |
+| | `wake` | `false` | With `async`: give the hook's output to the lead agent when it finishes |
+| `[rules]` | `compat` | `true` | Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline; see [rules](rules.md) |
+| `[[stream_rules]]` | `pattern` | required | Regular expression matched against a reply as it is written |
+| | `message` | required | What the agent is told when the pattern matches |
+| | `scope` | `"text"` | `text`, `thinking` or `tool:<name>` |
 
 Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_prompt_submit`, `session_start`,
 `session_end`, `stop`, `subagent_start`, `subagent_stop`, `pre_compact`, `post_compact`, `permission_request`,
-`notification`.
+`notification`, `file_changed`, `config_change`, `worktree_create`, `worktree_remove`, `setup`.
+
+`[[stream_rules]]` arrays concatenate across layers, like the hook arrays.
 
 ## Features
 
@@ -168,7 +177,8 @@ back. A project needs a trust decision when it has any of:
 - `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
 
-Gated settings: `hooks`, `providers`, `permissions.allow`, `lsp`, `verify.commands`, `tools.shell`, `browser.path`.
+Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
+`tools.shell`, `browser.path`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`; remove the project's entry there to be asked again.
@@ -180,8 +190,12 @@ In an untrusted project:
 - gated settings in the two project config files are dropped; everything else in them still applies
 - the project's `models.yml` is not read
 - project extensions, project MCP servers and skill hooks are not loaded
+- API keys in the project's `.env` are not read
 - `` !`command` `` lines in custom commands are left as text
-- context files, skills, agent definitions and custom commands still load
+- context files, rule files, skills, agent definitions and custom commands still load
+
+In a trusted project each MCP server the project defines still waits for your approval; see
+[MCP](mcp.md#approving-a-projects-servers).
 
 `~/.azazel/config.toml` is never filtered. The UI lists what was skipped when it starts, and so does
 `azazel doctor`.
@@ -209,7 +223,7 @@ In an untrusted project:
 | `--disallowed-tools <NAMES>` | Never offer these tools, on top of `[tools] disabled` |
 | `--system-prompt <TEXT\|@FILE>` | Replace the lead's built-in instructions (its identity and rules); sub-agents keep theirs |
 | `--append-system-prompt <TEXT\|@FILE>` | Add text to the lead's instructions, after the context files |
-| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run |
+| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md) |
 | `--bare` | All six `--no-*` switches |
 | `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |

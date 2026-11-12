@@ -58,6 +58,11 @@ pub enum EventKind {
     Stop,
     PermissionRequest,
     Notification,
+    FileChanged,
+    ConfigChange,
+    WorktreeCreate,
+    WorktreeRemove,
+    Setup,
 }
 
 /// Handlers receive the event mutably and may change the fields documented as replaceable.
@@ -142,6 +147,32 @@ pub enum Event {
         level: Level,
         text: String,
     },
+    /// A `write` or `edit` succeeded. `path` is absolute.
+    FileChanged {
+        agent: AgentInfo,
+        path: PathBuf,
+        tool: String,
+    },
+    /// The settings menu (`source` is `settings`) or a reload (`reload`) changed the
+    /// configuration.
+    ConfigChange {
+        source: String,
+    },
+    /// The worktree of an isolated agent was made.
+    WorktreeCreate {
+        agent_id: String,
+        path: PathBuf,
+    },
+    /// The worktree of an isolated agent was removed.
+    WorktreeRemove {
+        agent_id: String,
+        path: PathBuf,
+    },
+    /// `azazel init` finished (`trigger` is `init`), or the project runs trusted for the first
+    /// time (`trust`).
+    Setup {
+        trigger: String,
+    },
 }
 
 impl Event {
@@ -164,6 +195,11 @@ impl Event {
             Event::Stop { .. } => EventKind::Stop,
             Event::PermissionRequest { .. } => EventKind::PermissionRequest,
             Event::Notification { .. } => EventKind::Notification,
+            Event::FileChanged { .. } => EventKind::FileChanged,
+            Event::ConfigChange { .. } => EventKind::ConfigChange,
+            Event::WorktreeCreate { .. } => EventKind::WorktreeCreate,
+            Event::WorktreeRemove { .. } => EventKind::WorktreeRemove,
+            Event::Setup { .. } => EventKind::Setup,
         }
     }
 }
@@ -435,6 +471,21 @@ pub struct Registry {
 /// (a script host reloading its scripts).
 pub struct RegistryHandle(pub std::sync::Weak<Registry>);
 
+/// Tells extensions that the configuration changed: `source` is `settings` for the settings
+/// menu and `reload` for a reload. Does nothing where the registry is not published.
+pub async fn config_changed(services: &Services, source: &str) {
+    let Some(registry) = services
+        .get::<RegistryHandle>()
+        .and_then(|handle| handle.0.upgrade())
+    else {
+        return;
+    };
+    let mut event = Event::ConfigChange {
+        source: source.to_string(),
+    };
+    registry.bus.emit(&mut event).await;
+}
+
 /// Lets an extension add MCP servers without depending on the MCP client.
 pub trait McpRegistrar: Send + Sync {
     /// Adds a server and starts connecting to it. `entry` has the shape of an `mcp.json` entry.
@@ -561,6 +612,7 @@ impl Registry {
         Arc::new(BusHooks {
             bus: self.bus.clone(),
             prompt: self.prompt.clone(),
+            rules: self.services.get::<crate::rules::Rules>(),
         })
     }
 }
@@ -634,6 +686,8 @@ impl Registrar<'_> {
 struct BusHooks {
     bus: Arc<EventBus>,
     prompt: Arc<PromptBuilder>,
+    /// The stream rules, when the rules extension was loaded before these hooks were made.
+    rules: Option<Arc<crate::rules::Rules>>,
 }
 
 #[async_trait]
@@ -711,6 +765,14 @@ impl AgentHooks for BusHooks {
         self.bus
             .emit(&mut Event::PostCompact { agent: agent.clone() })
             .await;
+    }
+
+    fn stream_text(&self, agent: &AgentInfo, so_far: &str) -> Option<String> {
+        self.rules.as_ref()?.stream_text(agent, so_far)
+    }
+
+    fn stream_thinking(&self, agent: &AgentInfo, so_far: &str) -> Option<String> {
+        self.rules.as_ref()?.stream_thinking(agent, so_far)
     }
 }
 

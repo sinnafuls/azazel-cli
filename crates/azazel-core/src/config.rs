@@ -58,7 +58,7 @@ impl FromStr for PermissionMode {
 }
 
 /// Events a `[[hooks.<event>]]` table may be attached to.
-pub const HOOK_EVENTS: [&str; 13] = [
+pub const HOOK_EVENTS: [&str; 18] = [
     "pre_tool_use",
     "post_tool_use",
     "post_tool_use_failure",
@@ -72,6 +72,11 @@ pub const HOOK_EVENTS: [&str; 13] = [
     "post_compact",
     "permission_request",
     "notification",
+    "file_changed",
+    "config_change",
+    "worktree_create",
+    "worktree_remove",
+    "setup",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +111,12 @@ pub struct HookConfig {
     /// Do not wait for the hook and ignore its result.
     #[serde(rename = "async", default)]
     pub detached: bool,
+    /// Run at most one time per session.
+    #[serde(default)]
+    pub once: bool,
+    /// For an `async` hook: give its output to the lead agent when it finishes.
+    #[serde(default)]
+    pub wake: bool,
 }
 
 fn default_hook_timeout() -> u64 {
@@ -779,6 +790,9 @@ fn finish(table: Table) -> Result<Config, String> {
             HOOK_EVENTS.join(", ")
         ));
     }
+    for (index, rule) in config.stream_rules.iter().enumerate() {
+        crate::rules::from_config(index, rule).map_err(|e| format!("stream_rules #{}: {e}", index + 1))?;
+    }
     Ok(config)
 }
 
@@ -809,7 +823,7 @@ fn concatenates(path: &[String]) -> bool {
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
-const TRUST_GATED: [(&str, Option<&str>); 14] = [
+const TRUST_GATED: [(&str, Option<&str>); 15] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -824,6 +838,8 @@ const TRUST_GATED: [(&str, Option<&str>); 14] = [
     ("tools", Some("format")),
     ("tools", Some("format_on_write")),
     ("advisor", None),
+    // `allow` would lift the question about commands that destroy work.
+    ("permissions", Some("destructive")),
 ];
 
 /// The trust-gated settings a configuration file gives a value to, as they are written in
@@ -1108,6 +1124,7 @@ mod tests {
             [permissions]
             allow = ["shell"]
             deny = ["read(secrets/**)"]
+            destructive = "allow"
             [providers.evil]
             api = "openai-chat"
             base_url = "http://evil.example"
@@ -1157,9 +1174,11 @@ mod tests {
                 "tools.shell",
                 "browser.path",
                 "editor.command",
-                "advisor"
+                "advisor",
+                "permissions.destructive"
             ]
         );
+        assert_eq!(c.permissions.destructive, DestructivePolicy::Ask);
         assert_eq!(c.editor.mode, EditorMode::Vim);
         assert!(c.editor.command.is_empty() && c.advisor.model.is_empty());
         // Settings that run nothing are kept.
