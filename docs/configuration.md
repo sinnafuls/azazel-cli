@@ -111,6 +111,9 @@ thinking = "low"
 | | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`) needs in every mode: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
 | | `max_files` | `100000` | Checkpoints turn off for projects with more files than this |
+| `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
+| | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
+| | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |

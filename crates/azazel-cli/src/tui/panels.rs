@@ -153,6 +153,9 @@ impl Tui {
     /// Acts on one of the open overlay's own keys: `key` indexes its `keys`, `index` is the
     /// selected row. The overlay stays open unless the action replaces or closes it.
     pub(super) async fn overlay_hotkey(&mut self, index: usize, key: usize) {
+        if self.session_hotkey(index, key).await {
+            return;
+        }
         // What the key acts on is copied out first: acting on it may replace the overlay.
         enum Target {
             Agent(String),

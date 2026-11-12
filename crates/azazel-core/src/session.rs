@@ -116,7 +116,7 @@ pub struct SessionSummary {
     pub id: String,
     /// When the session was created.
     pub timestamp: String,
-    /// When its last entry was written.
+    /// When it was last used: the time of its last entry that is not a name, a pin or a label.
     pub updated: String,
     pub name: Option<String>,
     /// Text of the first user message, for pickers.
@@ -136,12 +136,43 @@ pub struct SessionSummary {
     pub tools: BTreeMap<String, u32>,
 }
 
+/// A sub-agent that ran in a session.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AgentRun {
+    pub id: String,
+    pub def: String,
+    /// How it ended.
+    pub status: String,
+    pub transcript: PathBuf,
+}
+
+/// What a session file holds, in numbers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SessionFacts {
+    pub created: String,
+    /// When it was last worked in.
+    pub updated: String,
+    /// The session this one was forked or handed off from.
+    pub parent_session: Option<String>,
+    /// Messages by who wrote them, over every branch.
+    pub user: usize,
+    pub assistant: usize,
+    pub tool: usize,
+    /// Places where the conversation went two or more ways.
+    pub branch_points: usize,
+    /// Tokens and cost of the lead's replies, over every branch.
+    pub usage: Usage,
+    pub checkpoints: usize,
+    pub compactions: usize,
+    pub agents: Vec<AgentRun>,
+}
+
 /// File in a sessions directory that caches each session's summary, so listing does not read
 /// every session file again.
 const INDEX_FILE: &str = "index.json";
 /// Bumped when [`SessionSummary`] gains a field, so older indexes are rebuilt rather than read
 /// with that field empty.
-const INDEX_VERSION: u32 = 2;
+const INDEX_VERSION: u32 = 3;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Index {
@@ -400,6 +431,147 @@ impl SessionStore {
         })
     }
 
+    /// Whether the session is pinned.
+    pub fn pinned(&self) -> bool {
+        self.lock()
+            .entries
+            .iter()
+            .rev()
+            .find_map(|e| match &e.kind {
+                EntryKind::Pin { pinned } => Some(*pinned),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// The label of each labelled entry. The newest label of an entry counts; an empty one
+    /// takes the label away.
+    pub fn labels(&self) -> HashMap<String, String> {
+        let mut labels = HashMap::new();
+        for entry in &self.lock().entries {
+            if let EntryKind::Label { target_id, label } = &entry.kind {
+                if label.trim().is_empty() {
+                    labels.remove(target_id);
+                } else {
+                    labels.insert(target_id.clone(), label.trim().to_string());
+                }
+            }
+        }
+        labels
+    }
+
+    /// The model chain the branch ending at `leaf` last switched to.
+    pub fn last_chain(&self, leaf: Option<&str>) -> Option<Vec<ModelSpec>> {
+        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
+            EntryKind::ModelChange { chain } if !chain.is_empty() => Some(chain),
+            _ => None,
+        })
+    }
+
+    /// The thinking level the branch ending at `leaf` last switched to.
+    pub fn last_thinking(&self, leaf: Option<&str>) -> Option<String> {
+        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
+            EntryKind::ThinkingChange { level } => Some(level),
+            _ => None,
+        })
+    }
+
+    /// The last message you sent on the branch ending at `leaf`, skipping those `skip` says the
+    /// UI wrote for you (notes about a command you ran, for example).
+    pub fn last_prompt(&self, leaf: Option<&str>, skip: &dyn Fn(&str) -> bool) -> Option<Entry> {
+        self.branch(leaf)
+            .into_iter()
+            .rev()
+            .find(|entry| match &entry.kind {
+                EntryKind::Message { message } => {
+                    message.role == Role::User
+                        && !skip(&message.text())
+                        && message
+                            .content
+                            .iter()
+                            .any(|block| !matches!(block, azazel_ai::Block::ToolResult { .. }))
+                }
+                _ => false,
+            })
+    }
+
+    /// What `/session` reports, counted over the whole file.
+    pub fn facts(&self) -> SessionFacts {
+        let inner = self.lock();
+        let mut facts = SessionFacts {
+            created: inner.header.timestamp.clone(),
+            updated: last_used(&inner.header, &inner.entries),
+            parent_session: inner.header.parent_session.clone(),
+            ..SessionFacts::default()
+        };
+        let mut children: HashMap<Option<&str>, usize> = HashMap::new();
+        for entry in &inner.entries {
+            *children.entry(entry.parent_id.as_deref()).or_default() += 1;
+            match &entry.kind {
+                EntryKind::Message { message } => {
+                    match message.role {
+                        Role::User => facts.user += 1,
+                        Role::Assistant => facts.assistant += 1,
+                        Role::Tool => facts.tool += 1,
+                    }
+                    if let Some(meta) = &message.meta {
+                        facts.usage.add(&meta.usage);
+                    }
+                }
+                EntryKind::Checkpoint { .. } => facts.checkpoints += 1,
+                EntryKind::Compaction { .. } => facts.compactions += 1,
+                EntryKind::Agent {
+                    agent_id,
+                    def,
+                    status,
+                    transcript,
+                } => {
+                    let run = AgentRun {
+                        id: agent_id.clone(),
+                        def: def.clone(),
+                        status: status.clone(),
+                        transcript: PathBuf::from(transcript),
+                    };
+                    // An agent that was woken again is recorded again; its last state counts.
+                    match facts.agents.iter_mut().find(|known| known.id == run.id) {
+                        Some(known) => *known = run,
+                        None => facts.agents.push(run),
+                    }
+                }
+                _ => {}
+            }
+        }
+        facts.branch_points = children.values().filter(|count| **count > 1).count();
+        facts
+    }
+
+    /// The last `count` messages with text in a session file, oldest first, for a preview.
+    pub fn preview(path: &Path, count: usize) -> Vec<(Role, String)> {
+        let Ok(branch) = read_branch(path) else {
+            return Vec::new();
+        };
+        let mut shown: Vec<(Role, String)> = branch
+            .into_iter()
+            .rev()
+            .filter_map(|entry| match entry.kind {
+                EntryKind::Message { message }
+                    if message.role != Role::Tool && !message.text().trim().is_empty() =>
+                {
+                    Some((message.role, message.text()))
+                }
+                _ => None,
+            })
+            .take(count)
+            .collect();
+        shown.reverse();
+        shown
+    }
+
+    /// The tokens and cost recorded in a transcript file (a sub-agent's, for example).
+    pub fn usage_of(path: &Path) -> Option<Usage> {
+        summarise(path).map(|summary| summary.usage)
+    }
+
     /// Deletes a session: its file and the folder of its sub-agents' transcripts.
     pub fn delete(summary: &SessionSummary) -> io::Result<()> {
         std::fs::remove_file(&summary.path)?;
@@ -554,10 +726,8 @@ fn summarise(path: &Path) -> Option<SessionSummary> {
     let (header, entries) = read_file(path).ok()?;
     let mut summary = SessionSummary {
         path: path.to_path_buf(),
+        updated: last_used(&header, &entries),
         id: header.id,
-        updated: entries
-            .last()
-            .map_or_else(|| header.timestamp.clone(), |e| e.timestamp.clone()),
         timestamp: header.timestamp,
         name: None,
         first_prompt: None,
@@ -598,6 +768,38 @@ fn summarise(path: &Path) -> Option<SessionSummary> {
         }
     }
     Some(summary)
+}
+
+/// The branch a session file ends on, read without opening the file for writing.
+fn read_branch(path: &Path) -> io::Result<Vec<Entry>> {
+    let (_, entries) = read_file(path)?;
+    let by_id: HashMap<&str, &Entry> = entries.iter().map(|e| (e.id.as_str(), e)).collect();
+    let mut branch = Vec::new();
+    let mut cursor = entries.last();
+    while let Some(entry) = cursor {
+        branch.push(entry.clone());
+        if branch.len() > entries.len() {
+            break; // a parent cycle in a damaged file
+        }
+        cursor = entry.parent_id.as_deref().and_then(|id| by_id.get(id).copied());
+    }
+    branch.reverse();
+    Ok(branch)
+}
+
+/// When a session was last worked in. Naming, pinning or labelling it from a picker is not use,
+/// so it neither moves the session up the list nor saves it from being pruned.
+fn last_used(header: &Header, entries: &[Entry]) -> String {
+    entries
+        .iter()
+        .rev()
+        .find(|entry| {
+            !matches!(
+                entry.kind,
+                EntryKind::SessionInfo { .. } | EntryKind::Pin { .. } | EntryKind::Label { .. }
+            )
+        })
+        .map_or_else(|| header.timestamp.clone(), |entry| entry.timestamp.clone())
 }
 
 /// Replaces the index in one step, so a concurrent reader sees the old or the new one.
@@ -809,6 +1011,83 @@ mod tests {
     }
 
     #[test]
+    fn labels_restore_points_the_last_prompt_and_facts_come_from_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/w"), None).unwrap();
+        let say = |message: Message| store.append(EntryKind::Message { message });
+        let first = say(Message::user("first"));
+        say(assistant("one"));
+        store.append(EntryKind::ModelChange {
+            chain: vec![ModelSpec::Role("slow".into())],
+        });
+        store.append(EntryKind::ThinkingChange { level: "high".into() });
+        let second = say(Message::user("second"));
+        let reply = say(assistant("two"));
+        let note = say(Message::user("I ran `ls` myself"));
+        let used = store.entry(&note).unwrap().timestamp;
+
+        // The note the UI wrote is not a prompt.
+        let is_note = |text: &str| text.starts_with("I ran `");
+        assert_eq!(store.last_prompt(None, &is_note).unwrap().id, second);
+        assert_eq!(store.last_chain(None), Some(vec![ModelSpec::Role("slow".into())]));
+        assert_eq!(store.last_thinking(None).as_deref(), Some("high"));
+
+        let label = |target: &str, label: &str| {
+            store.append(EntryKind::Label {
+                target_id: target.to_string(),
+                label: label.to_string(),
+            })
+        };
+        label(&first, "start");
+        label(&reply, "wrong turn");
+        label(&reply, " ");
+        assert_eq!(
+            store.labels(),
+            HashMap::from([(first.clone(), "start".to_string())])
+        );
+        assert!(!store.pinned());
+        store.append(EntryKind::Pin { pinned: true });
+        store.append(EntryKind::SessionInfo { name: "demo".into() });
+        assert!(store.pinned());
+
+        // A name, a pin or a label is not use: the session keeps its place in the list.
+        let listed = SessionStore::list(dir.path());
+        assert_eq!(listed[0].updated, used);
+
+        // Another branch from the first prompt: it never switched model or thinking.
+        assert!(store.set_leaf(Some(&first)));
+        say(assistant("another one"));
+        assert_eq!(store.last_chain(None), None);
+        assert_eq!(store.last_thinking(None), None);
+        assert_eq!(store.last_prompt(None, &is_note).unwrap().id, first);
+
+        let facts = store.facts();
+        assert_eq!((facts.user, facts.assistant, facts.tool), (3, 3, 0));
+        assert_eq!(facts.branch_points, 1);
+        assert_eq!(facts.updated, store.entries().last().unwrap().timestamp);
+
+        // A preview follows the branch the file ends on.
+        let shown = SessionStore::preview(&store.path(), 6);
+        assert_eq!(
+            shown,
+            vec![
+                (Role::User, "first".to_string()),
+                (Role::Assistant, "another one".to_string())
+            ]
+        );
+        assert_eq!(SessionStore::preview(&store.path(), 1).len(), 1);
+
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        assert!(reopened.pinned());
+        assert_eq!(reopened.labels().len(), 1);
+        assert_eq!(reopened.last_thinking(Some(&reply)).as_deref(), Some("high"));
+        assert_eq!(
+            reopened.last_chain(Some(&reply)).map(|chain| chain.len()),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn damaged_lines_are_skipped_and_the_file_is_not_truncated() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
@@ -915,17 +1194,20 @@ mod tests {
             "{list:?}"
         );
 
-        // A file written to is read again, and is now the most recently used.
+        // A file written to is read again. Pinning is not use: it keeps its place in the list.
         std::thread::sleep(std::time::Duration::from_millis(5));
         a.append(EntryKind::Pin { pinned: true });
         let list = SessionStore::list(dir.path());
-        assert_eq!(list[0].id, a.id());
-        assert_eq!((list[0].name.as_deref(), list[0].pinned), (None, true));
-        assert_eq!(list[1].name.as_deref(), Some("cached"));
+        assert_eq!(list[1].id, a.id());
+        assert_eq!((list[1].name.as_deref(), list[1].pinned), (None, true));
+        assert_eq!(list[0].name.as_deref(), Some("cached"));
+        // Work in it is: it moves to the top.
+        a.message(&Message::user("again"));
+        assert_eq!(SessionStore::list(dir.path())[0].id, a.id());
 
         // A deleted session leaves the index.
         drop(b);
-        std::fs::remove_file(&list[1].path).unwrap();
+        std::fs::remove_file(&list[0].path).unwrap();
         assert_eq!(SessionStore::list(dir.path()).len(), 1);
         let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         assert_eq!(index["files"].as_object().unwrap().len(), 1);

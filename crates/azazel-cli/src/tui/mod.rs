@@ -9,6 +9,7 @@ mod overlay;
 mod pager;
 mod panels;
 mod quick;
+mod sessions;
 mod slash;
 mod team;
 pub(crate) mod view;
@@ -157,6 +158,8 @@ enum Internal {
     Command(CommandOutcome),
     /// A setting the settings menu saved that applies to the running UI at once.
     Setting { path: String, value: toml::Value },
+    /// A reply to a request made outside the conversation (`/consult`, `/handoff`, `/name`).
+    Side(sessions::SideEvent),
 }
 
 pub struct Tui {
@@ -347,6 +350,7 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         followed_tools: Vec::new(),
         quit: false,
     };
+    tui.seed_history();
     tui.welcome(resumed);
     for problem in [theme_problem, key_problem].into_iter().flatten() {
         tui.warn(&problem);
@@ -433,8 +437,12 @@ impl Tui {
         } else {
             model
         };
+        let name = match self.active.session.name() {
+            Some(name) => format!(" · {name}"),
+            None => String::new(),
+        };
         let heading = format!(
-            "azazel {} · {model} · {}",
+            "azazel {} · {model} · {}{name}",
             env!("CARGO_PKG_VERSION"),
             self.app.paths.cwd.display()
         );
@@ -449,6 +457,9 @@ impl Tui {
         }
         if resumed {
             self.recap();
+        }
+        if let Some(notice) = self.active.notice.take() {
+            self.warn(&notice);
         }
     }
 
@@ -927,6 +938,7 @@ impl Tui {
                 share,
             } => (command, output, status, share),
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
+            Internal::Side(event) => return self.on_side(event).await,
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1332,7 +1344,9 @@ impl Tui {
                 Some(private) => (private, false),
                 None => (command, true),
             };
-            return self.user_shell(command.trim().to_string(), share);
+            let command = command.trim().to_string();
+            self.remember(entered.trim());
+            return self.user_shell(command, share);
         }
         // `# note`: remembered for later sessions, and not a prompt.
         if let Some(note) = quick::memory_note(&entered) {
@@ -1356,6 +1370,7 @@ impl Tui {
             return self.queue_message(entered);
         }
         self.prompts.push(entered.clone());
+        self.remember(&entered);
         let lines = view::user_prompt(&shown, self.width(), &self.theme);
         self.say(lines);
         if self.busy {
@@ -1586,7 +1601,7 @@ impl Tui {
             }
             Action::Thinking => {
                 if let Some(level) = azazel_ai::ThinkingLevel::ALL.get(choice) {
-                    self.active.lead.send(AgentCmd::SetThinking(*level));
+                    self.set_thinking(*level);
                     self.info(&format!("thinking: {level}"));
                 }
             }
@@ -1602,11 +1617,10 @@ impl Tui {
             }
             Action::Resume(paths) => {
                 if let Some(path) = paths.get(choice) {
-                    self.swap_session(Open::File(path.clone()), StartSource::Resume)
-                        .await;
+                    self.resume_file(path.clone()).await;
                 }
             }
-            Action::Tree(rows) => {
+            Action::Tree(rows, _) => {
                 if let Some((id, is_user, prompt)) = rows.get(choice) {
                     self.jump_to(id, *is_user, prompt).await;
                 }
@@ -1680,6 +1694,13 @@ impl Tui {
             | Action::Permissions(_)
             | Action::PermissionAdd
             | Action::PermissionScope(..)) => self.finish_panel(action, choice, typed).await,
+            action @ (Action::Sessions { .. }
+            | Action::SessionRename(..)
+            | Action::SessionDelete(..)
+            | Action::ConsultQuestion(_)
+            | Action::Side(_)
+            | Action::SideAnswer { .. }
+            | Action::TreeLabel { .. }) => self.finish_session_overlay(action, choice, typed).await,
         }
     }
 
@@ -1703,6 +1724,9 @@ impl Tui {
                     self.recap();
                 } else {
                     self.info("started a new session");
+                }
+                if let Some(notice) = self.active.notice.take() {
+                    self.warn(&notice);
                 }
             }
             Err(e) => {

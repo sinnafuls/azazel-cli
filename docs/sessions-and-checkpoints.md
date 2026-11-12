@@ -13,6 +13,7 @@ Everything about a project is kept outside the project, under the azazel home (`
 ~/.azazel/projects/<slug>/
   sessions/<utc-timestamp>_<session-id>.jsonl       one file per session
   sessions/<session-id>/agents/<agent-id>.jsonl     transcripts of that session's sub-agents
+  history.jsonl                                     what you typed, across sessions
   artifacts/                                        tool output too large for the context
   shadow.git/                                       the checkpoint store
 ```
@@ -35,14 +36,18 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | Entry type | Records |
 |---|---|
 | `message` | A user, assistant or tool message |
-| `model_change` | A model chosen with `/model` or the model picker |
+| `model_change` | A model chosen with `/model`, the model picker or `--model` |
+| `thinking_change` | A thinking level chosen with `/thinking`, the thinking key or `--thinking` |
 | `mode_change` | A change of permission mode |
 | `context_edit` | An old tool result replaced by a short note (see compaction) |
 | `compaction` | A summary standing in for older history |
 | `checkpoint` | The snapshot taken before a prompt |
 | `agent` | A sub-agent that finished, with the path of its transcript |
 | `goal` | The state of a [goal](goals.md) |
-| `label`, `session_info`, `custom` | A label on an entry, a session name, extension data |
+| `label` | A label on an entry, given in `/tree`; an empty label takes it away |
+| `session_info` | The session's name; the newest one counts |
+| `pin` | Whether the session is pinned |
+| `custom` | Extension data |
 
 The entries form a tree. Going back and continuing from an earlier point adds a new branch; nothing is rewritten
 or deleted, so every branch stays in the file. A line that cannot be parsed is skipped with a warning in the log
@@ -68,36 +73,101 @@ azazel -c -p "now add tests"    # all of them work with print mode too
 | `--no-session` | Writes the transcript to a temporary directory that is deleted when azazel exits, and turns checkpoints off |
 
 The session id is the part of the file name after the underscore; `/export` without a path also puts it in the
-name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages. The
-model and permission mode come from the current flags and [configuration](configuration.md), not from the
-session.
+name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages.
+
+### Model and thinking level
+
+A session that is opened again comes back on the model chain and the thinking level it last switched to. This
+holds for `-c`, `--session`, `--fork` and `/resume`, in the UI, in print mode and over RPC.
+
+- What counts is the newest `model_change` and `thinking_change` entry on the branch the session ends on. `/model`,
+  the model keys, `/thinking` and the thinking key write them, and so do `--model` and `--thinking` at launch.
+- A session that never switched starts on what the run is on: the `lead` role at launch, the model you are
+  using when you `/resume` it.
+- `--model` and `--thinking` on the command line win over what the session last used.
+- A chain that can no longer be used (the model or its login is gone) gives way to the run's own model, with the
+  notice `this session last used <chain>, which cannot be used now; it goes on with <chain>`.
+- `[session] restore_model = false` turns all of this off.
+- Moving within the open session (`/tree`, `/rewind`, `/retry`, `/fork`) keeps the model you are on.
+
+The permission mode comes from the current flags and [configuration](configuration.md), not from the session.
 
 ## Names
 
-A session gets a name in one of three ways:
+A session gets a name in one of these ways:
 
 - `--name <NAME>` on the command line.
+- `/name <text>` in the UI. `/name` alone asks the `smol` role for a title and replaces the name with it.
+- `Ctrl+R` on a session in the `/resume` picker.
 - Automatically: after the lead's first reply in a session that has no name, the `smol` role is asked for a title
   of at most six words, from the first prompt and the first reply. It has 10 seconds and no tools. Turn this off
   with `[session] auto_name = false`.
 - A name given by hand is never replaced by the automatic one.
 
-Names are stored as `session_info` entries and show in session lists and exports.
+Names are stored as `session_info` entries and show in the welcome line, `/session`, session lists and exports.
 
 ## Session commands
 
-All of these need the agent to be idle (press `Esc` first), except `/compact` and `/export`.
+`/new`, `/resume`, `/tree`, `/fork`, `/retry` and `/handoff` need the agent to be idle (press `Esc` first).
 
 | Command | What it does |
 |---|---|
 | `/new` | Starts a new session and keeps the current model |
-| `/resume` | Lists the project's other sessions by first prompt, time and message count; type to filter, `Enter` opens one |
-| `/tree` | Lists every prompt and reply of this session, newest first; `•` marks the current branch. Choosing one of your prompts goes back to before it and puts its text in the input; choosing a reply continues from it |
+| `/resume` | Lists the project's sessions, pinned ones first, then by last use; type to filter, `Enter` opens one. See [the session picker](#the-session-picker) |
+| `/name [text]` | Names the session; without text, has a name suggested |
+| `/session` | Shows the session's file, id, name, when it was created and last used, messages by who wrote them, branch points, tokens and cost of the lead, of sub-agents and of requests on the side, the model chain, checkpoints and the agents that ran |
+| `/search <text>` | Lists the lines of this project's sessions that contain the text (case-insensitive), each with its session and date; `Enter` resumes that session |
+| `/tree` | Lists every prompt and reply of this session, newest first; `•` marks the current branch. Choosing one of your prompts goes back to before it and puts its text in the input; choosing a reply continues from it. See [labels and filters](#labels-and-filters-in-tree) |
 | `/fork` | Copies the current branch into a new session file and switches to it. The original is unchanged |
+| `/retry` (`F5`) | Goes back to before your last prompt and sends it again, with its images; `@` mentions are read again. It is checkpointed and hooked like any prompt. The first attempt stays in the session as another branch, which `/tree` shows |
+| `/handoff [what matters]` | Has the current model write a brief of this session (goal, state, decisions, files touched, next steps, open questions), then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown |
+| `/consult [question]` | Pick a saved session and ask it a question. The answer comes from that session's conversation in a single request, shows in a panel (`Enter` on a row closes it, copies it or opens it full screen) and is stored in neither session |
 | `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |
 | `/compact [what to keep]` | Summarises the conversation now; the optional text is passed to the summariser as extra instructions |
 
 `/tree` moves within the conversation only; files on disk are not changed. Use `/rewind` to move files as well.
+
+`/handoff` and `/consult` are requests outside the conversation: the model gets the lead's system prompt and the
+conversation, may not use tools, and its reply is not added to any session. What they cost is counted in the
+run's spend and listed by `/session`. `Esc` stops one while its reply arrives.
+
+### The session picker
+
+`/resume` and `/consult` list sessions with their name (or first prompt), whether they are pinned or open, when
+they were last used and how many messages they hold. Keys act on the selected row:
+
+| Key | Does |
+|---|---|
+| `Enter` | Opens the session (`/resume`) or asks it (`/consult`) |
+| `Ctrl+R` | Renames it |
+| `Ctrl+D` | Deletes its file and its sub-agents' transcripts, after asking. The open session cannot be deleted |
+| `Ctrl+P` | Pins or unpins it. Pinned sessions are listed first and are never pruned |
+| `Ctrl+N` | Shows named sessions only, or all again |
+| `Tab` | Shows its last six messages above the list |
+
+Naming, pinning or labelling a session is not use: it does not move the session up the list and does not save it
+from `sessions prune`.
+
+### Labels and filters in `/tree`
+
+| Key | Does |
+|---|---|
+| `Alt+L` | Labels the selected entry; the label shows beside it. An empty label takes it away |
+| `Ctrl+L` | Lists labelled entries only, or all again |
+| `Ctrl+U` | Lists your prompts only, or all again |
+
+The tree filters as you type, so its keys are chords.
+
+### Prompt history
+
+What you send in the UI (prompts and `!` shell lines, with the `!`) is added to `history.jsonl` in the project's
+data directory, one `{"ts", "session", "text"}` object per line. It is cut back to its newest 5,000 lines when it
+passes 6,000.
+
+- `Up` and `Down` in the input step through the newest 1,000 entries, across sessions.
+- `Ctrl+R` lists the project's history newest first, each prompt once, with the name of the session it was sent
+  in; type to filter, `Enter` puts the prompt in the input.
+- A `--no-session` run adds nothing to it.
 
 ## From the shell
 

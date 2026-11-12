@@ -1,6 +1,5 @@
 //! Slash commands and the pickers that go with them.
 
-use std::collections::HashSet;
 use std::io::Write;
 use std::sync::Arc;
 
@@ -8,7 +7,7 @@ use azazel_agent::{AgentCmd, ToolSource, UserInput};
 use azazel_ai::providers::presets;
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::skills::invocation_text;
-use azazel_core::{EntryKind, PermissionMode, SessionStore, StartSource};
+use azazel_core::{EntryKind, PermissionMode, StartSource};
 use azazel_tui::SelectItem;
 use azazel_tui::components::format_tokens;
 
@@ -26,9 +25,39 @@ const BUILTIN: &[(&str, &str)] = &[
     ("thinking", "Pick the thinking level, or set it: /thinking high"),
     ("mode", "Pick the permission mode, or set it: /mode auto"),
     ("new", "Start a new session"),
-    ("resume", "Reopen an earlier session of this project"),
-    ("tree", "Go back to an earlier point of this session"),
+    (
+        "resume",
+        "Reopen an earlier session of this project; its keys rename, delete, pin and preview",
+    ),
+    (
+        "name",
+        "Name this session: /name <text>, or /name alone to have one suggested",
+    ),
+    (
+        "session",
+        "What this session is: file, messages, tokens, cost, agents",
+    ),
+    (
+        "search",
+        "Find sessions of this project by what was said in them: /search <text>",
+    ),
+    (
+        "tree",
+        "Go back to an earlier point of this session; alt+l labels an entry",
+    ),
     ("fork", "Continue from here in a copy of this session"),
+    (
+        "retry",
+        "Send your last prompt again; the first attempt stays as a branch",
+    ),
+    (
+        "handoff",
+        "Continue in a new session that starts from a brief of this one: /handoff [what matters]",
+    ),
+    (
+        "consult",
+        "Ask a saved session a question without resuming it: /consult [question]",
+    ),
     (
         "compact",
         "Summarise the conversation so far: /compact [what to keep]",
@@ -159,7 +188,7 @@ impl Tui {
             }
             "thinking" => match args.parse::<ThinkingLevel>() {
                 Ok(level) => {
-                    self.active.lead.send(AgentCmd::SetThinking(level));
+                    self.set_thinking(level);
                     self.info(&format!("thinking: {level}"));
                 }
                 Err(e) => self.fail(&e.to_string()),
@@ -188,8 +217,14 @@ impl Tui {
                 }
             }
             "resume" => self.open_resume(),
+            "name" => self.name_command(args),
+            "session" => self.show_session().await,
+            "search" => self.search_command(args),
             "tree" => self.open_tree(),
             "fork" => self.fork().await,
+            "retry" => self.retry().await,
+            "handoff" => self.handoff(args),
+            "consult" => self.open_consult(args),
             "compact" => {
                 let instructions = (!args.is_empty()).then(|| args.to_string());
                 self.active.lead.send(AgentCmd::Compact { instructions });
@@ -308,7 +343,7 @@ impl Tui {
     }
 
     /// Whether the lead is idle; says what cannot be done otherwise.
-    fn idle_to(&mut self, what: &str) -> bool {
+    pub(super) fn idle_to(&mut self, what: &str) -> bool {
         if self.busy {
             self.fail(&format!("the agent is working; press esc first to {what}"));
         }
@@ -365,38 +400,6 @@ impl Tui {
             Overlay::select("Model", body, items, true, Action::Model(specs))
                 .with_keys(super::panels::model_keys()),
         );
-    }
-
-    pub(super) fn open_history(&mut self) {
-        let mut prompts: Vec<String> = self.prompts.iter().rev().cloned().collect();
-        for entry in self.active.session.branch(None).iter().rev() {
-            let EntryKind::Message { message } = &entry.kind else {
-                continue;
-            };
-            let prompt = message.text();
-            if message.role == MessageRole::User
-                && !prompt.trim().is_empty()
-                && !is_note(&prompt)
-                && !prompts.contains(&prompt)
-            {
-                prompts.push(prompt);
-            }
-        }
-        if prompts.is_empty() {
-            self.notice = Some("no earlier prompts".to_string());
-            return;
-        }
-        let items = prompts
-            .iter()
-            .map(|prompt| SelectItem::new(first_line(prompt), ""))
-            .collect();
-        self.overlay = Some(Overlay::select(
-            "Prompt history",
-            Vec::new(),
-            items,
-            true,
-            Action::History(prompts),
-        ));
     }
 
     /// Servers to pick from; choosing one offers what can be done with it.
@@ -459,82 +462,6 @@ impl Tui {
             items,
             false,
             Action::Theme(names),
-        ));
-    }
-
-    fn open_resume(&mut self) {
-        if !self.idle_to("switch sessions") {
-            return;
-        }
-        let current = self.active.session.path();
-        let sessions: Vec<_> = SessionStore::list(&self.app.paths.sessions_dir())
-            .into_iter()
-            .filter(|session| session.path != current)
-            .collect();
-        if sessions.is_empty() {
-            return self.info("this project has no other sessions");
-        }
-        let items = sessions
-            .iter()
-            .map(|session| {
-                let label = session
-                    .name
-                    .as_deref()
-                    .or(session.first_prompt.as_deref())
-                    .unwrap_or("(no prompt yet)");
-                let detail = format!("{} · {} messages", session.timestamp, session.messages);
-                SelectItem::new(first_line(label), detail)
-            })
-            .collect();
-        let paths = sessions.into_iter().map(|session| session.path).collect();
-        self.overlay = Some(Overlay::select(
-            "Resume a session",
-            Vec::new(),
-            items,
-            true,
-            Action::Resume(paths),
-        ));
-    }
-
-    fn open_tree(&mut self) {
-        if !self.idle_to("move within the session") {
-            return;
-        }
-        let session = &self.active.session;
-        let current: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
-        let mut rows = Vec::new();
-        let mut items = Vec::new();
-        for entry in session.entries().into_iter().rev() {
-            let EntryKind::Message { message } = entry.kind else {
-                continue;
-            };
-            let said = message.text();
-            if message.role == MessageRole::Tool || said.trim().is_empty() {
-                continue;
-            }
-            let is_user = message.role == MessageRole::User;
-            let marker = if current.contains(&entry.id) { "•" } else { " " };
-            let who = if is_user { "you" } else { "agent" };
-            items.push(SelectItem::new(
-                format!("{marker} {who}: {}", first_line(&said)),
-                "",
-            ));
-            rows.push((entry.id, is_user, said));
-        }
-        if rows.is_empty() {
-            return self.info("this session has no messages yet");
-        }
-        let body = vec![
-            "• marks the current branch. Choosing one of your prompts goes back to before it and puts it in the \
-             editor; choosing a reply continues from it."
-                .to_string(),
-        ];
-        self.overlay = Some(Overlay::select(
-            "Session tree",
-            body,
-            items,
-            true,
-            Action::Tree(rows),
         ));
     }
 

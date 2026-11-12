@@ -47,6 +47,43 @@ impl Sandbox {
             .unwrap()
     }
 
+    /// The thinking level of each request the scripted provider received.
+    fn thinking_asked(&self) -> Vec<String> {
+        std::fs::read_to_string(self.dir.path().join("requests.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["request"]["thinking"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    /// Runs `azazel rpc` with `commands` on standard input and returns the lines it wrote.
+    fn rpc(&self, script: &Value, args: &[&str], commands: &[Value]) -> Vec<Value> {
+        let script_path = self.dir.path().join("script.json");
+        std::fs::write(&script_path, script.to_string()).unwrap();
+        let input: String = commands.iter().map(|command| format!("{command}\n")).collect();
+        let output = Command::cargo_bin("azazel")
+            .unwrap()
+            .env("AZAZEL_HOME", self.dir.path().join("home"))
+            .env("AZAZEL_MOCK_SCRIPT", &script_path)
+            .arg("--cwd")
+            .arg(self.project())
+            .args(args)
+            .arg("rpc")
+            .write_stdin(input)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        stdout(&output)
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
     fn models_asked(&self) -> Vec<String> {
         std::fs::read_to_string(self.dir.path().join("requests.jsonl"))
             .unwrap_or_default()
@@ -123,6 +160,84 @@ fn a_new_session_is_named_after_its_first_reply_unless_named_by_hand() {
         .collect();
     assert_eq!(names.len(), 1);
     assert_eq!(names[0]["name"], "mine");
+}
+
+#[test]
+fn a_reopened_session_comes_back_on_its_model_and_thinking_level() {
+    let sandbox = Sandbox::new();
+    let reply = |text: &str| json!({ "reply": { "text": text } });
+    // Every run reads the script from its start: one reply per model is enough.
+    let script = json!({
+        "lead": [reply("from the lead")],
+        "other": [reply("from the other")],
+    });
+    let quiet = ["--no-memory", "--set", "session.auto_name=false"];
+    let run = |args: &[&str]| {
+        let args: Vec<&str> = quiet.iter().chain(args).copied().collect();
+        let output = sandbox.azazel(&script, &args);
+        assert!(output.status.success(), "{}", stderr(&output));
+        (stdout(&output).trim().to_string(), stderr(&output))
+    };
+
+    // The model and thinking level chosen at launch are written into the session.
+    let (said, _) = run(&["--model", "mock/other", "--thinking", "high", "-p", "start"]);
+    assert_eq!(said, "from the other");
+    let file = sandbox.session_file();
+    let kinds: Vec<String> = entries(&file)[1..]
+        .iter()
+        .map(|e| e["type"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(kinds[..2], ["model_change", "thinking_change"], "{kinds:?}");
+
+    // Continued without flags, it is on both again.
+    let (said, _) = run(&["-c", "-p", "go on"]);
+    assert_eq!(said, "from the other");
+    assert_eq!(
+        (sandbox.models_asked(), sandbox.thinking_asked()),
+        (vec!["other".to_string()], vec!["high".to_string()])
+    );
+    // Nothing changed, so nothing was written again.
+    let changes = |file: &PathBuf| {
+        entries(file)
+            .iter()
+            .filter(|e| e["type"] == "model_change" || e["type"] == "thinking_change")
+            .count()
+    };
+    assert_eq!(changes(&file), 2);
+
+    // RPC reports the restored state before any prompt.
+    let lines = sandbox.rpc(&script, &["-c"], &[json!({ "id": 1, "type": "get_state" })]);
+    let state = lines
+        .iter()
+        .find(|line| line["type"] == "response" && line["id"] == 1)
+        .unwrap();
+    assert_eq!(state["data"]["thinking"], "high", "{state}");
+
+    // A flag wins over what the session last used, and `restore_model = false` switches it off.
+    let (said, _) = run(&["-c", "--thinking", "low", "-p", "quick one"]);
+    assert_eq!(said, "from the other");
+    assert_eq!(sandbox.thinking_asked(), ["low"]);
+    let (said, _) = run(&["-c", "--set", "session.restore_model=false", "-p", "plain"]);
+    assert_eq!(said, "from the lead");
+    assert_eq!(sandbox.thinking_asked(), ["off"]);
+
+    // A model that is gone gives way to the default one, and says so.
+    let last = entries(&file).last().unwrap()["id"].as_str().unwrap().to_string();
+    let gone = json!({
+        "id": "feedbeef", "parentId": last, "timestamp": "2026-11-12T10:00:00Z",
+        "type": "model_change", "chain": ["@retired"],
+    });
+    let mut text = std::fs::read_to_string(&file).unwrap();
+    text.push_str(&format!("{gone}\n"));
+    std::fs::write(&file, text).unwrap();
+    let (said, warned) = run(&["-c", "-p", "still there?"]);
+    assert_eq!(said, "from the lead");
+    assert!(
+        warned.contains("last used @retired, which cannot be used now"),
+        "{warned}"
+    );
+    // The thinking level it last switched to still applies.
+    assert_eq!(sandbox.thinking_asked(), ["low"]);
 }
 
 #[test]

@@ -6,6 +6,7 @@ pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
+pub mod history;
 pub mod hooks;
 pub mod init;
 pub mod login;
@@ -292,6 +293,12 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             trigger: "trust".to_string(),
         };
         app.registry.bus.emit(&mut setup).await;
+    }
+    app.record_flags(&active.session);
+    if cli.print
+        && let Some(notice) = &active.notice
+    {
+        eprintln!("azazel: {notice}");
     }
     if let Some(name) = cli.name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         active.session.append(azazel_core::EntryKind::SessionInfo {
