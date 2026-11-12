@@ -644,7 +644,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-ai",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-ai"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -687,7 +687,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-browser"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-cli"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-lua"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -809,7 +809,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-mcp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-media"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-memory"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -882,7 +882,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-team"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-tools"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-tui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "crossterm",
  "nucleo-matcher",
@@ -1543,7 +1543,7 @@ dependencies = [
 
 [[package]]
 name = "custom-distro"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -1896,7 +1896,7 @@ checksum = "0b5343afd4a8365a643ac588dab4cf234a190c7f6c88c9f6dd6ffe00837661b7"
 
 [[package]]
 name = "fake-lsp"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
@@ -3189,7 +3189,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-echo"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "rmcp",
  "serde_json",
@@ -6368,7 +6368,7 @@ checksum = "66fee0b777b0f5ac1c69bb06d361268faafa61cd4682ae064a171c16c433e9e4"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "azazel-ai",
