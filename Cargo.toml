@@ -5,6 +5,7 @@ members = [
     "xtask",
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
+    "tests/fixtures/fake-audio",
     "examples/custom-distro",
 ]
 
@@ -131,6 +132,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 arboard = "3.7"
 pdf-extract = "0.12"
 xcap = "0.9"
+cpal = "0.18"
 enigo = "0.6"
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",

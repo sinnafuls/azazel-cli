@@ -164,6 +164,11 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[media.models]` | `image`, `video`, `model3d`, `audio` | `""` | Model per kind, as `<backend>:<model id>` |
 | `[lsp.servers.<name>]` | `command`, `extensions` | required | Language server program and the file extensions it handles; see [LSP](lsp.md) |
 | | `args` | `[]` | Arguments |
+| `[voice]` | `stt`, `tts` | `""` | Speech-to-text and text-to-speech model, as `<provider>/<model>`; see [voice](voice.md) |
+| | `voice`, `language` | `""` | Voice name for speech; language code of what is dictated |
+| | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
+| | `auto_send` | `false` | Send a transcript as a prompt at once |
+| | `max_secs` | `120` | Longest recording, in seconds |
 | `[tui]` | `theme` | `"dark"` | `dark`, `light` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
 | | `favourites` | `[]` | Models `Alt+M` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
@@ -186,7 +191,7 @@ back. A project needs a trust decision when it has any of:
 - a project skill with `hooks` in its frontmatter
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
-`tools.shell`, `browser.path`, `editor.command`.
+`tools.shell`, `browser.path`, `editor.command`, `voice.record_command`, `voice.stt_command`, `voice.play_command`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it

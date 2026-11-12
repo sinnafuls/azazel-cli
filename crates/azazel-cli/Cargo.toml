@@ -28,6 +28,7 @@ default = [
     "pdf",
     "bedrock",
     "vertex",
+    "voice",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -39,6 +40,7 @@ lsp = ["azazel-tools/lsp"]
 pdf = ["azazel-tools/pdf"]
 bedrock = ["azazel-ai/bedrock"]
 vertex = ["azazel-ai/vertex"]
+voice = ["dep:cpal", "reqwest/multipart"]
 test-support = ["azazel-ai/test-support"]
 
 [dependencies]
@@ -78,6 +80,11 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 which.workspace = true
+
+# Linux records and plays through external programs: linking its audio library would stop the
+# binary from starting on machines without it.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+cpal = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd.workspace = true

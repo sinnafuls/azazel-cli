@@ -375,6 +375,10 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         )),
         None => report.ok("memory: on, word search only (no [embeddings] configured)"),
     }
+    #[cfg(feature = "voice")]
+    report
+        .findings
+        .extend(crate::voice::findings(&config, &credentials));
     report
 }
 

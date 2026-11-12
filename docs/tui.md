@@ -52,7 +52,8 @@ height (at least 5 rows) and scrolls beyond that; the rules then say how much is
 
 While the agent is working, the rule above the input carries the working indicator: a spinner, `working` /
 `thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. With [Vim keys](#vim-keys) on, the same
-rule shows `-- NORMAL --` in normal mode.
+rule shows `-- NORMAL --` in normal mode. While you dictate it shows `● rec`, the time and a level meter, then
+`transcribing`; see [voice](voice.md).
 
 The colour of the rules tells you what `Enter` will do:
 
@@ -129,6 +130,7 @@ When the terminal is too narrow for both sides, the model is shortened first, th
 | `F2` | `transcript` | Open the [transcript viewer](#transcript-viewer) |
 | `F5` | `retry` | Same as `/retry` |
 | `Ctrl+B` | `background` | While a `shell` command of the agent runs: move it to the background |
+| `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |
 
 `Esc` interrupts the lead only; stop sub-agents from the agent hub or with `/stop`. In the agent hub, `Enter`
 follows the selected agent's work in the transcript, `m` messages it, `s` stops it and `S` stops all.
@@ -317,6 +319,8 @@ Skills, extensions and services:
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |
 | `/lsp` | Language servers and their state; see [LSP](lsp.md) |
+| `/voice` | Start recording, or stop and put the transcript in the input; see [voice](voice.md) |
+| `/speak on\|off\|stop` | Read replies aloud, stop doing so, or stop the one being read |
 
 Custom commands from `commands/` directories and commands registered by extensions appear in `/help` and in
 completion as well. `/memory` is absent when memory is disabled in the configuration.

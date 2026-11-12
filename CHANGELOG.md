@@ -77,6 +77,12 @@ GitHub are its section here.
 - Format on write: `[tools] format_on_write = true` runs the file's formatter after `write` and `edit`;
   `[tools.format]` sets commands per extension.
 - Quick-add memory: a one-line input starting with `# ` is saved as a project preference.
+- Voice input: `Ctrl+Space` or `/voice` records from the microphone, a second press transcribes and puts the
+  words in the input, `Esc` cancels; the input rule shows the recording time and a level meter.
+- Spoken replies: `/speak on|off|stop` reads the final reply of each run aloud; `Esc` or typing stops it.
+- `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
+  `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
+  configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
 
 ### Changed
 

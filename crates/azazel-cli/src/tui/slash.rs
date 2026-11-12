@@ -99,6 +99,13 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
+    #[cfg(feature = "voice")]
+    (
+        "voice",
+        "Dictate: start recording, or stop and put the words in the input",
+    ),
+    #[cfg(feature = "voice")]
+    ("speak", "Read replies aloud: /speak on|off|stop"),
     ("quit", "Exit"),
 ];
 
@@ -257,6 +264,8 @@ impl Tui {
                 let report = doctor::examine(&self.app.paths, self.app.trusted).await;
                 self.info(&report.render());
             }
+            "voice" => self.voice_toggle().await,
+            "speak" => self.speak_command(args),
             "quit" | "exit" => self.quit = true,
             #[cfg(feature = "mcp")]
             "mcp" if args.is_empty() => self.open_mcp(),
