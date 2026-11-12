@@ -745,3 +745,94 @@ async fn the_project_index_follows_the_files() {
     assert!(!store.remove_collection("handbook").await.unwrap());
     assert_eq!(store.collections().await.unwrap(), [("code".to_string(), 2, 2)]);
 }
+
+/// Reads `memory://<rest>` the way the `read` tool would.
+async fn address(registry: &Registry, rest: &str) -> Result<String, String> {
+    let ctx = registry.bus.ctx();
+    let agent = lead(&ctx.session_id);
+    let ctx = ToolCtx {
+        agent_id: agent.id.clone(),
+        session_id: agent.session_id.clone(),
+        agent,
+        call_id: "call".into(),
+        cwd: ctx.cwd,
+        cancel: CancellationToken::new(),
+        update: UpdateSink::default(),
+        services: ctx.services,
+    };
+    let blocks = registry.schemes.get("memory").unwrap().read(rest, &ctx).await?;
+    Ok(blocks
+        .iter()
+        .filter_map(|block| match block {
+            azazel_ai::Block::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect())
+}
+
+#[tokio::test]
+async fn memory_addresses_list_what_is_remembered_show_one_memory_and_search() {
+    let home = home();
+    let ext = open(&home, &quiet());
+    let registry = registry(&home, &ext, "s1");
+    assert_eq!(address(&registry, "").await.unwrap(), "nothing is remembered yet");
+
+    let store = ext.store();
+    let style = ["style".to_string()];
+    let tabs = store
+        .save(
+            "Indent with tabs, never spaces",
+            "convention",
+            &style,
+            Scope::Project,
+            None,
+        )
+        .await
+        .unwrap();
+    let terse = store
+        .save(
+            "The user prefers short answers",
+            "preference",
+            &[],
+            Scope::Global,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        address(&registry, "").await.unwrap(),
+        format!(
+            "{tabs} [convention, project] Indent with tabs, never spaces #style\n\
+             {terse} [preference, global] The user prefers short answers"
+        )
+    );
+
+    let one = address(&registry, &tabs).await.unwrap();
+    assert!(
+        one.starts_with(&format!("id: {tabs}\nkind: convention\nscope: project\nsaved: ")),
+        "{one}"
+    );
+    assert!(one.ends_with("\ntags: style\n\nIndent with tabs, never spaces"), "{one}");
+
+    // The query may be written as in a URL.
+    for query in ["search/short answers", "search/short%20answers", "search/short+answers/"] {
+        assert_eq!(
+            address(&registry, query).await.unwrap(),
+            format!("{terse} [preference, global] The user prefers short answers"),
+            "{query}"
+        );
+    }
+    assert_eq!(
+        address(&registry, "search/zebra").await.unwrap(),
+        "no memory matches `zebra`"
+    );
+    assert_eq!(
+        address(&registry, "search/").await.unwrap_err(),
+        "memory://search/: give the words to search for after the slash"
+    );
+    assert_eq!(
+        address(&registry, "nope").await.unwrap_err(),
+        "no memory has the id `nope`; memory:// lists them, memory://search/<query> searches"
+    );
+}

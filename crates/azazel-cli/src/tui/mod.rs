@@ -4,6 +4,7 @@
 
 mod bridge;
 mod overlay;
+mod quick;
 mod slash;
 mod team;
 mod view;
@@ -1162,6 +1163,17 @@ impl Tui {
         if let Some(command) = trimmed.strip_prefix('!') {
             let command = command.trim().to_string();
             return self.user_shell(command);
+        }
+        // `# note`: remembered for later sessions, and not a prompt.
+        if let Some(note) = quick::memory_note(&entered) {
+            let lines = view::user_prompt(trimmed, self.width(), &self.theme);
+            self.say(lines);
+            let (services, note) = (self.app.registry.services.clone(), note.to_string());
+            let done = self.internal_tx.clone();
+            tokio::spawn(async move {
+                let _ = done.send(Internal::Command(quick::remember(&services, &note).await));
+            });
+            return;
         }
         // Nothing can answer yet: keep what was typed and set a model up first.
         if !self.busy && !self.app.has_model(&self.active.lead.status().chain) {

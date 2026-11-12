@@ -288,7 +288,10 @@ impl Scheme for MemoryScheme {
             } else {
                 rows.iter().map(describe).collect::<Vec<_>>().join("\n")
             }
-        } else if let Some(query) = rest.strip_prefix("search/") {
+        } else if let Some(query) = rest
+            .strip_prefix("search/")
+            .or_else(|| (rest == "search").then_some(""))
+        {
             let query = unescaped(query);
             if query.trim().is_empty() {
                 return Err("memory://search/: give the words to search for after the slash".to_string());

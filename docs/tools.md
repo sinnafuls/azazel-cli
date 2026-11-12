@@ -1,6 +1,6 @@
 # Tools
 
-Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the freshness rule for edits, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
+Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the freshness rule for edits, format on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
 
 Every call goes through the permission engine first; see [permissions](permissions.md). Each tool declares what a call touches (`read`, `write`, `exec` or `net`), and the permission mode decides from that whether you are asked. When all the calls in one assistant message are read-only they run at the same time; otherwise they run one after another in order.
 
@@ -10,7 +10,7 @@ Fields marked `?` are optional.
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?` | Reads a text file, an image, a directory or a `scheme://` address |
+| `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, a directory or a `scheme://` address |
 | `write` | `path`, `content` | Creates a file or replaces its whole content. Parent directories are created |
 | `edit` | `path`, `edits: [{old, new, replace_all?}]` | Exact text replacement in an existing file |
 
@@ -19,12 +19,42 @@ Fields marked `?` are optional.
 - Text comes back as `<line number><tab><text>`. Default 2000 lines per call; `offset` (1-based line) and `limit` page through longer files. Lines are cut at 2000 characters and one call returns at most about 256 KB. A partial read ends with `[lines 1-2000 of 5120; continue with offset=2001]`.
 - Files over 64 MB are refused. Other binary files return an error with their size and type.
 - PNG, JPEG, WebP and GIF files are returned as images, scaled down when their long side exceeds 1568 px.
+- A PDF comes back as its text, each page under a `--- page N ---` line. One call returns at most 20 pages; `pages` picks them (`"3"` or `"2-6"`), and a partial read ends with `[pages 1-20 of 57; continue with pages="21-40"]`. A PDF without a text layer returns `this PDF has no extractable text (it is probably scanned)`. A PDF cannot be edited, so reading one does not count as having read it for `write`.
+- A notebook (`.ipynb`) comes back cell by cell: `# cell 4 [code]`, the cell's source, then `--- output ---` and its text outputs, each cut at 2000 characters. An image output is named in a line such as `[image output: cell 4 image 1, image/png, 5120 bytes]`, and the first image of the cells shown is attached to the result (a model without vision gets a note in its place). `offset` and `limit` count cells; a partial read ends with `[cells 1-12 of 40; continue with offset=13]`.
 - A directory lists up to 500 entries: `name/` for directories, `name<tab>N bytes` for files.
 - `~/` is expanded. Relative paths start at the agent's working directory.
 
 Freshness rule for `write` and `edit`: an agent may only overwrite a file it has read (or written) and that has not changed since. Otherwise the call fails with `read the file before overwriting it` or `file changed since you last read it; read it again`. The check compares content, not timestamps. Files you attach with `@path` count as read. When one agent writes a file another agent has read, the other agent is told to read it again before editing.
 
 `edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md).
+
+### Format on write
+
+With `[tools] format_on_write = true`, a successful `write` or `edit` runs the formatter for the file's extension on the file. The result then ends with `; formatted with rustfmt`, the diff shown is of the formatted file, and the agent is taken to know the formatted content, so its next edit is not refused as stale. A formatter gets 5 seconds. One that fails, times out or is missing adds a one-line note such as `; rustfmt failed: ...` and never fails the edit.
+
+The formatter for an extension comes from `[tools.format]`:
+
+```toml
+[tools]
+format_on_write = true
+
+[tools.format]
+rs = "rustfmt --edition 2024"
+py = "black -q"
+sql = "sqlfluff fix {file}"
+```
+
+The command is run directly, without a shell. The file's path is appended, or put where `{file}` stands. Quote a program path that has spaces. For an extension with no entry, these defaults apply when the program is on `PATH`:
+
+| Extensions | Command |
+|---|---|
+| `rs` | `rustfmt`, with `--edition` from the nearest `Cargo.toml` that states one |
+| `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `json`, `css`, `scss`, `less`, `html`, `vue` | `prettier --write` |
+| `go` | `gofmt -w` |
+| `py`, `pyi` | `ruff format` |
+| `c`, `h`, `cc`, `cpp`, `cxx`, `hpp`, `hh` | `clang-format -i` |
+
+Both settings name programs to run, so a project's config can set them only when the project is trusted.
 
 ## Search
 
@@ -43,6 +73,35 @@ Both honour `.gitignore` and other ignore files, include hidden files and skip `
 | `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` |
 
 `shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for an agent can never push to a git remote; see [permissions](permissions.md).
+
+## Code execution
+
+| Tool | Input | Behaviour |
+|---|---|---|
+| `run_code` | `code` | Runs a Luau script that calls other tools, and returns what it printed and returned |
+
+`run_code` lets an agent do a job of several steps in one call: read a dozen files and return only the lines that matter, search and then filter, make the same edit in many places. Only the script's result reaches the model, not what the tools returned along the way.
+
+```lua
+local counts = {}
+for _, path in ipairs({ "src/lib.rs", "src/main.rs" }) do
+    local text = tools.read({ path = path })
+    local lines = 0
+    for _ in string.gmatch(text, "[^\n]+") do lines += 1 end
+    table.insert(counts, path .. ": " .. lines)
+end
+return table.concat(counts, "\n")
+```
+
+- `tools.<name>{ ... }` calls a tool with the arguments the agent would give it and returns the text of its result. A name that is not an identifier is written `tools["mcp__server__tool"]{ ... }`.
+- A call that fails or is refused raises an error whose message starts with the tool's name; `pcall` catches it.
+- Every call is made as the agent that runs the script and goes through the permission engine, the mode and the hooks like a call the agent makes itself. `run_code` counts as `read`; each call inside it is judged on its own, so a script cannot do what the agent could not.
+- `print(...)` output and the value the script returns are the result. A returned table comes back as JSON. `json.encode` and `json.decode` are available.
+- The script runs in a fresh sandboxed Luau VM: no file, process or network access except through `tools`.
+- Limits: 120 seconds of the script's own running time (waiting for a tool does not count), 50 tool calls, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
+- `run_code` itself, `task` and the other team tools cannot be called from a script.
+
+The tool's description lists the callable tools with their arguments, within about 3000 tokens; tools that do not fit are named, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
 
 ## Todo list, questions, plans
 
@@ -75,7 +134,7 @@ See [lsp](lsp.md).
 |---|---|---|
 | `skill` | `name`, `args?` | Loads a skill: returns its directory and its instructions with `$ARGUMENTS` filled in |
 
-See [skills and commands](skills-and-commands.md).
+A skill's `allowed-tools` limits the sub-agent of a `context: fork` skill to those tools, and for any other skill allows them without a prompt until the run ends. See [skills and commands](skills-and-commands.md).
 
 ## Memory
 
@@ -163,8 +222,20 @@ The agent reads the rest with `read artifact://<call id>`. The same directory ho
 | `agent://<id>/transcript` | What the agent did: one line per tool call and the full text of what it said |
 | `mcp://<server>/<resource uri>` | A resource of an MCP server |
 | `http://...`, `https://...` | The page as Markdown, through the `web_fetch` pipeline. Permission rules for `web_fetch` apply |
+| `session://` | The open session: id, file, name, when it was created, message counts, and up to 20 other sessions of the project |
+| `session://<id>` | Another session of the project (a unique start of its id is enough), in the same condensed form as `agent://<id>/transcript` |
+| `job://` | The background jobs, one per line |
+| `job://<id>` | A background job's output (its last 2000 lines) and state |
+| `memory://` | Every memory as `id [kind, scope] text #tags`. With memory on |
+| `memory://<id>` | One memory with its kind, scope, date and tags |
+| `memory://search/<query>` | The 20 best matches for a query |
+| `pr://`, `issue://` | The open pull requests or issues of the repository (`gh pr list`, `gh issue list`, 30 at most) |
+| `pr://<n>`, `issue://<n>` | One pull request or issue with its comments |
+| `pr://<n>/diff` | A pull request's diff |
 
-Extensions can add more schemes; see [extensions](extensions.md).
+`pr://` and `issue://` run the [`gh`](https://cli.github.com) program in the agent's working directory, with the account `gh` is signed in to, and exist only when `gh` is on `PATH` (`azazel doctor` says whether it is). They count as network access to `github.com`: in `ask` mode you are asked, and the rule `web_fetch(domain:github.com)` allows them.
+
+A scheme says what reading one of its addresses touches. Addresses that stay on this machine are plain reads. Extensions can add more schemes; see [extensions](extensions.md).
 
 ## `[tools]` configuration
 
@@ -174,6 +245,10 @@ disabled = ["web_search", "screen"]   # tool names no agent is offered
 max_result_bytes = 50000              # text kept from one tool result
 shell_timeout_secs = 120              # default timeout of the shell tool
 shell = ""                            # program name or path; empty means auto-resolve
+format_on_write = false               # run the file's formatter after write and edit
+
+[tools.format]                        # file extension to formatter command
+rs = "rustfmt --edition 2024"
 ```
 
 | Key | Default | Meaning |
@@ -182,6 +257,8 @@ shell = ""                            # program name or path; empty means auto-r
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
 | `shell` | `""` | Shell to use instead of the resolved one. In a project config this is honoured only when the project is trusted |
+| `format_on_write` | `false` | Runs the file's formatter after `write` and `edit`; see [format on write](#format-on-write). Project config: trusted projects only |
+| `format` | `{}` | Formatter command per file extension. Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
 
