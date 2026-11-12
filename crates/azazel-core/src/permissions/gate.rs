@@ -176,6 +176,7 @@ impl Gate for PermissionGate {
                 subjects: subject.subjects.clone(),
                 input: input.clone(),
                 rule: rule.clone(),
+                destructive: risk.is_some(),
                 note: risk
                     .map(|risk| format!("destructive: this command {risk}; it is asked about in every mode"))
                     .or_else(|| {

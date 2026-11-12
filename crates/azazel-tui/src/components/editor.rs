@@ -14,6 +14,10 @@ use crate::theme::{Role, Theme};
 
 const MAX_UNDO: usize = 200;
 const MAX_HISTORY: usize = 1000;
+/// Cuts the kill ring remembers.
+const MAX_KILLS: usize = 20;
+/// A paste with more characters than this is folded even when it has few lines.
+const FOLD_PASTE_CHARS: usize = 800;
 
 #[derive(Clone)]
 struct Snapshot {
@@ -28,6 +32,36 @@ enum Run {
     None,
     Typing,
     Deleting,
+}
+
+/// Where the last yank put its text and which entry of the kill ring it was, so that `alt+y` can
+/// swap in the one before.
+#[derive(Clone, Copy)]
+struct Yank {
+    start: usize,
+    end: usize,
+    index: usize,
+}
+
+/// A long paste shown as one token (`[paste #2 +41 lines]`) with the text it stands for.
+#[derive(Clone)]
+struct Paste {
+    token: String,
+    text: String,
+}
+
+/// What an editor held, taken out to be put back later (a stashed draft).
+#[derive(Clone, Default)]
+pub struct Draft {
+    text: String,
+    pastes: Vec<Paste>,
+}
+
+impl Draft {
+    /// The draft as it was shown, folded pastes as their tokens.
+    pub fn shown(&self) -> &str {
+        &self.text
+    }
 }
 
 /// The visible part of an editor's content, as returned by [`Editor::view`].
@@ -59,6 +93,14 @@ pub struct Editor {
     preferred_col: Option<usize>,
     /// First row shown by the last [`Editor::view`]; moved only as far as the cursor demands.
     scroll: Cell<usize>,
+    /// Text cut with the kill keys, newest last.
+    kills: Vec<String>,
+    /// Set while the last key was a yank.
+    yank: Option<Yank>,
+    /// Folded pastes whose tokens may be in the text.
+    pastes: Vec<Paste>,
+    /// Number of the last folded paste.
+    paste_seq: usize,
 }
 
 impl Editor {
@@ -66,8 +108,26 @@ impl Editor {
         Editor::default()
     }
 
+    /// The content as shown: a folded paste is its token.
     pub fn text(&self) -> &str {
         &self.text
+    }
+
+    /// The content with every folded paste written out.
+    pub fn expanded(&self) -> String {
+        let spans = self.token_spans();
+        if spans.is_empty() {
+            return self.text.clone();
+        }
+        let mut out = String::with_capacity(self.text.len());
+        let mut at = 0;
+        for (start, end, paste) in spans {
+            out.push_str(&self.text[at..start]);
+            out.push_str(&self.pastes[paste].text);
+            at = end;
+        }
+        out.push_str(&self.text[at..]);
+        out
     }
 
     pub fn is_empty(&self) -> bool {
@@ -97,23 +157,72 @@ impl Editor {
         self.cursor += text.len();
     }
 
+    /// Inserts pasted text. A paste of more than `fold_lines` lines, or of more than 800
+    /// characters, goes in as one token that stands for it; `fold_lines` of 0 never folds.
+    pub fn insert_paste(&mut self, text: &str, fold_lines: usize) {
+        let text = clean(text);
+        let lines = text.lines().count();
+        let chars = text.chars().count();
+        if fold_lines == 0 || (lines <= fold_lines && chars <= FOLD_PASTE_CHARS) {
+            return self.insert_str(&text);
+        }
+        self.paste_seq += 1;
+        let token = if lines > 1 {
+            format!("[paste #{} +{lines} lines]", self.paste_seq)
+        } else {
+            format!("[paste #{} +{chars} chars]", self.paste_seq)
+        };
+        self.pastes.push(Paste {
+            token: token.clone(),
+            text,
+        });
+        self.insert_str(&token);
+    }
+
     pub fn insert_newline(&mut self) {
         self.begin_edit(Run::None);
         self.text.insert(self.cursor, '\n');
         self.cursor += 1;
     }
 
-    /// Returns the content, records it in the prompt history and clears the editor.
+    /// Returns the content with folded pastes written out, records it in the prompt history and
+    /// clears the editor.
     pub fn take(&mut self) -> String {
-        let text = std::mem::take(&mut self.text);
+        let text = self.expanded();
         self.push_history(text.clone());
+        self.clear();
+        text
+    }
+
+    /// Takes the content out without recording it, folded pastes included, so that
+    /// [`Editor::restore_draft`] can put it back.
+    pub fn take_draft(&mut self) -> Draft {
+        let draft = Draft {
+            text: std::mem::take(&mut self.text),
+            pastes: std::mem::take(&mut self.pastes),
+        };
+        self.clear();
+        draft
+    }
+
+    /// Replaces the content with a draft taken earlier. Undo returns to the previous content.
+    pub fn restore_draft(&mut self, draft: Draft) {
+        self.begin_edit(Run::None);
+        self.pastes.extend(draft.pastes);
+        self.text = draft.text;
+        self.cursor = self.text.len();
+    }
+
+    fn clear(&mut self) {
+        self.text.clear();
+        self.pastes.clear();
         self.cursor = 0;
         self.undo.clear();
         self.redo.clear();
         self.run = Run::None;
         self.draft.clear();
         self.preferred_col = None;
-        text
+        self.yank = None;
     }
 
     /// Adds a prompt to the history reachable with the up key. Blank entries and immediate
@@ -164,6 +273,8 @@ impl Editor {
         if other {
             return false;
         }
+        // Only a yank directly before it gives `alt+y` something to replace.
+        let yanked = self.yank.take();
         match key.code {
             // Control together with alt is how AltGr characters arrive on Windows.
             KeyCode::Char(c) if ctrl == alt => {
@@ -173,7 +284,7 @@ impl Editor {
                 self.type_char(c);
             }
             KeyCode::Char(c) if ctrl => return self.control_key(c, mods.contains(KeyModifiers::SHIFT)),
-            KeyCode::Char(c) => return self.alt_key(c),
+            KeyCode::Char(c) => return self.alt_key(c, yanked),
             KeyCode::Backspace if ctrl || alt => self.delete_to(self.word_left(self.cursor), Run::None),
             KeyCode::Backspace => self.delete_to(self.prev_boundary(self.cursor), Run::Deleting),
             KeyCode::Delete if ctrl || alt => self.delete_to(self.word_right(self.cursor), Run::None),
@@ -282,8 +393,8 @@ impl Editor {
         match c.to_ascii_lowercase() {
             'a' => self.move_to(self.line_start(self.cursor)),
             'e' => self.move_to(self.line_end(self.cursor)),
-            'w' => self.delete_to(self.whitespace_word_start(self.cursor), Run::None),
-            'u' => self.delete_to(self.line_start(self.cursor), Run::None),
+            'w' => self.kill_to(self.whitespace_word_start(self.cursor)),
+            'u' => self.kill_to(self.line_start(self.cursor)),
             'k' => {
                 let end = self.line_end(self.cursor);
                 // At the end of a line, remove the line break instead.
@@ -292,24 +403,124 @@ impl Editor {
                 } else {
                     end
                 };
-                self.delete_to(end, Run::None);
+                self.kill_to(end);
             }
             'z' if shift => self.redo(),
             'z' => self.undo(),
-            'y' => self.redo(),
+            'y' => self.yank(),
             _ => return false,
         }
         true
     }
 
-    fn alt_key(&mut self, c: char) -> bool {
+    fn alt_key(&mut self, c: char, yanked: Option<Yank>) -> bool {
         match c.to_ascii_lowercase() {
             'b' => self.move_to(self.word_left(self.cursor)),
             'f' => self.move_to(self.word_right(self.cursor)),
-            'd' => self.delete_to(self.word_right(self.cursor), Run::None),
+            'd' => self.kill_to(self.word_right(self.cursor)),
+            'y' => self.yank_pop(yanked),
             _ => return false,
         }
         true
+    }
+
+    /// Deletes between the cursor and `target` and keeps what was cut on the kill ring.
+    fn kill_to(&mut self, target: usize) {
+        let (start, end) = self.span_to(target);
+        if start < end {
+            self.push_kill(self.text[start..end].to_string());
+            self.delete_to(target, Run::None);
+        }
+    }
+
+    /// Puts `text` on the kill ring as its newest entry.
+    pub(crate) fn push_kill(&mut self, text: String) {
+        if text.is_empty() {
+            return;
+        }
+        self.kills.push(text);
+        if self.kills.len() > MAX_KILLS {
+            self.kills.remove(0);
+        }
+    }
+
+    /// The newest entry of the kill ring.
+    pub(crate) fn newest_kill(&self) -> Option<&str> {
+        self.kills.last().map(String::as_str)
+    }
+
+    /// Inserts the newest kill at the cursor.
+    fn yank(&mut self) {
+        let Some(text) = self.kills.last().cloned() else {
+            return;
+        };
+        let start = self.cursor;
+        self.begin_edit(Run::None);
+        self.text.insert_str(start, &text);
+        self.cursor = start + text.len();
+        self.yank = Some(Yank {
+            start,
+            end: self.cursor,
+            index: self.kills.len() - 1,
+        });
+    }
+
+    /// Right after a yank: replaces what it inserted with the kill before that one.
+    fn yank_pop(&mut self, yanked: Option<Yank>) {
+        let Some(Yank { start, end, index }) = yanked else {
+            return;
+        };
+        let index = index.checked_sub(1).unwrap_or(self.kills.len() - 1);
+        let Some(text) = self.kills.get(index).cloned() else {
+            return;
+        };
+        self.begin_edit(Run::None);
+        self.text.replace_range(start..end, &text);
+        self.cursor = start + text.len();
+        self.yank = Some(Yank {
+            start,
+            end: self.cursor,
+            index,
+        });
+    }
+
+    /// Byte ranges of the paste tokens in the text, in order, each with the index of its paste.
+    fn token_spans(&self) -> Vec<(usize, usize, usize)> {
+        let mut spans: Vec<(usize, usize, usize)> = Vec::new();
+        for (index, paste) in self.pastes.iter().enumerate() {
+            for (start, token) in self.text.match_indices(paste.token.as_str()) {
+                spans.push((start, start + token.len(), index));
+            }
+        }
+        spans.sort_unstable();
+        spans
+    }
+
+    /// A position inside a paste token moved to its end (`forward`) or its start: a token is
+    /// crossed and deleted as one character.
+    fn snap(&self, pos: usize, forward: bool) -> usize {
+        if self.pastes.is_empty() {
+            return pos;
+        }
+        match self
+            .token_spans()
+            .into_iter()
+            .find(|(start, end, _)| *start < pos && pos < *end)
+        {
+            Some((_, end, _)) if forward => end,
+            Some((start, _, _)) => start,
+            None => pos,
+        }
+    }
+
+    /// The range between the cursor and `target`, widened to whole paste tokens.
+    fn span_to(&self, target: usize) -> (usize, usize) {
+        let (start, end) = if target < self.cursor {
+            (target, self.cursor)
+        } else {
+            (self.cursor, target)
+        };
+        (self.snap(start, false), self.snap(end, true))
     }
 
     /// Saves an undo step unless this edit continues a run of the same kind.
@@ -326,6 +537,7 @@ impl Editor {
         }
         self.run = run;
         self.preferred_col = None;
+        self.yank = None;
     }
 
     fn type_char(&mut self, c: char) {
@@ -340,11 +552,7 @@ impl Editor {
 
     /// Deletes between the cursor and `target`, whichever side it is on.
     fn delete_to(&mut self, target: usize, run: Run) {
-        let (start, end) = if target < self.cursor {
-            (target, self.cursor)
-        } else {
-            (self.cursor, target)
-        };
+        let (start, end) = self.span_to(target);
         if start == end {
             return;
         }
@@ -353,13 +561,13 @@ impl Editor {
         self.cursor = start;
     }
 
-    fn move_to(&mut self, target: usize) {
-        self.cursor = target;
+    pub(crate) fn move_to(&mut self, target: usize) {
+        self.cursor = self.snap(target, target > self.cursor);
         self.run = Run::None;
         self.preferred_col = None;
     }
 
-    fn undo(&mut self) {
+    pub(crate) fn undo(&mut self) {
         if let Some(previous) = self.undo.pop() {
             self.redo.push(Snapshot {
                 text: std::mem::take(&mut self.text),
@@ -369,7 +577,7 @@ impl Editor {
         }
     }
 
-    fn redo(&mut self) {
+    pub(crate) fn redo(&mut self) {
         if let Some(next) = self.redo.pop() {
             self.undo.push(Snapshot {
                 text: std::mem::take(&mut self.text),
@@ -386,7 +594,7 @@ impl Editor {
         self.preferred_col = None;
     }
 
-    fn move_up(&mut self) -> bool {
+    pub(crate) fn move_up(&mut self) -> bool {
         let start = self.line_start(self.cursor);
         if start == 0 {
             return self.history_previous();
@@ -396,13 +604,14 @@ impl Editor {
             .unwrap_or_else(|| text::width(&self.text[start..self.cursor]));
         let previous_end = start - 1;
         let previous_start = self.line_start(previous_end);
-        self.cursor = previous_start + offset_at_col(&self.text[previous_start..previous_end], col);
+        let target = previous_start + offset_at_col(&self.text[previous_start..previous_end], col);
+        self.cursor = self.snap(target, false);
         self.run = Run::None;
         self.preferred_col = Some(col);
         true
     }
 
-    fn move_down(&mut self) -> bool {
+    pub(crate) fn move_down(&mut self) -> bool {
         let end = self.line_end(self.cursor);
         if end == self.text.len() {
             return self.history_next();
@@ -413,7 +622,8 @@ impl Editor {
             .unwrap_or_else(|| text::width(&self.text[start..self.cursor]));
         let next_start = end + 1;
         let next_end = self.line_end(next_start);
-        self.cursor = next_start + offset_at_col(&self.text[next_start..next_end], col);
+        let target = next_start + offset_at_col(&self.text[next_start..next_end], col);
+        self.cursor = self.snap(target, false);
         self.run = Run::None;
         self.preferred_col = Some(col);
         true
@@ -457,26 +667,47 @@ impl Editor {
         self.history_pos = position;
     }
 
-    fn prev_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn prev_boundary(&self, pos: usize) -> usize {
         self.text[..pos]
             .grapheme_indices(true)
             .next_back()
             .map_or(0, |(i, _)| i)
     }
 
-    fn next_boundary(&self, pos: usize) -> usize {
+    pub(crate) fn next_boundary(&self, pos: usize) -> usize {
         self.text[pos..]
             .graphemes(true)
             .next()
             .map_or(pos, |g| pos + g.len())
     }
 
-    fn line_start(&self, pos: usize) -> usize {
+    pub(crate) fn line_start(&self, pos: usize) -> usize {
         self.text[..pos].rfind('\n').map_or(0, |i| i + 1)
     }
 
-    fn line_end(&self, pos: usize) -> usize {
+    pub(crate) fn line_end(&self, pos: usize) -> usize {
         self.text[pos..].find('\n').map_or(self.text.len(), |i| pos + i)
+    }
+
+    /// Removes `start..end` as one undo step and leaves the cursor at `start`; with `kill` the
+    /// removed text goes on the kill ring.
+    pub(crate) fn remove(&mut self, start: usize, end: usize, kill: bool) {
+        if start >= end {
+            return;
+        }
+        if kill {
+            self.push_kill(self.text[start..end].to_string());
+        }
+        self.begin_edit(Run::None);
+        self.text.replace_range(start..end, "");
+        self.cursor = start;
+    }
+
+    /// Inserts `text` at `pos` as one undo step and leaves the cursor after it.
+    pub(crate) fn insert_at(&mut self, pos: usize, text: &str) {
+        self.begin_edit(Run::None);
+        self.text.insert_str(pos, text);
+        self.cursor = pos + text.len();
     }
 
     /// Start of the word before `from`: skips separators, then letters, digits and underscores.
@@ -720,19 +951,129 @@ mod tests {
         editor.handle_key(&ctrl('z'));
         assert_eq!(editor.text(), "", "undo with nothing to undo is harmless");
 
-        editor.handle_key(&ctrl('y'));
+        let redo = KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL | KeyModifiers::SHIFT);
+        editor.handle_key(&redo);
         assert_eq!(editor.text(), "hello");
-        editor.handle_key(&ctrl('y'));
+        editor.handle_key(&redo);
         assert_eq!(editor.text(), "hello world");
         assert_eq!(editor.cursor(), 11);
-        editor.handle_key(&ctrl('y'));
+        editor.handle_key(&redo);
         assert_eq!(editor.text(), "hello world");
 
         // A new edit discards what could have been redone.
         editor.handle_key(&ctrl('z'));
         typed(&mut editor, "!");
-        editor.handle_key(&ctrl('y'));
+        editor.handle_key(&redo);
         assert_eq!(editor.text(), "hello!");
+    }
+
+    #[test]
+    fn kill_ring_keeps_cuts_and_yank_cycles_through_them_newest_first() {
+        let mut editor = with_text("one two three");
+        editor.handle_key(&ctrl('w'));
+        editor.handle_key(&ctrl('w'));
+        assert_eq!(editor.text(), "one ");
+        editor.handle_key(&ctrl('u'));
+        assert_eq!(editor.text(), "");
+
+        // The newest cut comes back first; alt+y swaps in the ones before, then wraps.
+        editor.handle_key(&ctrl('y'));
+        assert_eq!(editor.text(), "one ");
+        editor.handle_key(&alt('y'));
+        assert_eq!(editor.text(), "two ");
+        editor.handle_key(&alt('y'));
+        assert_eq!(editor.text(), "three");
+        editor.handle_key(&alt('y'));
+        assert_eq!(editor.text(), "one ");
+        assert_eq!(editor.cursor(), 4);
+
+        // Anything between the yank and alt+y breaks the pair.
+        typed(&mut editor, "x");
+        assert!(editor.handle_key(&alt('y')));
+        assert_eq!(editor.text(), "one x");
+
+        // ctrl+k and alt+d cut onto the ring too, and a yank is one undo step.
+        let mut editor = with_text("alpha beta");
+        editor.handle_key(&key(KeyCode::Home));
+        editor.handle_key(&alt('d'));
+        editor.handle_key(&ctrl('k'));
+        assert_eq!(editor.text(), "");
+        editor.handle_key(&ctrl('y'));
+        assert_eq!(editor.text(), " beta");
+        editor.handle_key(&alt('y'));
+        assert_eq!(editor.text(), "alpha");
+        editor.handle_key(&ctrl('z'));
+        editor.handle_key(&ctrl('z'));
+        assert_eq!(editor.text(), "");
+    }
+
+    #[test]
+    fn kill_ring_holds_twenty_cuts() {
+        let mut editor = Editor::new();
+        for i in 0..25 {
+            editor.set_text(&format!("cut{i}"));
+            editor.handle_key(&ctrl('u'));
+        }
+        assert_eq!(editor.kills.len(), MAX_KILLS);
+        assert_eq!(editor.kills[0], "cut5");
+        assert_eq!(editor.newest_kill(), Some("cut24"));
+    }
+
+    #[test]
+    fn a_long_paste_folds_into_a_token_and_take_returns_the_text() {
+        let long: String = (1..=41).map(|i| format!("line {i}\n")).collect();
+        let mut editor = Editor::new();
+        typed(&mut editor, "see ");
+        editor.insert_paste(&long, 10);
+        typed(&mut editor, " ok");
+        assert_eq!(editor.text(), "see [paste #1 +41 lines] ok");
+        assert_eq!(editor.expanded(), format!("see {long} ok"));
+
+        // A short paste goes in as it is; a long single line folds by its length.
+        let mut short = Editor::new();
+        short.insert_paste("a\nb", 10);
+        assert_eq!(short.text(), "a\nb");
+        short.insert_paste(&"x".repeat(801), 10);
+        assert_eq!(short.text(), "a\nb[paste #1 +801 chars]");
+        let mut never = Editor::new();
+        never.insert_paste(&long, 0);
+        assert_eq!(never.text(), long);
+
+        // The token is one character to the cursor and to backspace.
+        press(&mut editor, key(KeyCode::Left), 4);
+        assert_eq!(editor.cursor(), 4, "the cursor skips over the token");
+        editor.handle_key(&key(KeyCode::Right));
+        assert_eq!(editor.cursor(), "see [paste #1 +41 lines]".len());
+        editor.handle_key(&key(KeyCode::Backspace));
+        assert_eq!(editor.text(), "see  ok");
+        editor.handle_key(&ctrl('z'));
+        assert_eq!(editor.text(), "see [paste #1 +41 lines] ok");
+
+        assert_eq!(editor.take(), format!("see {long} ok"));
+        assert!(editor.is_empty());
+        // The history holds what was sent, not the token.
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), format!("see {long} ok"));
+    }
+
+    #[test]
+    fn a_draft_keeps_its_folded_pastes_across_take_and_restore() {
+        let long = "x\n".repeat(30);
+        let mut editor = Editor::new();
+        editor.insert_paste(&long, 10);
+        typed(&mut editor, " tail");
+        let draft = editor.take_draft();
+        assert!(editor.is_empty());
+        assert_eq!(draft.shown(), "[paste #1 +30 lines] tail");
+        typed(&mut editor, "other");
+        assert_eq!(editor.take(), "other");
+
+        editor.restore_draft(draft);
+        assert_eq!(editor.text(), "[paste #1 +30 lines] tail");
+        assert_eq!(editor.take(), format!("{long} tail"));
+        // Numbers are not reused, so an old token never names a newer paste.
+        editor.insert_paste(&long, 10);
+        assert_eq!(editor.text(), "[paste #2 +30 lines]");
     }
 
     #[test]

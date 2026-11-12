@@ -311,6 +311,75 @@ fn suggested_rules_fit_the_call() {
 }
 
 #[test]
+fn remembered_and_session_rules_can_be_forgotten() {
+    let f = fixture("[permissions]\nallow = [\"shell(git status:*)\"]\n");
+    std::fs::write(
+        f.paths.project_local_config(),
+        "# mine\n[tui]\ntheme = \"light\"\n",
+    )
+    .unwrap();
+    let build: Rule = "shell(cargo build:*)".parse().unwrap();
+    let test: Rule = "shell(cargo test:*)".parse().unwrap();
+    f.state.remember_allow(&build).unwrap();
+    f.state.remember_allow(&test).unwrap();
+    f.state
+        .add_session_rule("shell(ls:*)".parse().unwrap(), RuleKind::Allow);
+    f.state
+        .add_session_rule("shell(rm:*)".parse().unwrap(), RuleKind::Deny);
+    assert!(allowed(&verdict(&f, "shell", Access::Exec, "cargo build")));
+    assert!(allowed(&verdict(&f, "shell", Access::Exec, "ls -la")));
+
+    // One remembered approval goes: from this session and from the file, which keeps the rest.
+    assert!(f.state.forget_allow(&build).unwrap());
+    assert!(!f.state.forget_allow(&build).unwrap(), "already gone");
+    assert!(prompts(&verdict(&f, "shell", Access::Exec, "cargo build")));
+    assert!(allowed(&verdict(&f, "shell", Access::Exec, "cargo test")));
+    let saved = std::fs::read_to_string(f.paths.project_local_config()).unwrap();
+    assert!(saved.starts_with("# mine\n[tui]\ntheme = \"light\"\n"), "{saved}");
+    assert!(
+        !saved.contains("cargo build") && saved.contains("cargo test"),
+        "{saved}"
+    );
+    // A rule from a config file is not a remembered approval.
+    assert!(
+        !f.state
+            .forget_allow(&"shell(git status:*)".parse().unwrap())
+            .unwrap()
+    );
+
+    // A session rule goes by its kind; the same rule of another kind stays.
+    let ls: Rule = "shell(ls:*)".parse().unwrap();
+    assert!(!f.state.remove_session_rule(&ls, RuleKind::Deny));
+    assert!(f.state.remove_session_rule(&ls, RuleKind::Allow));
+    assert!(!f.state.remove_session_rule(&ls, RuleKind::Allow));
+    assert!(prompts(&verdict(&f, "shell", Access::Exec, "ls -la")));
+
+    // Everything remembered and everything of the session goes at once; config rules stay.
+    f.state.add_session_rule(ls, RuleKind::Allow);
+    assert_eq!(f.state.clear_remembered().unwrap(), 3);
+    assert_eq!(f.state.clear_remembered().unwrap(), 0);
+    let left: Vec<String> = f.state.rules().iter().map(|r| r.rule.to_string()).collect();
+    assert_eq!(left, ["shell(git status:*)"]);
+    assert!(prompts(&verdict(&f, "shell", Access::Exec, "cargo test")));
+    let saved = std::fs::read_to_string(f.paths.project_local_config()).unwrap();
+    assert!(!saved.contains("cargo test"), "{saved}");
+    let reloaded = Config::load(
+        &f.paths,
+        &LoadOptions {
+            trusted: true,
+            ..LoadOptions::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(reloaded.config.permissions.allow, ["shell(git status:*)"]);
+
+    // Nothing to forget and no file to edit is not an error.
+    let empty = fixture("");
+    assert_eq!(empty.state.clear_remembered().unwrap(), 0);
+    assert!(!empty.state.forget_allow(&build).unwrap());
+}
+
+#[test]
 fn remembered_rules_apply_now_and_land_in_the_local_config() {
     let f = fixture("");
     assert!(prompts(&verdict(&f, "shell", Access::Exec, "cargo build")));

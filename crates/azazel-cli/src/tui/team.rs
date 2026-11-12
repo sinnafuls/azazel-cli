@@ -163,17 +163,18 @@ impl Tui {
                 SelectItem::new(format!("{}{followed}", member.id), detail)
             })
             .collect();
-        let body =
-            vec!["enter: show this agent's work here · m: message · s: stop · S: stop all".to_string()];
+        let body = vec!["enter shows the agent's work here".to_string()];
         let ids = members.into_iter().map(|member| member.id).collect();
-        self.overlay = Some(Overlay::select("Agents", body, items, false, Action::Agents(ids)));
+        self.overlay = Some(
+            Overlay::select("Agents", body, items, false, Action::Agents(ids))
+                .with_keys(super::panels::hub_keys()),
+        );
     }
 
-    /// Acts on a key the agent hub understands beyond moving and choosing. `id` is the agent the
-    /// selection is on. Returns whether the key was one of them.
-    pub(super) fn hub_key(&mut self, key: char, id: &str) -> bool {
+    /// Acts on one of the agent hub's own keys. `id` is the agent the selection is on.
+    pub(super) fn hub_key(&mut self, key: char, id: &str) {
         let Some(team) = self.team.clone() else {
-            return false;
+            return;
         };
         match key {
             'm' => {
@@ -200,9 +201,8 @@ impl Tui {
                     self.info(&format!("stopped: {}", stopped.join(", ")));
                 }
             }
-            _ => return false,
+            _ => {}
         }
-        true
     }
 
     /// Shows `id`'s work in the transcript from now on; the lead's own work is always shown.

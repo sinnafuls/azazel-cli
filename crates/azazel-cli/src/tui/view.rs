@@ -221,6 +221,20 @@ pub fn tool_done(
     width: usize,
     theme: &Theme,
 ) -> Vec<Line> {
+    tool_card(name, input, output, Some(elapsed), expanded, width, theme)
+}
+
+/// The card of a tool call. `elapsed` is left out for a call read back from the session, which
+/// does not record how long it took.
+pub fn tool_card(
+    name: &str,
+    input: &Value,
+    output: &ToolOutput,
+    elapsed: Option<Duration>,
+    expanded: bool,
+    width: usize,
+    theme: &Theme,
+) -> Vec<Line> {
     let said = output_text(output);
     let state = if !output.is_error {
         CardState::Success
@@ -274,7 +288,7 @@ pub fn tool_done(
         body.push(theme.paint(Role::Muted, &more));
     }
 
-    let mut facts = vec![format_duration(elapsed)];
+    let mut facts: Vec<String> = elapsed.map(format_duration).into_iter().collect();
     if details.and_then(|d| d.get("timed_out")).and_then(Value::as_bool) == Some(true) {
         facts.push("timed out".to_string());
     } else if let Some(code) = details.and_then(|d| d.get("exit_code")).and_then(Value::as_i64) {

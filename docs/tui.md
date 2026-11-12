@@ -39,7 +39,7 @@ The live region, top to bottom:
 | Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time |
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
-| Input | always | The editor between two rules, with its completion list, notices and an attached-image count above it |
+| Input | always | The editor between two rules, with its completion list, notices, queued messages, stashed drafts and an attached-image count above it |
 | Status line | always | Session facts on the left, the model on the right |
 
 Your own messages appear in the transcript on a band that spans the terminal's width.
@@ -51,7 +51,8 @@ The input sits between two full-width rules, with `❯` in front of the first ro
 height (at least 5 rows) and scrolls beyond that; the rules then say how much is out of view (`↑ 3 more`).
 
 While the agent is working, the rule above the input carries the working indicator: a spinner, `working` /
-`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`.
+`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. With [Vim keys](#vim-keys) on, the same
+rule shows `-- NORMAL --` in normal mode.
 
 The colour of the rules tells you what `Enter` will do:
 
@@ -67,7 +68,9 @@ Questions from agents, approval prompts, plan reviews and pickers replace the in
 same way: the title in the rule above, the keys in the rule below. In a picker: `Up`/`Down` move, `Enter` chooses
 and `Esc` cancels; the selected row is marked `→` and highlighted, and a list too long to show ends with its
 position (`(7/20)`). Searchable pickers (models, sessions, prompt history) filter as you type; in the others,
-digits `1`-`9` choose a row directly.
+digits `1`-`9` choose a row directly. Some pickers have keys of their own that act on the selected row (`m` in
+the agent hub, `Ctrl+F` in the model picker, `d` in `/permissions`); the rule below names them. Where an overlay
+asks for text (feedback on a denied call, changes to a plan), `Ctrl+G` opens your editor for it.
 
 ### Tool cards
 
@@ -105,7 +108,7 @@ When the terminal is too narrow for both sides, the model is shortened first, th
 | Key | Action name | Effect |
 |---|---|---|
 | `Enter` | `submit` | Send the prompt. While the agent is working: steer it (the message is delivered before its next step) |
-| `Alt+Enter` | `follow_up` | While the agent is working: queue the message until it finishes |
+| `Alt+Enter` | `follow_up` | While the agent is working: queue the message until it finishes; see [queued messages](#queued-messages-and-stashed-drafts) |
 | `Shift+Enter`, `Ctrl+J` | `newline` | Insert a line break |
 | `Esc` | `abort` | Interrupt the lead agent. Twice within a second on an empty, idle input: open `/rewind` |
 | `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits |
@@ -118,14 +121,85 @@ When the terminal is too narrow for both sides, the model is shortened first, th
 | `Ctrl+R` | `history_search` | Search earlier prompts and put one back in the input |
 | `Ctrl+V` | `paste_image` | Attach the clipboard image to the next prompt |
 | `Tab` | `complete` | Open or accept completion |
+| `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
+| `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
+| `Ctrl+S` | `stash` | Park the draft; on an empty input, bring the last parked draft back |
+| `Alt+T` | `cycle_thinking` | Next thinking level the current model supports |
+| `Alt+M`, `Alt+Shift+M` | `cycle_model`, `cycle_model_back` | Next or previous favourite model |
+| `F2` | `transcript` | Open the [transcript viewer](#transcript-viewer) |
+| `F5` | `retry` | Same as `/retry` |
+| `Ctrl+B` | `background` | While a `shell` command of the agent runs: move it to the background |
 
 `Esc` interrupts the lead only; stop sub-agents from the agent hub or with `/stop`. In the agent hub, `Enter`
 follows the selected agent's work in the transcript, `m` messages it, `s` stops it and `S` stops all.
 
 Editing keys in the input: arrows, `Home`/`End`, `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+Left`/`Ctrl+Right` or
 `Alt+B`/`Alt+F` (word), `Ctrl+W` and `Ctrl+Backspace` (delete word back), `Alt+D` and `Ctrl+Delete` (delete word
-forward), `Ctrl+U` (delete to line start), `Ctrl+K` (delete to line end), `Ctrl+Z` (undo), `Ctrl+Y` or
-`Ctrl+Shift+Z` (redo). `Up` on the first line and `Down` on the last walk through earlier prompts.
+forward), `Ctrl+U` (delete to line start), `Ctrl+K` (delete to line end), `Ctrl+Z` (undo), `Ctrl+Shift+Z` (redo).
+`Up` on the first line and `Down` on the last walk through earlier prompts.
+
+What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
+one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
+
+`Alt+T` steps through the thinking levels the current model supports, `off` included. `Alt+M` and `Alt+Shift+M`
+step through your favourite models: `Ctrl+F` in the model picker (`Ctrl+L`, `/model`) adds the selected model to
+the favourites or takes it out, and the list is saved as `tui.favourites` in `~/.azazel/config.toml`. With no
+favourites the keys step through `@default`, `@smol` and `@slow`.
+
+`Ctrl+B` works while a `shell` command the agent started is running. The command goes on as a background job
+(it is not started again), the agent's call returns at once with the job's id, and `/jobs` lists it.
+
+### Queued messages and stashed drafts
+
+`Alt+Enter` while the agent works does not hand the message to the agent. The UI keeps it, shows it as a muted
+`⏵ queued:` line above the input, and sends it when the agent finishes, exactly like a prompt you type then:
+`@` files are attached, a checkpoint is taken and prompt hooks run. Several queued messages go one per run, in
+order. `Alt+Up` (or `Shift+Up`) takes the last one back into the input with its images. Interrupting with `Esc`
+keeps the queue; the next message goes after the next run that finishes on its own.
+
+`Ctrl+S` parks a draft (with its attached images) and clears the input; a line above the input counts what is
+parked. `Ctrl+S` on an empty input brings the last parked draft back.
+
+### Pastes and dropped files
+
+A paste of more than 10 lines (`editor.fold_paste_lines`) or 800 characters goes into the input as one token,
+`[paste #2 +41 lines]`. The cursor steps over the token as over one character, `Backspace` after it removes it
+whole, and the agent receives the full text. The transcript shows the token.
+
+Windows consoles do not mark pasted text, so there azazel treats keys that arrive faster than anyone types as a
+paste: line breaks inside it do not send the prompt. One short line that ends with a line break is taken as
+typed and sent, as in a shell.
+
+Files dropped on the terminal arrive as pasted paths. When a paste is nothing but absolute paths of existing
+files (quoted, backslash-escaped or `file://` forms included), images are attached to the next prompt and other
+files are inserted as `@path` mentions; a path with spaces is written `@"my notes/a file.md"`.
+
+### External editor
+
+`Ctrl+G` writes the draft (folded pastes written out) to a file, opens it in your editor and puts what you
+saved back into the input. The editor is `[editor] command`, else `$VISUAL`, else `$EDITOR`, else `notepad` on
+Windows and `vi` elsewhere; a command may carry arguments (`code --wait`). If the program cannot be started you
+get `no editor found: set $VISUAL or $EDITOR, or [editor] command`.
+
+### Vim keys
+
+`/vim` switches Vim keys in the input on or off and saves the choice (`editor.mode = "vim"`). The input starts
+in insert mode, where everything works as without Vim keys. `Esc` goes to normal mode, shown as `-- NORMAL --`
+in the rule above the input; `Esc` in normal mode does what it always does (interrupt, rewind).
+
+| Normal-mode keys | Effect |
+|---|---|
+| `h` `j` `k` `l`, `w` `b` `e`, `0` `^` `$`, `gg` `G` | Move; a count in front repeats (`3w`), and `5G` goes to line 5 |
+| `i` `a` `I` `A` `o` `O` | Enter insert mode at the cursor, after it, at the line's start or end, on a new line below or above |
+| `x` | Delete the character under the cursor |
+| `d` + motion, `dd`, `D` | Delete: `dw`, `d$`, a whole line, to the end of the line |
+| `c` + motion, `cc`, `C` | Change: delete, then insert mode |
+| `yy`, `y` + motion | Copy a line or what the motion covers |
+| `p` `P` | Paste after or before the cursor; whole lines go on a line of their own |
+| `u`, `Ctrl+R` | Undo, redo |
+
+Deleted and copied text shares the kill ring with the emacs keys. There is no visual mode, no `.` repeat and no
+named registers. In normal mode `Ctrl+R` is redo; prompt history search is `Ctrl+R` in insert mode.
 
 ### Changing keys
 
@@ -154,6 +228,7 @@ reported reliably. Where `Shift+Enter` does not arrive, use `Ctrl+J`.
 | `/` | A slash command. A completion list appears as you type; `Tab` accepts, and `Enter` on a half-typed name completes it |
 | `@` | Fuzzy file completion over the working directory (gitignored files and `.git` are left out). On submit, each `@path` that names a UTF-8 text file of at most 256 KB is attached to the prompt and counts as read by the agent |
 | `!` | `!command` runs in your shell, outside the permission engine and the push guard. You see the output, and the agent gets it as a note without being asked to reply |
+| `!!` | `!!command` runs the same way, but the output is for you only: nothing is added to the agent's context |
 
 Example:
 
@@ -176,6 +251,9 @@ Session and display:
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
 | `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
+| `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
+| `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
+| `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session |
 | `/context` | How full the context window is, message count, tools offered |
@@ -193,17 +271,22 @@ Models, permissions and setup:
 | `/model [name [fallback …]]` | Pick the model, or set a chain; part of a name or `@role` works too |
 | `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `/mode [mode]` | Pick or set the permission mode |
-| `/permissions` | List the permission rules in effect and where they come from |
+| `/permissions` | The permission rules in effect and where they come from. `d` removes a rule added in this session or remembered with "always allow"; `a` adds one (`allow shell(cargo test:*)`), for the session or saved. Rules from config files are shown with the file to edit |
+| `/forget-approvals` | Forget every remembered approval and every rule added in this session |
+| `/trust [yes\|no]` | Whether this project is trusted and what that covers; `yes` or `no` records the decision, a restart applies it |
 | `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
 | `/dirs` | List the directories agents may work in |
 | `/changelog [version]` | What changed in each release, or only since `version` |
-| `/settings` | Sign in, add API keys and choose the default model |
+| `/settings` | Sign in, add API keys, choose models and change settings; see [settings menu](#settings-menu) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
 | `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
+| `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked |
+| `/jobs` | Background jobs; choose one to read its output or stop it |
+| `/todo [add <text> \| done <n> \| clear]` | Show the agent's task list, or change it |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
 | `/doctor` | Check the installation and this project's setup |
 | `/rules` | List the rule files, when each applies and whether it has in this session; see [rules](rules.md) |
@@ -227,7 +310,7 @@ Skills, extensions and services:
 | `/skills` | List skills and where they come from |
 | `/skill:<name> [args]` | Run a skill; see [skills and commands](skills-and-commands.md) |
 | `/ext` | List loaded extensions and Luau scripts, with the errors of disabled scripts |
-| `/reload` | Drop all Luau extension state and load the scripts again; see [extensions](extensions.md) |
+| `/reload` | Read skills, custom commands, agent definitions, hooks, key bindings and the theme again, then drop all Luau extension state and load the scripts again ([extensions](extensions.md)). It reports what changed and every file that failed to load |
 | `/mcp` | MCP servers and their state; also `/mcp reconnect\|enable\|disable\|approve\|reject\|login\|logout <server>`; see [MCP](mcp.md) |
 | `/mcp:<server>:<prompt>` | Run a prompt offered by an MCP server |
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
@@ -236,6 +319,56 @@ Skills, extensions and services:
 
 Custom commands from `commands/` directories and commands registered by extensions appear in `/help` and in
 completion as well. `/memory` is absent when memory is disabled in the configuration.
+
+`/copy` uses the system clipboard. Over SSH, or when that fails, it asks the terminal to copy instead (OSC 52,
+passed through tmux when azazel runs inside it); the terminal must allow programs to set the clipboard.
+
+## Transcript viewer
+
+`F2` or `/transcript` opens the conversation of the current branch full screen: your prompts, the replies, tool
+calls with their results, and thinking when it is shown in the transcript. It uses the terminal's alternate
+screen, so the scrollback is as you left it when you return. This is the only place where azazel takes the
+mouse: the wheel scrolls here, and text selection with the mouse works everywhere else as usual.
+
+| Key | Effect |
+|---|---|
+| arrows, `j` `k` | Move the cursor a row |
+| `PgUp` `PgDn`, `b` `Space` | Move a screen |
+| `g` `G`, `Home` `End` | First and last row |
+| mouse wheel | Scroll |
+| `[` `]` | Previous and next prompt of yours |
+| `/` | Search (case does not matter); `Enter` goes to the first match, `n` and `N` step through the rest |
+| `y` | Copy the message under the cursor as Markdown |
+| `c` | Copy the code block under the cursor, or the next one of the message |
+| `v` | Start selecting lines; move, then `y` copies them |
+| `o` | Open the link on the cursor row in your browser |
+| `q`, `Esc` | Return |
+
+The agent keeps working while the viewer is open. If it needs you (an approval, a question), the last row says
+so and the request is shown when you return.
+
+## Settings menu
+
+`/settings` opens with signing in, API keys and models, followed by one section per group of everyday settings.
+Each change is saved at once in `~/.azazel/config.toml` (comments and everything else in the file are kept).
+Typing nothing for a text setting puts it back on its default. A project's own configuration still wins over
+these values inside that project.
+
+| Section | Settings |
+|---|---|
+| Appearance | theme\*, inline images, show thinking\*, full tool output\* |
+| Editor | emacs or Vim keys\*, external editor command\*, paste fold length\* |
+| Permissions | the mode sessions start in, what destructive commands need |
+| Notifications | bell, desktop notifications, terminal title, tab progress, minimum run length, keep awake |
+| Limits | cost cap, cost warning, turn cap |
+| Sessions | automatic names, restoring model and thinking on resume, retention |
+| Memory | on or off, saving memories from conversations, indexing the project |
+| Updates | daily check, automatic install |
+| Voice | transcription and speech models, voice, send at once, longest recording |
+| Team | coordinator mode, agents at the same time, advisor and its model |
+
+Settings marked \* change the running UI at once. The others are saved and say "applies to the next session".
+The keys behind each row are described in [configuration](configuration.md).
 
 ## Themes
 

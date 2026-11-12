@@ -349,6 +349,16 @@ impl Selection {
     }
 }
 
+/// One tool as [`ToolRegistry::listing`] reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolListing {
+    pub name: String,
+    /// Id of the extension that registered it.
+    pub owner: String,
+    /// False when `[tools] disabled` or the tool flags leave it out.
+    pub offered: bool,
+}
+
 fn glob_set(patterns: &[String]) -> Result<globset::GlobSet, String> {
     let mut set = globset::GlobSetBuilder::new();
     for pattern in patterns {
@@ -405,6 +415,37 @@ impl ToolRegistry {
         names.sort();
         names.dedup();
         names
+    }
+
+    /// Every tool agents could be offered, in registration order, with the extension it comes
+    /// from and whether the selection offers it. A name registered twice is listed once, under
+    /// the extension that wins.
+    pub fn listing(&self, agent: &AgentInfo) -> Vec<ToolListing> {
+        let selection = self.selection.read().unwrap_or_else(PoisonError::into_inner);
+        let mut out: Vec<ToolListing> = Vec::new();
+        let mut add = |owner: &str, name: &str| {
+            if !out.iter().any(|listed| listed.name == name) {
+                out.push(ToolListing {
+                    name: name.to_string(),
+                    owner: owner.to_string(),
+                    offered: selection.offers(name),
+                });
+            }
+        };
+        for (owner, tool) in self.tools.read().unwrap_or_else(PoisonError::into_inner).iter() {
+            add(owner, tool.name());
+        }
+        let sources: Vec<(String, Arc<dyn ToolSource>)> = self
+            .sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for (owner, source) in sources {
+            for tool in source.tools(agent) {
+                add(&owner, tool.name());
+            }
+        }
+        out
     }
 
     pub fn remove_owner(&self, owner: &str) {

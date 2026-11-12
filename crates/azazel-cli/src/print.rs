@@ -67,6 +67,9 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
     let mut team_events = team.as_ref().map(|team| team.subscribe());
     let mut stdout = std::io::stdout();
     let mut answer = String::new();
+    // Tests send follow-up messages through the queue the terminal UI holds them in.
+    #[cfg(feature = "test-support")]
+    let mut queued = crate::tui::queue_from_env();
     let mut interrupt = std::pin::pin!(tokio::signal::ctrl_c());
     let mut interrupted = false;
     let code = loop {
@@ -112,6 +115,15 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
                         .any(|member| member.id != lead && member.state.is_active())
                 });
                 if !pending {
+                    #[cfg(feature = "test-support")]
+                    match queued.send_next(app, active).await {
+                        Some((_, Ok(()))) => continue,
+                        Some((_, Err(reason))) => {
+                            eprintln!("prompt rejected: {reason}");
+                            break EXIT_FAILED;
+                        }
+                        None => {}
+                    }
                     break EXIT_OK;
                 }
             }

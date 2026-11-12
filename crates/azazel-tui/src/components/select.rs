@@ -87,6 +87,13 @@ impl SelectList {
         self.matches.is_empty()
     }
 
+    /// Selects the row at `index` among those shown; out of range leaves the selection as it is.
+    pub fn set_cursor(&mut self, index: usize) {
+        if index < self.matches.len() {
+            self.cursor = index;
+        }
+    }
+
     /// Moves the selection up one row, wrapping to the bottom.
     pub fn move_up(&mut self) {
         if !self.matches.is_empty() {

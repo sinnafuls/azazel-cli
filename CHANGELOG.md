@@ -52,19 +52,20 @@ GitHub are its section here.
 - API keys are read from `~/.azazel/.env` and, in a trusted project, from the project's `.env`.
 - `azazel mcp import` copies servers from Claude Desktop, Claude Code, Cursor, VS Code and Windsurf;
   `azazel mcp approve` and `azazel mcp reject` decide about a project's servers.
-- Rule files in `.azazel/rules/` and `~/.azazel/rules/` that apply always, when an agent touches matching files,
-  or on request through `rule://<name>`; the rule files of Cursor, Windsurf, Copilot, Gemini, Cline and
-  `.claude/rules/` are read too (`[rules] compat`).
-- Stream rules: a `trigger` in a rule file or `[[stream_rules]]` in the config stops a reply as it is written and
-  asks again with the rule.
-- `/rules`, `azazel rules list` and `azazel rules test`.
-- Hook options `once` and `wake`, and hook events `file_changed`, `config_change`, `worktree_create`,
-  `worktree_remove` and `setup`; `/hooks` lists every hook, where it comes from and how it last ran.
-- Commands that destroy work (`git reset --hard`, `rm -r` outside the project and others) are asked about in
-  every mode; `[permissions] destructive` sets `ask`, `allow` or `deny`.
-- API keys are read from `~/.azazel/.env` and, in a trusted project, from the project's `.env`.
-- `azazel mcp import` copies servers from Claude Desktop, Claude Code, Cursor, VS Code and Windsurf;
-  `azazel mcp approve` and `azazel mcp reject` decide about a project's servers.
+- Edit the draft in your own editor with `Ctrl+G` (`[editor] command`, `$VISUAL`, `$EDITOR`).
+- Vim keys in the input (`/vim`, `editor.mode = "vim"`).
+- A kill ring: `Ctrl+Y` pastes what `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut; `Alt+Y` cycles.
+- Long pastes fold into one token; dropped files become image attachments or `@` mentions;
+  `@"path with spaces"` works.
+- `!!command` runs a shell command without telling the agent.
+- `Ctrl+S` stashes a draft; `Alt+Up` takes a queued message back.
+- `Alt+T` steps the thinking level; `Alt+M` and `Alt+Shift+M` step through favourite models (`Ctrl+F` in the
+  model picker).
+- A full-screen transcript viewer (`F2`, `/transcript`) with search, jumps, copy and the mouse wheel.
+- `/copy`, `/tools`, `/jobs`, `/todo`, `/trust`, `/forget-approvals`; `/permissions` can remove and add rules.
+- `/settings` has sections for appearance, editor, permissions, notifications, limits, sessions, memory,
+  updates, voice and team.
+- `Ctrl+B` moves a running shell command to the background.
 
 ### Changed
 
@@ -75,9 +76,15 @@ GitHub are its section here.
 - MCP servers a project defines wait for your approval, once per version of their definition. Projects you
   already trust will ask once.
 - `--no-context-files` also leaves out rule files.
-- MCP servers a project defines wait for your approval, once per version of their definition. Projects you
-  already trust will ask once.
-- `--no-context-files` also leaves out rule files.
+- `Alt+Enter` messages are held by the UI and sent as real prompts (files attached, checkpoint, hooks).
+- `/reload` also re-reads skills, commands, agent definitions, rule files, hooks, key bindings and the theme.
+- `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
+- `tui.show_thinking` and `tui.expand_tools` take effect at startup.
+
+### Fixed
+
+- On Windows, a multi-line paste no longer sends the prompt at its first line break.
+- The approval prompt for a destructive command starts on "Deny", so a stray Enter cannot approve it.
 
 ## [0.2.0] - 2026-11-12
 

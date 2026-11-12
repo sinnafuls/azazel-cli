@@ -54,6 +54,10 @@ pub struct App {
     /// What a new session's lead starts with.
     pub chain: Vec<ModelSpec>,
     pub thinking: ThinkingLevel,
+    /// How the configuration was loaded, for reading it again (`/reload`).
+    pub load_options: LoadOptions,
+    /// Hooks are off for this run (`--no-hooks`, `AZAZEL_HOOKS_DISABLED`).
+    pub hooks_disabled: bool,
     /// A `--no-session` run: its transcripts are deleted when it ends.
     ephemeral: bool,
     /// The session mode changes are recorded in.
@@ -381,6 +385,7 @@ impl App {
             providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
             credentials: credentials.clone(),
             home_config: paths.home_config(),
+            config: config.clone(),
         })?;
         registry.load(&crate::accounts::AccountsExt {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
@@ -447,12 +452,14 @@ impl App {
         registry.load(&GoalExt {
             goals: Arc::new(Goals::new(checker, goal_settings)),
         })?;
+        let hooks_disabled =
+            cli.skips(Discovery::Hooks) || std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some();
         registry.load(&HooksExt {
             hooks: config.hooks.clone(),
             shell: shell.clone(),
             paths: paths.clone(),
             claude_compat: compat,
-            disabled: cli.skips(Discovery::Hooks) || std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some(),
+            disabled: hooks_disabled,
             trusted,
             sources: hook_sources,
         })?;
@@ -665,6 +672,8 @@ impl App {
             shell,
             chain,
             thinking,
+            load_options: options,
+            hooks_disabled,
             ephemeral: cli.no_session,
             current,
         })

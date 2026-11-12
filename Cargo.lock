@@ -732,6 +732,7 @@ dependencies = [
  "azazel-team",
  "azazel-tools",
  "azazel-tui",
+ "base64 0.23.1",
  "clap",
  "clap_complete",
  "crossterm",

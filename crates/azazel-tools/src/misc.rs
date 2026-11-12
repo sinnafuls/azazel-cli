@@ -41,7 +41,8 @@ impl TodoStore {
             .unwrap_or_default()
     }
 
-    fn set(&self, agent: &str, items: Vec<TodoItem>) {
+    /// Replaces `agent`'s list.
+    pub fn set(&self, agent: &str, items: Vec<TodoItem>) {
         self.lists
             .lock()
             .unwrap_or_else(PoisonError::into_inner)

@@ -21,7 +21,7 @@ They load in that order, and a later script replaces an earlier one with the sam
 | Command | Does |
 |---|---|
 | `/ext` | Lists the loaded extensions and every Luau script with its file, and the error of each disabled script |
-| `/reload` | Drops all Luau state and loads the scripts again. Use it after editing a script |
+| `/reload` | Drops all Luau state and loads the scripts again. Use it after editing a script. In the terminal UI it first reads skills, custom commands, agent definitions, hooks, key bindings and the theme again; see [the terminal UI](tui.md#slash-commands) |
 | `azazel ext types` | Writes type declarations for the `azazel` global to `~/.azazel/types/azazel.d.luau`; point your editor's Luau language server at it as a definitions file |
 
 ### How a script runs

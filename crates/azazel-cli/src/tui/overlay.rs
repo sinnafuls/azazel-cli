@@ -2,9 +2,10 @@
 
 use std::path::PathBuf;
 
+use azazel_core::permissions::{Rule, RuleKind, SourcedRule};
 use azazel_core::{ApprovalDecision, PlanDecision, UiError};
 use azazel_tui::components::composer;
-use azazel_tui::{Editor, Line, Role, SelectItem, SelectList, Theme, text};
+use azazel_tui::{Editor, KeyCombo, Line, Role, SelectItem, SelectList, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::bridge::Reply;
@@ -74,6 +75,18 @@ pub enum Action {
         server: String,
         actions: Vec<&'static str>,
     },
+    /// The code block of each row, to copy.
+    CopyCode(Vec<String>),
+    /// Background jobs: the id of each row.
+    Jobs(Vec<String>),
+    /// What to do with this job: read its output, stop it.
+    JobChoice(String),
+    /// `/permissions`: the rule of each row.
+    Permissions(Vec<SourcedRule>),
+    /// A rule being typed, such as `allow shell(cargo test:*)`.
+    PermissionAdd,
+    /// Where a new rule goes: this session, or saved for the project.
+    PermissionScope(Rule, RuleKind),
 }
 
 impl Action {
@@ -130,6 +143,10 @@ pub struct Overlay {
     pub body: Vec<String>,
     pub kind: Kind,
     pub action: Action,
+    /// Keys that act on the selected row without closing the overlay, each with the word the
+    /// hint line shows for it (`ctrl+d`, `delete`). They win over typing into a filter, so a
+    /// filterable list should use chords.
+    pub keys: Vec<(KeyCombo, &'static str)>,
 }
 
 pub enum Outcome {
@@ -138,11 +155,35 @@ pub enum Outcome {
     /// Index into the items the list was built from.
     Chosen(usize),
     Text(String),
+    /// One of the overlay's own keys was pressed: `key` is its index in [`Overlay::keys`],
+    /// `index` the selected row among the items the list was built from (0 for an input).
+    Hotkey {
+        index: usize,
+        key: usize,
+    },
+}
+
+/// A key as the hint line names it: `S` rather than `shift+s`.
+fn key_label(combo: &KeyCombo) -> String {
+    match combo.code {
+        KeyCode::Char(c) if combo.mods == KeyModifiers::SHIFT && c.is_alphabetic() => {
+            c.to_uppercase().collect()
+        }
+        _ => combo.to_string(),
+    }
 }
 
 const MAX_BODY_LINES: usize = 14;
 
 impl Overlay {
+    /// Starts a list with row `index` selected instead of the first.
+    pub fn starting_at(mut self, index: usize) -> Self {
+        if let Kind::Select { list, .. } = &mut self.kind {
+            list.set_cursor(index);
+        }
+        self
+    }
+
     pub fn select(
         title: impl Into<String>,
         body: Vec<String>,
@@ -159,7 +200,14 @@ impl Overlay {
                 filter: String::new(),
             },
             action,
+            keys: Vec::new(),
         }
+    }
+
+    /// Gives the overlay keys of its own; see [`Overlay::keys`].
+    pub fn with_keys(mut self, keys: Vec<(KeyCombo, &'static str)>) -> Self {
+        self.keys = keys;
+        self
     }
 
     pub fn input(title: impl Into<String>, body: Vec<String>, action: Action) -> Self {
@@ -171,6 +219,7 @@ impl Overlay {
                 secret: false,
             },
             action,
+            keys: Vec::new(),
         }
     }
 
@@ -181,14 +230,6 @@ impl Overlay {
             *secret = true;
         }
         overlay
-    }
-
-    /// Index, among the items the list was built from, of the row the selection is on.
-    pub fn selected(&self) -> Option<usize> {
-        match &self.kind {
-            Kind::Select { list, .. } => list.selected(),
-            Kind::Input { .. } => None,
-        }
     }
 
     /// Flips one option of a multi-choice question in place, keeping the selection on it. False
@@ -221,6 +262,15 @@ impl Overlay {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
             return Outcome::Cancelled;
+        }
+        let pressed = KeyCombo::from_event(key);
+        if let Some(key) = self.keys.iter().position(|(combo, _)| *combo == pressed) {
+            return match &self.kind {
+                Kind::Select { list, .. } => list
+                    .selected()
+                    .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
+                Kind::Input { .. } => Outcome::Hotkey { index: 0, key },
+            };
         }
         match &mut self.kind {
             Kind::Select {
@@ -316,9 +366,9 @@ impl Overlay {
                 let rows = max_rows.saturating_sub(lines.len() + 1).clamp(1, 12);
                 lines.extend(list.render(width, rows, theme));
                 if *filterable {
-                    "type to filter · ↑↓ move · enter choose · esc cancel"
+                    "type to filter · ↑↓ move · enter choose"
                 } else {
-                    "↑↓ move · enter choose · esc cancel"
+                    "↑↓ move · enter choose"
                 }
             }
             Kind::Input {
@@ -329,7 +379,7 @@ impl Overlay {
                 let view = editor.view(width, room, theme, &prompt);
                 cursor = Some((lines.len() as u16 + view.cursor.0, view.cursor.1));
                 lines.extend(view.lines);
-                "enter confirm · esc cancel"
+                "enter confirm"
             }
             Kind::Input { editor, secret: true } => {
                 // One dot per character, so a typo can still be counted, never read.
@@ -337,10 +387,15 @@ impl Overlay {
                 let before = editor.text()[..editor.cursor()].chars().count().min(dots);
                 cursor = Some((lines.len() as u16, (2 + before) as u16));
                 lines.push(format!("{prompt}{}", "•".repeat(dots)));
-                "hidden while you type · enter confirm · esc cancel"
+                "hidden while you type · enter confirm"
             }
         };
-        let hint = theme.paint(Role::Muted, hint);
+        let mut hint = hint.to_string();
+        for (combo, what) in &self.keys {
+            hint.push_str(&format!(" · {} {what}", key_label(combo)));
+        }
+        hint.push_str(" · esc cancel");
+        let hint = theme.paint(Role::Muted, &hint);
         lines.push(composer::rule(width, Some(&hint), None, Role::Border, theme));
         (lines, cursor)
     }
@@ -378,6 +433,26 @@ mod tests {
 
     fn items(labels: &[&str]) -> Vec<SelectItem> {
         labels.iter().map(|l| SelectItem::new(*l, "")).collect()
+    }
+
+    #[test]
+    fn a_list_can_start_on_another_row() {
+        let mut overlay = Overlay::select(
+            "Approve?",
+            Vec::new(),
+            items(&["Allow once", "Deny", "Deny and say why"]),
+            false,
+            Action::Mode,
+        )
+        .starting_at(1);
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(1)));
+        let past_the_end =
+            Overlay::select("x", Vec::new(), items(&["a"]), false, Action::Mode).starting_at(5);
+        let mut past_the_end = past_the_end;
+        assert!(matches!(
+            past_the_end.on_key(&key(KeyCode::Enter)),
+            Outcome::Chosen(0)
+        ));
     }
 
     #[test]
@@ -421,6 +496,96 @@ mod tests {
         match input.on_key(&key(KeyCode::Enter)) {
             Outcome::Text(text) => assert_eq!(text, "no thanks"),
             _ => panic!("expected text"),
+        }
+    }
+
+    #[test]
+    fn own_keys_report_the_selected_row_and_show_in_the_hint_line() {
+        let keys = vec![
+            (KeyCombo::new(KeyCode::Char('m'), KeyModifiers::NONE), "message"),
+            (KeyCombo::new(KeyCode::Char('S'), KeyModifiers::NONE), "stop all"),
+            (KeyCombo::new(KeyCode::Char('d'), KeyModifiers::CONTROL), "delete"),
+        ];
+        let mut overlay = Overlay::select(
+            "Agents",
+            Vec::new(),
+            items(&["lead", "scout", "coder"]),
+            false,
+            Action::Mode,
+        )
+        .with_keys(keys.clone());
+        overlay.on_key(&key(KeyCode::Down));
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('m'))),
+            Outcome::Hotkey { index: 1, key: 0 }
+        ));
+        // Terminals report shift+s as an upper-case letter, with or without the shift flag.
+        let shifted = KeyEvent {
+            modifiers: KeyModifiers::SHIFT,
+            ..key(KeyCode::Char('S'))
+        };
+        assert!(matches!(
+            overlay.on_key(&shifted),
+            Outcome::Hotkey { index: 1, key: 1 }
+        ));
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('S'))),
+            Outcome::Hotkey { index: 1, key: 1 }
+        ));
+        let chord = KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(KeyCode::Char('d'))
+        };
+        assert!(matches!(
+            overlay.on_key(&chord),
+            Outcome::Hotkey { index: 1, key: 2 }
+        ));
+        // Other keys still do what they did; digits pick a row.
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('s'))),
+            Outcome::Pending
+        ));
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('3'))),
+            Outcome::Chosen(2)
+        ));
+        let (lines, _) = overlay.render(100, 20, &Theme::dark());
+        let last = text::strip_ansi(&lines[lines.len() - 1]);
+        assert!(
+            last.starts_with(
+                "── ↑↓ move · enter choose · m message · S stop all · ctrl+d delete · esc cancel ─"
+            ),
+            "{last}"
+        );
+
+        // A chord wins over the filter; with no row left to act on it does nothing.
+        let mut filtered = Overlay::select("Pick", Vec::new(), items(&["alpha", "beta"]), true, Action::Mode)
+            .with_keys(keys);
+        overlay_type(&mut filtered, "be");
+        assert!(matches!(
+            filtered.on_key(&chord),
+            Outcome::Hotkey { index: 1, key: 2 }
+        ));
+        overlay_type(&mut filtered, "zz");
+        assert!(matches!(filtered.on_key(&chord), Outcome::Pending));
+
+        let mut input = Overlay::input("Why?", Vec::new(), Action::Mode).with_keys(vec![(
+            KeyCombo::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            "editor",
+        )]);
+        let chord = KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(KeyCode::Char('g'))
+        };
+        assert!(matches!(
+            input.on_key(&chord),
+            Outcome::Hotkey { index: 0, key: 0 }
+        ));
+    }
+
+    fn overlay_type(overlay: &mut Overlay, typed: &str) {
+        for c in typed.chars() {
+            overlay.on_key(&key(KeyCode::Char(c)));
         }
     }
 

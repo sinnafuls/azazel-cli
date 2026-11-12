@@ -29,6 +29,10 @@ pub struct ApprovalRequest {
     pub rule: Option<String>,
     /// Extra text for the prompt (for example that the call may cost money).
     pub note: Option<String>,
+    /// The call would destroy work (`git reset --hard`, `rm -r` outside the project). An
+    /// interface should not offer approval as the default answer.
+    #[serde(default)]
+    pub destructive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
