@@ -255,7 +255,9 @@ pub struct Mentions {
     pub images: Vec<(String, Vec<u8>)>,
 }
 
-static MENTION: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)@([^\s@]+)").expect("static regex"));
+// A path with spaces is written in quotes: `@"my notes/a file.md"`.
+static MENTION: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"(?:^|\s)@(?:"([^"\n]+)"|([^\s@"]+))"#).expect("static regex"));
 
 /// Expands the `@path` mentions of a prompt: text files are appended in `<file>` blocks, images
 /// (at most [`MAX_MENTION_IMAGES`]) are returned to be attached. Mentions that name neither are left
@@ -266,7 +268,13 @@ pub fn expand_mentions(text: &str, cwd: &Path) -> Mentions {
     let mut seen: Vec<PathBuf> = Vec::new();
     let mut out = text.to_string();
     for caps in MENTION.captures_iter(text) {
-        let mention = caps[1].trim_end_matches([',', '.', ';', ':', ')', '!', '?']);
+        let mention = match (caps.get(1), caps.get(2)) {
+            (Some(quoted), _) => quoted.as_str(),
+            (None, Some(bare)) => bare
+                .as_str()
+                .trim_end_matches([',', '.', ';', ':', ')', '!', '?']),
+            (None, None) => continue,
+        };
         let path = if Path::new(mention).is_absolute() {
             PathBuf::from(mention)
         } else {
@@ -413,6 +421,18 @@ mod tests {
         assert_eq!(
             (none.text.as_str(), none.files.len(), none.images.len()),
             ("no mentions here", 0, 0)
+        );
+
+        // A path with spaces is mentioned in quotes.
+        std::fs::create_dir_all(dir.path().join("my notes")).unwrap();
+        std::fs::write(dir.path().join("my notes/a file.md"), "spaced\n").unwrap();
+        let quoted = expand_mentions("read @\"my notes/a file.md\" please", dir.path());
+        assert!(
+            quoted
+                .text
+                .ends_with("<file path=\"my notes/a file.md\">\nspaced\n</file>"),
+            "{}",
+            quoted.text
         );
     }
 }

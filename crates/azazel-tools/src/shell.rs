@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::process::{AgentEnv, OutputBuffer, RunOptions, Shell, pump_lines, run, spawn};
+use azazel_core::process::{AgentEnv, Detached, OutputBuffer, RunOptions, Shell, pump_lines, run, spawn};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
@@ -59,18 +59,45 @@ impl Jobs {
         env: &[(String, String)],
     ) -> std::io::Result<String> {
         let mut child = spawn(shell, command, cwd, env, false)?;
-        let id = format!("job-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
-        let output = Arc::new(Mutex::new(OutputBuffer::new(0, JOB_TAIL_LINES)));
-        let state = Arc::new(Mutex::new(JobState::Running));
-        let kill = CancellationToken::new();
-
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
         if let Some(stdout) = child.stdout().take() {
             pump_lines(stdout, tx.clone());
         }
         if let Some(stderr) = child.stderr().take() {
             pump_lines(stderr, tx);
         }
+        let output = OutputBuffer::new(0, JOB_TAIL_LINES);
+        let running = Detached { child, lines: rx };
+        Ok(self.track(command, Instant::now(), running, output))
+    }
+
+    /// Takes over a command that was started in the foreground and let go of while it ran. It
+    /// becomes a job like any other, with the output it has produced so far; the process is the
+    /// same one, never a new start.
+    pub fn adopt(
+        &self,
+        command: &str,
+        started: Instant,
+        so_far: &OutputBuffer,
+        detached: Detached,
+    ) -> String {
+        let mut output = OutputBuffer::new(0, JOB_TAIL_LINES);
+        for line in so_far.render().lines() {
+            output.push(line);
+        }
+        self.track(command, started, detached, output)
+    }
+
+    /// Records a running process as a job: collects its output and watches for its end.
+    fn track(&self, command: &str, started: Instant, running: Detached, output: OutputBuffer) -> String {
+        let Detached {
+            mut child,
+            lines: mut rx,
+        } = running;
+        let id = format!("job-{}", self.next.fetch_add(1, Ordering::Relaxed) + 1);
+        let output = Arc::new(Mutex::new(output));
+        let state = Arc::new(Mutex::new(JobState::Running));
+        let kill = CancellationToken::new();
         let sink = output.clone();
         tokio::spawn(async move {
             while let Some(line) = rx.recv().await {
@@ -94,13 +121,13 @@ impl Jobs {
             id.clone(),
             Job {
                 command: command.to_string(),
-                started: Instant::now(),
+                started,
                 output,
                 state,
                 kill,
             },
         );
-        Ok(id)
+        id
     }
 
     fn describe(job: &Job) -> String {
@@ -144,6 +171,19 @@ impl Jobs {
             .collect()
     }
 
+    /// Every job with its state, for a picker.
+    pub fn entries(&self) -> Vec<JobEntry> {
+        locked(&self.jobs)
+            .iter()
+            .map(|(id, job)| JobEntry {
+                id: id.clone(),
+                state: Self::describe(job),
+                command: job.command.clone(),
+                running: *locked(&job.state) == JobState::Running,
+            })
+            .collect()
+    }
+
     pub fn kill_all(&self) {
         for job in locked(&self.jobs).values() {
             job.kill.cancel();
@@ -157,16 +197,77 @@ impl Drop for Jobs {
     }
 }
 
+/// One background job as a picker shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobEntry {
+    pub id: String,
+    /// `running for 12s`, `exited with code 0`, `killed`.
+    pub state: String,
+    pub command: String,
+    pub running: bool,
+}
+
+/// The commands agents are waiting on right now, by tool call, so that the person at the
+/// terminal can move one to the background instead of waiting for it or losing it.
+#[derive(Default)]
+pub struct Foreground {
+    runs: Mutex<BTreeMap<String, (String, CancellationToken)>>,
+}
+
+impl Foreground {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a command about to run for `call_id`; cancelling the returned token lets go of it.
+    fn begin(&self, call_id: &str, command: &str) -> CancellationToken {
+        let detach = CancellationToken::new();
+        locked(&self.runs).insert(call_id.to_string(), (command.to_string(), detach.clone()));
+        detach
+    }
+
+    fn end(&self, call_id: &str) {
+        locked(&self.runs).remove(call_id);
+    }
+
+    /// The commands running in the foreground as `(tool call id, command)`.
+    pub fn running(&self) -> Vec<(String, String)> {
+        locked(&self.runs)
+            .iter()
+            .map(|(call_id, (command, _))| (call_id.clone(), command.clone()))
+            .collect()
+    }
+
+    /// Asks the command of this tool call to go on as a background job. Its `shell` call then
+    /// returns at once with the job's id. False when no such command is running.
+    pub fn background(&self, call_id: &str) -> bool {
+        match locked(&self.runs).get(call_id) {
+            Some((_, detach)) => {
+                detach.cancel();
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 pub struct ShellTool {
     shell: Shell,
     default_timeout: Duration,
     jobs: Arc<Jobs>,
     env: Arc<AgentEnv>,
+    foreground: Arc<Foreground>,
     description: String,
 }
 
 impl ShellTool {
-    pub fn new(shell: Shell, default_timeout: Duration, jobs: Arc<Jobs>, env: Arc<AgentEnv>) -> Self {
+    pub fn new(
+        shell: Shell,
+        default_timeout: Duration,
+        jobs: Arc<Jobs>,
+        env: Arc<AgentEnv>,
+        foreground: Arc<Foreground>,
+    ) -> Self {
         let description = format!(
             "Run a command in {} on {}. stdout and stderr are returned together, followed by the exit \
              code; long output keeps its first 100 and last 300 lines. The default timeout is {} seconds \
@@ -182,6 +283,7 @@ impl ShellTool {
             default_timeout,
             jobs,
             env,
+            foreground,
             description,
         }
     }
@@ -265,10 +367,21 @@ impl Tool for ShellTool {
         options.timeout = Some(timeout);
         options.cancel = ctx.cancel.clone();
         options.on_line = Some(Arc::new(move |line| update.send(line)));
-        let result = match run(&self.shell, &input.command, options).await {
+        options.detach = Some(self.foreground.begin(&ctx.call_id, &input.command));
+        let started = Instant::now();
+        let result = run(&self.shell, &input.command, options).await;
+        self.foreground.end(&ctx.call_id);
+        let mut result = match result {
             Ok(result) => result,
             Err(e) => return ToolOutput::error(format!("could not start {}: {e}", self.shell.name())),
         };
+        if let Some(detached) = result.detached.take() {
+            let id = self.jobs.adopt(&input.command, started, &result.output, detached);
+            return ToolOutput::text(format!(
+                "moved to the background as {id}; use the job tool to read its output or stop it"
+            ))
+            .with_details(json!({"job_id": id}));
+        }
         let mut text = result.output.render();
         if text.is_empty() {
             text.push_str("(no output)");
@@ -426,7 +539,13 @@ mod tests {
         let jobs = Arc::new(Jobs::new());
         let env = Arc::new(AgentEnv::default());
         (
-            ShellTool::new(Shell::resolve(""), timeout, jobs.clone(), env.clone()),
+            ShellTool::new(
+                Shell::resolve(""),
+                timeout,
+                jobs.clone(),
+                env.clone(),
+                Arc::new(Foreground::new()),
+            ),
             JobTool::new(jobs),
             env,
         )
@@ -482,6 +601,63 @@ mod tests {
             out.text_content(),
             "(no output)\ntimed out after 1 seconds; the process tree was killed"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_command_moves_to_the_background_without_restarting() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, job, _) = tools(Duration::from_secs(120));
+        let shell = Arc::new(shell);
+        let command = if shell.shell.is_posix() {
+            "echo started; sleep 30; echo finished"
+        } else {
+            "Write-Output started; Start-Sleep 30; Write-Output finished"
+        };
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let update = UpdateSink::new(move |line| sink.lock().unwrap().push(line));
+        let context = ctx(dir.path(), CancellationToken::new(), update);
+        let foreground = shell.foreground.clone();
+        assert!(!foreground.background("c1"), "nothing runs yet");
+        let (tool, call_ctx) = (shell.clone(), context.clone());
+        let call = tokio::spawn(async move { tool.call(json!({"command": command}), &call_ctx).await });
+
+        // The command is listed while it runs; wait until it has printed its first line.
+        for _ in 0..300 {
+            if !seen.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(*seen.lock().unwrap(), ["started"]);
+        assert_eq!(foreground.running(), [("c1".to_string(), command.to_string())]);
+
+        let asked = Instant::now();
+        assert!(foreground.background("c1"));
+        let out = call.await.unwrap();
+        assert!(
+            asked.elapsed() < Duration::from_secs(5),
+            "the call returns at once"
+        );
+        assert!(!out.is_error);
+        assert_eq!(
+            out.text_content(),
+            "moved to the background as job-1; use the job tool to read its output or stop it"
+        );
+        assert_eq!(out.details.unwrap()["job_id"], "job-1");
+        assert!(foreground.running().is_empty());
+
+        // The same process goes on: it is running, and keeps the output it had produced.
+        let text = job
+            .call(json!({"action": "output", "id": "job-1"}), &context)
+            .await
+            .text_content();
+        assert!(text.starts_with("started\n[job-1: running"), "{text}");
+        assert!(!text.contains("finished"), "{text}");
+        let entries = shell.jobs.entries();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].running && entries[0].command == command, "{entries:?}");
+        assert!(shell.jobs.kill("job-1"));
     }
 
     #[tokio::test]

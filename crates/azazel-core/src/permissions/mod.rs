@@ -67,6 +67,9 @@ impl FromStr for Rule {
     }
 }
 
+/// The source of a rule that lasts until azazel exits.
+pub const SESSION: &str = "session";
+
 /// What a tool's subjects are, which decides how rule patterns match them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubjectKind {
@@ -418,7 +421,7 @@ impl PermissionState {
         write(&self.rules).push(SourcedRule {
             rule,
             kind,
-            source: "session".to_string(),
+            source: SESSION.to_string(),
         });
     }
 
@@ -462,6 +465,91 @@ impl PermissionState {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(&self.local_config, doc.to_string())
+    }
+
+    /// Removes a rule that was added for this session only. False when there is none.
+    pub fn remove_session_rule(&self, rule: &Rule, kind: RuleKind) -> bool {
+        let mut rules = write(&self.rules);
+        let found = rules
+            .iter()
+            .position(|r| r.source == SESSION && r.kind == kind && &r.rule == rule);
+        if let Some(at) = found {
+            rules.remove(at);
+        }
+        found.is_some()
+    }
+
+    /// Forgets an approval given with "always allow": the rule stops applying now and leaves
+    /// `.azazel/config.local.toml`. False when neither had it.
+    pub fn forget_allow(&self, rule: &Rule) -> std::io::Result<bool> {
+        let source = self.local_config.display().to_string();
+        let in_session = {
+            let mut rules = write(&self.rules);
+            let before = rules.len();
+            rules.retain(|r| !(r.kind == RuleKind::Allow && r.source == source && &r.rule == rule));
+            rules.len() != before
+        };
+        let wanted = rule.to_string();
+        let in_file = self.edit_local_allow(|allow| {
+            let before = allow.len();
+            allow.retain(|value| value.as_str() != Some(&wanted));
+            before - allow.len()
+        })?;
+        Ok(in_session || in_file > 0)
+    }
+
+    /// Forgets every remembered approval and every rule added for this session. Returns how many
+    /// rules went.
+    pub fn clear_remembered(&self) -> std::io::Result<usize> {
+        let source = self.local_config.display().to_string();
+        let (mut session, mut remembered) = (0, 0);
+        write(&self.rules).retain(|r| {
+            if r.source == SESSION {
+                session += 1;
+                false
+            } else if r.kind == RuleKind::Allow && r.source == source {
+                remembered += 1;
+                false
+            } else {
+                true
+            }
+        });
+        let in_file = self.edit_local_allow(|allow| {
+            let count = allow.len();
+            allow.clear();
+            count
+        })?;
+        // A remembered rule is in the file and in this session: it counts once. The file can
+        // hold more than the session does when the project is not trusted.
+        Ok(session + remembered.max(in_file))
+    }
+
+    /// Changes `permissions.allow` in `.azazel/config.local.toml` and returns what `change`
+    /// returns. The file is left alone when it has no such list or nothing changed.
+    fn edit_local_allow(
+        &self,
+        change: impl FnOnce(&mut toml_edit::Array) -> usize,
+    ) -> std::io::Result<usize> {
+        let text = match std::fs::read_to_string(&self.local_config) {
+            Ok(text) => text,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        let mut doc: toml_edit::DocumentMut = text
+            .parse()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{e}")))?;
+        let Some(allow) = doc
+            .get_mut("permissions")
+            .and_then(|permissions| permissions.get_mut("allow"))
+            .and_then(|allow| allow.as_array_mut())
+        else {
+            return Ok(0);
+        };
+        let changed = change(allow);
+        if changed > 0 {
+            std::fs::write(&self.local_config, doc.to_string())?;
+        }
+        Ok(changed)
     }
 
     fn ctx<'a>(&'a self, cwd: &'a Path) -> MatchCtx<'a> {

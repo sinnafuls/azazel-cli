@@ -20,11 +20,11 @@ use azazel_core::{ArtifactScheme, ArtifactStore, ExtError, Extension, FileTracke
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool};
 pub use read::ReadTool;
 pub use search::{GlobTool, GrepTool};
-pub use shell::{JobTool, Jobs, ShellTool};
+pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
 pub use write::{EditTool, WriteTool};
 
 /// Registers the core tools, the `artifact://` scheme, and the services they share:
-/// [`FileTracker`], [`ArtifactStore`], [`Jobs`], [`AgentEnv`] and [`TodoStore`].
+/// [`FileTracker`], [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
 pub struct CoreToolsExt {
     pub shell: Shell,
     pub shell_timeout: Duration,
@@ -46,6 +46,8 @@ impl Extension for CoreToolsExt {
         let jobs = Arc::new(Jobs::new());
         let env = Arc::new(AgentEnv::default());
         let todos = Arc::new(TodoStore::default());
+        let foreground = Arc::new(Foreground::new());
+        r.service(foreground.clone());
         r.service(tracker.clone());
         r.service(artifacts.clone());
         r.service(jobs.clone());
@@ -63,6 +65,7 @@ impl Extension for CoreToolsExt {
             self.shell_timeout,
             jobs.clone(),
             env,
+            foreground,
         )));
         r.tool(Arc::new(JobTool::new(jobs)));
         r.tool(Arc::new(TodoTool::new(todos)));

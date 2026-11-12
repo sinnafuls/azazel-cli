@@ -236,6 +236,9 @@ pub struct RunOptions {
     pub on_line: Option<LineSink>,
     /// Lines to keep from the start and the end of the output.
     pub keep: (usize, usize),
+    /// Cancelling this lets go of the command instead of ending it: [`run`] returns at once and
+    /// hands the running process over in [`RunOutput::detached`].
+    pub detach: Option<CancellationToken>,
 }
 
 impl RunOptions {
@@ -248,6 +251,7 @@ impl RunOptions {
             stdin: None,
             on_line: None,
             keep: (100, 300),
+            detach: None,
         }
     }
 }
@@ -260,6 +264,22 @@ pub struct RunOutput {
     pub output: OutputBuffer,
     pub timed_out: bool,
     pub cancelled: bool,
+    /// The process, still running, when the caller asked to let go of it.
+    pub detached: Option<Detached>,
+}
+
+/// A command that was let go of while it ran.
+pub struct Detached {
+    /// The process tree; it dies when this is dropped.
+    pub child: Box<dyn ChildWrapper>,
+    /// Its output from here on, line by line.
+    pub lines: mpsc::UnboundedReceiver<String>,
+}
+
+impl std::fmt::Debug for Detached {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Detached").field("pid", &self.child.id()).finish()
+    }
 }
 
 /// Starts `script` in `shell` as the leader of its own process group (Unix) or job (Windows), so
@@ -350,8 +370,17 @@ pub async fn run(shell: &Shell, script: &str, options: RunOptions) -> io::Result
     };
     tokio::pin!(deadline);
 
+    let let_go = async {
+        match &options.detach {
+            Some(detach) => detach.cancelled().await,
+            None => std::future::pending().await,
+        }
+    };
+    tokio::pin!(let_go);
+
     let mut timed_out = false;
     let mut cancelled = false;
+    let mut detached = false;
     let mut pipes_open = true;
     let status = loop {
         tokio::select! {
@@ -368,8 +397,21 @@ pub async fn run(shell: &Shell, script: &str, options: RunOptions) -> io::Result
                 cancelled = true;
                 break None;
             }
+            _ = &mut let_go => {
+                detached = true;
+                break None;
+            }
         }
     };
+    if detached {
+        return Ok(RunOutput {
+            code: None,
+            output,
+            timed_out: false,
+            cancelled: false,
+            detached: Some(Detached { child, lines: rx }),
+        });
+    }
     if timed_out || cancelled {
         let _ = child.start_kill();
         let _ = child.wait().await;
@@ -389,6 +431,7 @@ pub async fn run(shell: &Shell, script: &str, options: RunOptions) -> io::Result
         output,
         timed_out,
         cancelled,
+        detached: None,
     })
 }
 

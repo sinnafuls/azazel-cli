@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, PoisonError, RwLock};
 
 use azazel_ai::{ModelSpec, ThinkingLevel};
 use serde_json::{Map, Value};
@@ -79,32 +79,68 @@ pub struct InvalidDef {
     pub error: String,
 }
 
-/// The definitions of a session by name, with the files that failed to parse.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct AgentDefs {
+struct DefSet {
     defs: BTreeMap<String, Arc<AgentDef>>,
     invalid: Vec<InvalidDef>,
 }
 
+/// The definitions of a session by name, with the files that failed to parse. Shared by
+/// everything that starts agents, so that reading the files again ([`AgentDefs::replace`])
+/// reaches all of them.
+#[derive(Debug, Default)]
+pub struct AgentDefs {
+    set: RwLock<DefSet>,
+}
+
+impl Clone for AgentDefs {
+    fn clone(&self) -> Self {
+        AgentDefs {
+            set: RwLock::new(self.read().clone()),
+        }
+    }
+}
+
+impl PartialEq for AgentDefs {
+    fn eq(&self, other: &Self) -> bool {
+        *self.read() == *other.read()
+    }
+}
+
 impl AgentDefs {
+    fn read(&self) -> std::sync::RwLockReadGuard<'_, DefSet> {
+        self.set.read().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set_mut(&mut self) -> &mut DefSet {
+        self.set.get_mut().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn get(&self, name: &str) -> Option<Arc<AgentDef>> {
-        self.defs.get(name).cloned()
+        self.read().defs.get(name).cloned()
     }
 
     /// Sorted by name.
     pub fn list(&self) -> Vec<Arc<AgentDef>> {
-        self.defs.values().cloned().collect()
+        self.read().defs.values().cloned().collect()
     }
 
-    pub fn invalid(&self) -> &[InvalidDef] {
-        &self.invalid
+    pub fn invalid(&self) -> Vec<InvalidDef> {
+        self.read().invalid.clone()
+    }
+
+    /// Takes over the definitions of `other` (the files read again). Agents already running keep
+    /// the definition they started with.
+    pub fn replace(&self, other: AgentDefs) {
+        let other = other.set.into_inner().unwrap_or_else(PoisonError::into_inner);
+        *self.set.write().unwrap_or_else(PoisonError::into_inner) = other;
     }
 
     /// Applies `[agents.<name>]` config overrides (`model`, `thinking`) to the definitions that exist.
     /// An empty `model` override removes the definition's own chain.
     pub fn apply_overrides(&mut self, overrides: &BTreeMap<String, AgentOverride>) {
         for (name, over) in overrides {
-            let Some(def) = self.defs.get_mut(name) else {
+            let Some(def) = self.set_mut().defs.get_mut(name) else {
                 continue;
             };
             if over.model.is_none() && over.thinking.is_none() {
@@ -123,9 +159,9 @@ impl AgentDefs {
     fn load(&mut self, file: &Path, text: &str, source: DefSource) {
         match parse_def(file, text, source) {
             Ok(def) => {
-                self.defs.insert(def.name.clone(), Arc::new(def));
+                self.set_mut().defs.insert(def.name.clone(), Arc::new(def));
             }
-            Err(error) => self.invalid.push(InvalidDef {
+            Err(error) => self.set_mut().invalid.push(InvalidDef {
                 path: file.to_path_buf(),
                 error,
             }),
@@ -459,7 +495,7 @@ pub fn discover(builtin: &[(&str, &str)], roots: &[(PathBuf, DefSource)]) -> Age
         for file in files {
             match std::fs::read_to_string(&file) {
                 Ok(text) => defs.load(&file, &text, *source),
-                Err(e) => defs.invalid.push(InvalidDef {
+                Err(e) => defs.set_mut().invalid.push(InvalidDef {
                     path: file,
                     error: format!("cannot read the file: {e}"),
                 }),

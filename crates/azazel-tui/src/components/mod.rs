@@ -6,12 +6,14 @@ pub mod diff;
 pub mod editor;
 pub mod markdown;
 pub mod overlay;
+pub mod pager;
 pub mod roster;
 pub mod select;
 pub mod spinner;
 pub mod status;
 pub mod todo;
 pub mod tool_card;
+pub mod vim;
 
 use std::time::Duration;
 

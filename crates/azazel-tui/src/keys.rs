@@ -195,6 +195,24 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
         ("history_search", vec![ctrl('r')]),
         ("paste_image", vec![ctrl('v')]),
         ("complete", vec![plain(KeyCode::Tab)]),
+        ("external_editor", vec![ctrl('g')]),
+        (
+            "dequeue",
+            vec![alt(KeyCode::Up), KeyCombo::new(KeyCode::Up, KeyModifiers::SHIFT)],
+        ),
+        ("stash", vec![ctrl('s')]),
+        ("cycle_thinking", vec![alt(KeyCode::Char('t'))]),
+        ("cycle_model", vec![alt(KeyCode::Char('m'))]),
+        (
+            "cycle_model_back",
+            vec![KeyCombo::new(
+                KeyCode::Char('m'),
+                KeyModifiers::ALT | KeyModifiers::SHIFT,
+            )],
+        ),
+        ("transcript", vec![plain(KeyCode::F(2))]),
+        ("retry", vec![plain(KeyCode::F(5))]),
+        ("background", vec![ctrl('b')]),
     ]
 }
 
@@ -469,7 +487,7 @@ mod tests {
     #[test]
     fn default_keymap_has_documented_bindings() {
         let keymap = Keymap::defaults();
-        let expected: [(&str, &[&str]); 14] = [
+        let expected: [(&str, &[&str]); 23] = [
             ("submit", &["enter"]),
             ("follow_up", &["alt+enter"]),
             ("newline", &["shift+enter", "ctrl+j"]),
@@ -484,6 +502,15 @@ mod tests {
             ("history_search", &["ctrl+r"]),
             ("paste_image", &["ctrl+v"]),
             ("complete", &["tab"]),
+            ("external_editor", &["ctrl+g"]),
+            ("dequeue", &["alt+up", "shift+up"]),
+            ("stash", &["ctrl+s"]),
+            ("cycle_thinking", &["alt+t"]),
+            ("cycle_model", &["alt+m"]),
+            ("cycle_model_back", &["alt+shift+m"]),
+            ("transcript", &["f2"]),
+            ("retry", &["f5"]),
+            ("background", &["ctrl+b"]),
         ];
         assert_eq!(keymap.actions().count(), expected.len());
         for (action, keys) in expected {
