@@ -85,16 +85,21 @@ pub fn render(files: &[ContextFile]) -> Option<String> {
 }
 
 /// The `context_files` part of the system prompt. Files are re-read for every request, so edits
-/// take effect on the next turn.
+/// take effect on the next turn. Rules that always apply follow the files, inside the same cap.
 pub struct ContextFilesPart {
     pub paths: Paths,
     pub claude_compat: bool,
+    pub rules: Option<std::sync::Arc<crate::rules::Rules>>,
 }
 
 #[async_trait]
 impl SystemPartProvider for ContextFilesPart {
-    async fn render(&self, _: &AgentInfo) -> Option<String> {
-        render(&load(&self.paths, self.claude_compat))
+    async fn render(&self, agent: &AgentInfo) -> Option<String> {
+        let mut files = load(&self.paths, self.claude_compat);
+        if let Some(rules) = &self.rules {
+            files.extend(rules.always_for(agent));
+        }
+        render(&files)
     }
 }
 
@@ -102,6 +107,8 @@ impl SystemPartProvider for ContextFilesPart {
 pub struct ContextExt {
     pub paths: Paths,
     pub claude_compat: bool,
+    /// The rule files, whose always-on rules belong to this part.
+    pub rules: Option<std::sync::Arc<crate::rules::Rules>>,
 }
 
 impl crate::ext::Extension for ContextExt {
@@ -115,6 +122,7 @@ impl crate::ext::Extension for ContextExt {
             std::sync::Arc::new(ContextFilesPart {
                 paths: self.paths.clone(),
                 claude_compat: self.claude_compat,
+                rules: self.rules.clone(),
             }),
         );
         Ok(())

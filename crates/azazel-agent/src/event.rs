@@ -58,6 +58,7 @@ pub enum AgentCmd {
 
 /// One prompt produces `AgentStart`, then per request `TurnStart`, `MessageStart`, `Stream`*,
 /// `MessageEnd`, (`ToolStart`, `ToolUpdate`*, `ToolEnd`)*, `TurnEnd`, and finally `Idle` or `Failed`.
+/// A request whose reply a rule withdrew has `Rule` in place of `MessageEnd`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentEvent {
@@ -95,6 +96,11 @@ pub enum AgentEvent {
     Fallback {
         from: ModelRef,
         to: ModelRef,
+    },
+    /// A rule matched the reply as it was written: the message in progress was discarded and the
+    /// request is sent again with the rule added.
+    Rule {
+        name: String,
     },
     Compaction {
         tokens_before: u64,

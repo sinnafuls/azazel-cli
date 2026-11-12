@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, PoisonError, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Services, ToolOutput};
@@ -16,7 +16,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{HookConfig, HookKind, PermissionMode};
+use crate::config::{HookConfig, HookKind, Layer, PermissionMode};
 use crate::ext::{
     Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Level, Outcome, Registrar, StartSource,
 };
@@ -56,7 +56,7 @@ const TOOL_ALIASES: [(&str, &str); 9] = [
     ("web_search", "WebSearch"),
     ("task", "Task"),
 ];
-const KINDS: [EventKind; 11] = [
+const KINDS: [EventKind; 16] = [
     EventKind::SessionStart,
     EventKind::SessionEnd,
     EventKind::UserPrompt,
@@ -68,7 +68,84 @@ const KINDS: [EventKind; 11] = [
     EventKind::Stop,
     EventKind::PermissionRequest,
     EventKind::Notification,
+    EventKind::FileChanged,
+    EventKind::ConfigChange,
+    EventKind::WorktreeCreate,
+    EventKind::WorktreeRemove,
+    EventKind::Setup,
 ];
+
+/// Where a hook that no config file holds is said to come from.
+const OTHER_SOURCE: &str = "environment or command line";
+
+/// Gives text to the lead agent from outside a turn: a steer message while it works, a new
+/// prompt when it is idle. Registered as a service by whoever runs the lead; `wake` hooks use it.
+pub struct Wake(pub Arc<dyn Fn(String) + Send + Sync>);
+
+/// For each event, the file each of its hooks comes from, in the order the merged configuration
+/// lists them (layer by layer).
+pub fn hook_sources(layers: &[Layer]) -> BTreeMap<String, Vec<String>> {
+    let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for layer in layers {
+        let Some(hooks) = layer.table.get("hooks").and_then(toml::Value::as_table) else {
+            continue;
+        };
+        for (event, entries) in hooks {
+            let count = entries.as_array().map_or(0, Vec::len);
+            sources
+                .entry(event.clone())
+                .or_default()
+                .extend(std::iter::repeat_n(layer.path.display().to_string(), count));
+        }
+    }
+    sources
+}
+
+/// How a hook's last run ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LastRun {
+    /// `ok`, `blocked: <reason>`, `failed: <why>`, `allowed` or `asked`.
+    pub result: String,
+    pub duration: Duration,
+}
+
+/// One hook as `/hooks` shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookInfo {
+    /// The name in `[[hooks.<event>]]`.
+    pub event: &'static str,
+    /// The config file, or `skill <name>`.
+    pub source: String,
+    pub matcher: Option<String>,
+    /// The `if` rule.
+    pub when: Option<String>,
+    /// `command`, `http`, `prompt` or `agent`.
+    pub kind: &'static str,
+    /// The command line, the URL, or the start of the prompt.
+    pub target: String,
+    /// `async`, `once`, `wake`, and the timeout when it is not the default.
+    pub options: Vec<String>,
+    /// `None` when the hook has not run in this process.
+    pub last: Option<LastRun>,
+}
+
+/// The hooks that are loaded and how each last ran; a service.
+pub struct Hooks(Arc<Inner>);
+
+impl Hooks {
+    /// False when hooks are switched off for this run (`--no-hooks`, or inside a hook).
+    pub fn enabled(&self) -> bool {
+        !self.0.disabled
+    }
+
+    /// Config hooks in event order, then the hooks of the skills used in this session.
+    pub fn list(&self) -> Vec<HookInfo> {
+        let skills = self.0.skills.read().unwrap_or_else(PoisonError::into_inner);
+        let mut hooks: Vec<&Arc<Hook>> = self.0.config.iter().collect();
+        hooks.sort_by_key(|hook| HookEvent::ALL.iter().position(|event| *event == hook.event));
+        hooks.into_iter().chain(skills.iter()).map(|hook| hook.info()).collect()
+    }
+}
 
 /// Runs the `[[hooks.<event>]]` entries of the config, and the `hooks` a skill carries once that
 /// skill has been used in the session (until the session ends).
@@ -100,6 +177,8 @@ pub struct HooksExt {
     pub disabled: bool,
     /// Whether the project is trusted. Hooks of the project's own skills run only when it is.
     pub trusted: bool,
+    /// Where each hook comes from, as [`hook_sources`] gives it; shown by `/hooks`.
+    pub sources: BTreeMap<String, Vec<String>>,
 }
 
 impl Extension for HooksExt {
@@ -108,17 +187,18 @@ impl Extension for HooksExt {
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
-        if self.disabled {
-            return Ok(());
-        }
         let mut config = Vec::new();
         for (name, entries) in &self.hooks {
             let Some(event) = HookEvent::from_config(name) else {
                 tracing::warn!("hooks for unknown event `{name}` are ignored");
                 continue;
             };
+            let sources = self.sources.get(name);
             for (index, entry) in entries.iter().enumerate() {
-                match compile(event, entry) {
+                let source = sources
+                    .and_then(|files| files.get(index))
+                    .map_or(OTHER_SOURCE, String::as_str);
+                match compile(event, entry, source) {
                     Ok(hook) => config.push(Arc::new(hook)),
                     Err(problem) => tracing::warn!("{name} hook #{} is ignored: {problem}", index + 1),
                 }
@@ -134,8 +214,14 @@ impl Extension for HooksExt {
             paths: self.paths.clone(),
             claude_compat: self.claude_compat,
             trusted: self.trusted,
+            disabled: self.disabled,
             http: LazyLock::new(reqwest::Client::new),
         });
+        r.service(Arc::new(Hooks(inner.clone())));
+        // Loaded but never run: `/hooks` can still say what was skipped.
+        if self.disabled {
+            return Ok(());
+        }
         if let Some(skills) = r.services().get::<SkillRegistry>() {
             let hooks = Arc::downgrade(&inner);
             skills.on_first_use(Arc::new(move |skill: &Skill| {
@@ -167,10 +253,15 @@ enum HookEvent {
     PostCompact,
     PermissionRequest,
     Notification,
+    FileChanged,
+    ConfigChange,
+    WorktreeCreate,
+    WorktreeRemove,
+    Setup,
 }
 
 impl HookEvent {
-    const ALL: [HookEvent; 13] = [
+    const ALL: [HookEvent; 18] = [
         HookEvent::PreToolUse,
         HookEvent::PostToolUse,
         HookEvent::PostToolUseFailure,
@@ -184,6 +275,11 @@ impl HookEvent {
         HookEvent::PostCompact,
         HookEvent::PermissionRequest,
         HookEvent::Notification,
+        HookEvent::FileChanged,
+        HookEvent::ConfigChange,
+        HookEvent::WorktreeCreate,
+        HookEvent::WorktreeRemove,
+        HookEvent::Setup,
     ];
 
     /// The name in `[[hooks.<event>]]`.
@@ -202,6 +298,11 @@ impl HookEvent {
             HookEvent::PostCompact => "post_compact",
             HookEvent::PermissionRequest => "permission_request",
             HookEvent::Notification => "notification",
+            HookEvent::FileChanged => "file_changed",
+            HookEvent::ConfigChange => "config_change",
+            HookEvent::WorktreeCreate => "worktree_create",
+            HookEvent::WorktreeRemove => "worktree_remove",
+            HookEvent::Setup => "setup",
         }
     }
 
@@ -221,6 +322,11 @@ impl HookEvent {
             HookEvent::PostCompact => "PostCompact",
             HookEvent::PermissionRequest => "PermissionRequest",
             HookEvent::Notification => "Notification",
+            HookEvent::FileChanged => "FileChanged",
+            HookEvent::ConfigChange => "ConfigChange",
+            HookEvent::WorktreeCreate => "WorktreeCreate",
+            HookEvent::WorktreeRemove => "WorktreeRemove",
+            HookEvent::Setup => "Setup",
         }
     }
 
@@ -260,11 +366,22 @@ struct Hook {
     event: HookEvent,
     /// Matches the whole tool name.
     matcher: Option<Regex>,
+    /// The matcher as written.
+    matcher_text: Option<String>,
     when: Option<Rule>,
     action: Action,
     timeout: Duration,
     detached: bool,
+    /// Run at most one time per session.
+    once: bool,
+    /// Give the output of a detached run to the lead agent.
+    wake: bool,
     skill: Option<Arc<SkillOrigin>>,
+    /// The config file the hook is written in.
+    source: String,
+    /// For a `once` hook: the session it ran in.
+    ran_in: Mutex<Option<String>>,
+    last: Mutex<Option<LastRun>>,
 }
 
 impl Hook {
@@ -294,6 +411,50 @@ impl Hook {
                 || subjects(tool, input, posix)
                     .iter()
                     .any(|subject| rule.matches_subject(tool, subject, scope)))
+    }
+
+    /// Whether the hook may run now: always, or for a `once` hook the first time in `session`.
+    fn claim(&self, session: &str) -> bool {
+        if !self.once {
+            return true;
+        }
+        let mut ran_in = lock(&self.ran_in);
+        if ran_in.as_deref() == Some(session) {
+            return false;
+        }
+        *ran_in = Some(session.to_string());
+        true
+    }
+
+    fn info(&self) -> HookInfo {
+        let (kind, target) = match &self.action {
+            Action::Command(command) => ("command", clip(command, 80)),
+            Action::Http { url, .. } => ("http", clip(url, 80)),
+            Action::Prompt { prompt, .. } => ("prompt", clip(prompt, 80)),
+            Action::Agent { prompt } => ("agent", clip(prompt, 80)),
+        };
+        let mut options = Vec::new();
+        for (on, name) in [(self.detached, "async"), (self.once, "once"), (self.wake, "wake")] {
+            if on {
+                options.push(name.to_string());
+            }
+        }
+        if self.timeout.as_secs() != DEFAULT_TIMEOUT_SECS {
+            options.push(format!("timeout {} s", self.timeout.as_secs()));
+        }
+        HookInfo {
+            event: self.event.config_name(),
+            source: match &self.skill {
+                Some(skill) => format!("skill {}", skill.name),
+                None => self.source.clone(),
+            },
+            matcher: self.matcher_text.clone(),
+            when: self.when.as_ref().map(Rule::to_string),
+            kind,
+            target,
+            options,
+            last: lock(&self.last).clone(),
+        }
     }
 
     /// How warnings name this hook.
@@ -333,7 +494,15 @@ fn tool_matcher(pattern: Option<&str>) -> Result<Option<Regex>, String> {
     }
 }
 
-fn compile(event: HookEvent, config: &HookConfig) -> Result<Hook, String> {
+/// The matcher as `/hooks` shows it: nothing for one that matches every tool.
+fn matcher_text(pattern: Option<&str>) -> Option<String> {
+    pattern
+        .map(str::trim)
+        .filter(|pattern| !matches!(*pattern, "" | "*"))
+        .map(str::to_string)
+}
+
+fn compile(event: HookEvent, config: &HookConfig, source: &str) -> Result<Hook, String> {
     let required = |value: &Option<String>, key: &str| {
         value
             .clone()
@@ -361,14 +530,23 @@ fn compile(event: HookEvent, config: &HookConfig) -> Result<Hook, String> {
             prompt: required(&config.prompt, "prompt")?,
         },
     };
+    if config.wake && !config.detached {
+        return Err("`wake` needs `async = true`: a hook that is waited for answers directly".to_string());
+    }
     Ok(Hook {
         event,
         matcher: tool_matcher(config.matcher.as_deref())?,
+        matcher_text: matcher_text(config.matcher.as_deref()),
         when: config.when.as_deref().map(str::parse::<Rule>).transpose()?,
         action,
         timeout: Duration::from_secs(config.timeout),
         detached: config.detached,
+        once: config.once,
+        wake: config.wake,
         skill: None,
+        source: source.to_string(),
+        ran_in: Mutex::default(),
+        last: Mutex::default(),
     })
 }
 
@@ -402,7 +580,8 @@ fn skill_hooks(skill: &Skill) -> Vec<Hook> {
             continue;
         };
         for group in groups.as_array().into_iter().flatten() {
-            let matcher = match tool_matcher(group.get("matcher").and_then(Value::as_str)) {
+            let written = group.get("matcher").and_then(Value::as_str);
+            let matcher = match tool_matcher(written) {
                 Ok(matcher) => matcher,
                 Err(problem) => {
                     tracing::warn!("skill {}: {name} hooks are ignored: {problem}", skill.name);
@@ -425,6 +604,7 @@ fn skill_hooks(skill: &Skill) -> Vec<Hook> {
                 out.push(Hook {
                     event,
                     matcher: matcher.clone(),
+                    matcher_text: matcher_text(written),
                     when: None,
                     action: Action::Command(command.to_string()),
                     timeout: Duration::from_secs(
@@ -434,7 +614,12 @@ fn skill_hooks(skill: &Skill) -> Vec<Hook> {
                             .unwrap_or(DEFAULT_TIMEOUT_SECS),
                     ),
                     detached: false,
+                    once: entry.get("once").and_then(Value::as_bool).unwrap_or(false),
+                    wake: false,
                     skill: Some(origin.clone()),
+                    source: String::new(),
+                    ran_in: Mutex::default(),
+                    last: Mutex::default(),
                 });
             }
         }
@@ -696,6 +881,8 @@ struct Inner {
     paths: Paths,
     claude_compat: bool,
     trusted: bool,
+    /// Hooks are loaded but none runs.
+    disabled: bool,
     http: LazyLock<reqwest::Client>,
 }
 
@@ -858,6 +1045,9 @@ impl Inner {
             {
                 continue;
             }
+            if !hook.claim(&ctx.session_id) {
+                continue;
+            }
             let job = Job {
                 payload: payload(&hook, &occasion, &common, tool),
                 cwd: cwd.clone(),
@@ -894,7 +1084,19 @@ impl Inner {
         if hook.detached {
             let (hooks, hook) = (self.clone(), hook.clone());
             tokio::spawn(async move {
-                hooks.execute(&hook, job).await;
+                let wake = job.services.get::<Wake>().filter(|_| hook.wake);
+                let reply = hooks.execute(&hook, job).await;
+                let output = match reply.verdict {
+                    Verdict::Block(reason) => Some(reason),
+                    _ => reply.context.or(reply.stdout),
+                };
+                if let (Some(wake), Some(output)) = (wake, output) {
+                    (wake.0)(format!(
+                        "<hook-result event=\"{}\">\n{}\n</hook-result>",
+                        hook.event.config_name(),
+                        output.trim()
+                    ));
+                }
             });
             return Reply::default();
         }
@@ -903,12 +1105,26 @@ impl Inner {
 
     /// A hook that fails warns the user and answers nothing.
     async fn execute(&self, hook: &Hook, job: Job) -> Reply {
+        let started = Instant::now();
         let result = match &hook.action {
             Action::Command(command) => self.command(hook, command, &job).await,
             Action::Http { url, headers } => self.http(hook, url, headers, &job).await,
             Action::Prompt { prompt, chain } => self.prompt(hook, prompt, chain, &job).await,
             Action::Agent { prompt } => self.agent(hook, prompt, &job).await,
         };
+        let outcome = match &result {
+            Ok(reply) => match &reply.verdict {
+                Verdict::Pass => "ok".to_string(),
+                Verdict::Block(reason) => format!("blocked: {}", clip(reason, 120)),
+                Verdict::Allow => "allowed".to_string(),
+                Verdict::Ask => "asked".to_string(),
+            },
+            Err(problem) => format!("failed: {}", clip(problem, 120)),
+        };
+        *lock(&hook.last) = Some(LastRun {
+            result: outcome,
+            duration: started.elapsed(),
+        });
         result.unwrap_or_else(|problem| {
             job.warn(&format!("{} {problem}", hook.label()));
             Reply::default()
@@ -1347,6 +1563,39 @@ impl EventHandler for Dispatcher {
             }
             Event::Notification { text, .. } => {
                 let occasion = Occasion::new(HookEvent::Notification).field("message", text.as_str());
+                hooks.run(ctx, occasion).await;
+                Outcome::Continue
+            }
+            Event::FileChanged { agent, path, tool } => {
+                // As a tool event, so `matcher` and `if` select by tool and by path.
+                let file = path.display().to_string();
+                let input = serde_json::json!({ "path": file });
+                let occasion = Occasion::new(HookEvent::FileChanged)
+                    .agent(agent)
+                    .tool(tool, &input)
+                    .field("file_path", file.as_str());
+                hooks.run(ctx, occasion).await;
+                Outcome::Continue
+            }
+            Event::ConfigChange { source } => {
+                let occasion = Occasion::new(HookEvent::ConfigChange).field("source", source.as_str());
+                hooks.run(ctx, occasion).await;
+                Outcome::Continue
+            }
+            Event::WorktreeCreate { .. } | Event::WorktreeRemove { .. } => {
+                let (event, agent_id, path) = match ev {
+                    Event::WorktreeCreate { agent_id, path } => (HookEvent::WorktreeCreate, agent_id, path),
+                    Event::WorktreeRemove { agent_id, path } => (HookEvent::WorktreeRemove, agent_id, path),
+                    _ => return Outcome::Continue,
+                };
+                let occasion = Occasion::new(event)
+                    .field("worktree_path", path.display().to_string())
+                    .field("agent_id", agent_id.as_str());
+                hooks.run(ctx, occasion).await;
+                Outcome::Continue
+            }
+            Event::Setup { trigger } => {
+                let occasion = Occasion::new(HookEvent::Setup).field("trigger", trigger.as_str());
                 hooks.run(ctx, occasion).await;
                 Outcome::Continue
             }

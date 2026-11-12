@@ -36,6 +36,21 @@ pub trait AgentHooks: Send + Sync {
     }
 
     async fn post_compact(&self, _agent: &AgentInfo) {}
+
+    /// Called with the text of the reply so far each time more of it arrives. Returning a note
+    /// withdraws the reply: the request is cancelled, nothing of the reply is kept, the note is
+    /// added as a user message and the request is sent again. A note that opens with
+    /// `<rule name="…">` gives the stop its name in [`crate::AgentEvent::Rule`].
+    ///
+    /// Not async: it runs for every fragment the model sends.
+    fn stream_text(&self, _agent: &AgentInfo, _so_far: &str) -> Option<String> {
+        None
+    }
+
+    /// Like [`AgentHooks::stream_text`] for the reply's thinking.
+    fn stream_thinking(&self, _agent: &AgentInfo, _so_far: &str) -> Option<String> {
+        None
+    }
 }
 
 pub struct NoHooks;

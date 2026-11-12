@@ -23,6 +23,7 @@ use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::permissions::shell::guard_env;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::prompt::BasePromptExt;
+use azazel_core::rules::{self, Rules, RulesExt};
 use azazel_core::skills::{SkillsExt, standard_roots};
 use azazel_core::{
     ArtifactStore, Config, EntryKind, Event, ExtCtx, Extension, FileTracker, Headless, Level, LoadOptions,
@@ -279,6 +280,7 @@ impl App {
             loaded.config.checkpoints.enabled = false;
         }
         let permissions = Arc::new(PermissionState::new(&paths, &loaded).map_err(|e| anyhow!(e))?);
+        let hook_sources = azazel_core::hooks::hook_sources(&loaded.layers);
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;
 
@@ -349,10 +351,20 @@ impl App {
         registry.load(&PermissionsExt {
             state: permissions.clone(),
         })?;
+        // Rule files count as context files; `[[stream_rules]]` are settings and always apply.
+        let rules = Arc::new(Rules::new(rules::Sources {
+            paths: paths.clone(),
+            files: !cli.skips(Discovery::ContextFiles),
+            claude_compat: compat,
+            compat: config.rules.compat,
+            stream_rules: config.stream_rules.clone(),
+        }));
+        registry.load(&RulesExt { rules: rules.clone() })?;
         if !cli.skips(Discovery::ContextFiles) {
             registry.load(&ContextExt {
                 paths: paths.clone(),
                 claude_compat: compat,
+                rules: Some(rules),
             })?;
         }
         if !cli.skips(Discovery::Skills) {
@@ -399,6 +411,7 @@ impl App {
             claude_compat: compat,
             disabled: cli.skips(Discovery::Hooks) || std::env::var_os("AZAZEL_HOOKS_DISABLED").is_some(),
             trusted,
+            sources: hook_sources,
         })?;
         #[cfg(feature = "browser")]
         registry.load(&azazel_browser::BrowserExt {

@@ -747,3 +747,139 @@ async fn reading_a_web_address_is_decided_by_the_rules_for_web_fetch() {
         .unwrap_err();
     assert!(unlisted.starts_with("permission required"), "{unlisted}");
 }
+
+// ---------------------------------------------------------------- destructive commands
+
+const DESTRUCTIVE: [&str; 17] = [
+    "rm -rf /",
+    "rm -rf ~",
+    "rm -rf ..",
+    "rm -rf ../elsewhere",
+    "git reset --hard",
+    "git clean -fd",
+    "git checkout -- .",
+    "git restore .",
+    "git branch -D old",
+    "git stash drop",
+    "git stash clear",
+    "dd if=/dev/zero of=/dev/sda",
+    "mkfs.ext4 /dev/sdb1",
+    "chmod -R 777 /",
+    "terraform destroy",
+    "kubectl delete namespace prod",
+    "docker system prune -a",
+];
+
+#[test]
+fn every_destructive_command_prompts_in_auto_mode_and_under_an_allow_rule() {
+    let f = fixture("[permissions]\nmode = \"auto\"\nallow = [\"shell\"]\n");
+    for command in DESTRUCTIVE
+        .iter()
+        .chain(&["psql -c 'drop database app'", "chown -R me ~"])
+    {
+        assert_eq!(
+            verdict(&f, "shell", Access::Exec, command),
+            Verdict::Prompt { rule: None },
+            "{command}"
+        );
+    }
+    // Deleting inside the project, or in a directory agents may also work in, is ordinary work.
+    let f = fixture("[permissions]\nmode = \"auto\"\nadditional_dirs = [\"../extra\"]\n");
+    let extra = f.paths.project_root.parent().unwrap().join("extra/cache");
+    for command in [
+        "rm -r target/tmp".to_string(),
+        "rm -rf ./build".to_string(),
+        format!("rm -rf {}", extra.to_string_lossy().replace('\\', "/")),
+        "git reset HEAD~1".to_string(),
+        "git checkout main".to_string(),
+        "cargo clean".to_string(),
+    ] {
+        assert!(allowed(&verdict(&f, "shell", Access::Exec, &command)), "{command}");
+    }
+    // Plan mode still refuses it outright, and a deny rule still wins.
+    let plan = fixture("[permissions]\nmode = \"plan\"\n");
+    assert!(denied(&verdict(&plan, "shell", Access::Exec, "git reset --hard")));
+    let ruled = fixture("[permissions]\nmode = \"auto\"\ndeny = [\"shell(git reset:*)\"]\n");
+    assert!(denied(&verdict(&ruled, "shell", Access::Exec, "git reset --hard")));
+}
+
+#[test]
+fn the_destructive_setting_can_refuse_or_wave_such_commands_through() {
+    let deny = fixture("[permissions]\nmode = \"auto\"\ndestructive = \"deny\"\n");
+    let allow = fixture("[permissions]\nmode = \"auto\"\ndestructive = \"allow\"\n");
+    for command in DESTRUCTIVE {
+        match verdict(&deny, "shell", Access::Exec, command) {
+            Verdict::Deny(reason) => assert!(
+                reason.starts_with("this command ") && reason.contains("destructive = \"deny\""),
+                "{reason}"
+            ),
+            other => panic!("{command}: {other:?}"),
+        }
+        assert!(allowed(&verdict(&allow, "shell", Access::Exec, command)), "{command}");
+    }
+    assert!(allowed(&verdict(&deny, "shell", Access::Exec, "cargo build")));
+    // Without `auto`, `allow` only stops the extra question: the mode still asks.
+    let ask_mode = fixture("[permissions]\ndestructive = \"allow\"\n");
+    assert!(matches!(
+        verdict(&ask_mode, "shell", Access::Exec, "git reset --hard"),
+        Verdict::Prompt { rule: Some(_) }
+    ));
+}
+
+#[tokio::test]
+async fn a_destructive_command_is_asked_about_with_its_risk_and_refused_when_nobody_is_there() {
+    let rig = rig("[permissions]\nmode = \"auto\"\n");
+    let reason = before(&rig, &SHELL, json!({"command": "git reset --hard"}))
+        .await
+        .unwrap_err();
+    assert!(
+        reason.starts_with("this command discards uncommitted changes (git reset --hard); it needs the user's confirmation"),
+        "{reason}"
+    );
+    assert_eq!(before(&rig, &SHELL, json!({"command": "cargo build"})).await, Ok(None));
+
+    // A hook that waives prompts does not waive this one.
+    rig.bus.on(
+        EventKind::ToolCall,
+        "test",
+        Arc::new(Handler {
+            rewrite_to: None,
+            skip_prompt: true,
+            block: false,
+        }),
+    );
+    let answers = Arc::new(Answers(
+        std::sync::Mutex::new(vec![
+            ApprovalDecision::Always,
+            ApprovalDecision::Deny { feedback: None },
+        ]),
+        std::sync::Mutex::default(),
+    ));
+    rig.services.insert(Arc::new(Ui(answers.clone())));
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "git reset --hard"})).await,
+        Ok(None)
+    );
+    // "Always" had no rule to remember, so the same command asks again.
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "git reset --hard"}))
+            .await
+            .unwrap_err(),
+        "the user denied this call"
+    );
+    let requests = answers.1.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].rule, None);
+    assert_eq!(
+        requests[0].note.as_deref(),
+        Some(
+            "destructive: this command discards uncommitted changes (git reset --hard); it is asked about in \
+             every mode"
+        )
+    );
+    assert!(
+        !std::fs::read_to_string(rig.f.paths.project_local_config())
+            .unwrap_or_default()
+            .contains("reset")
+    );
+}

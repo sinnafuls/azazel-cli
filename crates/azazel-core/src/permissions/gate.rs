@@ -123,6 +123,7 @@ impl Gate for PermissionGate {
         }
 
         let the_call = call(agent, tool, input, &subject);
+        let risk = self.state.destructive(&the_call);
         let rule = match self.state.decide(&the_call, protected, skip_prompt) {
             Verdict::Allow => return GateDecision::Allow { input: rewritten },
             Verdict::Deny(reason) => return deny(reason),
@@ -153,10 +154,16 @@ impl Gate for PermissionGate {
         }
 
         let headless = || {
-            deny(format!(
-                "permission required for {}: re-run with --mode auto or add an allow rule",
-                tool.name()
-            ))
+            deny(match risk {
+                Some(risk) => format!(
+                    "this command {risk}; it needs the user's confirmation and nobody is here to give it \
+                     (`[permissions] destructive = \"allow\"` runs such commands unattended)"
+                ),
+                None => format!(
+                    "permission required for {}: re-run with --mode auto or add an allow rule",
+                    tool.name()
+                ),
+            })
         };
         let Some(ui) = self.services.get::<Ui>() else {
             return headless();
@@ -169,8 +176,11 @@ impl Gate for PermissionGate {
                 subjects: subject.subjects.clone(),
                 input: input.clone(),
                 rule: rule.clone(),
-                note: protected
-                    .then(|| "this path is protected and is asked about every time".to_string())
+                note: risk
+                    .map(|risk| format!("destructive: this command {risk}; it is asked about in every mode"))
+                    .or_else(|| {
+                        protected.then(|| "this path is protected and is asked about every time".to_string())
+                    })
                     .or_else(|| tool.approval_note(input)),
             })
             .await;
@@ -207,6 +217,23 @@ impl Gate for PermissionGate {
         }
         if let Outcome::Block { reason } = outcome {
             output.content.push(Block::text(reason));
+        }
+        // The file tools report the path they changed, relative to the agent's directory.
+        let changed = output
+            .details
+            .as_ref()
+            .and_then(|details| details.get("path"))
+            .and_then(Value::as_str)
+            .filter(|_| !output.is_error && matches!(tool.name(), "write" | "edit"));
+        if let Some(path) = changed {
+            let path = self.state.cwd_of(agent).join(path);
+            self.bus
+                .emit(&mut Event::FileChanged {
+                    agent: agent.clone(),
+                    path,
+                    tool: tool.name().to_string(),
+                })
+                .await;
         }
     }
 }

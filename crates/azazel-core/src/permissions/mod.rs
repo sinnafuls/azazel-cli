@@ -13,7 +13,7 @@ use std::sync::{PoisonError, RwLock};
 use azazel_agent::{Access, AgentInfo};
 use globset::{GlobBuilder, GlobMatcher};
 
-use crate::config::{LoadedConfig, PermissionMode};
+use crate::config::{DestructivePolicy, LoadedConfig, PermissionMode};
 use crate::paths::{Paths, canonical};
 use shell::ShellAnalysis;
 
@@ -252,6 +252,8 @@ pub struct PermissionState {
     user_home: Option<PathBuf>,
     plans_dir: PathBuf,
     local_config: PathBuf,
+    /// What a command that destroys work needs.
+    destructive: DestructivePolicy,
 }
 
 fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -313,6 +315,7 @@ impl PermissionState {
             user_home: std::env::home_dir(),
             plans_dir: paths.plans_dir(),
             local_config: paths.project_local_config(),
+            destructive: permissions.destructive,
         })
     }
 
@@ -562,15 +565,51 @@ impl PermissionState {
         {
             return Err(shell::PUSH_DENIED.to_string());
         }
+        if self.destructive == DestructivePolicy::Deny
+            && let Some(risk) = self.risk(call, &ctx)
+        {
+            return Err(format!(
+                "this command {risk}; destructive commands are refused here (`[permissions] destructive = \"deny\"`)"
+            ));
+        }
         let protected = call.access == Access::Write
             && subject_kind(call.tool) == SubjectKind::Path
             && call.subjects.iter().any(|s| self.is_protected(&ctx.resolve(s)));
         Ok(protected)
     }
 
+    /// What a shell call would destroy, whatever the policy is.
+    fn risk(&self, call: &Call<'_>, ctx: &MatchCtx<'_>) -> Option<&'static str> {
+        let (analysis, command) = (call.shell?, call.command?);
+        shell::destructive(command, analysis, &|target| {
+            !self.inside_roots(&ctx.resolve(target))
+        })
+    }
+
+    /// What makes this call one that is asked about in every mode: the work a destructive command
+    /// would destroy, in words that follow "this command". `None` for other calls, and when
+    /// `[permissions] destructive` is `allow`.
+    pub fn destructive(&self, call: &Call<'_>) -> Option<&'static str> {
+        if self.destructive != DestructivePolicy::Ask {
+            return None;
+        }
+        let cwd = self.cwd_of(call.agent);
+        self.risk(call, &self.ctx(&cwd))
+    }
+
     /// Ask rules, the mode, then allow rules. `protected` comes from [`PermissionState::precheck`];
-    /// `skip_prompt` is a hook's request to allow without asking.
+    /// `skip_prompt` is a hook's request to allow without asking. A destructive command is asked
+    /// about whatever the mode, the allow rules and `skip_prompt` say, and "always" is not offered.
     pub fn decide(&self, call: &Call<'_>, protected: bool, skip_prompt: bool) -> Verdict {
+        match self.decide_by_rules(call, protected, skip_prompt) {
+            Verdict::Allow | Verdict::Prompt { .. } if self.destructive(call).is_some() => {
+                Verdict::Prompt { rule: None }
+            }
+            verdict => verdict,
+        }
+    }
+
+    fn decide_by_rules(&self, call: &Call<'_>, protected: bool, skip_prompt: bool) -> Verdict {
         let cwd = self.cwd_of(call.agent);
         let ctx = self.ctx(&cwd);
         let kind = subject_kind(call.tool);

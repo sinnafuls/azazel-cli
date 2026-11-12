@@ -55,6 +55,8 @@ fn hook(kind: HookKind) -> HookConfig {
         model: None,
         timeout: 60,
         detached: false,
+        once: false,
+        wake: false,
     }
 }
 
@@ -135,6 +137,7 @@ impl Bench {
             claude_compat: true,
             disabled: false,
             trusted: true,
+            sources: BTreeMap::new(),
         }
     }
 
@@ -782,4 +785,203 @@ async fn hooks_of_a_project_skill_do_not_run_in_an_untrusted_project() {
         Outcome::Continue
     );
     assert_eq!(bench.written("skill_dir.txt"), None);
+}
+
+#[tokio::test]
+async fn a_once_hook_runs_one_time_per_session() {
+    let bench = Bench::new();
+    let mut once = command("echo ran >> once.txt");
+    once.once = true;
+    let registry = bench.load(vec![
+        ("pre_tool_use", once),
+        ("pre_tool_use", command("echo ran >> every.txt")),
+    ]);
+    for _ in 0..3 {
+        let mut event = tool_call("read", json!({"path": "a.txt"}));
+        assert_eq!(registry.bus.emit(&mut event).await, Outcome::Continue);
+    }
+    assert_eq!(bench.written("once.txt").unwrap().lines().count(), 1);
+    assert_eq!(bench.written("every.txt").unwrap().lines().count(), 3);
+
+    // Another session is another first time.
+    registry.bus.set_session("session-2");
+    for _ in 0..2 {
+        let mut event = tool_call("read", json!({"path": "a.txt"}));
+        registry.bus.emit(&mut event).await;
+    }
+    assert_eq!(bench.written("once.txt").unwrap().lines().count(), 2);
+}
+
+#[tokio::test]
+async fn a_wake_hook_hands_its_output_to_the_lead_when_it_finishes() {
+    let bench = Bench::new();
+    let delivered: Arc<Mutex<Vec<String>>> = Arc::default();
+    let sink = delivered.clone();
+    bench
+        .services
+        .insert(Arc::new(azazel_core::hooks::Wake(Arc::new(move |text| {
+            sink.lock().unwrap().push(text);
+        }))));
+    let mut lint = matching("edit", command("sleep 0.3; echo 'lint: 2 warnings in a.rs'"));
+    lint.detached = true;
+    lint.wake = true;
+    // Detached without `wake`: its output goes nowhere. `wake` without `async`: not a valid hook.
+    let mut silent = command("echo 'nobody hears this'");
+    silent.detached = true;
+    let mut invalid = command("echo invalid >> invalid.txt");
+    invalid.wake = true;
+    let registry = bench.load(vec![
+        ("post_tool_use", lint),
+        ("post_tool_use", silent),
+        ("post_tool_use", invalid),
+    ]);
+
+    let started = Instant::now();
+    let mut event = tool_call("edit", json!({"path": "a.rs", "edits": []}));
+    registry.bus.emit(&mut event).await;
+    let mut result = Event::ToolResult {
+        agent: lead(),
+        call_id: "call-1".into(),
+        tool: "edit".into(),
+        output: ToolOutput::text("edited"),
+    };
+    registry.bus.emit(&mut result).await;
+    // The tool result does not wait for the hook.
+    assert!(delivered.lock().unwrap().is_empty());
+    while delivered.lock().unwrap().is_empty() && started.elapsed() < Duration::from_secs(20) {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        *delivered.lock().unwrap(),
+        ["<hook-result event=\"post_tool_use\">\nlint: 2 warnings in a.rs\n</hook-result>"]
+    );
+    assert_eq!(bench.written("invalid.txt"), None);
+}
+
+#[tokio::test]
+async fn the_newer_events_reach_their_hooks_with_their_fields() {
+    let bench = Bench::new();
+    let mut rust_only = matching("write|edit", command("cat > changed.json"));
+    rust_only.when = Some("edit(src/**)".to_string());
+    let registry = bench.load(vec![
+        ("file_changed", rust_only),
+        ("config_change", command("cat > config.json")),
+        ("worktree_create", command("cat > created.json")),
+        ("worktree_remove", command("cat > removed.json")),
+        ("setup", command("cat > setup.json")),
+    ]);
+    let changed = |path: &str, tool: &str| Event::FileChanged {
+        agent: lead(),
+        path: bench.paths.cwd.join(path),
+        tool: tool.to_string(),
+    };
+    registry.bus.emit(&mut changed("docs/a.md", "edit")).await;
+    assert_eq!(bench.written("changed.json"), None);
+    registry.bus.emit(&mut changed("src/a.rs", "edit")).await;
+    let payload = bench.json("changed.json");
+    assert_eq!(payload["hook_event_name"], "FileChanged");
+    assert_eq!(payload["tool_name"], "edit");
+    assert_eq!(
+        payload["file_path"],
+        bench.paths.cwd.join("src/a.rs").display().to_string()
+    );
+
+    registry
+        .bus
+        .emit(&mut Event::ConfigChange {
+            source: "settings".into(),
+        })
+        .await;
+    assert_eq!(bench.json("config.json")["source"], "settings");
+
+    let worktree = bench.paths.worktrees_dir().join("coder-1");
+    registry
+        .bus
+        .emit(&mut Event::WorktreeCreate {
+            agent_id: "coder-1".into(),
+            path: worktree.clone(),
+        })
+        .await;
+    registry
+        .bus
+        .emit(&mut Event::WorktreeRemove {
+            agent_id: "coder-1".into(),
+            path: worktree.clone(),
+        })
+        .await;
+    for file in ["created.json", "removed.json"] {
+        let payload = bench.json(file);
+        assert_eq!(payload["agent_id"], "coder-1", "{file}");
+        assert_eq!(payload["worktree_path"], worktree.display().to_string(), "{file}");
+    }
+    assert_eq!(bench.json("removed.json")["hook_event_name"], "WorktreeRemove");
+
+    registry
+        .bus
+        .emit(&mut Event::Setup {
+            trigger: "init".into(),
+        })
+        .await;
+    assert_eq!(bench.json("setup.json")["trigger"], "init");
+}
+
+#[tokio::test]
+async fn the_hook_list_names_each_hook_its_source_and_how_it_last_ran() {
+    let bench = Bench::new();
+    let mut gate = matching("shell", command("echo 'no' >&2; exit 2"));
+    gate.once = true;
+    gate.timeout = 5;
+    let mut ext = bench.ext(vec![
+        ("stop", command("true")),
+        ("pre_tool_use", gate),
+        ("pre_tool_use", command("exit 1")),
+    ]);
+    ext.sources = BTreeMap::from([(
+        "pre_tool_use".to_string(),
+        vec!["/home/config.toml".to_string()],
+    )]);
+    let registry = bench.registry(&ext);
+    let hooks = bench.services.get::<azazel_core::hooks::Hooks>().unwrap();
+    assert!(hooks.enabled());
+    let before = hooks.list();
+    let shown: Vec<(&str, &str, Option<&str>)> = before
+        .iter()
+        .map(|hook| (hook.event, hook.source.as_str(), hook.matcher.as_deref()))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("pre_tool_use", "/home/config.toml", Some("shell")),
+            ("pre_tool_use", "environment or command line", None),
+            ("stop", "environment or command line", None),
+        ]
+    );
+    assert_eq!(before[0].options, ["once", "timeout 5 s"]);
+    assert_eq!(before[0].kind, "command");
+    assert!(before.iter().all(|hook| hook.last.is_none()));
+
+    let mut event = tool_call("shell", json!({"command": "ls"}));
+    assert_eq!(registry.bus.emit(&mut event).await, blocked("no"));
+    let mut event = tool_call("read", json!({"path": "a"}));
+    registry.bus.emit(&mut event).await;
+    let after = hooks.list();
+    assert_eq!(after[0].last.as_ref().unwrap().result, "blocked: no");
+    assert_eq!(
+        after[1].last.as_ref().unwrap().result,
+        "failed: exited with code 1"
+    );
+    assert!(after[2].last.is_none());
+
+    // Switched off, the hooks are still listed but none runs.
+    let off = Bench::new();
+    let mut ext = off.ext(vec![("pre_tool_use", command("echo ran > ran.txt"))]);
+    ext.disabled = true;
+    let registry = off.registry(&ext);
+    let hooks = off.services.get::<azazel_core::hooks::Hooks>().unwrap();
+    assert!(!hooks.enabled());
+    assert_eq!(hooks.list().len(), 1);
+    let mut event = tool_call("read", json!({"path": "a"}));
+    registry.bus.emit(&mut event).await;
+    assert_eq!(off.written("ran.txt"), None);
 }
