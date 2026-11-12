@@ -11,8 +11,9 @@ pub const NOT_FOUND: &str = "no Chromium-based browser found; set [browser] path
 /// Environment variable naming the browser binary, tried after the configured path.
 pub const BROWSER_ENV: &str = "AZAZEL_BROWSER";
 
-/// How long the browser gets to publish its debugging port.
-const STARTUP: Duration = Duration::from_secs(10);
+/// How long the browser gets to publish its debugging port. A first start on a cold machine (a
+/// fresh CI runner, a new profile) can take well over ten seconds.
+const STARTUP: Duration = Duration::from_secs(30);
 
 /// The file, in the profile directory, in which the browser writes its debugging port and the path
 /// of its WebSocket endpoint.
