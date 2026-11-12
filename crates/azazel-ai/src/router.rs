@@ -911,7 +911,10 @@ mod tests {
                 until,
                 limit,
             } => {
-                assert_eq!((provider.as_str(), from.as_str(), to.as_str()), ("acme", "default", "work"));
+                assert_eq!(
+                    (provider.as_str(), from.as_str(), to.as_str()),
+                    ("acme", "default", "work")
+                );
                 // No reset time was given: the account is left alone for a quarter of an hour.
                 let wait = until - crate::credentials::now_ms() / 1000;
                 assert!((890..=900).contains(&wait), "{wait}");
@@ -957,7 +960,13 @@ mod tests {
         let events: Vec<RouteEvent> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert!(matches!(events[0], RouteEvent::Account { .. }), "{events:?}");
         assert!(
-            matches!(&events[1], RouteEvent::Fallback { error: AiError::Quota { .. }, .. }),
+            matches!(
+                &events[1],
+                RouteEvent::Fallback {
+                    error: AiError::Quota { .. },
+                    ..
+                }
+            ),
             "{events:?}"
         );
         assert_eq!(events.len(), 2);
@@ -1028,7 +1037,10 @@ mod tests {
         assert_eq!(final_text(stream).await, "standard");
         assert!(matches!(
             rx.try_recv(),
-            Ok(RouteEvent::TierDropped { tier: Tier::Priority, .. })
+            Ok(RouteEvent::TierDropped {
+                tier: Tier::Priority,
+                ..
+            })
         ));
         for model in ["mock/a", "mock/b"] {
             let (_, stream) = r

@@ -130,10 +130,17 @@ async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
     // A label that cannot name an account is a usage error before anything is asked.
     let bad = sandbox.azazel(&["login", "gateway", "--as", "a b"]).await;
     assert_eq!(bad.status.code(), Some(2), "{}", text(&bad.stderr));
-    assert!(text(&bad.stderr).contains("cannot name an account"), "{}", text(&bad.stderr));
+    assert!(
+        text(&bad.stderr).contains("cannot name an account"),
+        "{}",
+        text(&bad.stderr)
+    );
 
     for (args, said) in [
-        (vec!["login", "gateway"], "signed in to gateway; the login is kept in".to_string()),
+        (
+            vec!["login", "gateway"],
+            "signed in to gateway; the login is kept in".to_string(),
+        ),
         (
             vec!["login", "gateway", "--as", "work"],
             "signed in to gateway as account `work`; the login is kept in".to_string(),
@@ -155,7 +162,10 @@ async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
 
     // The configured account is the one in use.
     let mut config = std::fs::read_to_string(sandbox.home().join("config.toml")).unwrap();
-    config = config.replace("api = \"openai-chat\"", "api = \"openai-chat\"\naccount = \"work\"");
+    config = config.replace(
+        "api = \"openai-chat\"",
+        "api = \"openai-chat\"\naccount = \"work\"",
+    );
     std::fs::write(sandbox.home().join("config.toml"), config).unwrap();
     let status = text(&sandbox.azazel(&["auth", "status"]).await.stdout);
     assert!(status.contains("auth.json (login, account work)"), "{status}");
@@ -230,7 +240,15 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
 
     // As events, for a program that drives azazel.
     let run = sandbox
-        .azazel(&["-p", "hi", "--model", "gateway/small", "--no-memory", "--output", "json"])
+        .azazel(&[
+            "-p",
+            "hi",
+            "--model",
+            "gateway/small",
+            "--no-memory",
+            "--output",
+            "json",
+        ])
         .await;
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     let events: Vec<Value> = text(&run.stdout)
@@ -242,8 +260,18 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
         .find(|event| event["type"] == "account")
         .unwrap_or_else(|| panic!("no account event in {events:?}"));
     assert_eq!(
-        (&switch["provider"], &switch["from"], &switch["to"], &switch["limit"]),
-        (&json!("gateway"), &json!("default"), &json!("work"), &json!("usage limit"))
+        (
+            &switch["provider"],
+            &switch["from"],
+            &switch["to"],
+            &switch["limit"]
+        ),
+        (
+            &json!("gateway"),
+            &json!("default"),
+            &json!("work"),
+            &json!("usage limit")
+        )
     );
     assert!(switch["until"].as_u64().is_some());
 }
@@ -282,7 +310,15 @@ async fn the_tier_goes_out_with_the_request_and_is_dropped_when_the_model_refuse
     .unwrap();
 
     let run = sandbox
-        .azazel(&["-p", "hi", "--model", "gateway/small", "--no-memory", "--tier", "priority"])
+        .azazel(&[
+            "-p",
+            "hi",
+            "--model",
+            "gateway/small",
+            "--no-memory",
+            "--tier",
+            "priority",
+        ])
         .await;
     assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
     assert_eq!(text(&run.stdout), "hello from work");

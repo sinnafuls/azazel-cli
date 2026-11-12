@@ -235,7 +235,11 @@ pub fn forget_key(credentials: &Credentials, entry: &str) -> Result<String, Stri
 }
 
 /// Forgets account `label` of `provider` (the default account when `None`).
-pub fn forget_account(credentials: &Credentials, provider: &str, label: Option<&str>) -> Result<String, String> {
+pub fn forget_account(
+    credentials: &Credentials,
+    provider: &str,
+    label: Option<&str>,
+) -> Result<String, String> {
     forget_key(credentials, &account_key(provider, account_label(label)?))
 }
 
@@ -489,7 +493,10 @@ mod tests {
         let anthropic = find(&providers, "anthropic").unwrap();
         let store = credentials(dir.path(), None);
 
-        assert_eq!(store_key(&store, anthropic, "  ", None).unwrap_err(), "no key given");
+        assert_eq!(
+            store_key(&store, anthropic, "  ", None).unwrap_err(),
+            "no key given"
+        );
         let line = store_key(&store, anthropic, " sk-stored \n", None).unwrap();
         assert!(
             line.starts_with("stored the anthropic key in ") && !line.contains("note:"),

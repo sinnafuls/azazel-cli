@@ -85,6 +85,8 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `turn_end` | |
 | `retry` | `attempt`, `model` |
 | `fallback` | `from`, `to` |
+| `account` | `provider`, `from`, `to`, `until` (Unix seconds), `limit`: the provider's account `from` ran out of allowance and requests now use `to` |
+| `tier_dropped` | `model`, `tier`: the model refused the service tier and is asked without one from now on |
 | `compaction` | `tokens_before`, `tokens_after` |
 | `idle` | `stop`: `stop`, `length`, `tool_use`, `error` or `aborted` |
 | `failed` | `error` |

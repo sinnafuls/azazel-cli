@@ -1260,7 +1260,11 @@ fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
             window("overage", 0.0, Some(1_791_000_000), "allowed"),
         ]
     );
-    let headers = unified(&[("status", "rejected"), ("representative-claim", "five_hour"), ("reset", "1790000000")]);
+    let headers = unified(&[
+        ("status", "rejected"),
+        ("representative-claim", "five_hour"),
+        ("reset", "1790000000"),
+    ]);
     assert_eq!(
         anthropic::limits(&headers),
         [window("5h", 1.0, Some(1_790_000_000), "rejected")]
@@ -1299,7 +1303,11 @@ fn a_full_usage_window_is_a_quota_error_with_its_reset_time() {
     );
     // Asked too often, with the window still open: an ordinary rate limit, left to the generic
     // mapping and its `retry-after`.
-    let allowed = unified(&[("status", "allowed_warning"), ("5h-utilization", "0.9"), ("5h-reset", "1790000000")]);
+    let allowed = unified(&[
+        ("status", "allowed_warning"),
+        ("5h-utilization", "0.9"),
+        ("5h-reset", "1790000000"),
+    ]);
     assert_eq!(anthropic::classify_response(429, &allowed, &body), None);
     assert_eq!(
         anthropic::classify_response(429, &reqwest::header::HeaderMap::new(), &body),
@@ -1345,7 +1353,11 @@ fn the_priority_tier_is_fast_mode_and_only_claude_models_are_asked_for_it() {
 
     // From Opus 5.5 on, and on the other families, `speed` is a regular member.
     for id in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"] {
-        assert_eq!(sent(&plain, id, Some(Tier::Priority)), (Some(json!("fast")), None), "{id}");
+        assert_eq!(
+            sent(&plain, id, Some(Tier::Priority)),
+            (Some(json!("fast")), None),
+            "{id}"
+        );
     }
     // Where fast mode is a preview it needs its beta header.
     for id in ["claude-opus-5", "claude-opus-5-20260801", "claude-opus-4-8"] {

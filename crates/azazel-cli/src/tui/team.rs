@@ -78,6 +78,18 @@ impl Tui {
             // The roster is read afresh for every frame.
             return;
         };
+        // A provider moving to another account concerns every agent, whoever ran into the limit.
+        if let AgentEvent::Account {
+            provider,
+            from,
+            to,
+            until,
+            limit,
+        } = &*event
+        {
+            let line = crate::accounts::switch_line(provider, from, to, *until, limit);
+            return self.info(&line);
+        }
         if self.follow.as_deref() != Some(id.as_str()) {
             return;
         }

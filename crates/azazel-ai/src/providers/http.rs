@@ -326,12 +326,12 @@ pub(crate) struct Failed {
 }
 
 impl Failed {
-    fn unsent(error: AiError) -> Self {
-        Failed {
+    fn unsent(error: AiError) -> Box<Self> {
+        Box::new(Failed {
             status: None,
             headers: HeaderMap::new(),
             error,
-        }
+        })
     }
 }
 
@@ -341,7 +341,7 @@ pub(crate) async fn send_request(
     request: reqwest::RequestBuilder,
     classify: Classify,
     cancel: &CancellationToken,
-) -> Result<reqwest::Response, Failed> {
+) -> Result<reqwest::Response, Box<Failed>> {
     let response = tokio::select! {
         _ = cancel.cancelled() => return Err(Failed::unsent(AiError::Aborted)),
         r = request.send() => r.map_err(|e| Failed::unsent(AiError::Network(describe(&e))))?,
@@ -354,11 +354,11 @@ pub(crate) async fn send_request(
     let body = response.text().await.unwrap_or_default();
     let status = status.as_u16();
     let error = http_error(classify, status, &headers, &body);
-    Err(Failed {
+    Err(Box::new(Failed {
         status: Some(status),
         headers,
         error,
-    })
+    }))
 }
 
 /// The events of a streaming SSE response body, decoded by `decoder`; see [`framed_stream`].
@@ -423,9 +423,7 @@ impl Provider for HttpProvider {
 
         let started = Instant::now();
         let request = (wire.build_request)(&self.client, &self.config, model, &prepared, &auth);
-        let response = self
-            .send_as(&wire, request, &cancel, account.as_deref())
-            .await?;
+        let response = self.send_as(&wire, request, &cancel, account.as_deref()).await?;
         let decoder = (wire.decoder)(&self.config, model);
         Ok(framed_stream(
             response,

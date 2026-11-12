@@ -178,10 +178,7 @@ impl AccountCommand {
         let label = match taken.iter().any(|account| account.label == DEFAULT_ACCOUNT) {
             false => None,
             true => {
-                let Ok(label) =
-                    ui.0.input("Label for the new account (for example: work)")
-                        .await
-                else {
+                let Ok(label) = ui.0.input("Label for the new account (for example: work)").await else {
                     return Ok(None);
                 };
                 let label = label.trim().to_string();
@@ -200,7 +197,10 @@ impl AccountCommand {
             (None, _) => true,
             (Some(_), true) => false,
             (Some(_), false) => {
-                let ways = ["Sign in with a subscription".to_string(), "Store an API key".to_string()];
+                let ways = [
+                    "Sign in with a subscription".to_string(),
+                    "Store an API key".to_string(),
+                ];
                 match ui.0.select("Add the account how?", &ways).await {
                     Ok(index) => index == 1,
                     Err(_) => return Ok(None),
@@ -355,9 +355,9 @@ impl Extension for AccountsExt {
 mod tests {
     #![allow(clippy::unwrap_used)]
 
+    use azazel_agent::Services;
     use azazel_ai::Credential;
     use azazel_ai::credentials::account_key;
-    use azazel_agent::Services;
 
     use super::*;
 
@@ -429,7 +429,10 @@ mod tests {
             "default (API key) · default · no usage seen yet"
         );
         let blocked = account_row(&key, false, false, &[], Some(now + 3600), now);
-        assert!(blocked.starts_with("default (API key) · out of allowance until "), "{blocked}");
+        assert!(
+            blocked.starts_with("default (API key) · out of allowance until "),
+            "{blocked}"
+        );
         let line = switch_line("anthropic", "work", "personal", now + 60, "5-hour limit");
         assert!(
             line.starts_with("anthropic: account work reached its 5-hour limit (resets ")
@@ -453,7 +456,10 @@ mod tests {
         let line = command
             .act(anthropic, &work, Action::Use, &context(Some(session.clone())))
             .unwrap();
-        assert!(line.starts_with("this session now uses account work of anthropic"), "{line}");
+        assert!(
+            line.starts_with("this session now uses account work of anthropic"),
+            "{line}"
+        );
         assert_eq!(command.credentials.selected("anthropic").as_deref(), Some("work"));
 
         // Another process resuming the session ends up on the same account.
@@ -483,7 +489,10 @@ mod tests {
         let line = command
             .act(anthropic, &accounts[1], Action::MakeDefault, &ctx)
             .unwrap();
-        assert!(line.starts_with("work is now the default account of anthropic"), "{line}");
+        assert!(
+            line.starts_with("work is now the default account of anthropic"),
+            "{line}"
+        );
         let written = std::fs::read_to_string(&command.home_config).unwrap();
         let config: toml::Table = written.parse().unwrap();
         assert_eq!(config["providers"]["anthropic"]["account"].as_str(), Some("work"));
@@ -499,10 +508,15 @@ mod tests {
             .unwrap();
         let written = std::fs::read_to_string(&command.home_config).unwrap();
         assert!(!written.contains("account"), "{written}");
-        assert_eq!(command.credentials.default_account("anthropic").as_deref(), Some("default"));
+        assert_eq!(
+            command.credentials.default_account("anthropic").as_deref(),
+            Some("default")
+        );
 
         assert_eq!(
-            command.act(anthropic, &accounts[1], Action::SignOut, &ctx).unwrap(),
+            command
+                .act(anthropic, &accounts[1], Action::SignOut, &ctx)
+                .unwrap(),
             "forgot the stored anthropic key of account `work`"
         );
         assert_eq!(command.credentials.accounts("anthropic").len(), 1);

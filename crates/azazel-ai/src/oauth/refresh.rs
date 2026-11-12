@@ -34,12 +34,19 @@ pub(crate) async fn fresh_login(
 ) -> Result<(String, BTreeMap<String, String>), AiError> {
     let id = &provider.id;
     let expired = || {
-        AiError::Auth(match key.strip_prefix(id.as_str()).and_then(|rest| rest.strip_prefix('#')) {
-            Some(label) => {
-                format!("login for {id} (account {label}) has expired: run `azazel login {id} --as {label}`")
-            }
-            None => format!("login for {id} has expired: run `azazel login {id}`"),
-        })
+        AiError::Auth(
+            match key
+                .strip_prefix(id.as_str())
+                .and_then(|rest| rest.strip_prefix('#'))
+            {
+                Some(label) => {
+                    format!(
+                        "login for {id} (account {label}) has expired: run `azazel login {id} --as {label}`"
+                    )
+                }
+                None => format!("login for {id} has expired: run `azazel login {id}`"),
+            },
+        )
     };
     // The stored login when its access token is good for at least `margin` more milliseconds.
     let usable = |entry: Option<&Credential>, margin: u64| match entry {

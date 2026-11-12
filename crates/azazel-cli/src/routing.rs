@@ -99,7 +99,7 @@ impl CommandHandler for TierCommand {
         match (turn_on, on) {
             (true, _) => {
                 router.set_tier(Some(self.0));
-                CommandOutcome::Show(format!("{name}: on. From the next request, {}.", tier_effect(self.0)))
+                CommandOutcome::Show(format!("{name}: on. From now on {}.", tier_effect(self.0)))
             }
             (false, true) => {
                 router.set_tier(None);
@@ -114,7 +114,9 @@ impl CommandHandler for TierCommand {
 /// The roles of preset `name`, or which presets there are.
 fn preset<'a>(presets: &'a BTreeMap<String, PresetConfig>, name: &str) -> Result<&'a PresetConfig, String> {
     presets.get(name).ok_or_else(|| match presets.is_empty() {
-        true => format!("no preset `{name}`: none is saved yet (/preset save <name> keeps the current models)"),
+        true => {
+            format!("no preset `{name}`: none is saved yet (/preset save <name> keeps the current models)")
+        }
         false => format!(
             "no preset `{name}`; there are: {}",
             presets.keys().cloned().collect::<Vec<_>>().join(", ")
@@ -220,10 +222,7 @@ impl PresetCommand {
         write(&["presets", name], None)?;
         for (role, chain) in &roles {
             let models = toml_edit::Array::from_iter(chain.iter().map(ToString::to_string));
-            write(
-                &["presets", name, "roles", role],
-                Some(toml_edit::value(models)),
-            )?;
+            write(&["presets", name, "roles", role], Some(toml_edit::value(models)))?;
         }
         let count = roles.len();
         self.presets().insert(name.to_string(), PresetConfig { roles });
@@ -265,7 +264,10 @@ impl Extension for RoutingExt {
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
         for (tier, description) in [
-            (Tier::Priority, "Faster replies at a higher price (the priority tier)"),
+            (
+                Tier::Priority,
+                "Faster replies at a higher price (the priority tier)",
+            ),
             (Tier::Economy, "Cheaper, slower replies (the economy tier)"),
         ] {
             r.command(Command {
@@ -335,7 +337,12 @@ mod tests {
         let (ctx, router) = context(&[]);
         let (fast, slow) = (TierCommand(Tier::Priority), TierCommand(Tier::Economy));
 
-        assert!(show(&fast, "status", &ctx).await.unwrap().starts_with("fast: off"));
+        assert!(
+            show(&fast, "status", &ctx)
+                .await
+                .unwrap()
+                .starts_with("fast: off")
+        );
         assert!(show(&fast, "on", &ctx).await.unwrap().starts_with("fast: on."));
         assert_eq!(router.tier(), Some(Tier::Priority));
         assert!(show(&slow, "status", &ctx).await.unwrap().starts_with("fast: on"));
@@ -346,11 +353,20 @@ mod tests {
         assert_eq!(router.tier(), Some(Tier::Economy));
         show(&slow, "", &ctx).await.unwrap();
         assert_eq!(router.tier(), None);
-        assert!(show(&fast, "maybe", &ctx).await.unwrap_err().starts_with("usage: /fast"));
+        assert!(
+            show(&fast, "maybe", &ctx)
+                .await
+                .unwrap_err()
+                .starts_with("usage: /fast")
+        );
 
         assert_eq!(parse_tier("priority"), Ok(Some(Tier::Priority)));
         assert_eq!(parse_tier("standard"), Ok(None));
-        assert!(parse_tier("turbo").unwrap_err().contains("priority, standard or economy"));
+        assert!(
+            parse_tier("turbo")
+                .unwrap_err()
+                .contains("priority, standard or economy")
+        );
     }
 
     #[tokio::test]
@@ -371,7 +387,12 @@ mod tests {
                 .unwrap()
                 .starts_with("no preset is saved yet")
         );
-        assert!(show(&command, "cheap", &ctx).await.unwrap_err().contains("none is saved yet"));
+        assert!(
+            show(&command, "cheap", &ctx)
+                .await
+                .unwrap_err()
+                .contains("none is saved yet")
+        );
         assert!(show(&command, "save", &ctx).await.is_err());
         assert!(show(&command, "save a/b", &ctx).await.is_err());
 

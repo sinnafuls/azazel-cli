@@ -65,11 +65,23 @@ struct Entry {
 /// moves work off an account that is out of allowance, and by the usage views.
 #[derive(Default)]
 pub struct LimitStore {
-    entries: Mutex<HashMap<(String, String), Entry>>,
+    /// Provider id, then account label.
+    entries: Mutex<HashMap<String, HashMap<String, Entry>>>,
 }
+
+type Entries = HashMap<String, HashMap<String, Entry>>;
 
 fn now_secs() -> u64 {
     now_ms() / 1000
+}
+
+/// The entry of an account, made when there is none yet.
+fn entry_of<'a>(entries: &'a mut Entries, provider: &str, account: &str) -> &'a mut Entry {
+    entries
+        .entry(provider.to_string())
+        .or_default()
+        .entry(account.to_string())
+        .or_default()
 }
 
 impl LimitStore {
@@ -77,7 +89,7 @@ impl LimitStore {
         Self::default()
     }
 
-    fn entries(&self) -> MutexGuard<'_, HashMap<(String, String), Entry>> {
+    fn entries(&self) -> MutexGuard<'_, Entries> {
         self.entries.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -88,9 +100,7 @@ impl LimitStore {
             return;
         }
         let mut entries = self.entries();
-        let entry = entries
-            .entry((provider.to_string(), account.to_string()))
-            .or_default();
+        let entry = entry_of(&mut entries, provider, account);
         for window in windows {
             match entry.windows.iter_mut().find(|known| known.name == window.name) {
                 Some(known) => *known = window,
@@ -101,7 +111,8 @@ impl LimitStore {
 
     pub fn windows(&self, provider: &str, account: &str) -> Vec<Window> {
         self.entries()
-            .get(&(provider.to_string(), account.to_string()))
+            .get(provider)
+            .and_then(|accounts| accounts.get(account))
             .map(|entry| entry.windows.clone())
             .unwrap_or_default()
     }
@@ -115,17 +126,15 @@ impl LimitStore {
 
     /// Marks the account as out of allowance until `until` (Unix seconds).
     pub fn block(&self, provider: &str, account: &str, until: u64) {
-        self.entries()
-            .entry((provider.to_string(), account.to_string()))
-            .or_default()
-            .blocked_until = Some(until);
+        entry_of(&mut self.entries(), provider, account).blocked_until = Some(until);
     }
 
     /// The account answered again.
     pub fn unblock(&self, provider: &str, account: &str) {
         if let Some(entry) = self
             .entries()
-            .get_mut(&(provider.to_string(), account.to_string()))
+            .get_mut(provider)
+            .and_then(|accounts| accounts.get_mut(account))
         {
             entry.blocked_until = None;
         }
@@ -134,7 +143,8 @@ impl LimitStore {
     /// Until when the account is out of allowance; `None` once that time has passed.
     pub fn blocked_until(&self, provider: &str, account: &str) -> Option<u64> {
         self.entries()
-            .get(&(provider.to_string(), account.to_string()))
+            .get(provider)
+            .and_then(|accounts| accounts.get(account))
             .and_then(|entry| entry.blocked_until)
             .filter(|until| *until > now_secs())
     }
@@ -142,14 +152,16 @@ impl LimitStore {
     /// Every account something is known about, sorted by provider and account.
     pub fn snapshot(&self) -> Vec<AccountLimits> {
         let now = now_secs();
-        let mut all: Vec<AccountLimits> = self
-            .entries()
+        let entries = self.entries();
+        let mut all: Vec<AccountLimits> = entries
             .iter()
-            .map(|((provider, account), entry)| AccountLimits {
-                provider: provider.clone(),
-                account: account.clone(),
-                windows: entry.windows.clone(),
-                blocked_until: entry.blocked_until.filter(|until| *until > now),
+            .flat_map(|(provider, accounts)| {
+                accounts.iter().map(move |(account, entry)| AccountLimits {
+                    provider: provider.clone(),
+                    account: account.clone(),
+                    windows: entry.windows.clone(),
+                    blocked_until: entry.blocked_until.filter(|until| *until > now),
+                })
             })
             .collect();
         all.sort_by(|a, b| (&a.provider, &a.account).cmp(&(&b.provider, &b.account)));
@@ -186,7 +198,10 @@ mod tests {
         assert_eq!(default.len(), 2);
         assert_eq!(default[0], window("5h", 1.0, REJECTED));
         assert_eq!(default[1].used, 0.5);
-        assert_eq!(store.exhausted("anthropic", "default").unwrap().label(), "5-hour limit");
+        assert_eq!(
+            store.exhausted("anthropic", "default").unwrap().label(),
+            "5-hour limit"
+        );
         assert_eq!(store.exhausted("anthropic", "work"), None);
         assert!(store.windows("openai", "default").is_empty());
 

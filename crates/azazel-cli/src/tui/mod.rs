@@ -728,7 +728,9 @@ impl Tui {
                 to,
                 until,
                 limit,
-            } => self.info(&crate::accounts::switch_line(&provider, &from, &to, until, &limit)),
+            } => self.info(&crate::accounts::switch_line(
+                &provider, &from, &to, until, &limit,
+            )),
             AgentEvent::TierDropped { model, tier } => {
                 self.info(&crate::routing::tier_dropped_line(&model, tier))
             }

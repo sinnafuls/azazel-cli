@@ -335,7 +335,10 @@ async fn usage_windows_are_kept_per_account_and_a_full_one_moves_work_to_the_nex
     let limits = router.limits();
     let default = limits.windows("acme", "default");
     assert_eq!(
-        default.iter().map(|w| (w.name.as_str(), w.used, w.status.as_str())).collect::<Vec<_>>(),
+        default
+            .iter()
+            .map(|w| (w.name.as_str(), w.used, w.status.as_str()))
+            .collect::<Vec<_>>(),
         [("5h", 1.0, "rejected"), ("7d", 0.3, "allowed")]
     );
     assert_eq!(limits.blocked_until("acme", "default"), reset.parse().ok());
@@ -422,7 +425,9 @@ async fn the_service_tier_is_sent_and_dropped_once_the_model_refuses_it() {
         .filter(|sent| sent.method == wiremock::http::Method::POST)
         .map(|sent| {
             let body: serde_json::Value = serde_json::from_slice(&sent.body).unwrap();
-            body.get("service_tier").and_then(|tier| tier.as_str()).map(str::to_string)
+            body.get("service_tier")
+                .and_then(|tier| tier.as_str())
+                .map(str::to_string)
         })
         .collect();
     assert_eq!(sent, [Some("priority".to_string()), None, None]);

@@ -286,7 +286,10 @@ impl Credentials {
 
     /// Like [`Credentials::resolve`], also saying which stored account the credential belongs
     /// to; `None` when it did not come from `auth.json`.
-    pub async fn resolve_account(&self, provider: &ProviderConfig) -> Result<(Auth, Option<String>), AiError> {
+    pub async fn resolve_account(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<(Auth, Option<String>), AiError> {
         match self.outside_store(provider).await? {
             Some(auth) => {
                 locked(&self.stored).remove(&provider.id);
@@ -692,16 +695,25 @@ mod tests {
         );
         assert_eq!(
             c.resolve_account(&provider(true)).await.unwrap(),
-            (Auth::ApiKey("k-default".into()), Some(DEFAULT_ACCOUNT.to_string()))
+            (
+                Auth::ApiKey("k-default".into()),
+                Some(DEFAULT_ACCOUNT.to_string())
+            )
         );
 
         c.store(&account_key("acme", "work"), login("w@example.com", "org-1"))
             .unwrap();
-        c.store(&account_key("acme", "alt"), Credential::ApiKey { key: "k-alt".into() })
-            .unwrap();
+        c.store(
+            &account_key("acme", "alt"),
+            Credential::ApiKey { key: "k-alt".into() },
+        )
+        .unwrap();
         let raw: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
-        assert_eq!(raw["acme"], serde_json::json!({"type": "api_key", "key": "k-default"}));
+        assert_eq!(
+            raw["acme"],
+            serde_json::json!({"type": "api_key", "key": "k-default"})
+        );
         assert_eq!(raw["acme#work"]["type"], "oauth");
         assert_eq!(raw["acme#alt"]["key"], "k-alt");
 
@@ -713,7 +725,8 @@ mod tests {
         // The same e-mail in the same organisation is the same account; another organisation
         // is not.
         assert_eq!(
-            c.same_account("acme", &login("w@example.com", "org-1")).as_deref(),
+            c.same_account("acme", &login("w@example.com", "org-1"))
+                .as_deref(),
             Some("work")
         );
         assert_eq!(c.same_account("acme", &login("w@example.com", "org-2")), None);
@@ -728,8 +741,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let c = creds(dir.path(), &[]);
         for (label, key) in [("default", "k-default"), ("work", "k-work"), ("home", "k-home")] {
-            c.store(&account_key("acme", label), Credential::ApiKey { key: key.into() })
-                .unwrap();
+            c.store(
+                &account_key("acme", label),
+                Credential::ApiKey { key: key.into() },
+            )
+            .unwrap();
         }
         let used = async |c: &Credentials| c.resolve_account(&provider(true)).await.unwrap();
 

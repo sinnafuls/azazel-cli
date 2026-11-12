@@ -1041,7 +1041,8 @@ fn a_used_up_chatgpt_plan_is_a_quota_error_with_its_reset_time() {
         })
     );
     // Only the time left is given, or the time as text.
-    let body = r#"{"error":{"type":"usage_limit_reached","message":"Limit reached.","resets_in_seconds":"600"}}"#;
+    let body =
+        r#"{"error":{"type":"usage_limit_reached","message":"Limit reached.","resets_in_seconds":"600"}}"#;
     let Some(AiError::Quota {
         resets_at: Some(at), ..
     }) = openai_chat::classify_error(429, body)
