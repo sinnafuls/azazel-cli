@@ -30,6 +30,7 @@ New here? Read [getting started](getting-started.md) first.
 | [Screen and playtesting](screen-and-playtesting.md) | Screen capture and input, the playtester agent |
 | [Media and sprites](media-and-sprites.md) | Image, video, 3D and audio generation; sprite sheets for game engines |
 | [Language servers](lsp.md) | Diagnostics after edits, definitions, references, renames |
+| [Voice](voice.md) | Dictating prompts, spoken replies, speech services and recorder programs |
 
 ## Extending azazel
 

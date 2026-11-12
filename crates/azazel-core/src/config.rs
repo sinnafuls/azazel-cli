@@ -260,6 +260,8 @@ config_table!(VoiceConfig {
     /// `provider/model` used for speech.
     tts: String = String::new(),
     voice: String = String::new(),
+    /// Language of what is dictated, as a code such as `en`; empty lets the service detect it.
+    language: String = String::new(),
     record_command: String = String::new(),
     play_command: String = String::new(),
     stt_command: String = String::new(),

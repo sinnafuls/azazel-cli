@@ -51,7 +51,8 @@ The input sits between two full-width rules, with `❯` in front of the first ro
 height (at least 5 rows) and scrolls beyond that; the rules then say how much is out of view (`↑ 3 more`).
 
 While the agent is working, the rule above the input carries the working indicator: a spinner, `working` /
-`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`.
+`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. While you dictate it shows `● rec`, the
+time and a level meter, then `transcribing`; see [voice](voice.md).
 
 The colour of the rules tells you what `Enter` will do:
 
@@ -118,6 +119,7 @@ When the terminal is too narrow for both sides, the model is shortened first, th
 | `Ctrl+R` | `history_search` | Search earlier prompts and put one back in the input |
 | `Ctrl+V` | `paste_image` | Attach the clipboard image to the next prompt |
 | `Tab` | `complete` | Open or accept completion |
+| `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |
 
 `Esc` interrupts the lead only; stop sub-agents from the agent hub or with `/stop`. In the agent hub, `Enter`
 follows the selected agent's work in the transcript, `m` messages it, `s` stops it and `S` stops all.
@@ -226,6 +228,8 @@ Skills, extensions and services:
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |
 | `/lsp` | Language servers and their state; see [LSP](lsp.md) |
+| `/voice` | Start recording, or stop and put the transcript in the input; see [voice](voice.md) |
+| `/speak on\|off\|stop` | Read replies aloud, stop doing so, or stop the one being read |
 
 Custom commands from `commands/` directories and commands registered by extensions appear in `/help` and in
 completion as well. `/memory` is absent when memory is disabled in the configuration.

@@ -7,6 +7,11 @@ mod overlay;
 mod slash;
 mod team;
 mod view;
+#[cfg(feature = "voice")]
+mod voice;
+#[cfg(not(feature = "voice"))]
+#[path = "voice_off.rs"]
+mod voice;
 
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -108,6 +113,8 @@ enum Internal {
     },
     /// What a registered slash command came back with.
     Command(CommandOutcome),
+    #[cfg(feature = "voice")]
+    Voice(voice::Done),
 }
 
 pub struct Tui {
@@ -153,6 +160,8 @@ pub struct Tui {
     follow: Option<String>,
     /// Tool calls in flight of the followed agent.
     followed_tools: Vec<RunningTool>,
+    #[cfg(feature = "voice")]
+    voice: voice::Voice,
     quit: bool,
 }
 
@@ -253,6 +262,8 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         team_events,
         follow: None,
         followed_tools: Vec::new(),
+        #[cfg(feature = "voice")]
+        voice: voice::Voice::default(),
         quit: false,
     };
     tui.welcome(resumed);
@@ -411,6 +422,7 @@ impl Tui {
             }
             self.waiting.retain(|request| !request.abandoned());
             self.show_next_request();
+            self.voice_tick();
             if let Err(e) = self.draw() {
                 tracing::error!("terminal write failed: {e}");
                 break;
@@ -441,7 +453,8 @@ impl Tui {
                 event = team::next_event(&mut self.team_events) => self.on_team(event),
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
-                _ = ticker.tick(), if self.busy || self.agents_active() || self.overlay.is_some() => {}
+                _ = ticker.tick(),
+                    if self.busy || self.agents_active() || self.overlay.is_some() || self.voice_animates() => {}
             }
         }
     }
@@ -607,7 +620,7 @@ impl Tui {
                 bottom.push(self.theme.paint(Role::Muted, &label));
             }
             let rule = self.rule_role();
-            let activity = self.activity();
+            let activity = self.voice_status().or_else(|| self.activity());
             let composer = Composer {
                 prompt: "❯ ",
                 prompt_role: if rule == Role::Border { Role::Accent } else { rule },
@@ -703,6 +716,7 @@ impl Tui {
                 }
             }
             AgentEvent::MessageEnd { message } => {
+                self.voice_reply(&message);
                 if !self.stream.saw_text && !message.text().trim().is_empty() {
                     self.open_reply();
                     self.stream.markdown.push(&message.text());
@@ -763,6 +777,7 @@ impl Tui {
             )),
             AgentEvent::Idle { stop } => {
                 self.end_of_run();
+                self.voice_run_ended(&stop);
                 match stop {
                     StopReason::Aborted => self.info("interrupted"),
                     StopReason::Length => self.warn("the reply was cut off at the model's output limit"),
@@ -810,6 +825,8 @@ impl Tui {
                     CommandOutcome::Error(e) => self.fail(&e),
                 };
             }
+            #[cfg(feature = "voice")]
+            Internal::Voice(done) => return self.voice_done(done).await,
         };
         self.notice = None;
         self.branch = azazel_core::prompt::git_branch(&self.app.paths.project_root);
@@ -1012,6 +1029,9 @@ impl Tui {
 
     async fn on_key(&mut self, key: KeyEvent) {
         self.notice = None;
+        if self.voice_key(&key) {
+            return;
+        }
         if let Some(overlay) = &self.overlay
             && let Action::Agents(ids) = &overlay.action
             && let KeyCode::Char(c) = key.code
@@ -1101,6 +1121,7 @@ impl Tui {
                 }
             }
             Some("agent_hub") => self.open_agent_hub(),
+            Some("voice") => self.voice_pressed(&key).await,
             _ => {
                 if self.editor.handle_key(&key) {
                     self.refresh_completion();

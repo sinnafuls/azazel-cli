@@ -16,6 +16,8 @@ pub mod rpc;
 pub mod settings;
 mod tui;
 pub mod update;
+#[cfg(feature = "voice")]
+pub mod voice;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
