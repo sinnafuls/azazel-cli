@@ -15,6 +15,7 @@ azazel-agent.workspace = true
 azazel-ai.workspace = true
 base64.workspace = true
 blake3.workspace = true
+futures.workspace = true
 dunce.workspace = true
 globset.workspace = true
 image.workspace = true

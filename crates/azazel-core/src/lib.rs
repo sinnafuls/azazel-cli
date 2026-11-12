@@ -21,6 +21,7 @@ pub mod process;
 pub mod prompt;
 pub mod scheme;
 pub mod session;
+pub mod side;
 pub mod skills;
 pub mod subagent;
 pub mod tracker;

@@ -23,6 +23,7 @@ use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::permissions::shell::guard_env;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::prompt::BasePromptExt;
+use azazel_core::side::{Side, SideCosts};
 use azazel_core::skills::{SkillsExt, standard_roots};
 use azazel_core::{
     ArtifactStore, Config, EntryKind, Event, ExtCtx, Extension, FileTracker, Headless, Level, LoadOptions,
@@ -559,13 +560,22 @@ impl App {
             posix_shell: shell.is_posix(),
         }));
         services.insert(team.clone());
-        // What the run has spent, for the cost cap: every agent of the team, the lead included.
+        let side_costs = Arc::new(SideCosts::default());
+        services.insert(Arc::new(Side {
+            router: router.clone(),
+            prompt: registry.prompt.clone(),
+            tools: registry.tools.clone(),
+            costs: side_costs.clone(),
+        }));
+        // What the run has spent, for the cost cap: every agent of the team, the lead included,
+        // and the requests made on the side.
         let members = Arc::downgrade(&team);
         services.insert(Arc::new(Spend(Arc::new(move || {
-            members
+            let agents: f64 = members
                 .upgrade()
                 .map(|team| team.list().iter().filter_map(|m| m.cost_usd).sum())
-                .unwrap_or(0.0)
+                .unwrap_or(0.0);
+            agents + side_costs.total_cost()
         }))));
         // The interactive UI starts anyway and walks the user through choosing a model; every
         // other mode needs one before it can do anything.
