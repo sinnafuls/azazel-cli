@@ -196,6 +196,7 @@ Models, permissions and setup:
 | `/permissions` | List the permission rules in effect and where they come from |
 | `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
 | `/dirs` | List the directories agents may work in |
+| `/changelog [version]` | What changed in each release, or only since `version` |
 | `/settings` | Sign in, add API keys and choose the default model |
 | `/login [provider]` | Sign in to a provider or store its API key |
 | `/logout <provider>` | Forget the stored key or login of a provider |

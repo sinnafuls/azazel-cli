@@ -1,6 +1,7 @@
 //! The `azazel` command-line harness: argument parsing, run modes and the embedding [`Builder`].
 
 pub mod app;
+pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
@@ -16,6 +17,7 @@ pub mod print;
 pub mod rpc;
 pub mod sessions;
 pub mod settings;
+pub mod stats;
 mod tui;
 pub mod update;
 
@@ -175,6 +177,8 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }
         Some(Sub::Logout { provider }) => return login::logout(provider, &paths),
         Some(Sub::Sessions { action }) => return sessions::run(action, &paths),
+        Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),
+        Some(Sub::Stats { days, json }) => return stats::run(&paths, *days, *json),
         Some(Sub::Export {
             session,
             format,

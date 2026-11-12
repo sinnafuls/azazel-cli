@@ -146,6 +146,21 @@ pub enum Sub {
     },
     /// Print a completion script for a shell
     Completions { shell: clap_complete::Shell },
+    /// What changed in each release, newest first
+    Changelog {
+        /// Only the releases newer than this version
+        #[arg(long, value_name = "VERSION")]
+        since: Option<String>,
+    },
+    /// Sessions, prompts, tokens and cost per day, model, project and tool
+    Stats {
+        /// How many days back, today included
+        #[arg(long, value_name = "N", default_value_t = 30)]
+        days: u32,
+        /// One JSON object
+        #[arg(long)]
+        json: bool,
+    },
     /// List, search, delete, prune and export sessions
     Sessions {
         #[command(subcommand)]

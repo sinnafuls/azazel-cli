@@ -63,6 +63,9 @@ The interactive UI also checks GitHub in the background, at most once a day, and
 version exists. Turn that off with `[update] check = false` in [configuration](configuration.md) or with the
 environment variable `AZAZEL_NO_UPDATE_CHECK=1`.
 
+The first time the UI starts after an update it says so, with the number of changes. `azazel changelog` (or
+`/changelog`) shows what changed in each release; `--since 0.2.0` shows only what is newer.
+
 ## First run
 
 Start it inside a project:

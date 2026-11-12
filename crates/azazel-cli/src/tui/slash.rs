@@ -55,6 +55,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "add-dir",
         "Let agents work in another directory too: /add-dir <path>",
     ),
+    (
+        "changelog",
+        "What changed in each release: /changelog [since version]",
+    ),
     ("dirs", "List the directories agents may work in"),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
@@ -173,6 +177,10 @@ impl Tui {
                     .collect();
                 self.info(&format!("agents may work in:\n{}", roots.join("\n")));
             }
+            "changelog" => match crate::changelog::text((!args.is_empty()).then_some(args)) {
+                Ok(text) => self.info(&text),
+                Err(e) => self.fail(&e),
+            },
             "add-dir" if args.is_empty() => self.fail("usage: /add-dir <path>"),
             "add-dir" => {
                 let dir = azazel_core::paths::canonical(&self.app.paths.cwd.join(args.trim()));

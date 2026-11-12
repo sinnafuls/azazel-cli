@@ -28,6 +28,8 @@ GitHub are its section here.
 - `azazel sessions list|search|delete|prune|export` and `azazel export`; exports can be Markdown, HTML (one
   file, no scripts) or JSON lines, and `/export` picks the format from the file name.
 - `[session] retention_days` deletes old unpinned sessions in the background.
+- `azazel stats`: sessions, prompts, tokens and cost per day, model, project and tool.
+- `azazel changelog` and `/changelog`; the first start after an update says how many changes it brought.
 
 ### Changed
 

@@ -7,6 +7,7 @@
 pub mod components;
 pub mod keys;
 pub mod render;
+pub mod term;
 pub mod text;
 pub mod theme;
 

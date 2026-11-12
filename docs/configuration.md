@@ -224,7 +224,7 @@ A wrong flag value (an unknown tool, a model name that matches nothing or severa
 with status 2.
 
 Subcommands: `init`, `doctor`, `login`, `logout`, `update`, `completions` ([getting started](getting-started.md)),
-`models`, `auth status` ([models and logins](models-and-logins.md)), `sessions`, `export`
-([sessions](sessions-and-checkpoints.md)), `goal`
+`changelog` ([getting started](getting-started.md)), `models`, `auth status` ([models and logins](models-and-logins.md)),
+`sessions`, `export`, `stats` ([sessions](sessions-and-checkpoints.md)), `goal`
 ([goals](goals.md)), `mcp` ([MCP](mcp.md)), `pkg`, `skills` ([packages](packages.md)), `memory`, `index`, `rag`
 ([memory](memory.md)), `ext types` ([extensions](extensions.md)) and `rpc` ([RPC mode](rpc.md)).

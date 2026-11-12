@@ -266,6 +266,9 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
             StartSource::Startup
         })
         .await;
+    if let Some(notice) = crate::changelog::update_notice(&tui.app.paths) {
+        tui.info(&notice);
+    }
     if crate::update::checks_enabled(tui.app.config.update.check) {
         if let Some(notice) = crate::update::notice(&tui.app.paths) {
             tui.info(&notice);

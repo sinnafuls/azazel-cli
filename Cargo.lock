@@ -935,6 +935,7 @@ dependencies = [
 name = "azazel-tui"
 version = "0.2.0"
 dependencies = [
+ "base64 0.23.1",
  "crossterm",
  "nucleo-matcher",
  "pulldown-cmark",

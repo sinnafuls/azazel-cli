@@ -125,14 +125,28 @@ pub struct SessionSummary {
     pub pinned: bool,
     /// Tokens and cost of the lead's replies.
     pub usage: Usage,
+    /// Messages you sent.
+    #[serde(default)]
+    pub prompts: usize,
+    /// Tokens and cost per `provider/model`.
+    #[serde(default)]
+    pub models: BTreeMap<String, Usage>,
+    /// Calls per tool name.
+    #[serde(default)]
+    pub tools: BTreeMap<String, u32>,
 }
 
 /// File in a sessions directory that caches each session's summary, so listing does not read
 /// every session file again.
 const INDEX_FILE: &str = "index.json";
+/// Bumped when [`SessionSummary`] gains a field, so older indexes are rebuilt rather than read
+/// with that field empty.
+const INDEX_VERSION: u32 = 2;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Index {
+    #[serde(default)]
+    version: u32,
     files: BTreeMap<String, Indexed>,
 }
 
@@ -469,9 +483,13 @@ impl SessionStore {
         let index_path = dir.join(INDEX_FILE);
         let old: Index = std::fs::read(&index_path)
             .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .and_then(|bytes| serde_json::from_slice::<Index>(&bytes).ok())
+            .filter(|index| index.version == INDEX_VERSION)
             .unwrap_or_default();
-        let mut index = Index::default();
+        let mut index = Index {
+            version: INDEX_VERSION,
+            files: BTreeMap::new(),
+        };
         let mut changed = false;
         for entry in read_dir.flatten() {
             let path = entry.path();
@@ -546,11 +564,27 @@ fn summarise(path: &Path) -> Option<SessionSummary> {
         messages: 0,
         pinned: false,
         usage: Usage::default(),
+        prompts: 0,
+        models: BTreeMap::new(),
+        tools: BTreeMap::new(),
     };
     for entry in &entries {
         match &entry.kind {
             EntryKind::Message { message } => {
                 summary.messages += 1;
+                if message.role == Role::User {
+                    summary.prompts += 1;
+                }
+                for (_, name, _) in message.tool_calls() {
+                    *summary.tools.entry(name.to_string()).or_default() += 1;
+                }
+                if let Some(meta) = &message.meta {
+                    summary
+                        .models
+                        .entry(format!("{}/{}", meta.provider, meta.model))
+                        .or_default()
+                        .add(&meta.usage);
+                }
                 if summary.first_prompt.is_none() && message.role == Role::User {
                     summary.first_prompt = Some(message.text());
                 }
