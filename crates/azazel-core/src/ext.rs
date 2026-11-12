@@ -586,10 +586,15 @@ struct BusHooks {
 
 #[async_trait]
 impl AgentHooks for BusHooks {
-    async fn turn_start(&self, agent: &AgentInfo) {
-        self.bus
+    async fn turn_start(&self, agent: &AgentInfo) -> Result<(), String> {
+        match self
+            .bus
             .emit(&mut Event::TurnStart { agent: agent.clone() })
-            .await;
+            .await
+        {
+            Outcome::Block { reason } => Err(reason),
+            Outcome::Continue => Ok(()),
+        }
     }
 
     async fn turn_end(&self, agent: &AgentInfo) {

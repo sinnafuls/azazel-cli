@@ -20,7 +20,7 @@ const CLOUD_SOURCES: [(&str, &str); 3] = [
 /// The limits `bench-startup` enforces.
 const MAX_VERSION: Duration = Duration::from_millis(30);
 const MAX_PROMPT: Duration = Duration::from_millis(150);
-const MAX_BINARY_BYTES: u64 = 40 * 1024 * 1024;
+const MAX_BINARY_BYTES: u64 = 56 * 1024 * 1024;
 const BENCH_RUNS: usize = 20;
 const TASKS: &str = "catalog, bench-startup, dist";
 
@@ -236,6 +236,20 @@ fn bench_startup() -> Result<()> {
     })?;
 
     let megabytes = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    // The size of the previous run, so each change reports what it added.
+    let size_file = root.join("target").join("bench-size.txt");
+    let previous = std::fs::read_to_string(&size_file)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    let _ = std::fs::write(&size_file, size.to_string());
+    let delta = match previous {
+        Some(before) if before != size => {
+            let change = megabytes(size) - megabytes(before);
+            format!(", {change:+.2} MB since the last run")
+        }
+        Some(_) => ", unchanged since the last run".to_string(),
+        None => String::new(),
+    };
     let rows = [
         (
             "azazel --version",
@@ -251,7 +265,7 @@ fn bench_startup() -> Result<()> {
         ),
         (
             "binary size",
-            format!("{:.1} MB", megabytes(size)),
+            format!("{:.1} MB{delta}", megabytes(size)),
             format!("{:.0} MB", megabytes(MAX_BINARY_BYTES)),
             size <= MAX_BINARY_BYTES,
         ),

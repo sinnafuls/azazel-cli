@@ -1,14 +1,15 @@
 //! The session transcript: an append-only JSONL tree with an in-memory leaf pointer.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs::File;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::time::UNIX_EPOCH;
 
 use azazel_agent::compaction::{apply_context_edit, summary_message};
 use azazel_agent::{ContextEntry, TranscriptSink};
-use azazel_ai::{Message, ModelSpec, Role};
+use azazel_ai::{Message, ModelSpec, Role, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -88,6 +89,14 @@ pub enum EntryKind {
     SessionInfo {
         name: String,
     },
+    /// The thinking level the session switched to.
+    ThinkingChange {
+        level: String,
+    },
+    /// Pinned sessions are listed first.
+    Pin {
+        pinned: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,15 +109,40 @@ pub struct Entry {
     pub kind: EntryKind,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionSummary {
+    #[serde(skip)]
     pub path: PathBuf,
     pub id: String,
+    /// When the session was created.
     pub timestamp: String,
+    /// When its last entry was written.
+    pub updated: String,
     pub name: Option<String>,
     /// Text of the first user message, for pickers.
     pub first_prompt: Option<String>,
     pub messages: usize,
+    pub pinned: bool,
+    /// Tokens and cost of the lead's replies.
+    pub usage: Usage,
+}
+
+/// File in a sessions directory that caches each session's summary, so listing does not read
+/// every session file again.
+const INDEX_FILE: &str = "index.json";
+
+#[derive(Default, Serialize, Deserialize)]
+struct Index {
+    files: BTreeMap<String, Indexed>,
+}
+
+/// A summary, valid while the file keeps this size and modification time. Session files only
+/// grow, so any change to one changes its size.
+#[derive(Serialize, Deserialize)]
+struct Indexed {
+    size: u64,
+    mtime_ns: u64,
+    summary: SessionSummary,
 }
 
 struct Inner {
@@ -352,42 +386,123 @@ impl SessionStore {
         })
     }
 
-    /// Sessions in `dir`, newest first.
+    /// Sessions in `dir`, most recently used first. Summaries come from the directory's index
+    /// where a file is unchanged since it was summarised; the index is rewritten when anything
+    /// changed.
     pub fn list(dir: &Path) -> Vec<SessionSummary> {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
-        let mut sessions: Vec<SessionSummary> = read_dir
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|ext| ext == "jsonl"))
-            .filter_map(|path| {
-                let (header, entries) = read_file(&path).ok()?;
-                let mut summary = SessionSummary {
-                    path,
-                    id: header.id,
-                    timestamp: header.timestamp,
-                    name: None,
-                    first_prompt: None,
-                    messages: 0,
-                };
-                for entry in &entries {
-                    match &entry.kind {
-                        EntryKind::Message { message } => {
-                            summary.messages += 1;
-                            if summary.first_prompt.is_none() && message.role == Role::User {
-                                summary.first_prompt = Some(message.text());
-                            }
-                        }
-                        EntryKind::SessionInfo { name } => summary.name = Some(name.clone()),
-                        _ => {}
+        let index_path = dir.join(INDEX_FILE);
+        let old: Index = std::fs::read(&index_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .unwrap_or_default();
+        let mut index = Index::default();
+        let mut changed = false;
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            if path.extension().is_none_or(|ext| ext != "jsonl") {
+                continue;
+            }
+            // Asked of the file itself: on Windows a directory listing can report a stale size
+            // and time for a file another handle is still writing.
+            let (Some(name), Ok(meta)) = (
+                path.file_name().and_then(|n| n.to_str()),
+                std::fs::metadata(&path),
+            ) else {
+                continue;
+            };
+            let size = meta.len();
+            let mtime_ns = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos() as u64);
+            let summary = match old.files.get(name) {
+                Some(known) if known.size == size && known.mtime_ns == mtime_ns => known.summary.clone(),
+                _ => match summarise(&path) {
+                    Some(summary) => {
+                        changed = true;
+                        summary
                     }
-                }
-                Some(summary)
+                    None => continue,
+                },
+            };
+            index.files.insert(
+                name.to_string(),
+                Indexed {
+                    size,
+                    mtime_ns,
+                    summary,
+                },
+            );
+        }
+        if changed || index.files.len() != old.files.len() {
+            write_index(&index_path, &index);
+        }
+        let mut sessions: Vec<SessionSummary> = index
+            .files
+            .into_iter()
+            .map(|(name, indexed)| SessionSummary {
+                path: dir.join(name),
+                ..indexed.summary
             })
             .collect();
-        sessions.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        sessions.sort_by(|a, b| {
+            b.updated
+                .cmp(&a.updated)
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
+        });
         sessions
+    }
+}
+
+/// Reads a whole session file into its summary.
+fn summarise(path: &Path) -> Option<SessionSummary> {
+    let (header, entries) = read_file(path).ok()?;
+    let mut summary = SessionSummary {
+        path: path.to_path_buf(),
+        id: header.id,
+        updated: entries
+            .last()
+            .map_or_else(|| header.timestamp.clone(), |e| e.timestamp.clone()),
+        timestamp: header.timestamp,
+        name: None,
+        first_prompt: None,
+        messages: 0,
+        pinned: false,
+        usage: Usage::default(),
+    };
+    for entry in &entries {
+        match &entry.kind {
+            EntryKind::Message { message } => {
+                summary.messages += 1;
+                if summary.first_prompt.is_none() && message.role == Role::User {
+                    summary.first_prompt = Some(message.text());
+                }
+                if let Some(meta) = &message.meta {
+                    summary.usage.add(&meta.usage);
+                }
+            }
+            EntryKind::SessionInfo { name } => summary.name = Some(name.clone()),
+            EntryKind::Pin { pinned } => summary.pinned = *pinned,
+            _ => {}
+        }
+    }
+    Some(summary)
+}
+
+/// Replaces the index in one step, so a concurrent reader sees the old or the new one.
+fn write_index(path: &Path, index: &Index) {
+    let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+    let written = serde_json::to_vec(index)
+        .map_err(io::Error::other)
+        .and_then(|bytes| std::fs::write(&temp, bytes))
+        .and_then(|()| std::fs::rename(&temp, path));
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&temp);
+        tracing::debug!("could not write {}: {e}", path.display());
     }
 }
 
@@ -633,5 +748,43 @@ mod tests {
             (Some("first session prompt"), 2)
         );
         assert!(SessionStore::list(&dir.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn the_index_reuses_unchanged_summaries_and_rereads_changed_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        a.message(&Message::user("hello"));
+        let b = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        b.message(&Message::user("other"));
+        assert_eq!(SessionStore::list(dir.path()).len(), 2);
+
+        // Edited cached summaries come back for unchanged files: they were not read again.
+        let index_path = dir.path().join(INDEX_FILE);
+        let mut index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        for file in index["files"].as_object_mut().unwrap().values_mut() {
+            file["summary"]["name"] = json!("cached");
+        }
+        std::fs::write(&index_path, serde_json::to_vec(&index).unwrap()).unwrap();
+        let list = SessionStore::list(dir.path());
+        assert!(
+            list.iter().all(|s| s.name.as_deref() == Some("cached")),
+            "{list:?}"
+        );
+
+        // A file written to is read again, and is now the most recently used.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        a.append(EntryKind::Pin { pinned: true });
+        let list = SessionStore::list(dir.path());
+        assert_eq!(list[0].id, a.id());
+        assert_eq!((list[0].name.as_deref(), list[0].pinned), (None, true));
+        assert_eq!(list[1].name.as_deref(), Some("cached"));
+
+        // A deleted session leaves the index.
+        drop(b);
+        std::fs::remove_file(&list[1].path).unwrap();
+        assert_eq!(SessionStore::list(dir.path()).len(), 1);
+        let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        assert_eq!(index["files"].as_object().unwrap().len(), 1);
     }
 }

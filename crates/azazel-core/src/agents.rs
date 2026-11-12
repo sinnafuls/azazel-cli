@@ -828,6 +828,7 @@ System prompt body.
             project_root: root.clone(),
             cwd: root.join("src"),
             project_data: home.join("projects").join("app"),
+            sessions_override: None,
         };
         assert_eq!(
             def_roots(&paths, true, &crate::packages::Loaded::default()),

@@ -11,6 +11,8 @@ pub struct Paths {
     pub cwd: PathBuf,
     /// `<home>/projects/<slug>`.
     pub project_data: PathBuf,
+    /// Where sessions are kept instead of `<project_data>/sessions` (`--session-dir`, `--no-session`).
+    pub sessions_override: Option<PathBuf>,
 }
 
 impl Paths {
@@ -29,6 +31,7 @@ impl Paths {
             project_root,
             cwd,
             project_data,
+            sessions_override: None,
         }
     }
 
@@ -88,7 +91,9 @@ impl Paths {
     }
 
     pub fn sessions_dir(&self) -> PathBuf {
-        self.project_data.join("sessions")
+        self.sessions_override
+            .clone()
+            .unwrap_or_else(|| self.project_data.join("sessions"))
     }
     /// Transcripts of the sub-agents of one session.
     pub fn agent_transcripts_dir(&self, session_id: &str) -> PathBuf {

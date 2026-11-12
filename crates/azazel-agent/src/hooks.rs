@@ -10,7 +10,11 @@ use crate::event::AgentInfo;
 /// Called by the agent loop at fixed points. The application's event bus implements this.
 #[async_trait]
 pub trait AgentHooks: Send + Sync {
-    async fn turn_start(&self, _agent: &AgentInfo) {}
+    /// Returning an error ends the run before the request is sent, with that text as the failure
+    /// (a spending limit, for example).
+    async fn turn_start(&self, _agent: &AgentInfo) -> Result<(), String> {
+        Ok(())
+    }
 
     async fn turn_end(&self, _agent: &AgentInfo) {}
 

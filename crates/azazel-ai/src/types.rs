@@ -193,6 +193,18 @@ impl Usage {
     pub fn context_tokens(&self) -> u64 {
         self.input + self.cache_read + self.cache_write + self.output
     }
+
+    /// Adds `other` to these totals; a known cost on either side keeps the sum known.
+    pub fn add(&mut self, other: &Usage) {
+        self.input += other.input;
+        self.output += other.output;
+        self.cache_read += other.cache_read;
+        self.cache_write += other.cache_write;
+        self.reasoning += other.reasoning;
+        if let Some(cost) = other.cost_usd {
+            self.cost_usd = Some(self.cost_usd.unwrap_or(0.0) + cost);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

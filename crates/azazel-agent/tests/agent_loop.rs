@@ -980,6 +980,44 @@ async fn stop_hook_keeps_the_agent_going_and_withdrawn_tools_cannot_be_called() 
     assert_eq!(kinds(&events).iter().filter(|k| *k == "idle").count(), 1);
 }
 
+/// Lets one turn start, then refuses the next ones, like a spending limit that is reached.
+#[derive(Default)]
+struct Budget {
+    turns: std::sync::atomic::AtomicU32,
+}
+
+#[async_trait]
+impl AgentHooks for Budget {
+    async fn turn_start(&self, _: &AgentInfo) -> Result<(), String> {
+        match self.turns.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => Ok(()),
+            _ => Err("the cost limit is reached".to_string()),
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_turn_start_hook_can_end_the_run_before_the_next_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = start(Setup {
+        tools: vec![Arc::new(ReadFile(dir.path().into()))],
+        hooks: Arc::new(Budget::default()),
+        ..Setup::default()
+    });
+    session.mock.push(
+        "a",
+        MockStep::tools("", &[("c1", "read", json!({"path": "x.txt"}))]),
+    );
+    session.mock.push("a", MockStep::text("never asked"));
+    let events = session.run("go").await;
+
+    assert_eq!(session.mock.requests_for("a").len(), 1);
+    assert!(
+        matches!(events.last(), Some(AgentEvent::Failed { error }) if error == "the cost limit is reached"),
+        "{events:?}"
+    );
+}
+
 #[tokio::test]
 async fn a_stream_that_fails_part_way_is_discarded_and_retried() {
     let mut session = start(Setup::default());

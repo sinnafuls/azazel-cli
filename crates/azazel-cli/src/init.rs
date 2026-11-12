@@ -36,29 +36,47 @@ fn default_role_is_set(config: &Path) -> Result<bool> {
         .is_some())
 }
 
-/// Sets `roles.<role>` to `model` in the config file at `config`, or removes it when `model` is
-/// `None`, leaving everything else as written.
-pub fn write_role(config: &Path, role: &str, model: Option<&str>) -> Result<()> {
+/// Sets the key at `path` (`["editor", "mode"]`) in the config file at `config` to `value`, or
+/// removes it when `value` is `None`, keeping comments and everything else as written. Missing
+/// tables on the way are created.
+pub fn set_config_value(config: &Path, path: &[&str], value: Option<Item>) -> Result<()> {
+    let Some((key, tables)) = path.split_last() else {
+        bail!("no setting named");
+    };
     let mut doc = read_document(config)?;
-    let roles = doc
-        .entry("roles")
-        .or_insert(Item::Table(Table::new()))
-        .as_table_like_mut()
-        .ok_or_else(|| anyhow!("`roles` in {} is not a table", config.display()))?;
-    match model {
-        Some(model) => {
-            let mut chain = Array::new();
-            chain.push(model);
-            roles.insert(role, toml_edit::value(chain));
+    let mut table = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+    for (depth, name) in tables.iter().enumerate() {
+        table = table
+            .entry(name)
+            .or_insert(Item::Table(Table::new()))
+            .as_table_like_mut()
+            .ok_or_else(|| {
+                anyhow!(
+                    "`{}` in {} is not a table",
+                    tables[..=depth].join("."),
+                    config.display()
+                )
+            })?;
+    }
+    match value {
+        Some(value) => {
+            table.insert(key, value);
         }
         None => {
-            roles.remove(role);
+            table.remove(key);
         }
     }
     if let Some(dir) = config.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     std::fs::write(config, doc.to_string()).with_context(|| format!("cannot write {}", config.display()))
+}
+
+/// Sets `roles.<role>` to `model` in the config file at `config`, or removes it when `model` is
+/// `None`, leaving everything else as written.
+pub fn write_role(config: &Path, role: &str, model: Option<&str>) -> Result<()> {
+    let chain = model.map(|model| toml_edit::value(Array::from_iter([model])));
+    set_config_value(config, &["roles", role], chain)
 }
 
 /// Lets the user pick one of `options` by number or by name. A single option is taken as is.
@@ -213,6 +231,42 @@ pub async fn run(paths: &Paths) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_nested_setting_is_written_kept_beside_comments_and_removed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "# mine\n[editor]\nmode = \"vim\" # keep\n").unwrap();
+        set_config_value(
+            &config,
+            &["editor", "fold_paste_lines"],
+            Some(toml_edit::value(4)),
+        )
+        .unwrap();
+        set_config_value(
+            &config,
+            &["tools", "format", "rs"],
+            Some(toml_edit::value("rustfmt")),
+        )
+        .unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            text.starts_with("# mine\n[editor]\nmode = \"vim\" # keep\nfold_paste_lines = 4\n"),
+            "{text}"
+        );
+        let parsed: toml::Table = text.parse().unwrap();
+        assert_eq!(parsed["tools"]["format"]["rs"].as_str(), Some("rustfmt"));
+
+        set_config_value(&config, &["editor", "fold_paste_lines"], None).unwrap();
+        assert!(
+            !std::fs::read_to_string(&config)
+                .unwrap()
+                .contains("fold_paste_lines")
+        );
+        let error =
+            set_config_value(&config, &["editor", "mode", "x"], Some(toml_edit::value(1))).unwrap_err();
+        assert!(format!("{error:#}").contains("`editor.mode`"), "{error:#}");
+    }
 
     #[test]
     fn the_default_role_is_added_without_disturbing_the_file() {

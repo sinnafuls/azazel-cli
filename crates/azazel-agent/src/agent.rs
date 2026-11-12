@@ -396,9 +396,14 @@ impl Actor {
             }
             locked(&self.core.status).turn = turn;
             self.core.emit(AgentEvent::TurnStart { turn });
-            self.inbox
+            if let Err(reason) = self
+                .inbox
                 .drive(self.core.hooks.turn_start(&self.core.info))
-                .await;
+                .await
+            {
+                self.core.emit(AgentEvent::TurnEnd);
+                return Err(reason);
+            }
 
             let chain = self.inbox.chain.clone();
             let thinking = self.inbox.thinking;
@@ -600,15 +605,7 @@ impl Core {
 
     fn add_usage(&self, usage: &Usage) {
         let mut status = locked(&self.status);
-        let total = &mut status.usage;
-        total.input += usage.input;
-        total.output += usage.output;
-        total.cache_read += usage.cache_read;
-        total.cache_write += usage.cache_write;
-        total.reasoning += usage.reasoning;
-        if let Some(cost) = usage.cost_usd {
-            total.cost_usd = Some(total.cost_usd.unwrap_or(0.0) + cost);
-        }
+        status.usage.add(usage);
         status.requests += 1;
     }
 

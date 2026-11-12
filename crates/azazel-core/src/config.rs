@@ -137,6 +137,8 @@ config_table!(PermissionsConfig {
     ask: Vec<String> = Vec::new(),
     deny: Vec<String> = Vec::new(),
     additional_dirs: Vec<PathBuf> = Vec::new(),
+    /// What a command that destroys work (`git reset --hard`, `rm -r ~`) needs, in every mode.
+    destructive: DestructivePolicy = DestructivePolicy::Ask,
 });
 config_table!(CheckpointsConfig {
     enabled: bool = true,
@@ -144,7 +146,9 @@ config_table!(CheckpointsConfig {
 });
 config_table!(TeamConfig {
     max_parallel: usize = 4,
-    max_depth: u32 = 2
+    max_depth: u32 = 2,
+    /// The lead only plans and delegates: it is offered no tool that edits or runs commands.
+    coordinator: bool = false,
 });
 config_table!(VerifyConfig {
     /// Empty means auto-detect.
@@ -170,6 +174,10 @@ config_table!(ToolsConfig {
     shell_timeout_secs: u64 = 120,
     /// Empty means auto-resolve.
     shell: String = String::new(),
+    /// Run the file's formatter after `write` and `edit`.
+    format_on_write: bool = false,
+    /// File extension (without the dot) to formatter command; the file path is appended.
+    format: BTreeMap<String, String> = BTreeMap::new(),
 });
 config_table!(MemoryConfig {
     enabled: bool = true,
@@ -196,7 +204,12 @@ config_table!(MediaConfig {
 });
 config_table!(LspConfig { servers: BTreeMap<String, LspServerConfig> = BTreeMap::new() });
 config_table!(TuiConfig {
-    theme: String = "dark".to_string()
+    theme: String = "dark".to_string(),
+    /// Models the model-cycling keys step through.
+    favourites: Vec<ModelSpec> = Vec::new(),
+    images: ImageMode = ImageMode::Auto,
+    show_thinking: bool = false,
+    expand_tools: bool = false,
 });
 config_table!(CompatConfig { claude: bool = true });
 config_table!(BrowserConfig {
@@ -205,8 +218,141 @@ config_table!(BrowserConfig {
 });
 config_table!(UpdateConfig {
     /// Look for a newer release on GitHub at most once a day, in the background.
-    check: bool = true
+    check: bool = true,
+    /// Download a newer release in the background and install it when the UI exits.
+    auto: bool = false,
 });
+config_table!(SessionConfig {
+    /// Ask a small model for a session title after the first reply.
+    auto_name: bool = true,
+    /// Sessions not used for this many days are deleted at start; 0 keeps everything.
+    retention_days: u32 = 0,
+    /// A resumed session starts on the model and thinking level it last used.
+    restore_model: bool = true,
+});
+config_table!(LimitsConfig {
+    /// Spend at which a run stops; 0 is no cap.
+    max_cost_usd: f64 = 0.0,
+    /// Spend at which a warning is shown once; 0 is no warning.
+    warn_cost_usd: f64 = 0.0,
+    /// Requests per prompt for the lead; 0 is no limit.
+    max_turns: u32 = 0,
+});
+config_table!(NotifyConfig {
+    bell: bool = true,
+    desktop: DesktopNotify = DesktopNotify::Auto,
+    title: bool = true,
+    progress: bool = true,
+    /// A finished run notifies only when it took at least this long.
+    min_secs: u64 = 20,
+    keep_awake: bool = true,
+});
+config_table!(EditorConfig {
+    mode: EditorMode = EditorMode::Emacs,
+    /// Empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi`.
+    command: String = String::new(),
+    /// Pastes longer than this many lines are folded into one token.
+    fold_paste_lines: usize = 10,
+});
+config_table!(VoiceConfig {
+    /// `provider/model` used for transcription.
+    stt: String = String::new(),
+    /// `provider/model` used for speech.
+    tts: String = String::new(),
+    voice: String = String::new(),
+    record_command: String = String::new(),
+    play_command: String = String::new(),
+    stt_command: String = String::new(),
+    auto_send: bool = false,
+    max_secs: u64 = 120,
+});
+config_table!(AdvisorConfig {
+    /// The second model; empty means no advisor.
+    model: Vec<ModelSpec> = Vec::new(),
+    when: AdvisorWhen = AdvisorWhen::Off,
+});
+config_table!(RulesConfig {
+    /// Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline.
+    compat: bool = true
+});
+
+/// `[presets.<name>]`: a saved set of role chains.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PresetConfig {
+    pub roles: BTreeMap<String, Vec<ModelSpec>>,
+}
+
+/// `[[stream_rules]]`: a pattern that stops a reply as it is written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StreamRuleConfig {
+    /// Regular expression matched against the reply as it streams.
+    pub pattern: String,
+    /// What the agent is told when the pattern matches.
+    pub message: String,
+    /// `text` (default), `thinking` or `tool:<name>`.
+    #[serde(default = "default_rule_scope")]
+    pub scope: String,
+}
+
+fn default_rule_scope() -> String {
+    "text".to_string()
+}
+
+/// A setting with a fixed set of values, written in config files as the kebab-case word.
+macro_rules! config_enum {
+    ($(#[$meta:meta])* $name:ident { $($variant:ident = $text:literal),+ $(,)? } default $default:ident) => {
+        $(#[$meta])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+        pub enum $name {
+            $(#[serde(rename = $text)] $variant,)+
+        }
+
+        impl Default for $name {
+            fn default() -> Self {
+                $name::$default
+            }
+        }
+
+        impl $name {
+            pub const ALL: &[$name] = &[$($name::$variant),+];
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $($name::$variant => $text),+
+                }
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = String;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                $name::ALL
+                    .iter()
+                    .copied()
+                    .find(|v| v.as_str() == s.trim())
+                    .ok_or_else(|| {
+                        let names: Vec<&str> = $name::ALL.iter().map(|v| v.as_str()).collect();
+                        format!("unknown value `{s}`: expected {}", names.join(", "))
+                    })
+            }
+        }
+    };
+}
+
+config_enum!(DestructivePolicy { Ask = "ask", Allow = "allow", Deny = "deny" } default Ask);
+config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "iterm", Sixel = "sixel" } default Auto);
+config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
+config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
+config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
 
 impl From<&CompactionConfig> for CompactionSettings {
     fn from(c: &CompactionConfig) -> Self {
@@ -272,6 +418,16 @@ pub struct Config {
     pub compat: CompatConfig,
     pub browser: BrowserConfig,
     pub update: UpdateConfig,
+    pub session: SessionConfig,
+    pub limits: LimitsConfig,
+    pub notify: NotifyConfig,
+    pub editor: EditorConfig,
+    pub voice: VoiceConfig,
+    pub advisor: AdvisorConfig,
+    pub rules: RulesConfig,
+    /// Saved sets of roles, by name.
+    pub presets: BTreeMap<String, PresetConfig>,
+    pub stream_rules: Vec<StreamRuleConfig>,
     /// Event name (one of [`HOOK_EVENTS`]) to hooks, in layer order.
     pub hooks: BTreeMap<String, Vec<HookConfig>>,
 }
@@ -330,13 +486,22 @@ impl Default for Config {
             compat: CompatConfig::default(),
             browser: BrowserConfig::default(),
             update: UpdateConfig::default(),
+            session: SessionConfig::default(),
+            limits: LimitsConfig::default(),
+            notify: NotifyConfig::default(),
+            editor: EditorConfig::default(),
+            voice: VoiceConfig::default(),
+            advisor: AdvisorConfig::default(),
+            rules: RulesConfig::default(),
+            presets: BTreeMap::new(),
+            stream_rules: Vec::new(),
             hooks: BTreeMap::new(),
         }
     }
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-const TABLES: [&str; 23] = [
+const TABLES: [&str; 31] = [
     "roles",
     "providers",
     "models",
@@ -360,6 +525,14 @@ const TABLES: [&str; 23] = [
     "browser",
     "update",
     "hooks",
+    "session",
+    "limits",
+    "notify",
+    "editor",
+    "voice",
+    "advisor",
+    "rules",
+    "presets",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -629,13 +802,14 @@ fn concatenates(path: &[String]) -> bool {
     match path {
         [table, key] if table == "permissions" => matches!(key.as_str(), "allow" | "ask" | "deny"),
         [table, _] => table == "hooks",
+        [table] => table == "stream_rules",
         _ => false,
     }
 }
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
-const TRUST_GATED: [(&str, Option<&str>); 7] = [
+const TRUST_GATED: [(&str, Option<&str>); 14] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -643,6 +817,13 @@ const TRUST_GATED: [(&str, Option<&str>); 7] = [
     ("verify", Some("commands")),
     ("tools", Some("shell")),
     ("browser", Some("path")),
+    ("editor", Some("command")),
+    ("voice", Some("record_command")),
+    ("voice", Some("play_command")),
+    ("voice", Some("stt_command")),
+    ("tools", Some("format")),
+    ("tools", Some("format_on_write")),
+    ("advisor", None),
 ];
 
 /// The trust-gated settings a configuration file gives a value to, as they are written in
@@ -652,6 +833,7 @@ pub fn gated_settings(table: &Table) -> Vec<String> {
         Value::Array(items) => !items.is_empty(),
         Value::Table(entries) => !entries.is_empty(),
         Value::String(text) => !text.is_empty(),
+        Value::Boolean(on) => *on,
         _ => true,
     };
     TRUST_GATED
@@ -898,6 +1080,12 @@ mod tests {
             [browser]
             path = "/tmp/evil-browser"
             headless = false
+            [editor]
+            command = "evil-editor"
+            mode = "vim"
+            [advisor]
+            model = ["evil/model"]
+            when = "stop"
         "#;
         let f = fixture("[permissions]\nallow = [\"read\"]\n", project, "");
         let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
@@ -920,9 +1108,13 @@ mod tests {
                 "lsp",
                 "verify.commands",
                 "tools.shell",
-                "browser.path"
+                "browser.path",
+                "editor.command",
+                "advisor"
             ]
         );
+        assert_eq!(c.editor.mode, EditorMode::Vim);
+        assert!(c.editor.command.is_empty() && c.advisor.model.is_empty());
         // Settings that run nothing are kept.
         assert!(c.lsp.servers.is_empty() && c.verify.commands.is_empty());
         assert_eq!((c.verify.timeout_secs, c.browser.headless), (5, false));
@@ -931,6 +1123,67 @@ mod tests {
         let c = Config::load(&f.paths, &trusted()).unwrap().config;
         assert_eq!(c.permissions.allow, ["read", "shell"]);
         assert!(c.providers.contains_key("evil") && c.hooks.contains_key("session_start"));
+    }
+
+    #[test]
+    fn new_tables_parse_with_their_values_and_reject_unknown_words() {
+        let home = r#"
+            [session]
+            auto_name = false
+            retention_days = 30
+            [limits]
+            max_cost_usd = 5.0
+            [notify]
+            desktop = "system"
+            min_secs = 5
+            [editor]
+            mode = "vim"
+            fold_paste_lines = 4
+            [voice]
+            stt = "openai/whisper-1"
+            [tui]
+            favourites = ["anthropic/a", "@smol"]
+            images = "sixel"
+            [team]
+            coordinator = true
+            [permissions]
+            destructive = "deny"
+            [tools.format]
+            rs = "rustfmt"
+            [presets.cheap.roles]
+            default = ["openai/mini"]
+            [[stream_rules]]
+            pattern = "TODO"
+            message = "finish the work"
+        "#;
+        let f = fixture(
+            home,
+            "[[stream_rules]]\npattern = \"FIXME\"\nmessage = \"no\"\n",
+            "",
+        );
+        let c = Config::load(&f.paths, &trusted()).unwrap().config;
+        assert!(!c.session.auto_name && c.session.restore_model);
+        assert_eq!(c.session.retention_days, 30);
+        assert_eq!((c.limits.max_cost_usd, c.limits.max_turns), (5.0, 0));
+        assert_eq!((c.notify.desktop, c.notify.min_secs), (DesktopNotify::System, 5));
+        assert_eq!((c.editor.mode, c.editor.fold_paste_lines), (EditorMode::Vim, 4));
+        assert_eq!(c.voice.stt, "openai/whisper-1");
+        assert_eq!(c.tui.favourites.len(), 2);
+        assert_eq!(c.tui.images, ImageMode::Sixel);
+        assert!(c.team.coordinator);
+        assert_eq!(c.permissions.destructive, DestructivePolicy::Deny);
+        assert_eq!(c.tools.format["rs"], "rustfmt");
+        assert_eq!(c.presets["cheap"].roles["default"].len(), 1);
+        // Stream rules from every layer apply, home first.
+        let patterns: Vec<&str> = c.stream_rules.iter().map(|r| r.pattern.as_str()).collect();
+        assert_eq!(patterns, ["TODO", "FIXME"]);
+        assert_eq!(c.stream_rules[0].scope, "text");
+
+        let f = fixture("[notify]\ndesktop = \"loud\"\n", "", "");
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(error.contains("loud"), "{error}");
+        assert_eq!("vim".parse::<EditorMode>(), Ok(EditorMode::Vim));
+        assert!("nano".parse::<EditorMode>().unwrap_err().contains("emacs, vim"));
     }
 
     fn models_yml(f: &Fixture, home: &str, project: &str) {
