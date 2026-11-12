@@ -10,11 +10,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use azazel_agent::{Access, AgentHandle, ToolCtx, UpdateSink, UserInput};
+use azazel_agent::{Access, AgentCmd, AgentHandle, ToolCtx, UpdateSink, UserInput};
 use azazel_ai::providers::http::http_client;
-use azazel_ai::{ProviderConfig, WireApi};
+use azazel_ai::{ModelSpec, ProviderConfig, Role, Router, ThinkingLevel, WireApi};
 use azazel_core::process::AgentEnv;
-use azazel_core::{Level, McpServers, Memory, PermissionState, ToolCaller, Ui, UiBridge};
+use azazel_core::{
+    EntryKind, Level, McpServers, Memory, PermissionState, SessionStore, ToolCaller, Ui, UiBridge,
+};
 use azazel_team::{SpawnRequest, Team};
 use mlua::{FromLua, Function, Lua, LuaString, Table};
 use serde_json::{Value, json};
@@ -105,12 +107,26 @@ pub(crate) fn install(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
     azazel.set("agent", agent(lua, shared)?)?;
     azazel.set("memory", memory(lua, shared)?)?;
     azazel.set("tools", tools(lua, shared)?)?;
+    azazel.set("session", session(lua, shared)?)?;
     azazel.set_readonly(true);
     lua.globals().set("azazel", azazel)?;
     ui_table(lua, shared)
 }
 
-/// `tool`, `on`, `command`, `shortcut`, `provider` and `mcp`.
+/// Names of the system prompt's own parts. Their order and the prompt cache depend on them, so a
+/// script adds parts under names of its own.
+const BUILT_IN_PARTS: [&str; 8] = [
+    "identity",
+    "rules",
+    "team",
+    "skills",
+    "environment",
+    "context_files",
+    "memory",
+    "mode",
+];
+
+/// `tool`, `on`, `command`, `prompt`, `shortcut`, `provider` and `mcp`.
 fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<()> {
     let script = shared.clone();
     let tool = lua.create_function(move |lua, spec: Table| {
@@ -194,6 +210,25 @@ fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<
         Ok(())
     })?;
     azazel.set("command", command)?;
+
+    let script = shared.clone();
+    let prompt = lua.create_function(move |_, (name, render): (String, Function)| {
+        const NAME: &str = "azazel.prompt";
+        script.registering(NAME)?;
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err(runtime(format!(
+                "{NAME}: the name must be one word, such as \"house_rules\""
+            )));
+        }
+        if BUILT_IN_PARTS.contains(&name.as_str()) {
+            return Err(runtime(format!(
+                "{NAME}: `{name}` is a part of the built-in prompt; give the part a name of its own"
+            )));
+        }
+        script.pending().prompts.push((name, render));
+        Ok(())
+    })?;
+    azazel.set("prompt", prompt)?;
 
     let script = shared.clone();
     let shortcut = lua.create_function(move |_, (key, handler): (String, Function)| {
@@ -771,6 +806,136 @@ fn tools(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
 
     tools.set_readonly(true);
     Ok(tools)
+}
+
+/// A copy of `value` without the bytes of the images in it: a script has no use for them, and
+/// they would fill its memory.
+fn without_image_bytes(value: &mut Value) {
+    match value {
+        Value::Object(fields) => {
+            if fields.get("type").and_then(Value::as_str) == Some("image") {
+                fields.remove("data");
+            }
+            fields.values_mut().for_each(without_image_bytes);
+        }
+        Value::Array(items) => items.iter_mut().for_each(without_image_bytes),
+        _ => {}
+    }
+}
+
+/// `azazel.session`: the open session, through its file and its lead agent.
+fn session(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
+    let session = lua.create_table()?;
+    fn open(shared: &Shared, function: &str) -> mlua::Result<Arc<SessionStore>> {
+        shared
+            .services
+            .get::<SessionStore>()
+            .ok_or_else(|| runtime(format!("{function}: no session is open")))
+    }
+
+    let script = shared.clone();
+    let name = lua.create_function(move |_, ()| Ok(open(&script, "azazel.session.name")?.name()))?;
+    session.set("name", name)?;
+
+    let script = shared.clone();
+    let set_name = lua.create_function(move |_, text: String| {
+        const NAME: &str = "azazel.session.set_name";
+        let text = text.trim();
+        if text.is_empty() {
+            return Err(runtime(format!("{NAME}: the name is empty")));
+        }
+        open(&script, NAME)?.append(EntryKind::SessionInfo {
+            name: text.to_string(),
+        });
+        Ok(())
+    })?;
+    session.set("set_name", set_name)?;
+
+    let script = shared.clone();
+    let set_model = lua.create_function(move |_, specs: mlua::Value| {
+        const NAME: &str = "azazel.session.set_model";
+        let names: Vec<String> = match specs {
+            mlua::Value::String(one) => vec![one.to_string_lossy()],
+            mlua::Value::Table(many) => many.sequence_values::<String>().collect::<mlua::Result<_>>()?,
+            other => {
+                return Err(runtime(format!(
+                    "{NAME}: the models are a {}; pass \"provider/model\", \"@role\" or a list of them",
+                    other.type_name()
+                )));
+            }
+        };
+        let chain = names
+            .iter()
+            .map(|name| name.parse::<ModelSpec>())
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| runtime(format!("{NAME}: {e}")))?;
+        let usable = script
+            .services
+            .get::<Router>()
+            .is_some_and(|router| !router.resolve(&chain).is_empty());
+        if !usable {
+            return Err(runtime(format!(
+                "{NAME}: `{}` names no model that is configured",
+                names.join(", ")
+            )));
+        }
+        let store = open(&script, NAME)?;
+        let (_, lead) = team(&script, NAME)?;
+        lead.send(AgentCmd::SetModel(chain.clone()));
+        // Recorded, so that a resumed session comes back on it.
+        store.append(EntryKind::ModelChange { chain });
+        Ok(())
+    })?;
+    session.set("set_model", set_model)?;
+
+    let script = shared.clone();
+    let set_thinking = lua.create_function(move |_, level: String| {
+        const NAME: &str = "azazel.session.set_thinking";
+        let level: ThinkingLevel = level.parse().map_err(|e| runtime(format!("{NAME}: {e}")))?;
+        let store = open(&script, NAME)?;
+        let (_, lead) = team(&script, NAME)?;
+        lead.send(AgentCmd::SetThinking(level));
+        store.append(EntryKind::ThinkingChange {
+            level: level.to_string(),
+        });
+        Ok(())
+    })?;
+    session.set("set_thinking", set_thinking)?;
+
+    let script = shared.clone();
+    let compact = lua.create_function(move |_, instructions: Option<String>| {
+        let (_, lead) = team(&script, "azazel.session.compact")?;
+        lead.send(AgentCmd::Compact { instructions });
+        Ok(())
+    })?;
+    session.set("compact", compact)?;
+
+    let script = shared.clone();
+    let messages = lua.create_function(move |lua, ()| {
+        const NAME: &str = "azazel.session.messages";
+        let rows: Vec<Value> = open(&script, NAME)?
+            .branch(None)
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                EntryKind::Message { message } => {
+                    let mut content = serde_json::to_value(&message.content).ok()?;
+                    without_image_bytes(&mut content);
+                    let role = match message.role {
+                        Role::User => "user",
+                        Role::Assistant => "assistant",
+                        Role::Tool => "tool",
+                    };
+                    Some(json!({ "id": entry.id, "role": role, "text": message.text(), "content": content }))
+                }
+                _ => None,
+            })
+            .collect();
+        to_lua(lua, &Value::Array(rows))
+    })?;
+    session.set("messages", messages)?;
+
+    session.set_readonly(true);
+    Ok(session)
 }
 
 /// `ctx.ui`: questions to the user.

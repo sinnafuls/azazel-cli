@@ -64,6 +64,8 @@ pub(crate) struct Pending {
     /// `(event name, kind, handler)`.
     pub handlers: Vec<(&'static str, EventKind, Function)>,
     pub commands: Vec<CommandDef>,
+    /// `(part name, function that renders it)`.
+    pub prompts: Vec<(String, Function)>,
     /// `(key combination, handler)`.
     pub shortcuts: Vec<(String, Function)>,
     pub providers: Vec<ProviderConfig>,

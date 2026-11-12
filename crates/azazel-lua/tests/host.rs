@@ -572,6 +572,7 @@ async fn functions_that_register_are_refused_once_the_script_has_loaded() {
                     azazel.provider({ id = "late", api = "openai-chat", base_url = "http://localhost:1" })
                 end,
                 mcp = function() azazel.mcp({ name = "late", command = "late" }) end,
+                prompt = function() azazel.prompt("late", noop) end,
             }
             local refused = {}
             for name, attempt in pairs(attempts) do
@@ -588,7 +589,7 @@ async fn functions_that_register_are_refused_once_the_script_has_loaded() {
     bench.load(false);
     let (outcome, _) = bench.emit(Event::SessionEnd).await;
     assert_eq!(outcome, Outcome::Continue);
-    assert_eq!(bench.extras().status(), ["command mcp on provider shortcut tool"]);
+    assert_eq!(bench.extras().status(), ["command mcp on prompt provider shortcut tool"]);
     assert_eq!(bench.tool_names(), Vec::<String>::new());
     assert!(bench.registry.command("late").is_none());
     assert!(bench.extras().shortcut("ctrl+l").is_none());
@@ -651,6 +652,123 @@ async fn what_the_session_lacks_is_reported_to_the_script_as_an_error() {
 }
 
 #[tokio::test]
+async fn a_script_adds_parts_to_the_system_prompt() {
+    let bench = Bench::new();
+    bench.home_script(
+        "house.luau",
+        r#"
+        azazel.prompt("house_rules", function(ctx)
+            return "House rule: tabs. Agent " .. ctx.agent_id .. " in session " .. ctx.session_id .. "."
+        end)
+        azazel.prompt("only_for_scouts", function(ctx)
+            if ctx.agent_id == "lead" then return nil end
+            return "You are a scout."
+        end)
+        local ok, why = pcall(azazel.prompt, "identity", function() return "I am someone else" end)
+        azazel.status("identity", tostring(ok) .. " " .. tostring(why))
+        "#,
+    );
+    bench.home_script(
+        "broken.luau",
+        r#"azazel.prompt("broken", function() error("no such rule") end)"#,
+    );
+    bench.load(false);
+    let status = bench.extras().status();
+    assert!(
+        status[0].starts_with("false ") && status[0].contains("`identity` is a part of the built-in prompt"),
+        "{status:?}"
+    );
+
+    let texts = |parts: Vec<azazel_ai::SystemPart>| parts.into_iter().map(|part| part.text).collect::<Vec<_>>();
+    assert_eq!(
+        texts(bench.registry.prompt.render(&lead()).await),
+        ["House rule: tabs. Agent lead in session s1."]
+    );
+    let scout = AgentInfo {
+        id: "scout-1".into(),
+        def: "scout".into(),
+        parent: Some("lead".into()),
+        depth: 1,
+        session_id: "s1".into(),
+    };
+    assert_eq!(
+        texts(bench.registry.prompt.render(&scout).await),
+        [
+            "House rule: tabs. Agent scout-1 in session s1.",
+            "You are a scout."
+        ]
+    );
+    // A part that fails disables its script and is left out from then on.
+    let listed = bench.shown("ext", "").await;
+    assert!(
+        listed.contains("disabled: its prompt part `broken` failed:") && listed.contains("no such rule"),
+        "{listed}"
+    );
+    // The parts go when the scripts are unloaded, and come back with a reload.
+    bench.registry.unload("lua");
+    assert_eq!(texts(bench.registry.prompt.render(&lead()).await), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn a_script_reads_and_names_the_open_session() {
+    let bench = Bench::new();
+    bench.home_script(
+        "session.luau",
+        r#"
+        azazel.command({ name = "name", run = function(args)
+            local before = azazel.session.name()
+            azazel.session.set_name(args)
+            return tostring(before) .. " -> " .. azazel.session.name()
+        end })
+        azazel.command({ name = "said", run = function()
+            local lines = {}
+            for _, message in ipairs(azazel.session.messages()) do
+                local kinds = {}
+                for _, block in ipairs(message.content) do
+                    table.insert(kinds, block.type .. (block.data and "+bytes" or ""))
+                end
+                table.insert(lines, message.role .. ": " .. message.text .. " [" .. table.concat(kinds, " ") .. "]")
+            end
+            return table.concat(lines, "\n")
+        end })
+        azazel.command({ name = "think", run = function(args) azazel.session.set_thinking(args) end })
+        azazel.command({ name = "model", run = function(args) azazel.session.set_model(args) end })
+        "#,
+    );
+    bench.load(false);
+    let failure = |outcome: CommandOutcome| match outcome {
+        CommandOutcome::Error(why) => why,
+        other => panic!("{other:?}"),
+    };
+    assert!(failure(bench.command("name", "x").await).contains("no session is open"));
+
+    let store = Arc::new(
+        azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None).unwrap(),
+    );
+    bench.services.insert(store.clone());
+    assert_eq!(bench.shown("name", " demo ").await, "nil -> demo");
+    assert_eq!(bench.shown("name", "second").await, "demo -> second");
+    assert!(failure(bench.command("name", "  ").await).contains("the name is empty"));
+    assert_eq!(store.name().as_deref(), Some("second"));
+
+    store.append(azazel_core::EntryKind::Message {
+        message: azazel_ai::Message::user_blocks(vec![
+            azazel_ai::Block::text("look"),
+            azazel_ai::Block::Image {
+                mime: "image/png".into(),
+                data: "AAAA".into(),
+            },
+        ]),
+    });
+    assert_eq!(bench.shown("said", "").await, "user: look [text image]");
+
+    // Without a lead agent there is nothing to switch, and a mistake is named either way.
+    assert!(failure(bench.command("think", "extreme").await).contains("extreme"));
+    assert!(failure(bench.command("think", "high").await).contains("no session with a team of agents"));
+    assert!(failure(bench.command("model", "mock/a").await).contains("names no model that is configured"));
+}
+
+#[tokio::test]
 async fn the_type_declarations_cover_everything_a_script_is_given() {
     let bench = Bench::new();
     bench.home_script(
@@ -683,8 +801,10 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
         surface,
         "agent agent.list agent.send agent.spawn agent.stop command ctx.agent_id ctx.cwd ctx.session_id \
          ctx.ui ctx.ui.confirm ctx.ui.input ctx.ui.select exec fs fs.data_dir fs.exists fs.list fs.read \
-         fs.write http json json.decode json.encode mcp memory memory.save memory.search notify on provider \
-         send shortcut state state.get state.set status tool tools tools.call widget"
+         fs.write http json json.decode json.encode mcp memory memory.save memory.search notify on prompt \
+         provider send session session.compact session.messages session.name session.set_model \
+         session.set_name session.set_thinking shortcut state state.get state.set status tool tools \
+         tools.call widget"
     );
     let declarations = type_declarations();
     assert!(declarations.contains("declare azazel: {"));

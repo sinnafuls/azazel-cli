@@ -162,6 +162,18 @@ type Member = {
 	cost_usd: number?,
 }
 
+-- One message of the session.
+type Message = {
+	-- The id of its entry in the session file.
+	id: string,
+	role: "user" | "assistant" | "tool",
+	-- Its text blocks, joined.
+	text: string,
+	-- Its blocks as the session file has them: `type` is "text", "thinking", "image", "tool_call",
+	-- "tool_result" and so on. Images come without their bytes.
+	content: { { [string]: any } },
+}
+
 type MemoryHit = { id: string, kind: string, text: string, tags: { string }, scope: "project" | "global" }
 
 type ProviderSpec = {
@@ -195,6 +207,10 @@ declare azazel: {
 	on: On,
 	-- Load only. Adds the slash command `/<name>`.
 	command: (spec: CommandSpec) -> (),
+	-- Load only. Adds a part to the system prompt of every agent. `render` runs each time a prompt
+	-- is put together; `ctx.agent_id` says for whom. Returning nil leaves the part out. The part
+	-- comes after the project's context files.
+	prompt: (name: string, render: (ctx: Ctx) -> string?) -> (),
 	-- Load only. Binds a key combination such as "ctrl+k" in the interactive UI.
 	shortcut: (key: string, handler: (ctx: Ctx) -> ()) -> (),
 	-- Load only. Makes the models of an HTTP endpoint available as `<id>/<model>`.
@@ -268,6 +284,22 @@ declare azazel: {
 		save: (text: string, kind: string?, tags: { string }?) -> string,
 		-- Best matches first. Default limit 8.
 		search: (query: string, limit: number?) -> { MemoryHit },
+	},
+
+	-- The open session. Every function errors with "no session is open" while there is none, as
+	-- when the script loads.
+	session: {
+		name: () -> string?,
+		set_name: (text: string) -> (),
+		-- Changes the lead's model: "provider/model[:thinking]", "@role", or a list of them tried
+		-- in order.
+		set_model: (specs: string | { string }) -> (),
+		-- "off", "minimal", "low", "medium", "high", "xhigh" or "max".
+		set_thinking: (level: string) -> (),
+		-- Summarises the conversation so far to free context, once the lead is idle.
+		compact: (instructions: string?) -> (),
+		-- The messages from the start of the session to where the conversation is now.
+		messages: () -> { Message },
 	},
 
 	-- The harness's own tools and those of other extensions and MCP servers.

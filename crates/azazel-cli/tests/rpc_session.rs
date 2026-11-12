@@ -4,7 +4,7 @@
 //! lines, export, side questions and registered commands.
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
@@ -23,9 +23,16 @@ struct Client {
 
 impl Client {
     fn start(script: &Value, args: &[&str]) -> Client {
+        Client::start_in(script, args, |_| {})
+    }
+
+    /// Like [`Client::start`], after `prepare` has put what the test needs into the azazel home.
+    fn start_in(script: &Value, args: &[&str], prepare: impl FnOnce(&Path)) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir_all(project.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        prepare(&dir.path().join("home"));
         let script_path = dir.path().join("script.json");
         std::fs::write(&script_path, script.to_string()).unwrap();
         let mut child = Command::new(assert_cmd::cargo::cargo_bin("azazel"))
@@ -547,6 +554,73 @@ fn moving_between_sessions_waits_for_the_lead() {
     assert_eq!(idle["stop"], "aborted");
     let state = client.state(json!({ "type": "new_session" }));
     assert!(!state.busy);
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[cfg(feature = "lua")]
+#[test]
+fn a_script_adds_a_prompt_part_and_acts_on_the_session() {
+    const SCRIPT: &str = r#"
+        azazel.prompt("house_rules", function(ctx)
+            return "House rule: tabs, for " .. ctx.agent_id .. "."
+        end)
+        azazel.on("session_start", function()
+            azazel.session.set_name("named by a script")
+            azazel.session.set_thinking("high")
+        end)
+        azazel.command({ name = "said", run = function()
+            local lines = {}
+            for _, message in ipairs(azazel.session.messages()) do
+                table.insert(lines, message.role .. ": " .. message.text)
+            end
+            return azazel.session.name() .. " | " .. table.concat(lines, ", ")
+        end })
+        azazel.command({ name = "switch", run = function(args)
+            azazel.session.set_model({ args, "@default" })
+            azazel.session.compact("keep it short")
+        end })
+    "#;
+    let mut client = Client::start_in(&replies(&["one", "## Goal\nsummarised"]), &[], |home| {
+        std::fs::create_dir_all(home.join("extensions")).unwrap();
+        std::fs::write(home.join("extensions/house.luau"), SCRIPT).unwrap();
+    });
+    // What the script did when the session started is in the session file.
+    let state = client.state(json!({ "type": "get_state" }));
+    assert_eq!(
+        (state.name.as_deref(), state.thinking.as_str()),
+        (Some("named by a script"), "high")
+    );
+    let tree = client.tree();
+    let named = tree.iter().find(|row| row.kind == "session_info").unwrap();
+    assert_eq!(named.text.as_deref(), Some("named by a script"));
+    assert!(tree.iter().any(|row| row.kind == "thinking_change"));
+
+    client.prompt("first");
+    let request = &client.requests()[0];
+    let system: Vec<&str> = request["system"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|part| part["text"].as_str().unwrap())
+        .collect();
+    assert!(system.contains(&"House rule: tabs, for lead."), "{system:?}");
+    assert_eq!(request["thinking"], "high");
+
+    let said = client.ok(json!({ "type": "run_command", "name": "said" }));
+    assert_eq!(
+        said,
+        json!({ "outcome": "show", "text": "named by a script | user: first, assistant: one" })
+    );
+    // The model changes for the lead and the change is recorded; the compaction follows.
+    let switched = client.ok(json!({ "type": "run_command", "name": "switch", "args": "mock/other" }));
+    assert_eq!(switched, json!({ "outcome": "done" }));
+    client.until(|line| line["type"] == "compaction");
+    let state = client.state(json!({ "type": "get_state" }));
+    assert_eq!(state.chain, ["mock/other", "@default"]);
+    assert!(client.tree().iter().any(|row| row.kind == "model_change"));
+    let mistake = client.error(json!({ "type": "run_command", "name": "switch", "args": "not a model" }));
+    assert!(mistake.starts_with("/switch: azazel.session.set_model: "), "{mistake}");
 
     assert_eq!(client.finish(), Some(0));
 }

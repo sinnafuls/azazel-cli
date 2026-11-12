@@ -15,7 +15,7 @@ use azazel_core::{
 };
 
 use crate::LuaExt;
-use crate::bridge::{LuaCommand, LuaHandler, LuaShortcut, LuaTool};
+use crate::bridge::{LuaCommand, LuaHandler, LuaPrompt, LuaShortcut, LuaTool};
 use crate::confine::Roots;
 use crate::script::{OWNER, Script, Shared, locked};
 
@@ -167,6 +167,15 @@ impl Host {
                     }),
                 };
                 loaded.commands.push((shared.clone(), command));
+            }
+            for (name, function) in pending.prompts {
+                let part = LuaPrompt {
+                    script: script.clone(),
+                    name: name.clone(),
+                    function,
+                    cwd: self.paths.cwd.clone(),
+                };
+                r.system_part(&name, Arc::new(part));
             }
             for (key, function) in pending.shortcuts {
                 if let Some(extras) = &extras {

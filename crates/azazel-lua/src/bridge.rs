@@ -1,14 +1,16 @@
 //! What a script registered, in the shapes the harness calls: tools, event handlers, slash
 //! commands and key bindings.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput};
 use azazel_ai::Block;
 use azazel_core::{
-    CommandHandler, CommandOutcome, Event, EventHandler, ExtCtx, Level, Outcome, ShortcutHandler, Ui,
+    CommandHandler, CommandOutcome, Event, EventHandler, ExtCtx, Level, Outcome, ShortcutHandler,
+    SystemPartProvider, Ui,
 };
 use mlua::Function;
 use serde_json::{Map, Value};
@@ -194,6 +196,57 @@ impl CommandHandler for LuaCommand {
             Ok(mlua::Value::String(text)) => CommandOutcome::Show(text.to_string_lossy()),
             Ok(_) => CommandOutcome::Done,
             Err(e) => CommandOutcome::Error(format!("/{}: {}", self.name, describe(&e))),
+        }
+    }
+}
+
+/// A part of the system prompt registered with `azazel.prompt`. The first error disables its
+/// script.
+pub(crate) struct LuaPrompt {
+    pub script: Arc<Script>,
+    pub name: String,
+    pub function: Function,
+    /// The directory the session works in.
+    pub cwd: PathBuf,
+}
+
+#[async_trait]
+impl SystemPartProvider for LuaPrompt {
+    async fn render(&self, agent: &AgentInfo) -> Option<String> {
+        let shared = &self.script.shared;
+        if shared.error().is_some() {
+            return None;
+        }
+        let call = self
+            .script
+            .ctx(&self.cwd, &agent.session_id, Some(agent))
+            .map(|context| {
+                self.script
+                    .call::<mlua::Value>(&self.function, context, Some(BUDGET), None)
+            });
+        let returned = match call {
+            Ok(call) => call.await,
+            Err(e) => Err(e),
+        };
+        match returned {
+            Ok(mlua::Value::String(text)) => {
+                let text = text.to_string_lossy();
+                (!text.trim().is_empty()).then_some(text)
+            }
+            Ok(mlua::Value::Nil) => None,
+            Ok(other) => {
+                tracing::warn!(
+                    script = %shared.id,
+                    "the prompt part `{}` returned a {}; only a string or nil has an effect",
+                    self.name,
+                    other.type_name()
+                );
+                None
+            }
+            Err(e) => {
+                shared.disable(format!("its prompt part `{}` failed: {}", self.name, describe(&e)));
+                None
+            }
         }
     }
 }
