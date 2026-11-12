@@ -198,8 +198,12 @@ Models, permissions and setup:
 | `/dirs` | List the directories agents may work in |
 | `/changelog [version]` | What changed in each release, or only since `version` |
 | `/settings` | Sign in, add API keys and choose the default model |
-| `/login [provider]` | Sign in to a provider or store its API key |
-| `/logout <provider>` | Forget the stored key or login of a provider |
+| `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
+| `/logout <provider> [account]` | Forget the stored key or login of a provider |
+| `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
+| `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
+| `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
+| `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
 | `/doctor` | Check the installation and this project's setup |
 

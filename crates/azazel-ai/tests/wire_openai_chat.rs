@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use azazel_ai::wire::{decode_sse, openai_chat};
 use azazel_ai::{
     AiError, AssistantMeta, Auth, Block, Cost, INVALID_JSON_KEY, Message, ModelInfo, ProviderConfig, Request,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, ToolSpec, Usage, WireApi,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
 };
 use serde_json::{Value, json};
 
@@ -1027,6 +1027,58 @@ fn classify_error_recognises_provider_signals_and_defers_the_rest() {
             "{status} {body}"
         );
     }
+}
+
+#[test]
+fn a_used_up_chatgpt_plan_is_a_quota_error_with_its_reset_time() {
+    // The ChatGPT backend's answer to a subscription whose usage window is full.
+    let body = r#"{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"team","resets_at":1787286694,"eligible_promo":null,"resets_in_seconds":2608165}}"#;
+    assert_eq!(
+        openai_chat::classify_error(429, body),
+        Some(AiError::Quota {
+            resets_at: Some(1_787_286_694),
+            message: "The usage limit has been reached".into(),
+        })
+    );
+    // Only the time left is given, or the time as text.
+    let body =
+        r#"{"error":{"type":"usage_limit_reached","message":"Limit reached.","resets_in_seconds":"600"}}"#;
+    let Some(AiError::Quota {
+        resets_at: Some(at), ..
+    }) = openai_chat::classify_error(429, body)
+    else {
+        panic!("not a quota error");
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!((now + 590..=now + 610).contains(&at), "{at} vs {now}");
+    let body = r#"{"error":{"type":"usage_limit_reached","message":"Limit reached."}}"#;
+    assert_eq!(
+        openai_chat::classify_error(429, body),
+        Some(AiError::Quota {
+            resets_at: None,
+            message: "Limit reached.".into(),
+        })
+    );
+}
+
+#[test]
+fn the_service_tier_is_named_only_when_one_is_asked_for() {
+    let tier_of = |tier: Option<Tier>| {
+        body(&Request {
+            messages: vec![Message::user("hi")],
+            tier,
+            ..Request::default()
+        })
+        .get("service_tier")
+        .cloned()
+    };
+    assert_eq!(tier_of(Some(Tier::Priority)), Some(json!("priority")));
+    assert_eq!(tier_of(Some(Tier::Economy)), Some(json!("flex")));
+    assert_eq!(tier_of(Some(Tier::Standard)), None);
+    assert_eq!(tier_of(None), None);
 }
 
 #[test]

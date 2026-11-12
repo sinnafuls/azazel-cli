@@ -15,7 +15,7 @@ use crate::catalog::ModelInfo;
 use crate::credentials::Auth;
 use crate::error::AiError;
 use crate::provider::Provider;
-use crate::providers::http::{event_stream, prepare, send_request};
+use crate::providers::http::{Classify, event_stream, prepare, send_request};
 use crate::providers::presets::{ProviderConfig, VERTEX};
 use crate::stream::EventStream;
 use crate::types::{Request, WireApi};
@@ -174,7 +174,7 @@ impl Provider for VertexProvider {
         let prepared = prepare(req, &target);
         let started = Instant::now();
 
-        let (request, decoder, classify): (_, _, fn(u16, &str) -> Option<AiError>) = if claude {
+        let (request, decoder, classify): (_, _, Classify) = if claude {
             // The address names the model, so the body must not.
             let mut body = wire::anthropic::build_body(&config, model, &prepared);
             if let Value::Object(members) = &mut body {
@@ -185,7 +185,7 @@ impl Provider for VertexProvider {
             (
                 self.client.post(url).bearer_auth(&token).json(&body),
                 wire::anthropic::decoder(&config, model),
-                wire::anthropic::classify_error,
+                |status, _, body| wire::anthropic::classify_error(status, body),
             )
         } else {
             let auth = Auth::OAuth {
@@ -195,12 +195,12 @@ impl Provider for VertexProvider {
             (
                 wire::google::build_request(&self.client, &config, model, &prepared, &auth),
                 wire::google::decoder(&config, model),
-                wire::google::classify_error,
+                |status, _, body| wire::google::classify_error(status, body),
             )
         };
         let response = send_request(request, classify, &cancel)
             .await
-            .map_err(|(_, error)| error)?;
+            .map_err(|failed| failed.error)?;
         Ok(event_stream(response, decoder, cancel, started, model.cost))
     }
 

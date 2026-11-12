@@ -635,6 +635,20 @@ impl Core {
             self.emit(match event {
                 RouteEvent::Retry { attempt, model, .. } => AgentEvent::Retry { attempt, model },
                 RouteEvent::Fallback { from, to, .. } => AgentEvent::Fallback { from, to },
+                RouteEvent::Account {
+                    provider,
+                    from,
+                    to,
+                    until,
+                    limit,
+                } => AgentEvent::Account {
+                    provider,
+                    from,
+                    to,
+                    until,
+                    limit,
+                },
+                RouteEvent::TierDropped { model, tier } => AgentEvent::TierDropped { model, tier },
             });
         }
     }
@@ -803,6 +817,9 @@ impl Core {
             max_output: None,
             temperature: None,
             cache_key: Some(format!("{}:{}", self.info.session_id, self.info.id)),
+            // The tier is the session's, so every agent's own requests carry it; summaries and
+            // other side requests stay at the provider's default.
+            tier: self.router.tier(),
         };
         self.hooks.before_request(&self.info, &mut request).await;
         // A hook may have withdrawn tools; only what was offered can be called.

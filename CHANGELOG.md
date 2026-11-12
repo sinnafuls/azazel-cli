@@ -30,10 +30,22 @@ GitHub are its section here.
 - `[session] retention_days` deletes old unpinned sessions in the background.
 - `azazel stats`: sessions, prompts, tokens and cost per day, model, project and tool.
 - `azazel changelog` and `/changelog`; the first start after an update says how many changes it brought.
+- Several accounts per provider: `azazel login <provider> --as <label>`, `azazel logout <provider> --account
+  <label>`, and `[providers.<id>] account` to choose the default one.
+- `/account` lists a provider's accounts with their usage windows and lets you use one for the session, make it
+  the default, sign it out or add another.
+- When an account runs out of its usage allowance, azazel moves to the provider's next account and asks the
+  same model again, and says so.
+- Service tiers: `/fast`, `/slow` and `--tier` ask OpenAI models for priority or flex processing and Claude
+  models for fast mode; the status line shows the tier.
+- Model presets: `/preset`, `/preset <name>`, `/preset save <name>` and `--preset <name>`.
 
 ### Changed
 
 - `-r` is now `--session` and also takes a path to a session file; `--resume` still works.
+- A used-up Anthropic or ChatGPT subscription window is reported as a usage limit with its reset time, not as
+  an authentication failure.
+- `/login` and `/logout` take an optional account label; `azazel auth status` lists each provider's accounts.
 
 ## [0.2.0] - 2026-11-12
 

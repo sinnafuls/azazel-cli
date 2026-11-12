@@ -75,6 +75,7 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         max_output: Some(params.max_tokens),
         temperature: params.temperature,
         cache_key: None,
+        tier: None,
     }
 }
 

@@ -137,6 +137,8 @@ impl Side {
             thinking: ThinkingLevel::Off,
             max_output: None,
             temperature: None,
+            // Side requests run at the standard tier whatever the session's tier is.
+            tier: None,
             // The lead's key, so a provider that caches by key finds the lead's prefix.
             cache_key: question
                 .framed

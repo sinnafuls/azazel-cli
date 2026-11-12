@@ -122,9 +122,17 @@ pub enum Sub {
         /// Store an API key even when the provider also has a sign-in
         #[arg(long)]
         key: bool,
+        /// Keep it as another account of the provider, under this label
+        #[arg(long = "as", value_name = "LABEL")]
+        label: Option<String>,
     },
     /// Forget the stored key or login of a provider
-    Logout { provider: String },
+    Logout {
+        provider: String,
+        /// The account to forget; the default account when left out
+        #[arg(long, value_name = "LABEL")]
+        account: Option<String>,
+    },
     /// Credentials of the providers
     Auth {
         #[command(subcommand)]
@@ -428,6 +436,14 @@ pub struct Cli {
     /// Stop every agent once the run has spent this much
     #[arg(long = "max-cost", value_name = "USD")]
     pub max_cost: Option<f64>,
+
+    /// Service tier of the requests: priority (faster, costs more), standard, economy
+    #[arg(long, value_name = "TIER", global = true)]
+    pub tier: Option<String>,
+
+    /// Use the models of a saved preset ([presets.<name>]) for this run
+    #[arg(long, value_name = "NAME", global = true)]
+    pub preset: Option<String>,
 
     /// Work in this directory instead of the current one
     #[arg(long, value_name = "DIR", global = true)]

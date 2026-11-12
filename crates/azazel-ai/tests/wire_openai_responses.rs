@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use azazel_ai::wire::{decode_sse, openai_responses};
 use azazel_ai::{
     AiError, AssistantMeta, Auth, Block, INVALID_JSON_KEY, Message, ModelInfo, ProviderConfig, Request,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, ToolSpec, Usage, WireApi,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
 };
 use serde_json::{Value, json};
 
@@ -1073,4 +1073,21 @@ fn parse_models_reads_ids_and_defaults_unreported_fields() {
             ..ModelInfo::unknown("mock", "mock-small")
         }
     );
+}
+
+#[test]
+fn the_service_tier_is_named_only_when_one_is_asked_for() {
+    let tier_of = |tier: Option<Tier>| {
+        body(&Request {
+            messages: vec![Message::user("hi")],
+            tier,
+            ..Request::default()
+        })
+        .get("service_tier")
+        .cloned()
+    };
+    assert_eq!(tier_of(Some(Tier::Priority)), Some(json!("priority")));
+    assert_eq!(tier_of(Some(Tier::Economy)), Some(json!("flex")));
+    assert_eq!(tier_of(Some(Tier::Standard)), None);
+    assert_eq!(tier_of(None), None);
 }

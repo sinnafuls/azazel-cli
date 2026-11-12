@@ -1,6 +1,6 @@
 //! A provider that speaks one of the HTTP wire APIs.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use tokio::sync::OnceCell;
+use reqwest::header::HeaderMap;
 use tokio_util::sync::CancellationToken;
 
 use crate::catalog::{Cost, ModelInfo};
-use crate::credentials::{Auth, Credentials};
+use crate::credentials::{Auth, Credentials, DEFAULT_ACCOUNT, account_key, now_ms};
 use crate::error::AiError;
+use crate::limits::Window;
 use crate::provider::Provider;
 use crate::providers::presets::{Discovery, ProviderConfig};
 use crate::providers::{cloud_code, discovery};
@@ -33,13 +34,22 @@ pub(crate) enum Framing {
     JsonLines,
 }
 
+/// What a failed response means beyond its status: `None` leaves it to the generic mapping.
+pub(crate) type Classify = fn(u16, &HeaderMap, &str) -> Option<AiError>;
+
+fn no_limits(_: &HeaderMap) -> Vec<Window> {
+    Vec::new()
+}
+
 /// The function set of one wire API.
 pub(super) struct Wire {
     build_request:
         fn(&reqwest::Client, &ProviderConfig, &ModelInfo, &Request, &Auth) -> reqwest::RequestBuilder,
     decoder: fn(&ProviderConfig, &ModelInfo) -> Box<dyn Decoder>,
     framing: Framing,
-    pub(super) classify_error: fn(u16, &str) -> Option<AiError>,
+    pub(super) classify_error: Classify,
+    /// The usage windows of the account, read from the headers of a response.
+    limits: fn(&HeaderMap) -> Vec<Window>,
     pub(super) models_request: fn(&reqwest::Client, &ProviderConfig, &Auth) -> reqwest::RequestBuilder,
     pub(super) parse_models: fn(&ProviderConfig, &serde_json::Value) -> Vec<ModelInfo>,
 }
@@ -50,7 +60,8 @@ macro_rules! wire_table {
             build_request: wire::$module::build_request,
             decoder: wire::$module::decoder,
             framing: Framing::Sse,
-            classify_error: wire::$module::classify_error,
+            classify_error: |status, _, body| wire::$module::classify_error(status, body),
+            limits: no_limits,
             models_request: wire::$module::models_request,
             parse_models: wire::$module::parse_models,
         }
@@ -59,7 +70,11 @@ macro_rules! wire_table {
 
 pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
     Ok(match api {
-        WireApi::AnthropicMessages => wire_table!(anthropic),
+        WireApi::AnthropicMessages => Wire {
+            classify_error: wire::anthropic::classify_response,
+            limits: wire::anthropic::limits,
+            ..wire_table!(anthropic)
+        },
         WireApi::OpenAiResponses => wire_table!(openai_responses),
         // OpenRouter is the chat format with its own request members, chosen inside the module.
         WireApi::OpenAiChat | WireApi::OpenRouter => wire_table!(openai_chat),
@@ -109,8 +124,32 @@ pub struct HttpProvider {
     credentials: Arc<Credentials>,
     /// Models the configuration names for this provider; listed whatever the endpoint reports.
     declared: Vec<ModelInfo>,
-    /// The Cloud project of a Cloud Code Assist login, looked up once.
-    project: OnceCell<String>,
+    /// The Cloud project of each Cloud Code Assist login, looked up once per account.
+    projects: tokio::sync::Mutex<HashMap<String, String>>,
+}
+
+/// A request to an account that answers 429 with a wait this long is out of allowance, not
+/// merely asked too often.
+pub(crate) const LONG_WAIT: Duration = Duration::from_secs(60);
+/// How long an account that ran out of allowance is left alone when the provider did not say
+/// when it resets.
+pub(crate) const UNKNOWN_RESET: Duration = Duration::from_secs(15 * 60);
+
+/// Until when (Unix seconds) the account that got `error` is out of allowance; `None` for an
+/// error that says nothing about the account's allowance.
+pub(crate) fn blocked_until(error: &AiError) -> Option<u64> {
+    let now = now_ms() / 1000;
+    match error {
+        AiError::Quota { resets_at, .. } => Some(
+            resets_at
+                .filter(|at| *at > now)
+                .unwrap_or(now + UNKNOWN_RESET.as_secs()),
+        ),
+        AiError::RateLimit {
+            retry_after: Some(wait),
+        } if *wait > LONG_WAIT => Some(now + wait.as_secs()),
+        _ => None,
+    }
 }
 
 impl HttpProvider {
@@ -120,7 +159,7 @@ impl HttpProvider {
             client,
             credentials,
             declared: Vec::new(),
-            project: OnceCell::new(),
+            projects: tokio::sync::Mutex::default(),
         }
     }
 
@@ -145,13 +184,39 @@ impl HttpProvider {
         request: reqwest::RequestBuilder,
         cancel: &CancellationToken,
     ) -> Result<reqwest::Response, AiError> {
+        self.send_as(wire, request, cancel, None).await
+    }
+
+    /// Sends `request`. When it was made with stored account `account`, what the answer's
+    /// headers say about that account's usage windows is kept, and an answer that means the
+    /// account is out of allowance marks it so.
+    async fn send_as(
+        &self,
+        wire: &Wire,
+        request: reqwest::RequestBuilder,
+        cancel: &CancellationToken,
+        account: Option<&str>,
+    ) -> Result<reqwest::Response, AiError> {
+        let limits = self.credentials.limits();
         match send_request(request, wire.classify_error, cancel).await {
-            Ok(response) => Ok(response),
-            Err((status, error)) => {
-                if status == Some(401) {
+            Ok(response) => {
+                if let Some(account) = account {
+                    limits.record(&self.config.id, account, (wire.limits)(response.headers()));
+                    limits.unblock(&self.config.id, account);
+                }
+                Ok(response)
+            }
+            Err(failed) => {
+                if failed.status == Some(401) {
                     self.credentials.invalidate(&self.config.id);
                 }
-                Err(error)
+                if let Some(account) = account {
+                    limits.record(&self.config.id, account, (wire.limits)(&failed.headers));
+                    if let Some(until) = blocked_until(&failed.error) {
+                        limits.block(&self.config.id, account, until);
+                    }
+                }
+                Err(failed.error)
             }
         }
     }
@@ -166,19 +231,19 @@ impl HttpProvider {
         response.json().await.map_err(|e| AiError::Network(describe(&e)))
     }
 
-    /// The credential requests are made with. Fails before anything is sent when the provider's
-    /// address still waits for a variable, and finds the Cloud project a Cloud Code Assist login
-    /// works in.
-    async fn authorise(&self) -> Result<Auth, AiError> {
+    /// The credential requests are made with, and the stored account it belongs to. Fails before
+    /// anything is sent when the provider's address still waits for a variable, and finds the
+    /// Cloud project a Cloud Code Assist login works in.
+    async fn authorise(&self) -> Result<(Auth, Option<String>), AiError> {
         if let Some(variable) = self.config.unset_variable() {
             return Err(AiError::Auth(format!(
                 "provider {} is not set up: set {variable} (its address is {})",
                 self.config.id, self.config.base_url
             )));
         }
-        let auth = self.credentials.resolve(&self.config).await?;
+        let (auth, account) = self.credentials.resolve_account(&self.config).await?;
         if self.config.api != WireApi::GoogleGeminiCli {
-            return Ok(auth);
+            return Ok((auth, account));
         }
         let (access, mut fields) = match auth {
             Auth::OAuth { access, fields } => (access, fields),
@@ -192,9 +257,12 @@ impl HttpProvider {
             }
         };
         if !fields.contains_key(PROJECT_FIELD) {
-            let project = self
-                .project
-                .get_or_try_init(|| async {
+            let label = account.as_deref().unwrap_or(DEFAULT_ACCOUNT);
+            // Held across the lookup: requests that start together wait for one answer.
+            let mut projects = self.projects.lock().await;
+            let project = match projects.get(label) {
+                Some(project) => project.clone(),
+                None => {
                     let configured = cloud_code::PROJECT_ENV
                         .iter()
                         .find_map(|name| std::env::var(name).ok().filter(|value| !value.trim().is_empty()));
@@ -207,18 +275,20 @@ impl HttpProvider {
                     };
                     let project = lookup.project().await?;
                     // Kept with the login, so the next process does not ask again.
-                    if let Err(e) = self
-                        .credentials
-                        .set_login_field(&self.config.id, PROJECT_FIELD, &project)
-                    {
+                    if let Err(e) = self.credentials.set_login_field(
+                        &account_key(&self.config.id, label),
+                        PROJECT_FIELD,
+                        &project,
+                    ) {
                         tracing::debug!("could not keep the project of {}: {e}", self.config.id);
                     }
-                    Ok::<_, AiError>(project)
-                })
-                .await?;
-            fields.insert(PROJECT_FIELD.to_string(), project.clone());
+                    projects.insert(label.to_string(), project.clone());
+                    project
+                }
+            };
+            fields.insert(PROJECT_FIELD.to_string(), project);
         }
-        Ok(Auth::OAuth { access, fields })
+        Ok((Auth::OAuth { access, fields }, account))
     }
 
     /// The wire API's own model list.
@@ -242,28 +312,53 @@ pub(crate) fn prepare(req: &Request, target: &Target<'_>) -> Request {
         max_output: req.max_output,
         temperature: req.temperature,
         cache_key: req.cache_key.clone(),
+        tier: req.tier,
     }
 }
 
-/// Sends `request`. A failure status becomes the error `classify` reads from the body, or the one
-/// the status stands for; it is returned with the status.
+/// A request that got no usable answer.
+pub(crate) struct Failed {
+    /// `None` when no response arrived.
+    pub(crate) status: Option<u16>,
+    /// The headers of the failure response; empty when there was none.
+    pub(crate) headers: HeaderMap,
+    pub(crate) error: AiError,
+}
+
+impl Failed {
+    fn unsent(error: AiError) -> Box<Self> {
+        Box::new(Failed {
+            status: None,
+            headers: HeaderMap::new(),
+            error,
+        })
+    }
+}
+
+/// Sends `request`. A failure status becomes the error `classify` reads from the headers and the
+/// body, or the one the status stands for; it is returned with the status and the headers.
 pub(crate) async fn send_request(
     request: reqwest::RequestBuilder,
-    classify: fn(u16, &str) -> Option<AiError>,
+    classify: Classify,
     cancel: &CancellationToken,
-) -> Result<reqwest::Response, (Option<u16>, AiError)> {
+) -> Result<reqwest::Response, Box<Failed>> {
     let response = tokio::select! {
-        _ = cancel.cancelled() => return Err((None, AiError::Aborted)),
-        r = request.send() => r.map_err(|e| (None, AiError::Network(describe(&e))))?,
+        _ = cancel.cancelled() => return Err(Failed::unsent(AiError::Aborted)),
+        r = request.send() => r.map_err(|e| Failed::unsent(AiError::Network(describe(&e))))?,
     };
     let status = response.status();
     if status.is_success() {
         return Ok(response);
     }
-    let retry_after = retry_after(response.headers());
+    let headers = response.headers().clone();
     let body = response.text().await.unwrap_or_default();
     let status = status.as_u16();
-    Err((Some(status), http_error(classify, status, retry_after, &body)))
+    let error = http_error(classify, status, &headers, &body);
+    Err(Box::new(Failed {
+        status: Some(status),
+        headers,
+        error,
+    }))
 }
 
 /// The events of a streaming SSE response body, decoded by `decoder`; see [`framed_stream`].
@@ -318,7 +413,7 @@ impl Provider for HttpProvider {
         cancel: CancellationToken,
     ) -> Result<EventStream, AiError> {
         let wire = wire_for(self.config.api)?;
-        let auth = self.authorise().await?;
+        let (auth, account) = self.authorise().await?;
         let target = Target {
             provider: &self.config.id,
             model,
@@ -328,7 +423,7 @@ impl Provider for HttpProvider {
 
         let started = Instant::now();
         let request = (wire.build_request)(&self.client, &self.config, model, &prepared, &auth);
-        let response = self.send(&wire, request, &cancel).await?;
+        let response = self.send_as(&wire, request, &cancel, account.as_deref()).await?;
         let decoder = (wire.decoder)(&self.config, model);
         Ok(framed_stream(
             response,
@@ -347,7 +442,7 @@ impl Provider for HttpProvider {
             Discovery::Off => Vec::new(),
             kind => {
                 let wire = wire_for(self.config.api)?;
-                let auth = self.authorise().await?;
+                let (auth, _) = self.authorise().await?;
                 discovery::list(self, &wire, &auth, kind).await?
             }
         };
@@ -496,13 +591,9 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 
 const MAX_ERROR_BODY: usize = 2000;
 
-fn http_error(
-    classify: fn(u16, &str) -> Option<AiError>,
-    status: u16,
-    retry_after: Option<Duration>,
-    body: &str,
-) -> AiError {
-    match classify(status, body) {
+fn http_error(classify: Classify, status: u16, headers: &HeaderMap, body: &str) -> AiError {
+    let retry_after = retry_after(headers);
+    match classify(status, headers, body) {
         Some(AiError::RateLimit { retry_after: None }) => return AiError::RateLimit { retry_after },
         Some(error) => return error,
         None => {}

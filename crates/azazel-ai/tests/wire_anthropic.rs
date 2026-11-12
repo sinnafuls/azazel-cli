@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use azazel_ai::wire::{anthropic, decode_sse};
 use azazel_ai::{
     AiError, AssistantMeta, Auth, Block, INVALID_JSON_KEY, Message, ModelInfo, ProviderConfig, Request, Role,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, ToolSpec, Usage, WireApi,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, Window, WireApi,
 };
 use serde_json::{Value, json};
 
@@ -1150,14 +1150,16 @@ fn classify_error_returns_only_what_the_generic_mapping_would_miss() {
         (400, "rate_limit_error", "Slow down", rate_limit.clone()),
         // Not retryable on this account, but another model in the chain may answer.
         (402, "billing_error", credit, billing),
-        // A subscription refusing to bill the request to the plan: shown as it is, not retried.
+        // A subscription refusing to bill the request to the plan: the account's allowance is
+        // used up, so another account or model may answer.
         (
             400,
             invalid,
             "You're out of extra usage. Add more at claude.ai/settings/usage",
-            Some(AiError::Auth(
-                "You're out of extra usage. Add more at claude.ai/settings/usage".into(),
-            )),
+            Some(AiError::Quota {
+                resets_at: None,
+                message: "You're out of extra usage. Add more at claude.ai/settings/usage".into(),
+            }),
         ),
         (401, "authentication_error", "invalid x-api-key", None),
         (403, "permission_error", "not allowed", None),
@@ -1181,6 +1183,210 @@ fn classify_error_returns_only_what_the_generic_mapping_would_miss() {
     );
     assert_eq!(anthropic::classify_error(502, "<html>Bad Gateway</html>"), None);
     assert_eq!(anthropic::classify_error(400, ""), None);
+}
+
+fn unified(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
+    pairs
+        .iter()
+        .map(|(name, value)| {
+            (
+                format!("anthropic-ratelimit-unified-{name}").parse().unwrap(),
+                value.parse().unwrap(),
+            )
+        })
+        .collect::<reqwest::header::HeaderMap<reqwest::header::HeaderValue>>()
+}
+
+fn window(name: &str, used: f32, resets_at: Option<u64>, status: &str) -> Window {
+    Window {
+        name: name.to_string(),
+        used,
+        resets_at,
+        status: status.to_string(),
+    }
+}
+
+#[test]
+fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
+    // What a subscription answers while everything is within its allowance.
+    let headers = unified(&[
+        ("status", "allowed"),
+        ("reset", "1790000000"),
+        ("representative-claim", "five_hour"),
+        ("5h-utilization", "0.42"),
+        ("5h-reset", "1790000000"),
+        ("7d-utilization", "0.07"),
+        ("7d-reset", "1790500000"),
+        ("overage-status", "rejected"),
+        ("overage-disabled-reason", "org_level_disabled"),
+    ]);
+    assert_eq!(
+        anthropic::limits(&headers),
+        [
+            window("5h", 0.42, Some(1_790_000_000), "allowed"),
+            window("7d", 0.07, Some(1_790_500_000), "allowed"),
+            window("overage", 0.0, None, "rejected (org_level_disabled)"),
+        ]
+    );
+
+    // The status speaks about the window the claim names; the other stays allowed.
+    let headers = unified(&[
+        ("status", "rejected"),
+        ("reset", "1790500000"),
+        ("representative-claim", "seven_day"),
+        ("5h-utilization", "0.5"),
+        ("5h-reset", "1790000000"),
+        ("7d-utilization", "1.0"),
+        ("7d-reset", "1790500000"),
+    ]);
+    let windows = anthropic::limits(&headers);
+    assert_eq!(windows[0], window("5h", 0.5, Some(1_790_000_000), "allowed"));
+    assert_eq!(windows[1], window("7d", 1.0, Some(1_790_500_000), "rejected"));
+    assert!(windows[1].exhausted() && !windows[0].exhausted());
+    assert_eq!(windows[1].label(), "7-day limit");
+
+    // A claim without utilisation headers of its own still becomes a window.
+    let headers = unified(&[
+        ("status", "allowed_warning"),
+        ("reset", "1790600000"),
+        ("representative-claim", "seven_day_opus"),
+        ("overage-status", "allowed"),
+        ("overage-reset", "1791000000"),
+    ]);
+    assert_eq!(
+        anthropic::limits(&headers),
+        [
+            window("7d-opus", 0.0, Some(1_790_600_000), "allowed_warning"),
+            window("overage", 0.0, Some(1_791_000_000), "allowed"),
+        ]
+    );
+    let headers = unified(&[
+        ("status", "rejected"),
+        ("representative-claim", "five_hour"),
+        ("reset", "1790000000"),
+    ]);
+    assert_eq!(
+        anthropic::limits(&headers),
+        [window("5h", 1.0, Some(1_790_000_000), "rejected")]
+    );
+
+    // An API key's responses carry none of these headers.
+    assert!(anthropic::limits(&reqwest::header::HeaderMap::new()).is_empty());
+    let headers = unified(&[("5h-utilization", "not a number"), ("status", "allowed")]);
+    assert!(anthropic::limits(&headers).is_empty());
+}
+
+#[test]
+fn a_full_usage_window_is_a_quota_error_with_its_reset_time() {
+    let body = json!({"type": "error", "error": {"type": "rate_limit_error", "message": "This request would exceed your account's rate limit."}}).to_string();
+    let rejected = unified(&[
+        ("status", "rejected"),
+        ("reset", "1790000000"),
+        ("representative-claim", "five_hour"),
+        ("5h-utilization", "1.01"),
+        ("5h-reset", "1790000000"),
+    ]);
+    assert_eq!(
+        anthropic::classify_response(429, &rejected, &body),
+        Some(AiError::Quota {
+            resets_at: Some(1_790_000_000),
+            message: "This request would exceed your account's rate limit.".into(),
+        })
+    );
+    // Without a body the window names what ran out.
+    assert_eq!(
+        anthropic::classify_response(429, &rejected, ""),
+        Some(AiError::Quota {
+            resets_at: Some(1_790_000_000),
+            message: "the 5-hour limit of this account is used up".into(),
+        })
+    );
+    // Asked too often, with the window still open: an ordinary rate limit, left to the generic
+    // mapping and its `retry-after`.
+    let allowed = unified(&[
+        ("status", "allowed_warning"),
+        ("5h-utilization", "0.9"),
+        ("5h-reset", "1790000000"),
+    ]);
+    assert_eq!(anthropic::classify_response(429, &allowed, &body), None);
+    assert_eq!(
+        anthropic::classify_response(429, &reqwest::header::HeaderMap::new(), &body),
+        None
+    );
+
+    // The 400 about extra usage takes its reset time from the window the headers call full.
+    let extra = json!({"type": "error", "error": {"type": "invalid_request_error", "message": "You're out of extra usage. Add more at claude.ai/settings/usage"}}).to_string();
+    let full_week = unified(&[
+        ("status", "rejected"),
+        ("representative-claim", "seven_day"),
+        ("7d-utilization", "1.0"),
+        ("7d-reset", "1790500000"),
+    ]);
+    assert_eq!(
+        anthropic::classify_response(400, &full_week, &extra),
+        Some(AiError::Quota {
+            resets_at: Some(1_790_500_000),
+            message: "You're out of extra usage. Add more at claude.ai/settings/usage".into(),
+        })
+    );
+    // Everything else is what `classify_error` says.
+    assert_eq!(
+        anthropic::classify_response(413, &reqwest::header::HeaderMap::new(), ""),
+        Some(AiError::ContextOverflow)
+    );
+}
+
+#[test]
+fn the_priority_tier_is_fast_mode_and_only_claude_models_are_asked_for_it() {
+    let client = reqwest::Client::new();
+    let auth = Auth::ApiKey("sk-mock".to_string());
+    let sent = |provider: &ProviderConfig, model_id: &str, tier: Option<Tier>| {
+        let mut req = request(vec![Message::user("hi")]);
+        req.tier = tier;
+        let built = anthropic::build_request(&client, provider, &model(model_id), &req, &auth)
+            .build()
+            .unwrap();
+        let body: Value = serde_json::from_slice(built.body().unwrap().as_bytes().unwrap()).unwrap();
+        (body.get("speed").cloned(), header(&built, "anthropic-beta"))
+    };
+    let plain = provider();
+
+    // From Opus 5.5 on, and on the other families, `speed` is a regular member.
+    for id in ["claude-opus-5-5", "claude-fable-5-2", "claude-mythos-5-2"] {
+        assert_eq!(
+            sent(&plain, id, Some(Tier::Priority)),
+            (Some(json!("fast")), None),
+            "{id}"
+        );
+    }
+    // Where fast mode is a preview it needs its beta header.
+    for id in ["claude-opus-5", "claude-opus-5-20260801", "claude-opus-4-8"] {
+        assert_eq!(
+            sent(&plain, id, Some(Tier::Priority)),
+            (Some(json!("fast")), Some("fast-mode-2026-02-01".to_string())),
+            "{id}"
+        );
+    }
+    // The header joins the ones a login already sends.
+    let mut login = provider();
+    login
+        .headers
+        .insert("anthropic-beta".to_string(), "oauth-2025-04-20".to_string());
+    assert_eq!(
+        sent(&login, "claude-opus-5", Some(Tier::Priority)).1.as_deref(),
+        Some("oauth-2025-04-20,fast-mode-2026-02-01")
+    );
+    assert_eq!(
+        sent(&login, "claude-opus-5", None),
+        (None, Some("oauth-2025-04-20".to_string()))
+    );
+
+    // No tier, the default tier and the cheaper tier send nothing; nor does another vendor's
+    // model behind a compatible endpoint.
+    for tier in [None, Some(Tier::Standard), Some(Tier::Economy)] {
+        assert_eq!(sent(&plain, "claude-opus-5-5", tier), (None, None), "{tier:?}");
+    }
+    assert_eq!(sent(&plain, MANUAL_MODEL, Some(Tier::Priority)), (None, None));
 }
 
 #[test]

@@ -5,7 +5,10 @@
 //!   `anthropic-version` and thinking is off;
 //! - thinking is `{"type": "adaptive"}` steered by `output_config.effort`; only Claude models older
 //!   than 4.6, and non-Claude models behind compatible endpoints, take the manual `budget_tokens` form;
-//! - an assistant turn is replayed block for block in its original order, thinking blocks included.
+//! - an assistant turn is replayed block for block in its original order, thinking blocks included;
+//! - the priority tier is fast mode, `speed: "fast"` (the `service_tier` member is legacy and only
+//!   chooses between committed and standard capacity); the models on which fast mode is a preview
+//!   also need the `fast-mode-2026-02-01` beta header.
 
 use std::collections::HashMap;
 
@@ -15,11 +18,12 @@ use serde_json::{Map, Value, json};
 use crate::catalog::ModelInfo;
 use crate::credentials::Auth;
 use crate::error::AiError;
+use crate::limits::{REJECTED, Window};
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, SystemPart, ThinkingLevel,
-    ToolSpec, Usage, WireApi,
+    Tier, ToolSpec, Usage, WireApi,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
 use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
@@ -30,6 +34,11 @@ const API_VERSION: &str = "2026-10-21";
 /// as if an unknown client had called.
 const CLIENT_IDENTITY: &str = "You are Claude Code, Anthropic's official CLI for Claude.";
 const VERSION_HEADER: &str = "anthropic-version";
+const BETA_HEADER: &str = "anthropic-beta";
+/// Needed for fast mode on the models where it is a preview or deprecated.
+const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
+/// What every header of a subscription's unified rate limit starts with.
+const UNIFIED: &str = "anthropic-ratelimit-unified-";
 /// The API accepts at most this many `cache_control` markers in one request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
 /// Output tokens kept for the answer on top of a manual thinking budget.
@@ -90,6 +99,9 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
             body.insert("output_config".to_string(), json!({"effort": effort}));
         }
     }
+    if fast_mode(model, req) {
+        body.insert("speed".to_string(), json!("fast"));
+    }
     let messages = messages
         .into_iter()
         .map(|m| json!({"role": m.role, "content": m.content}))
@@ -115,10 +127,42 @@ pub fn build_request(
         // does not identify as the CLI the token was issued to.
         system.insert(0, json!({"type": "text", "text": CLIENT_IDENTITY}));
     }
+    let mut headers = headers(provider, auth, true);
+    if fast_mode(model, req) && fast_mode_is_beta(&model.id) {
+        let betas = match headers.get(BETA_HEADER).and_then(|value| value.to_str().ok()) {
+            Some(others) if !others.trim().is_empty() => format!("{others},{FAST_MODE_BETA}"),
+            _ => FAST_MODE_BETA.to_string(),
+        };
+        if let Ok(value) = HeaderValue::from_str(&betas) {
+            headers.insert(HeaderName::from_static(BETA_HEADER), value);
+        }
+    }
     client
         .post(format!("{}/v1/messages", provider.base_url))
-        .headers(headers(provider, auth, true))
+        .headers(headers)
         .json(&body)
+}
+
+/// Whether the request asks a Claude model for fast mode. Other models behind compatible
+/// endpoints do not know the member, and Anthropic has no cheaper tier for a live request.
+fn fast_mode(model: &ModelInfo, req: &Request) -> bool {
+    req.tier == Some(Tier::Priority) && model.id.to_ascii_lowercase().contains("claude")
+}
+
+/// Fast mode needs its beta header on Claude Opus 5 and on the Opus 4 models; from Opus 5.5 on,
+/// and on the other families, it is a regular request member.
+fn fast_mode_is_beta(model_id: &str) -> bool {
+    let id = model_id.to_ascii_lowercase();
+    let Some(opus) = id.find("claude-opus") else {
+        return false;
+    };
+    let mut parts = id[opus..]
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(version_part)
+        .skip_while(Option::is_none);
+    let major = parts.next().flatten().unwrap_or(0);
+    let minor = parts.next().flatten().unwrap_or(0);
+    (major, minor) <= (5, 0)
 }
 
 pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder> {
@@ -149,6 +193,95 @@ pub fn classify_error(status: u16, body: &str) -> Option<AiError> {
         AiError::Auth(_) if matches!(status, 401 | 403) => None,
         error => Some(error),
     }
+}
+
+/// [`classify_error`] with the response headers: a subscription says in them that the account's
+/// usage window is full and when it resets, which a status and a body alone do not tell apart
+/// from being asked too often.
+pub fn classify_response(status: u16, headers: &HeaderMap, body: &str) -> Option<AiError> {
+    let parsed = serde_json::from_str::<Value>(body).ok();
+    let (_, message) = parsed.as_ref().map_or(("", ""), error_fields);
+    let unified = |name: &str| header(headers, &format!("{UNIFIED}{name}"));
+    let rejected = status == 429 && unified("status") == Some(REJECTED);
+    if rejected || message.contains(EXTRA_USAGE) {
+        let windows = limits(headers);
+        let full = windows.iter().find(|window| window.exhausted());
+        let resets_at = unified("reset")
+            .and_then(|at| at.parse().ok())
+            .or_else(|| full.and_then(|window| window.resets_at));
+        let message = match (message.is_empty(), full) {
+            (false, _) => message.to_string(),
+            (true, Some(window)) => format!("the {} of this account is used up", window.label()),
+            (true, None) => "the usage limit of this account is reached".to_string(),
+        };
+        return Some(AiError::Quota { resets_at, message });
+    }
+    classify_error(status, body)
+}
+
+fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get(name)?
+        .to_str()
+        .ok()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+}
+
+/// The usage windows of a subscription, from the unified rate-limit headers of a response:
+/// `5h` and `7d` with their utilisation and reset time, the window the answer's status is about
+/// when it is another one, and `overage` (extra usage) when the account has a say on it.
+pub fn limits(headers: &HeaderMap) -> Vec<Window> {
+    let unified = |name: &str| header(headers, &format!("{UNIFIED}{name}"));
+    let status = unified("status").unwrap_or("allowed");
+    // The window the status speaks about; the others are within their allowance.
+    let claim = unified("representative-claim");
+    let mut windows = Vec::new();
+    for (name, claimed) in [("5h", "five_hour"), ("7d", "seven_day")] {
+        let used = unified(&format!("{name}-utilization")).and_then(|used| used.parse::<f32>().ok());
+        let resets_at = unified(&format!("{name}-reset")).and_then(|at| at.parse().ok());
+        let is_claim = claim == Some(claimed);
+        if used.is_none() && resets_at.is_none() && !is_claim {
+            continue;
+        }
+        windows.push(Window {
+            name: name.to_string(),
+            used: used.unwrap_or(if is_claim && status == REJECTED { 1.0 } else { 0.0 }),
+            resets_at: resets_at.or_else(|| unified("reset").filter(|_| is_claim)?.parse().ok()),
+            status: if is_claim { status } else { "allowed" }.to_string(),
+        });
+    }
+    let other = match claim {
+        Some("seven_day_opus") => Some("7d-opus"),
+        Some("seven_day_sonnet") => Some("7d-sonnet"),
+        _ => None,
+    };
+    if let Some(name) = other.filter(|_| status != "allowed") {
+        windows.push(Window {
+            name: name.to_string(),
+            used: if status == REJECTED { 1.0 } else { 0.0 },
+            resets_at: unified("reset").and_then(|at| at.parse().ok()),
+            status: status.to_string(),
+        });
+    }
+    let overage = unified("overage-status");
+    let disabled = unified("overage-disabled-reason");
+    if overage.is_some() || disabled.is_some() {
+        windows.push(Window {
+            name: "overage".to_string(),
+            used: unified("overage-utilization")
+                .and_then(|used| used.parse().ok())
+                .unwrap_or(0.0),
+            resets_at: unified("overage-reset").and_then(|at| at.parse().ok()),
+            status: match (overage, disabled) {
+                (Some(status), Some(reason)) => format!("{status} ({reason})"),
+                (Some(status), None) => status.to_string(),
+                (None, Some(reason)) => format!("disabled ({reason})"),
+                (None, None) => String::new(),
+            },
+        });
+    }
+    windows
 }
 
 pub fn models_request(
@@ -493,6 +626,9 @@ fn error_fields(envelope: &Value) -> (&str, &str) {
     (field("type"), field("message"))
 }
 
+/// How the refusal of a subscription whose usage window is full reads.
+const EXTRA_USAGE: &str = "out of extra usage";
+
 /// What the error object alone says, whatever the HTTP status was.
 fn classify_kind(kind: &str, message: &str) -> Option<AiError> {
     match kind {
@@ -505,9 +641,12 @@ fn classify_kind(kind: &str, message: &str) -> Option<AiError> {
         "request_too_large" => Some(AiError::ContextOverflow),
         _ if is_context_overflow(message) => Some(AiError::ContextOverflow),
         // A subscription refuses requests it will not bill to the plan (some tool names, a used-up
-        // usage window) with a 400 about extra usage. Retrying the same request does not help, but
-        // another model in the chain may answer, so it is handled like a billing failure.
-        _ if message.contains("out of extra usage") => Some(AiError::Auth(message.to_string())),
+        // usage window) with a 400 about extra usage. Retrying on the same account does not help,
+        // but another account or another model in the chain may answer.
+        _ if message.contains(EXTRA_USAGE) => Some(AiError::Quota {
+            resets_at: None,
+            message: message.to_string(),
+        }),
         _ => None,
     }
 }

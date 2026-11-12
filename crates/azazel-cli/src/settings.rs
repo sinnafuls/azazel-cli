@@ -159,7 +159,7 @@ impl Settings {
         let Some(settings) = &provider.oauth else {
             return Ok(None);
         };
-        let line = sign_in_from_ui(&self.credentials, provider, settings, ui.clone()).await?;
+        let line = sign_in_from_ui(&self.credentials, provider, settings, ui.clone(), None).await?;
         Ok(line.map(|line| format!("{line}\n{provider}", provider = provider.id)))
     }
 
@@ -181,7 +181,7 @@ impl Settings {
         let provider = candidates[index];
         let prompt = format!("API key for {} (stored in ~/.azazel/auth.json)", provider.id);
         match ui.0.secret(&prompt).await {
-            Ok(key) => store_key(&self.credentials, provider, &key)
+            Ok(key) => store_key(&self.credentials, provider, &key, None)
                 .map(|line| Some(format!("{line}\n{provider}", provider = provider.id))),
             Err(_) => Ok(None),
         }

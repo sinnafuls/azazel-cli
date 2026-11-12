@@ -261,6 +261,48 @@ impl FromStr for ThinkingLevel {
     }
 }
 
+/// How fast, and at what price, a provider should serve a request. Providers without tiers
+/// ignore it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Tier {
+    /// Faster output at a premium: OpenAI priority processing, Anthropic fast mode.
+    Priority,
+    /// The provider's default; the same as naming no tier.
+    Standard,
+    /// Cheaper and slower: OpenAI flex processing.
+    Economy,
+}
+
+impl Tier {
+    pub const ALL: [Tier; 3] = [Tier::Priority, Tier::Standard, Tier::Economy];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Priority => "priority",
+            Tier::Standard => "standard",
+            Tier::Economy => "economy",
+        }
+    }
+}
+
+impl fmt::Display for Tier {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for Tier {
+    type Err = ParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Tier::ALL
+            .into_iter()
+            .find(|tier| tier.as_str() == s)
+            .ok_or_else(|| ParseError(format!("unknown tier `{s}`: use priority, standard or economy")))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum WireApi {
     #[serde(rename = "anthropic-messages")]
@@ -366,6 +408,9 @@ pub struct Request {
     pub temperature: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_key: Option<String>,
+    /// The service tier asked for; `None` leaves it to the provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tier: Option<Tier>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

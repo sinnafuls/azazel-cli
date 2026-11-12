@@ -242,3 +242,193 @@ async fn lists_models_from_the_endpoint() {
     ids.sort();
     assert_eq!(ids, ["mock-a", "mock-b"]);
 }
+
+const MESSAGES_STREAM: &str = concat!(
+    "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m1\",\"usage\":{\"input_tokens\":1,\"output_tokens\":0}}}\n\n",
+    "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+    "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+    "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+    "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+);
+
+/// An Anthropic-format provider with two stored accounts, `default` and `work`.
+fn two_accounts(server: &MockServer, dir: &std::path::Path) -> (Arc<HttpProvider>, Arc<Credentials>) {
+    let config = ProviderConfig {
+        requires_key: true,
+        ..ProviderConfig::new("acme", WireApi::AnthropicMessages, server.uri())
+    };
+    let credentials = Arc::new(Credentials::with_env(
+        dir.join("auth.json"),
+        Arc::new(|_: &str| None),
+    ));
+    for (key, secret) in [("acme", "k-default"), ("acme#work", "k-work")] {
+        let key_entry = azazel_ai::Credential::ApiKey {
+            key: secret.to_string(),
+        };
+        credentials.store(key, key_entry).unwrap();
+    }
+    let provider = HttpProvider::new(config, http_client(), credentials.clone());
+    (Arc::new(provider), credentials)
+}
+
+#[tokio::test]
+async fn usage_windows_are_kept_per_account_and_a_full_one_moves_work_to_the_next_account() {
+    let server = MockServer::start().await;
+    let reset = (azazel_ai::credentials::now_ms() / 1000 + 7200).to_string();
+    // The default account's 5-hour window is full; the work account answers.
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", "k-default"))
+        .respond_with(
+            ResponseTemplate::new(429)
+                .insert_header("anthropic-ratelimit-unified-status", "rejected")
+                .insert_header("anthropic-ratelimit-unified-reset", reset.as_str())
+                .insert_header("anthropic-ratelimit-unified-representative-claim", "five_hour")
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "1.0")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", reset.as_str())
+                .insert_header("anthropic-ratelimit-unified-7d-utilization", "0.3")
+                .insert_header("anthropic-ratelimit-unified-7d-reset", "4000000000")
+                .set_body_string(
+                    r#"{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit."}}"#,
+                ),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", "k-work"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("anthropic-ratelimit-unified-status", "allowed")
+                .insert_header("anthropic-ratelimit-unified-5h-utilization", "0.25")
+                .insert_header("anthropic-ratelimit-unified-5h-reset", "4000000000")
+                .set_body_raw(MESSAGES_STREAM, "text/event-stream"),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let (provider, credentials) = two_accounts(&server, dir.path());
+    let router = azazel_ai::Router::new(
+        vec![provider],
+        azazel_ai::Catalog::default(),
+        BTreeMap::new(),
+        azazel_ai::RetryPolicy::default(),
+    )
+    .with_accounts(credentials.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    let (_, stream) = router
+        .stream_with(
+            &["acme/claude-mock".parse().unwrap()],
+            &request(),
+            CancellationToken::new(),
+            &mut azazel_ai::RouteState::with_events(tx),
+        )
+        .await
+        .unwrap();
+    let events: Vec<StreamEvent> = stream.collect().await;
+    assert!(matches!(events.last(), Some(StreamEvent::Done { message }) if message.text() == "hi"));
+
+    let limits = router.limits();
+    let default = limits.windows("acme", "default");
+    assert_eq!(
+        default
+            .iter()
+            .map(|w| (w.name.as_str(), w.used, w.status.as_str()))
+            .collect::<Vec<_>>(),
+        [("5h", 1.0, "rejected"), ("7d", 0.3, "allowed")]
+    );
+    assert_eq!(limits.blocked_until("acme", "default"), reset.parse().ok());
+    let work = limits.windows("acme", "work");
+    assert_eq!((work.len(), work[0].used), (1, 0.25));
+    assert_eq!(limits.blocked_until("acme", "work"), None);
+    assert_eq!(credentials.selected("acme").as_deref(), Some("work"));
+    match rx.try_recv().unwrap() {
+        azazel_ai::RouteEvent::Account {
+            from,
+            to,
+            until,
+            limit,
+            ..
+        } => {
+            assert_eq!((from.as_str(), to.as_str()), ("default", "work"));
+            assert_eq!(Some(until), reset.parse().ok());
+            assert_eq!(limit, "5-hour limit");
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn the_service_tier_is_sent_and_dropped_once_the_model_refuses_it() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(wiremock::matchers::body_partial_json(
+            serde_json::json!({"service_tier": "priority"}),
+        ))
+        .respond_with(ResponseTemplate::new(400).set_body_string(
+            r#"{"error":{"message":"Unsupported parameter: 'service_tier' is not supported with this model.","type":"invalid_request_error","param":"service_tier","code":"unsupported_parameter"}}"#,
+        ))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(CHAT_STREAM, "text/event-stream"))
+        .mount(&server)
+        .await;
+    let dir = tempfile::tempdir().unwrap();
+    let router = azazel_ai::Router::new(
+        vec![Arc::new(provider(&server, dir.path(), Some("sk-test")))],
+        azazel_ai::Catalog::default(),
+        BTreeMap::new(),
+        azazel_ai::RetryPolicy::default(),
+    );
+    router.set_tier(Some(azazel_ai::Tier::Priority));
+    let fast = Request {
+        tier: router.tier(),
+        ..request()
+    };
+    let chain = ["acme/mock-model".parse().unwrap()];
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+    for _ in 0..2 {
+        let (_, stream) = router
+            .stream_with(
+                &chain,
+                &fast,
+                CancellationToken::new(),
+                &mut azazel_ai::RouteState::with_events(tx.clone()),
+            )
+            .await
+            .unwrap();
+        let events: Vec<StreamEvent> = stream.collect().await;
+        assert!(matches!(events.last(), Some(StreamEvent::Done { .. })));
+    }
+
+    // Said once; the second prompt went out without the tier from the start.
+    assert!(matches!(
+        rx.try_recv(),
+        Ok(azazel_ai::RouteEvent::TierDropped { .. })
+    ));
+    assert!(rx.try_recv().is_err());
+    let sent: Vec<Option<String>> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        // The router also asks an unknown model's provider for its model list.
+        .filter(|sent| sent.method == wiremock::http::Method::POST)
+        .map(|sent| {
+            let body: serde_json::Value = serde_json::from_slice(&sent.body).unwrap();
+            body.get("service_tier")
+                .and_then(|tier| tier.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    assert_eq!(sent, [Some("priority".to_string()), None, None]);
+}

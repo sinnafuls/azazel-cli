@@ -646,6 +646,10 @@ impl Tui {
             Some(cost) => format!("${cost:.4}"),
             None => "unknown (no price is known for this model)".to_string(),
         };
+        let cost = match self.app.router.tier() {
+            Some(tier) => format!("{cost}\n{}", crate::routing::tier_cost_note(tier)),
+            None => cost,
+        };
         self.info(&format!(
             "requests: {}\ninput: {} · output: {} · cache read: {} · cache write: {} · reasoning: {}\ncost: {cost}",
             status.requests,

@@ -124,7 +124,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         )),
     }
 
-    let credentials = Credentials::new(paths.auth_file());
+    let credentials = Credentials::new(paths.auth_file()).configured(&config.providers);
     match presets::resolve(&config.providers) {
         Ok(providers) => {
             let (mut with_key, mut local, mut without) = (0, Vec::new(), Vec::new());

@@ -1,6 +1,6 @@
 //! Credential lookup and the `auth.json` store.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
@@ -9,7 +9,76 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AiError;
-use crate::providers::presets::ProviderConfig;
+use crate::limits::LimitStore;
+use crate::providers::presets::{ProviderConfig, ProviderSettings};
+
+/// The label of the account kept under the plain provider key of `auth.json`.
+pub const DEFAULT_ACCOUNT: &str = "default";
+
+/// The `auth.json` key of `provider`'s account `label`: the provider id for the default account,
+/// `provider#label` for the others.
+pub fn account_key(provider: &str, label: &str) -> String {
+    match label {
+        DEFAULT_ACCOUNT => provider.to_string(),
+        label => format!("{provider}#{label}"),
+    }
+}
+
+/// Whether `label` can name an account: letters, digits, `-`, `_` and `.`, and not `default`.
+pub fn check_label(label: &str) -> Result<(), String> {
+    let plain = !label.is_empty()
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'));
+    match (plain, label) {
+        (false, _) => Err(format!(
+            "`{label}` cannot name an account: use letters, digits, `-`, `_` and `.`"
+        )),
+        (true, DEFAULT_ACCOUNT) => Err(format!(
+            "`{DEFAULT_ACCOUNT}` is the account without a label; choose another name"
+        )),
+        (true, _) => Ok(()),
+    }
+}
+
+/// One stored account of a provider, without its secrets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Account {
+    pub label: String,
+    /// A sign-in, as opposed to a stored API key.
+    pub login: bool,
+    pub email: Option<String>,
+    /// The organisation the login belongs to, as the provider identifies it.
+    pub org: Option<String>,
+}
+
+impl Account {
+    fn of(label: &str, credential: &Credential) -> Account {
+        let field = |name: &str| match credential {
+            Credential::OAuth { extra, .. } => extra
+                .get(name)
+                .and_then(serde_json::Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string),
+            Credential::ApiKey { .. } => None,
+        };
+        Account {
+            label: label.to_string(),
+            login: matches!(credential, Credential::OAuth { .. }),
+            email: field("email").or_else(|| field("account_email")),
+            org: field("org_id"),
+        }
+    }
+
+    /// The label with the e-mail behind it when the login has one.
+    pub fn describe(&self) -> String {
+        match &self.email {
+            Some(email) => format!("{} ({email})", self.label),
+            None if self.login => self.label.clone(),
+            None => format!("{} (API key)", self.label),
+        }
+    }
+}
 
 /// What a wire module puts on a request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +144,15 @@ pub struct Credentials {
     /// Held by the one task that is refreshing a login.
     refreshing: tokio::sync::Mutex<()>,
     http: OnceLock<reqwest::Client>,
+    /// The account chosen for this process, per provider: by the user for the session, or by the
+    /// router when the one in use ran out of allowance.
+    pinned: Mutex<HashMap<String, String>>,
+    /// The account `[providers.<id>] account` names, per provider.
+    preferred: Mutex<HashMap<String, String>>,
+    /// Providers whose last credential came from `auth.json`: only there can an account be
+    /// switched.
+    stored: Mutex<HashSet<String>>,
+    limits: Arc<LimitStore>,
 }
 
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -105,7 +183,90 @@ impl Credentials {
             command_keys: Mutex::default(),
             refreshing: tokio::sync::Mutex::default(),
             http: OnceLock::new(),
+            pinned: Mutex::default(),
+            preferred: Mutex::default(),
+            stored: Mutex::default(),
+            limits: Arc::default(),
         }
+    }
+
+    /// What the providers reported about each account's usage windows.
+    pub fn limits(&self) -> &Arc<LimitStore> {
+        &self.limits
+    }
+
+    /// The stored accounts of `provider`: the default one first, then the labelled ones by name.
+    pub fn accounts(&self, provider: &str) -> Vec<Account> {
+        accounts_in(&self.load(), provider)
+    }
+
+    /// Uses account `label` of `provider` for the rest of the process. A label that names no
+    /// stored account is ignored when a credential is looked up.
+    pub fn select(&self, provider: &str, label: &str) {
+        locked(&self.pinned).insert(provider.to_string(), label.to_string());
+    }
+
+    /// Takes the account each `[providers.<id>]` table names as that provider's preferred one.
+    pub fn configured(self, providers: &BTreeMap<String, ProviderSettings>) -> Self {
+        for (provider, settings) in providers {
+            self.prefer(provider, settings.account.as_deref());
+        }
+        self
+    }
+
+    /// The account `[providers.<id>] account` names; `None` goes back to the default account.
+    pub fn prefer(&self, provider: &str, label: Option<&str>) {
+        let mut preferred = locked(&self.preferred);
+        match label {
+            Some(label) => preferred.insert(provider.to_string(), label.to_string()),
+            None => preferred.remove(provider),
+        };
+    }
+
+    /// The account a request to `provider` uses: the one selected for this process, else the
+    /// configured one, else the default one, else the first there is. `None` when `auth.json`
+    /// holds nothing for the provider.
+    pub fn selected(&self, provider: &str) -> Option<String> {
+        self.selected_in(&self.load(), provider)
+    }
+
+    /// The account a new session starts on: the configured one, else the default one, else the
+    /// first there is.
+    pub fn default_account(&self, provider: &str) -> Option<String> {
+        self.default_in(&self.load(), provider)
+    }
+
+    fn default_in(&self, entries: &BTreeMap<String, Credential>, provider: &str) -> Option<String> {
+        let exists = |label: &String| entries.contains_key(&account_key(provider, label));
+        let preferred = locked(&self.preferred).get(provider).cloned();
+        preferred
+            .filter(exists)
+            .or_else(|| Some(DEFAULT_ACCOUNT.to_string()).filter(exists))
+            .or_else(|| accounts_in(entries, provider).into_iter().next().map(|a| a.label))
+    }
+
+    fn selected_in(&self, entries: &BTreeMap<String, Credential>, provider: &str) -> Option<String> {
+        let pinned = locked(&self.pinned).get(provider).cloned();
+        pinned
+            .filter(|label| entries.contains_key(&account_key(provider, label)))
+            .or_else(|| self.default_in(entries, provider))
+    }
+
+    /// Whether the last credential handed out for `provider` came from `auth.json`. A key from
+    /// the environment or the configuration is the same whichever account is selected.
+    pub fn uses_store(&self, provider: &str) -> bool {
+        locked(&self.stored).contains(provider)
+    }
+
+    /// The label of the stored login of `provider` that is the same account as `credential`:
+    /// same e-mail and same organisation.
+    pub fn same_account(&self, provider: &str, credential: &Credential) -> Option<String> {
+        let new = Account::of("", credential);
+        new.email.as_ref()?;
+        self.accounts(provider)
+            .into_iter()
+            .find(|known| known.login && known.email == new.email && known.org == new.org)
+            .map(|known| known.label)
     }
 
     pub fn auth_file(&self) -> &Path {
@@ -120,34 +281,32 @@ impl Credentials {
     /// Order: command-line key, environment, `api_key_command`, a key written in the
     /// configuration, `auth.json`.
     pub async fn resolve(&self, provider: &ProviderConfig) -> Result<Auth, AiError> {
-        if let Some(key) = locked(&self.flag_keys).get(&provider.id) {
-            return Ok(Auth::ApiKey(key.clone()));
-        }
-        if let Some(key) = provider.api_key_env.iter().find_map(|name| (self.env)(name)) {
-            return Ok(Auth::ApiKey(key));
-        }
-        if let Some(command) = &provider.api_key_command {
-            let cached = locked(&self.command_keys).get(&provider.id).cloned();
-            let key = match cached {
-                Some(key) => key,
-                None => {
-                    let key = run_key_command(&provider.id, command).await?;
-                    locked(&self.command_keys).insert(provider.id.clone(), key.clone());
-                    key
-                }
-            };
-            return Ok(Auth::ApiKey(key));
-        }
-        if let Some(key) = &provider.api_key {
-            return Ok(Auth::ApiKey(key.clone()));
-        }
-        match self.load().remove(&provider.id) {
-            Some(Credential::ApiKey { key }) => Ok(Auth::ApiKey(key)),
-            Some(Credential::OAuth { .. }) => {
-                let (access, fields) = crate::oauth::refresh::fresh_login(self, provider).await?;
-                Ok(Auth::OAuth { access, fields })
+        self.resolve_account(provider).await.map(|(auth, _)| auth)
+    }
+
+    /// Like [`Credentials::resolve`], also saying which stored account the credential belongs
+    /// to; `None` when it did not come from `auth.json`.
+    pub async fn resolve_account(
+        &self,
+        provider: &ProviderConfig,
+    ) -> Result<(Auth, Option<String>), AiError> {
+        match self.outside_store(provider).await? {
+            Some(auth) => {
+                locked(&self.stored).remove(&provider.id);
+                return Ok((auth, None));
             }
-            None if !provider.requires_key => Ok(Auth::None),
+            None => locked(&self.stored).insert(provider.id.clone()),
+        };
+        let mut entries = self.load();
+        let label = self.selected_in(&entries, &provider.id);
+        let key = account_key(&provider.id, label.as_deref().unwrap_or(DEFAULT_ACCOUNT));
+        match entries.remove(&key) {
+            Some(Credential::ApiKey { key }) => Ok((Auth::ApiKey(key), label)),
+            Some(Credential::OAuth { .. }) => {
+                let (access, fields) = crate::oauth::refresh::fresh_login(self, provider, &key).await?;
+                Ok((Auth::OAuth { access, fields }, label))
+            }
+            None if !provider.requires_key => Ok((Auth::None, None)),
             None => Err(AiError::Auth(match provider.api_key_env.first() {
                 Some(env) => {
                     format!(
@@ -161,6 +320,29 @@ impl Credentials {
                 ),
             })),
         }
+    }
+
+    /// The credential that does not depend on a stored account, when there is one.
+    async fn outside_store(&self, provider: &ProviderConfig) -> Result<Option<Auth>, AiError> {
+        if let Some(key) = locked(&self.flag_keys).get(&provider.id) {
+            return Ok(Some(Auth::ApiKey(key.clone())));
+        }
+        if let Some(key) = provider.api_key_env.iter().find_map(|name| (self.env)(name)) {
+            return Ok(Some(Auth::ApiKey(key)));
+        }
+        if let Some(command) = &provider.api_key_command {
+            let cached = locked(&self.command_keys).get(&provider.id).cloned();
+            let key = match cached {
+                Some(key) => key,
+                None => {
+                    let key = run_key_command(&provider.id, command).await?;
+                    locked(&self.command_keys).insert(provider.id.clone(), key.clone());
+                    key
+                }
+            };
+            return Ok(Some(Auth::ApiKey(key)));
+        }
+        Ok(provider.api_key.clone().map(Auth::ApiKey))
     }
 
     /// Forget the cached `api_key_command` result; call after the provider answers 401.
@@ -186,11 +368,16 @@ impl Credentials {
         if provider.api_key.is_some() {
             return Some("api_key in the configuration".to_string());
         }
-        match self.load().get(&provider.id) {
-            Some(Credential::ApiKey { .. }) => Some("auth.json (api key)".to_string()),
-            Some(Credential::OAuth { .. }) => Some("auth.json (login)".to_string()),
-            None => None,
-        }
+        let entries = self.load();
+        let label = self.selected_in(&entries, &provider.id)?;
+        let kind = match entries.get(&account_key(&provider.id, &label))? {
+            Credential::ApiKey { .. } => "api key",
+            Credential::OAuth { .. } => "login",
+        };
+        Some(match label.as_str() {
+            DEFAULT_ACCOUNT => format!("auth.json ({kind})"),
+            label => format!("auth.json ({kind}, account {label})"),
+        })
     }
 
     /// All entries; empty when the file is missing or unreadable.
@@ -198,11 +385,11 @@ impl Credentials {
         read_auth_file(&self.auth_file)
     }
 
-    /// Keeps `field` beside the stored login of `provider`, where the next request finds it
-    /// among the login's account fields. Nothing happens when there is no login.
-    pub fn set_login_field(&self, provider: &str, field: &str, value: &str) -> io::Result<()> {
+    /// Keeps `field` beside the stored login under `key` (see [`account_key`]), where the next
+    /// request finds it among the login's account fields. Nothing happens when there is no login.
+    pub fn set_login_field(&self, key: &str, field: &str, value: &str) -> io::Result<()> {
         self.modify(|entries| {
-            if let Some(Credential::OAuth { extra, .. }) = entries.get_mut(provider) {
+            if let Some(Credential::OAuth { extra, .. }) = entries.get_mut(key) {
                 extra.insert(field.to_string(), serde_json::Value::String(value.to_string()));
             }
         })
@@ -259,6 +446,18 @@ impl Credentials {
                 .unwrap_or_default()
         })
     }
+}
+
+/// The accounts of `provider` among `entries`: the default one first, then the others by label.
+fn accounts_in(entries: &BTreeMap<String, Credential>, provider: &str) -> Vec<Account> {
+    let default = entries
+        .get(provider)
+        .map(|credential| Account::of(DEFAULT_ACCOUNT, credential));
+    let labelled = entries.iter().filter_map(|(key, credential)| {
+        let label = key.strip_prefix(provider)?.strip_prefix('#')?;
+        Some(Account::of(label, credential))
+    });
+    default.into_iter().chain(labelled).collect()
 }
 
 fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
@@ -461,5 +660,135 @@ mod tests {
         assert!(c.remove("a").unwrap());
         assert!(!c.remove("a").unwrap());
         assert_eq!(c.load().len(), 1);
+    }
+
+    fn login(email: &str, org: &str) -> Credential {
+        Credential::OAuth {
+            access: format!("tok-{email}"),
+            refresh: "r".into(),
+            expires: now_ms() + 3_600_000,
+            extra: BTreeMap::from([
+                ("email".to_string(), serde_json::json!(email)),
+                ("org_id".to_string(), serde_json::json!(org)),
+            ]),
+        }
+    }
+
+    #[tokio::test]
+    async fn accounts_live_beside_the_default_one_and_old_files_load_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = creds(dir.path(), &[]);
+        // A file written before accounts existed: one entry under the plain provider id.
+        std::fs::write(
+            c.auth_file(),
+            r#"{"acme": {"type": "api_key", "key": "k-default"}, "acmeish": {"type": "api_key", "key": "other"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            c.accounts("acme"),
+            [Account {
+                label: DEFAULT_ACCOUNT.into(),
+                login: false,
+                email: None,
+                org: None
+            }]
+        );
+        assert_eq!(
+            c.resolve_account(&provider(true)).await.unwrap(),
+            (
+                Auth::ApiKey("k-default".into()),
+                Some(DEFAULT_ACCOUNT.to_string())
+            )
+        );
+
+        c.store(&account_key("acme", "work"), login("w@example.com", "org-1"))
+            .unwrap();
+        c.store(
+            &account_key("acme", "alt"),
+            Credential::ApiKey { key: "k-alt".into() },
+        )
+        .unwrap();
+        let raw: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
+        assert_eq!(
+            raw["acme"],
+            serde_json::json!({"type": "api_key", "key": "k-default"})
+        );
+        assert_eq!(raw["acme#work"]["type"], "oauth");
+        assert_eq!(raw["acme#alt"]["key"], "k-alt");
+
+        let labels: Vec<String> = c.accounts("acme").into_iter().map(|a| a.label).collect();
+        assert_eq!(labels, ["default", "alt", "work"]);
+        assert_eq!(c.accounts("acme")[2].describe(), "work (w@example.com)");
+        assert!(c.accounts("nobody").is_empty());
+
+        // The same e-mail in the same organisation is the same account; another organisation
+        // is not.
+        assert_eq!(
+            c.same_account("acme", &login("w@example.com", "org-1"))
+                .as_deref(),
+            Some("work")
+        );
+        assert_eq!(c.same_account("acme", &login("w@example.com", "org-2")), None);
+        assert_eq!(
+            c.same_account("acme", &Credential::ApiKey { key: "k-alt".into() }),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn the_account_is_the_selected_one_then_the_configured_one_then_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let c = creds(dir.path(), &[]);
+        for (label, key) in [("default", "k-default"), ("work", "k-work"), ("home", "k-home")] {
+            c.store(
+                &account_key("acme", label),
+                Credential::ApiKey { key: key.into() },
+            )
+            .unwrap();
+        }
+        let used = async |c: &Credentials| c.resolve_account(&provider(true)).await.unwrap();
+
+        assert_eq!(c.selected("acme").as_deref(), Some("default"));
+        assert_eq!(c.source(&provider(true)).as_deref(), Some("auth.json (api key)"));
+
+        c.prefer("acme", Some("work"));
+        assert_eq!(
+            used(&c).await,
+            (Auth::ApiKey("k-work".into()), Some("work".to_string()))
+        );
+        assert_eq!(
+            c.source(&provider(true)).as_deref(),
+            Some("auth.json (api key, account work)")
+        );
+
+        c.select("acme", "home");
+        assert_eq!(used(&c).await.0, Auth::ApiKey("k-home".into()));
+        assert!(c.uses_store("acme"));
+
+        // A selection that names no stored account falls through to the next rule.
+        c.select("acme", "gone");
+        assert_eq!(c.selected("acme").as_deref(), Some("work"));
+        c.prefer("acme", None);
+        assert_eq!(c.selected("acme").as_deref(), Some("default"));
+
+        // Without a default account the first labelled one answers.
+        c.remove("acme").unwrap();
+        assert_eq!(c.selected("acme").as_deref(), Some("home"));
+
+        // A key from the environment is the same whatever is selected.
+        let env = creds(dir.path(), &[("ACME_KEY", "from-env")]);
+        assert_eq!(used(&env).await, (Auth::ApiKey("from-env".into()), None));
+        assert!(!env.uses_store("acme"));
+    }
+
+    #[test]
+    fn account_labels_are_plain_words() {
+        assert_eq!(account_key("acme", DEFAULT_ACCOUNT), "acme");
+        assert_eq!(account_key("acme", "work"), "acme#work");
+        assert!(check_label("work-2.b_c").is_ok());
+        for bad in ["", "a b", "a#b", "default", "é"] {
+            assert!(check_label(bad).is_err(), "{bad}");
+        }
     }
 }

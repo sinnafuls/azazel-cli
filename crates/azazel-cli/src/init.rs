@@ -140,7 +140,7 @@ async fn global(paths: &Paths, input: &mut impl BufRead) -> Result<String> {
         env: std::env::vars().collect(),
     };
     let config = Config::load(paths, &options)?.config;
-    let credentials = Arc::new(Credentials::new(paths.auth_file()));
+    let credentials = Arc::new(Credentials::new(paths.auth_file()).configured(&config.providers));
     let client = http_client();
     let connect =
         |config: &ProviderConfig| HttpProvider::new(config.clone(), client.clone(), credentials.clone());

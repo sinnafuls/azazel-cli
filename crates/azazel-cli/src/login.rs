@@ -5,9 +5,10 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use azazel_ai::credentials::{account_key, check_label};
 use azazel_ai::providers::http::http_client;
 use azazel_ai::providers::presets;
-use azazel_ai::{Credential, Credentials, LoginUi, OAuthSettings, ProviderConfig};
+use azazel_ai::{Credential, Credentials, DEFAULT_ACCOUNT, LoginUi, OAuthSettings, ProviderConfig};
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, LoadOptions, Paths,
     Registrar, Ui,
@@ -61,25 +62,46 @@ fn open_in_browser(url: &str) {
         .spawn();
 }
 
-/// Signs in with the provider's authorisation server and keeps the login.
+/// The account a command line or a slash command names: `None` is the default account.
+pub(crate) fn account_label(label: Option<&str>) -> Result<&str, String> {
+    match label {
+        None | Some(DEFAULT_ACCOUNT) => Ok(DEFAULT_ACCOUNT),
+        Some(label) => check_label(label).map(|()| label),
+    }
+}
+
+/// Signs in with the provider's authorisation server and keeps the login as account `label`
+/// (the default account when `None`). A login for an account that is already stored, under
+/// whatever label, renews that account instead.
 pub(crate) async fn sign_in(
     credentials: &Credentials,
     provider: &ProviderConfig,
     settings: &OAuthSettings,
     ui: &dyn LoginUi,
     cancel: &CancellationToken,
+    label: Option<&str>,
 ) -> Result<String, String> {
+    let wanted = account_label(label)?;
     let login = azazel_ai::oauth::login(&http_client(), settings, ui, cancel)
         .await
         .map_err(|e| format!("login to {} failed: {e}", provider.id))?;
     let file = credentials.auth_file().display().to_string();
+    let known = credentials.same_account(&provider.id, &login);
+    let label = known.as_deref().unwrap_or(wanted);
     credentials
-        .store(&provider.id, login)
+        .store(&account_key(&provider.id, label), login)
         .map_err(|e| format!("could not write {file}: {e}"))?;
-    Ok(format!(
-        "signed in to {}; the login is kept in {file}",
-        provider.id
-    ))
+    Ok(match (label, known.is_some() && label != wanted) {
+        (_, true) => format!(
+            "this is the {} account already stored as `{label}`; its login is renewed in {file}",
+            provider.id
+        ),
+        (DEFAULT_ACCOUNT, _) => format!("signed in to {}; the login is kept in {file}", provider.id),
+        _ => format!(
+            "signed in to {} as account `{label}`; the login is kept in {file}",
+            provider.id
+        ),
+    })
 }
 
 /// The person at the terminal.
@@ -132,10 +154,11 @@ pub(crate) async fn sign_in_from_ui(
     provider: &ProviderConfig,
     settings: &OAuthSettings,
     ui: Arc<Ui>,
+    label: Option<&str>,
 ) -> Result<Option<String>, String> {
     let cancel = CancellationToken::new();
     let login = Overlay(ui.clone());
-    let signing_in = sign_in(credentials, provider, settings, &login, &cancel);
+    let signing_in = sign_in(credentials, provider, settings, &login, &cancel, label);
     tokio::pin!(signing_in);
     let cancel_option = ["Cancel the sign-in".to_string()];
     let waiting =
@@ -154,18 +177,31 @@ pub(crate) async fn sign_in_from_ui(
     }
 }
 
-/// Stores `key` for `provider` and returns the line to show. A key from the environment or a key
-/// command still wins over the stored one, which the line says.
-pub fn store_key(credentials: &Credentials, provider: &ProviderConfig, key: &str) -> Result<String, String> {
+/// Stores `key` for `provider` as account `label` (the default account when `None`) and returns
+/// the line to show. A key from the environment or a key command still wins over the stored
+/// one, which the line says.
+pub fn store_key(
+    credentials: &Credentials,
+    provider: &ProviderConfig,
+    key: &str,
+    label: Option<&str>,
+) -> Result<String, String> {
+    let label = account_label(label)?;
     let key = key.trim();
     if key.is_empty() {
         return Err("no key given".to_string());
     }
     let file = credentials.auth_file().display().to_string();
     credentials
-        .store(&provider.id, Credential::ApiKey { key: key.to_string() })
+        .store(
+            &account_key(&provider.id, label),
+            Credential::ApiKey { key: key.to_string() },
+        )
         .map_err(|e| format!("could not write {file}: {e}"))?;
-    let mut line = format!("stored the {} key in {file}", provider.id);
+    let mut line = match label {
+        DEFAULT_ACCOUNT => format!("stored the {} key in {file}", provider.id),
+        label => format!("stored the {} key of account `{label}` in {file}", provider.id),
+    };
     match credentials.source(provider) {
         Some(source) if !source.starts_with("auth.json") => {
             line.push_str(&format!("\nnote: the key from {source} takes precedence over it"));
@@ -175,20 +211,36 @@ pub fn store_key(credentials: &Credentials, provider: &ProviderConfig, key: &str
     Ok(line)
 }
 
-/// Forgets the stored key or login of `provider`.
-pub fn forget_key(credentials: &Credentials, provider: &str) -> Result<String, String> {
-    let what = match credentials.load().get(provider) {
+/// Forgets the stored key or login under `entry`: a provider id for its default account, or
+/// `provider#label` for another one.
+pub fn forget_key(credentials: &Credentials, entry: &str) -> Result<String, String> {
+    let what = match credentials.load().get(entry) {
         Some(Credential::OAuth { .. }) => "login",
         _ => "key",
     };
-    match credentials.remove(provider) {
-        Ok(true) => Ok(format!("forgot the stored {provider} {what}")),
-        Ok(false) => Err(format!("there is no stored key or login for `{provider}`")),
+    let (provider, account) = match entry.split_once('#') {
+        Some((provider, label)) => (provider, format!(" of account `{label}`")),
+        None => (entry, String::new()),
+    };
+    match credentials.remove(entry) {
+        Ok(true) => Ok(format!("forgot the stored {provider} {what}{account}")),
+        Ok(false) => Err(format!(
+            "there is no stored key or login for `{provider}`{account}"
+        )),
         Err(e) => Err(format!(
             "could not update {}: {e}",
             credentials.auth_file().display()
         )),
     }
+}
+
+/// Forgets account `label` of `provider` (the default account when `None`).
+pub fn forget_account(
+    credentials: &Credentials,
+    provider: &str,
+    label: Option<&str>,
+) -> Result<String, String> {
+    forget_key(credentials, &account_key(provider, account_label(label)?))
 }
 
 /// Reads a line from the terminal without showing it; from a pipe, reads the line as it is.
@@ -243,9 +295,14 @@ fn load(paths: &Paths) -> Result<(Vec<ProviderConfig>, Credentials), String> {
     Ok((key_providers(&config)?, Credentials::new(paths.auth_file())))
 }
 
-/// `azazel login [provider] [--key]`: asks for the provider when none is given, then signs in
-/// with its authorisation server or asks for its key.
-pub async fn login(provider: Option<&str>, key: bool, paths: &Paths) -> u8 {
+/// `azazel login [provider] [--key] [--as label]`: asks for the provider when none is given, then
+/// signs in with its authorisation server or asks for its key, and keeps the result as account
+/// `label`.
+pub async fn login(provider: Option<&str>, key: bool, label: Option<&str>, paths: &Paths) -> u8 {
+    if let Err(why) = account_label(label) {
+        eprintln!("azazel: --as: {why}");
+        return EXIT_USAGE;
+    }
     let chosen = load(paths).and_then(|(providers, credentials)| {
         let id = match provider {
             Some(id) => id.to_string(),
@@ -282,19 +339,23 @@ pub async fn login(provider: Option<&str>, key: bool, paths: &Paths) -> u8 {
                         interrupted.cancel();
                     }
                 });
-                sign_in(&credentials, &provider, settings, &Terminal, &cancel).await
+                sign_in(&credentials, &provider, settings, &Terminal, &cancel, label).await
             }
             None => read_secret(&format!("API key for {}: ", provider.id))
                 .map_err(|e| e.to_string())
-                .and_then(|key| store_key(&credentials, &provider, &key)),
+                .and_then(|key| store_key(&credentials, &provider, &key, label)),
         },
     };
     report(done)
 }
 
-/// `azazel logout <provider>`.
-pub fn logout(provider: &str, paths: &Paths) -> u8 {
-    report(forget_key(&Credentials::new(paths.auth_file()), provider))
+/// `azazel logout <provider> [--account label]`.
+pub fn logout(provider: &str, account: Option<&str>, paths: &Paths) -> u8 {
+    report(forget_account(
+        &Credentials::new(paths.auth_file()),
+        provider,
+        account,
+    ))
 }
 
 fn report(done: Result<String, String>) -> u8 {
@@ -325,8 +386,12 @@ impl CommandHandler for LoginCommand {
         let Some(ui) = ctx.services.get::<Ui>() else {
             return CommandOutcome::Error("there is nobody to ask for the key".to_string());
         };
-        let id = match args.trim() {
-            "" => {
+        // `/login <provider> [label]`: the label keeps the login beside the provider's other
+        // accounts.
+        let mut words = args.split_whitespace();
+        let (first, label) = (words.next(), words.next());
+        let id = match first {
+            None => {
                 let names: Vec<String> = self
                     .providers
                     .iter()
@@ -337,14 +402,14 @@ impl CommandHandler for LoginCommand {
                     Err(_) => return CommandOutcome::Done,
                 }
             }
-            id => id.to_string(),
+            Some(id) => id.to_string(),
         };
         let provider = match find(&self.providers, &id) {
             Ok(provider) => provider,
             Err(why) => return CommandOutcome::Error(why),
         };
         if let Some(settings) = &provider.oauth {
-            return match sign_in_from_ui(&self.credentials, provider, settings, ui).await {
+            return match sign_in_from_ui(&self.credentials, provider, settings, ui, label).await {
                 Ok(Some(line)) => CommandOutcome::Show(line),
                 Ok(None) => CommandOutcome::Show("sign-in cancelled".to_string()),
                 Err(why) => CommandOutcome::Error(why),
@@ -352,7 +417,7 @@ impl CommandHandler for LoginCommand {
         }
         let prompt = format!("API key for {} (shown while you type)", provider.id);
         match ui.0.input(&prompt).await {
-            Ok(key) => match store_key(&self.credentials, provider, &key) {
+            Ok(key) => match store_key(&self.credentials, provider, &key, label) {
                 Ok(line) => CommandOutcome::Show(line),
                 Err(why) => CommandOutcome::Error(why),
             },
@@ -366,9 +431,10 @@ struct LogoutCommand(Arc<Credentials>);
 #[async_trait]
 impl CommandHandler for LogoutCommand {
     async fn run(&self, args: &str, _: &ExtCtx) -> CommandOutcome {
-        match args.trim() {
-            "" => CommandOutcome::Error("usage: /logout <provider>".to_string()),
-            provider => match forget_key(&self.0, provider) {
+        let mut words = args.split_whitespace();
+        match (words.next(), words.next()) {
+            (None, _) => CommandOutcome::Error("usage: /logout <provider> [account]".to_string()),
+            (Some(provider), account) => match forget_account(&self.0, provider, account) {
                 Ok(line) => CommandOutcome::Show(line),
                 Err(why) => CommandOutcome::Error(why),
             },
@@ -391,7 +457,7 @@ impl Extension for LoginExt {
         r.command(Command {
             name: "login".to_string(),
             description: "Sign in to a provider or store its API key".to_string(),
-            argument_hint: Some("[provider]".to_string()),
+            argument_hint: Some("[provider] [account]".to_string()),
             handler: Arc::new(LoginCommand {
                 providers: self.providers.clone(),
                 credentials: self.credentials.clone(),
@@ -400,7 +466,7 @@ impl Extension for LoginExt {
         r.command(Command {
             name: "logout".to_string(),
             description: "Forget the stored key or login of a provider".to_string(),
-            argument_hint: Some("<provider>".to_string()),
+            argument_hint: Some("<provider> [account]".to_string()),
             handler: Arc::new(LogoutCommand(self.credentials.clone())),
         });
         Ok(())
@@ -427,8 +493,11 @@ mod tests {
         let anthropic = find(&providers, "anthropic").unwrap();
         let store = credentials(dir.path(), None);
 
-        assert_eq!(store_key(&store, anthropic, "  ").unwrap_err(), "no key given");
-        let line = store_key(&store, anthropic, " sk-stored \n").unwrap();
+        assert_eq!(
+            store_key(&store, anthropic, "  ", None).unwrap_err(),
+            "no key given"
+        );
+        let line = store_key(&store, anthropic, " sk-stored \n", None).unwrap();
         assert!(
             line.starts_with("stored the anthropic key in ") && !line.contains("note:"),
             "{line}"
@@ -455,10 +524,58 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let providers = key_providers(&Config::default()).unwrap();
         let anthropic = find(&providers, "anthropic").unwrap();
-        let line = store_key(&credentials(dir.path(), Some("sk-env")), anthropic, "sk-stored").unwrap();
+        let line = store_key(
+            &credentials(dir.path(), Some("sk-env")),
+            anthropic,
+            "sk-stored",
+            None,
+        )
+        .unwrap();
         assert!(
             line.ends_with("note: the key from env ANTHROPIC_API_KEY takes precedence over it"),
             "{line}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_second_account_is_kept_beside_the_first_and_forgotten_on_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let providers = key_providers(&Config::default()).unwrap();
+        let anthropic = find(&providers, "anthropic").unwrap();
+        let store = credentials(dir.path(), None);
+
+        store_key(&store, anthropic, "sk-first", None).unwrap();
+        let line = store_key(&store, anthropic, "sk-work", Some("work")).unwrap();
+        assert!(
+            line.starts_with("stored the anthropic key of account `work` in "),
+            "{line}"
+        );
+        assert!(store_key(&store, anthropic, "sk", Some("no spaces")).is_err());
+        let labels: Vec<String> = store
+            .accounts("anthropic")
+            .into_iter()
+            .map(|account| account.label)
+            .collect();
+        assert_eq!(labels, ["default", "work"]);
+        // The default account answers until another one is selected.
+        assert_eq!(
+            store.resolve(anthropic).await.unwrap(),
+            azazel_ai::Auth::ApiKey("sk-first".into())
+        );
+
+        assert_eq!(
+            forget_account(&store, "anthropic", Some("work")).unwrap(),
+            "forgot the stored anthropic key of account `work`"
+        );
+        assert!(
+            forget_account(&store, "anthropic", Some("work"))
+                .unwrap_err()
+                .contains("no stored key or login for `anthropic` of account `work`")
+        );
+        assert_eq!(store.accounts("anthropic").len(), 1);
+        assert_eq!(
+            forget_account(&store, "anthropic", Some("default")).unwrap(),
+            "forgot the stored anthropic key"
         );
     }
 

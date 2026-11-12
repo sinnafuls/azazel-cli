@@ -47,6 +47,27 @@ The lead starts on `@lead`, and each built-in agent on the role named after it, 
 
 You may define further roles and use them anywhere a spec is accepted. When a chain is resolved, roles are expanded in order, a model that already appeared is dropped, and an unknown role or a role that refers back to itself is skipped.
 
+### Presets
+
+A preset is a saved set of role chains, for switching the whole team between, say, a cheap and a thorough set of models.
+
+```toml
+# ~/.azazel/config.toml
+[presets.cheap.roles]
+default = ["anthropic/claude-haiku-4-5"]
+slow    = ["anthropic/claude-sonnet-4-5"]
+
+[presets.thorough.roles]
+default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
+```
+
+| Where | Effect |
+|---|---|
+| `/preset` | Lists the presets and the roles each one sets |
+| `/preset <name>` | Points each role of the preset at its models, for this session. Roles the preset does not name stay as they are. When it sets `lead` or `default`, the lead goes back to following its role, so a model picked with `/model` does not outlive the preset |
+| `/preset save <name>` | Writes every role as it is now to `[presets.<name>.roles]` in `~/.azazel/config.toml`, replacing a preset of that name |
+| `--preset <name>` | Applies the preset to the roles of this run; an unknown name exits with status 2 and lists the presets |
+
 ## Choosing the model
 
 | Where | Effect |
@@ -56,6 +77,7 @@ You may define further roles and use them anywhere a spec is accepted. When a ch
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `/model` or `Ctrl+L` | Picker over roles and the models of providers that have a credential |
 | `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
+| `/preset <name>`, `--preset <name>` | Re-points every role a [preset](#presets) names |
 | `model:` in an agent definition, `[agents.<name>] model` | Per-agent chain (see [team](team.md)) |
 
 When every `--model` is a concrete model, that chain also becomes this run's `default` role, so the roles and agents built on `@default` follow it.
@@ -95,6 +117,25 @@ cooldown_secs = 300   # how long a failed model is skipped
 - Models in cooldown are skipped unless every model in the chain is.
 - A response that breaks off mid-stream is discarded and counts as one attempt.
 - Context overflow, an invalid request and a user abort are not retried and do not fall back.
+- A used-up usage allowance (a subscription's 5-hour or weekly window, for example) is not retried on the same account. With [several accounts](#several-accounts) the same model is asked again on the next one; otherwise the next model in the chain is tried.
+
+## Service tiers
+
+Some providers serve a request faster for a higher price, or slower for a lower one. The tier applies to every agent's requests of the run; summaries and other side requests stay at the provider's default.
+
+| Where | Effect |
+|---|---|
+| `/fast [on\|off\|status]` | The priority tier: faster output at a higher price. Without an argument it switches between on and off |
+| `/slow [on\|off\|status]` | The economy tier: cheaper and slower |
+| `--tier priority\|standard\|economy` | The tier at launch; `standard` is the same as naming none |
+
+| Wire API | `priority` | `economy` |
+|---|---|---|
+| `openai-responses`, `openai-chat`, `openrouter`, `azure-openai-*` | `service_tier: "priority"` | `service_tier: "flex"` |
+| `anthropic-messages` (Claude models only) | Fast mode: `speed: "fast"`, with the `fast-mode-2026-02-01` beta header on the models where it is a preview (Claude Opus 5 and the Opus 4 models) | Nothing: Anthropic has no cheaper tier for a live request |
+| The others | Nothing | Nothing |
+
+While a tier is on, the status line shows `fast` or `slow` before the thinking level. A model that refuses the tier is asked again without it and stays without it for the rest of the session; the transcript says so once (`<model> does not take the priority tier; …`). The catalogue has no tier prices, so `/cost` and the status line count at standard rates; `/cost` says so while a tier is on.
 
 ## Wire APIs
 
@@ -241,6 +282,7 @@ headers = { "X-Team" = "platform" }
 | `region`, `profile` | `bedrock` only |
 | `project`, `location` | `vertex` only |
 | `oauth`, `oauth_headers` | `[providers.<id>.oauth]`: an OAuth sign-in (`flow = "pkce"` or `"device"`, `client_id`, `token_url`, `authorize_url` or `device_url`, `scopes`, …) that `azazel login <id>` then uses, and headers sent only with that sign-in |
+| `account` | The label of the stored account to use when a session chooses none (see [several accounts](#several-accounts)); the default account when unset |
 
 A new provider needs a key only when it names a key source. Providers in a project's files are ignored until the project is trusted.
 
@@ -319,11 +361,42 @@ For each request the provider's credential is the first of:
 
 An environment key therefore wins over a stored sign-in for the same provider. `azazel doctor` shows where each provider's credential comes from, never the secret.
 
+### Several accounts
+
+`auth.json` can hold more than one key or sign-in per provider. The entry under the provider's id is the default account; the others are kept as `<provider>#<label>`. A label is made of letters, digits, `-`, `_` and `.`.
+
+```sh
+azazel login anthropic --as work        # a second Claude subscription, kept beside the first
+azazel login groq --as team             # a second key
+azazel logout anthropic --account work  # forget that one only
+```
+
+A sign-in whose e-mail address and organisation match an account that is already stored renews that account, whatever label was asked for.
+
+Which account a request uses, first match:
+
+1. The account chosen for the session: `/account` → "Use for this session", or the one the router moved to (below). The choice is recorded in the session and made again when the session is resumed.
+2. `[providers.<id>] account = "<label>"`, which `/account` → "Make default" writes to `~/.azazel/config.toml`.
+3. The default account.
+
+`/account [provider]` lists the provider's accounts: which is in use, which is the default, and what each has left of its usage windows as far as the provider has said in this run (`5h 42% (resets 14:05) · 7d 7%`). Pick one to use it for this session, make it the default, or sign it out; "Add another account" signs in or stores a key under a new label.
+
+Usage windows come from response headers. Anthropic subscriptions report a 5-hour and a 7-day window, which of them a refusal is about, and whether extra usage is on.
+
+**When an account runs out.** A response that says the account's allowance is used up (Anthropic: a 429 whose unified rate-limit status is `rejected`, or the 400 about extra usage; ChatGPT: `usage_limit_reached`), or a rate limit that asks to wait more than a minute, marks that account as out of allowance until the reset time the provider gave (15 minutes when it gave none). If the provider has another stored account that is not marked, azazel selects it and asks the same model again:
+
+```text
+anthropic: account work reached its 5-hour limit (resets 14:05); now using personal
+```
+
+Otherwise the chain falls back as for any other failure. An account is never switched for any other reason, and work stays on the account it moved to. Accounts apply to credentials in `auth.json` only: a key from the environment, a command or the configuration is used whatever is selected.
+
 `auth.json` is written with mode `0600` on Unix, by temp file and rename under a lock file (`auth.json.lock`), so several azazel processes can share it. Sign-in tokens are refreshed automatically when they have less than five minutes left.
 
 `azazel auth status [--json]` lists each provider that has a credential and where it comes from (`--api-key`, an
 environment variable, `api_key_command`, the configuration, or `auth.json`), and for logins the account and when
-the token expires. Keys and tokens are never printed.
+the token expires. A provider with several stored accounts lists their labels, and its source names the one in
+use (`auth.json (login, account work)`). Keys and tokens are never printed.
 
 ## Logging in and out
 
@@ -336,6 +409,8 @@ azazel login openai-codex     # browser sign-in with a ChatGPT subscription
 azazel login github-copilot   # enter a code on github.com
 azazel login openrouter       # creates an OpenRouter key in the browser (--key to paste one)
 azazel logout anthropic       # forget the stored key or sign-in
+azazel login anthropic --as work         # keep it as a second account (see "Several accounts")
+azazel logout anthropic --account work   # forget that account only
 ```
 
 | Provider | Sign-in | Notes |
@@ -353,7 +428,8 @@ A sign-in must be finished within ten minutes; `Ctrl+C` cancels it. Providers ma
 
 In the TUI:
 
-- `/login [provider]` signs in, or asks for the key of a provider without a sign-in. `/logout <provider>` forgets it.
+- `/login [provider] [account]` signs in, or asks for the key of a provider without a sign-in; with an account label it is kept as another account. `/logout <provider> [account]` forgets it.
+- `/account [provider]` lists a provider's accounts with their usage and switches between them.
 - `/settings` opens a menu: sign in with a subscription, add an API key, choose the default model, sign out or forget a key. After the first credential it goes straight on to choosing a default model.
 
 ## Bedrock, Vertex and Azure

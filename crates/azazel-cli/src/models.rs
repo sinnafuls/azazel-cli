@@ -187,6 +187,10 @@ pub fn run_auth_status(providers: &[ProviderConfig], credentials: &Credentials, 
             if let Some(expires) = row["expires_in"].as_str() {
                 line.push_str(&format!("  {expires}"));
             }
+            if let Some(accounts) = row["accounts"].as_array() {
+                let labels: Vec<&str> = accounts.iter().filter_map(Value::as_str).collect();
+                line.push_str(&format!("  accounts: {}", labels.join(", ")));
+            }
             println!("{line}");
         }
     }
@@ -204,8 +208,15 @@ fn status_rows(
         .filter_map(|provider| {
             let source = credentials.source(provider)?;
             let mut row = json!({ "provider": provider.id, "source": source });
+            // The stored accounts beside the one in use, when there are several.
+            let accounts = credentials.accounts(&provider.id);
+            if accounts.len() > 1 {
+                row["accounts"] = accounts.iter().map(|account| account.label.as_str()).collect();
+            }
+            let in_use = credentials.selected(&provider.id).unwrap_or_default();
             if source.contains("login")
-                && let Some(Credential::OAuth { expires, extra, .. }) = stored.get(&provider.id)
+                && let Some(Credential::OAuth { expires, extra, .. }) =
+                    stored.get(&azazel_ai::credentials::account_key(&provider.id, &in_use))
             {
                 if let Some(account) = ["email", "account_email", "org_name"]
                     .iter()

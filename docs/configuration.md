@@ -89,6 +89,8 @@ thinking = "low"
 | | `region`, `profile` | unset | AWS settings, for `bedrock` |
 | | `project`, `location` | unset | Google Cloud settings, for `vertex` |
 | | `oauth`, `oauth_headers` | preset | A sign-in instead of a key; see [models and logins](models-and-logins.md) |
+| | `account` | the default account | Which stored account of the provider to use; see [several accounts](models-and-logins.md#several-accounts) |
+| `[presets.<name>.roles]` | `<role>` | none | A saved set of role chains that `/preset <name>` and `--preset <name>` apply; see [presets](models-and-logins.md#presets) |
 | `[models."<provider>/<id>"]` | `name` | catalogue | Display name |
 | | `context_window`, `max_output` | catalogue | Token limits; unknown models get 128000 and 8192 |
 | | `vision`, `reasoning` | catalogue | Capabilities; unknown models get `false` |
@@ -211,17 +213,19 @@ In an untrusted project:
 | `--bare` | All six `--no-*` switches |
 | `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
+| `--tier <TIER>` | [Service tier](models-and-logins.md#service-tiers) of the requests: `priority`, `standard`, `economy` |
+| `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
 | `--trust` | Trust this project's configuration for this run |
 | `--api-key <KEY>` | Key for the provider of the first `--model`, for this run only |
 | `--debug` | Write debug-level logs to `~/.azazel/logs/azazel.log` |
 | `--version`, `--help` | Print the version or the usage |
 
-`--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set` and
-`--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+`--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
+`--tier`, `--preset` and `--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
-A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`) exits
-with status 2.
+A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
+unknown tier or preset) exits with status 2.
 
 Subcommands: `init`, `doctor`, `login`, `logout`, `update`, `completions` ([getting started](getting-started.md)),
 `changelog` ([getting started](getting-started.md)), `models`, `auth status` ([models and logins](models-and-logins.md)),
