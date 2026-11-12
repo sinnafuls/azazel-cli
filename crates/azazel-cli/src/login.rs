@@ -39,7 +39,7 @@ fn find<'a>(providers: &'a [ProviderConfig], id: &str) -> Result<&'a ProviderCon
 }
 
 /// Opens `url` in the user's browser when a person is at the terminal.
-fn open_in_browser(url: &str) {
+pub(crate) fn open_in_browser(url: &str) {
     if !std::io::stderr().is_terminal() {
         return;
     }

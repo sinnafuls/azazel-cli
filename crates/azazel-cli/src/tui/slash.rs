@@ -7,7 +7,6 @@ use std::sync::Arc;
 use azazel_agent::{AgentCmd, ToolSource, UserInput};
 use azazel_ai::providers::presets;
 use azazel_ai::{Block, ModelSpec, Role as MessageRole, ThinkingLevel};
-use azazel_core::permissions::RuleKind;
 use azazel_core::skills::invocation_text;
 use azazel_core::{EntryKind, PermissionMode, SessionStore, StartSource};
 use azazel_tui::SelectItem;
@@ -49,7 +48,37 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     (
         "permissions",
-        "List the permission rules in effect and where they come from",
+        "The permission rules in effect and where they come from; d removes one, a adds one",
+    ),
+    (
+        "forget-approvals",
+        "Forget every remembered approval and every rule added in this session",
+    ),
+    (
+        "trust",
+        "Whether this project is trusted, and what that covers: /trust [yes|no]",
+    ),
+    (
+        "transcript",
+        "Read the whole conversation full screen, with search and copy",
+    ),
+    (
+        "copy",
+        "Copy the last reply: /copy, /copy code for a code block, /copy <n> for an earlier reply",
+    ),
+    ("vim", "Switch Vim keys in the input on or off"),
+    (
+        "tools",
+        "List the tools offered to the agent, by where they come from",
+    ),
+    ("jobs", "Background jobs: read their output or stop them"),
+    (
+        "todo",
+        "The agent's task list: /todo, /todo add <text>, /todo done <n>, /todo clear",
+    ),
+    (
+        "reload",
+        "Read skills, commands, agent definitions, hooks, key bindings, the theme and scripts again",
     ),
     (
         "add-dir",
@@ -162,7 +191,19 @@ impl Tui {
             "theme" => self.set_theme(args),
             "keys" => self.show_keys(),
             "rewind" => self.open_rewind().await,
-            "permissions" => self.show_permissions(),
+            "permissions" => match args.strip_prefix("add") {
+                Some(rule) if !rule.trim().is_empty() => self.add_rule(rule),
+                _ => self.open_permissions(),
+            },
+            "forget-approvals" => self.forget_approvals(),
+            "trust" => self.trust_command(args),
+            "transcript" => self.open_transcript().await,
+            "copy" => self.copy_command(args),
+            "vim" => self.toggle_vim(),
+            "tools" => self.show_tools(),
+            "jobs" => self.open_jobs(),
+            "todo" => self.todo_command(args),
+            "reload" => self.reload().await,
             "dirs" => {
                 let roots: Vec<String> = self
                     .app
@@ -291,8 +332,17 @@ impl Tui {
                 specs.push(model.key());
             }
         }
-        let body = vec![format!("current: {}", self.model_label())];
-        self.overlay = Some(Overlay::select("Model", body, items, true, Action::Model(specs)));
+        // Favourites are marked; ctrl+f on a row adds it to them or takes it out.
+        for (item, spec) in items.iter_mut().zip(&specs) {
+            if self.favourites.contains(spec) {
+                item.detail = format!("★ {}", item.detail);
+            }
+        }
+        let body = vec![format!("current: {}", self.model_label()), self.favourites_line()];
+        self.overlay = Some(
+            Overlay::select("Model", body, items, true, Action::Model(specs))
+                .with_keys(super::panels::model_keys()),
+        );
     }
 
     pub(super) fn open_history(&mut self) {
@@ -734,26 +784,9 @@ impl Tui {
         ));
         self.info(&out);
     }
-
-    fn show_permissions(&mut self) {
-        let mut out = format!("mode: {}\n", self.app.permissions.mode());
-        let rules = self.app.permissions.rules();
-        if rules.is_empty() {
-            out.push_str("no rules");
-        }
-        for sourced in rules {
-            let kind = match sourced.kind {
-                RuleKind::Allow => "allow",
-                RuleKind::Ask => "ask",
-                RuleKind::Deny => "deny",
-            };
-            out.push_str(&format!("{kind:<5} {}  ({})\n", sourced.rule, sourced.source));
-        }
-        self.info(&out);
-    }
 }
 
 /// Whether a user message in the transcript was written by the UI rather than typed as a prompt.
-fn is_note(message: &str) -> bool {
+pub(super) fn is_note(message: &str) -> bool {
     message.starts_with(SHELL_NOTE) || message.starts_with(REWIND_NOTE)
 }

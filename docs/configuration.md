@@ -152,6 +152,12 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[lsp.servers.<name>]` | `command`, `extensions` | required | Language server program and the file extensions it handles; see [LSP](lsp.md) |
 | | `args` | `[]` | Arguments |
 | `[tui]` | `theme` | `"dark"` | `dark`, `light` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
+| | `favourites` | `[]` | Models `Alt+M` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list |
+| | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
+| | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
+| `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
+| | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |
+| | `fold_paste_lines` | `10` | Pastes longer than this many lines fold into one token; `0` never folds |
 | `[compat]` | `claude` | `true` | Also read `CLAUDE.md` and `.claude/` skills, agents and commands |
 | `[update]` | `check` | `true` | Look for a newer release at most once a day |
 
@@ -166,10 +172,12 @@ back. A project needs a trust decision when it has any of:
 - `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
 
-Gated settings: `hooks`, `providers`, `permissions.allow`, `lsp`, `verify.commands`, `tools.shell`, `browser.path`.
+Gated settings: `hooks`, `providers`, `permissions.allow`, `lsp`, `verify.commands`, `tools.shell`, `browser.path`,
+`editor.command`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
-[y/N]`. The answer is stored in `~/.azazel/trust.json`; remove the project's entry there to be asked again.
+[y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it
+covers, and `/trust yes` or `/trust no` changes it; the change applies from the next start.
 Print mode, RPC mode and the subcommands never ask: they treat an undecided project as untrusted unless you pass
 `--trust`, which trusts it for that run only.
 

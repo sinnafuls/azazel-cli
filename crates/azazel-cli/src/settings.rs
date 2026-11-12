@@ -1,5 +1,6 @@
-//! `/settings`: signing in with a subscription, storing API keys, choosing the default model and
-//! signing out, all from inside the terminal UI, so that a first run needs no config editing.
+//! `/settings`: signing in with a subscription, storing API keys, choosing the default model,
+//! signing out and changing the everyday settings, all from inside the terminal UI, so that
+//! neither a first run nor a change of taste needs config editing.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -51,6 +52,9 @@ struct Settings {
     providers: Vec<ProviderConfig>,
     credentials: Arc<Credentials>,
     home_config: PathBuf,
+    /// The configuration this run started with, as a table, for showing values the user's
+    /// config file does not set.
+    effective: toml::Table,
 }
 
 /// The menu rows, in order.
@@ -60,8 +64,400 @@ enum Item {
     ApiKey,
     DefaultModel,
     Roles,
+    /// One group of the settings in [`SETTINGS`].
+    Section(&'static str),
     SignOut,
     Done,
+}
+
+/// How the settings menu reaches the running UI: called with the path and the new value of a
+/// setting that applies at once. The terminal UI registers it as a service.
+pub struct LiveSettings(pub Arc<ApplySetting>);
+
+/// Called with a setting's path (`editor.mode`) and its new value.
+pub type ApplySetting = dyn Fn(&str, &toml::Value) + Send + Sync;
+
+/// How a setting is edited.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Kind {
+    /// On or off; choosing the row flips it.
+    Switch,
+    /// One of these values.
+    Choice(&'static [&'static str]),
+    /// A number, whole or with a fraction as the setting's default is.
+    Number,
+    Text,
+    /// Several values, typed with commas between them.
+    List,
+}
+
+/// One row of a settings section.
+struct Setting {
+    section: &'static str,
+    /// Where it lives in the config file, as `table.key`.
+    path: &'static str,
+    label: &'static str,
+    kind: Kind,
+    /// Applies to the running UI at once; the others take effect in the next session.
+    live: bool,
+}
+
+const fn setting(
+    section: &'static str,
+    path: &'static str,
+    label: &'static str,
+    kind: Kind,
+    live: bool,
+) -> Setting {
+    Setting {
+        section,
+        path,
+        label,
+        kind,
+        live,
+    }
+}
+
+/// Every setting the menu can change, section by section. Each is saved in the user's
+/// `config.toml`; what a project's own config sets on top still wins in that project.
+const SETTINGS: &[Setting] = &[
+    setting(
+        "Appearance",
+        "tui.theme",
+        "Theme (dark, light or a file in ~/.azazel/themes)",
+        Kind::Text,
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.images",
+        "Inline images",
+        Kind::Choice(&["auto", "off", "kitty", "iterm", "sixel"]),
+        false,
+    ),
+    setting(
+        "Appearance",
+        "tui.show_thinking",
+        "Show the model's thinking",
+        Kind::Switch,
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.expand_tools",
+        "Show tool output in full",
+        Kind::Switch,
+        true,
+    ),
+    setting(
+        "Editor",
+        "editor.mode",
+        "Keys in the input",
+        Kind::Choice(&["emacs", "vim"]),
+        true,
+    ),
+    setting(
+        "Editor",
+        "editor.command",
+        "External editor command (empty uses $VISUAL, then $EDITOR)",
+        Kind::Text,
+        true,
+    ),
+    setting(
+        "Editor",
+        "editor.fold_paste_lines",
+        "Fold pastes longer than this many lines (0 never folds)",
+        Kind::Number,
+        true,
+    ),
+    setting(
+        "Permissions",
+        "permissions.mode",
+        "Mode a session starts in",
+        Kind::Choice(&["plan", "ask", "accept-edits", "auto"]),
+        false,
+    ),
+    setting(
+        "Permissions",
+        "permissions.destructive",
+        "Commands that destroy work",
+        Kind::Choice(&["ask", "allow", "deny"]),
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.bell",
+        "Ring the terminal bell",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.desktop",
+        "Desktop notifications",
+        Kind::Choice(&["auto", "terminal", "system", "off"]),
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.title",
+        "Show the session in the terminal title",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.progress",
+        "Show progress in the terminal tab",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.min_secs",
+        "Notify about runs that took at least this many seconds",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Notifications",
+        "notify.keep_awake",
+        "Keep the computer awake while agents work",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Limits",
+        "limits.max_cost_usd",
+        "Stop a run at this cost in USD (0 is no cap)",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Limits",
+        "limits.warn_cost_usd",
+        "Warn at this cost in USD (0 is no warning)",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Limits",
+        "limits.max_turns",
+        "Requests per prompt for the lead (0 is no limit)",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Sessions",
+        "session.auto_name",
+        "Name sessions automatically",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Sessions",
+        "session.restore_model",
+        "Resume on the model and thinking level last used",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Sessions",
+        "session.retention_days",
+        "Delete sessions unused for this many days (0 keeps all)",
+        Kind::Number,
+        false,
+    ),
+    setting("Memory", "memory.enabled", "Memory", Kind::Switch, false),
+    setting(
+        "Memory",
+        "memory.auto_extract",
+        "Save memories from conversations",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Memory",
+        "memory.auto_index",
+        "Index the project for search",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Updates",
+        "update.check",
+        "Look for a newer release once a day",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Updates",
+        "update.auto",
+        "Install a newer release when the UI exits",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Voice",
+        "voice.stt",
+        "Transcription model (provider/model)",
+        Kind::Text,
+        false,
+    ),
+    setting(
+        "Voice",
+        "voice.tts",
+        "Speech model (provider/model)",
+        Kind::Text,
+        false,
+    ),
+    setting("Voice", "voice.voice", "Voice", Kind::Text, false),
+    setting(
+        "Voice",
+        "voice.auto_send",
+        "Send what was dictated at once",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Voice",
+        "voice.max_secs",
+        "Longest recording in seconds",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Team",
+        "team.coordinator",
+        "Coordinator mode: the lead only plans and delegates",
+        Kind::Switch,
+        false,
+    ),
+    setting(
+        "Team",
+        "team.max_parallel",
+        "Agents working at the same time",
+        Kind::Number,
+        false,
+    ),
+    setting(
+        "Team",
+        "advisor.when",
+        "Second-model advisor",
+        Kind::Choice(&["off", "stop"]),
+        false,
+    ),
+    setting(
+        "Team",
+        "advisor.model",
+        "Advisor model (several with commas: first that answers)",
+        Kind::List,
+        false,
+    ),
+];
+
+/// The sections of [`SETTINGS`], in the order they first appear.
+fn sections() -> Vec<&'static str> {
+    let mut out: Vec<&'static str> = Vec::new();
+    for setting in SETTINGS {
+        if !out.contains(&setting.section) {
+            out.push(setting.section);
+        }
+    }
+    out
+}
+
+/// The value at `table.key` in a configuration table.
+fn lookup<'a>(table: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
+    let mut parts = path.split('.');
+    let mut value = table.get(parts.next()?)?;
+    for part in parts {
+        value = value.get(part)?;
+    }
+    Some(value)
+}
+
+/// A value as a menu row shows it.
+fn shown(value: Option<&toml::Value>) -> String {
+    match value {
+        Some(toml::Value::Boolean(true)) => "on".to_string(),
+        Some(toml::Value::Boolean(false)) => "off".to_string(),
+        Some(toml::Value::String(text)) if text.is_empty() => "(not set)".to_string(),
+        Some(toml::Value::String(text)) => text.clone(),
+        Some(toml::Value::Array(items)) if items.is_empty() => "(none)".to_string(),
+        Some(toml::Value::Array(items)) => items
+            .iter()
+            .map(|item| item.as_str().map_or_else(|| item.to_string(), str::to_string))
+            .collect::<Vec<_>>()
+            .join(", "),
+        Some(other) => other.to_string(),
+        None => "(not set)".to_string(),
+    }
+}
+
+/// What the user typed for a setting, as the value to save. `like` is the setting's current
+/// value, which decides whether a number is whole.
+fn parse_value(kind: Kind, typed: &str, like: Option<&toml::Value>) -> Result<toml::Value, String> {
+    let typed = typed.trim();
+    match kind {
+        Kind::Switch => match typed {
+            "on" | "true" | "yes" => Ok(toml::Value::Boolean(true)),
+            "off" | "false" | "no" => Ok(toml::Value::Boolean(false)),
+            _ => Err("expected on or off".to_string()),
+        },
+        Kind::Choice(options) => match options.iter().find(|option| **option == typed) {
+            Some(option) => Ok(toml::Value::String(option.to_string())),
+            None => Err(format!("expected one of: {}", options.join(", "))),
+        },
+        Kind::Number if matches!(like, Some(toml::Value::Float(_))) => typed
+            .parse::<f64>()
+            .ok()
+            .filter(|number| number.is_finite() && *number >= 0.0)
+            .map(toml::Value::Float)
+            .ok_or_else(|| "expected a number that is not negative".to_string()),
+        Kind::Number => typed
+            .parse::<u32>()
+            .map(|number| toml::Value::Integer(i64::from(number)))
+            .map_err(|_| "expected a whole number that is not negative".to_string()),
+        Kind::Text => Ok(toml::Value::String(typed.to_string())),
+        Kind::List => Ok(toml::Value::Array(
+            typed
+                .split(',')
+                .map(str::trim)
+                .filter(|item| !item.is_empty())
+                .map(|item| toml::Value::String(item.to_string()))
+                .collect(),
+        )),
+    }
+}
+
+/// Whether the configuration accepts `value` at `path`, with its own error when it does not
+/// (an unknown mode, a model name that does not parse).
+fn validate(path: &str, value: &toml::Value) -> Result<(), String> {
+    let mut nested = value.clone();
+    for part in path.rsplit('.') {
+        let mut table = toml::Table::new();
+        table.insert(part.to_string(), nested);
+        nested = toml::Value::Table(table);
+    }
+    nested
+        .try_into::<Config>()
+        .map(|_| ())
+        .map_err(|e| e.message().to_string())
+}
+
+/// A value as an item of the config file.
+fn config_item(value: &toml::Value) -> Option<toml_edit::Item> {
+    Some(match value {
+        toml::Value::Boolean(on) => toml_edit::value(*on),
+        toml::Value::Integer(number) => toml_edit::value(*number),
+        toml::Value::Float(number) => toml_edit::value(*number),
+        toml::Value::String(text) => toml_edit::value(text.as_str()),
+        toml::Value::Array(items) => toml_edit::value(toml_edit::Array::from_iter(
+            items.iter().filter_map(|item| item.as_str()),
+        )),
+        _ => return None,
+    })
 }
 
 /// The roles a person can give a model, in the order the menu lists them, with what each is for.
@@ -96,6 +492,93 @@ impl Settings {
             .filter(|p| p.requires_key)
             .filter_map(|p| self.credentials.source(p).map(|source| (p.id.clone(), source)))
             .collect()
+    }
+
+    /// The value of a setting: what the user's config file says, else what this run started with.
+    fn current(&self, path: &str) -> Option<toml::Value> {
+        let saved = std::fs::read_to_string(&self.home_config)
+            .ok()
+            .and_then(|text| text.parse::<toml::Table>().ok());
+        saved
+            .as_ref()
+            .and_then(|table| lookup(table, path))
+            .or_else(|| lookup(&self.effective, path))
+            .cloned()
+    }
+
+    /// Saves `value` for a setting in the user's config file and applies it to the running UI
+    /// when it is one that can change at once. Returns the line that says what happened.
+    fn save(&self, setting: &Setting, value: toml::Value, ctx: &ExtCtx) -> Result<String, String> {
+        validate(setting.path, &value).map_err(|why| format!("{}: {why}", setting.label))?;
+        let path: Vec<&str> = setting.path.split('.').collect();
+        // Nothing typed puts the setting back on its default.
+        let cleared = matches!(&value, toml::Value::String(text) if text.is_empty())
+            || matches!(&value, toml::Value::Array(items) if items.is_empty());
+        let item = if cleared { None } else { config_item(&value) };
+        crate::init::set_config_value(&self.home_config, &path, item).map_err(|e| format!("{e:#}"))?;
+        let when = if setting.live {
+            if let Some(live) = ctx.services.get::<LiveSettings>() {
+                (live.0)(setting.path, &value);
+            }
+            ""
+        } else {
+            " (applies to the next session)"
+        };
+        Ok(format!("{} = {}{when}", setting.path, shown(Some(&value))))
+    }
+
+    /// Shows one section until the user goes back; each change is saved as it is made.
+    async fn section(&self, name: &str, ui: &Arc<Ui>, ctx: &ExtCtx, done: &mut Vec<String>) {
+        let rows: Vec<&Setting> = SETTINGS.iter().filter(|s| s.section == name).collect();
+        loop {
+            let mut labels: Vec<String> = rows
+                .iter()
+                .map(|setting| {
+                    format!(
+                        "{}: {}",
+                        setting.label,
+                        shown(self.current(setting.path).as_ref())
+                    )
+                })
+                .collect();
+            labels.push("Back".to_string());
+            let heading = format!("{name} · saved in {}", self.home_config.display());
+            let Ok(index) = ui.0.select(&heading, &labels).await else {
+                return;
+            };
+            let Some(setting) = rows.get(index) else {
+                return;
+            };
+            let current = self.current(setting.path);
+            let typed = match setting.kind {
+                Kind::Switch => Some(match current {
+                    Some(toml::Value::Boolean(true)) => "off".to_string(),
+                    _ => "on".to_string(),
+                }),
+                Kind::Choice(options) => {
+                    let options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+                    ui.0.select(setting.label, &options)
+                        .await
+                        .ok()
+                        .and_then(|chosen| options.get(chosen).cloned())
+                }
+                Kind::Number | Kind::Text | Kind::List => {
+                    let prompt = format!("{} (now: {})", setting.label, shown(current.as_ref()));
+                    ui.0.input(&prompt).await.ok()
+                }
+            };
+            let Some(typed) = typed else { continue };
+            let saved = parse_value(setting.kind, &typed, current.as_ref())
+                .map_err(|why| format!("{}: {why}", setting.label))
+                .and_then(|value| self.save(setting, value, ctx));
+            match saved {
+                Ok(line) => {
+                    ui.0.notify(Level::Info, &line);
+                    done.push(line);
+                }
+                Err(why) => ui.0.notify(Level::Error, &why),
+            }
+        }
     }
 
     fn default_model(&self, router: Option<&Router>) -> Option<String> {
@@ -135,6 +618,11 @@ impl Settings {
                 "Models for the lead and each agent (coder, scout, reviewer, ...)".to_string(),
             ),
         ];
+        items.extend(
+            sections()
+                .into_iter()
+                .map(|section| (Item::Section(section), section.to_string())),
+        );
         let stored = self.credentials.load();
         if !stored.is_empty() {
             items.push((Item::SignOut, "Sign out or forget a key".to_string()));
@@ -353,6 +841,10 @@ impl CommandHandler for Settings {
                     None => Err("no model router in this session".to_string()),
                 },
                 Item::SignOut => self.sign_out(&ui).await,
+                Item::Section(name) => {
+                    self.section(name, &ui, ctx, &mut done).await;
+                    Ok(None)
+                }
             };
             match outcome {
                 Ok(Some(line)) => {
@@ -391,6 +883,8 @@ pub struct SettingsExt {
     pub providers: Vec<ProviderConfig>,
     pub credentials: Arc<Credentials>,
     pub home_config: PathBuf,
+    /// The configuration this run started with.
+    pub config: Config,
 }
 
 impl Extension for SettingsExt {
@@ -401,12 +895,13 @@ impl Extension for SettingsExt {
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
         r.command(Command {
             name: "settings".to_string(),
-            description: "Sign in, add API keys and choose the default model".to_string(),
+            description: "Sign in, add API keys, choose models and change settings".to_string(),
             argument_hint: None,
             handler: Arc::new(Settings {
                 providers: self.providers.clone(),
                 credentials: self.credentials.clone(),
                 home_config: self.home_config.clone(),
+                effective: toml::Table::try_from(&self.config).unwrap_or_default(),
             }),
         });
         Ok(())
@@ -468,6 +963,7 @@ mod tests {
                 Arc::new(|_: &str| None),
             )),
             home_config: dir.path().join("config.toml"),
+            effective: toml::Table::try_from(Config::default()).unwrap(),
         };
         let router = Router::new(
             Vec::new(),
@@ -496,5 +992,182 @@ mod tests {
         );
         assert!(heading.contains("credentials for: openai"), "{heading}");
         assert!(items.iter().any(|(item, _)| *item == Item::SignOut));
+    }
+
+    fn settings_in(dir: &std::path::Path) -> Settings {
+        Settings {
+            providers: Vec::new(),
+            credentials: Arc::new(Credentials::with_env(
+                dir.join("auth.json"),
+                Arc::new(|_: &str| None),
+            )),
+            home_config: dir.join("config.toml"),
+            effective: toml::Table::try_from(Config::default()).unwrap(),
+        }
+    }
+
+    fn ctx() -> ExtCtx {
+        ExtCtx {
+            services: Arc::new(azazel_agent::Services::new()),
+            cwd: PathBuf::new(),
+            session_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn every_setting_exists_in_the_configuration_with_a_value_of_its_kind() {
+        let defaults = toml::Table::try_from(Config::default()).unwrap();
+        for setting in SETTINGS {
+            let value = lookup(&defaults, setting.path)
+                .unwrap_or_else(|| panic!("{} is not a configuration key", setting.path));
+            let fits = match setting.kind {
+                Kind::Switch => value.is_bool(),
+                Kind::Choice(options) => {
+                    for option in options {
+                        let candidate = toml::Value::String(option.to_string());
+                        validate(setting.path, &candidate)
+                            .unwrap_or_else(|why| panic!("{} = {option}: {why}", setting.path));
+                    }
+                    value.as_str().is_some_and(|now| options.contains(&now))
+                }
+                Kind::Number => value.is_integer() || value.is_float(),
+                Kind::Text => value.is_str(),
+                Kind::List => value.is_array(),
+            };
+            assert!(fits, "{} is {value:?}, not a {:?}", setting.path, setting.kind);
+        }
+        assert_eq!(
+            sections(),
+            [
+                "Appearance",
+                "Editor",
+                "Permissions",
+                "Notifications",
+                "Limits",
+                "Sessions",
+                "Memory",
+                "Updates",
+                "Voice",
+                "Team"
+            ]
+        );
+    }
+
+    #[test]
+    fn typed_values_are_parsed_by_kind_and_checked_against_the_configuration() {
+        let float = toml::Value::Float(0.0);
+        assert_eq!(
+            parse_value(Kind::Switch, "on", None),
+            Ok(toml::Value::Boolean(true))
+        );
+        assert!(parse_value(Kind::Switch, "maybe", None).is_err());
+        assert_eq!(
+            parse_value(Kind::Number, " 2.5 ", Some(&float)),
+            Ok(toml::Value::Float(2.5))
+        );
+        assert_eq!(
+            parse_value(Kind::Number, "12", None),
+            Ok(toml::Value::Integer(12))
+        );
+        assert!(
+            parse_value(Kind::Number, "1.5", None).is_err(),
+            "a whole number stays whole"
+        );
+        assert!(parse_value(Kind::Number, "-1", Some(&float)).is_err());
+        assert!(
+            parse_value(Kind::Choice(&["emacs", "vim"]), "nano", None)
+                .unwrap_err()
+                .contains("emacs, vim")
+        );
+        assert_eq!(
+            parse_value(Kind::List, "anthropic/a, @slow ,", None),
+            Ok(toml::Value::Array(vec![
+                toml::Value::String("anthropic/a".into()),
+                toml::Value::String("@slow".into())
+            ]))
+        );
+
+        assert!(validate("editor.mode", &toml::Value::String("vim".into())).is_ok());
+        assert!(validate("editor.mode", &toml::Value::String("nano".into())).is_err());
+        assert!(
+            validate(
+                "advisor.model",
+                &parse_value(Kind::List, "not a model", None).unwrap()
+            )
+            .is_err()
+        );
+        assert!(validate("limits.max_turns", &toml::Value::Integer(5)).is_ok());
+    }
+
+    #[test]
+    fn a_saved_setting_lands_in_the_config_file_is_read_back_and_reaches_the_ui_when_live() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = settings_in(dir.path());
+        std::fs::write(&settings.home_config, "# mine\n[tui]\ntheme = \"light\"\n").unwrap();
+        let by_path = |path: &str| SETTINGS.iter().find(|s| s.path == path).unwrap();
+        assert_eq!(shown(settings.current("tui.theme").as_ref()), "light");
+        assert_eq!(shown(settings.current("editor.mode").as_ref()), "emacs");
+        assert_eq!(shown(settings.current("editor.command").as_ref()), "(not set)");
+        assert_eq!(shown(settings.current("advisor.model").as_ref()), "(none)");
+        assert_eq!(shown(settings.current("notify.bell").as_ref()), "on");
+
+        let context = ctx();
+        let seen: Arc<std::sync::Mutex<Vec<(String, toml::Value)>>> = Arc::default();
+        let sink = seen.clone();
+        context.services.insert(Arc::new(LiveSettings(Arc::new(
+            move |path: &str, value: &toml::Value| {
+                sink.lock().unwrap().push((path.to_string(), value.clone()));
+            },
+        ))));
+
+        let line = settings
+            .save(
+                by_path("editor.mode"),
+                toml::Value::String("vim".into()),
+                &context,
+            )
+            .unwrap();
+        assert_eq!(line, "editor.mode = vim");
+        let line = settings
+            .save(by_path("limits.max_cost_usd"), toml::Value::Float(2.5), &context)
+            .unwrap();
+        assert_eq!(line, "limits.max_cost_usd = 2.5 (applies to the next session)");
+        settings
+            .save(
+                by_path("advisor.model"),
+                parse_value(Kind::List, "anthropic/a, @slow", None).unwrap(),
+                &context,
+            )
+            .unwrap();
+        // Only the live setting reached the UI.
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [("editor.mode".to_string(), toml::Value::String("vim".into()))]
+        );
+
+        let saved = std::fs::read_to_string(&settings.home_config).unwrap();
+        assert!(saved.starts_with("# mine\n[tui]\ntheme = \"light\"\n"), "{saved}");
+        let loaded: Config = saved.parse::<toml::Table>().unwrap().try_into().unwrap();
+        assert_eq!(loaded.editor.mode, azazel_core::config::EditorMode::Vim);
+        assert_eq!(loaded.limits.max_cost_usd, 2.5);
+        assert_eq!(loaded.advisor.model.len(), 2);
+        assert_eq!(
+            shown(settings.current("advisor.model").as_ref()),
+            "anthropic/a, @slow"
+        );
+
+        // A value the configuration rejects is not written; an empty one removes the key.
+        let refused = settings.save(
+            by_path("editor.mode"),
+            toml::Value::String("nano".into()),
+            &context,
+        );
+        assert!(refused.unwrap_err().starts_with("Keys in the input: "));
+        settings
+            .save(by_path("tui.theme"), toml::Value::String(String::new()), &context)
+            .unwrap();
+        let saved = std::fs::read_to_string(&settings.home_config).unwrap();
+        assert!(!saved.contains("theme"), "{saved}");
+        assert_eq!(shown(settings.current("tui.theme").as_ref()), "dark");
     }
 }

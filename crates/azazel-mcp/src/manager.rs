@@ -747,6 +747,21 @@ impl McpManager {
             .collect()
     }
 
+    /// Every MCP tool by name with whether agents are offered it right now; a tool that waits to
+    /// be found through `tool_search` is not.
+    pub fn tool_states(&self) -> Vec<(String, bool)> {
+        let proxies = self.proxies();
+        let deferring = proxies.len() > self.0.options.defer_threshold;
+        let activated = self.0.activated.read().unwrap_or_else(PoisonError::into_inner);
+        proxies
+            .into_iter()
+            .map(|tool| {
+                let offered = !deferring || activated.contains(&tool.name);
+                (tool.name.clone(), offered)
+            })
+            .collect()
+    }
+
     /// Ranks every MCP tool against `query` and makes the hits available to agents.
     pub fn search(&self, query: &str, limit: usize) -> Vec<SearchHit> {
         let proxies = self.proxies();

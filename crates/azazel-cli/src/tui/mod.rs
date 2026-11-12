@@ -3,7 +3,11 @@
 //! of the screen, the input and the status line.
 
 mod bridge;
+mod clip;
+mod input;
 mod overlay;
+mod pager;
+mod panels;
 mod slash;
 mod team;
 mod view;
@@ -26,12 +30,11 @@ use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
 };
 use azazel_tui::{
-    ColorDepth, Composer, Editor, Floor, Frame, Keymap, Line, Renderer, Role, SelectItem, SelectList,
-    Spinner, StreamingMarkdown, Theme, TodoState, disable_enhanced_keys, enable_enhanced_keys, text,
+    ColorDepth, Composer, Draft, Editor, Floor, Frame, Keymap, Line, Renderer, Role, SelectItem, SelectList,
+    Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys, enable_enhanced_keys, text,
 };
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
-    KeyModifiers,
 };
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
@@ -40,6 +43,9 @@ use tokio::sync::{broadcast, mpsc};
 
 use crate::app::{Active, App, Open};
 use bridge::{TuiBridge, UiRequest};
+pub(crate) use input::Queue;
+#[cfg(feature = "test-support")]
+pub(crate) use input::queue_from_env;
 use overlay::{Action, Outcome, Overlay, ask_items};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
@@ -51,27 +57,65 @@ const SHELL_NOTE: &str = "I ran `";
 /// Puts the terminal into raw mode and restores it when dropped, however the UI ends.
 struct TerminalGuard {
     enhanced_keys: bool,
+    /// The terminal is ours: raw mode, bracketed paste and enhanced keys are on.
+    active: bool,
 }
 
 impl TerminalGuard {
     fn enter() -> io::Result<Self> {
+        let mut guard = TerminalGuard {
+            enhanced_keys: false,
+            active: false,
+        };
+        guard.take()?;
+        Ok(guard)
+    }
+
+    fn take(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
+        self.active = true;
         let mut out = io::stdout();
         crossterm::execute!(out, EnableBracketedPaste)?;
-        let enhanced_keys = enable_enhanced_keys(&mut out).unwrap_or(false);
-        Ok(TerminalGuard { enhanced_keys })
+        self.enhanced_keys = enable_enhanced_keys(&mut out).unwrap_or(false);
+        Ok(())
     }
-}
 
-impl Drop for TerminalGuard {
-    fn drop(&mut self) {
+    /// Hands the terminal back as a shell would have it (cooked mode, no bracketed paste, no
+    /// enhanced keys), for a program that takes it over for a while or for exit.
+    fn suspend(&mut self) {
+        if !std::mem::take(&mut self.active) {
+            return;
+        }
         let mut out = io::stdout();
-        if self.enhanced_keys {
+        if std::mem::take(&mut self.enhanced_keys) {
             let _ = disable_enhanced_keys(&mut out);
         }
         let _ = crossterm::execute!(out, DisableBracketedPaste);
         let _ = disable_raw_mode();
         let _ = out.flush();
+    }
+
+    /// Takes the terminal again after [`TerminalGuard::suspend`].
+    fn resume(&mut self) {
+        if !self.active
+            && let Err(e) = self.take()
+        {
+            tracing::error!("cannot take the terminal back: {e}");
+        }
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        self.suspend();
+    }
+}
+
+/// The next terminal event; never resolves while the terminal is handed to another program.
+async fn next_terminal(terminal: &mut Option<EventStream>) -> Option<io::Result<Event>> {
+    match terminal {
+        Some(events) => events.next().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -105,22 +149,45 @@ enum Internal {
         command: String,
         output: String,
         status: String,
+        /// Whether the agent is told what was run (`!command`) or not (`!!command`).
+        share: bool,
     },
     /// What a registered slash command came back with.
     Command(CommandOutcome),
+    /// A setting the settings menu saved that applies to the running UI at once.
+    Setting { path: String, value: toml::Value },
 }
 
 pub struct Tui {
     app: Arc<App>,
     active: Active,
+    guard: TerminalGuard,
+    /// Keys, pastes and resizes; `None` while another program has the terminal.
+    terminal: Option<EventStream>,
     events: mpsc::UnboundedReceiver<AgentEvent>,
     requests: mpsc::UnboundedReceiver<UiRequest>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     renderer: Renderer<io::Stdout>,
     theme: Theme,
+    /// The name the theme was loaded by, for reading it again.
+    theme_name: String,
     keymap: Keymap,
     editor: Editor,
+    /// Vim keys in front of the editor, when they are on.
+    vim: Option<Vim>,
+    /// Pastes longer than this many lines fold into a token.
+    fold_paste_lines: usize,
+    /// `[editor] command`, as the settings menu last left it.
+    editor_command: String,
+    /// Models the cycling keys step through, as written in `tui.favourites`.
+    favourites: Vec<String>,
+    /// Messages waiting for the agent to finish.
+    queued: Queue,
+    /// The lead just finished a run without being interrupted: the next queued message may go.
+    run_ended: bool,
+    /// Drafts parked with `ctrl+s`, each with the images that were attached to it.
+    stashed: Vec<(Draft, Vec<Block>)>,
     /// Keeps the input and the status line on the last rows of the screen.
     floor: Floor,
     /// Transcript lines waiting to be written above the live region.
@@ -203,6 +270,19 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
             return 1;
         }
     };
+    let (internal_tx, internal_rx) = mpsc::unbounded_channel();
+    // The settings menu runs as a command, outside the UI loop; this is how it reaches it.
+    let settings_tx = internal_tx.clone();
+    app.registry
+        .services
+        .insert(Arc::new(crate::settings::LiveSettings(Arc::new(
+            move |path: &str, value: &toml::Value| {
+                let _ = settings_tx.send(Internal::Setting {
+                    path: path.to_string(),
+                    value: value.clone(),
+                });
+            },
+        ))));
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     let (theme, theme_problem) = load_theme(&app);
     let mut keymap = Keymap::defaults();
@@ -212,23 +292,34 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
     {
         key_problem = Some(format!("{}: {e}", app.paths.keybindings_file().display()));
     }
-    let (internal_tx, internal_rx) = mpsc::unbounded_channel();
     let branch = azazel_core::prompt::git_branch(&app.paths.project_root);
     let events = active.lead.subscribe();
     let resumed = active.resumed;
     let team = app.registry.services.get::<Team>();
     let team_events = team.as_ref().map(|team| team.subscribe());
+    let editor_config = app.config.editor.clone();
+    let tui_config = app.config.tui.clone();
     let mut tui = Tui {
         app,
         active,
+        guard,
+        terminal: Some(EventStream::new()),
         events,
         requests,
         internal_tx,
         internal_rx,
         renderer: Renderer::new(io::stdout(), width, height),
         theme,
+        theme_name: tui_config.theme.clone(),
         keymap,
         editor: Editor::new(),
+        vim: (editor_config.mode == azazel_core::config::EditorMode::Vim).then(Vim::new),
+        fold_paste_lines: editor_config.fold_paste_lines,
+        editor_command: editor_config.command,
+        favourites: tui_config.favourites.iter().map(ToString::to_string).collect(),
+        queued: Queue::default(),
+        run_ended: false,
+        stashed: Vec::new(),
         floor: Floor::new(height),
         transcript: Vec::new(),
         after_card: false,
@@ -241,8 +332,8 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         files: None,
         busy: false,
         busy_since: Instant::now(),
-        show_thinking: false,
-        expand_tools: false,
+        show_thinking: tui_config.show_thinking,
+        expand_tools: tui_config.expand_tools,
         images: Vec::new(),
         prompts: Vec::new(),
         notice: None,
@@ -287,7 +378,7 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
     }
     tui.main_loop().await;
     let _ = tui.renderer.suspend();
-    drop(guard);
+    tui.guard.suspend();
     tui.app.finish(&tui.active).await;
     0
 }
@@ -398,7 +489,6 @@ impl Tui {
     }
 
     async fn main_loop(&mut self) {
-        let mut terminal = EventStream::new();
         let mut ticker = tokio::time::interval(spinner::INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.quit {
@@ -416,7 +506,7 @@ impl Tui {
                 break;
             }
             tokio::select! {
-                event = terminal.next() => match event {
+                event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
                     Some(Err(e)) => {
                         tracing::error!("terminal read failed: {e}");
@@ -425,7 +515,10 @@ impl Tui {
                     None => break,
                 },
                 event = self.events.recv() => match event {
-                    Some(event) => self.on_agent(event),
+                    Some(event) => {
+                        self.on_agent(event);
+                        self.send_queued().await;
+                    }
                     None => break,
                 },
                 request = self.requests.recv() => {
@@ -602,12 +695,13 @@ impl Tui {
             if let Some(notice) = &self.notice {
                 bottom.extend(view::notice(notice, width, &self.theme));
             }
+            bottom.extend(self.waiting_lines(width));
             if !self.images.is_empty() {
                 let label = format!("[{} image(s) attached to the next prompt]", self.images.len());
                 bottom.push(self.theme.paint(Role::Muted, &label));
             }
             let rule = self.rule_role();
-            let activity = self.activity();
+            let activity = self.rule_status();
             let composer = Composer {
                 prompt: "❯ ",
                 prompt_role: if rule == Role::Border { Role::Accent } else { rule },
@@ -763,6 +857,8 @@ impl Tui {
             )),
             AgentEvent::Idle { stop } => {
                 self.end_of_run();
+                // An interrupted run keeps what is queued for the user to send or take back.
+                self.run_ended = stop != StopReason::Aborted;
                 match stop {
                     StopReason::Aborted => self.info("interrupted"),
                     StopReason::Length => self.warn("the reply was cut off at the model's output limit"),
@@ -796,12 +892,14 @@ impl Tui {
     }
 
     async fn on_internal(&mut self, done: Internal) {
-        let (command, output, status) = match done {
+        let (command, output, status, share) = match done {
             Internal::Shell {
                 command,
                 output,
                 status,
-            } => (command, output, status),
+                share,
+            } => (command, output, status, share),
+            Internal::Setting { path, value } => return self.apply_setting(&path, &value),
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -820,6 +918,9 @@ impl Tui {
             display = format!("… {from} earlier lines\n{display}");
         }
         self.info(&format!("{display}\n{status}"));
+        if !share {
+            return;
+        }
         // The agent sees what the user ran, without being asked to respond.
         let note = format!("{SHELL_NOTE}{command}` myself:\n{output}\n{status}");
         self.active.lead.send(AgentCmd::Append(UserInput::text(note)));
@@ -993,15 +1094,32 @@ impl Tui {
     // ------------------------------------------------------------ terminal input
 
     async fn on_terminal(&mut self, event: Event) {
+        // Windows consoles have no bracketed paste: a paste is a burst of key presses.
+        let event = if cfg!(windows)
+            && let Event::Key(key) = &event
+            && let Some(first) = input::typed_char(key)
+        {
+            let (burst, after) = input::read_burst(first);
+            if input::is_paste(&burst) {
+                self.on_paste(&burst);
+            } else if burst.chars().count() == 1 {
+                self.on_key(*key).await;
+            } else {
+                for typed in burst.chars() {
+                    self.on_key(input::key_for(typed)).await;
+                }
+            }
+            // What ended the burst is handled like any other event.
+            match after {
+                Some(event) => event,
+                None => return,
+            }
+        } else {
+            event
+        };
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key).await,
-            Event::Paste(pasted) => match &mut self.overlay {
-                Some(overlay) => overlay.on_paste(&pasted),
-                None => {
-                    self.editor.insert_str(&pasted);
-                    self.refresh_completion();
-                }
-            },
+            Event::Paste(pasted) => self.on_paste(&pasted),
             Event::Resize(width, height) => {
                 self.renderer.resize(width, height);
                 self.floor.resize(height);
@@ -1012,23 +1130,19 @@ impl Tui {
 
     async fn on_key(&mut self, key: KeyEvent) {
         self.notice = None;
-        if let Some(overlay) = &self.overlay
-            && let Action::Agents(ids) = &overlay.action
-            && let KeyCode::Char(c) = key.code
-            && !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-            && let Some(id) = overlay.selected().and_then(|index| ids.get(index)).cloned()
-            && self.hub_key(c, &id)
-        {
-            return;
-        }
         if let Some(overlay) = &mut self.overlay {
+            // Feedback for the agent can be written in the user's editor too.
+            if panels::is_text_input(overlay) && self.keymap.action_for(&key) == Some("external_editor") {
+                return self.external_editor().await;
+            }
             let outcome = overlay.on_key(&key);
             if let Outcome::Chosen(index) = outcome
                 && overlay.toggle(index)
             {
                 return;
+            }
+            if let Outcome::Hotkey { index, key } = outcome {
+                return self.overlay_hotkey(index, key).await;
             }
             if !matches!(outcome, Outcome::Pending)
                 && let Some(overlay) = self.overlay.take()
@@ -1056,6 +1170,13 @@ impl Tui {
                 }
                 _ => {}
             }
+        }
+        // Vim keys come before the keymap: in normal mode letters are commands, and `esc` leaves
+        // insert mode before it interrupts anything.
+        if let Some(vim) = &mut self.vim
+            && vim.handle_key(&mut self.editor, &key)
+        {
+            return self.refresh_completion();
         }
         let action = self.keymap.action_for(&key).map(str::to_string);
         match action.as_deref() {
@@ -1101,6 +1222,20 @@ impl Tui {
                 }
             }
             Some("agent_hub") => self.open_agent_hub(),
+            Some("external_editor") => self.external_editor().await,
+            // With nothing queued the key is the editor's (up, into the history).
+            Some("dequeue") if !self.queued.is_empty() => self.dequeue(),
+            Some("stash") => self.stash(),
+            Some("cycle_thinking") => self.cycle_thinking(),
+            Some("cycle_model") => self.cycle_model(true),
+            Some("cycle_model_back") => self.cycle_model(false),
+            Some("transcript") => self.open_transcript().await,
+            Some("retry") => self.slash("retry").await,
+            Some("background") if self.foreground_call().is_some() => {
+                if let Some(call_id) = self.foreground_call() {
+                    self.background_shell(&call_id);
+                }
+            }
             _ => {
                 if self.editor.handle_key(&key) {
                     self.refresh_completion();
@@ -1152,6 +1287,8 @@ impl Tui {
         if self.editor.is_empty() && self.images.is_empty() {
             return;
         }
+        // What is echoed keeps a folded paste as its token; what is sent has the text.
+        let shown = self.editor.text().to_string();
         let entered = self.editor.take();
         self.completion = None;
         let trimmed = entered.trim();
@@ -1160,8 +1297,12 @@ impl Tui {
             return self.slash(&command).await;
         }
         if let Some(command) = trimmed.strip_prefix('!') {
-            let command = command.trim().to_string();
-            return self.user_shell(command);
+            // `!!command` runs the same way but its output stays out of the agent's context.
+            let (command, share) = match command.strip_prefix('!') {
+                Some(private) => (private, false),
+                None => (command, true),
+            };
+            return self.user_shell(command.trim().to_string(), share);
         }
         // Nothing can answer yet: keep what was typed and set a model up first.
         if !self.busy && !self.app.has_model(&self.active.lead.status().chain) {
@@ -1169,19 +1310,17 @@ impl Tui {
             self.warn("no model is set up yet: sign in or add an API key, then choose a default model");
             return self.other_command("settings", "").await;
         }
+        if self.busy && follow_up {
+            // Held here, not by the agent, so that it is sent like any typed prompt.
+            return self.queue_message(entered);
+        }
         self.prompts.push(entered.clone());
-        let lines = view::user_prompt(&entered, self.width(), &self.theme);
+        let lines = view::user_prompt(&shown, self.width(), &self.theme);
         self.say(lines);
         if self.busy {
             let mut content = vec![Block::text(entered)];
             content.append(&mut self.images);
-            let input = UserInput { content };
-            if follow_up {
-                self.active.lead.follow_up(input);
-                self.info("queued until the agent finishes");
-            } else {
-                self.active.lead.steer(input);
-            }
+            self.active.lead.steer(UserInput { content });
             return;
         }
         self.send_prompt(entered).await;
@@ -1198,11 +1337,13 @@ impl Tui {
     }
 
     /// `!command`: runs in the user's shell, outside the permission engine and the push guard.
-    fn user_shell(&mut self, command: String) {
+    /// With `share` the agent is told what was run and what it printed.
+    fn user_shell(&mut self, command: String, share: bool) {
         if command.is_empty() {
             return;
         }
-        let lines = view::user_prompt(&format!("!{command}"), self.width(), &self.theme);
+        let echo = if share { "!" } else { "!!" };
+        let lines = view::user_prompt(&format!("{echo}{command}"), self.width(), &self.theme);
         self.say(lines);
         self.notice = Some(format!("running `{command}`…"));
         let shell = self.app.shell.clone();
@@ -1225,6 +1366,7 @@ impl Tui {
                 command,
                 output,
                 status,
+                share,
             });
         });
     }
@@ -1335,6 +1477,8 @@ impl Tui {
             Outcome::Cancelled => return action.cancel(),
             Outcome::Chosen(index) => (index, String::new()),
             Outcome::Text(typed) => (0, typed),
+            // Handled where the key was pressed; the overlay stays open.
+            Outcome::Hotkey { .. } => return,
         };
         match action {
             Action::AskFree { reply } => drop(reply.send(Ok(vec![typed]))),
@@ -1489,6 +1633,12 @@ impl Tui {
                     self.other_command("mcp", &format!("{action} {server}")).await;
                 }
             }
+            action @ (Action::CopyCode(_)
+            | Action::Jobs(_)
+            | Action::JobChoice(_)
+            | Action::Permissions(_)
+            | Action::PermissionAdd
+            | Action::PermissionScope(..)) => self.finish_panel(action, choice, typed).await,
         }
     }
 
@@ -1569,6 +1719,7 @@ impl Tui {
             Some(problem) => self.fail(&problem),
             None => {
                 self.theme = theme.with_depth(depth);
+                self.theme_name = name.to_string();
                 self.info(&format!("theme: {name}"));
             }
         }

@@ -104,7 +104,16 @@ The prompt is titled `<agent> wants to use <tool>` and shows the commands, path 
 
 Sub-agents use the same prompt; the roster shows `waiting for your approval` beside the agent until you answer.
 
-`/permissions` prints the current mode and every rule in effect with its kind and source: a config file path, or `environment or command line`.
+`/permissions` lists the current mode and every rule in effect with its kind and source: this session, a config
+file path, or `environment or command line`. In the list:
+
+- `d` removes the selected rule when it was added in this session or remembered with "always allow" (it leaves
+  `config.local.toml` too). A rule from another config file is shown with the file to edit.
+- `a` adds a rule typed as `allow shell(cargo test:*)` (`allow`, `ask` or `deny`). An `allow` rule can be kept
+  for this session or saved for the project; `ask` and `deny` rules added here last until azazel exits.
+- `/permissions add <kind> <rule>` adds a session rule without opening the list.
+
+`/forget-approvals` drops every remembered approval and every rule added in this session, and says how many.
 
 ## Agents never push
 

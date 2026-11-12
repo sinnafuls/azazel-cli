@@ -312,7 +312,17 @@ impl Pager {
         }
     }
 
-    /// Moves to the first row of the next or previous anchored item.
+    /// The first row of `item`, and its first row with something on it, where a jump lands.
+    fn landing(&self, item: usize) -> Option<(usize, usize)> {
+        let first = self.rows.iter().position(|(i, _)| *i == item)?;
+        let text = (first..self.rows.len())
+            .take_while(|row| self.rows[*row].0 == item)
+            .find(|row| !text::strip_ansi(self.row_text(*row)).trim().is_empty())
+            .unwrap_or(first);
+        Some((first, text))
+    }
+
+    /// Moves to the next or previous anchored item.
     fn step_anchor(&mut self, forward: bool) {
         let Some((current, _)) = self.rows.get(self.cursor).copied() else {
             return;
@@ -320,19 +330,19 @@ impl Pager {
         let target = if forward {
             (current + 1..self.items.len()).find(|i| self.items[*i].anchor)
         } else {
-            // From inside an item, back goes to its own first row before the one before it.
-            let own_start = self.rows.iter().position(|(i, _)| *i == current);
-            let from = if self.items[current].anchor && own_start != Some(self.cursor) {
+            // From further down in an item, back goes to its own start before the one before it.
+            let below_start = self.landing(current).is_some_and(|(_, text)| self.cursor > text);
+            let from = if self.items[current].anchor && below_start {
                 current + 1
             } else {
                 current
             };
             (0..from).rev().find(|i| self.items[*i].anchor)
         };
-        if let Some(row) = target.and_then(|item| self.rows.iter().position(|(i, _)| *i == item)) {
-            self.cursor = row;
+        if let Some((first, text)) = target.and_then(|item| self.landing(item)) {
             // The item starts at the top of the screen, so as much of it as fits is shown.
-            self.top = row;
+            self.top = first;
+            self.cursor = text;
         }
     }
 
@@ -596,6 +606,28 @@ mod tests {
         assert_eq!(pager.cursor(), 4);
         press(&mut pager, "]");
         assert_eq!(pager.cursor(), 4, "no prompt after the last");
+    }
+
+    #[test]
+    fn a_jump_lands_on_the_first_row_with_text() {
+        let mut pager = Pager::new(
+            "t",
+            vec![
+                item(&["", "first prompt"], true),
+                item(&["a reply"], false),
+                item(&["", "", "second prompt"], true),
+            ],
+        );
+        assert_eq!(pager.cursor(), 5);
+        press(&mut pager, "[");
+        assert_eq!(pager.cursor(), 1, "from a prompt's own text to the prompt before");
+        press(&mut pager, "j[");
+        assert_eq!(pager.cursor(), 1, "from the reply back to its prompt");
+        press(&mut pager, "]");
+        assert_eq!(pager.cursor(), 5);
+        // The blank row above the prompt stays in view.
+        let shown = pager.render(30, 6, &Theme::dark());
+        assert_eq!(text::strip_ansi(&shown[3]), "▌ second prompt", "{shown:?}");
     }
 
     #[test]
