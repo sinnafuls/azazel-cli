@@ -253,7 +253,8 @@ Each prompt is one trace, with the prompt as its root:
 | Tool call | `execute_tool <name>` | The tool, its call id, how long it ran, the size of its output and whether it reported an error |
 
 A tool call hangs under the request whose reply asked for it. A sub-agent's prompt hangs under the tool call that
-was running in its parent when it started, in the same trace, so a delegated task reads as one tree.
+was running in its parent when it started, in the same trace, so a delegated task reads as one tree. A
+sub-agent that is picked up again while its parent is at rest starts a trace of its own.
 
 The session is not a span. Every span carries its id as `session.id` and `gen_ai.conversation.id`, and a
 backend groups the prompts of a session by that. A span is sent when it ends, so a prompt is whole in the
