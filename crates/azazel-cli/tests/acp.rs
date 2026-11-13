@@ -42,6 +42,28 @@ impl Seen {
     }
 }
 
+/// How many requests the scripted lead has received, from the file the mock records them in.
+fn lead_requests(file: &Path) -> usize {
+    std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|line| line["model"] == "lead")
+        .count()
+}
+
+/// Waits until the scripted lead has received `count` requests: a prompt must have taken its
+/// scripted reply before it is cancelled, or the next prompt would take that reply instead.
+async fn until_lead_requests(file: &Path, count: usize) {
+    for _ in 0..1200 {
+        if lead_requests(file) >= count {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the lead received {} requests, not {count}", lead_requests(file));
+}
+
 fn kinds(updates: &[Value]) -> Vec<&str> {
     updates
         .iter()
@@ -152,6 +174,7 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
     let seen = Seen::default();
     let watching = seen.clone();
     let project_dir = cwd.clone();
+    let recorded = dir.path().join("requests.jsonl");
     let session_id = with_agent(dir.path(), &script(), seen.clone(), async move |agent| {
         let seen = watching;
         let initialized = agent
@@ -321,14 +344,15 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
         }
 
         // A prompt is cancelled while its reply is on the way.
+        let before = lead_requests(&recorded);
         let slow = agent.send_request(acp::PromptRequest::new(session_id.clone(), vec![text("slow")]));
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        until_lead_requests(&recorded, before + 1).await;
         agent.send_notification(acp::CancelNotification::new(session_id.clone()))?;
         assert_eq!(slow.block_task().await?.stop_reason, acp::StopReason::Cancelled);
 
         // A prompt that arrives while another runs cancels it first.
         let first = agent.send_request(acp::PromptRequest::new(session_id.clone(), vec![text("one")]));
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        until_lead_requests(&recorded, before + 2).await;
         let second = agent.send_request(acp::PromptRequest::new(session_id.clone(), vec![text("two")]));
         assert_eq!(first.block_task().await?.stop_reason, acp::StopReason::Cancelled);
         assert_eq!(second.block_task().await?.stop_reason, acp::StopReason::EndTurn);

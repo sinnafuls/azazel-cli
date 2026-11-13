@@ -24,8 +24,9 @@ use azazel_agent::AgentEvent;
 use azazel_ai::{Block, Role, StopReason, StreamEvent};
 use azazel_core::names::Namer;
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, AskKind, EntryKind, Event, EventHandler, EventKind, ExtCtx, Extension,
-    Level, McpServers, Outcome, PermissionMode, PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
+    ApprovalDecision, ApprovalRequest, AskKind, EntryKind, Event, EventHandler, EventKind, Excerpt, ExtCtx,
+    Extension, Level, McpServers, Outcome, PermissionMode, PlanDecision, Question, StartSource, Ui, UiBridge,
+    UiError,
 };
 use azazel_team::LEAD;
 use azazel_tools::{TodoStatus, TodoStore};
@@ -205,12 +206,41 @@ struct Bridge {
 #[async_trait]
 impl UiBridge for Bridge {
     async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
-        let context = question.context.as_deref();
+        // What the question is about goes where the request has room for text: the context,
+        // then the code or the diff, fenced.
+        let context = match (&question.context, &question.excerpt) {
+            (context, Some(excerpt)) => {
+                let fence = match excerpt {
+                    Excerpt::Code(_) => "```",
+                    Excerpt::Diff(_) => "```diff",
+                };
+                let about = context.as_deref().map(|context| format!("{context}\n\n"));
+                Some(format!(
+                    "{}{fence}\n{}\n```",
+                    about.unwrap_or_default(),
+                    excerpt.text().trim_end()
+                ))
+            }
+            (context, None) => context.clone(),
+        };
+        let context = context.as_deref();
+        // The option the agent would take says so.
+        let labelled = |options: &[String]| -> Vec<String> {
+            options
+                .iter()
+                .map(|option| match &question.recommended {
+                    Some(recommended) if recommended.eq_ignore_ascii_case(option) => {
+                        format!("{option} (recommended)")
+                    }
+                    _ => option.clone(),
+                })
+                .collect()
+        };
         match question.kind {
             // The protocol has a way to choose, not a way to type an answer.
             AskKind::Text => Err(UiError::NoUser),
             AskKind::Confirm => {
-                let options = ["Yes".to_string(), "No".to_string()];
+                let options = labelled(&["Yes".to_string(), "No".to_string()]);
                 let said = match self.shared.pick(&question.text, context, &options).await? {
                     0 => "yes",
                     _ => "no",
@@ -220,11 +250,25 @@ impl UiBridge for Bridge {
             AskKind::Select | AskKind::Multiselect => {
                 let index = self
                     .shared
-                    .pick(&question.text, context, &question.options)
+                    .pick(&question.text, context, &labelled(&question.options))
                     .await?;
                 Ok(vec![question.options[index].clone()])
             }
         }
+    }
+
+    /// The protocol has no form: the questions are asked one after another, and one that
+    /// cannot be asked this way (a typed answer) is left open rather than ending the others.
+    async fn ask_form(&self, questions: &[Question]) -> Result<Vec<Vec<String>>, UiError> {
+        let mut answers = Vec::with_capacity(questions.len());
+        for question in questions {
+            match self.ask(question).await {
+                Ok(answer) => answers.push(answer),
+                Err(UiError::NoUser) => answers.push(Vec::new()),
+                Err(cancelled) => return Err(cancelled),
+            }
+        }
+        Ok(answers)
     }
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError> {

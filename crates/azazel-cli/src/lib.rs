@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod acp;
 pub mod app;
 mod attention;
+pub mod bug;
 pub mod changelog;
 pub mod cli;
 pub mod context;
@@ -41,9 +42,11 @@ pub mod running;
 pub mod secrets;
 pub mod sessions;
 pub mod settings;
+pub mod share;
 pub mod side;
 pub mod ssh;
 pub mod stats;
+pub mod telemetry;
 mod tui;
 pub mod update;
 pub mod usage;
@@ -284,6 +287,21 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
+        Some(Sub::Bug {
+            description,
+            transcript,
+            session,
+            issue,
+        }) => {
+            let description = description.join(" ");
+            let args = bug::Args {
+                description: &description,
+                transcript: *transcript,
+                session: session.as_deref(),
+                issue: *issue,
+            };
+            return bug::run(&paths, trusted, args).await;
+        }
         Some(Sub::Login { provider, key, label }) => {
             return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
         }

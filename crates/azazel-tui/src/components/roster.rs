@@ -1,4 +1,5 @@
-//! Agent roster: one line per agent that has not finished.
+//! Agent roster: one line per agent that has not finished. With a row selected it is a list
+//! to move in: the fleet view.
 
 use std::time::Duration;
 
@@ -6,7 +7,7 @@ use super::{format_elapsed, format_tokens, one_line};
 use crate::glyphs::Glyph;
 use crate::render::Line;
 use crate::text;
-use crate::theme::{Role, Theme};
+use crate::theme::{RESET, Role, Theme};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RosterState {
@@ -29,8 +30,40 @@ pub struct RosterRow {
 /// One line per row: `● <id>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
 /// `ascii` glyph level). The bullet is coloured by state and the activity is shortened first
 /// when the line is too long.
-pub fn render(rows: &[RosterRow], width: usize, theme: &Theme) -> Vec<Line> {
-    rows.iter().map(|row| render_row(row, width, theme)).collect()
+///
+/// With `selected` the roster has the keyboard: every row gives up two columns to a rail, and
+/// the selected one has the rail drawn, the selection background across the width and its id
+/// in bold, as the selected row of any list has.
+pub fn render(rows: &[RosterRow], selected: Option<usize>, width: usize, theme: &Theme) -> Vec<Line> {
+    rows.iter()
+        .enumerate()
+        .map(|(at, row)| match selected {
+            None => render_row(row, width, theme),
+            Some(chosen) => focused_row(row, at == chosen, width, theme),
+        })
+        .collect()
+}
+
+/// Columns the rail of a roster that has the keyboard takes.
+const RAIL: usize = 2;
+
+fn focused_row(row: &RosterRow, selected: bool, width: usize, theme: &Theme) -> Line {
+    if width <= RAIL {
+        return " ".repeat(width);
+    }
+    let line = render_row(row, width - RAIL, theme);
+    if !selected {
+        return format!("{}{line}", " ".repeat(RAIL));
+    }
+    let background = theme.bg(Role::SelectedBg);
+    // The fill goes on after each reset inside the row.
+    let content = line.replace(RESET, &format!("{RESET}{background}"));
+    let pad = " ".repeat(width - RAIL - text::width(&line));
+    format!(
+        "{background}{}{} {RESET}{background}{content}{pad}{RESET}",
+        theme.fg(Role::Accent),
+        theme.glyph(Glyph::Rail),
+    )
 }
 
 fn render_row(row: &RosterRow, width: usize, theme: &Theme) -> Line {
@@ -85,7 +118,7 @@ mod tests {
                 RosterState::Waiting,
             ),
         ];
-        let lines = render(&rows, 80, &Theme::dark());
+        let lines = render(&rows, None, 80, &Theme::dark());
         let plain: Vec<String> = lines.iter().map(|l| text::strip_ansi(l)).collect();
         assert_eq!(
             plain,
@@ -104,7 +137,7 @@ mod tests {
         theme.set_color(Role::Warning, Color::Indexed(3));
         theme.set_color(Role::Muted, Color::Indexed(8));
         let bullet = |state| {
-            let lines = render(&[row("a", "b", 1, 1, state)], 40, &theme);
+            let lines = render(&[row("a", "b", 1, 1, state)], None, 40, &theme);
             lines[0].split('●').next().map(str::to_string)
         };
         assert_eq!(bullet(RosterState::Queued).as_deref(), Some("\x1b[38;5;240m"));
@@ -122,7 +155,7 @@ mod tests {
             1234,
             RosterState::Running,
         )];
-        let lines = render(&rows, 32, &Theme::dark());
+        let lines = render(&rows, None, 32, &Theme::dark());
         let plain = text::strip_ansi(&lines[0]);
         assert_eq!(text::width(&lines[0]), 32);
         assert!(plain.starts_with("● scout-1  reading a"), "{plain:?}");
@@ -139,9 +172,52 @@ mod tests {
             RosterState::Idle,
         )];
         for width in 0..50 {
-            for line in render(&rows, width, &Theme::dark()) {
+            for line in render(&rows, None, width, &Theme::dark()) {
                 assert!(text::width(&line) <= width, "width {width}: {line:?}");
             }
+        }
+    }
+
+    #[test]
+    fn a_roster_with_the_keyboard_marks_the_selected_row_and_keeps_the_columns() {
+        let rows = [
+            row("scout-1", "grep TODO", 42, 1234, RosterState::Running),
+            row(
+                "coder-2",
+                "editing src/main.rs",
+                185,
+                15_700,
+                RosterState::Waiting,
+            ),
+        ];
+        let mut theme = Theme::dark();
+        theme.set_color(Role::SelectedBg, Color::Indexed(237));
+        let lines = render(&rows, Some(1), 60, &theme);
+        let plain: Vec<String> = lines.iter().map(|l| text::strip_ansi(l)).collect();
+        assert_eq!(plain[0], "  ● scout-1  grep TODO  42s  1.2k");
+        assert!(
+            plain[1].starts_with("▌ ● coder-2  editing src/main.rs  3m05s  15.7k"),
+            "{:?}",
+            plain[1]
+        );
+        // The selected row is filled across the width, and only that one.
+        assert_eq!(text::width(&lines[1]), 60);
+        assert!(lines[1].starts_with("\x1b[48;5;237m"), "{:?}", lines[1]);
+        assert!(!lines[0].contains("48;5;237"), "{:?}", lines[0]);
+        // Every reset inside the row is followed by the fill again.
+        let resets = lines[1].matches(RESET).count();
+        assert_eq!(lines[1].matches("\x1b[0m\x1b[48;5;237m").count(), resets - 1);
+
+        for width in 0..50 {
+            for selected in [0, 1] {
+                for line in render(&rows, Some(selected), width, &theme) {
+                    assert!(text::width(&line) <= width, "width {width}: {line:?}");
+                }
+            }
+        }
+        let ascii = theme.with_glyphs(crate::glyphs::GlyphLevel::Ascii);
+        for line in render(&rows, Some(0), 40, &ascii) {
+            assert!(text::strip_ansi(&line).is_ascii(), "{line:?}");
         }
     }
 
@@ -155,13 +231,13 @@ mod tests {
             1234,
             RosterState::Running,
         )];
-        let wide = text::strip_ansi(&render(&rows, 80, &theme)[0]);
+        let wide = text::strip_ansi(&render(&rows, None, 80, &theme)[0]);
         assert!(wide.starts_with("* scout-1  reading"), "{wide:?}");
         for width in 0..50 {
-            let line = text::strip_ansi(&render(&rows, width, &theme)[0]);
+            let line = text::strip_ansi(&render(&rows, None, width, &theme)[0]);
             assert!(line.is_ascii(), "width {width}: {line:?}");
             assert!(text::width(&line) <= width, "width {width}: {line:?}");
         }
-        assert!(text::strip_ansi(&render(&rows, 32, &theme)[0]).ends_with("...  42s  1.2k"));
+        assert!(text::strip_ansi(&render(&rows, None, 32, &theme)[0]).ends_with("...  42s  1.2k"));
     }
 }

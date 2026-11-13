@@ -1,0 +1,46 @@
+{
+  "lead": [
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "c1",
+            "name": "ask_user",
+            "input": {
+              "questions": [
+                {
+                  "question": "Which store should the service use?",
+                  "header": "Store",
+                  "context": "The service keeps sessions between restarts.",
+                  "code": "CREATE TABLE sessions (id TEXT PRIMARY KEY, data BLOB);",
+                  "options": ["sqlite", "postgres"],
+                  "recommended": "postgres"
+                },
+                { "question": "Anything else I should know?", "header": "Notes" },
+                {
+                  "question": "Apply this change?",
+                  "header": "Patch",
+                  "type": "confirm",
+                  "diff": "--- a/src/store.rs\n+++ b/src/store.rs\n@@ -1,2 +1,2 @@\n fn open() {\n-    memory();\n+    disk();\n"
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "c2",
+            "name": "ask_user",
+            "input": { "question": "Ship it when the tests pass?", "type": "confirm", "recommended": "yes", "async": true }
+          }
+        ]
+      }
+    },
+    { "reply": { "text": "Working on the store meanwhile." } },
+    { "reply": { "text": "Shipping." } }
+  ]
+}

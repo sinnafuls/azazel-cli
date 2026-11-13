@@ -69,7 +69,7 @@ impl Default for Setup {
 /// A project where the fixture checks four kinds of file:
 ///
 /// - `.chk`: prints what `findings.txt` holds, and exits with 1 when that is anything;
-/// - `.slow`: takes more than a second, then prints what `findings.txt` holds and adds a line
+/// - `.slow`: takes five seconds (long enough for the writes behind it on a loaded machine), then prints what `findings.txt` holds and adds a line
 ///   to `finished.log`;
 /// - `.stuck`: takes four seconds, then adds a line to `finished.log`;
 /// - `.bad`: fails without a finding;
@@ -103,7 +103,7 @@ fn bench(setup: Setup) -> Bench {
         (
             "slow".to_string(),
             format!(
-                "{fixture} --log {log} --sleep-ms 1200 --from {findings} --log {}",
+                "{fixture} --log {log} --sleep-ms 5000 --from {findings} --log {}",
                 in_root("finished.log")
             ),
         ),

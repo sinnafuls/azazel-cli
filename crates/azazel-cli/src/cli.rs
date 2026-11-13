@@ -159,6 +159,21 @@ pub enum Sub {
     Init,
     /// Check the installation and this project's setup
     Doctor,
+    /// Write a bug report (version, system, doctor, settings without secrets, log) as a zip
+    Bug {
+        /// What went wrong
+        #[arg(value_name = "DESCRIPTION")]
+        description: Vec<String>,
+        /// Include the latest session of this project, secrets hidden
+        #[arg(long)]
+        transcript: bool,
+        /// Include this session instead: a path to its file, or its id
+        #[arg(long, value_name = "PATH|ID")]
+        session: Option<String>,
+        /// Open an issue on azazel's repository with the summary, through `gh`
+        #[arg(long)]
+        issue: bool,
+    },
     /// Sign in to a provider, or store its API key, in ~/.azazel/auth.json
     Login {
         /// The provider; asked for when left out
