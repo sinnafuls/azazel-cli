@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Use when a change spans several files or has open design choices and you want a written implementation plan before any code is touched.
-tools: read, glob, grep, semantic_search, web_search, web_fetch, write(.azazel/plans/**), edit(.azazel/plans/**)
+tools: read, glob, grep, semantic_search, web_search, web_fetch, web_grep, write(.azazel/plans/**), edit(.azazel/plans/**)
 model: "@planner"
 max-turns: 80
 spawns: []

@@ -848,6 +848,32 @@ async fn reading_a_web_address_is_decided_by_the_rules_for_web_fetch() {
     assert!(unlisted.starts_with("permission required"), "{unlisted}");
 }
 
+#[tokio::test]
+async fn searching_a_web_page_is_decided_by_the_rules_for_web_fetch() {
+    const WEB_GREP: FakeTool = FakeTool {
+        name: "web_grep",
+        access: Access::Net,
+    };
+    let rig = rig("[permissions]\nallow = [\"web_fetch(domain:docs.rs)\"]\n\
+         deny = [\"web_fetch(domain:evil.example)\"]");
+    // A host the user lets `web_fetch` reach needs no second rule to be searched.
+    assert_eq!(
+        before(&rig, &WEB_GREP, json!({"path": "domain:api.docs.rs"})).await,
+        Ok(None)
+    );
+    let denied = before(&rig, &WEB_GREP, json!({"path": "domain:evil.example"}))
+        .await
+        .unwrap_err();
+    assert!(
+        denied.starts_with("denied by rule `web_fetch(domain:evil.example)`"),
+        "{denied}"
+    );
+    let unlisted = before(&rig, &WEB_GREP, json!({"path": "domain:other.example"}))
+        .await
+        .unwrap_err();
+    assert!(unlisted.starts_with("permission required"), "{unlisted}");
+}
+
 // ---------------------------------------------------------------- destructive commands
 
 const DESTRUCTIVE: [&str; 17] = [

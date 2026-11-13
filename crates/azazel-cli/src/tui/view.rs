@@ -144,7 +144,20 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "read" | "write" | "edit" | "plan_submit" => field("path"),
         "glob" | "grep" => field("pattern"),
         "web_fetch" => field("url"),
-        "web_search" | "memory_search" | "semantic_search" | "tool_search" => field("query"),
+        "web_grep" => {
+            field("pattern").map(|pattern| format!("{pattern} in {}", field("url").unwrap_or_default()))
+        }
+        "web_search" => {
+            let queries = input.get("queries").and_then(Value::as_array);
+            let all: Vec<&str> = input
+                .get("query")
+                .and_then(Value::as_str)
+                .into_iter()
+                .chain(queries.into_iter().flatten().filter_map(Value::as_str))
+                .collect();
+            (!all.is_empty()).then(|| all.join(" | "))
+        }
+        "memory_search" | "semantic_search" | "tool_search" => field("query"),
         "skill" => field("name"),
         "run_code" => field("code").map(|code| {
             let lines = code.trim().lines().count();
@@ -373,6 +386,22 @@ mod tests {
             "fn main"
         );
         assert_eq!(tool_summary("todo", &json!({"items": [1, 2]})), "2 items");
+        assert_eq!(
+            tool_summary(
+                "web_grep",
+                &json!({"url": "https://docs.rs/tokio", "pattern": "select!"})
+            ),
+            "select! in https://docs.rs/tokio"
+        );
+        assert_eq!(tool_summary("web_search", &json!({"query": "one"})), "one");
+        assert_eq!(
+            tool_summary(
+                "web_search",
+                &json!({"query": "one", "queries": ["two", "three"]})
+            ),
+            "one | two | three"
+        );
+        assert_eq!(tool_summary("web_search", &json!({"queries": ["two"]})), "two");
         assert_eq!(
             tool_summary(
                 "task",
