@@ -192,7 +192,8 @@ struct Indexed {
 
 struct Inner {
     path: PathBuf,
-    file: File,
+    /// `None` for a copy of a session that another process holds: it is only read.
+    file: Option<File>,
     header: Header,
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
@@ -233,7 +234,7 @@ impl SessionStore {
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
-                file,
+                file: Some(file),
                 header,
                 entries: Vec::new(),
                 index: HashMap::new(),
@@ -256,13 +257,34 @@ impl SessionStore {
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
-                file,
+                file: Some(file),
                 header,
                 entries,
                 index,
                 leaf,
             }),
         })
+    }
+
+    /// A copy, in memory, of a session that lives in another process: what it holds can be
+    /// read as from any other store. Nothing is written to `path`; what is appended stays in
+    /// the copy.
+    pub fn mirror(header: Header, entries: Vec<Entry>, leaf: Option<String>, path: PathBuf) -> Self {
+        let index = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id.clone(), i))
+            .collect();
+        SessionStore {
+            inner: Mutex::new(Inner {
+                path,
+                file: None,
+                header,
+                entries,
+                index,
+                leaf,
+            }),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -323,9 +345,13 @@ impl SessionStore {
             timestamp: now(),
             kind,
         };
-        let written = serde_json::to_string(&entry)
-            .map_err(io::Error::from)
-            .and_then(|line| writeln!(inner.file, "{line}"));
+        let written =
+            serde_json::to_string(&entry)
+                .map_err(io::Error::from)
+                .and_then(|line| match &mut inner.file {
+                    Some(file) => writeln!(file, "{line}"),
+                    None => Ok(()),
+                });
         if let Err(e) = written {
             tracing::error!("could not write to {}: {e}", inner.path.display());
         }
@@ -413,7 +439,9 @@ impl SessionStore {
         {
             let mut inner = fork.lock();
             for entry in branch {
-                writeln!(inner.file, "{}", serde_json::to_string(&entry)?)?;
+                if let Some(file) = &mut inner.file {
+                    writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+                }
                 let position = inner.entries.len();
                 inner.index.insert(entry.id.clone(), position);
                 inner.leaf = Some(entry.id.clone());
@@ -878,6 +906,38 @@ mod tests {
 
     fn texts(context: &[ContextEntry]) -> Vec<String> {
         context.iter().map(|c| c.message.text()).collect()
+    }
+
+    #[test]
+    fn a_mirror_reads_like_the_session_and_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        let first = store.message(&Message::user("hello"));
+        store.message(&assistant("hi"));
+        store.append(EntryKind::SessionInfo {
+            name: "greeting".into(),
+        });
+        store.set_leaf(Some(&first));
+        let size = std::fs::metadata(store.path()).unwrap().len();
+
+        // As it travels to another process: the header and the entries as JSON, and the leaf.
+        let header: Header = serde_json::from_value(serde_json::to_value(store.header()).unwrap()).unwrap();
+        let entries: Vec<Entry> = store
+            .entries()
+            .iter()
+            .map(|entry| serde_json::from_value(serde_json::to_value(entry).unwrap()).unwrap())
+            .collect();
+        let mirror = SessionStore::mirror(header, entries, store.leaf(), store.path());
+        assert_eq!(mirror.id(), store.id());
+        assert_eq!(mirror.name().as_deref(), Some("greeting"));
+        assert_eq!(mirror.entries(), store.entries());
+        assert_eq!(texts(&mirror.build_context(None)), ["hello"]);
+        assert_eq!(mirror.branch(None), store.branch(None));
+
+        // What is appended to the copy stays in the copy.
+        mirror.message(&assistant("only here"));
+        assert_eq!(texts(&mirror.build_context(None)), ["hello", "only here"]);
+        assert_eq!(std::fs::metadata(store.path()).unwrap().len(), size);
     }
 
     #[test]

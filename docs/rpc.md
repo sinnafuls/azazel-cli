@@ -32,7 +32,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `type` | Members | Does | Response `data` |
 |---|---|---|---|
 | `prompt` | `text`, `images?` | Starts work on the input. While the lead is busy it is queued | `null` |
-| `steer` | `text` | Hands the working lead input before its next model request | `null` |
+| `steer` | `text`, `images?` | Hands the working lead input before its next model request | `null` |
 | `follow_up` | `text` | Queues input for when the lead would go idle | `null` |
 | `abort` | | Stops the lead's current work | `null` |
 | `get_state` | | Reports the session's state | See below |
@@ -49,7 +49,9 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `shell` | `command`, `share?` | Runs a command in your shell, outside the permission rules. With `share` (the default) the lead is told what was run and what it printed | `{"output": "...", "status": "exit code: 0"}` |
 | `btw` | `question` | Asks a question on the side, without interrupting the lead. The answer streams as `btw_delta` frames | `{"answer": "...", "model": "...", "dropped_tools?": [...]}` |
 | `export` | `format?`, `path?` | Writes the session to a file: `markdown`, `html` or `jsonl`. The format comes from `format`, else from the file name, else it is Markdown; the default file is `azazel-session-<id>.<ext>` in the working directory | `{"path": "..."}` |
-| `run_command` | `name`, `args?` | Runs a slash command an extension registered (`fast`, `preset`, a custom command), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
+| `run_command` | `name`, `args?` | Runs a slash command an extension registered (`fast`, `preset`, a custom command), one of the session's reports (`cost`, `context`, `session`, `tools`, `todo`, `dirs`, `add-dir`, `rules`, `hooks`, `doctor`, `trust`, `forget-approvals`), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
+| `list_commands` | | What `run_command` takes | A list of `{"name", "description"}` |
+| `list_files` | | The files of the working directory, relative to it, for completing `@` mentions; ignored files are left out and the list is cut at 20,000 | A list of strings |
 | `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
 | `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status"}], "blocked_until?"}` |
 
@@ -63,7 +65,9 @@ The session commands report the saved sessions and the open one, change which se
 | `list_sessions` | `query?` | The saved sessions of this project, most recently used first; with `query`, those whose messages contain it | A list of `{"id", "path", "name", "created", "updated", "first_prompt", "messages", "prompts", "pinned", "usage", "matches?"}` |
 | `get_messages` | `leaf?` | The messages from the start of the session to `leaf` (the current leaf when left out) | A list of `{"entry_id", "timestamp", "message"}` |
 | `get_tree` | | Every entry of the session file | A list of `{"id", "parent_id", "timestamp", "kind", "role?", "text?", "target_id?", "current"}`; `current` marks the branch that ends at the current leaf |
-| `set_leaf` | `entry_id` | Continues the conversation from another entry of the tree | The state |
+| `set_leaf` | `entry_id`, `before?` | Continues the conversation from another entry of the tree; with `before`, from the entry before it, which is how a prompt is gone back to | The state |
+| `set_label` | `entry_id`, `label` | Labels an entry of the tree; an empty label takes the label away | `null` |
+| `get_session` | | The open session as its file holds it | `{"path", "header", "entries", "leaf"}`: the file's first line, its entries as stored, and the entry the conversation continues from |
 | `retry` | | Goes back to before the last prompt and sends it again; the earlier attempt stays in the file as a branch | `null` |
 | `rewind` | `entry_id`, `what?` | Goes back to a checkpoint. `entry_id` names a `checkpoint` entry of the tree, or the prompt that followed it. `what` is `code` (the files), `conversation` or `both` (the default) | `null` |
 
@@ -75,7 +79,7 @@ The session commands report the saved sessions and the open one, change which se
 
 | Member | Meaning |
 |---|---|
-| `session_id`, `name`, `cwd` | The session, its name (`null` until it has one) and its working directory |
+| `session_id`, `session_file`, `name`, `cwd` | The session, its file, its name (`null` until it has one) and its working directory |
 | `mode` | The permission mode |
 | `busy` | Whether the lead is working |
 | `turn` | The lead's request number within the current prompt; 0 before the first |
@@ -84,8 +88,12 @@ The session commands report the saved sessions and the open one, change which se
 | `thinking` | The thinking level |
 | `tier` | The service tier, or `null` at the standard tier |
 | `context_tokens`, `context_window` | Context in use and the model's window |
-| `usage` | Token and cost totals of the lead |
+| `usage`, `requests` | Token and cost totals of the lead, and how many model requests it has made |
 | `agents` | The roster, with the same members as the `roster` event below |
+| `branch` | The checked-out git branch of the project, or `null` |
+| `coordinator`, `goal` | Whether coordinator mode is on; the open goal in a few words, or `null` |
+| `todo` | The lead's task list: `{"text", "status"}` with `pending`, `in_progress` or `done` |
+| `roles` | The model each role (`default`, `smol`, ...) resolves to first |
 
 ## Responses
 
@@ -137,7 +145,8 @@ Sent whenever a sub-agent appears or changes state:
 ]}
 ```
 
-`state` is `queued`, `running`, `waiting for approval`, `idle`, `done`, `failed` or `stopped`. See [team](team.md).
+`state` is `queued`, `running`, `waiting for approval`, `idle`, `done`, `failed` or `stopped`. A running member
+also carries `activity`: what it is doing, in a few words. See [team](team.md).
 
 ### `approval_request`
 
@@ -152,6 +161,7 @@ Sent when a tool call needs the user's permission. The agent waits until the mat
 | `subjects` | What permission rules are matched against: paths, commands, `domain:<host>` |
 | `rule` | Optional: the allow rule that `always` would add |
 | `note` | Optional: a remark to show, such as a cost warning |
+| `destructive` | Optional, `true` when the call would destroy work: approval should not be the answer a stray key gives |
 
 `decision` in the response:
 
@@ -172,13 +182,33 @@ Sent when an agent or extension asks the user something. Answer with `ui_respons
 | `ask` | `question`, `options`, `multi` | A list of the chosen options, or one string when there are no options |
 | `confirm` | `prompt` | `true` or `false` |
 | `select` | `prompt`, `options` | The index of the chosen option (the option's text is accepted too) |
-| `input` | `prompt` | A string |
+| `input` | `prompt`, `secret?` | A string. A `secret` one (a key, a password) should not be shown as it is typed |
 | `plan` | `path`, `plan` | `true` to approve the plan, or a string of feedback to revise it |
 | `notify` | `level` (`info`, `warn`, `error`), `text` | None; no answer is expected |
+
+### `user_input`
+
+Written by a [background session](background-and-remote.md) only: what a client sent the lead,
+`{"type": "user_input", "kind": "prompt", "text": "..."}` with `kind` `prompt`, `steer` or `follow_up`. It is in
+the session's log and in what a client that attaches later is replayed, so both show what was asked.
 
 ### `btw_delta`
 
 A piece of the answer to a `btw` command: `{"type": "btw_delta", "id": <the command's id>, "delta": "..."}`. The command's response carries the whole answer.
+
+## Background sessions
+
+A background session (`azazel bg`, see [background sessions](background-and-remote.md)) serves this protocol on
+a local socket instead of standard input and output; `azazel rpc --attach <id>` connects your standard input and
+output to it. Two commands exist only there:
+
+| `type` | Members | Does | Response `data` |
+|---|---|---|---|
+| `attach` | `pid?`, `replay?` | The first command on a connection: takes the place of the session's one client. `replay` is `missed` (what was written since the last client left; the default), `all` or `none`; those frames follow the response, then the requests that still wait for an answer. A second client is refused, and told the `pid` the first one gave | `{"host", "pid", "session_id", "session_file"}` |
+| `stop` | `now?` | Ends the session once the lead has finished what it is doing; with `now` the lead is stopped first. Any connection may send it, attached or not. The connection closes when the session has ended | `null` |
+
+Until `attach` has been answered, every other command is refused. Responses and `btw_delta` frames go to the
+client that is attached and are not logged; every other frame is appended to `~/.azazel/run/<id>.log`.
 
 ## Example
 

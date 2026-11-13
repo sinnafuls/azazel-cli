@@ -139,6 +139,21 @@ GitHub are its section here.
 - `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
   `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
   configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
+- Background sessions: `azazel bg <prompt>` runs a prompt in a session that goes on after the terminal is
+  closed and prints its id; `azazel ps` lists them, `azazel logs <id> [-f]` shows what one did, `azazel attach
+  <id>` opens it in the full UI (`--plain` as lines you answer), `azazel attach --take <id>` brings it back
+  into this terminal, and `azazel kill <id>` stops it. `/bg <prompt>` starts one from the UI on a copy of the
+  open session. Approvals and questions raised while nobody is attached wait, with a desktop notification.
+- `azazel --ssh <host> [--remote-dir DIR] [prompt]` works on another machine: azazel runs there and the UI
+  (or with `-p` the reply) is shown here. `--detach` runs the prompt in a background session there,
+  `--attach <id>` opens one, and `azazel --ssh <host> ps|logs|kill` manage them.
+- A session a background session has open is locked: opening it elsewhere says where it runs, and `/resume`
+  marks it.
+- RPC: `attach` and `stop` for background sessions, `azazel rpc --attach <id>` to reach one from any
+  program, `get_session`, `set_label`, `list_commands`, `list_files`, `set_leaf` with `before`, images with
+  `steer`, and the session's reports (`cost`, `session`, `tools`, ...) through `run_command`. `get_state` also
+  reports the session file, the git branch, coordinator mode, the goal, the task list, the roles and the
+  request count.
 
 ### Changed
 
@@ -165,6 +180,12 @@ GitHub are its section here.
 - `tui.show_thinking` and `tui.expand_tools` take effect at startup.
 - A skill's `allowed-tools` now takes effect: it limits the sub-agent of a `context: fork` skill, and for other
   skills allows the listed calls without a prompt until the run ends.
+
+- The terminal UI reaches its session through one interface, so it runs the same on a session in its own
+  process, on a background session and over SSH.
+- RPC `get_state` reports `busy` from the moment a prompt is accepted, not only once the lead has picked
+  it up.
+- The release binary gains `interprocess` and, on Windows, `winsafe` (feature `detach`, on by default).
 
 ### Fixed
 

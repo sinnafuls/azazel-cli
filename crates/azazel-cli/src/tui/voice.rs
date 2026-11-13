@@ -95,12 +95,12 @@ impl Tui {
                 self.notice = Some("still transcribing; esc cancels".to_string());
             }
             Dictation::Idle => {
-                if !stt::configured(&self.app.config.voice) {
+                if !stt::configured(&self.env.config.voice) {
                     return self.fail(stt::NOT_SET);
                 }
                 // The microphone would pick the speech up.
                 self.hush();
-                match record::start(&self.app.config.voice).await {
+                match record::start(&self.env.config.voice).await {
                     Ok(recording) => self.voice.dictation = Dictation::Recording(Box::new(recording)),
                     Err(why) => self.fail(&format!("cannot record: {why}")),
                 }
@@ -112,9 +112,10 @@ impl Tui {
         let Dictation::Recording(recording) = std::mem::take(&mut self.voice.dictation) else {
             return;
         };
-        let (app, done) = (self.app.clone(), self.internal_tx.clone());
+        let (config, credentials) = (self.env.config.clone(), self.env.credentials.clone());
+        let done = self.internal_tx.clone();
         let task = tokio::spawn(async move {
-            let heard = dictate(*recording, &app.config, &app.credentials).await;
+            let heard = dictate(*recording, &config, &credentials).await;
             let _ = done.send(Internal::Voice(Done::Heard(heard)));
         });
         self.voice.dictation = Dictation::Transcribing(task.abort_handle());
@@ -125,7 +126,7 @@ impl Tui {
         let Dictation::Recording(recording) = &mut self.voice.dictation else {
             return;
         };
-        let limit = self.app.config.voice.max_secs;
+        let limit = self.env.config.voice.max_secs;
         let timed_out = limit > 0 && recording.elapsed() >= Duration::from_secs(limit);
         if timed_out {
             self.notice = Some(format!("recording stopped at the limit of {limit} s"));
@@ -225,9 +226,10 @@ impl Tui {
         let number = self.voice.utterances;
         let cancel = CancellationToken::new();
         self.voice.speaking = Some((number, cancel.clone()));
-        let (app, done) = (self.app.clone(), self.internal_tx.clone());
+        let (config, credentials) = (self.env.config.clone(), self.env.credentials.clone());
+        let done = self.internal_tx.clone();
         tokio::spawn(async move {
-            let spoken = speak::say(&app.config, &app.credentials, &text, &cancel).await;
+            let spoken = speak::say(&config, &credentials, &text, &cancel).await;
             let _ = done.send(Internal::Voice(Done::Spoken(number, spoken)));
         });
     }
@@ -245,7 +247,7 @@ impl Tui {
                     Ok(text) => {
                         insert(&mut self.editor, &text);
                         self.refresh_completion();
-                        if self.app.config.voice.auto_send {
+                        if self.env.config.voice.auto_send {
                             self.submit(false).await;
                         }
                     }
@@ -266,7 +268,7 @@ impl Tui {
     /// `/speak on|off|stop`.
     pub(super) fn speak_command(&mut self, args: &str) {
         match args {
-            "on" if self.app.config.voice.tts.trim().is_empty() => self.fail(
+            "on" if self.env.config.voice.tts.trim().is_empty() => self.fail(
                 "spoken replies are not set up: set [voice] tts = \"provider/model\" (for example \"openai/tts-1\")",
             ),
             "on" => {

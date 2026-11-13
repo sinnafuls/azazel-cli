@@ -3,15 +3,14 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use azazel_agent::UserInput;
 use azazel_core::side::SideAnswer;
 use azazel_tui::components::{composer, markdown};
 use azazel_tui::{Editor, Line, Role, Spinner, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio_util::sync::CancellationToken;
 
-use super::{Internal, Tui, first_line};
-use crate::side::{Btw, Exchange, dropped_note};
+use super::{Tui, first_line};
+use crate::side::{Exchange, dropped_note};
 
 /// Rows of questions and answers the panel shows at once; the rest scrolls.
 const MAX_CONTENT_ROWS: usize = 18;
@@ -284,32 +283,21 @@ impl Tui {
         if let Some(open) = self.btw.take() {
             open.cancel.cancel();
         }
-        if !self.app.has_model(&self.active.lead.status().chain) {
+        if !self.backend.has_model() {
             return self.fail("no model is set up yet: /settings adds one");
         }
-        let asked = Btw::prepare(
-            &self.app.registry.services,
-            &self.active.session,
-            &self.active.lead,
-            &earlier,
-            &question,
-        );
-        let btw = match asked {
-            Ok(btw) => btw,
-            Err(why) => return self.fail(&why),
-        };
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let cancel = CancellationToken::new();
-        let (updates, stop) = (self.internal_tx.clone(), cancel.clone());
-        tokio::spawn(async move {
-            let text = updates.clone();
-            let mut on_text = move |delta: &str| {
-                let delta = delta.to_string();
-                let _ = text.send(Internal::Btw(Update::Text { id, delta }));
-            };
-            let result = btw.ask(&mut on_text, stop).await;
-            let _ = updates.send(Internal::Btw(Update::Done { id, result }));
-        });
+        let asked = self.backend.btw(
+            id,
+            question.clone(),
+            earlier.clone(),
+            self.internal_tx.clone(),
+            cancel.clone(),
+        );
+        if let Err(why) = asked {
+            return self.fail(&why);
+        }
         self.btw = Some(Panel::new(id, earlier, question, cancel));
     }
 
@@ -356,7 +344,7 @@ impl Tui {
             first_line(&exchange.question)
         ));
         if self.busy {
-            self.active.lead.steer(UserInput::text(message));
+            self.backend.steer(message, Vec::new());
         } else {
             self.send_prompt(message).await;
         }

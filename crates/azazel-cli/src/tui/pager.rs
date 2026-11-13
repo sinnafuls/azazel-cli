@@ -17,6 +17,7 @@ use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventK
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
 use serde_json::Value;
 
+use super::backend::Incoming;
 use super::{Tui, clip, view};
 
 /// One thing the viewer shows. It is rendered again whenever the width changes.
@@ -158,12 +159,14 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             },
-            request = tui.requests.recv() => {
-                if let Some(request) = request {
+            incoming = tui.backend.next() => match incoming {
+                Incoming::Request(request) => {
                     tui.waiting.push_back(request);
                     view.set_notice("the agent is waiting for you: q returns to it");
                 }
-            }
+                // What the agents do meanwhile is shown once the viewer is closed.
+                other => tui.held.push_back(other),
+            },
         }
     }
     // The viewer hid the cursor; the inline renderer believes it is showing.
@@ -200,7 +203,7 @@ impl Tui {
     /// The session branch as the viewer shows it: prompts, replies, tool calls with their
     /// results, and thinking when it is shown in the transcript too.
     fn transcript_sources(&self) -> Vec<Source> {
-        let branch = self.active.session.branch(None);
+        let branch = self.session.branch(None);
         let mut results: HashMap<String, ToolOutput> = HashMap::new();
         for entry in &branch {
             let EntryKind::Message { message } = &entry.kind else {
@@ -289,11 +292,12 @@ impl Tui {
 
     /// `f2`, `/transcript`: the whole conversation of this branch, full screen.
     pub(super) async fn open_transcript(&mut self) {
+        self.sync().await;
         let sources = self.transcript_sources();
         if sources.is_empty() {
             return self.info("this session has no messages yet");
         }
-        let title = match self.active.session.name() {
+        let title = match self.session.name() {
             Some(name) => format!("Transcript · {name}"),
             None => "Transcript".to_string(),
         };

@@ -28,6 +28,7 @@ use azazel_protocol::{
     UiRequest,
 };
 use azazel_team::{Team, TeamEvent};
+use futures::StreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
@@ -69,7 +70,7 @@ fn data(value: impl Serialize) -> Result<Value, String> {
 
 /// Requests the client has been sent and not yet answered.
 #[derive(Default)]
-struct Waiting {
+pub(crate) struct Waiting {
     next: AtomicU64,
     approvals: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
     answers: Mutex<HashMap<String, oneshot::Sender<Value>>>,
@@ -78,6 +79,19 @@ struct Waiting {
 impl Waiting {
     fn id(&self) -> String {
         format!("r{}", self.next.fetch_add(1, Ordering::Relaxed) + 1)
+    }
+
+    /// Whether the request is still waiting: nobody has answered it, and whoever asked has not
+    /// given up.
+    #[cfg(feature = "detach")]
+    pub(crate) fn is_open(&self, request_id: &str) -> bool {
+        let approval = locked(&self.approvals)
+            .get(request_id)
+            .is_some_and(|reply| !reply.is_closed());
+        approval
+            || locked(&self.answers)
+                .get(request_id)
+                .is_some_and(|reply| !reply.is_closed())
     }
 }
 
@@ -157,6 +171,18 @@ impl UiBridge for RpcBridge {
     async fn input(&self, prompt: &str) -> Result<String, UiError> {
         let request = UiRequest::Input {
             prompt: prompt.to_string(),
+            secret: false,
+        };
+        match self.request(request).await {
+            Some(Value::String(text)) => Ok(text),
+            _ => Err(UiError::Cancelled),
+        }
+    }
+
+    async fn secret(&self, prompt: &str) -> Result<String, UiError> {
+        let request = UiRequest::Input {
+            prompt: prompt.to_string(),
+            secret: true,
         };
         match self.request(request).await {
             Some(Value::String(text)) => Ok(text),
@@ -191,6 +217,7 @@ impl UiBridge for RpcBridge {
             input: request.input,
             rule: request.rule,
             note: request.note,
+            destructive: request.destructive,
         });
         answer.await.ok()
     }
@@ -334,8 +361,13 @@ impl Session {
                 self.submit(text, images).await?;
                 done(Value::Null)
             }
-            Command::Steer { text } => {
-                self.active.lead.send(AgentCmd::Steer(UserInput::text(text)));
+            Command::Steer { text, images } => {
+                let mut content = vec![Block::text(text)];
+                content.extend(images.into_iter().map(|image| Block::Image {
+                    mime: image.mime,
+                    data: image.data,
+                }));
+                self.active.lead.send(AgentCmd::Steer(UserInput { content }));
                 done(Value::Null)
             }
             Command::FollowUp { text } => {
@@ -416,7 +448,18 @@ impl Session {
             Command::ListSessions { query } => self.list_sessions(query.as_deref()).map(Some),
             Command::GetMessages { leaf } => self.messages(leaf.as_deref()).map(Some),
             Command::GetTree => data(self.tree()).map(Some),
-            Command::SetLeaf { entry_id } => self.set_leaf(&entry_id).await.map(Some),
+            Command::SetLeaf { entry_id, before } => self.set_leaf(&entry_id, before).await.map(Some),
+            Command::SetLabel { entry_id, label } => {
+                if self.active.session.entry(&entry_id).is_none() {
+                    return Err(format!("no entry `{entry_id}` in this session"));
+                }
+                self.active.session.append(EntryKind::Label {
+                    target_id: entry_id,
+                    label: label.trim().to_string(),
+                });
+                done(Value::Null)
+            }
+            Command::GetSession => self.session_copy().map(Some),
             Command::SetName { name } => {
                 let name = name.trim();
                 if name.is_empty() {
@@ -456,8 +499,20 @@ impl Session {
                 Ok(None)
             }
             Command::ListModels => self.models().map(Some),
+            Command::ListCommands => data(self.commands()).map(Some),
+            Command::ListFiles => {
+                let root = self.app.paths.cwd.clone();
+                let files = tokio::task::spawn_blocking(move || crate::tui::project_files(&root))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                data(files).map(Some)
+            }
             Command::GetUsage => data(self.app.router.limits().snapshot()).map(Some),
             Command::RunCommand { name, args } => self.command(id, &name, args).await,
+            // A background session answers these itself, before its lines get here.
+            Command::Attach { .. } | Command::Stop { .. } => Err(
+                "this is not a background session: it serves the one client it was started for".to_string(),
+            ),
         }
     }
 
@@ -538,6 +593,10 @@ impl Session {
     /// commands run beside the loop: some ask the user, and the answer arrives as a command.
     async fn command(&mut self, id: &Value, name: &str, args: String) -> Result<Option<Value>, String> {
         let name = name.trim_start_matches('/');
+        // What the session says about itself is text, whoever asks.
+        if let Some(report) = crate::reports::run(&self.app, &self.active, name, &args).await {
+            return data(CommandResult::Show { text: report? }).map(Some);
+        }
         if let Some(skill_name) = name.strip_prefix("skill:") {
             let skills = self.app.registry.skills.clone();
             let skill = skills
@@ -642,15 +701,38 @@ pub async fn serve(
             }
         }
     });
-    let out = Out(lines);
-    out.line(&Frame::Hello {
+    Out(lines.clone()).line(&hello());
+    let input = futures::stream::unfold(reader.lines(), |mut lines| async {
+        let line = lines.next_line().await.ok().flatten()?;
+        Some((line, lines))
+    });
+    serve_lines(app, active, input, lines, Arc::default()).await;
+    let _ = writing.await;
+    EXIT_OK
+}
+
+/// The first frame a client is sent.
+pub(crate) fn hello() -> Frame {
+    Frame::Hello {
         protocol: PROTOCOL,
         version: env!("CARGO_PKG_VERSION").to_string(),
-    });
+    }
+}
+
+/// Serves the session: command lines come from `input`, frames go to `lines` as JSON text. Ends
+/// when `input` does, and says so with a last `None`. The `hello` frame is the caller's to send;
+/// `waiting` lets the caller see which requests to the user are still open.
+pub(crate) async fn serve_lines(
+    app: Arc<App>,
+    active: Active,
+    input: impl futures::Stream<Item = String>,
+    lines: mpsc::UnboundedSender<Option<String>>,
+    waiting: Arc<Waiting>,
+) {
+    let out = Out(lines);
     // Requests from agents go through the loop below rather than straight out, so they are written
     // after the events emitted before them (a `tool_start` comes before its `approval_request`).
     let (request_lines, mut requests) = mpsc::unbounded_channel::<Option<String>>();
-    let waiting = Arc::new(Waiting::default());
     app.registry.services.insert(Arc::new(Ui(Arc::new(RpcBridge {
         out: Out(request_lines),
         waiting: waiting.clone(),
@@ -678,7 +760,7 @@ pub async fn serve(
         cancel: CancellationToken::new(),
     };
 
-    let mut input = reader.lines();
+    let mut input = std::pin::pin!(input);
     loop {
         tokio::select! {
             // Agent events first: an event is always queued before the request it causes.
@@ -695,9 +777,9 @@ pub async fn serve(
                 let _ = out.0.send(Some(line));
             }
             Some(done) = finishing.recv() => session.finish(done).await,
-            line = input.next_line() => match line {
-                Ok(Some(line)) => session.line(&line).await,
-                _ => break,
+            line = input.next() => match line {
+                Some(line) => session.line(&line).await,
+                None => break,
             },
         }
     }
@@ -710,8 +792,6 @@ pub async fn serve(
     // The bridge the agents were given keeps a sender, so the end of the output is said, not
     // inferred from the channel closing.
     let _ = out.0.send(None);
-    let _ = writing.await;
-    EXIT_OK
 }
 
 #[cfg(test)]
@@ -817,6 +897,19 @@ mod tests {
             // Nothing is lost on the way through the typed frame.
             assert_eq!(serde_json::to_value(&frame).unwrap(), wire);
         }
+    }
+
+    #[test]
+    fn a_frame_read_back_is_the_event_it_was_written_from() {
+        // What a UI attached from another process draws is what a local one draws.
+        for event in every_event() {
+            let wire = event_json("scout-1", &event);
+            let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+            let (agent, back) = crate::tui::agent_event(frame).unwrap_or_else(|| panic!("{wire}"));
+            assert_eq!(agent, "scout-1");
+            assert_eq!(event_json(&agent, &back), wire);
+        }
+        assert!(crate::tui::agent_event(Frame::Roster { members: Vec::new() }).is_none());
     }
 
     #[test]

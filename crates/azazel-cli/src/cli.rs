@@ -239,7 +239,70 @@ pub enum Sub {
         action: RulesAction,
     },
     /// Serve one session to another program: JSON lines on standard input and output
-    Rpc,
+    Rpc {
+        /// Instead of a session of its own, connect standard input and output to this
+        /// background session
+        #[arg(long, value_name = "ID")]
+        attach: Option<String>,
+    },
+    /// Run a prompt in a background session and print the session's id
+    #[cfg(feature = "detach")]
+    Bg {
+        /// What to do
+        #[arg(required = true, value_name = "PROMPT")]
+        prompt: Vec<String>,
+    },
+    /// List the background sessions that are running
+    #[cfg(feature = "detach")]
+    Ps {
+        /// One JSON object per session
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show what a background session has done so far
+    #[cfg(feature = "detach")]
+    Logs {
+        /// Its id as `azazel ps` shows it (the start of it is enough), or its name
+        id: String,
+        /// Keep printing as the session goes on
+        #[arg(short = 'f', long)]
+        follow: bool,
+        /// The frames as they were written, one JSON object per line
+        #[arg(long)]
+        json: bool,
+    },
+    /// Open a background session in the UI; --plain shows it as lines instead
+    #[cfg(feature = "detach")]
+    Attach {
+        /// Its id as `azazel ps` shows it (the start of it is enough), or its name
+        id: String,
+        /// End the background session after its current work and continue it here
+        #[arg(long)]
+        take: bool,
+        /// With --take: stop the current work instead of waiting for it
+        #[arg(long, requires = "take")]
+        now: bool,
+    },
+    /// Stop a background session
+    #[cfg(feature = "detach")]
+    Kill {
+        /// Its id as `azazel ps` shows it (the start of it is enough), or its name
+        id: String,
+    },
+    /// The process of one background session; `azazel bg` starts it
+    #[cfg(feature = "detach")]
+    #[command(hide = true)]
+    Host {
+        /// The id the session is listed under
+        #[arg(long)]
+        id: String,
+        /// How long to stay with nothing to do and nobody attached
+        #[arg(long, value_name = "SECONDS", default_value_t = 600)]
+        idle_secs: u64,
+        /// The first message; without one the session waits for a client
+        #[arg(value_name = "PROMPT")]
+        prompt: Vec<String>,
+    },
     /// Serve editors that speak the Agent Client Protocol, on standard input and output
     #[cfg(feature = "acp")]
     Acp,
@@ -515,6 +578,36 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub trust: bool,
 
+    /// Work on another machine: azazel runs there, reached over SSH, and is shown here
+    #[arg(long, value_name = "HOST", global = true)]
+    pub ssh: Option<String>,
+
+    /// With --ssh: the directory to work in on the other machine
+    #[arg(long = "remote-dir", value_name = "DIR", requires = "ssh", global = true)]
+    pub remote_dir: Option<String>,
+
+    /// With --ssh: how azazel is started on the other machine
+    #[arg(
+        long = "remote-azazel",
+        value_name = "COMMAND",
+        requires = "ssh",
+        default_value = "azazel",
+        global = true
+    )]
+    pub remote_azazel: String,
+
+    /// With --ssh: run the prompt in a background session there, which outlives the connection
+    #[arg(long, requires = "ssh", conflicts_with = "attach")]
+    pub detach: bool,
+
+    /// With --ssh: open a background session of the other machine
+    #[arg(long, value_name = "ID", requires = "ssh")]
+    pub attach: Option<String>,
+
+    /// Show a background session as lines you answer, not in the full UI
+    #[arg(long, global = true)]
+    pub plain: bool,
+
     /// API key for the provider of the first --model, for this run only
     #[arg(long = "api-key", value_name = "KEY")]
     pub api_key: Option<String>,
@@ -530,9 +623,86 @@ impl Cli {
         self.prompt.join(" ")
     }
 
-    /// Whether this run opens the interactive UI.
+    /// Whether this run opens the interactive UI on a session of this process.
     pub fn interactive(&self) -> bool {
-        !self.print && self.command.is_none()
+        !self.print && self.command.is_none() && self.ssh.is_none()
+    }
+
+    /// Whether this process is a background session, which keeps its session to itself.
+    pub fn background(&self) -> bool {
+        #[cfg(feature = "detach")]
+        if matches!(self.command, Some(Sub::Host { .. })) {
+            return true;
+        }
+        false
+    }
+
+    /// The options that shape a run whatever its session and prompt are, as arguments for
+    /// another azazel that is to work the same way (`/bg`). The model, the thinking level and
+    /// the permission mode are not among them: they change while a session runs, so whoever
+    /// starts the other process says what they are now. An option added to [`Cli`] that
+    /// belongs here has to be added here.
+    #[cfg(feature = "detach")]
+    pub fn carried(&self) -> Vec<std::ffi::OsString> {
+        use std::ffi::OsString;
+        let mut args: Vec<OsString> = Vec::new();
+        let mut value = |flag: &str, value: OsString| args.extend([OsString::from(flag), value]);
+        for assignment in &self.set {
+            value("--set", assignment.into());
+        }
+        for dir in &self.add_dir {
+            value("--add-dir", dir.into());
+        }
+        if let Some(dir) = &self.session_dir {
+            value("--session-dir", dir.into());
+        }
+        if let Some(tools) = &self.tools {
+            value("--tools", tools.join(",").into());
+        }
+        if !self.disallowed_tools.is_empty() {
+            value("--disallowed-tools", self.disallowed_tools.join(",").into());
+        }
+        if let Some(text) = &self.system_prompt {
+            value("--system-prompt", text.into());
+        }
+        if let Some(text) = &self.append_system_prompt {
+            value("--append-system-prompt", text.into());
+        }
+        if let Some(turns) = self.max_turns {
+            value("--max-turns", turns.to_string().into());
+        }
+        if let Some(cost) = self.max_cost {
+            value("--max-cost", cost.to_string().into());
+        }
+        if let Some(tier) = &self.tier {
+            value("--tier", tier.into());
+        }
+        if let Some(preset) = &self.preset {
+            value("--preset", preset.into());
+        }
+        if let Some(key) = &self.api_key {
+            value("--api-key", key.into());
+        }
+        let switches = [
+            (self.no_tools, "--no-tools"),
+            (self.no_extensions, "--no-extensions"),
+            (self.no_skills, "--no-skills"),
+            (self.no_hooks, "--no-hooks"),
+            (self.no_context_files, "--no-context-files"),
+            (self.no_mcp, "--no-mcp"),
+            (self.no_memory, "--no-memory"),
+            (self.bare, "--bare"),
+            (self.coordinator, "--coordinator"),
+            (self.trust, "--trust"),
+            (self.debug, "--debug"),
+        ];
+        args.extend(
+            switches
+                .into_iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, flag)| OsString::from(flag)),
+        );
+        args
     }
 
     /// Whether a discovery switch (`--no-<what>` or `--bare`) is on.

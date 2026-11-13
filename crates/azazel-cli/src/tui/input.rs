@@ -5,9 +5,7 @@
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-use azazel_agent::AgentCmd;
-use azazel_ai::{Block, ModelSpec, ThinkingLevel};
-use azazel_core::EntryKind;
+use azazel_ai::{Block, ThinkingLevel};
 use azazel_core::commands::split_args;
 use azazel_core::config::EditorMode;
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
@@ -17,7 +15,6 @@ use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyM
 
 use super::overlay::Kind;
 use super::{Tui, first_line, view};
-use crate::app::{Active, App};
 
 /// Files larger than this are mentioned, never read to see whether they are images.
 const MAX_DROPPED_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
@@ -57,16 +54,9 @@ impl Queue {
         self.waiting.iter().map(|(text, _)| text.as_str())
     }
 
-    /// Sends the oldest message as a prompt of its own. Returns its text and whether an
-    /// extension rejected it; `None` when nothing is queued.
-    pub(crate) async fn send_next(
-        &mut self,
-        app: &App,
-        active: &Active,
-    ) -> Option<(String, Result<(), String>)> {
-        let (text, images) = self.waiting.pop_front()?;
-        let sent = app.submit(active, text.clone(), images).await;
-        Some((text, sent))
+    /// Takes the oldest message, to be sent as a prompt of its own.
+    pub(crate) fn next(&mut self) -> Option<(String, Vec<Block>)> {
+        self.waiting.pop_front()
     }
 }
 
@@ -366,9 +356,10 @@ impl Tui {
         if !std::mem::take(&mut self.run_ended) || self.busy {
             return;
         }
-        let Some((text, sent)) = self.queued.send_next(&self.app, &self.active).await else {
+        let Some((text, images)) = self.queued.next() else {
             return;
         };
+        let sent = self.backend.prompt(text.clone(), images).await;
         self.notice = None;
         self.prompts.push(text.clone());
         self.remember(&text);
@@ -445,7 +436,12 @@ impl Tui {
                     attached += 1;
                 }
                 None => {
-                    let mention = mention(path, &self.app.paths.cwd);
+                    // A session elsewhere does not have this machine's files under its own
+                    // directory: the path is given as it is here.
+                    let mention = match self.local_cwd() {
+                        Some(cwd) => mention(path, &cwd),
+                        None => path.display().to_string(),
+                    };
                     self.editor.insert_str(&format!("{mention} "));
                 }
             }
@@ -474,7 +470,7 @@ impl Tui {
             None => self.editor.expanded(),
         };
         let file = self
-            .app
+            .env
             .paths
             .cache_dir()
             .join(format!("prompt-{}.md", std::process::id()));
@@ -548,7 +544,7 @@ impl Tui {
         self.set_vim(on);
         let mode = if on { EditorMode::Vim } else { EditorMode::Emacs };
         let saved = crate::init::set_config_value(
-            &self.app.paths.home_config(),
+            &self.env.paths.home_config(),
             &["editor", "mode"],
             Some(toml_edit::value(mode.to_string())),
         );
@@ -562,32 +558,22 @@ impl Tui {
     // ------------------------------------------------------------ thinking and model keys
 
     /// Steps to the next thinking level the current model supports.
-    pub(super) fn cycle_thinking(&mut self) {
-        let status = self.active.lead.status();
-        let model = status
-            .model
-            .or_else(|| self.app.router.resolve(&status.chain).into_iter().next());
-        let supported = model
-            .map(|model| {
-                self.app
-                    .router
-                    .catalog()
-                    .get(&model.provider, &model.model)
-                    .thinking_levels
-            })
-            .unwrap_or_default();
-        let level = next_thinking(status.thinking, &supported);
-        self.set_thinking(level);
-        self.notice = Some(format!("thinking: {level}"));
+    pub(super) async fn cycle_thinking(&mut self) {
+        let supported = self.backend.thinking_levels();
+        let level = next_thinking(self.backend.status().thinking, &supported);
+        match self.backend.set_thinking(level).await {
+            Ok(()) => self.notice = Some(format!("thinking: {level}")),
+            Err(why) => self.fail(&why),
+        }
     }
 
-    /// Changes the lead's thinking level and records it, so that a resumed session comes back
-    /// on it.
-    pub(super) fn set_thinking(&mut self, level: ThinkingLevel) {
-        self.active.lead.send(AgentCmd::SetThinking(level));
-        self.active.session.append(EntryKind::ThinkingChange {
-            level: level.to_string(),
-        });
+    /// Changes the lead's thinking level; the session records it, so that it comes back on it
+    /// when it is resumed.
+    pub(super) async fn set_thinking(&mut self, level: ThinkingLevel) {
+        match self.backend.set_thinking(level).await {
+            Ok(()) => self.info(&format!("thinking: {level}")),
+            Err(why) => self.fail(&why),
+        }
     }
 
     /// The models the cycling keys step through.
@@ -600,16 +586,13 @@ impl Tui {
     }
 
     /// Switches to the next or previous favourite model.
-    pub(super) fn cycle_model(&mut self, forward: bool) {
+    pub(super) async fn cycle_model(&mut self, forward: bool) {
         let cycle: Vec<String> = self
             .model_cycle()
             .into_iter()
-            .filter(|spec| {
-                spec.parse::<ModelSpec>()
-                    .is_ok_and(|spec| !self.app.router.resolve(&[spec]).is_empty())
-            })
+            .filter(|spec| self.backend.resolves(spec))
             .collect();
-        let chain = self.active.lead.status().chain;
+        let chain = self.backend.status().chain;
         let current = match chain.as_slice() {
             [only] => only.to_string(),
             _ => String::new(),
@@ -617,7 +600,7 @@ impl Tui {
         match next_model(&cycle, &current, forward) {
             Some(spec) if spec != current => {
                 let spec = spec.to_string();
-                self.set_model(&[spec.as_str()]);
+                self.set_model(&[spec.as_str()]).await;
             }
             Some(_) => {
                 self.notice =
@@ -642,7 +625,7 @@ impl Tui {
         };
         let list = toml_edit::Array::from_iter(self.favourites.iter().map(String::as_str));
         if let Err(e) = crate::init::set_config_value(
-            &self.app.paths.home_config(),
+            &self.env.paths.home_config(),
             &["tui", "favourites"],
             Some(toml_edit::value(list)),
         ) {
@@ -655,7 +638,7 @@ impl Tui {
 
     /// The tool call of the lead's shell command that is running in the foreground, if any.
     pub(super) fn foreground_call(&self) -> Option<String> {
-        let foreground = self.app.registry.services.get::<Foreground>()?;
+        let foreground = self.backend.local()?.app.registry.services.get::<Foreground>()?;
         let running = foreground.running();
         self.tools
             .iter()
@@ -668,10 +651,9 @@ impl Tui {
     /// Moves the running shell command to the background; the agent's call returns with a job id.
     pub(super) fn background_shell(&mut self, call_id: &str) {
         let moved = self
-            .app
-            .registry
-            .services
-            .get::<Foreground>()
+            .backend
+            .local()
+            .and_then(|local| local.app.registry.services.get::<Foreground>())
             .is_some_and(|foreground| foreground.background(call_id));
         self.notice = Some(
             if moved {

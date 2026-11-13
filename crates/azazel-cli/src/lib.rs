@@ -7,6 +7,8 @@ pub mod app;
 mod attention;
 pub mod changelog;
 pub mod cli;
+#[cfg(feature = "detach")]
+pub mod detach;
 #[cfg(feature = "diagrams")]
 mod diagram;
 pub mod doctor;
@@ -16,6 +18,8 @@ pub mod git;
 pub mod headless;
 pub mod history;
 pub mod hooks;
+#[cfg(feature = "detach")]
+pub mod host;
 pub mod init;
 pub mod login;
 #[cfg(feature = "mcp")]
@@ -26,13 +30,16 @@ pub mod models;
 pub mod orchestration;
 pub mod pkg;
 pub mod print;
+pub mod reports;
 pub mod retry;
 pub mod routing;
 pub mod rpc;
 pub mod rules;
+pub mod running;
 pub mod sessions;
 pub mod settings;
 pub mod side;
+pub mod ssh;
 pub mod stats;
 mod tui;
 pub mod update;
@@ -54,6 +61,9 @@ use clap::Parser;
 use crate::app::{App, discover_paths};
 use crate::cli::{Cli, Sub};
 
+/// The stack of the thread a run happens on.
+const RUN_STACK: usize = 8 * 1024 * 1024;
+
 /// Entry point for the `azazel` binary and for custom distributions that add their own extensions.
 #[derive(Default)]
 pub struct Builder {
@@ -70,17 +80,34 @@ impl Builder {
     /// Parses the process arguments and runs the selected mode to completion.
     pub fn run(self) -> ExitCode {
         let cli = Cli::parse();
-        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-            Ok(runtime) => runtime,
+        let extensions = self.extensions;
+        // The run gets a thread of its own, with the stack a main thread has on Linux. The main
+        // thread of a Windows process has one megabyte, which a debug build does not fit in.
+        let running = std::thread::Builder::new()
+            .name("azazel".to_string())
+            .stack_size(RUN_STACK)
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+                    Ok(runtime) => runtime,
+                    Err(e) => {
+                        eprintln!("azazel: cannot start the async runtime: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                let code = runtime.block_on(run(cli, extensions));
+                // Background work (jobs being killed, log flushes) gets a moment, not forever.
+                runtime.shutdown_timeout(Duration::from_secs(2));
+                ExitCode::from(code)
+            });
+        match running.map(|run| run.join()) {
+            Ok(Ok(code)) => code,
+            // The run panicked; the panic has been reported.
+            Ok(Err(_)) => ExitCode::FAILURE,
             Err(e) => {
-                eprintln!("azazel: cannot start the async runtime: {e}");
-                return ExitCode::FAILURE;
+                eprintln!("azazel: cannot start: {e}");
+                ExitCode::FAILURE
             }
-        };
-        let code = runtime.block_on(run(cli, self.extensions));
-        // Background work (jobs being killed, log flushes) gets a moment, not forever.
-        runtime.shutdown_timeout(Duration::from_secs(2));
-        ExitCode::from(code)
+        }
     }
 }
 
@@ -166,7 +193,48 @@ fn write_extension_types(paths: &Paths) -> u8 {
     }
 }
 
+/// `azazel attach --take <id>`: ends the background session and turns this run into an
+/// ordinary interactive one that opens its session.
+#[cfg(feature = "detach")]
+async fn taken(mut cli: Cli) -> Result<Cli, u8> {
+    let Some(Sub::Attach {
+        id, take: true, now, ..
+    }) = &cli.command
+    else {
+        return Ok(cli);
+    };
+    // The session goes on in the interactive UI, or with -p answers what is piped in. Without
+    // either the background session is better left running.
+    if !cli.print && !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        eprintln!(
+            "azazel: attach --take continues the session in the interactive UI, which needs a terminal"
+        );
+        return Err(print::EXIT_USAGE);
+    }
+    let entry = match discover_paths(&cli) {
+        Ok(paths) => detach::take(&paths, id, *now).await,
+        Err(e) => Err(format!("{e:#}")),
+    };
+    match entry {
+        Ok(entry) => {
+            cli.command = None;
+            cli.cwd = Some(entry.cwd);
+            cli.session = Some(entry.session_file.to_string_lossy().into_owned());
+            Ok(cli)
+        }
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            Err(print::EXIT_FAILED)
+        }
+    }
+}
+
 async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
+    #[cfg(feature = "detach")]
+    let cli = match taken(cli).await {
+        Ok(cli) => cli,
+        Err(code) => return code,
+    };
     let paths = match discover_paths(&cli) {
         Ok(paths) => paths,
         Err(e) => {
@@ -177,6 +245,10 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     let _log_guard = init_logging(&paths, cli.debug);
     if cfg!(windows) {
         update::remove_retired();
+    }
+    // The session is on another machine: nothing of this one's project is opened.
+    if let Some(host) = &cli.ssh {
+        return ssh::run(&cli, paths, host).await;
     }
     let interactive = cli.interactive();
     if cli.print && cli.prompt.is_empty() && std::io::stdin().is_terminal() {
@@ -282,13 +354,45 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }) => Some((objective.clone(), *max_iterations, *max_cost, *max_minutes)),
         #[cfg(feature = "acp")]
         Some(Sub::Acp) => return acp::run(extensions).await,
-        Some(Sub::Rpc) | None => None,
+        #[cfg(feature = "detach")]
+        Some(Sub::Bg { .. }) => return detach::bg(&paths).await,
+        #[cfg(feature = "detach")]
+        Some(Sub::Ps { json }) => return detach::ps(&paths, *json),
+        #[cfg(feature = "detach")]
+        Some(Sub::Logs { id, follow, json }) => return detach::logs(&paths, id, *follow, *json).await,
+        #[cfg(feature = "detach")]
+        Some(Sub::Kill { id }) => return detach::kill(&paths, id).await,
+        #[cfg(feature = "detach")]
+        Some(Sub::Attach { id, .. }) => return detach::attach(&cli, paths, id).await,
+        #[cfg(feature = "detach")]
+        Some(Sub::Host { .. }) => None,
+        #[cfg(feature = "detach")]
+        Some(Sub::Rpc { attach: Some(wanted) }) => return detach::bridge(&paths, wanted).await,
+        #[cfg(not(feature = "detach"))]
+        Some(Sub::Rpc { attach: Some(_) }) => {
+            eprintln!("azazel: this build has no background sessions");
+            return print::EXIT_FAILED;
+        }
+        Some(Sub::Rpc { attach: None }) | None => None,
     };
 
+    // A background session that cannot start leaves the reason for `azazel bg` to print.
+    #[cfg(feature = "detach")]
+    let background = match &cli.command {
+        Some(Sub::Host { id, .. }) => Some((paths.home.clone(), id.clone())),
+        _ => None,
+    };
+    let complain = move |why: String| {
+        eprintln!("azazel: {why}");
+        #[cfg(feature = "detach")]
+        if let Some((home, id)) = &background {
+            running::note_failure(home, id, &why);
+        }
+    };
     let app = match App::build(&cli, paths, trusted, &extensions).await {
         Ok(app) => app,
         Err(e) => {
-            eprintln!("azazel: {e:#}");
+            complain(format!("{e:#}"));
             return if e.downcast_ref::<app::UsageError>().is_some() {
                 print::EXIT_USAGE
             } else {
@@ -303,7 +407,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     let active = match opened {
         Ok(active) => active,
         Err(e) => {
-            eprintln!("azazel: {e:#}");
+            complain(format!("{e:#}"));
             return print::EXIT_FAILED;
         }
     };
@@ -343,8 +447,23 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         )
         .await;
     }
-    if cli.command == Some(Sub::Rpc) {
+    if matches!(cli.command, Some(Sub::Rpc { .. })) {
         return rpc::run(Arc::new(app), active).await;
+    }
+    #[cfg(feature = "detach")]
+    if let Some(Sub::Host {
+        id,
+        idle_secs,
+        prompt,
+    }) = &cli.command
+    {
+        let prompt = prompt.join(" ");
+        let options = host::Options {
+            id: id.clone(),
+            idle: Duration::from_secs(*idle_secs),
+            prompt: (!prompt.trim().is_empty()).then_some(prompt),
+        };
+        return host::run(Arc::new(app), active, options).await;
     }
     let prompt = cli.prompt_text();
     if cli.print {

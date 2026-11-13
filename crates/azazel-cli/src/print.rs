@@ -28,7 +28,7 @@ pub fn event_json(agent: &str, event: &AgentEvent) -> Value {
 }
 
 /// The prompt with anything piped on stdin appended.
-fn with_piped_stdin(prompt: &str) -> String {
+pub(crate) fn with_piped_stdin(prompt: &str) -> String {
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
         return prompt.to_string();
@@ -123,13 +123,14 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
                 });
                 if !pending {
                     #[cfg(feature = "test-support")]
-                    match queued.send_next(app, active).await {
-                        Some((_, Ok(()))) => continue,
-                        Some((_, Err(reason))) => {
-                            eprintln!("prompt rejected: {reason}");
-                            break EXIT_FAILED;
+                    if let Some((text, images)) = queued.next() {
+                        match app.submit(active, text, images).await {
+                            Ok(()) => continue,
+                            Err(reason) => {
+                                eprintln!("prompt rejected: {reason}");
+                                break EXIT_FAILED;
+                            }
                         }
-                        None => {}
                     }
                     break EXIT_OK;
                 }

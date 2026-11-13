@@ -5,6 +5,10 @@ output is written once into your terminal's own scrollback, and only the live re
 page lists the layout, keys, input prefixes, slash commands and themes. The UI needs a real terminal; without
 one, use [print mode](getting-started.md#print-mode) or [RPC mode](rpc.md).
 
+The same UI opens on a session that runs elsewhere: `azazel attach <id>` on a background session, and
+`azazel --ssh <host>` on another machine. A few commands need the session to be in the UI's own process;
+[background sessions and remote work](background-and-remote.md#attaching) lists them.
+
 ## Layout
 
 ```text
@@ -275,6 +279,7 @@ Session and display:
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
+| `/bg <prompt>` | Run a prompt in the background, in a copy of this session; see [background sessions](background-and-remote.md) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |

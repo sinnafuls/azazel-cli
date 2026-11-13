@@ -10,9 +10,11 @@ use azazel_ai::providers::presets;
 use azazel_core::session::{Entry, SessionSummary};
 use azazel_core::{EntryKind, SessionStore, StartSource};
 use azazel_protocol::{
-    ExportFormat, Exported, Member, MessageRow, RewindWhat, SessionRow, State, TreeRow, Usage,
+    CommandRow, ExportFormat, Exported, Member, MessageRow, RewindWhat, SessionCopy, SessionRow, State, Todo,
+    TreeRow, Usage,
 };
-use azazel_team::MemberInfo;
+use azazel_team::{Goals, MemberInfo, MemberState};
+use azazel_tools::{TodoStatus, TodoStore};
 use serde_json::Value;
 
 use super::{Session, data};
@@ -35,6 +37,10 @@ fn member(member: &MemberInfo) -> Member {
         elapsed_ms: member.elapsed.as_millis() as u64,
         tokens: member.tokens,
         cost_usd: member.cost_usd,
+        activity: match &member.state {
+            MemberState::Running { activity } => Some(activity.clone()),
+            _ => None,
+        },
     }
 }
 
@@ -172,12 +178,14 @@ impl Session {
 
     pub(super) fn state(&self) -> State {
         let status = self.active.lead.status();
+        let (services, router) = (&self.app.registry.services, &self.app.router);
         State {
             session_id: self.active.session.id(),
+            session_file: self.active.session.path().display().to_string(),
             name: self.active.session.name(),
             cwd: self.app.paths.cwd.display().to_string(),
             mode: self.app.permissions.mode().to_string(),
-            busy: status.busy,
+            busy: self.busy(),
             turn: status.turn,
             model: status.model.map(|model| model.to_string()),
             chain: status.chain.iter().map(ToString::to_string).collect(),
@@ -186,8 +194,87 @@ impl Session {
             context_tokens: status.context_tokens,
             context_window: status.context_window,
             usage: usage(&status.usage),
+            requests: status.requests,
             agents: self.roster(),
+            branch: azazel_core::prompt::git_branch(&self.app.paths.project_root),
+            coordinator: self.app.coordinator.is_on(),
+            goal: services
+                .get::<Goals>()
+                .and_then(|goals| goals.current())
+                .filter(|goal| goal.status.is_open())
+                .map(|goal| format!("goal {}, attempt {}", goal.status.label(), goal.iteration + 1)),
+            todo: services
+                .get::<TodoStore>()
+                .map(|store| store.get(&self.active.lead.id))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| Todo {
+                    text: item.text,
+                    status: match item.status {
+                        TodoStatus::Pending => "pending",
+                        TodoStatus::InProgress => "in_progress",
+                        TodoStatus::Done => "done",
+                    }
+                    .to_string(),
+                })
+                .collect(),
+            roles: router
+                .roles()
+                .keys()
+                .filter_map(|role| {
+                    let first = router.resolve(&[azazel_ai::ModelSpec::Role(role.clone())]);
+                    Some((role.clone(), first.first()?.to_string()))
+                })
+                .collect(),
         }
+    }
+
+    /// The open session as its file holds it.
+    pub(super) fn session_copy(&self) -> Result<Value, String> {
+        let session = &self.active.session;
+        data(SessionCopy {
+            path: session.path().display().to_string(),
+            header: serde_json::to_value(session.header()).map_err(|e| e.to_string())?,
+            entries: session
+                .entries()
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<_, _>>()
+                .map_err(|e| e.to_string())?,
+            leaf: session.leaf(),
+        })
+    }
+
+    /// What `run_command` takes: the commands of extensions, the reports, and the skills.
+    pub(super) fn commands(&self) -> Vec<CommandRow> {
+        let mut rows: Vec<CommandRow> = crate::reports::REPORTS
+            .iter()
+            .map(|(name, description)| CommandRow {
+                name: name.to_string(),
+                description: description.to_string(),
+            })
+            .collect();
+        for command in self.app.registry.commands() {
+            if rows.iter().any(|row| row.name == command.name) {
+                continue;
+            }
+            rows.push(CommandRow {
+                description: match &command.argument_hint {
+                    Some(hint) => format!("{} {hint}", command.description),
+                    None => command.description,
+                },
+                name: command.name,
+            });
+        }
+        for skill in self.app.registry.skills.list() {
+            if skill.user_invocable {
+                rows.push(CommandRow {
+                    name: format!("skill:{}", skill.name),
+                    description: skill.description,
+                });
+            }
+        }
+        rows
     }
 
     /// Replaces the open session with another one, keeping the model selection. When the other
@@ -320,11 +407,16 @@ impl Session {
             .collect()
     }
 
-    /// Moves the session to another entry of its tree and restarts the lead from there.
-    pub(super) async fn set_leaf(&mut self, entry_id: &str) -> Result<Value, String> {
+    /// Moves the session to another entry of its tree, or with `before` to the entry before
+    /// it, and restarts the lead from there.
+    pub(super) async fn set_leaf(&mut self, entry_id: &str, before: bool) -> Result<Value, String> {
         self.idle_to("move within the session")?;
         let session = self.active.session.clone();
-        if !session.set_leaf(Some(entry_id)) {
+        let entry = session
+            .entry(entry_id)
+            .ok_or_else(|| format!("no entry `{entry_id}` in this session"))?;
+        let target = if before { entry.parent_id } else { Some(entry.id) };
+        if !session.set_leaf(target.as_deref()) {
             return Err(format!("no entry `{entry_id}` in this session"));
         }
         self.swap(Open::Store(session), StartSource::Resume).await?;

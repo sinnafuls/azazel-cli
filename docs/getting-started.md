@@ -174,6 +174,10 @@ has no recorded decision runs untrusted unless you pass `--trust`.
 | 2 | Usage error: a missing prompt, an unknown tool, an ambiguous model name |
 | 130 | Interrupted with `Ctrl+C` |
 
+To leave a prompt running after you close the terminal, use `azazel bg "<prompt>"`; `azazel attach <id>`
+opens it again, and `azazel --ssh <host>` works on another machine. See
+[background sessions and remote work](background-and-remote.md).
+
 For driving azazel from another program, see [RPC mode](rpc.md). For runs that only end when the work is
 verified, see [goals](goals.md).
 

@@ -52,6 +52,12 @@
             },
             "text": {
               "type": "string"
+            },
+            "images": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/Image"
+              }
             }
           },
           "required": [
@@ -348,13 +354,50 @@
             },
             "entry_id": {
               "type": "string"
+            },
+            "before": {
+              "type": "boolean"
             }
           },
           "required": [
             "type",
             "entry_id"
           ],
-          "description": "Continues the conversation from another entry of the tree. Answers with [`State`]."
+          "description": "Continues the conversation from another entry of the tree; with `before`, from the\nentry before it, which is how a prompt is gone back to. Answers with [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_label"
+            },
+            "entry_id": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "entry_id",
+            "label"
+          ],
+          "description": "Labels an entry of the tree; an empty label takes the label away."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_session"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The open session as its file holds it. Answers with [`SessionCopy`]."
         },
         {
           "type": "object",
@@ -545,6 +588,32 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "list_commands"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The commands `run_command` takes: those of extensions, the built-in reports, and the\nskills as `skill:<name>`. Answers with a list of [`CommandRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_files"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The files of the working directory, as paths relative to it, for completing `@`\nmentions. Ignored files are left out and the list is cut at 20,000. Answers with a list\nof strings."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "get_usage"
             }
           },
@@ -572,6 +641,48 @@
             "name"
           ],
           "description": "Runs a slash command by name (without the slash). Answers with [`CommandResult`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "attach"
+            },
+            "pid": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "replay": {
+              "$ref": "#/$defs/Replay",
+              "default": "missed"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Background sessions only, and the first command on a connection to one: takes the place\nof its one client. The frames `replay` asks for follow the response, then the requests\nthat still wait for an answer. `pid` is told to a client that is refused while this one\nis attached. Answers with [`Attached`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stop"
+            },
+            "now": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Background sessions only, attached or not: ends the session once the lead has finished\nwhat it is doing; with `now` the lead is stopped first. The connection closes when the\nsession has ended."
         }
       ],
       "description": "One line from the client: a command and the id its response repeats."
@@ -643,6 +754,26 @@
         "jsonl"
       ],
       "description": "The file format of `export`."
+    },
+    "Replay": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "missed",
+          "description": "The frames written since the last client left; everything for the first client."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Every frame since the background session started."
+        },
+        {
+          "type": "string",
+          "const": "none",
+          "description": "Nothing but the requests that still wait for an answer."
+        }
+      ],
+      "description": "What a client that attaches to a background session is sent of what happened before."
     },
     "Frame": {
       "oneOf": [
@@ -1140,6 +1271,10 @@
                 "null"
               ],
               "description": "A remark to show, such as a cost warning."
+            },
+            "destructive": {
+              "type": "boolean",
+              "description": "The call would destroy work: approval should not be the answer a stray key gives."
             }
           },
           "required": [
@@ -1247,13 +1382,16 @@
                 },
                 "prompt": {
                   "type": "string"
+                },
+                "secret": {
+                  "type": "boolean"
                 }
               },
               "required": [
                 "kind",
                 "prompt"
               ],
-              "description": "Expects a string."
+              "description": "Expects a string. A `secret` one (a key, a password) should not be shown as it is typed."
             },
             {
               "type": "object",
@@ -1318,6 +1456,27 @@
             "delta"
           ],
           "description": "A piece of the answer to the `btw` command with this `id`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user_input"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "text"
+          ],
+          "description": "Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or\n`follow_up`. It is in the log and in what a later client is replayed, never in what the\nsender itself reads."
         }
       ],
       "description": "One line from azazel. `type` names the frame; frames of an agent carry its id as `agent`\n(`lead` for the main agent)."
@@ -1541,6 +1700,13 @@
             "null"
           ],
           "format": "double"
+        },
+        "activity": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What a running agent is doing, in a few words."
         }
       },
       "required": [
@@ -1558,6 +1724,11 @@
       "properties": {
         "session_id": {
           "type": "string"
+        },
+        "session_file": {
+          "type": "string",
+          "description": "The session file.",
+          "default": ""
         },
         "name": {
           "type": [
@@ -1623,12 +1794,56 @@
           "$ref": "#/$defs/Usage",
           "description": "Totals of the lead."
         },
+        "requests": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "How many model requests the lead has made.",
+          "default": 0
+        },
         "agents": {
           "type": "array",
           "items": {
             "$ref": "#/$defs/Member"
           },
           "description": "The roster."
+        },
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The checked-out git branch of the project.",
+          "default": null
+        },
+        "coordinator": {
+          "type": "boolean",
+          "description": "Whether coordinator mode is on.",
+          "default": false
+        },
+        "goal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The open goal, in a few words.",
+          "default": null
+        },
+        "todo": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Todo"
+          },
+          "description": "The lead's task list.",
+          "default": []
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The model each role (`default`, `smol`, ...) resolves to first.",
+          "default": {}
         }
       },
       "required": [
@@ -1689,6 +1904,23 @@
         }
       },
       "description": "Token and cost totals."
+    },
+    "Todo": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "`pending`, `in_progress` or `done`."
+        }
+      },
+      "required": [
+        "text",
+        "status"
+      ],
+      "description": "One item of the lead's task list."
     },
     "Models": {
       "type": "object",
@@ -2074,6 +2306,77 @@
         }
       ],
       "description": "The data of `run_command`."
+    },
+    "Attached": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "The id of the background session, as `azazel ps` lists it."
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The process that runs it."
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_file": {
+          "type": "string",
+          "description": "The session file."
+        }
+      },
+      "required": [
+        "host",
+        "pid",
+        "session_id",
+        "session_file"
+      ],
+      "description": "The data of `attach`."
+    },
+    "SessionCopy": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "The session file."
+        },
+        "header": true,
+        "entries": {
+          "type": "array",
+          "items": true
+        },
+        "leaf": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "path",
+        "header",
+        "entries"
+      ],
+      "description": "The data of `get_session`: the session file's first line and its entries, as they are\nstored, and the entry the conversation continues from."
+    },
+    "CommandRow": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "description": "One command of `list_commands`."
     }
   }
 }

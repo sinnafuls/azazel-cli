@@ -72,6 +72,19 @@ pub enum ExportFormat {
     Jsonl,
 }
 
+/// What a client that attaches to a background session is sent of what happened before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Replay {
+    /// The frames written since the last client left; everything for the first client.
+    #[default]
+    Missed,
+    /// Every frame since the background session started.
+    All,
+    /// Nothing but the requests that still wait for an answer.
+    None,
+}
+
 fn yes() -> bool {
     true
 }
@@ -87,7 +100,11 @@ pub enum Command {
         images: Vec<Image>,
     },
     /// Hands the working lead input before its next model request.
-    Steer { text: String },
+    Steer {
+        text: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<Image>,
+    },
     /// Queues input for when the lead would go idle.
     FollowUp { text: String },
     /// Stops the lead's current work.
@@ -149,8 +166,17 @@ pub enum Command {
     },
     /// Every entry of the session file. Answers with a list of [`TreeRow`].
     GetTree,
-    /// Continues the conversation from another entry of the tree. Answers with [`State`].
-    SetLeaf { entry_id: String },
+    /// Continues the conversation from another entry of the tree; with `before`, from the
+    /// entry before it, which is how a prompt is gone back to. Answers with [`State`].
+    SetLeaf {
+        entry_id: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        before: bool,
+    },
+    /// Labels an entry of the tree; an empty label takes the label away.
+    SetLabel { entry_id: String, label: String },
+    /// The open session as its file holds it. Answers with [`SessionCopy`].
+    GetSession,
     /// Names the session.
     SetName { name: String },
     /// Changes the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`.
@@ -193,6 +219,13 @@ pub enum Command {
     Btw { question: String },
     /// The models that can be used. Answers with a list of [`ModelRow`].
     ListModels,
+    /// The commands `run_command` takes: those of extensions, the built-in reports, and the
+    /// skills as `skill:<name>`. Answers with a list of [`CommandRow`].
+    ListCommands,
+    /// The files of the working directory, as paths relative to it, for completing `@`
+    /// mentions. Ignored files are left out and the list is cut at 20,000. Answers with a list
+    /// of strings.
+    ListFiles,
     /// What is known of each provider account's usage windows. Answers with a list of
     /// [`AccountUsage`].
     GetUsage,
@@ -201,6 +234,23 @@ pub enum Command {
         name: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         args: String,
+    },
+    /// Background sessions only, and the first command on a connection to one: takes the place
+    /// of its one client. The frames `replay` asks for follow the response, then the requests
+    /// that still wait for an answer. `pid` is told to a client that is refused while this one
+    /// is attached. Answers with [`Attached`].
+    Attach {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        #[serde(default)]
+        replay: Replay,
+    },
+    /// Background sessions only, attached or not: ends the session once the lead has finished
+    /// what it is doing; with `now` the lead is stopped first. The connection closes when the
+    /// session has ended.
+    Stop {
+        #[serde(default)]
+        now: bool,
     },
 }
 
@@ -331,6 +381,9 @@ pub struct Member {
     pub elapsed_ms: u64,
     pub tokens: u64,
     pub cost_usd: Option<f64>,
+    /// What a running agent is doing, in a few words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activity: Option<String>,
 }
 
 /// A question to the user. Answer with `ui_response` and a `value` of the kind shown.
@@ -347,8 +400,12 @@ pub enum UiRequest {
     Confirm { prompt: String },
     /// Expects the index of the chosen option; the option's text is accepted too.
     Select { prompt: String, options: Vec<String> },
-    /// Expects a string.
-    Input { prompt: String },
+    /// Expects a string. A `secret` one (a key, a password) should not be shown as it is typed.
+    Input {
+        prompt: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
+    },
     /// Expects `true` to approve the plan, or a string of feedback to revise it.
     Plan { path: String, plan: String },
     /// Expects no answer. `level` is `info`, `warn` or `error`.
@@ -477,6 +534,9 @@ pub enum Frame {
         /// A remark to show, such as a cost warning.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         note: Option<String>,
+        /// The call would destroy work: approval should not be the answer a stray key gives.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        destructive: bool,
     },
     /// An agent or extension asks the user something.
     UiRequest {
@@ -488,6 +548,13 @@ pub enum Frame {
     BtwDelta {
         id: Value,
         delta: String,
+    },
+    /// Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or
+    /// `follow_up`. It is in the log and in what a later client is replayed, never in what the
+    /// sender itself reads.
+    UserInput {
+        kind: String,
+        text: String,
     },
     /// A frame this version of the crate does not know.
     #[serde(other)]
@@ -542,6 +609,9 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct State {
     pub session_id: String,
+    /// The session file.
+    #[serde(default)]
+    pub session_file: String,
     /// The session's name, once it has one.
     #[serde(default)]
     pub name: Option<String>,
@@ -564,8 +634,34 @@ pub struct State {
     pub context_window: u64,
     /// Totals of the lead.
     pub usage: Usage,
+    /// How many model requests the lead has made.
+    #[serde(default)]
+    pub requests: u32,
     /// The roster.
     pub agents: Vec<Member>,
+    /// The checked-out git branch of the project.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Whether coordinator mode is on.
+    #[serde(default)]
+    pub coordinator: bool,
+    /// The open goal, in a few words.
+    #[serde(default)]
+    pub goal: Option<String>,
+    /// The lead's task list.
+    #[serde(default)]
+    pub todo: Vec<Todo>,
+    /// The model each role (`default`, `smol`, ...) resolves to first.
+    #[serde(default)]
+    pub roles: std::collections::BTreeMap<String, String>,
+}
+
+/// One item of the lead's task list.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Todo {
+    pub text: String,
+    /// `pending`, `in_progress` or `done`.
+    pub status: String,
 }
 
 /// The data of `set_model`: the usable models the chain resolves to.
@@ -695,6 +791,36 @@ pub struct BtwAnswer {
     pub dropped_tools: Vec<String>,
 }
 
+/// The data of `get_session`: the session file's first line and its entries, as they are
+/// stored, and the entry the conversation continues from.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SessionCopy {
+    /// The session file.
+    pub path: String,
+    pub header: Value,
+    pub entries: Vec<Value>,
+    pub leaf: Option<String>,
+}
+
+/// One command of `list_commands`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CommandRow {
+    pub name: String,
+    pub description: String,
+}
+
+/// The data of `attach`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attached {
+    /// The id of the background session, as `azazel ps` lists it.
+    pub host: String,
+    /// The process that runs it.
+    pub pid: u32,
+    pub session_id: String,
+    /// The session file.
+    pub session_file: String,
+}
+
 /// The data of `run_command`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -725,6 +851,9 @@ pub fn schema() -> Value {
     generator.subschema_for::<Exported>();
     generator.subschema_for::<BtwAnswer>();
     generator.subschema_for::<CommandResult>();
+    generator.subschema_for::<Attached>();
+    generator.subschema_for::<SessionCopy>();
+    generator.subschema_for::<CommandRow>();
     let definitions = generator.take_definitions(true);
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

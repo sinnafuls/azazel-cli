@@ -75,6 +75,10 @@ azazel -c -p "now add tests"    # all of them work with print mode too
 The session id is the part of the file name after the underscore; `/export` without a path also puts it in the
 name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages.
 
+A session that a [background session](background-and-remote.md) has open cannot be opened a second time: it
+fails with `this session is running in the background: azazel attach <id>`. `azazel attach` opens it where it
+runs, and `azazel attach --take` brings it back here.
+
 ### Model and thinking level
 
 A session that is opened again comes back on the model chain and the thinking level it last switched to. This

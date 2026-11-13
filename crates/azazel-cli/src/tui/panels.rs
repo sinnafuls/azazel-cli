@@ -1,16 +1,13 @@
 //! Commands that look into the running session and change it: `/tools`, `/jobs`, `/todo`,
 //! `/permissions`, `/forget-approvals`, `/trust` and `/reload`, plus what the keys of overlays do.
 
-use std::collections::BTreeMap;
-
 use azazel_core::agents;
 use azazel_core::commands::{CustomCommandsExt, command_roots};
 use azazel_core::hooks::HooksExt;
 use azazel_core::packages::Packages;
 use azazel_core::permissions::{Rule, RuleKind, SESSION, SourcedRule};
-use azazel_core::trust::{TrustStore, needs_trust};
 use azazel_core::{Config, Extension};
-use azazel_tools::{Jobs, TodoItem, TodoStatus, TodoStore};
+use azazel_tools::Jobs;
 use azazel_tui::{KeyCombo, Keymap, SelectItem};
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -61,20 +58,6 @@ pub(super) fn parse_rule(typed: &str) -> Result<(RuleKind, Rule), String> {
     Ok((kind, rule.trim().parse()?))
 }
 
-/// Which group of `/tools` a tool belongs to: its MCP server, or what its extension is.
-fn tool_group(name: &str, owner: &str) -> String {
-    if let Some(rest) = name.strip_prefix("mcp__") {
-        let server = rest.split("__").next().unwrap_or(rest);
-        return format!("MCP server {server}");
-    }
-    match owner {
-        "core-tools" | "permissions" | "web" | "lsp" | "skills" => "core".to_string(),
-        "team" | "goal" => "team".to_string(),
-        "lua" => "scripts".to_string(),
-        other => other.to_string(),
-    }
-}
-
 /// What changed between two lists of names, as `+2 (a, b) −1 (c)`; empty when nothing did.
 pub(super) fn name_changes(before: &[String], after: &[String]) -> String {
     let added: Vec<&str> = after
@@ -95,56 +78,6 @@ pub(super) fn name_changes(before: &[String], after: &[String]) -> String {
         parts.push(format!("−{} ({})", removed.len(), removed.join(", ")));
     }
     parts.join(" ")
-}
-
-/// `/todo` edits as changes to a list. `Err` is what to tell the user.
-pub(super) fn edit_todo(mut items: Vec<TodoItem>, args: &str) -> Result<Vec<TodoItem>, String> {
-    let (verb, rest) = match args.split_once(char::is_whitespace) {
-        Some((verb, rest)) => (verb, rest.trim()),
-        None => (args, ""),
-    };
-    match verb {
-        "add" if rest.is_empty() => Err("usage: /todo add <text>".to_string()),
-        "add" => {
-            items.push(TodoItem {
-                text: rest.to_string(),
-                status: TodoStatus::Pending,
-            });
-            Ok(items)
-        }
-        "done" => {
-            let count = items.len();
-            let item = rest
-                .parse::<usize>()
-                .ok()
-                .and_then(|number| number.checked_sub(1))
-                .and_then(|index| items.get_mut(index))
-                .ok_or_else(|| format!("usage: /todo done <n>, with n from 1 to {count}"))?;
-            item.status = TodoStatus::Done;
-            Ok(items)
-        }
-        "clear" => Ok(Vec::new()),
-        _ => Err("usage: /todo, /todo add <text>, /todo done <n> or /todo clear".to_string()),
-    }
-}
-
-fn todo_text(items: &[TodoItem]) -> String {
-    if items.is_empty() {
-        return "the todo list is empty; /todo add <text> adds an item".to_string();
-    }
-    items
-        .iter()
-        .enumerate()
-        .map(|(index, item)| {
-            let mark = match item.status {
-                TodoStatus::Pending => "[ ]",
-                TodoStatus::InProgress => "[~]",
-                TodoStatus::Done => "[x]",
-            };
-            format!("{:>2}. {mark} {}", index + 1, item.text)
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 impl Tui {
@@ -171,7 +104,7 @@ impl Tui {
         match target {
             Some(Target::Agent(id)) => {
                 if let Some(key) = ['m', 's', 'S'].get(key) {
-                    self.hub_key(*key, &id);
+                    self.hub_key(*key, &id).await;
                 }
             }
             Some(Target::Model(spec)) => {
@@ -230,7 +163,10 @@ impl Tui {
                 }
             }
             Action::JobChoice(id) => {
-                let Some(jobs) = self.app.registry.services.get::<Jobs>() else {
+                let jobs = self
+                    .app("/jobs")
+                    .and_then(|app| app.registry.services.get::<Jobs>());
+                let Some(jobs) = jobs else {
                     return;
                 };
                 if choice == 0 {
@@ -270,18 +206,24 @@ impl Tui {
                 }
                 // Only approvals are saved from here; ask and deny rules belong in a config file.
                 Ok((kind, rule)) => {
-                    self.app.permissions.add_session_rule(rule.clone(), kind);
+                    let Some(app) = self.app("/permissions") else {
+                        return;
+                    };
+                    app.permissions.add_session_rule(rule.clone(), kind);
                     self.info(&format!("{} {rule} applies until azazel exits", kind_word(kind)));
                     self.open_permissions();
                 }
                 Err(why) => self.fail(&why),
             },
             Action::PermissionScope(rule, kind) => {
+                let Some(app) = self.app("/permissions") else {
+                    return;
+                };
                 if choice == 0 {
-                    self.app.permissions.add_session_rule(rule.clone(), kind);
+                    app.permissions.add_session_rule(rule.clone(), kind);
                     self.info(&format!("{} {rule} applies until azazel exits", kind_word(kind)));
                 } else {
-                    match self.app.permissions.remember_allow(&rule) {
+                    match app.permissions.remember_allow(&rule) {
                         Ok(()) => self.info(&format!("allow {rule} is saved for this project")),
                         Err(e) => self.fail(&format!("could not save the rule: {e}")),
                     }
@@ -292,72 +234,14 @@ impl Tui {
         }
     }
 
-    // ------------------------------------------------------------ /tools, /jobs, /todo
-
-    /// `/tools`: every tool the lead could be offered, grouped by where it comes from.
-    pub(super) fn show_tools(&mut self) {
-        let lead = self.active.lead.info();
-        let listing = self.app.registry.tools.listing(lead);
-        #[cfg(feature = "mcp")]
-        let deferred: Vec<String> = self
-            .app
-            .registry
-            .services
-            .get::<azazel_mcp::McpManager>()
-            .map(|manager| {
-                manager
-                    .tool_states()
-                    .into_iter()
-                    .filter(|(_, offered)| !offered)
-                    .map(|(name, _)| name)
-                    .collect()
-            })
-            .unwrap_or_default();
-        #[cfg(not(feature = "mcp"))]
-        let deferred: Vec<String> = Vec::new();
-
-        let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut offered = 0;
-        for tool in &listing {
-            let mark = if !tool.offered {
-                " (disabled)"
-            } else if self.app.coordinator.is_on() && !azazel_team::coordinator::offers(&tool.name) {
-                " (withheld in coordinator mode)"
-            } else {
-                offered += 1;
-                ""
-            };
-            groups
-                .entry(tool_group(&tool.name, &tool.owner))
-                .or_default()
-                .push(format!("{}{mark}", tool.name));
-        }
-        for name in &deferred {
-            if !listing.iter().any(|tool| tool.name == *name) {
-                groups
-                    .entry(tool_group(name, "mcp"))
-                    .or_default()
-                    .push(format!("{name} (deferred: found through tool_search)"));
-            }
-        }
-        let mut out = format!("{offered} tools are offered to the lead\n");
-        // Core first, then the rest by name.
-        let core = groups.remove("core");
-        for (group, mut names) in core
-            .map(|names| ("core".to_string(), names))
-            .into_iter()
-            .chain(groups)
-        {
-            names.sort();
-            out.push_str(&format!("\n{group}\n  {}\n", names.join("\n  ")));
-        }
-        self.info(out.trim_end());
-    }
+    // ------------------------------------------------------------ /jobs
 
     /// `/jobs`: the background jobs; choosing one offers its output or stops it.
     pub(super) fn open_jobs(&mut self) {
-        let entries = self
-            .app
+        let Some(app) = self.app("/jobs") else {
+            return;
+        };
+        let entries = app
             .registry
             .services
             .get::<Jobs>()
@@ -385,32 +269,16 @@ impl Tui {
         ));
     }
 
-    /// `/todo`, `/todo add <text>`, `/todo done <n>`, `/todo clear`: the lead's task list.
-    pub(super) fn todo_command(&mut self, args: &str) {
-        let Some(store) = self.app.registry.services.get::<TodoStore>() else {
-            return self.info("this session has no todo list");
-        };
-        let lead = self.active.lead.id.clone();
-        let items = store.get(&lead);
-        if args.is_empty() {
-            return self.info(&todo_text(&items));
-        }
-        match edit_todo(items, args) {
-            Ok(items) => {
-                self.info(&todo_text(&items));
-                store.set(&lead, items);
-            }
-            Err(why) => self.fail(&why),
-        }
-    }
-
     // ------------------------------------------------------------ permissions and trust
 
     /// `/permissions`: the rules in effect with where each comes from. `d` removes one that was
     /// added here or remembered, `a` adds one.
     pub(super) fn open_permissions(&mut self) {
-        let rules = self.app.permissions.rules();
-        let local = self.app.paths.project_local_config().display().to_string();
+        let Some(app) = self.app("/permissions") else {
+            return;
+        };
+        let rules = app.permissions.rules();
+        let local = app.paths.project_local_config().display().to_string();
         let items: Vec<SelectItem> = rules
             .iter()
             .map(|sourced| {
@@ -425,7 +293,7 @@ impl Tui {
             })
             .collect();
         let mut body = vec![
-            format!("mode: {}", self.app.permissions.mode()),
+            format!("mode: {}", app.permissions.mode()),
             "d removes a rule of this session or a remembered one; rules from files are changed there"
                 .to_string(),
         ];
@@ -446,7 +314,10 @@ impl Tui {
     pub(super) fn add_rule(&mut self, typed: &str) {
         match parse_rule(typed) {
             Ok((kind, rule)) => {
-                self.app.permissions.add_session_rule(rule.clone(), kind);
+                let Some(app) = self.app("/permissions") else {
+                    return;
+                };
+                app.permissions.add_session_rule(rule.clone(), kind);
                 self.info(&format!("{} {rule} applies until azazel exits", kind_word(kind)));
             }
             Err(why) => self.fail(&why),
@@ -454,15 +325,16 @@ impl Tui {
     }
 
     fn remove_rule(&mut self, sourced: &SourcedRule) {
-        let local = self.app.paths.project_local_config().display().to_string();
+        let Some(app) = self.app("/permissions") else {
+            return;
+        };
+        let local = app.paths.project_local_config().display().to_string();
         let label = format!("{} {}", kind_word(sourced.kind), sourced.rule);
         if sourced.source == SESSION {
-            self.app
-                .permissions
-                .remove_session_rule(&sourced.rule, sourced.kind);
+            app.permissions.remove_session_rule(&sourced.rule, sourced.kind);
             self.info(&format!("removed {label}"));
         } else if sourced.source == local && sourced.kind == RuleKind::Allow {
-            match self.app.permissions.forget_allow(&sourced.rule) {
+            match app.permissions.forget_allow(&sourced.rule) {
                 Ok(_) => self.info(&format!("removed {label} from {local}")),
                 Err(e) => self.fail(&format!("could not edit {local}: {e}")),
             }
@@ -475,83 +347,14 @@ impl Tui {
         self.open_permissions();
     }
 
-    /// `/forget-approvals`: drops every remembered approval and every rule of this session.
-    pub(super) fn forget_approvals(&mut self) {
-        match self.app.permissions.clear_remembered() {
-            Ok(0) => self.info("there were no remembered approvals or session rules"),
-            Ok(1) => self.info("forgot 1 rule; the agent asks again from now on"),
-            Ok(count) => self.info(&format!("forgot {count} rules; the agent asks again from now on")),
-            Err(e) => self.fail(&format!(
-                "could not edit {}: {e}",
-                self.app.paths.project_local_config().display()
-            )),
-        }
-    }
-
-    /// `/trust`: whether this project is trusted and what that covers; `/trust yes|no` decides.
-    pub(super) fn trust_command(&mut self, args: &str) {
-        let paths = &self.app.paths;
-        let store = TrustStore::new(paths.trust_file());
-        let decide = match args.to_ascii_lowercase().as_str() {
-            "" => None,
-            "yes" | "y" | "on" => Some(true),
-            "no" | "n" | "off" => Some(false),
-            _ => return self.fail("usage: /trust, /trust yes or /trust no"),
-        };
-        if let Some(trusted) = decide {
-            return match store.set(&paths.project_root, trusted) {
-                Ok(()) if trusted == self.app.trusted => self.info(if trusted {
-                    "this project is trusted"
-                } else {
-                    "this project is not trusted"
-                }),
-                Ok(()) => self.info(if trusted {
-                    "this project is trusted from the next start of azazel: its hooks, extensions, MCP \
-                     servers and permission settings load then"
-                } else {
-                    "this project is no longer trusted from the next start of azazel; what it loaded \
-                     stays active until then"
-                }),
-                Err(e) => self.fail(&format!("could not save the decision: {e}")),
-            };
-        }
-        let gated = needs_trust(paths, self.app.config.compat.claude);
-        let mut out = match (self.app.trusted, store.decision(&paths.project_root)) {
-            (true, Some(true)) => "this project is trusted".to_string(),
-            (true, _) => "this project is trusted for this run (--trust)".to_string(),
-            (false, Some(false)) => "this project is not trusted (you said no)".to_string(),
-            (false, Some(true)) => "this project is trusted from the next start of azazel".to_string(),
-            (false, None) => "this project is not trusted (no decision yet)".to_string(),
-        };
-        out.push_str(&format!("\n{}", paths.project_root.display()));
-        if gated.is_empty() {
-            out.push_str("\nnothing in it needs trust: it runs no code and widens no permissions");
-        } else {
-            out.push_str(if self.app.trusted {
-                "\ntrust lets it use:"
-            } else {
-                "\nwithout trust these are skipped:"
-            });
-            for reason in &gated {
-                out.push_str(&format!("\n  - {reason}"));
-            }
-        }
-        if !self.app.ignored_settings.is_empty() {
-            out.push_str(&format!(
-                "\nskipped in this run: {}",
-                self.app.ignored_settings.join(", ")
-            ));
-        }
-        out.push_str("\n/trust yes or /trust no changes it; a restart applies the change");
-        self.info(&out);
-    }
-
     // ------------------------------------------------------------ /reload
 
     /// `/reload`: reads skills, custom commands, agent definitions, hooks, key bindings and the
     /// theme again, then the Luau scripts, and says what changed and what failed to load.
     pub(super) async fn reload(&mut self) {
-        let app = self.app.clone();
+        let Some(app) = self.app("/reload") else {
+            return;
+        };
         let registry = &app.registry;
         let mut report: Vec<String> = Vec::new();
         let mut problems: Vec<String> = Vec::new();
@@ -614,7 +417,7 @@ impl Tui {
         report.push(changed("custom commands", found, name_changes(&before, &after)));
 
         // Agent definitions: every holder shares the one set, which takes the new files over.
-        if let Some(team) = &self.team {
+        if let Some(team) = registry.services.get::<azazel_team::Team>() {
             let defs = team.defs();
             let def_names = |defs: &agents::AgentDefs| -> Vec<String> {
                 defs.list().iter().map(|def| def.name.clone()).collect()
@@ -684,7 +487,7 @@ impl Tui {
             }
         }
         let depth = self.theme.depth();
-        let (theme, problem) = super::named_theme(&app, &self.theme_name);
+        let (theme, problem) = super::named_theme(&app.paths, &self.theme_name);
         match problem {
             Some(problem) => problems.push(problem),
             None => {
@@ -703,7 +506,7 @@ impl Tui {
         azazel_core::ext::config_changed(&registry.services, "reload").await;
         // Last, the Luau scripts: their own command drops their state and loads them again.
         if registry.command("reload").is_some() {
-            self.other_command("reload", "").await;
+            self.other_command("reload", "");
         }
     }
 }
@@ -737,39 +540,6 @@ mod tests {
                 .unwrap_err()
                 .contains("invalid permission rule")
         );
-    }
-
-    #[test]
-    fn todo_edits_add_finish_and_clear() {
-        let items = edit_todo(Vec::new(), "add write the tests").unwrap();
-        let items = edit_todo(items, "add run them").unwrap();
-        assert_eq!(todo_text(&items), " 1. [ ] write the tests\n 2. [ ] run them");
-        let items = edit_todo(items, "done 1").unwrap();
-        assert_eq!(items[0].status, TodoStatus::Done);
-        assert_eq!(items[1].status, TodoStatus::Pending);
-        assert!(
-            edit_todo(items.clone(), "done 3")
-                .unwrap_err()
-                .contains("from 1 to 2")
-        );
-        assert!(edit_todo(items.clone(), "done x").is_err());
-        assert!(edit_todo(items.clone(), "add").is_err());
-        assert!(edit_todo(items.clone(), "shuffle").unwrap_err().contains("usage"));
-        assert_eq!(edit_todo(items, "clear").unwrap(), Vec::new());
-        assert!(todo_text(&[]).contains("empty"));
-    }
-
-    #[test]
-    fn tools_group_by_where_they_come_from() {
-        assert_eq!(tool_group("read", "core-tools"), "core");
-        assert_eq!(tool_group("plan_submit", "permissions"), "core");
-        assert_eq!(tool_group("task", "team"), "team");
-        assert_eq!(
-            tool_group("mcp__github__create_issue", "mcp"),
-            "MCP server github"
-        );
-        assert_eq!(tool_group("deploy", "lua"), "scripts");
-        assert_eq!(tool_group("memory_search", "memory"), "memory");
     }
 
     #[test]

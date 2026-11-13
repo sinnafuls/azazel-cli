@@ -368,6 +368,11 @@ impl Client {
     /// Ends the session: closes the connection and, for a child process, waits for it to exit.
     /// Returns the child's exit code.
     pub async fn shutdown(self) -> Result<Option<i32>, Error> {
+        self.close().await
+    }
+
+    /// [`Client::shutdown`] for a client that is shared: commands sent after it fail.
+    pub async fn close(&self) -> Result<Option<i32>, Error> {
         // Closing the queue lets the writer send what is still in it, then close the connection.
         drop(locked(&self.lines).take());
         let writing = locked(&self.writing).take();

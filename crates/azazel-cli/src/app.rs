@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -39,6 +39,7 @@ use azazel_team::{
 use azazel_tools::CoreToolsExt;
 
 use crate::cli::{Cli, Discovery};
+use crate::running::{self, Lock};
 
 pub const NO_MODEL: &str = "no model configured: run \"azazel init\" or pass --model provider/id";
 
@@ -77,6 +78,10 @@ pub struct App {
     thinking_flag: bool,
     /// The session mode changes are recorded in.
     current: Arc<RwLock<Option<Arc<SessionStore>>>>,
+    /// This process is a background session (`azazel host`): it locks the session it has open.
+    background: bool,
+    /// The lock on the open session, by its id, for when the same session is opened again.
+    session_lock: Mutex<Option<(String, Weak<Lock>)>>,
 }
 
 /// One open session and its lead agent.
@@ -88,6 +93,8 @@ pub struct Active {
     pub resumed: bool,
     /// Something about how it was opened that the user should be told.
     pub notice: Option<String>,
+    /// Keeps other processes out of the session while a background session has it open.
+    _lock: Option<Arc<Lock>>,
 }
 
 pub enum Open {
@@ -421,6 +428,13 @@ impl App {
         registry.load(&PermissionsExt {
             state: permissions.clone(),
         })?;
+        #[cfg(feature = "detach")]
+        registry.load(&crate::detach::BgExt {
+            paths: paths.clone(),
+            permissions: permissions.clone(),
+            carried: cli.carried(),
+            ephemeral: cli.no_session,
+        })?;
         // Rule files count as context files; `[[stream_rules]]` are settings and always apply.
         let rules = Arc::new(Rules::new(rules::Sources {
             paths: paths.clone(),
@@ -751,6 +765,8 @@ impl App {
             model_flag: !cli.model.is_empty(),
             thinking_flag: cli.thinking.is_some(),
             current,
+            background: cli.background(),
+            session_lock: Mutex::default(),
         })
     }
 
@@ -900,6 +916,7 @@ impl App {
             Open::File(path) => (Arc::new(SessionStore::open(&path)?), true),
             Open::Store(store) => (store, true),
         };
+        let lock = self.lock_session(&session.id(), from_file)?;
         let (chain, thinking, notice) = if from_file {
             self.as_left(&session, chain, thinking)
         } else {
@@ -981,7 +998,30 @@ impl App {
             checkpoints,
             resumed,
             notice,
+            _lock: lock,
         })
+    }
+
+    /// A background session locks the session it opens. Any other process only makes sure that
+    /// no background session has the file it is about to read and write.
+    fn lock_session(&self, session_id: &str, from_file: bool) -> Result<Option<Arc<Lock>>> {
+        if !self.background {
+            if from_file && running::host_of(&self.paths.home, session_id).is_some() {
+                bail!(running::in_background(&self.paths.home, session_id));
+            }
+            return Ok(None);
+        }
+        let mut held = self.session_lock.lock().unwrap_or_else(PoisonError::into_inner);
+        // The same session opened again (its leaf moved): the lock it has stays.
+        if let Some((id, lock)) = held.as_ref()
+            && id == session_id
+            && let Some(lock) = lock.upgrade()
+        {
+            return Ok(Some(lock));
+        }
+        let lock = Arc::new(running::lock_session(&self.paths.home, session_id).map_err(|e| anyhow!(e))?);
+        *held = Some((session_id.to_string(), Arc::downgrade(&lock)));
+        Ok(Some(lock))
     }
 
     /// Announces a session to extensions. Call once per opened session, before its first prompt.

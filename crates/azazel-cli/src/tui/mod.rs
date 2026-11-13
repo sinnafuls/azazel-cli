@@ -2,6 +2,7 @@
 //! live region below it holds the streaming reply and running tools on top and, on the last rows
 //! of the screen, the input and the status line.
 
+mod backend;
 mod bridge;
 mod btw;
 mod clip;
@@ -12,6 +13,7 @@ mod pager;
 mod panels;
 mod probe;
 mod quick;
+mod remote;
 mod sessions;
 mod slash;
 mod team;
@@ -28,15 +30,13 @@ use std::io::{self, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use azazel_agent::{AgentCmd, AgentEvent, UserInput};
+use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
-use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::{
-    ApprovalDecision, CommandOutcome, EntryKind, Level, PermissionMode, PlanDecision, StartSource, Ui,
+    ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
-use azazel_team::{Goals, Team, TeamEvent};
-use azazel_tools::{TodoStatus, TodoStore};
+use azazel_tools::TodoStatus;
 use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
 };
@@ -52,15 +52,20 @@ use crossterm::event::{
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
 use serde_json::Value;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
-use crate::app::{Active, App, Open};
+use crate::app::{Active, App};
 use crate::attention::{Attention, Kind};
-use bridge::{TuiBridge, UiRequest};
+pub(crate) use backend::Env;
+use backend::{Backend, Go, Incoming, Local, Moved};
+use bridge::UiRequest;
 pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
 use overlay::{Action, Outcome, Overlay, ask_items};
+#[cfg(test)]
+pub(crate) use remote::agent_event;
+pub(crate) use remote::{Place, Remote};
 pub(crate) use slash::{REWIND_NOTE, is_note};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
@@ -171,15 +176,12 @@ struct Completion {
 
 /// Results of work the UI started in the background.
 enum Internal {
-    Shell {
-        command: String,
-        output: String,
-        status: String,
-        /// Whether the agent is told what was run (`!command`) or not (`!!command`).
-        share: bool,
-    },
+    /// What a `!command` printed and how it ended.
+    Shell { output: String, status: String },
     /// What a registered slash command came back with.
     Command(CommandOutcome),
+    /// The files of a session in another process, for completing `@` mentions.
+    Files(Vec<String>),
     /// A setting the settings menu saved that applies to the running UI at once.
     Setting { path: String, value: toml::Value },
     #[cfg(feature = "voice")]
@@ -193,13 +195,16 @@ enum Internal {
 }
 
 pub struct Tui {
-    app: Arc<App>,
-    active: Active,
+    /// The session, in this process or in another.
+    backend: Box<dyn Backend>,
+    /// What the open session holds, to read: the live store of a local session, a copy of a
+    /// remote one that [`Tui::sync`] brings up to date.
+    session: Arc<SessionStore>,
+    /// This machine's paths and settings, for what belongs to the UI itself.
+    env: Env,
     guard: TerminalGuard,
     /// Keys, pastes and resizes; `None` while another program has the terminal.
     terminal: Option<EventStream>,
-    events: mpsc::UnboundedReceiver<AgentEvent>,
-    requests: mpsc::UnboundedReceiver<UiRequest>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     renderer: Renderer<io::Stdout>,
@@ -245,6 +250,8 @@ pub struct Tui {
     /// The side question (`/btw`) being answered; it stands in for the input.
     btw: Option<btw::Panel>,
     waiting: VecDeque<UiRequest>,
+    /// What the session said while a full-screen view had the terminal.
+    held: VecDeque<Incoming>,
     completion: Option<Completion>,
     files: Option<Vec<String>>,
     busy: bool,
@@ -258,8 +265,6 @@ pub struct Tui {
     last_interrupt: Option<Instant>,
     /// The chain to go back to after a command that ran one prompt on another model.
     restore_chain: Option<Vec<ModelSpec>>,
-    team: Option<Arc<Team>>,
-    team_events: Option<broadcast::Receiver<TeamEvent>>,
     /// The sub-agent whose work is shown in the transcript next to the lead's.
     follow: Option<String>,
     /// Tool calls in flight of the followed agent.
@@ -267,25 +272,27 @@ pub struct Tui {
     #[cfg(feature = "voice")]
     voice: voice::Voice,
     quit: bool,
+    /// The session went away under the UI.
+    ended: bool,
 }
 
-fn load_theme(app: &App) -> (Theme, Option<String>) {
+fn load_theme(env: &Env) -> (Theme, Option<String>) {
     let depth = if std::env::var_os("WT_SESSION").is_some() {
         ColorDepth::TrueColor
     } else {
         ColorDepth::detect(std::env::var("COLORTERM").ok().as_deref())
     };
-    let (theme, problem) = named_theme(app, &app.config.tui.theme);
+    let (theme, problem) = named_theme(&env.paths, &env.config.tui.theme);
     (theme.with_depth(depth), problem)
 }
 
 /// `dark`, `light`, or `~/.azazel/themes/<name>.toml`. Falls back to `dark` with a message.
-fn named_theme(app: &App, name: &str) -> (Theme, Option<String>) {
+fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
     match name {
         "dark" => (Theme::dark(), None),
         "light" => (Theme::light(), None),
         other => {
-            let file = app.paths.home.join("themes").join(format!("{other}.toml"));
+            let file = paths.home.join("themes").join(format!("{other}.toml"));
             match std::fs::read_to_string(&file) {
                 Ok(source) => match Theme::from_toml(&source) {
                     Ok(theme) => (theme, None),
@@ -303,59 +310,86 @@ fn named_theme(app: &App, name: &str) -> (Theme, Option<String>) {
     }
 }
 
+/// The UI on a session in this process.
 pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) -> u8 {
-    let (request_tx, requests) = mpsc::unbounded_channel();
-    app.registry
-        .services
-        .insert(Arc::new(Ui(Arc::new(TuiBridge::new(request_tx)))));
+    let local = Local::new(app, active);
+    let env = local.env();
+    run_on(Box::new(local), env, first_prompt).await
+}
+
+/// The UI on a session in another process: a background session, or azazel on another machine.
+/// `env` is this machine's, for the UI's own settings.
+pub(crate) async fn run_remote(remote: Remote, env: Env, first_prompt: Option<String>) -> u8 {
+    run_on(Box::new(remote), env, first_prompt).await
+}
+
+/// This machine's settings for a UI whose session is elsewhere. The project here is not the
+/// session's, so nothing of it is trusted.
+pub(crate) fn env_here(cli: &crate::cli::Cli, paths: Paths) -> anyhow::Result<Env> {
+    let options = azazel_core::LoadOptions {
+        trusted: false,
+        overrides: crate::app::config_overrides(cli)?,
+        env: std::env::vars().collect(),
+    };
+    let config = azazel_core::Config::load(&paths, &options)?.config;
+    Ok(Env {
+        #[cfg(feature = "voice")]
+        credentials: Arc::new(crate::app::credentials(&paths, false).configured(&config.providers)),
+        paths,
+        config,
+    })
+}
+
+async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<String>) -> u8 {
     let guard = match TerminalGuard::enter() {
         Ok(guard) => guard,
         Err(e) => {
             eprintln!("azazel: cannot take over the terminal: {e}");
-            app.finish(&active).await;
+            backend.finish().await;
             return 1;
         }
     };
     let (internal_tx, internal_rx) = mpsc::unbounded_channel();
     // The settings menu runs as a command, outside the UI loop; this is how it reaches it.
-    let settings_tx = internal_tx.clone();
-    app.registry
-        .services
-        .insert(Arc::new(crate::settings::LiveSettings(Arc::new(
-            move |path: &str, value: &toml::Value| {
-                let _ = settings_tx.send(Internal::Setting {
-                    path: path.to_string(),
-                    value: value.clone(),
-                });
-            },
-        ))));
+    if let Some(local) = backend.local() {
+        let settings_tx = internal_tx.clone();
+        local
+            .app
+            .registry
+            .services
+            .insert(Arc::new(crate::settings::LiveSettings(Arc::new(
+                move |path: &str, value: &toml::Value| {
+                    let _ = settings_tx.send(Internal::Setting {
+                        path: path.to_string(),
+                        value: value.clone(),
+                    });
+                },
+            ))));
+    }
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     // Asked before anything reads keys: the answers come in on the same channel.
-    let (caps, images_problem) = terminal::capabilities(app.config.tui.images).await;
-    let (theme, theme_problem) = load_theme(&app);
+    let (caps, images_problem) = terminal::capabilities(env.config.tui.images).await;
+    let (theme, theme_problem) = load_theme(&env);
     let theme = theme.with_links(caps.links);
-    let attention = Attention::new(caps.clone(), app.config.notify.clone());
+    let attention = Attention::new(caps.clone(), env.config.notify.clone());
     let mut keymap = Keymap::defaults();
     let mut key_problem = None;
-    if let Ok(source) = std::fs::read_to_string(app.paths.keybindings_file())
+    if let Ok(source) = std::fs::read_to_string(env.paths.keybindings_file())
         && let Err(e) = keymap.merge_toml(&source)
     {
-        key_problem = Some(format!("{}: {e}", app.paths.keybindings_file().display()));
+        key_problem = Some(format!("{}: {e}", env.paths.keybindings_file().display()));
     }
-    let branch = azazel_core::prompt::git_branch(&app.paths.project_root);
-    let events = active.lead.subscribe();
-    let resumed = active.resumed;
-    let team = app.registry.services.get::<Team>();
-    let team_events = team.as_ref().map(|team| team.subscribe());
-    let editor_config = app.config.editor.clone();
-    let tui_config = app.config.tui.clone();
+    let branch = backend.branch();
+    let session = backend.session().await;
+    backend.list_files(internal_tx.clone());
+    let editor_config = env.config.editor.clone();
+    let tui_config = env.config.tui.clone();
     let mut tui = Tui {
-        app,
-        active,
+        backend,
+        session,
+        env,
         guard,
         terminal: Some(EventStream::new()),
-        events,
-        requests,
         internal_tx,
         internal_rx,
         renderer: Renderer::new(io::stdout(), width, height),
@@ -383,6 +417,7 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         deferred: VecDeque::new(),
         btw: None,
         waiting: VecDeque::new(),
+        held: VecDeque::new(),
         completion: None,
         files: None,
         busy: false,
@@ -395,60 +430,61 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         last_escape: None,
         last_interrupt: None,
         restore_chain: None,
-        team,
-        team_events,
         follow: None,
         followed_tools: Vec::new(),
         #[cfg(feature = "voice")]
         voice: voice::Voice::default(),
         quit: false,
+        ended: false,
     };
     let opening = tui.attention.open();
     tui.write_out(opening);
     tui.seed_history();
-    tui.welcome(resumed);
+    tui.welcome();
     for problem in [theme_problem, key_problem, images_problem].into_iter().flatten() {
         tui.warn(&problem);
     }
-    tui.app
-        .start(if resumed {
-            StartSource::Resume
-        } else {
-            StartSource::Startup
-        })
-        .await;
-    if let Some(notice) = crate::changelog::update_notice(&tui.app.paths) {
+    tui.backend.started().await;
+    // A session that is already at work when the UI opens on it shows as working.
+    if tui.backend.status().busy {
+        tui.busy = true;
+        tui.busy_since = Instant::now();
+    }
+    if let Some(notice) = crate::changelog::update_notice(&tui.env.paths) {
         tui.info(&notice);
     }
-    if crate::update::checks_enabled(tui.app.config.update.check) {
-        if let Some(notice) = crate::update::notice(&tui.app.paths) {
+    if crate::update::checks_enabled(tui.env.config.update.check) {
+        if let Some(notice) = crate::update::notice(&tui.env.paths) {
             tui.info(&notice);
         }
-        crate::update::check_in_background(&tui.app.paths, tui.app.config.update.auto);
+        crate::update::check_in_background(&tui.env.paths, tui.env.config.update.auto);
     }
     if let Some(prompt) = first_prompt {
         // Sent as if typed: without a model it is kept in the editor while settings open.
         tui.editor.set_text(&prompt);
         tui.submit(false).await;
-    } else if !tui.app.has_model(&tui.active.lead.status().chain) {
+    } else if !tui.backend.has_model() {
         // A first run has nothing to answer with: go straight to signing in or adding a key.
         tui.info(
             "Welcome! azazel needs a model before it can work. Sign in with a Claude or ChatGPT \
              subscription, or add an API key, then pick the default model. You can come back \
              any time with /settings.",
         );
-        tui.other_command("settings", "").await;
+        tui.other_command("settings", "");
     }
     tui.main_loop().await;
     let _ = tui.renderer.suspend();
     let closing = tui.attention.close();
     tui.write_out(&closing);
     tui.guard.suspend();
-    tui.app.finish(&tui.active).await;
+    tui.backend.finish().await;
+    if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended) {
+        println!("{farewell}");
+    }
     // A release the background check downloaded takes the place of this binary now.
-    if tui.app.config.update.auto
-        && crate::update::checks_enabled(tui.app.config.update.check)
-        && let Some(line) = crate::update::apply_staged(&tui.app.paths)
+    if tui.env.config.update.auto
+        && crate::update::checks_enabled(tui.env.config.update.check)
+        && let Some(line) = crate::update::apply_staged(&tui.env.paths)
     {
         println!("{line}");
     }
@@ -488,7 +524,7 @@ impl Tui {
         self.say(lines);
     }
 
-    fn welcome(&mut self, resumed: bool) {
+    fn welcome(&mut self) {
         let width = self.width();
         let art = view::banner(width, &self.theme);
         self.say(art);
@@ -498,40 +534,44 @@ impl Tui {
         } else {
             model
         };
-        let name = match self.active.session.name() {
+        let name = match self.session.name() {
             Some(name) => format!(" · {name}"),
             None => String::new(),
         };
+        let place = match self.backend.place() {
+            Some(place) => format!(" · {place}"),
+            None => String::new(),
+        };
         let heading = format!(
-            "azazel {} · {model} · {}{name}",
+            "azazel {} · {model} · {}{name}{place}",
             env!("CARGO_PKG_VERSION"),
-            self.app.paths.cwd.display()
+            self.backend.cwd().display()
         );
         let lines = view::styled(&heading, Role::Accent, width, &self.theme);
         self.say(lines);
         self.info(
             "enter sends · shift+enter adds a line · / commands · @ files · ! shell · /settings accounts and models · ctrl+c twice quits",
         );
-        if !self.app.ignored_settings.is_empty() {
-            let skipped = self.app.ignored_settings.join(", ");
+        let skipped = match self.backend.local() {
+            Some(local) => local.app.ignored_settings.join(", "),
+            None => String::new(),
+        };
+        if !skipped.is_empty() {
             self.warn(&format!("this project is not trusted; skipped: {skipped}"));
         }
-        if resumed {
+        let opened = self.backend.opened();
+        if opened.resumed {
             self.recap();
         }
-        if let Some(notice) = self.active.notice.take() {
+        if let Some(notice) = opened.notice {
             self.warn(&notice);
         }
     }
 
     /// Shows where a reopened session left off.
     fn recap(&mut self) {
-        let context = self.active.session.build_context(None);
-        let name = self
-            .active
-            .session
-            .name()
-            .unwrap_or_else(|| self.active.session.id());
+        let context = self.session.build_context(None);
+        let name = self.session.name().unwrap_or_else(|| self.session.id());
         self.info(&format!(
             "resumed session {name} ({} messages in context)",
             context.len()
@@ -551,17 +591,7 @@ impl Tui {
     }
 
     fn model_label(&self) -> String {
-        let status = self.active.lead.status();
-        match status.model {
-            Some(model) => model.to_string(),
-            None => self
-                .app
-                .router
-                .resolve(&status.chain)
-                .first()
-                .map(|m| m.to_string())
-                .unwrap_or_default(),
-        }
+        self.backend.model_label()
     }
 
     async fn main_loop(&mut self) {
@@ -591,16 +621,13 @@ impl Tui {
                     }
                     None => break,
                 },
-                event = self.events.recv() => match event {
-                    Some(event) => {
-                        self.on_agent(event);
-                        self.send_queued().await;
-                    }
-                    None => break,
-                },
-                request = self.requests.recv() => {
-                    if let Some(request) = request {
-                        self.waiting.push_back(request);
+                incoming = self.backend.next(), if self.held.is_empty() => {
+                    self.on_incoming(incoming).await;
+                }
+                // What arrived while a full-screen view had the terminal comes first.
+                _ = std::future::ready(()), if !self.held.is_empty() => {
+                    if let Some(incoming) = self.held.pop_front() {
+                        self.on_incoming(incoming).await;
                     }
                 }
                 done = self.internal_rx.recv() => {
@@ -608,7 +635,6 @@ impl Tui {
                         self.on_internal(done).await;
                     }
                 }
-                event = team::next_event(&mut self.team_events) => self.on_team(event),
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
                 _ = ticker.tick(),
@@ -619,6 +645,28 @@ impl Tui {
                         || self.voice_animates() => {}
                 // Something to tell the terminal although nothing happens: see `tell_terminal`.
                 _ = wake_at(self.attention.next_wake()) => {}
+            }
+        }
+    }
+
+    async fn on_incoming(&mut self, incoming: Incoming) {
+        match incoming {
+            Incoming::Lead(event) => {
+                let ended = event.is_terminal();
+                self.on_agent(event);
+                if ended {
+                    // What the run added to the session is there to read from now on.
+                    self.sync().await;
+                }
+                self.send_queued().await;
+            }
+            Incoming::Request(request) => self.waiting.push_back(request),
+            Incoming::Team(event) => self.on_team(event),
+            Incoming::Closed(why) => {
+                self.fail(&why);
+                let _ = self.draw();
+                self.ended = true;
+                self.quit = true;
             }
         }
     }
@@ -647,21 +695,22 @@ impl Tui {
     fn status_line(&self, width: usize) -> Line {
         let theme = &self.theme;
         let muted = |text: &str| theme.paint(Role::Muted, text);
-        let status = self.active.lead.status();
-        let mode = self.app.permissions.mode();
+        let status = self.backend.status();
+        let facts = self.backend.facts();
+        let mode = self.backend.mode();
         let mut left = vec![match mode {
             PermissionMode::Plan => theme.paint(Role::ModePlan, &format!("⏸ {mode}")),
             PermissionMode::Ask => muted(&mode.to_string()),
             PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &format!("⏵⏵ {mode}")),
             PermissionMode::Auto => theme.paint(Role::ModeAuto, &format!("⏵⏵ {mode}")),
         }];
-        if self.app.coordinator.is_on() {
+        if facts.coordinator {
             left.push(theme.paint(Role::Accent, "coordinator"));
         }
         if let Some(branch) = &self.branch {
             left.push(muted(&format!("⑂ {branch}")));
         }
-        let cwd = &self.app.paths.cwd;
+        let cwd = &self.backend.cwd();
         let shown = match std::env::home_dir()
             .and_then(|home| cwd.strip_prefix(home).ok().map(|rest| rest.to_path_buf()))
         {
@@ -677,25 +726,16 @@ impl Tui {
         if let Some(cost) = status.usage.cost_usd {
             left.push(muted(&format!("${cost:.2}")));
         }
-        if let Some(nearly_full) = self.usage_segment(status.model.as_ref()) {
-            left.push(nearly_full);
+        if let Some(nearly_full) = &facts.usage {
+            left.push(theme.paint(Role::Warning, &format!("◔ {nearly_full}")));
         }
         match self.active_agents() {
             0 => {}
             1 => left.push(theme.paint(Role::Accent, "⇶ 1 agent")),
             n => left.push(theme.paint(Role::Accent, &format!("⇶ {n} agents"))),
         }
-        let goal = self
-            .app
-            .registry
-            .services
-            .get::<Goals>()
-            .and_then(|goals| goals.current());
-        if let Some(goal) = goal.filter(|goal| goal.status.is_open()) {
-            left.push(theme.paint(
-                Role::Accent,
-                &format!("⚑ goal {}, attempt {}", goal.status.label(), goal.iteration + 1),
-            ));
+        if let Some(goal) = &facts.goal {
+            left.push(theme.paint(Role::Accent, &format!("⚑ {goal}")));
         }
 
         let model = self.model_label();
@@ -704,7 +744,7 @@ impl Tui {
         } else {
             model
         };
-        let tier = match self.app.router.tier() {
+        let tier = match facts.tier {
             Some(tier) => format!("{} · ", crate::routing::tier_word(tier)),
             None => String::new(),
         };
@@ -742,7 +782,7 @@ impl Tui {
         if self.editor.text().starts_with('!') {
             return Role::Bash;
         }
-        match self.app.permissions.mode() {
+        match self.backend.mode() {
             PermissionMode::Plan => Role::ModePlan,
             PermissionMode::Ask => Role::Border,
             PermissionMode::AcceptEdits => Role::ModeEdits,
@@ -751,10 +791,7 @@ impl Tui {
     }
 
     fn todo_lines(&self, width: usize) -> Vec<Line> {
-        let Some(store) = self.app.registry.services.get::<TodoStore>() else {
-            return Vec::new();
-        };
-        let items = store.get(&self.active.lead.id);
+        let items = self.backend.facts().todo;
         if items.iter().all(|item| item.status == TodoStatus::Done) {
             return Vec::new();
         }
@@ -971,7 +1008,7 @@ impl Tui {
                         &output,
                         Duration::from_millis(duration_ms),
                         self.expand_tools,
-                        Some(&self.app.paths.cwd),
+                        self.local_cwd().as_deref(),
                         width,
                         &self.theme,
                     );
@@ -1026,20 +1063,48 @@ impl Tui {
         self.tools.clear();
         self.stream = StreamView::default();
         // The agent may have switched branches.
-        self.branch = azazel_core::prompt::git_branch(&self.app.paths.project_root);
+        self.branch = self.backend.branch();
         if let Some(chain) = self.restore_chain.take() {
-            self.active.lead.send(AgentCmd::SetModel(chain));
+            self.backend.set_chain(chain);
         }
     }
 
+    /// Brings what the UI reads of the session up to date with the session itself.
+    async fn sync(&mut self) {
+        self.session = self.backend.session().await;
+    }
+
+    /// The directory the session works in, when it is one of this machine: paths in it can
+    /// then be opened from here.
+    fn local_cwd(&self) -> Option<std::path::PathBuf> {
+        self.backend.local().map(|local| local.app.paths.cwd.clone())
+    }
+
+    /// The application, for `what`, which needs the session to be in this process. Says so
+    /// when the open one is not.
+    fn app(&mut self, what: &str) -> Option<Arc<App>> {
+        let app = self.backend.local().map(|local| local.app.clone());
+        if app.is_none() {
+            self.here_only(what);
+        }
+        app
+    }
+
+    /// Says that `what` needs a session in this process, when the open one is not.
+    fn here_only(&mut self, what: &str) -> bool {
+        let here = self.backend.local().is_some();
+        if !here {
+            self.fail(&format!(
+                "{what} works only in a session that runs in this process; this one runs elsewhere"
+            ));
+        }
+        here
+    }
+
     async fn on_internal(&mut self, done: Internal) {
-        let (command, output, status, share) = match done {
-            Internal::Shell {
-                command,
-                output,
-                status,
-                share,
-            } => (command, output, status, share),
+        let (output, status) = match done {
+            Internal::Shell { output, status } => (output, status),
+            Internal::Files(files) => return self.files = Some(files),
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
             Internal::Btw(update) => return self.on_btw(update),
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
@@ -1056,7 +1121,7 @@ impl Tui {
             Internal::Voice(done) => return self.voice_done(done).await,
         };
         self.notice = None;
-        self.branch = azazel_core::prompt::git_branch(&self.app.paths.project_root);
+        self.branch = self.backend.branch();
         let shown: Vec<&str> = output.lines().collect();
         let from = shown.len().saturating_sub(40);
         let mut display = shown[from..].join("\n");
@@ -1064,12 +1129,6 @@ impl Tui {
             display = format!("… {from} earlier lines\n{display}");
         }
         self.info(&format!("{display}\n{status}"));
-        if !share {
-            return;
-        }
-        // The agent sees what the user ran, without being asked to respond.
-        let note = format!("{SHELL_NOTE}{command}` myself:\n{output}\n{status}");
-        self.active.lead.send(AgentCmd::Append(UserInput::text(note)));
     }
 
     // ------------------------------------------------------------ requests from agents
@@ -1088,7 +1147,11 @@ impl Tui {
 
     /// Tells extensions (notification hooks) that something wants the user's attention.
     fn announce(&self, level: Level, text: String) {
-        let bus = self.app.registry.bus.clone();
+        // A session in another process tells its own extensions.
+        let Some(local) = self.backend.local() else {
+            return;
+        };
+        let bus = local.app.registry.bus.clone();
         tokio::spawn(async move {
             bus.emit(&mut azazel_core::Event::Notification { level, text })
                 .await;
@@ -1361,11 +1424,8 @@ impl Tui {
             Some("exit") if self.editor.is_empty() => self.quit = true,
             Some("cycle_mode") => {
                 let modes = PermissionMode::ALL;
-                let current = modes
-                    .iter()
-                    .position(|m| *m == self.app.permissions.mode())
-                    .unwrap_or(0);
-                self.app.permissions.set_mode(modes[(current + 1) % modes.len()]);
+                let current = modes.iter().position(|m| *m == self.backend.mode()).unwrap_or(0);
+                self.set_mode(modes[(current + 1) % modes.len()]).await;
             }
             Some("toggle_tool_output") => {
                 self.expand_tools = !self.expand_tools;
@@ -1385,7 +1445,7 @@ impl Tui {
                     if self.show_thinking { "shown" } else { "hidden" }
                 ));
             }
-            Some("model_picker") => self.open_model_picker(),
+            Some("model_picker") => self.open_model_picker().await,
             Some("history_search") => self.open_history(),
             Some("paste_image") => self.paste_image(),
             Some("complete") => {
@@ -1399,9 +1459,9 @@ impl Tui {
             // With nothing queued the key is the editor's (up, into the history).
             Some("dequeue") if !self.queued.is_empty() => self.dequeue(),
             Some("stash") => self.stash(),
-            Some("cycle_thinking") => self.cycle_thinking(),
-            Some("cycle_model") => self.cycle_model(true),
-            Some("cycle_model_back") => self.cycle_model(false),
+            Some("cycle_thinking") => self.cycle_thinking().await,
+            Some("cycle_model") => self.cycle_model(true).await,
+            Some("cycle_model_back") => self.cycle_model(false).await,
             Some("transcript") => self.open_transcript().await,
             Some("retry") => self.slash("retry").await,
             Some("background") if self.foreground_call().is_some() => {
@@ -1420,7 +1480,7 @@ impl Tui {
 
     async fn on_escape(&mut self) {
         if self.busy {
-            self.active.lead.abort();
+            self.backend.abort();
             return;
         }
         if !self.editor.is_empty() {
@@ -1484,7 +1544,11 @@ impl Tui {
         if let Some(note) = quick::memory_note(&entered) {
             let lines = view::user_prompt(trimmed, self.width(), &self.theme);
             self.say(lines);
-            let (services, note) = (self.app.registry.services.clone(), note.to_string());
+            let Some(local) = self.backend.local() else {
+                self.here_only("a `# note` for the memory");
+                return;
+            };
+            let (services, note) = (local.app.registry.services.clone(), note.to_string());
             let done = self.internal_tx.clone();
             tokio::spawn(async move {
                 let _ = done.send(Internal::Command(quick::remember(&services, &note).await));
@@ -1492,10 +1556,10 @@ impl Tui {
             return;
         }
         // Nothing can answer yet: keep what was typed and set a model up first.
-        if !self.busy && !self.app.has_model(&self.active.lead.status().chain) {
+        if !self.busy && !self.backend.has_model() {
             self.editor.set_text(&entered);
             self.warn("no model is set up yet: sign in or add an API key, then choose a default model");
-            return self.other_command("settings", "").await;
+            return self.other_command("settings", "");
         }
         if self.busy && follow_up {
             // Held here, not by the agent, so that it is sent like any typed prompt.
@@ -1506,9 +1570,8 @@ impl Tui {
         let lines = view::user_prompt(&shown, self.width(), &self.theme);
         self.say(lines);
         if self.busy {
-            let mut content = vec![Block::text(entered)];
-            content.append(&mut self.images);
-            self.active.lead.steer(UserInput { content });
+            let images = std::mem::take(&mut self.images);
+            self.backend.steer(entered, images);
             return;
         }
         self.send_prompt(entered).await;
@@ -1516,16 +1579,16 @@ impl Tui {
 
     async fn send_prompt(&mut self, prompt: String) {
         let images = std::mem::take(&mut self.images);
-        if let Err(reason) = self.app.submit(&self.active, prompt, images).await {
+        if let Err(reason) = self.backend.prompt(prompt, images).await {
             self.fail(&format!("prompt rejected: {reason}"));
             if let Some(chain) = self.restore_chain.take() {
-                self.active.lead.send(AgentCmd::SetModel(chain));
+                self.backend.set_chain(chain);
             }
         }
     }
 
-    /// `!command`: runs in the user's shell, outside the permission engine and the push guard.
-    /// With `share` the agent is told what was run and what it printed.
+    /// `!command`: runs in the user's shell where the session works. With `share` the agent is
+    /// told what was run and what it printed.
     fn user_shell(&mut self, command: String, share: bool) {
         if command.is_empty() {
             return;
@@ -1534,29 +1597,7 @@ impl Tui {
         let lines = view::user_prompt(&format!("{echo}{command}"), self.width(), &self.theme);
         self.say(lines);
         self.notice = Some(format!("running `{command}`…"));
-        let shell = self.app.shell.clone();
-        let cwd = self.app.paths.cwd.clone();
-        let done = self.internal_tx.clone();
-        tokio::spawn(async move {
-            let mut options = RunOptions::new(cwd);
-            options.keep = (200, 800);
-            let (output, status) = match run_command(&shell, &command, options).await {
-                Ok(result) => {
-                    let status = match result.code {
-                        Some(code) => format!("exit code: {code}"),
-                        None => "killed".to_string(),
-                    };
-                    (result.output.render(), status)
-                }
-                Err(e) => (String::new(), format!("could not start: {e}")),
-            };
-            let _ = done.send(Internal::Shell {
-                command,
-                output,
-                status,
-                share,
-            });
-        });
+        self.backend.shell(command, share, self.internal_tx.clone());
     }
 
     fn paste_image(&mut self) {
@@ -1585,22 +1626,13 @@ impl Tui {
 
     // ------------------------------------------------------------ completion
 
+    /// The files `@` completes. Those of a session in another process were asked for when
+    /// the UI started; until they are there, there are none.
     fn project_files(&mut self) -> &[String] {
-        let root = self.app.paths.cwd.clone();
-        self.files.get_or_insert_with(|| {
-            ignore::WalkBuilder::new(&root)
-                .hidden(false)
-                .require_git(false)
-                .filter_entry(|entry| entry.file_name() != ".git")
-                .build()
-                .flatten()
-                .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
-                .filter_map(|entry| {
-                    let relative = entry.path().strip_prefix(&root).ok()?;
-                    Some(relative.to_string_lossy().replace('\\', "/"))
-                })
-                .take(MAX_COMPLETION_FILES)
-                .collect()
+        let root = self.local_cwd();
+        self.files.get_or_insert_with(|| match root {
+            Some(root) => project_files(&root),
+            None => Vec::new(),
         })
     }
 
@@ -1728,18 +1760,17 @@ impl Tui {
             Action::PlanFeedback { reply } => drop(reply.send(Ok(PlanDecision::Revise(typed)))),
             Action::Model(specs) => {
                 if let Some(spec) = specs.get(choice) {
-                    self.set_model(&[spec.as_str()]);
+                    self.set_model(&[spec.as_str()]).await;
                 }
             }
             Action::Thinking => {
                 if let Some(level) = azazel_ai::ThinkingLevel::ALL.get(choice) {
-                    self.set_thinking(*level);
-                    self.info(&format!("thinking: {level}"));
+                    self.set_thinking(*level).await;
                 }
             }
             Action::Mode => {
                 if let Some(mode) = PermissionMode::ALL.get(choice) {
-                    self.app.permissions.set_mode(*mode);
+                    self.set_mode(*mode).await;
                 }
             }
             Action::Theme(names) => {
@@ -1788,7 +1819,7 @@ impl Tui {
                     self.follow_agent(id);
                 }
             }
-            Action::AgentMessage(id) => self.message_agent(&id, &typed),
+            Action::AgentMessage(id) => self.message_agent(&id, &typed).await,
             #[cfg(feature = "mcp")]
             Action::McpServer(servers) => {
                 if let Some((name, enabled)) = servers.get(choice) {
@@ -1817,7 +1848,7 @@ impl Tui {
             #[cfg(feature = "mcp")]
             Action::McpChoice { server, actions } => {
                 if let Some(action) = actions.get(choice) {
-                    self.other_command("mcp", &format!("{action} {server}")).await;
+                    self.other_command("mcp", &format!("{action} {server}"));
                 }
             }
             action @ (Action::CommitStage(_) | Action::Commit { .. }) => {
@@ -1839,82 +1870,66 @@ impl Tui {
         }
     }
 
-    /// Replaces the open session with another one, keeping the model selection.
-    async fn swap_session(&mut self, how: Open, source: StartSource) {
-        let status = self.active.lead.status();
-        self.app.close(&self.active).await;
-        match self.app.open(how, status.chain.clone(), status.thinking).await {
-            Ok(active) => {
-                self.events = active.lead.subscribe();
-                let resumed = active.resumed;
-                self.active = active;
-                // The agents of the session that was left are gone with it.
-                self.follow = None;
-                self.followed_tools.clear();
-                self.busy = false;
-                self.tools.clear();
-                self.stream = StreamView::default();
-                self.app.start(source).await;
-                if resumed {
-                    self.recap();
-                } else {
-                    self.info("started a new session");
-                }
-                if let Some(notice) = self.active.notice.take() {
-                    self.warn(&notice);
-                }
+    /// Leaves the open session, or the place in it, for another, and shows where that is.
+    /// False when it could not be done; the reason has been said.
+    async fn go(&mut self, to: Go) -> bool {
+        let new = matches!(to, Go::New);
+        match self.backend.go(to).await {
+            Ok(moved) => {
+                self.moved(moved, new).await;
+                true
             }
-            Err(e) => {
-                self.fail(&format!("could not open the session: {e:#}"));
-                // Keep working in the session we had.
-                match self
-                    .app
-                    .open(
-                        Open::Store(self.active.session.clone()),
-                        status.chain,
-                        status.thinking,
-                    )
-                    .await
-                {
-                    Ok(active) => {
-                        self.events = active.lead.subscribe();
-                        self.active = active;
-                    }
-                    Err(e) => {
-                        self.fail(&format!("could not reopen the previous session either: {e:#}"));
-                        self.quit = true;
-                    }
-                }
+            Err(why) => {
+                self.fail(&why);
+                // The session that was open is open again, or nothing is.
+                self.sync().await;
+                false
             }
         }
     }
 
-    fn record_chain(&mut self, chain: Vec<ModelSpec>) {
-        self.active.lead.send(AgentCmd::SetModel(chain.clone()));
-        let label = chain
-            .iter()
-            .map(ModelSpec::to_string)
-            .collect::<Vec<_>>()
-            .join(", ");
-        self.active.session.append(EntryKind::ModelChange { chain });
-        self.info(&format!("model: {label}"));
+    /// After the conversation moved: what was in flight belonged to the session that was left.
+    async fn moved(&mut self, moved: Moved, new: bool) {
+        self.sync().await;
+        self.follow = None;
+        self.followed_tools.clear();
+        self.busy = false;
+        self.tools.clear();
+        self.stream = StreamView::default();
+        if moved.resumed && !new {
+            self.recap();
+        } else {
+            self.info("started a new session");
+        }
+        if let Some(notice) = moved.notice {
+            self.warn(&notice);
+        }
     }
 
-    fn set_model(&mut self, specs: &[&str]) {
+    async fn set_mode(&mut self, mode: PermissionMode) {
+        if let Err(why) = self.backend.set_mode(mode).await {
+            self.fail(&why);
+        }
+    }
+
+    async fn set_model(&mut self, specs: &[&str]) {
         let texts: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
-        let chain = match self.app.model_specs(&texts) {
-            Ok(chain) => chain,
-            Err(e) => return self.fail(e.trim_start_matches("--model ")),
-        };
-        if self.app.router.resolve(&chain).is_empty() {
-            return self.fail("that selection resolves to no model");
+        match self.backend.set_model(&texts).await {
+            Ok(chain) => {
+                let label = chain
+                    .iter()
+                    .map(ModelSpec::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.info(&format!("model: {label}"));
+            }
+            Err(why) => self.fail(&why),
         }
-        self.record_chain(chain);
     }
 
     fn set_theme(&mut self, name: &str) {
         let depth = self.theme.depth();
-        let (theme, problem) = named_theme(&self.app, name);
+        let (theme, problem) = named_theme(&self.env.paths, name);
         match problem {
             Some(problem) => self.fail(&problem),
             None => {
@@ -1924,6 +1939,24 @@ impl Tui {
             }
         }
     }
+}
+
+/// The files under `root`, as paths relative to it with forward slashes; ignored files are
+/// left out and the list is cut at [`MAX_COMPLETION_FILES`].
+pub(crate) fn project_files(root: &std::path::Path) -> Vec<String> {
+    ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .require_git(false)
+        .filter_entry(|entry| entry.file_name() != ".git")
+        .build()
+        .flatten()
+        .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
+        .filter_map(|entry| {
+            let relative = entry.path().strip_prefix(root).ok()?;
+            Some(relative.to_string_lossy().replace('\\', "/"))
+        })
+        .take(MAX_COMPLETION_FILES)
+        .collect()
 }
 
 fn first_line(prompt: &str) -> String {

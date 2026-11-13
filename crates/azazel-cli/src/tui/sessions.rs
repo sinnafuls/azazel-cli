@@ -2,34 +2,30 @@
 //! filters in `/tree`, `/retry`, `/handoff`, `/search`, `/consult`, and the prompt history that
 //! is kept across sessions.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use azazel_ai::{Message, Role as MessageRole, Usage};
+use azazel_ai::{Message, Role as MessageRole};
 use azazel_core::names;
 use azazel_core::paths::canonical;
-use azazel_core::session::{Entry, SessionFacts, SessionSummary};
+use azazel_core::session::{Entry, SessionSummary};
 use azazel_core::side::{Side, SideAnswer, SideQuestion};
-use azazel_core::{EntryKind, SessionStore, StartSource};
-use azazel_tui::components::format_tokens;
+use azazel_core::{EntryKind, SessionStore};
 use azazel_tui::{KeyCombo, SelectItem, text};
 use crossterm::event::{KeyCode, KeyModifiers};
 use tokio_util::sync::CancellationToken;
 
+use super::backend::Go;
 use super::overlay::{Action, Kind, Overlay};
 use super::pager::{self, Source, Start};
 use super::{Internal, Tui, first_line, view};
-use crate::app::Open;
 use crate::history;
-use crate::retry::{self, Again, HANDOFF_NOTE};
+use crate::retry::{self, HANDOFF_NOTE};
 use crate::sessions::local_time;
 
 /// Messages shown when `tab` previews a session in a picker.
 const PREVIEW_MESSAGES: usize = 6;
-/// Matching lines listed per session by `/search`.
-const SEARCH_LINES: usize = 3;
 /// Entries `ctrl+r` lists.
 const HISTORY_ROWS: usize = 2000;
 /// Rows of a reply shown in the panel while it arrives.
@@ -158,13 +154,17 @@ fn session_label(session: &SessionSummary) -> String {
     )
 }
 
-fn session_item(session: &SessionSummary, open: bool) -> SelectItem {
+/// `background` is the id of the background session that has the session open, if one does.
+fn session_item(session: &SessionSummary, open: bool, background: Option<&str>) -> SelectItem {
     let mut detail = Vec::new();
     if session.pinned {
         detail.push("pinned".to_string());
     }
     if open {
         detail.push("open now".to_string());
+    }
+    if let Some(id) = background {
+        detail.push(format!("in the background: azazel attach {id}"));
     }
     detail.push(local_time(&session.updated));
     detail.push(format!("{} messages", session.messages));
@@ -261,136 +261,21 @@ fn wrapped(said: &str, width: usize) -> Vec<String> {
         .collect()
 }
 
-fn usage_text(usage: &Usage) -> String {
-    let cost = match usage.cost_usd {
-        Some(cost) => format!("${cost:.4}"),
-        None => "no price known".to_string(),
-    };
-    format!(
-        "{} in · {} out · {} cache read · {} cache write · {cost}",
-        format_tokens(usage.input),
-        format_tokens(usage.output),
-        format_tokens(usage.cache_read),
-        format_tokens(usage.cache_write),
-    )
-}
-
-/// Everything `/session` says.
-struct SessionReport {
-    file: PathBuf,
-    id: String,
-    name: Option<String>,
-    pinned: bool,
-    facts: SessionFacts,
-    /// Messages the model sees on the current branch.
-    in_context: usize,
-    chain: String,
-    model: String,
-    thinking: String,
-    agents_usage: Usage,
-    side: BTreeMap<String, Usage>,
-    checkpoints: String,
-}
-
-impl SessionReport {
-    fn render(&self) -> String {
-        let facts = &self.facts;
-        let mut rows: Vec<(&str, String)> = vec![
-            (
-                "session",
-                self.name
-                    .clone()
-                    .unwrap_or_else(|| "(no name yet; /name gives it one)".to_string()),
-            ),
-            ("id", self.id.clone()),
-            ("file", self.file.display().to_string()),
-            (
-                "created",
-                format!(
-                    "{} · last used {}",
-                    local_time(&facts.created),
-                    local_time(&facts.updated)
-                ),
-            ),
-        ];
-        if let Some(parent) = &facts.parent_session {
-            rows.push(("continues", parent.clone()));
-        }
-        if self.pinned {
-            rows.push(("pinned", "yes".to_string()));
-        }
-        rows.push((
-            "messages",
-            format!(
-                "{} from you · {} replies · {} tool results · {} in the model's context",
-                facts.user, facts.assistant, facts.tool, self.in_context
-            ),
-        ));
-        rows.push((
-            "branches",
-            match facts.branch_points {
-                0 => "the conversation never branched".to_string(),
-                1 => "1 branch point; /tree shows it".to_string(),
-                n => format!("{n} branch points; /tree shows them"),
-            },
-        ));
-        if facts.compactions > 0 {
-            rows.push(("compacted", format!("{} times", facts.compactions)));
-        }
-        let model = if self.model.is_empty() || self.model == self.chain {
-            self.chain.clone()
-        } else {
-            format!("{} (now {})", self.chain, self.model)
-        };
-        rows.push(("model", format!("{model} · thinking {}", self.thinking)));
-        rows.push(("tokens", format!("lead: {}", usage_text(&facts.usage))));
-        if !facts.agents.is_empty() {
-            rows.push(("", format!("agents: {}", usage_text(&self.agents_usage))));
-        }
-        if !self.side.is_empty() {
-            let side: Vec<String> = self
-                .side
-                .iter()
-                .map(|(purpose, usage)| match usage.cost_usd {
-                    Some(cost) => format!("{purpose} ${cost:.4}"),
-                    None => format!("{purpose} {} tokens", format_tokens(usage.input + usage.output)),
-                })
-                .collect();
-            rows.push(("", format!("on the side, in this run: {}", side.join(", "))));
-        }
-        rows.push(("checkpoints", self.checkpoints.clone()));
-        rows.push((
-            "agents",
-            if facts.agents.is_empty() {
-                "none run".to_string()
-            } else {
-                let runs: Vec<String> = facts
-                    .agents
-                    .iter()
-                    .map(|run| format!("{} ({}, {})", run.id, run.def, run.status))
-                    .collect();
-                format!("{} run: {}", runs.len(), runs.join(", "))
-            },
-        ));
-        rows.iter()
-            .map(|(what, value)| format!("{what:<12}{value}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
-}
-
 impl Tui {
     // ------------------------------------------------------------ /name and /session
 
     /// `/name <text>` names the session; `/name` alone asks the namer for a name.
-    pub(super) fn name_command(&mut self, args: &str) {
+    pub(super) async fn name_command(&mut self, args: &str) {
         if let Some(name) = clean_name(args) {
-            return self.set_name(name);
+            return self.set_name(name).await;
         }
-        let Some(side) = self.app.registry.services.get::<Side>() else {
+        let Some(local) = self.backend.local() else {
+            return self.fail("give the session a name with /name <text>");
+        };
+        let Some(side) = local.app.registry.services.get::<Side>() else {
             return self.fail("no model can be asked for a name; give one with /name <text>");
         };
-        let (agent, session) = (self.active.lead.info().clone(), self.active.session.clone());
+        let (agent, session) = (local.active.lead.info().clone(), local.active.session.clone());
         let done = self.internal_tx.clone();
         self.notice = Some("asking for a name…".to_string());
         tokio::spawn(async move {
@@ -399,72 +284,36 @@ impl Tui {
         });
     }
 
-    fn set_name(&mut self, name: String) {
-        self.info(&format!("session named: {name}"));
-        self.active.session.append(EntryKind::SessionInfo { name });
-    }
-
-    /// `/session`: what the open session is and what it holds.
-    pub(super) async fn show_session(&mut self) {
-        let session = self.active.session.clone();
-        let facts = session.facts();
-        let status = self.active.lead.status();
-        let mut agents_usage = Usage::default();
-        for run in &facts.agents {
-            if let Some(usage) = SessionStore::usage_of(&run.transcript) {
-                agents_usage.add(&usage);
-            }
+    async fn set_name(&mut self, name: String) {
+        match self.backend.set_name(name.clone()).await {
+            Ok(()) => self.info(&format!("session named: {name}")),
+            Err(why) => self.fail(&why),
         }
-        let checkpoints = match self.active.checkpoints.disabled().await {
-            Some(reason) => format!("off: {reason}"),
-            None => format!("on · {} taken; /rewind goes back to one", facts.checkpoints),
-        };
-        let report = SessionReport {
-            file: session.path(),
-            id: session.id(),
-            name: session.name(),
-            pinned: session.pinned(),
-            in_context: session.build_context(None).len(),
-            chain: status
-                .chain
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", "),
-            model: self.model_label(),
-            thinking: status.thinking.to_string(),
-            agents_usage,
-            side: self
-                .app
-                .registry
-                .services
-                .get::<Side>()
-                .map(|side| side.costs.by_purpose())
-                .unwrap_or_default(),
-            checkpoints,
-            facts,
-        };
-        self.info(&report.render());
+        self.sync().await;
     }
 
     // ------------------------------------------------------------ session pickers
 
     /// `/resume`: the sessions of this project to pick from.
-    pub(super) fn open_resume(&mut self) {
+    pub(super) async fn open_resume(&mut self) {
         if self.idle_to("switch sessions") {
-            self.open_sessions(PickFor::Resume, false, None, None);
+            self.open_sessions(PickFor::Resume, false, None, None).await;
         }
     }
 
     /// `/consult [question]`: pick a saved session and ask it something.
-    pub(super) fn open_consult(&mut self, question: &str) {
+    pub(super) async fn open_consult(&mut self, question: &str) {
+        if !self.here_only("/consult") {
+            return;
+        }
         let question = (!question.trim().is_empty()).then(|| question.trim().to_string());
-        self.open_sessions(PickFor::Consult(question), false, None, None);
+        self.open_sessions(PickFor::Consult(question), false, None, None)
+            .await;
     }
 
     /// Opens a session picker with the row of session `select` selected and `note` above the
     /// list. What was typed into the filter of the picker it replaces is kept.
-    fn open_sessions(
+    async fn open_sessions(
         &mut self,
         purpose: PickFor,
         named_only: bool,
@@ -479,13 +328,12 @@ impl Tui {
             }) => filter.clone(),
             _ => String::new(),
         };
-        let open = self.active.session.id();
-        let rows = picker_rows(
-            SessionStore::list(&self.app.paths.sessions_dir()),
-            named_only,
-            &open,
-            purpose == PickFor::Resume,
-        );
+        let open = self.session.id();
+        let listed = match self.backend.sessions(None).await {
+            Ok(listed) => listed.into_iter().map(|(session, _)| session).collect(),
+            Err(why) => return self.fail(&why),
+        };
+        let rows = picker_rows(listed, named_only, &open, purpose == PickFor::Resume);
         if rows.is_empty() {
             self.overlay = None;
             if let Some(note) = note {
@@ -497,9 +345,16 @@ impl Tui {
                 "this project has no other sessions"
             });
         }
+        let home = &self.env.paths.home;
         let items = rows
             .iter()
-            .map(|session| session_item(session, session.id == open))
+            .map(|session| {
+                // The open session says so itself, wherever it runs.
+                let background = Some(&session.id)
+                    .filter(|id| **id != open)
+                    .and_then(|id| crate::running::host_of(home, id));
+                session_item(session, session.id == open, background.as_deref())
+            })
             .collect();
         let mut body = vec![SESSION_KEYS.to_string()];
         if named_only {
@@ -541,8 +396,8 @@ impl Tui {
 
     /// Appends to a session of a picker: the open one through its store, another through its file.
     fn write_to(&self, session: &SessionSummary, kind: EntryKind) -> std::io::Result<()> {
-        if session.id == self.active.session.id() {
-            self.active.session.append(kind);
+        if session.id == self.session.id() {
+            self.session.append(kind);
         } else {
             SessionStore::open(&session.path)?.append(kind);
         }
@@ -572,11 +427,11 @@ impl Tui {
         };
         match target {
             Some(Target::Session(row, purpose, named_only)) => {
-                self.picker_key(key, *row, purpose, named_only)
+                self.picker_key(key, *row, purpose, named_only).await
             }
             Some(Target::Tree((id, said), filter)) => match key {
                 0 => {
-                    let current = self.active.session.labels().remove(&id);
+                    let current = self.session.labels().remove(&id);
                     let body = vec![
                         format!("A label for: {}", first_line(&said)),
                         match current {
@@ -600,9 +455,17 @@ impl Tui {
         true
     }
 
-    fn picker_key(&mut self, key: usize, row: SessionSummary, purpose: PickFor, named_only: bool) {
+    async fn picker_key(&mut self, key: usize, row: SessionSummary, purpose: PickFor, named_only: bool) {
         let label = session_label(&row);
-        let open = row.id == self.active.session.id();
+        let open = row.id == self.session.id();
+        // Renaming, deleting, pinning and previewing work on the session files themselves.
+        if key != 3 && self.backend.local().is_none() {
+            let note = "Only a session that runs in this process can rename, delete, pin or preview others."
+                .to_string();
+            return self
+                .open_sessions(purpose, named_only, Some(&row.id), Some(note))
+                .await;
+        }
         match key {
             0 => {
                 let body = vec![format!("A new name for: {label}")];
@@ -614,7 +477,8 @@ impl Tui {
             }
             1 if open => {
                 let note = "The open session cannot be deleted; switch to another one first.".to_string();
-                self.open_sessions(purpose, named_only, Some(&row.id), Some(note));
+                self.open_sessions(purpose, named_only, Some(&row.id), Some(note))
+                    .await;
             }
             1 => {
                 let items = vec![
@@ -649,9 +513,13 @@ impl Tui {
                     Ok(()) => format!("Unpinned: {label}"),
                     Err(e) => format!("Could not write to {}: {e}", row.path.display()),
                 };
-                self.open_sessions(purpose, named_only, Some(&row.id), Some(note));
+                self.open_sessions(purpose, named_only, Some(&row.id), Some(note))
+                    .await;
             }
-            3 => self.open_sessions(purpose, !named_only, Some(&row.id), None),
+            3 => {
+                self.open_sessions(purpose, !named_only, Some(&row.id), None)
+                    .await
+            }
             _ => {
                 let width = self.width();
                 let mut body = vec![
@@ -702,7 +570,7 @@ impl Tui {
                     },
                     None => None,
                 };
-                self.open_sessions(purpose, named_only, Some(&row.id), note);
+                self.open_sessions(purpose, named_only, Some(&row.id), note).await;
             }
             Action::SessionDelete(row, purpose, named_only) => {
                 let note = if choice != 0 {
@@ -713,13 +581,13 @@ impl Tui {
                         Err(e) => format!("Could not delete {}: {e}", row.path.display()),
                     })
                 };
-                self.open_sessions(purpose, named_only, Some(&row.id), note);
+                self.open_sessions(purpose, named_only, Some(&row.id), note).await;
             }
             Action::TreeLabel { entry, filter } => {
-                self.active.session.append(EntryKind::Label {
-                    target_id: entry.clone(),
-                    label: typed.trim().to_string(),
-                });
+                if let Err(why) = self.backend.set_label(&entry, typed.trim()).await {
+                    self.fail(&why);
+                }
+                self.sync().await;
                 self.open_tree_with(filter, Some(&entry));
             }
             Action::ConsultQuestion(row) => self.consult(&row, &typed),
@@ -743,16 +611,23 @@ impl Tui {
 
     /// Switches to the session in `path`, on the model and thinking level it last used.
     pub(super) async fn resume_file(&mut self, path: PathBuf) {
-        if canonical(&path) == canonical(&self.active.session.path()) {
+        // A session in another process names its files as its own machine does.
+        let same = match self.backend.local() {
+            Some(_) => canonical(&path) == canonical(&self.session.path()),
+            None => path == self.session.path(),
+        };
+        if same {
             return self.info("that session is the one that is open");
         }
         if !self.idle_to("switch sessions") {
             return;
         }
-        let before = self.active.lead.status();
-        self.swap_session(Open::File(path), StartSource::Resume).await;
+        let before = self.backend.status();
+        if !self.go(Go::File(path)).await {
+            return;
+        }
         // The session came back on what it last used; say so when that is a change.
-        let now = self.active.lead.status();
+        let now = self.backend.status();
         if (&now.chain, now.thinking) != (&before.chain, before.thinking) {
             let chain: Vec<String> = now.chain.iter().map(ToString::to_string).collect();
             self.info(&format!(
@@ -765,11 +640,14 @@ impl Tui {
 
     /// `/search <query>`: the sessions of this project whose messages hold `query`; choosing a
     /// result resumes its session.
-    pub(super) fn search_command(&mut self, query: &str) {
+    pub(super) async fn search_command(&mut self, query: &str) {
         if query.trim().is_empty() {
             return self.fail("usage: /search <text>");
         }
-        let found = SessionStore::search(&self.app.paths.sessions_dir(), query.trim(), SEARCH_LINES);
+        let found = match self.backend.sessions(Some(query.trim())).await {
+            Ok(found) => found,
+            Err(why) => return self.fail(&why),
+        };
         if found.is_empty() {
             return self.info(&format!("no session of this project mentions `{}`", query.trim()));
         }
@@ -807,7 +685,7 @@ impl Tui {
 
     /// Opens `/tree` listing what `filter` lets through, with entry `select` selected.
     fn open_tree_with(&mut self, filter: TreeFilter, select: Option<&str>) {
-        let session = &self.active.session;
+        let session = &self.session;
         let branch: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
         let rows = tree_rows(session.entries(), &branch, &session.labels(), filter);
         if rows.is_empty() {
@@ -864,23 +742,21 @@ impl Tui {
         if !self.idle_to("retry") {
             return;
         }
-        let session = self.active.session.clone();
-        let Some(Again {
-            parent,
-            text: prompt,
-            images,
-        }) = retry::last_prompt(&session, &self.app.paths.cwd)
-        else {
+        let Some(again) = retry::last_prompt(&self.session, &self.backend.cwd()) else {
             return self.info("there is no prompt to send again yet");
         };
-        if !session.set_leaf(parent.as_deref()) {
-            return self.fail("that prompt is no longer part of the session");
+        let prompt = again.text.clone();
+        match self.backend.retry(again).await {
+            Ok(moved) => {
+                self.moved(moved, false).await;
+                let lines = view::user_prompt(&prompt, self.width(), &self.theme);
+                self.say(lines);
+            }
+            Err(why) => {
+                self.sync().await;
+                self.fail(&why);
+            }
         }
-        self.swap_session(Open::Store(session), StartSource::Resume).await;
-        let lines = view::user_prompt(&prompt, self.width(), &self.theme);
-        self.say(lines);
-        self.images = images;
-        self.send_prompt(prompt).await;
     }
 
     // ------------------------------------------------------------ requests on the side
@@ -894,14 +770,17 @@ impl Tui {
         question: String,
         purpose: &'static str,
     ) {
-        let Some(side) = self.app.registry.services.get::<Side>() else {
+        let Some(local) = self.backend.local() else {
+            return self.fail("this works only in a session that runs in this process");
+        };
+        let Some(side) = local.app.registry.services.get::<Side>() else {
             return self.fail("no model can be asked in this session");
         };
         static RUNS: AtomicU64 = AtomicU64::new(0);
         let run = RUNS.fetch_add(1, Ordering::Relaxed);
         let cancel = CancellationToken::new();
-        let agent = self.active.lead.info().clone();
-        let chain = self.active.lead.status().chain;
+        let agent = local.active.lead.info().clone();
+        let chain = local.active.lead.status().chain;
         let (events, stop) = (self.internal_tx.clone(), cancel.clone());
         tokio::spawn(async move {
             let deltas = events.clone();
@@ -943,7 +822,7 @@ impl Tui {
             SideEvent::Named(named) => {
                 self.notice = None;
                 match named {
-                    Ok(name) => self.set_name(name),
+                    Ok(name) => self.set_name(name).await,
                     Err(why) => self.fail(&format!(
                         "no name was suggested: {why}; give one with /name <text>"
                     )),
@@ -1044,10 +923,10 @@ impl Tui {
     /// `/handoff [focus]`: has the model write a brief of this session, then opens a new session
     /// that starts from the brief.
     pub(super) fn handoff(&mut self, focus: &str) {
-        if !self.idle_to("hand the work off") {
+        if !self.here_only("/handoff") || !self.idle_to("hand the work off") {
             return;
         }
-        let context = closed_context(&self.active.session);
+        let context = closed_context(&self.session);
         if context.is_empty() {
             return self.info("there is nothing to hand off yet");
         }
@@ -1065,10 +944,13 @@ impl Tui {
     }
 
     async fn finish_handoff(&mut self, brief: &str) {
-        let old = self.active.session.clone();
+        let Some(local) = self.backend.local() else {
+            return;
+        };
+        let old = local.active.session.clone();
         let made = SessionStore::create(
-            &self.app.paths.sessions_dir(),
-            &self.app.paths.cwd,
+            &local.app.paths.sessions_dir(),
+            &local.app.paths.cwd,
             Some(&old.path()),
         );
         let new = match made {
@@ -1085,8 +967,12 @@ impl Tui {
                 name: text::truncate(&format!("{name} (continued)"), MAX_NAME_CHARS, "…"),
             });
         }
-        self.swap_session(Open::Store(Arc::new(new)), StartSource::Resume)
-            .await;
+        // Read back from its file, like any session that was not open here.
+        let file = new.path();
+        drop(new);
+        if !self.go(Go::File(file)).await {
+            return;
+        }
         self.info(&format!(
             "handed off: session {old_id} continues as {new_id}. The brief is its first message; \
              send a message to start from it."
@@ -1097,18 +983,26 @@ impl Tui {
 
     /// Adds what was just sent to the project's history file.
     pub(super) fn remember(&mut self, sent: &str) {
-        if !self.app.keeps_sessions() {
+        // The history is this project's; a session elsewhere is not part of it.
+        if !self
+            .backend
+            .local()
+            .is_some_and(|local| local.app.keeps_sessions())
+        {
             return;
         }
-        let file = history::file(&self.app.paths);
-        if let Err(e) = history::append(&file, &self.active.session.id(), sent) {
+        let file = history::file(&self.env.paths);
+        if let Err(e) = history::append(&file, &self.session.id(), sent) {
             tracing::debug!("could not write {}: {e}", file.display());
         }
     }
 
     /// Puts the project's newest prompts behind the editor's up key.
     pub(super) fn seed_history(&mut self) {
-        let records = history::load(&history::file(&self.app.paths));
+        if self.backend.local().is_none() {
+            return;
+        }
+        let records = history::load(&history::file(&self.env.paths));
         let from = records.len().saturating_sub(history::SEED);
         for record in &records[from..] {
             self.editor.push_history(record.text.clone());
@@ -1117,12 +1011,17 @@ impl Tui {
 
     /// `ctrl+r`: what you sent in this project, newest first, with the session it was sent in.
     pub(super) fn open_history(&mut self) {
-        let open = self.active.session.id();
-        let names: HashMap<String, String> = SessionStore::list(&self.app.paths.sessions_dir())
-            .into_iter()
-            .filter_map(|session| Some((session.id, session.name?)))
-            .collect();
-        let records = history::newest_first(history::load(&history::file(&self.app.paths)), HISTORY_ROWS);
+        let open = self.session.id();
+        let (names, records) = match self.backend.local() {
+            Some(local) => (
+                SessionStore::list(&local.app.paths.sessions_dir())
+                    .into_iter()
+                    .filter_map(|session| Some((session.id, session.name?)))
+                    .collect::<HashMap<String, String>>(),
+                history::newest_first(history::load(&history::file(&self.env.paths)), HISTORY_ROWS),
+            ),
+            None => (HashMap::new(), Vec::new()),
+        };
         let mut rows: Vec<(String, String)> = records
             .into_iter()
             .map(|record| {
@@ -1138,8 +1037,7 @@ impl Tui {
         // session from before the history was kept.
         let mut seen: HashSet<String> = rows.iter().map(|(sent, _)| sent.clone()).collect();
         let earlier = self.prompts.iter().rev().cloned().chain(
-            self.active
-                .session
+            self.session
                 .branch(None)
                 .into_iter()
                 .rev()
@@ -1189,7 +1087,9 @@ mod tests {
     use std::path::Path;
 
     use azazel_ai::Block;
-    use azazel_core::session::AgentRun;
+    use std::collections::BTreeMap;
+
+    use azazel_ai::Usage;
 
     use super::*;
 
@@ -1245,13 +1145,17 @@ mod tests {
             ["pinned", "newest", "oldest"]
         );
 
-        let item = session_item(&summary("pinned", Some("kept"), true, 9), true);
+        let item = session_item(&summary("pinned", Some("kept"), true, 9), true, None);
         assert_eq!(item.label, "kept");
         assert!(item.detail.starts_with("pinned · open now · "), "{}", item.detail);
         assert!(item.detail.ends_with("9 messages"), "{}", item.detail);
-        assert_eq!(
-            session_item(&summary("x", None, false, 1), false).label,
-            "prompt of x"
+        let item = session_item(&summary("x", None, false, 1), false, Some("ab12"));
+        assert_eq!(item.label, "prompt of x");
+        assert!(
+            item.detail
+                .starts_with("in the background: azazel attach ab12 · "),
+            "{}",
+            item.detail
         );
     }
 
@@ -1394,86 +1298,5 @@ mod tests {
         assert_eq!(narrow.len(), 3);
         assert_eq!(narrow[2], "three");
         assert!(tail_rows("", 80, 5).is_empty());
-    }
-
-    #[test]
-    fn the_session_report_names_what_the_session_holds() {
-        let mut facts = SessionFacts {
-            created: "2026-11-12T10:00:00Z".to_string(),
-            updated: "2026-11-12T12:30:00Z".to_string(),
-            user: 3,
-            assistant: 5,
-            tool: 12,
-            branch_points: 2,
-            checkpoints: 3,
-            ..SessionFacts::default()
-        };
-        facts.usage = Usage {
-            input: 12_000,
-            output: 2_000,
-            cost_usd: Some(0.25),
-            ..Usage::default()
-        };
-        facts.agents.push(AgentRun {
-            id: "scout-1".to_string(),
-            def: "scout".to_string(),
-            status: "done".to_string(),
-            transcript: PathBuf::from("scout-1.jsonl"),
-        });
-        let mut report = SessionReport {
-            file: PathBuf::from("sessions/s.jsonl"),
-            id: "0199-abc".to_string(),
-            name: Some("parser rework".to_string()),
-            pinned: true,
-            facts,
-            in_context: 8,
-            chain: "@lead".to_string(),
-            model: "mock/lead".to_string(),
-            thinking: "high".to_string(),
-            agents_usage: Usage {
-                input: 500,
-                output: 100,
-                ..Usage::default()
-            },
-            side: BTreeMap::from([(
-                "handoff".to_string(),
-                Usage {
-                    cost_usd: Some(0.01),
-                    ..Usage::default()
-                },
-            )]),
-            checkpoints: "on · 3 taken".to_string(),
-        };
-        let shown = report.render();
-        for expected in [
-            "session     parser rework",
-            "id          0199-abc",
-            "pinned      yes",
-            "3 from you · 5 replies · 12 tool results · 8 in the model's context",
-            "2 branch points",
-            "model       @lead (now mock/lead) · thinking high",
-            "tokens      lead: 12.0k in · 2.0k out · 0 cache read · 0 cache write · $0.2500",
-            "agents: 500 in · 100 out · 0 cache read · 0 cache write · no price known",
-            "on the side, in this run: handoff $0.0100",
-            "checkpoints on · 3 taken",
-            "agents      1 run: scout-1 (scout, done)",
-        ] {
-            assert!(shown.contains(expected), "missing `{expected}` in:\n{shown}");
-        }
-        assert!(!shown.contains("continues"));
-
-        report.name = None;
-        report.pinned = false;
-        report.facts.agents.clear();
-        report.facts.branch_points = 0;
-        report.facts.parent_session = Some("sessions/old.jsonl".to_string());
-        let shown = report.render();
-        assert!(shown.contains("(no name yet; /name gives it one)"), "{shown}");
-        assert!(shown.contains("continues   sessions/old.jsonl"), "{shown}");
-        assert!(
-            shown.contains("never branched") && shown.contains("none run"),
-            "{shown}"
-        );
-        assert!(!shown.contains("pinned") && !shown.contains("agents:"), "{shown}");
     }
 }

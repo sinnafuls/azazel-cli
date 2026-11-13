@@ -6,6 +6,7 @@ members = [
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
     "tests/fixtures/fake-audio",
+    "tests/fixtures/fake-ssh",
     "examples/custom-distro",
     "examples/client-demo",
 ]
@@ -117,6 +118,9 @@ rand = "0.10"
 
 # Processes and shell parsing
 process-wrap = { version = "10", features = ["tokio1"] }
+# Local sockets (Unix) and named pipes (Windows) for background sessions
+interprocess = { version = "2.4", features = ["tokio"] }
+winsafe = { version = "0.0.29", features = ["kernel"] }
 tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
 regex = "1"
