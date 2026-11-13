@@ -198,7 +198,11 @@ async fn a_sub_agent_is_a_tree_under_the_call_that_started_it() {
     let script = json!({
         "lead": [
             { "reply": { "tool_calls": [{ "id": "t1", "name": "task", "input": {
-                "agents": [{ "agent": "scout", "prompt": "Read note.txt and say what it holds." }]
+                "agents": [{
+                    "agent": "scout",
+                    "prompt": "Read note.txt and say what it holds.",
+                    "model": "mock/scout",
+                }]
             } }] } },
             { "reply": { "text": REPLY } },
         ],
