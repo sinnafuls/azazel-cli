@@ -1244,6 +1244,10 @@ impl Tool for LspTool {
         }
     }
 
+    fn replay_safe(&self, input: &Value) -> bool {
+        self.access(input) == Access::Read
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         let moved = input.get("action").and_then(Value::as_str) == Some("rename_file");
         let named = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);

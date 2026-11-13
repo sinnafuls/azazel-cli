@@ -35,13 +35,33 @@
               "items": {
                 "$ref": "#/$defs/Image"
               }
+            },
+            "request_id": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "A name of the client's choosing for this prompt, to send it again safely."
             }
           },
           "required": [
             "type",
             "text"
           ],
-          "description": "Starts work on the input. While the lead is busy it is queued."
+          "description": "Starts work on the input. While the lead is busy it is queued. With a `request_id`,\nanswers with [`RunState`], and a prompt whose `request_id` the session has seen before\nstarts nothing: the answer says where the run the first one started stands."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "continue_run"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Goes on with the run that the end of the session's process cut short (`interrupted` of\n[`State`]): tool calls without a result get one, and the request the model never\nanswered is sent again. Answers with [`RunState`]."
         },
         {
           "type": "object",
@@ -665,7 +685,7 @@
           "required": [
             "type"
           ],
-          "description": "Background sessions only, and the first command on a connection to one: takes the place\nof its one client. The frames `replay` asks for follow the response, then the requests\nthat still wait for an answer. `pid` is told to a client that is refused while this one\nis attached. Answers with [`Attached`]."
+          "description": "Background sessions only, and the first command on a connection to one: makes the\nconnection a client of the session, beside any that are attached already. The frames\n`replay` asks for follow the response, then the requests that still wait for an answer,\nthen what the session does from then on. Answers with [`Attached`]."
         },
         {
           "type": "object",
@@ -765,7 +785,7 @@
         {
           "type": "string",
           "const": "missed",
-          "description": "The frames written since the last client left; everything for the first client."
+          "description": "The frames written since the last client left; everything for the first client. With\nanother client attached already, the frames of the run in progress."
         },
         {
           "type": "string",
@@ -1517,7 +1537,24 @@
             "kind",
             "text"
           ],
-          "description": "Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or\n`follow_up`. It is in the log and in what a later client is replayed, never in what the\nsender itself reads."
+          "description": "Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or\n`follow_up`. It is in the log, in what a later client is replayed and in what the other\nclients read, never in what the sender itself reads."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "request_closed"
+            },
+            "request_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "request_id"
+          ],
+          "description": "Background sessions only: the `approval_request` or `ui_request` with this id no longer\nwaits. Another client answered it, or whoever asked gave up."
         }
       ],
       "description": "One line from azazel. `type` names the frame; frames of an agent carry its id as `agent`\n(`lead` for the main agent)."
@@ -1910,6 +1947,13 @@
           },
           "description": "The model each role (`default`, `smol`, ...) resolves to first.",
           "default": {}
+        },
+        "interrupted": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the session's last run stopped, when the end of a process cut it short and\n`continue_run` can go on with it."
         }
       },
       "required": [
@@ -2131,7 +2175,7 @@
         },
         "current": {
           "type": "boolean",
-          "description": "Whether the entry is on the branch that ends at the current leaf."
+          "description": "Whether the entry is on the branch that ends at the current leaf, or, for an entry of a\nrun's journal (`run_started`, ...), hangs from that branch."
         }
       },
       "required": [
@@ -2392,6 +2436,25 @@
         "session_file": {
           "type": "string",
           "description": "The session file."
+        },
+        "clients": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "How many clients are attached, this one counted.",
+          "default": 0
+        },
+        "snapshot": {
+          "$ref": "#/$defs/Snapshot",
+          "description": "Where the session stands at this moment.",
+          "default": {
+            "busy": false,
+            "tail": [],
+            "streaming": [],
+            "tools": [],
+            "queue": [],
+            "pending": []
+          }
         }
       },
       "required": [
@@ -2401,6 +2464,168 @@
         "session_file"
       ],
       "description": "The data of `attach`."
+    },
+    "Snapshot": {
+      "type": "object",
+      "properties": {
+        "busy": {
+          "type": "boolean",
+          "description": "Whether the lead is working.",
+          "default": false
+        },
+        "tail": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/MessageRow"
+          },
+          "description": "The last messages of the conversation, oldest first.",
+          "default": []
+        },
+        "streaming": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Streaming"
+          },
+          "description": "The replies being written, one per agent that is writing one.",
+          "default": []
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RunningTool"
+          },
+          "description": "The tool calls that are running.",
+          "default": []
+        },
+        "queue": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Queued"
+          },
+          "description": "What clients sent the lead that it has not taken up yet, oldest first.",
+          "default": []
+        },
+        "pending": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The ids of the requests that wait for an answer; the requests follow as frames.",
+          "default": []
+        }
+      },
+      "description": "A background session at the moment a client attaches: what a client needs to show the work\nin progress before the frames that follow."
+    },
+    "Streaming": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string",
+          "description": "The text so far."
+        },
+        "thinking": {
+          "type": "string",
+          "description": "The thinking so far."
+        }
+      },
+      "required": [
+        "agent",
+        "text"
+      ],
+      "description": "A reply in the making."
+    },
+    "RunningTool": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "call_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "input": true,
+        "elapsed_ms": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "For how long it has run."
+        }
+      },
+      "required": [
+        "agent",
+        "call_id",
+        "name",
+        "input",
+        "elapsed_ms"
+      ],
+      "description": "A tool call that has started and not ended."
+    },
+    "Queued": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "text"
+      ],
+      "description": "Input the lead has not taken up yet. `kind` is `prompt`, `steer` or `follow_up`."
+    },
+    "RunState": {
+      "type": "object",
+      "properties": {
+        "request_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `request_id` of the prompt that started the run, when it had one."
+        },
+        "run_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The run as the session file names it; absent until the lead has taken the prompt up."
+        },
+        "state": {
+          "type": "string",
+          "description": "`queued` (the lead has not taken it up yet), `running` or `ended`."
+        },
+        "duplicate": {
+          "type": "boolean",
+          "description": "Whether this answers a prompt that had been sent before: nothing was started."
+        },
+        "stop": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "How an ended run ended: a stop reason of `idle`, or `failed`."
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The last thing the lead said in the run."
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "description": "The data of a `prompt` that carries a `request_id`, and of `continue_run`: where a run\nstands."
     },
     "SessionCopy": {
       "type": "object",

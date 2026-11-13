@@ -202,7 +202,8 @@ mod tests {
             command,
             Ok(Command::Prompt {
                 text: "hi".into(),
-                images: Vec::new()
+                images: Vec::new(),
+                request_id: None
             })
         );
         assert_eq!(
@@ -214,7 +215,8 @@ mod tests {
                 images: vec![Image {
                     mime: "image/png".into(),
                     data: "AA==".into()
-                }]
+                }],
+                request_id: None
             })
         );
         assert_eq!(
@@ -297,7 +299,7 @@ mod tests {
     #[test]
     fn every_command_has_a_name() {
         let names = Command::names();
-        assert_eq!(names.len(), 36, "{names:?}");
+        assert_eq!(names.len(), 37, "{names:?}");
         assert!(names.contains(&"prompt") && names.contains(&"run_command"));
     }
 }

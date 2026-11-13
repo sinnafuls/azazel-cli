@@ -108,18 +108,26 @@ fn json_output_streams_events_from_agent_start_to_idle() {
     assert_eq!(sessions.len(), 1);
     let entries = json_lines(std::fs::read(&sessions[0]).unwrap().as_slice());
     let kinds: Vec<&str> = entries.iter().map(|e| e["type"].as_str().unwrap()).collect();
-    // The tree is checkpointed before the prompt; then user, (assistant, tool) twice, assistant.
+    // The tree is checkpointed before the prompt; then user, (assistant, tool) twice, assistant,
+    // with the journal of the run between them: each request and each call as it starts.
     assert_eq!(
         kinds,
         [
             "session",
             "checkpoint",
             "message",
+            "run_started",
+            "request_started",
             "message",
+            "tool_started",
             "message",
+            "request_started",
             "message",
+            "tool_started",
             "message",
-            "message"
+            "request_started",
+            "message",
+            "run_ended"
         ]
     );
     assert_eq!(entries[1]["commit"].as_str().unwrap().len(), 40);

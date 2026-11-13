@@ -736,6 +736,10 @@ impl Tool for WebSearchTool {
         Access::Net
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, _: &Value) -> Vec<String> {
         let Ok(backend) = &self.backend else {
             return Vec::new();

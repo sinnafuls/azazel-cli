@@ -43,13 +43,29 @@ pub(crate) fn with_piped_stdin(prompt: &str) -> String {
     format!("{prompt}\n\n{piped}")
 }
 
-pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat) -> u8 {
-    let prompt = with_piped_stdin(prompt);
-    if prompt.trim().is_empty() {
-        eprintln!("azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input");
-        app.finish(active).await;
-        return EXIT_USAGE;
-    }
+/// What a run in print mode works on.
+pub enum What<'a> {
+    /// A prompt, with anything piped on standard input appended.
+    Prompt(&'a str),
+    /// The run the session's last process did not finish (`--continue-run`).
+    ContinueRun,
+}
+
+pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputFormat) -> u8 {
+    let prompt = match what {
+        What::Prompt(prompt) => {
+            let prompt = with_piped_stdin(prompt);
+            if prompt.trim().is_empty() {
+                eprintln!(
+                    "azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input"
+                );
+                app.finish(active).await;
+                return EXIT_USAGE;
+            }
+            Some(prompt)
+        }
+        What::ContinueRun => None,
+    };
     app.start(if active.resumed {
         StartSource::Resume
     } else {
@@ -57,8 +73,15 @@ pub async fn run(app: &App, active: &Active, prompt: &str, format: OutputFormat)
     })
     .await;
     let mut events = active.lead.subscribe();
-    if let Err(reason) = app.submit(active, prompt, Vec::new()).await {
-        eprintln!("prompt rejected: {reason}");
+    let started = match prompt {
+        Some(prompt) => app
+            .submit(active, prompt, Vec::new())
+            .await
+            .map_err(|reason| format!("prompt rejected: {reason}")),
+        None => app.continue_run(active).map(|_| ()),
+    };
+    if let Err(why) = started {
+        eprintln!("{why}");
         app.finish(active).await;
         return EXIT_FAILED;
     }

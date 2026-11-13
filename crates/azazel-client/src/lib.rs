@@ -335,6 +335,7 @@ impl Client {
         self.send(Command::Prompt {
             text: text.into(),
             images: Vec::new(),
+            request_id: None,
         })
         .await?;
         let mut answer = String::new();

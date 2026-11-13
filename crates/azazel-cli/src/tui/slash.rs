@@ -48,6 +48,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "Send your last prompt again; the first attempt stays as a branch",
     ),
     (
+        "continue",
+        "Go on with the run that was cut short when azazel last ended in the middle of it",
+    ),
+    (
         "handoff",
         "Continue in a new session that starts from a brief of this one: /handoff [what matters]",
     ),
@@ -238,6 +242,7 @@ impl Tui {
             "tree" => self.open_tree(),
             "fork" => self.fork().await,
             "retry" => self.retry().await,
+            "continue" => self.continue_run().await,
             "handoff" => self.handoff(args),
             "consult" => self.open_consult(args).await,
             "compact" => {
@@ -322,6 +327,17 @@ impl Tui {
     }
 
     /// Whether the lead is idle; says what cannot be done otherwise.
+    /// `/continue`: goes on with the run the end of a process cut short.
+    async fn continue_run(&mut self) {
+        if !self.idle_to("go on with an interrupted run") {
+            return;
+        }
+        match self.backend.continue_run().await {
+            Ok(()) => self.info("going on with the interrupted run"),
+            Err(why) => self.fail(&why),
+        }
+    }
+
     pub(super) fn idle_to(&mut self, what: &str) -> bool {
         if self.busy {
             self.fail(&format!("the agent is working; press esc first to {what}"));

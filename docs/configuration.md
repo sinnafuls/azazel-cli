@@ -121,7 +121,7 @@ thinking = "low"
 | `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
-| | `resume_runs` | `true` | A run cut off by a crash or a closed terminal continues when its session is opened again |
+| | `resume_runs` | `true` | A background session that is started again after its process died in the middle of a run goes on with the run by itself; with `false` it waits for `/continue`. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |
