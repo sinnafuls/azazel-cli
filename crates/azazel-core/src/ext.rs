@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use azazel_agent::{AgentHooks, AgentInfo, Services, Tool, ToolOutput, ToolSource};
+use azazel_agent::{Access, AgentHooks, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_ai::{Block, Message, ModelSpec, Provider, Request, SystemPart};
 use serde_json::Value;
 
@@ -327,12 +327,101 @@ pub trait CommandSource: Send + Sync {
     fn commands(&self) -> Vec<Command>;
 }
 
+/// Code that runs around every call of one tool, whichever implementation of the tool is in use.
+#[async_trait]
+pub trait ToolWrap: Send + Sync {
+    /// Runs before the tool, after the call was permitted. `input` may be rewritten; `Err` answers
+    /// the call with that output and the tool does not run.
+    async fn before(&self, _input: &mut Value, _ctx: &ToolCtx) -> Result<(), ToolOutput> {
+        Ok(())
+    }
+
+    /// Runs after the tool with the input it was given; `output` may be changed.
+    async fn after(&self, _input: &Value, _output: &mut ToolOutput, _ctx: &ToolCtx) {}
+}
+
+/// A tool with the wraps registered for its name around it.
+struct Wrapped {
+    inner: Arc<dyn Tool>,
+    /// In registration order: the first is the outermost.
+    wraps: Vec<Arc<dyn ToolWrap>>,
+}
+
+#[async_trait]
+impl Tool for Wrapped {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn description(&self) -> &str {
+        self.inner.description()
+    }
+
+    fn schema(&self) -> Value {
+        self.inner.schema()
+    }
+
+    fn access(&self, input: &Value) -> Access {
+        self.inner.access(input)
+    }
+
+    fn subjects(&self, input: &Value) -> Vec<String> {
+        self.inner.subjects(input)
+    }
+
+    fn concurrency_safe(&self, input: &Value) -> bool {
+        self.inner.concurrency_safe(input)
+    }
+
+    fn replay_safe(&self, input: &Value) -> bool {
+        self.inner.replay_safe(input)
+    }
+
+    fn approval_note(&self, input: &Value) -> Option<String> {
+        self.inner.approval_note(input)
+    }
+
+    async fn call(&self, mut input: Value, ctx: &ToolCtx) -> ToolOutput {
+        let mut entered = 0;
+        let mut answered = None;
+        for wrap in &self.wraps {
+            match wrap.before(&mut input, ctx).await {
+                Ok(()) => entered += 1,
+                Err(output) => {
+                    answered = Some(output);
+                    break;
+                }
+            }
+        }
+        let mut output = match answered {
+            Some(output) => output,
+            None => self.inner.call(input.clone(), ctx).await,
+        };
+        // Only the wraps that let the call in see it come out, innermost first.
+        for wrap in self.wraps[..entered].iter().rev() {
+            wrap.after(&input, &mut output, ctx).await;
+        }
+        output
+    }
+}
+
+/// Something registered for the tools, with the extension it is removed with and the name it is
+/// listed under (the extension's id unless the extension gave another).
+struct Entry<T> {
+    owner: String,
+    label: String,
+    item: T,
+}
+
 /// Every tool available to agents: registered tools plus dynamic sources, minus disabled names.
-/// The first tool registered under a name wins.
+/// The first tool registered under a name wins, unless a replacement was registered for the name:
+/// then the replacement registered last does. Wraps go around whichever won.
 #[derive(Default)]
 pub struct ToolRegistry {
     tools: RwLock<Vec<(String, Arc<dyn Tool>)>>,
     sources: RwLock<Vec<(String, Arc<dyn ToolSource>)>>,
+    replacements: RwLock<Vec<Entry<Arc<dyn ToolSource>>>>,
+    wraps: RwLock<Vec<Entry<(String, Arc<dyn ToolWrap>)>>>,
     selection: RwLock<Selection>,
 }
 
@@ -354,10 +443,17 @@ impl Selection {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolListing {
     pub name: String,
-    /// Id of the extension that registered it.
+    /// Who registered the implementation in use: the id of an extension, or the name it gave
+    /// for a part of itself (`lua:<script>`).
     pub owner: String,
     /// False when `[tools] disabled` or the tool flags leave it out.
     pub offered: bool,
+    /// The implementation in use was registered as a replacement.
+    pub replacement: bool,
+    /// Who registered the implementation the replacement stands in for, when there was one.
+    pub replaces: Option<String>,
+    /// Who wraps the tool, outermost first.
+    pub wrapped_by: Vec<String>,
 }
 
 fn glob_set(patterns: &[String]) -> Result<globset::GlobSet, String> {
@@ -366,6 +462,14 @@ fn glob_set(patterns: &[String]) -> Result<globset::GlobSet, String> {
         set.add(globset::Glob::new(pattern).map_err(|e| format!("tool pattern `{pattern}`: {e}"))?);
     }
     set.build().map_err(|e| e.to_string())
+}
+
+/// A tool as the registry settled it, before selection and wrapping.
+struct Settled {
+    tool: Arc<dyn Tool>,
+    owner: String,
+    replacement: bool,
+    replaces: Option<String>,
 }
 
 impl ToolRegistry {
@@ -384,6 +488,31 @@ impl ToolRegistry {
             .push((owner.to_string(), source));
     }
 
+    /// The tools of `source` take the place of whatever else is registered under their names,
+    /// earlier replacements included. `label` is what listings call the one who replaced them.
+    pub fn replace(&self, owner: &str, label: &str, source: Arc<dyn ToolSource>) {
+        self.replacements
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Entry {
+                owner: owner.to_string(),
+                label: label.to_string(),
+                item: source,
+            });
+    }
+
+    /// Puts `wrap` around the tool `name`, inside the wraps registered for it before.
+    pub fn wrap(&self, owner: &str, label: &str, name: &str, wrap: Arc<dyn ToolWrap>) {
+        self.wraps
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(Entry {
+                owner: owner.to_string(),
+                label: label.to_string(),
+                item: (name.to_string(), wrap),
+            });
+    }
+
     /// Offers only the tools `allowed` matches (all when `None`), minus those `disabled` matches.
     pub fn select(&self, allowed: Option<&[String]>, disabled: &[String]) -> Result<(), String> {
         let selection = Selection {
@@ -394,48 +523,24 @@ impl ToolRegistry {
         Ok(())
     }
 
-    /// Names of every registered tool and every tool a source offers now, before selection.
-    pub fn all_names(&self, agent: &AgentInfo) -> Vec<String> {
-        let mut names: Vec<String> = self
-            .tools
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .map(|(_, tool)| tool.name().to_string())
-            .collect();
-        let sources: Vec<Arc<dyn ToolSource>> = self
-            .sources
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .map(|(_, s)| s.clone())
-            .collect();
-        for source in sources {
-            names.extend(source.tools(agent).iter().map(|tool| tool.name().to_string()));
-        }
-        names.sort();
-        names.dedup();
-        names
-    }
-
-    /// Every tool agents could be offered, in registration order, with the extension it comes
-    /// from and whether the selection offers it. A name registered twice is listed once, under
-    /// the extension that wins.
-    pub fn listing(&self, agent: &AgentInfo) -> Vec<ToolListing> {
-        let selection = self.selection.read().unwrap_or_else(PoisonError::into_inner);
-        let mut out: Vec<ToolListing> = Vec::new();
-        let mut add = |owner: &str, name: &str| {
-            if !out.iter().any(|listed| listed.name == name) {
-                out.push(ToolListing {
-                    name: name.to_string(),
+    /// One tool per name, in registration order; a replacement stands where what it replaced
+    /// stood, or at the end when it replaced nothing.
+    fn settled(&self, agent: &AgentInfo) -> Vec<Settled> {
+        let mut out: Vec<Settled> = Vec::new();
+        let mut add = |owner: &str, tool: Arc<dyn Tool>| {
+            if !out.iter().any(|settled| settled.tool.name() == tool.name()) {
+                out.push(Settled {
+                    tool,
                     owner: owner.to_string(),
-                    offered: selection.offers(name),
+                    replacement: false,
+                    replaces: None,
                 });
             }
         };
         for (owner, tool) in self.tools.read().unwrap_or_else(PoisonError::into_inner).iter() {
-            add(owner, tool.name());
+            add(owner, tool.clone());
         }
+        // The sources are asked outside the locks: one may register something while it answers.
         let sources: Vec<(String, Arc<dyn ToolSource>)> = self
             .sources
             .read()
@@ -443,10 +548,104 @@ impl ToolRegistry {
             .clone();
         for (owner, source) in sources {
             for tool in source.tools(agent) {
-                add(&owner, tool.name());
+                add(&owner, tool);
+            }
+        }
+        let replacements: Vec<(String, Arc<dyn ToolSource>)> = self
+            .replacements
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .rev()
+            .map(|entry| (entry.label.clone(), entry.item.clone()))
+            .collect();
+        for (label, source) in replacements {
+            for tool in source.tools(agent) {
+                match out.iter_mut().find(|settled| settled.tool.name() == tool.name()) {
+                    // A replacement registered later has the name already.
+                    Some(settled) if settled.replacement => {}
+                    Some(settled) => {
+                        settled.replaces = Some(std::mem::replace(&mut settled.owner, label.clone()));
+                        settled.replacement = true;
+                        settled.tool = tool;
+                    }
+                    None => out.push(Settled {
+                        tool,
+                        owner: label.clone(),
+                        replacement: true,
+                        replaces: None,
+                    }),
+                }
             }
         }
         out
+    }
+
+    /// Names of every registered tool and every tool a source offers now, before selection.
+    pub fn all_names(&self, agent: &AgentInfo) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .settled(agent)
+            .iter()
+            .map(|settled| settled.tool.name().to_string())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Every tool agents could be offered, in registration order, with who registered the
+    /// implementation in use, whether the selection offers it, and who replaced or wraps it. A
+    /// name registered twice is listed once.
+    pub fn listing(&self, agent: &AgentInfo) -> Vec<ToolListing> {
+        let settled = self.settled(agent);
+        let selection = self.selection.read().unwrap_or_else(PoisonError::into_inner);
+        let wraps = self.wraps.read().unwrap_or_else(PoisonError::into_inner);
+        settled
+            .into_iter()
+            .map(|settled| {
+                let name = settled.tool.name();
+                ToolListing {
+                    offered: selection.offers(name),
+                    wrapped_by: wraps
+                        .iter()
+                        .filter(|entry| entry.item.0 == name)
+                        .map(|entry| entry.label.clone())
+                        .collect(),
+                    name: name.to_string(),
+                    owner: settled.owner,
+                    replacement: settled.replacement,
+                    replaces: settled.replaces,
+                }
+            })
+            .collect()
+    }
+
+    /// The tools registered as replacements, as `(who registered it, tool name)`, in
+    /// registration order.
+    pub fn replacements(&self, agent: &AgentInfo) -> Vec<(String, String)> {
+        let sources: Vec<(String, Arc<dyn ToolSource>)> = self
+            .replacements
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|entry| (entry.label.clone(), entry.item.clone()))
+            .collect();
+        let mut out = Vec::new();
+        for (label, source) in sources {
+            for tool in source.tools(agent) {
+                out.push((label.clone(), tool.name().to_string()));
+            }
+        }
+        out
+    }
+
+    /// The wraps there are, as `(who registered it, tool name)`, in registration order.
+    pub fn wraps(&self) -> Vec<(String, String)> {
+        self.wraps
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|entry| (entry.label.clone(), entry.item.0.clone()))
+            .collect()
     }
 
     pub fn remove_owner(&self, owner: &str) {
@@ -458,6 +657,14 @@ impl ToolRegistry {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .retain(|(o, _)| o != owner);
+        self.replacements
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|entry| entry.owner != owner);
+        self.wraps
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|entry| entry.owner != owner);
     }
 
     pub fn get(&self, agent: &AgentInfo, name: &str) -> Option<Arc<dyn Tool>> {
@@ -467,30 +674,28 @@ impl ToolRegistry {
 
 impl ToolSource for ToolRegistry {
     fn tools(&self, agent: &AgentInfo) -> Vec<Arc<dyn Tool>> {
+        let settled = self.settled(agent);
         let selection = self.selection.read().unwrap_or_else(PoisonError::into_inner);
-        let mut out: Vec<Arc<dyn Tool>> = Vec::new();
-        let mut add = |tool: Arc<dyn Tool>| {
-            let name = tool.name();
-            if selection.offers(name) && !out.iter().any(|t| t.name() == name) {
-                out.push(tool);
-            }
-        };
-        for (_, tool) in self.tools.read().unwrap_or_else(PoisonError::into_inner).iter() {
-            add(tool.clone());
-        }
-        let sources: Vec<Arc<dyn ToolSource>> = self
-            .sources
-            .read()
-            .unwrap_or_else(PoisonError::into_inner)
-            .iter()
-            .map(|(_, s)| s.clone())
-            .collect();
-        for source in sources {
-            for tool in source.tools(agent) {
-                add(tool);
-            }
-        }
-        out
+        let wraps = self.wraps.read().unwrap_or_else(PoisonError::into_inner);
+        settled
+            .into_iter()
+            .filter(|settled| selection.offers(settled.tool.name()))
+            .map(|settled| {
+                let around: Vec<Arc<dyn ToolWrap>> = wraps
+                    .iter()
+                    .filter(|entry| entry.item.0 == settled.tool.name())
+                    .map(|entry| entry.item.1.clone())
+                    .collect();
+                if around.is_empty() {
+                    settled.tool
+                } else {
+                    Arc::new(Wrapped {
+                        inner: settled.tool,
+                        wraps: around,
+                    })
+                }
+            })
+            .collect()
     }
 }
 
@@ -674,6 +879,30 @@ impl Registrar<'_> {
 
     pub fn tool_source(&mut self, s: Arc<dyn ToolSource>) {
         self.registry.tools.add_source(&self.owner, s);
+    }
+
+    /// Registers `t` in place of whatever else has its name: a built-in tool, another
+    /// extension's, or an earlier replacement.
+    pub fn replace_tool(&mut self, t: Arc<dyn Tool>) {
+        self.registry
+            .tools
+            .replace(&self.owner, &self.owner, Arc::new(vec![t]));
+    }
+
+    /// Like [`Registrar::replace_tool`] for tools that come and go; listings name `label` as the
+    /// one who replaced them.
+    pub fn replace_tool_source(&mut self, label: &str, s: Arc<dyn ToolSource>) {
+        self.registry.tools.replace(&self.owner, label, s);
+    }
+
+    /// Runs `w` around every call of the tool `name`, whoever registered the tool.
+    pub fn wrap_tool(&mut self, name: &str, w: Arc<dyn ToolWrap>) {
+        self.registry.tools.wrap(&self.owner, &self.owner, name, w);
+    }
+
+    /// Like [`Registrar::wrap_tool`]; listings name `label` as the one who wraps the tool.
+    pub fn wrap_tool_as(&mut self, label: &str, name: &str, w: Arc<dyn ToolWrap>) {
+        self.registry.tools.wrap(&self.owner, label, name, w);
     }
 
     pub fn command_source(&mut self, s: Arc<dyn CommandSource>) {
@@ -1026,6 +1255,219 @@ mod tests {
         assert_eq!(names(&registry), ["shared"]);
         assert_eq!(registry.tools.all_names(&agent()), ["beta", "shared"]);
         assert!(registry.tools.select(Some(&["[".into()]), &[]).is_err());
+    }
+
+    fn tool_ctx() -> ToolCtx {
+        ToolCtx {
+            agent: agent(),
+            agent_id: "lead".into(),
+            session_id: "s".into(),
+            call_id: "c".into(),
+            cwd: PathBuf::from("."),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            update: azazel_agent::UpdateSink::default(),
+            services: Arc::new(Services::new()),
+        }
+    }
+
+    /// Answers with the input it was called with.
+    struct Echo(&'static str);
+
+    #[async_trait]
+    impl Tool for Echo {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn description(&self) -> &str {
+            "echo"
+        }
+        fn schema(&self) -> Value {
+            json!({"type": "object"})
+        }
+        fn access(&self, _: &Value) -> Access {
+            Access::Write
+        }
+        fn subjects(&self, input: &Value) -> Vec<String> {
+            vec![input["path"].as_str().unwrap_or_default().to_string()]
+        }
+        async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+            ToolOutput::text(input.to_string())
+        }
+    }
+
+    /// Adds its tag to the input's `trail` on the way in and to the output on the way out;
+    /// refuses the call when the input says `refuse: <tag>`.
+    struct Trail(&'static str);
+
+    #[async_trait]
+    impl ToolWrap for Trail {
+        async fn before(&self, input: &mut Value, _: &ToolCtx) -> Result<(), ToolOutput> {
+            if input["refuse"] == self.0 {
+                return Err(ToolOutput::error(format!("{} refused", self.0)));
+            }
+            input["trail"].as_array_mut().unwrap().push(json!(self.0));
+            Ok(())
+        }
+
+        async fn after(&self, _: &Value, output: &mut ToolOutput, _: &ToolCtx) {
+            *output = ToolOutput {
+                content: vec![azazel_ai::Block::text(format!(
+                    "{} <{}",
+                    output.text_content(),
+                    self.0
+                ))],
+                ..output.clone()
+            };
+        }
+    }
+
+    /// Registers a replacement for `shared`, or a wrap around it.
+    struct Override {
+        id: &'static str,
+        replace: bool,
+    }
+
+    impl Extension for Override {
+        fn id(&self) -> &str {
+            self.id
+        }
+        fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
+            if self.replace {
+                r.replace_tool(Arc::new(Echo("shared")));
+                r.replace_tool(Arc::new(Echo("extra")));
+            } else {
+                r.wrap_tool("shared", Arc::new(Trail(self.id)));
+            }
+            Ok(())
+        }
+    }
+
+    fn listed(registry: &Registry, name: &str) -> ToolListing {
+        let listing = registry.tools.listing(&agent());
+        listing.into_iter().find(|tool| tool.name == name).unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_replacement_takes_the_place_of_the_tool_and_leaves_with_its_extension() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let registry = Registry::new(ctx());
+        let first = Ext {
+            id: "one",
+            tool: "alpha",
+            block: false,
+            seen,
+        };
+        registry.load(&first).unwrap();
+        registry
+            .load(&Override {
+                id: "over",
+                replace: true,
+            })
+            .unwrap();
+
+        // The replacement stands where the tool stood; one that replaced nothing comes last.
+        let tools = registry.tools.tools(&agent());
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name()).collect();
+        assert_eq!(names, ["alpha", "shared", "extra"]);
+        let shared = registry.tools.get(&agent(), "shared").unwrap();
+        assert_eq!(shared.description(), "echo");
+        assert_eq!(
+            shared
+                .call(json!({"path": "a"}), &tool_ctx())
+                .await
+                .text_content(),
+            r#"{"path":"a"}"#
+        );
+        let listing = listed(&registry, "shared");
+        assert_eq!(listing.owner, "over");
+        assert!(listing.replacement);
+        assert_eq!(listing.replaces.as_deref(), Some("one"));
+        assert_eq!(listed(&registry, "extra").replaces, None);
+        assert!(!listed(&registry, "alpha").replacement);
+        assert_eq!(registry.tools.all_names(&agent()), ["alpha", "extra", "shared"]);
+        assert_eq!(
+            registry.tools.replacements(&agent()),
+            [
+                ("over".to_string(), "shared".to_string()),
+                ("over".to_string(), "extra".to_string())
+            ]
+        );
+
+        // The selection goes by name, whoever has it.
+        registry.tools.select(None, &["shared".into()]).unwrap();
+        assert!(registry.tools.get(&agent(), "shared").is_none());
+        registry.tools.select(None, &[]).unwrap();
+
+        // A replacement registered later wins over an earlier one.
+        registry.tools.replace(
+            "late",
+            "late",
+            Arc::new(vec![Arc::new(Named("shared")) as Arc<dyn Tool>]),
+        );
+        assert_eq!(listed(&registry, "shared").owner, "late");
+        assert_eq!(listed(&registry, "shared").replaces.as_deref(), Some("one"));
+        registry.tools.remove_owner("late");
+
+        registry.unload("over");
+        let shared = registry.tools.get(&agent(), "shared").unwrap();
+        assert_eq!(shared.description(), "test");
+        assert_eq!(listed(&registry, "shared").owner, "one");
+        assert!(registry.tools.get(&agent(), "extra").is_none());
+    }
+
+    #[tokio::test]
+    async fn wraps_run_around_whichever_tool_has_the_name_outermost_first() {
+        let registry = Registry::new(ctx());
+        registry.tools.add("core", Arc::new(Echo("shared")));
+        for id in ["outer", "inner"] {
+            registry.load(&Override { id, replace: false }).unwrap();
+        }
+        let shared = registry.tools.get(&agent(), "shared").unwrap();
+        // The wrapped tool is still the tool as far as permissions go.
+        assert_eq!(shared.access(&json!({})), Access::Write);
+        assert_eq!(shared.subjects(&json!({"path": "a.txt"})), ["a.txt"]);
+
+        let output = shared.call(json!({"trail": []}), &tool_ctx()).await;
+        assert_eq!(
+            output.text_content(),
+            r#"{"trail":["outer","inner"]} <inner <outer"#
+        );
+
+        // A wrap that answers the call keeps the tool and the wraps inside it from running.
+        let refused = shared
+            .call(json!({"trail": [], "refuse": "inner"}), &tool_ctx())
+            .await;
+        assert!(refused.is_error);
+        assert_eq!(refused.text_content(), "inner refused <outer");
+
+        assert_eq!(listed(&registry, "shared").wrapped_by, ["outer", "inner"]);
+        assert_eq!(
+            registry.tools.wraps(),
+            [
+                ("outer".to_string(), "shared".to_string()),
+                ("inner".to_string(), "shared".to_string())
+            ]
+        );
+        // The wraps stay around a replacement.
+        registry.tools.replace(
+            "late",
+            "late",
+            Arc::new(vec![Arc::new(Named("shared")) as Arc<dyn Tool>]),
+        );
+        let replaced = registry.tools.get(&agent(), "shared").unwrap();
+        let output = replaced.call(json!({"trail": []}), &tool_ctx()).await;
+        assert_eq!(output.text_content(), "shared <inner <outer");
+
+        registry.unload("inner");
+        assert_eq!(listed(&registry, "shared").wrapped_by, ["outer"]);
+        registry.unload("outer");
+        let output = registry
+            .tools
+            .get(&agent(), "shared")
+            .unwrap()
+            .call(json!({"trail": []}), &tool_ctx())
+            .await;
+        assert_eq!(output.text_content(), "shared");
     }
 
     #[test]
