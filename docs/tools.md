@@ -288,10 +288,42 @@ preview: 3 replacements in 2 files, nothing written. To write them, run this aga
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `shell` | `command`, `cwd?`, `timeout_secs?`, `background?`, `description?` | Runs a command in the resolved shell |
+| `shell` | `command`, `cwd?`, `timeout_secs?`, `background?`, `interactive?`, `wake_on_exit?`, `description?` | Runs a command in the resolved shell |
 | `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` |
+| `pty` | `action` (`send`, `read`, `stop`, `list`), `id?`, `text?`, `keys?`, `submit?`, `wait?`, `wait_for?`, `timeout_secs?` | Works with a program `shell` started in a terminal; see [programs in a terminal](#programs-in-a-terminal) |
 
 `shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for an agent can never push to a git remote; see [permissions](permissions.md).
+
+### Programs in a terminal
+
+A program that asks questions, waits for keys or draws a screen (an editor, a REPL, an installer, `git rebase -i`, `ssh`, a login that wants a password) has nothing to talk to in an ordinary `shell` call and hangs until the timeout. `shell` with `interactive: true` runs the command in a real terminal instead: a pseudo-terminal (ConPTY on Windows) whose screen azazel emulates. The call does not wait for the program to end. It returns once the program has drawn something and the screen has been still for a moment:
+
+```
+started pty-1 in a terminal; read its screen, type into it and stop it with the pty tool
+? package name: (demo)
+[pty-1: running for 0s; screen 100x30, cursor at row 1 column 24]
+```
+
+The agent then works with it through `pty`:
+
+| Action | Input | What it does |
+|---|---|---|
+| `read` | `id?`, `wait?`, `wait_for?`, `timeout_secs?` | The screen as text, with the state of the program. Without a wait it answers at once. `wait: "change"` waits until the screen has changed since the agent last saw it, `wait: "exit"` until the program has ended, `wait_for: "text"` until that text is on the screen. A wait gives up after `timeout_secs` (30 by default, at most 1800) and says so; that is not an error |
+| `send` | `id?`, `text?`, `keys?`, `submit?` | Types `text` (a line break in it presses Enter), then presses each of `keys` in order, then Enter when `submit` is true. Returns the screen once it has settled |
+| `stop` | `id?` | Ends the program. Its last screen stays to be read |
+| `list` | | Every terminal of the session with its state and command |
+
+- `id` may be left out while only one terminal is open.
+- Keys are `enter`, `tab`, `esc`, `backspace`, `delete`, `insert`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`, `f1` to `f12` and single characters, with `ctrl+`, `alt+` or `shift+` in front: `ctrl+c`, `alt+x`, `shift+tab`, `ctrl+left`. They are sent as xterm sends them, and the arrow keys follow the mode a full-screen program sets.
+- The screen is 100 columns by 30 rows until the [interface shows it](tui.md#terminals), which gives the program the size of its box. The status line of a result has the size and where the cursor is.
+- With `wake_on_exit: true` the agent need not watch the program. When it ends, the lead gets a message with the last screen and the address of the log: at once if it is working, as a new prompt if it is idle. Only the lead can be woken; a sub-agent waits with `read` and `wait: "exit"`.
+- Everything the program printed is saved: the rows that scrolled off the screen as they do, and the last screen when the program ends. A result names the log once the program has ended (`artifact://pty-<start time>-<n>.log`), and `read` takes that address. What a full-screen program (an editor, a pager) scrolled within its own screen is not output and is not kept.
+- You see the terminal live and can type into it yourself; see [terminals](tui.md#terminals). While you have the keyboard an agent's `send` waits (up to two minutes) for you to hand it back, and the next result the agent gets says that you typed.
+- At most eight programs run in terminals at once. They are ended when the session ends. `timeout_secs` of `shell` does not apply to an interactive command, and `background` cannot be combined with `interactive`: the program goes on after the call returns anyway.
+- An agent whose definition lists its tools needs `pty` beside `shell` to work with what it starts, as it needs `job` for background jobs.
+- A terminal exists in the process the session runs in. A session that runs elsewhere (a background session, `--ssh`) still gives its agents terminals, but the interface attached to it does not show them.
+
+Permissions are those of `shell`: starting the program is a `shell` call like any other, typing into it and stopping it are allowed where running it is, and what is typed is checked like a command. See [permissions](permissions.md#programs-in-a-terminal).
 
 ## Code execution
 
@@ -557,4 +589,4 @@ With `shell` empty, the first of these that exists is used:
 | Linux, macOS | `bash`, then `sh` |
 | Windows | `bash.exe` on `PATH` (the WSL launcher in `System32` is skipped), then the `bash.exe` shipped with Git for Windows, then `pwsh`, then `powershell` |
 
-POSIX shells run the command with `-c`; PowerShell runs it with `-NoProfile -NonInteractive -Command`. The `shell` tool's description tells the model which shell and operating system it is writing for. `azazel doctor` shows the resolved shell.
+POSIX shells run the command with `-c`; PowerShell runs it with `-NoProfile -NonInteractive -Command` (without `-NonInteractive` for a [program in a terminal](#programs-in-a-terminal)). The `shell` tool's description tells the model which shell and operating system it is writing for. `azazel doctor` shows the resolved shell.
