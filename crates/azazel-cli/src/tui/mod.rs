@@ -37,8 +37,7 @@ use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::{
-    ApprovalDecision, AskKind, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, Question,
-    SessionStore,
+    ApprovalDecision, AskKind, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
@@ -1324,7 +1323,9 @@ impl Tui {
                         let mut items = ask_items(&question.options, &picked, multi);
                         let other = (question.allow_freeform && !multi).then_some(question.text);
                         if other.is_some() {
-                            items.push(SelectItem::new(Question::OTHER, "type your own answer"));
+                            // "Other…", drawn in the symbols in use.
+                            let label = format!("Other{}", self.theme.glyph(Glyph::Ellipsis));
+                            items.push(SelectItem::new(label, "type your own answer"));
                         }
                         let action = Action::Ask {
                             reply,

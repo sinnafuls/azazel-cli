@@ -90,7 +90,7 @@ Eager servers start connecting in the background when a session starts. The firs
 ## Managing servers
 
 ```bash
-azazel mcp list                                   # every server and whether it connects
+azazel mcp list                                   # every server and its state
 azazel mcp add fs -- npx -y @modelcontextprotocol/server-filesystem .
 azazel mcp add docs --url https://example.com/mcp --header 'Authorization=Bearer ${DOCS_TOKEN}'
 azazel mcp add fs --project -- npx -y some-server # write to <project>/.azazel/mcp.json
@@ -104,7 +104,7 @@ azazel mcp serve                                  # be an MCP server for another
 
 | Command | Does |
 |---|---|
-| `azazel mcp list` | Gives servers up to 10 seconds to connect, then prints each one's state, tool and prompt counts, command line or URL, and the file it comes from |
+| `azazel mcp list` | Gives the servers it starts up to 10 seconds to connect, then prints each one's state, tool and prompt counts, command line or URL, and the file it comes from. It starts what a session would start: a `lazy` server whose tools are known is listed as `not started (cached N tools)`; `"lifecycle": "eager"` in its entry, or `/mcp reconnect <server>` in a session, connects it to see that it works |
 | `azazel mcp add <name> [--project] -- <command> [args...]` | Adds a stdio server to `~/.azazel/mcp.json`, or with `--project` to `<project>/.azazel/mcp.json` |
 | `azazel mcp add <name> [--project] --url <url> [--header NAME=VALUE]...` | Adds an HTTP server |
 | `azazel mcp remove <name>` | Removes the entry from the first of `<project>/.azazel/mcp.json`, `<project>/.mcp.json`, `~/.azazel/mcp.json` that has it |
@@ -148,7 +148,7 @@ When the servers offer more tools than `defer_threshold` (default 40), counting 
 
 ## Resources and prompts
 
-- `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`.
+- `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`. Without `server` it asks the servers that are connected; naming a `lazy` server that is not running starts it, as reading one of its resources does.
 - The `read` tool accepts those addresses: `read mcp://docs/file:///guide.md`. Text and images are returned; other binary content is saved as an artifact.
 - Each server prompt is a slash command `/mcp:<server>:<prompt>`. Arguments are filled by position, or by name as `key=value`; quotes group words. The prompt's text is sent to the lead as your message.
 

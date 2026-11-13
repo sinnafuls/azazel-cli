@@ -1036,7 +1036,7 @@ mod tests {
             Overlay::select(
                 "lead wants to use shell",
                 subjects.clone(),
-                items(&["Allow once", "Deny", "Deny and say what to do instead"]),
+                items(&["Allow once", "Deny", "Deny and say why"]),
                 false,
                 Action::Mode,
             )
