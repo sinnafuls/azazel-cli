@@ -6,8 +6,8 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::{Output, Stdio};
-use std::sync::mpsc::channel;
+use std::process::{Child, ChildStdin, Output, Stdio};
+use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use assert_cmd::Command;
@@ -421,101 +421,123 @@ fn a_summary_says_where_it_ends_and_session_recall_finds_what_it_replaced() {
     assert!(position(ids[0]) < position(ids[1]) && ids[1] == last);
 }
 
-#[test]
-fn the_context_report_gives_numbers_then_the_exact_text_of_a_category() {
-    let dir = tempfile::tempdir().unwrap();
-    let project = dir.path().join("project");
-    std::fs::create_dir_all(project.join(".git")).unwrap();
-    std::fs::create_dir_all(dir.path().join("home")).unwrap();
-    let script_path = dir.path().join("script.json");
-    std::fs::write(
-        &script_path,
-        json!({ "lead": [text("one"), text("two")] }).to_string(),
-    )
-    .unwrap();
-    let requests = dir.path().join("requests.jsonl");
-    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("azazel"))
-        .env("AZAZEL_HOME", dir.path().join("home"))
-        .env("AZAZEL_MOCK_SCRIPT", &script_path)
-        .env("AZAZEL_MOCK_REQUESTS", &requests)
-        .args(["--set", "session.auto_name=false", "--no-memory", "rpc", "--cwd"])
-        .arg(&project)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (sender, lines) = channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                break;
+/// An `azazel rpc` process in a sandbox, answering from a script.
+struct Rpc {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    lines: Receiver<String>,
+    next_id: u64,
+}
+
+impl Rpc {
+    fn start(sandbox: &Sandbox, script: &Value, args: &[&str]) -> Rpc {
+        let script_path = sandbox.dir.path().join("rpc-script.json");
+        std::fs::write(&script_path, script.to_string()).unwrap();
+        let _ = std::fs::remove_file(sandbox.requests_file());
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("azazel"))
+            .env("AZAZEL_HOME", sandbox.dir.path().join("home"))
+            .env("AZAZEL_MOCK_SCRIPT", &script_path)
+            .env("AZAZEL_MOCK_REQUESTS", sandbox.requests_file())
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .args(["--set", "session.auto_name=false", "--no-memory"])
+            .args(args)
+            .args(["rpc", "--cwd"])
+            .arg(sandbox.project())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (sender, lines) = channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
             }
+        });
+        Rpc {
+            stdin: child.stdin.take(),
+            child,
+            lines,
+            next_id: 0,
         }
-    });
-    let mut next_id = 0;
-    // Sends a command and reads up to its response.
-    let mut ask = |command: Value| -> Value {
-        next_id += 1;
-        let mut command = command;
-        command["id"] = next_id.into();
+    }
+
+    fn next(&self) -> Value {
+        let line = self
+            .lines
+            .recv_timeout(Duration::from_secs(60))
+            .expect("a protocol line within a minute");
+        serde_json::from_str(&line).unwrap_or_else(|e| panic!("not a protocol line ({e}): {line}"))
+    }
+
+    /// Sends a command and reads up to its response.
+    fn ask(&mut self, mut command: Value) -> Value {
+        self.next_id += 1;
+        command["id"] = self.next_id.into();
+        let stdin = self.stdin.as_mut().unwrap();
         writeln!(stdin, "{command}").unwrap();
         stdin.flush().unwrap();
         loop {
-            let line = lines
-                .recv_timeout(Duration::from_secs(60))
-                .expect("a line within a minute");
-            let value: Value = serde_json::from_str(&line).unwrap();
-            if value["type"] == "response" && value["id"] == next_id {
-                return value;
+            let line = self.next();
+            if line["type"] == "response" && line["id"] == self.next_id {
+                return line;
             }
         }
-    };
-    let report = |ask: &mut dyn FnMut(Value) -> Value, args: &str| {
-        ask(json!({ "type": "run_command", "name": "context", "args": args }))
-    };
-    let wait_idle = || loop {
-        let line = lines
-            .recv_timeout(Duration::from_secs(60))
-            .expect("a line within a minute");
-        let value: Value = serde_json::from_str(&line).unwrap();
-        if value["type"] == "idle" {
-            return;
+    }
+
+    /// The response to `/context <args>`.
+    fn context(&mut self, args: &str) -> Value {
+        self.ask(json!({ "type": "run_command", "name": "context", "args": args }))
+    }
+
+    /// What `/context <args>` shows; it must succeed.
+    fn shown(&mut self, args: &str) -> String {
+        let response = self.context(args);
+        assert_eq!(response["success"], true, "/context {args}: {response}");
+        response["data"]["text"].as_str().unwrap().to_string()
+    }
+
+    /// Sends a prompt and reads to the end of its run.
+    fn prompt(&mut self, text: &str) {
+        let response = self.ask(json!({ "type": "prompt", "text": text }));
+        assert_eq!(response["success"], true, "{response}");
+        loop {
+            let line = self.next();
+            assert_ne!(line["type"], "failed", "{line}");
+            if line["type"] == "idle" {
+                return;
+            }
         }
-        assert_ne!(value["type"], "failed", "{value}");
-    };
+    }
+
+    fn finish(mut self) -> Option<i32> {
+        drop(self.stdin.take());
+        self.child.wait().unwrap().code()
+    }
+}
+
+#[test]
+fn the_context_report_gives_numbers_then_the_exact_text_of_a_category() {
+    let sandbox = Sandbox::new();
+    let mut rpc = Rpc::start(&sandbox, &json!({ "lead": [text("one"), text("two")] }), &[]);
 
     // Before any request: said so, and nothing to take apart.
-    let early = report(&mut ask, "");
+    let early = rpc.shown("");
     assert!(
-        early["data"]["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("no request has been sent in this session yet"),
+        early.starts_with("no request has been sent in this session yet"),
         "{early}"
     );
-    assert_eq!(report(&mut ask, "json")["success"], false);
+    assert_eq!(rpc.context("json")["success"], false);
 
-    assert_eq!(
-        ask(json!({ "type": "prompt", "text": "a question about heron nests" }))["success"],
-        true
-    );
-    wait_idle();
-    let shown = report(&mut ask, "json");
-    let numbers: Value = serde_json::from_str(shown["data"]["text"].as_str().unwrap()).unwrap();
+    rpc.prompt("a question about heron nests");
+    let numbers: Value = serde_json::from_str(&rpc.shown("json")).unwrap();
     assert_eq!(numbers["request"], 1);
     let categories = numbers["categories"].as_array().unwrap();
-    let sent: Value = serde_json::from_str::<Value>(
-        std::fs::read_to_string(&requests)
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap(),
-    )
-    .unwrap()["request"]
-        .clone();
+    let sent = sandbox.requests().remove(0);
 
     // The text of a category is the text that was sent: a system part word for word, the
     // prompt under the message it is.
@@ -529,39 +551,27 @@ fn the_context_report_gives_numbers_then_the_exact_text_of_a_category() {
         .iter()
         .find(|part| part["name"] == "rules")
         .unwrap();
-    let text_of = |ask: &mut dyn FnMut(Value) -> Value, index: usize| {
-        report(ask, &format!("text 1 {index}"))["data"]["text"]
-            .as_str()
-            .unwrap()
-            .to_string()
-    };
-    assert_eq!(text_of(&mut ask, rules), rules_sent["text"].as_str().unwrap());
+    assert_eq!(
+        rpc.shown(&format!("text 1 {rules}")),
+        rules_sent["text"].as_str().unwrap()
+    );
     let user = categories
         .iter()
         .position(|c| c["kind"] == "messages" && c["name"] == "user")
         .unwrap();
     assert_eq!(
-        text_of(&mut ask, user),
+        rpc.shown(&format!("text 1 {user}")),
         "--- message 1 ---\na question about heron nests"
     );
-    let plain = report(&mut ask, "");
-    assert!(
-        plain["data"]["text"]
-            .as_str()
-            .unwrap()
-            .starts_with("request 1 of lead · mock/lead\n"),
-        "{plain}"
-    );
+    assert!(rpc.shown("").starts_with("request 1 of lead · mock/lead\n"));
 
     // A category that does not exist, and a request the agent has moved on from.
-    let missing = report(&mut ask, &format!("text 1 {}", categories.len()));
-    assert_eq!(missing["success"], false);
     assert_eq!(
-        ask(json!({ "type": "prompt", "text": "and another" }))["success"],
-        true
+        rpc.context(&format!("text 1 {}", categories.len()))["success"],
+        false
     );
-    wait_idle();
-    let stale = report(&mut ask, &format!("text 1 {user}"));
+    rpc.prompt("and another");
+    let stale = rpc.context(&format!("text 1 {user}"));
     assert_eq!(stale["success"], false);
     assert!(
         stale["error"]
@@ -570,12 +580,54 @@ fn the_context_report_gives_numbers_then_the_exact_text_of_a_category() {
             .starts_with("request 1 is gone: the agent has sent request 2 since"),
         "{stale}"
     );
-    let newer = report(&mut ask, &format!("text 2 {user}"));
     assert_eq!(
-        newer["data"]["text"],
+        rpc.shown(&format!("text 2 {user}")),
         "--- message 1 ---\na question about heron nests\n\n--- message 3 ---\nand another"
     );
+    assert_eq!(rpc.finish(), Some(0));
+}
 
-    drop(stdin);
-    assert_eq!(child.wait().unwrap().code(), Some(0));
+#[test]
+fn a_reopened_session_still_says_what_its_last_request_was_made_of() {
+    let sandbox = Sandbox::new();
+    let script = json!({ "lead": [
+        { "reply": { "text": "first answer", "usage": { "input": 2500 } } },
+    ] });
+    let output = sandbox.print(&script, "a question about heron nests");
+    assert!(output.status.success(), "{}", stderr(&output));
+    let from_shell = sandbox.azazel().args(["context", "--json"]).output().unwrap();
+    let mut from_shell: Value = serde_json::from_str(stdout(&from_shell).trim()).unwrap();
+    assert_eq!(from_shell["reported"], 2500);
+
+    // The same session in a new process, before it has sent anything: the numbers come from
+    // the session's folder; the text of that request went with the process that sent it.
+    let mut rpc = Rpc::start(&sandbox, &json!({ "lead": [text("second answer")] }), &["-c"]);
+    let reopened: Value = serde_json::from_str(&rpc.shown("json")).unwrap();
+    from_shell.as_object_mut().unwrap().remove("session");
+    assert_eq!(reopened, from_shell);
+    let text = rpc.context("text 1 0");
+    assert_eq!(text["success"], false);
+    assert!(
+        text["error"]
+            .as_str()
+            .unwrap()
+            .contains("only while the session that sent it runs"),
+        "{text}"
+    );
+
+    // Its next request is its own first, with the earlier exchange in it.
+    rpc.prompt("and where do they nest?");
+    let next: Value = serde_json::from_str(&rpc.shown("json")).unwrap();
+    assert_eq!(next["request"], 1);
+    let user = next["categories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|c| c["kind"] == "messages" && c["name"] == "user")
+        .unwrap();
+    assert_eq!(
+        rpc.shown(&format!("text 1 {user}")),
+        "--- message 1 ---\na question about heron nests\n\n--- message 3 ---\nand where do they nest?"
+    );
+    assert_eq!(rpc.finish(), Some(0));
 }

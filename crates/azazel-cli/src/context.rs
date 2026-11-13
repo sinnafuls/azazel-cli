@@ -343,12 +343,8 @@ mod tests {
             "tool calls                     0   0%  ....................  1 call"
         );
         // Every row lines up under the widest label.
-        let column = lines[2].find("400").unwrap() + 3;
-        assert!(
-            lines[2..]
-                .iter()
-                .all(|line| line[..column].ends_with(char::is_numeric))
-        );
+        let column = lines[2].find('%').unwrap();
+        assert!(lines[2..].iter().all(|line| line.find('%') == Some(column)));
 
         let mut unanswered = sample();
         unanswered.reported = None;
