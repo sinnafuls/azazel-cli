@@ -44,6 +44,8 @@ const JSON: &str = "application/vnd.github+json";
 const RAW: &str = "application/vnd.github.raw+json";
 const DIFF: &str = "application/vnd.github.diff";
 const API_VERSION: &str = "2022-11-28";
+/// The option with which `gh api` prints an answer that holds terminal escape sequences.
+const ALLOW_ESCAPES: &str = "--allow-escape-sequences";
 
 /// First path segments of `github.com` that are pages of the site, not accounts.
 const NOT_OWNERS: &[&str] = &[
@@ -319,18 +321,23 @@ impl GitHub {
         }
     }
 
-    /// Whether `gh` is installed and holds a login for github.com. Asked once.
+    /// Whether `gh` is installed and holds a login for github.com. Asked once; a call that is
+    /// given up before `gh` answers leaves the question open.
     async fn signed_in(&self, ctx: &ToolCtx) -> bool {
         let ask = || async {
-            let Some(gh) = &self.gh else { return false };
+            let Some(gh) = &self.gh else { return Ok(false) };
             let mut command = Command::new(gh);
             // Whether there is a token is all that is asked: the token itself is not read.
             command
                 .args(["auth", "token", "--hostname", "github.com"])
                 .stdout(Stdio::null());
-            matches!(run(command, GH_TIMEOUT, ctx).await, Ok(output) if output.status.success())
+            let output = run(command, GH_TIMEOUT, ctx).await?;
+            Ok::<bool, String>(output.status.success())
         };
-        *self.signed_in.get_or_init(ask).await
+        self.signed_in
+            .get_or_try_init(ask)
+            .await
+            .is_ok_and(|signed_in| *signed_in)
     }
 }
 
@@ -665,10 +672,26 @@ fn stamped(line: &str) -> Option<(&str, &str)> {
     is_stamp.then_some((stamp, rest))
 }
 
-/// The last [`LOG_TAIL_LINES`] of `lines`, under a line that says how many came before.
+/// `text` without the escape sequences that colour it in a terminal.
+fn uncoloured(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+        } else if chars.next() == Some('[') {
+            // Parameters, then one letter that ends the sequence.
+            chars.by_ref().find(|c| ('@'..='~').contains(c));
+        }
+    }
+    out
+}
+
+/// The last [`LOG_TAIL_LINES`] of `lines`, without their colours, under a line that says how
+/// many came before.
 fn tail(lines: &[&str]) -> String {
     let skipped = lines.len().saturating_sub(LOG_TAIL_LINES);
-    let shown = lines[skipped..].join("\n");
+    let shown = uncoloured(&lines[skipped..].join("\n"));
     match skipped {
         0 => shown,
         _ => format!("[{skipped} earlier lines are not shown]\n{shown}"),
@@ -701,13 +724,23 @@ impl Call<'_> {
     async fn api_within(&self, path: &str, accept: &str, limit: usize) -> Result<Vec<u8>, Failure> {
         match &self.github.gh {
             Some(gh) if self.github.signed_in(self.ctx).await => {
-                let mut command = program(gh);
-                command.args(["api", "--hostname", "github.com", "-H"]);
-                command.arg(format!("Accept: {accept}"));
-                command.arg("-H");
-                command.arg(format!("X-GitHub-Api-Version: {API_VERSION}"));
-                command.arg(path);
-                let output = run(command, GH_TIMEOUT, self.ctx).await.map_err(Failure::Other)?;
+                let ask = |escapes: bool| {
+                    let mut command = program(gh);
+                    command.args(["api", "--hostname", "github.com", "-H"]);
+                    command.arg(format!("Accept: {accept}"));
+                    command.arg("-H");
+                    command.arg(format!("X-GitHub-Api-Version: {API_VERSION}"));
+                    if escapes {
+                        command.arg(ALLOW_ESCAPES);
+                    }
+                    command.arg(path);
+                    run(command, GH_TIMEOUT, self.ctx)
+                };
+                let mut output = ask(false).await.map_err(Failure::Other)?;
+                // A `gh` that knows the option holds back a log with colours until it is given.
+                if !output.status.success() && complaint(&output).contains(ALLOW_ESCAPES) {
+                    output = ask(true).await.map_err(Failure::Other)?;
+                }
                 if output.status.success() {
                     return Ok(output.stdout);
                 }
@@ -1069,8 +1102,13 @@ impl Call<'_> {
         };
         let count = |key: &str| pull.get(key).and_then(Value::as_u64).unwrap_or(0);
         let branch = |key: &str| pull.get(key).map_or("", |side| text(side, "label"));
+        let files_word = if count("changed_files") == 1 {
+            "file"
+        } else {
+            "files"
+        };
         let mut out = format!(
-            "# {} ({repo}#{number})\n{state} · @{} · {} into {} · +{} -{} in {} files · opened {}",
+            "# {} ({repo}#{number})\n{state} · @{} · {} into {} · +{} -{} in {} {files_word} · opened {}",
             text(&pull, "title"),
             login(&pull, "user"),
             branch("head"),
@@ -1264,6 +1302,10 @@ impl Call<'_> {
             Err(failure) => {
                 let why = match failure {
                     Failure::Missing => "GitHub no longer has it".to_string(),
+                    // What GitHub answers for a log it kept for its ninety days.
+                    Failure::Other(why) if why.contains("HTTP 410") => {
+                        "GitHub no longer keeps it: the logs of a run expire".to_string()
+                    }
                     Failure::Other(why) => why,
                 };
                 let login = match self.github.signed_in.get() {
@@ -1550,6 +1592,14 @@ mod tests {
             "{shown}"
         );
         assert_eq!(tail(&lines[..2]), "line 1\nline 2");
+        assert_eq!(
+            tail(&[
+                "\u{1b}[36;1mRun cargo test\u{1b}[0m",
+                "\u{1b}[31merror\u{1b}[m: no",
+                "\u{1b}7kept"
+            ]),
+            "Run cargo test\nerror: no\nkept"
+        );
     }
 
     #[test]

@@ -888,6 +888,74 @@ async fn with_gh_signed_in_everything_goes_through_it() {
 }
 
 #[tokio::test]
+async fn a_log_with_colours_is_asked_of_gh_a_second_time_and_shown_without_them() {
+    let server = MockServer::start().await;
+    let bench = bench();
+    let (gh, data) = bench.gh(true);
+    let api = data.join("api");
+    std::fs::write(
+        api.join("repos_acme_secret_actions_runs_7.json"),
+        json!({"name": "CI", "run_number": 3, "display_title": "Oil", "conclusion": "failure", "event": "push",
+               "head_branch": "main", "head_sha": "89abcdef0123", "run_attempt": 1,
+               "created_at": "2026-03-01T09:31:00Z"})
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        api.join("repos_acme_secret_actions_runs_7_jobs_filter_latest_per_page_100.json"),
+        json!({"jobs": [{"id": 70, "name": "test", "conclusion": "failure", "steps": [
+            step(4, "Run tests", "failure", "2026-03-01T09:31:03Z", "2026-03-01T09:31:04Z"),
+        ]}]})
+        .to_string(),
+    )
+    .unwrap();
+    let log = "2026-03-01T09:31:02.0000000Z setting up\n\
+               2026-03-01T09:31:03.0000000Z \u{1b}[36;1mcargo test\u{1b}[0m\n\
+               2026-03-01T09:31:04.0000000Z \u{1b}[31merror\u{1b}[0m: test failed\n";
+    std::fs::write(api.join("repos_acme_secret_actions_jobs_70_logs.json"), log).unwrap();
+    let fetcher = fetcher(&server, Some(gh), None, "http://127.0.0.1:9");
+
+    let run = bench
+        .get(&fetcher, "https://github.com/acme/secret/actions/runs/7")
+        .await;
+    let saved = bench.artifacts().join("c1-job-70.log");
+    assert_eq!(
+        run,
+        format!(
+            "# CI #3: Oil (acme/secret)\n\
+             failure · push on main · commit 89abcde · attempt 1 · 2026-03-01T09:31:00Z\n\
+             \n\
+             ## Jobs (1)\n\
+             \n\
+             test: failure; step 4 \"Run tests\" failed\n\
+             \n\
+             ## Logs of the failed steps\n\
+             \n\
+             ### test / Run tests\n\
+             \n\
+             cargo test\n\
+             error: test failed\n\
+             [the whole log of this job: {}]",
+            saved.display()
+        )
+    );
+    // The saved log is the log as GitHub has it.
+    assert_eq!(std::fs::read_to_string(saved).unwrap(), log);
+    let logs: Vec<String> = calls(&data)
+        .into_iter()
+        .filter(|call| call.ends_with("/logs"))
+        .collect();
+    let asked = "api --hostname github.com -H Accept: application/vnd.github+json -H X-GitHub-Api-Version: 2022-11-28";
+    assert_eq!(
+        logs,
+        [
+            format!("{asked} repos/acme/secret/actions/jobs/70/logs"),
+            format!("{asked} --allow-escape-sequences repos/acme/secret/actions/jobs/70/logs"),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn with_gh_installed_but_signed_out_github_is_asked_without_a_login() {
     let server = MockServer::start().await;
     api(

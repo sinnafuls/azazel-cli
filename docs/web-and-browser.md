@@ -147,7 +147,7 @@ A repository address:
 
 An Actions run:
 
-- Each job is one line with its conclusion and the step that failed. For up to 5 failed jobs, the lines each failed step logged follow, the last 150 of a longer step, and the whole log of the job is saved under the artifacts directory, where `grep` reaches it. A log is at most 32 MB.
+- Each job is one line with its conclusion and the step that failed. For up to 5 failed jobs, the lines each failed step logged follow, the last 150 of a longer step, and the whole log of the job is saved under the artifacts directory, where `grep` reaches it. A log is at most 32 MB. GitHub keeps logs for a limited time (90 days by default); for an older run the result says the log is gone.
 
 A branch name with slashes (`feature/login`) cannot be told from a path in a `tree` or `blob` address. For a directory, and for a file read through `gh`, the shortest branch name is tried first, then longer ones, up to four parts; without a login GitHub's file server takes the address as it is.
 
@@ -162,8 +162,7 @@ The address of a video (`youtube.com/watch?v=...`, `youtu.be/...`, `/shorts/`, `
 jawed · 0:19 · https://www.youtube.com/watch?v=jNQXAC9IVRw
 Captions: English (not shown: German)
 
-[0:01] All right, so here we are, in front of the elephants the cool thing about these guys is that they have really...
-[0:07] really really long trunks and that's cool (baaaaaaaaaaahhh!!) and that's pretty much all there is to say
+[0:01] All right, so here we are, in front of the elephants the cool thing about these guys is that they have really... really really long trunks and that's cool (baaaaaaaaaaahhh!!) and that's pretty much all there is to say
 ```
 
 - Each line starts with the time it is said at (`m:ss`, or `h:mm:ss` from an hour on) and gathers captions until it holds 200 characters or covers 30 seconds.

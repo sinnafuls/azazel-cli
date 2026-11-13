@@ -312,8 +312,10 @@ impl Store<'_> {
         let text = match self.stream(dir, &format!("__substg1.0_{id:04X}001F")) {
             Some(wide) => {
                 let units: Vec<u16> = wide
-                    .chunks_exact(2)
-                    .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|pair| u16::from_le_bytes(*pair))
                     .collect();
                 String::from_utf16_lossy(&units)
             }
@@ -331,7 +333,9 @@ impl Store<'_> {
     fn fixed(&mut self, dir: &str, header: usize) -> Fixed {
         let rows = self.stream(dir, "__properties_version1.0").unwrap_or_default();
         let rows = rows.get(header..).unwrap_or_default();
-        rows.chunks_exact(16)
+        rows.as_chunks::<16>()
+            .0
+            .iter()
             .map(|row| {
                 let kind = u16::from_le_bytes([row[0], row[1]]);
                 let id = u16::from_le_bytes([row[2], row[3]]);
