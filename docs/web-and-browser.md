@@ -65,10 +65,10 @@ Each query is one request of its own on the lead's first model, with the lead's 
 
 - title and URL are the cited page's;
 - the snippet is the passage the provider quotes from the page (Anthropic), or else the sentences of the answer that cite it (OpenAI, xAI, Gemini);
-- pages the search found and the answer did not cite follow, without a snippet (Anthropic, xAI);
+- pages the search found and the answer did not cite follow, without a snippet;
 - Gemini names pages by redirect links on `vertexaisearch.cloud.google.com`; each is asked where it leads and replaced by that address, and kept as it is when it does not answer.
 
-`site` is passed to the provider as a domain filter where it has one (Anthropic, OpenAI, xAI), and results outside the site are dropped in any case. `recency` is part of the request's wording; no provider takes it as a filter.
+The domain of `site` is passed to the provider as a filter where it has one (Anthropic, OpenAI, xAI), and results outside the site, or outside the path it names, are dropped in any case. `recency` is part of the request's wording; no provider takes it as a filter.
 
 The search falls back to the configured backend, per query, when the request fails, takes longer than 90 seconds, or its answer cites no page. The result's details then name the backend that answered and carry the provider's failure as `provider_error`. With `search = "provider"` there is no fallback: the failure is the result, and a lead whose provider has no search tool makes every call fail with a message saying so.
 

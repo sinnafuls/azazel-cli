@@ -162,8 +162,13 @@ async fn the_leads_provider_searches_and_its_pages_become_the_numbered_results()
                     "tokio - Rust",
                     "A runtime for writing reliable\n  network applications.",
                 ),
-                // Outside the site asked for: left out even though the provider returned it.
+                // Outside the site asked for: left out even though the provider returned them.
                 page("https://tokio.rs/blog", "Blog", "Announcing Tokio 1.48"),
+                page(
+                    "https://docs.rs/serde/latest/serde/",
+                    "serde - Rust",
+                    "A serialization framework.",
+                ),
                 page("https://docs.rs/tokio/latest/tokio/task/", "", ""),
                 page(
                     "https://docs.rs/tokio/latest/tokio/net/",
@@ -178,7 +183,7 @@ async fn the_leads_provider_searches_and_its_pages_become_the_numbered_results()
     let out = bench
         .call(
             &tool,
-            json!({"query": "tokio runtime", "site": "https://docs.rs/", "recency": "month", "limit": 2}),
+            json!({"query": "tokio runtime", "site": "https://docs.rs/tokio/", "recency": "month", "limit": 2}),
         )
         .await;
     assert!(!out.is_error, "{out:?}");
@@ -210,7 +215,7 @@ async fn the_leads_provider_searches_and_its_pages_become_the_numbered_results()
     assert_eq!(request.messages.len(), 1);
     assert_eq!(
         request.messages[0].text(),
-        "Query: tokio runtime\nPages wanted: 2\nOnly pages on the site docs.rs.\n\
+        "Query: tokio runtime\nPages wanted: 2\nOnly pages on the site docs.rs/tokio.\n\
          Only pages published or updated in the last month."
     );
     assert!(bench.costs.by_purpose().contains_key(SEARCH_PURPOSE));

@@ -129,7 +129,7 @@ impl Side {
     /// a lookup.
     pub fn search_model(&self, lead: &[ModelSpec]) -> Option<ModelRef> {
         let model = self.router.resolve(lead).into_iter().next()?;
-        self.router.hosts_web_search(&model).then(|| ModelRef {
+        self.router.hosts_web_search(&model).then_some(ModelRef {
             thinking: None,
             ..model
         })

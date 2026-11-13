@@ -740,8 +740,10 @@ impl WebSearchTool {
         query: &SearchQuery,
         cancel: &tokio_util::sync::CancellationToken,
     ) -> Result<Vec<SearchHit>, String> {
+        // The filter takes a domain; the path a site may carry is applied to what comes back.
+        let domain = query.site.as_deref().and_then(|site| site.split('/').next());
         let tool = HostedTool::WebSearch {
-            domains: query.site.iter().cloned().collect(),
+            domains: domain.into_iter().map(str::to_string).collect(),
             max_uses: Some(PROVIDER_SEARCHES),
         };
         let request = cancel.child_token();
