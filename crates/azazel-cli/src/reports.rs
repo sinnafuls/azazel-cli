@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 use azazel_ai::Usage;
 use azazel_core::SessionStore;
+use azazel_core::cache::CacheLedger;
 use azazel_core::session::SessionFacts;
 use azazel_core::side::Side;
 use azazel_core::trust::{TrustStore, needs_trust};
@@ -111,6 +112,16 @@ fn cost(app: &App, active: &Active) -> String {
     };
     let cost = match crate::side::cost_report(&app.registry.services) {
         Some(side) => format!("{cost}\n{side}"),
+        None => cost,
+    };
+    // Every agent's requests, where the lines above are the lead's.
+    let cache = app
+        .registry
+        .services
+        .get::<CacheLedger>()
+        .and_then(|ledger| ledger.report(&active.session.id()).render());
+    let cost = match cache {
+        Some(cache) => format!("{cost}\n{cache}"),
         None => cost,
     };
     format!(

@@ -9,6 +9,7 @@ use azazel_agent::{AgentHooks, AgentInfo, Services, Tool, ToolOutput, ToolSource
 use azazel_ai::{Block, Message, ModelSpec, Provider, Request, SystemPart};
 use serde_json::Value;
 
+use crate::cache::CacheLedger;
 use crate::prompt::{PromptBuilder, SystemPartProvider};
 use crate::scheme::{Scheme, Schemes};
 use crate::skills::{SkillRegistry, SkillRoot, SkillSource};
@@ -655,6 +656,7 @@ impl Registry {
             prompt: self.prompt.clone(),
             rules: self.services.get::<crate::rules::Rules>(),
             runaway: self.services.get::<crate::runaway::Runaway>(),
+            services: self.services.clone(),
         })
     }
 }
@@ -732,6 +734,7 @@ struct BusHooks {
     rules: Option<Arc<crate::rules::Rules>>,
     /// The runaway guard, when it was registered before these hooks were made.
     runaway: Option<Arc<crate::runaway::Runaway>>,
+    services: Arc<Services>,
 }
 
 #[async_trait]
@@ -766,7 +769,9 @@ impl AgentHooks for BusHooks {
     }
 
     async fn before_request(&self, agent: &AgentInfo, request: &mut Request) {
-        request.system = self.prompt.render(agent).await;
+        let prompt = self.prompt.prompt(agent).await;
+        request.system = prompt.system;
+        request.tail = prompt.tail;
         let mut event = Event::BeforeRequest {
             agent: agent.clone(),
             request: std::mem::take(request),
@@ -774,6 +779,17 @@ impl AgentHooks for BusHooks {
         self.bus.emit(&mut event).await;
         if let Event::BeforeRequest { request: changed, .. } = event {
             *request = changed;
+        }
+        if let Some(ledger) = self.services.get::<CacheLedger>() {
+            ledger.sent(agent);
+        }
+    }
+
+    fn response(&self, agent: &AgentInfo, request: &Arc<Request>, chain: &[ModelSpec], message: &Message) {
+        if let Some(ledger) = self.services.get::<CacheLedger>()
+            && let Some(miss) = ledger.answered(agent, request, chain, message)
+        {
+            crate::cache::report_miss(&ledger, &self.services, &miss);
         }
     }
 
