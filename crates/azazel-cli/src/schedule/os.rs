@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::Duration;
 
 use jiff::ToSpan;
 use jiff::civil::DateTime;
@@ -121,8 +120,8 @@ fn boundary(at: DateTime) -> String {
 /// A number of minutes as Task Scheduler writes a length of time.
 fn iso_minutes(minutes: u32) -> String {
     match minutes {
-        m if m % 1440 == 0 => format!("P{}D", m / 1440),
-        m if m % 60 == 0 => format!("PT{}H", m / 60),
+        m if m.is_multiple_of(1440) => format!("P{}D", m / 1440),
+        m if m.is_multiple_of(60) => format!("PT{}H", m / 60),
         m => format!("PT{m}M"),
     }
 }
@@ -220,7 +219,10 @@ fn cron_fields(job: &Job) -> Result<String, String> {
             let steps = [
                 1440, 720, 480, 360, 240, 180, 120, 60, 30, 20, 15, 12, 10, 6, 5, 4, 3, 2, 1,
             ];
-            let step = steps.into_iter().find(|step| minutes % step == 0).unwrap_or(1);
+            let step = steps
+                .into_iter()
+                .find(|step| minutes.is_multiple_of(*step))
+                .unwrap_or(1);
             Ok(match step {
                 1 => "* * * * *".to_string(),
                 1440 => format!("{minute} {hour} * * *"),
@@ -473,19 +475,21 @@ pub fn register(job: &Job) -> Result<(), String> {
             // Task Scheduler reads the file in the encoding its first line names.
             let mut bytes = vec![0xFF, 0xFE];
             bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
+            // Closed before schtasks opens it: Windows lets no second program read a file that
+            // is open for writing.
             let file = tempfile::Builder::new()
                 .prefix("azazel-task-")
                 .suffix(".xml")
                 .tempfile()
                 .and_then(|mut file| {
                     std::io::Write::write_all(&mut file, &bytes)?;
-                    Ok(file)
+                    Ok(file.into_temp_path())
                 })
                 .map_err(|e| format!("cannot write the task: {e}"))?;
             checked(
                 Command::new(program)
                     .args(["/Create", "/TN", &task_name(&job.id), "/F", "/XML"])
-                    .arg(file.path()),
+                    .arg(&file),
                 None,
             )
             .map(drop)
@@ -552,9 +556,6 @@ pub fn headless_wrapper() -> Option<PathBuf> {
     let conhost = Path::new(&root).join("System32").join("conhost.exe");
     conhost.is_file().then_some(conhost)
 }
-
-/// How long an entry of the scheduler may take to be written.
-pub const LIMIT: Duration = Duration::from_secs(30);
 
 #[cfg(test)]
 mod tests {

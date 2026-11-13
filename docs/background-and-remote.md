@@ -206,7 +206,9 @@ Where the prompt goes:
   and in its session.
 - With `--session <id>` every run goes to that session. When a background session has it open, the
   prompt is sent to it: it starts on it at once when it has nothing to do, and after its current work
-  otherwise. When none has, a background session is started on it.
+  otherwise. When none has, a background session is started on it. A session you have open in the
+  interactive UI at that moment is not held by a background session, and a run would write to it
+  beside you: give `--session` a session that only background runs use.
 
 Schedules are kept per project, in `~/.azazel/projects/<project>/schedules.json`, not in the repository:
 a checkout never brings schedules with it.
@@ -218,7 +220,7 @@ There is no daemon. A schedule is handed to the scheduler of the operating syste
 
 | System | Where the entry is |
 |---|---|
-| Windows | A task `azazel\<id>` of Task Scheduler (`schtasks`), which runs while you are signed in |
+| Windows | A task `azazel\<id>` of Task Scheduler (`schtasks`), which runs while you are signed in, without a console window |
 | Linux | A line of your crontab that ends in `# azazel-schedule:<id>` |
 | macOS | A launch agent `~/Library/LaunchAgents/dev.azazel.schedule.<id>.plist` |
 

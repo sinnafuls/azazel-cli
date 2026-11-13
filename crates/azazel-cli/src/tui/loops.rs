@@ -24,6 +24,7 @@ pub(super) struct Looping {
     state: State,
     /// Tells this loop's verdicts from those of one that was stopped meanwhile.
     id: u64,
+    started: Instant,
 }
 
 /// A wait as a few words, rounded up to what a person reads: `45s`, `9m`.
@@ -83,6 +84,7 @@ impl Tui {
             looped,
             state: State::Running,
             id: self.loop_serial,
+            started: Instant::now(),
         });
         self.loop_send().await;
     }
@@ -145,8 +147,10 @@ impl Tui {
             }
             Next::Judge => self.loop_judge(),
             Next::Done(why) => {
-                self.looping = None;
+                let took = self.looping.take().map(|looping| looping.started.elapsed());
                 self.info(&why);
+                // The rounds did not call for you one by one; their end does.
+                self.attend_end(None, took.unwrap_or_default());
             }
         }
     }

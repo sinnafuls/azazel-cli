@@ -186,10 +186,11 @@ pub async fn fire(scheduler: &Scheduler, wanted: &str, scheduled: bool) -> Resul
     };
     record(scheduler, &schedule, now.timestamp(), &fired);
     // A single moment has had its run.
-    if matches!(schedule.when, When::At(_)) && matches!(fired, Ok(Fired::Started(_) | Fired::Sent(_))) {
-        if let Err(e) = scheduler.remove(&schedule.id) {
-            tracing::warn!("could not remove the schedule {} after its run: {e}", schedule.id);
-        }
+    if matches!(schedule.when, When::At(_))
+        && matches!(fired, Ok(Fired::Started(_) | Fired::Sent(_)))
+        && let Err(e) = scheduler.remove(&schedule.id)
+    {
+        tracing::warn!("could not remove the schedule {} after its run: {e}", schedule.id);
     }
     fired
 }

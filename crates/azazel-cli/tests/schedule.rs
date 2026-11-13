@@ -359,6 +359,65 @@ fn a_schedule_with_a_session_sends_its_prompt_to_the_background_session_that_has
     assert!(sandbox.schedules().is_empty());
 }
 
+#[test]
+fn a_single_moment_runs_when_the_scheduler_is_on_time_and_is_missed_when_it_is_late() {
+    let sandbox = Sandbox::new(&json!({ "lead": [said("Done at the appointed time.")] }));
+    let late = sandbox.add(&["at", "+1h", "do it late"]);
+    let timely = sandbox.add(&["at", "+2h", "do it on time"]);
+    // Time passes: the one moment is two hours gone, the other half a minute.
+    let stores: Vec<PathBuf> = std::fs::read_dir(sandbox.path("home/projects"))
+        .unwrap()
+        .flatten()
+        .map(|project| project.path().join("schedules.json"))
+        .filter(|file| file.is_file())
+        .collect();
+    let [store] = stores.as_slice() else {
+        panic!("one project has schedules: {stores:?}");
+    };
+    let now = jiff::Timestamp::now();
+    let ago = |seconds: i64| format!("at {}", now - jiff::SignedDuration::from_secs(seconds));
+    let mut kept: Value = serde_json::from_slice(&std::fs::read(store).unwrap()).unwrap();
+    for schedule in kept.as_array_mut().unwrap() {
+        let when = if schedule["id"] == late.as_str() {
+            ago(7200)
+        } else {
+            ago(30)
+        };
+        schedule["when"] = json!(when);
+    }
+    std::fs::write(store, kept.to_string()).unwrap();
+
+    // The scheduler wakes both. What it is far too late for is not made up for.
+    let woken = sandbox.run(&["schedule", "run", &late, "--scheduled"]);
+    assert!(woken.status.success(), "{:?}", text(&woken));
+    assert!(sandbox.ps().is_empty());
+    let rows = sandbox.schedules();
+    let row = rows.iter().find(|row| row["id"] == late.as_str()).unwrap();
+    assert_eq!(
+        (&row["runs"], &row["last_result"]),
+        (&json!(0), &json!("missed: nothing could run it at its time")),
+        "{row}"
+    );
+    assert!(sandbox.ok(&["schedule", "list"]).contains("missed"));
+
+    // What it is a little late for runs, once, and is then gone from the list.
+    sandbox.ok(&["schedule", "run", &timely, "--scheduled"]);
+    let host = sandbox.wait("a background session", || {
+        sandbox
+            .ps()
+            .first()
+            .map(|row| row["id"].as_str().unwrap().to_string())
+    });
+    sandbox.wait_for_state(&host, "idle");
+    assert_eq!(sandbox.prompts(), ["do it on time"]);
+    let left: Vec<Value> = sandbox.schedules();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0]["id"], json!(late));
+    // Nothing more comes of either, however often the scheduler wakes them.
+    assert_eq!(sandbox.ok(&["schedule", "run", "--due"]), "");
+    assert_eq!(sandbox.ps().len(), 1);
+}
+
 /// The words of the command the scheduler was given for the schedule.
 fn registered_command(sandbox: &Sandbox, id: &str) -> Vec<String> {
     if cfg!(windows) {

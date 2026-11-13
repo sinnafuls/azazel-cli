@@ -39,7 +39,7 @@ pub fn lock_file(home: &Path, id: &str) -> PathBuf {
 #[derive(Debug)]
 pub enum Event {
     /// A trigger happened. `text` is its prompt with what happened.
-    Fire { schedule: Schedule, text: String },
+    Fire { schedule: Box<Schedule>, text: String },
     /// Something the user should know: a trigger that cannot be watched.
     Note(String),
 }
@@ -302,7 +302,7 @@ impl Watcher {
                         let text = files_text(&owned.schedule.prompt, pending);
                         pending.clear();
                         let _ = self.events.send(Event::Fire {
-                            schedule: owned.schedule.clone(),
+                            schedule: Box::new(owned.schedule.clone()),
                             text,
                         });
                     }
@@ -340,7 +340,7 @@ impl Watcher {
                     for run in runs.iter().rev().filter(|run| run.status == "completed") {
                         if known.insert(run.database_id) && run.failed() {
                             let _ = self.events.send(Event::Fire {
-                                schedule: owned.schedule.clone(),
+                                schedule: Box::new(owned.schedule.clone()),
                                 text: ci_text(&owned.schedule.prompt, run),
                             });
                         }

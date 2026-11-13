@@ -32,9 +32,9 @@ pub const USAGE: &str = "usage: /loop <count> <prompt>, /loop <interval> <prompt
 pub fn span_text(span: Duration) -> String {
     let seconds = span.as_secs();
     match seconds / 60 {
-        _ if seconds % 60 != 0 => format!("{seconds}s"),
-        m if m % 1440 == 0 => format!("{}d", m / 1440),
-        m if m % 60 == 0 => format!("{}h", m / 60),
+        _ if !seconds.is_multiple_of(60) => format!("{seconds}s"),
+        m if m.is_multiple_of(1440) => format!("{}d", m / 1440),
+        m if m.is_multiple_of(60) => format!("{}h", m / 60),
         m => format!("{m}m"),
     }
 }

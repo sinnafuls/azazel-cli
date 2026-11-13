@@ -191,12 +191,21 @@ impl Store {
         &self.file
     }
 
+    /// Every schedule, oldest first; none when there is no file yet.
+    fn read(&self) -> io::Result<Vec<Schedule>> {
+        match std::fs::read(&self.file) {
+            Ok(bytes) => serde_json::from_slice(&bytes).map_err(io::Error::from),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e),
+        }
+    }
+
     /// Every schedule, oldest first. A file that cannot be read holds none.
     pub fn list(&self) -> Vec<Schedule> {
-        std::fs::read(&self.file)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .unwrap_or_default()
+        self.read().unwrap_or_else(|e| {
+            tracing::warn!("cannot read {}: {e}", self.file.display());
+            Vec::new()
+        })
     }
 
     /// Changes the schedules with no other process changing them meanwhile.
@@ -215,7 +224,8 @@ impl Store {
                 None => std::thread::sleep(Duration::from_millis(20)),
             }
         };
-        let mut all = self.list();
+        // A file that cannot be read is left as it is rather than written over.
+        let mut all = self.read()?;
         let out = change(&mut all);
         let staged = self.file.with_extension("json.tmp");
         std::fs::write(&staged, serde_json::to_vec_pretty(&all)?)?;
@@ -679,6 +689,27 @@ mod tests {
         // Another project has its own.
         let other = Paths::discover(dir.path(), Some(&dir.path().join("home").to_string_lossy()));
         assert_eq!(Store::of(&other).list(), []);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_not_written_over() {
+        let dir = tempfile::tempdir().unwrap();
+        let scheduler = scheduler(dir.path());
+        let store = scheduler.store();
+        std::fs::create_dir_all(store.file().parent().unwrap()).unwrap();
+        std::fs::write(store.file(), "[{\"id\": \"from a later version\"}]").unwrap();
+        assert_eq!(store.list(), []);
+        let refused = scheduler.add(
+            When::Every(Duration::from_secs(600)),
+            "go",
+            Target::New,
+            Vec::new(),
+        );
+        assert!(refused.unwrap_err().starts_with("cannot write "));
+        assert_eq!(
+            std::fs::read_to_string(store.file()).unwrap(),
+            "[{\"id\": \"from a later version\"}]"
+        );
     }
 
     #[test]

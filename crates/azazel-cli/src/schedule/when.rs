@@ -48,13 +48,19 @@ impl When {
     /// `on ci-failure`, `on file:src/**/*.rs`, or five cron fields. Times without a zone are in
     /// the zone of `now`.
     pub fn parse(text: &str, now: &Zoned) -> Result<When, String> {
+        When::read(text, now, false)
+    }
+
+    /// [`When::parse`]; `stored` is whether the text is one that was kept, whose one moment may
+    /// have passed since.
+    fn read(text: &str, now: &Zoned, stored: bool) -> Result<When, String> {
         let text = text.trim();
         let lower = text.to_ascii_lowercase();
         if let Some(rest) = lower.strip_prefix("every ") {
             return every(rest).map(When::Every);
         }
         if lower.starts_with("at ") {
-            return at(text[3..].trim(), now).map(When::At);
+            return at(text[3..].trim(), now, stored).map(When::At);
         }
         if lower.starts_with("on ") {
             return on(text[3..].trim());
@@ -162,7 +168,7 @@ impl<'de> serde::Deserialize<'de> for When {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<When, D::Error> {
         let text = String::deserialize(deserializer)?;
         // What is stored names its moment in full, so the time of reading does not matter.
-        When::parse(&text, &Zoned::now()).map_err(serde::de::Error::custom)
+        When::read(&text, &Zoned::now(), true).map_err(serde::de::Error::custom)
     }
 }
 
@@ -175,13 +181,13 @@ fn every(text: &str) -> Result<Duration, String> {
     if every < MIN_EVERY || every > MAX_EVERY {
         return Err("`every` takes between one minute and 31 days".to_string());
     }
-    if every.as_secs() % 60 != 0 {
+    if !every.as_secs().is_multiple_of(60) {
         return Err("`every` takes whole minutes: the system's scheduler counts in minutes".to_string());
     }
     Ok(every)
 }
 
-fn at(text: &str, now: &Zoned) -> Result<Timestamp, String> {
+fn at(text: &str, now: &Zoned, may_have_passed: bool) -> Result<Timestamp, String> {
     let zone = now.time_zone().clone();
     let local = |at: DateTime| {
         at.to_zoned(zone.clone())
@@ -207,7 +213,7 @@ fn at(text: &str, now: &Zoned) -> Result<Timestamp, String> {
             "`{text}` is not a time: +2h, 17:30, 2026-12-01 09:00, or a full timestamp"
         ));
     };
-    if at <= now.timestamp() {
+    if at <= now.timestamp() && !may_have_passed {
         return Err(format!("`{text}` is in the past"));
     }
     Ok(at)
@@ -464,6 +470,17 @@ mod tests {
             parse("  0   9 * *   mon-fri ").unwrap().to_string(),
             "0 9 * * mon-fri"
         );
+    }
+
+    #[test]
+    fn a_stored_moment_is_read_back_after_it_has_passed() {
+        let passed = When::At("2020-01-01T10:00:00Z".parse().unwrap());
+        let stored = serde_json::to_string(&passed).unwrap();
+        assert_eq!(stored, "\"at 2020-01-01T10:00:00Z\"");
+        assert_eq!(serde_json::from_str::<When>(&stored).unwrap(), passed);
+        let cron: When = serde_json::from_str("\"0 9 * * 1-5\"").unwrap();
+        assert_eq!(serde_json::to_string(&cron).unwrap(), "\"0 9 * * 1-5\"");
+        assert!(serde_json::from_str::<When>("\"whenever\"").is_err());
     }
 
     #[test]

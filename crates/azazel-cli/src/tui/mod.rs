@@ -1197,8 +1197,9 @@ impl Tui {
                 // An interrupted run keeps what is queued for the user to send or take back.
                 self.run_ended = stop != StopReason::Aborted;
                 self.voice_run_ended(&stop);
-                // With a message queued the work goes on: nothing to call the user for yet.
-                if self.run_ended && self.queued.is_empty() {
+                // With a message queued, or a loop that sends the next round, the work goes
+                // on: nothing to call the user for yet.
+                if self.run_ended && self.queued.is_empty() && self.looping.is_none() {
                     self.attend_end(None, took);
                 }
                 match stop {
