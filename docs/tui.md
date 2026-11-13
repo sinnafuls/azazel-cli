@@ -678,7 +678,7 @@ with `args: "json"` this object, and with `args: "text <request> <category index
 |---|---|
 | `/loop 5 fix one failing test` | Five rounds, then it ends. `5x` works too; at most 1000 |
 | `/loop 10m look at the deploy and say what changed` | A round every ten minutes, counted from the start of the round before (`30s`, `10m`, `1h`; five seconds at least). A round that takes longer is followed at once |
-| `/loop until "cargo test passes" fix the next failing test` | After every round the `smol` role is asked whether the condition holds, and the loop ends when it says yes. The condition goes in quotes |
+| `/loop until "cargo test passes" fix the next failing test` | After every round the `judge` role (by default the `smol` model) is asked whether the condition holds, and the loop ends when it says yes. The condition goes in quotes |
 | `/loop` | Where the loop stands |
 | `/loop stop` | Ends it; the round in progress goes on |
 

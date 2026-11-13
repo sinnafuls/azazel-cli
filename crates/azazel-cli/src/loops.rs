@@ -1,7 +1,8 @@
 //! `/loop`: one prompt sent again and again, a number of times, on an interval, or until a
 //! condition holds. The loop itself is here; the interactive UI drives it (`tui/loops.rs`).
 //!
-//! Whether a condition holds is judged by the small model (`smol`), outside the session: it is
+//! Whether a condition holds is judged by the `judge` role (which falls back to `smol`), outside
+//! the session: it is
 //! shown the end of the conversation and answers yes or no.
 
 use std::time::{Duration, Instant};
@@ -13,7 +14,7 @@ use azazel_core::side::{Side, SideQuestion};
 use tokio_util::sync::CancellationToken;
 
 /// The role that judges a condition; the lead's own models follow it.
-const JUDGE_ROLE: &str = "smol";
+const JUDGE_ROLE: &str = "judge";
 const JUDGE_LIMIT: Duration = Duration::from_secs(90);
 /// How much of the conversation the judge is shown, from its end.
 const EVIDENCE_CHARS: usize = 20_000;

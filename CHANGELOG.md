@@ -37,7 +37,7 @@ GitHub are its section here.
   A session that is open in the project (the UI or a background session) watches for them and gets the
   prompt as a message; with several open, one of them owns each trigger.
 - `/loop`: `/loop 5 <prompt>` sends a prompt five times, `/loop 10m <prompt>` every ten minutes, and
-  `/loop until "<condition>" <prompt>` until the `smol` role, shown the end of the conversation, says the
+  `/loop until "<condition>" <prompt>` until the `judge` role, shown the end of the conversation, says the
   condition holds. `Esc`, a round that fails and a check that fails stop it; `schedule.loop_max` (50) is
   the most rounds an interval or a condition takes.
 - The `schedule` tool: an agent adds, lists and removes schedules and triggers; adding and removing ask
