@@ -309,13 +309,10 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
         let second = agent.send_request(acp::PromptRequest::new(session_id.clone(), vec![text("two")]));
         assert_eq!(first.block_task().await?.stop_reason, acp::StopReason::Cancelled);
         assert_eq!(second.block_task().await?.stop_reason, acp::StopReason::EndTurn);
-        let updates = seen.take();
-        assert!(
-            updates
-                .iter()
-                .any(|update| update["content"]["text"] == "The second prompt was answered."),
-            "{updates:?}"
-        );
+        // The reply's last chunk may arrive just after the prompt's answer.
+        seen.wait_for(|update| update["content"]["text"] == "The second prompt was answered.")
+            .await;
+        seen.take();
 
         let nowhere = agent
             .send_request(acp::PromptRequest::new("no-such-session", vec![text("x")]))

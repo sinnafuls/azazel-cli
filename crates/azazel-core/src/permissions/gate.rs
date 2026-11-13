@@ -67,8 +67,9 @@ fn call<'a>(agent: &'a AgentInfo, tool: &'a dyn Tool, input: &Value, subject: &'
     let access = tool.access(input);
     Call {
         agent,
-        // Reading a web address is a fetch, so the rules written for `web_fetch` govern it.
-        tool: if tool.name() == "read" && access == Access::Net {
+        // Reading a web address is a fetch, and so is searching the page behind one, so the rules
+        // written for `web_fetch` govern both.
+        tool: if (tool.name() == "read" && access == Access::Net) || tool.name() == "web_grep" {
             "web_fetch"
         } else {
             tool.name()

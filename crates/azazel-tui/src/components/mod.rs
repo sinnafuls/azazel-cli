@@ -9,6 +9,7 @@ pub mod overlay;
 pub mod pager;
 pub mod roster;
 pub mod select;
+pub mod shimmer;
 pub mod spinner;
 pub mod status;
 pub mod todo;

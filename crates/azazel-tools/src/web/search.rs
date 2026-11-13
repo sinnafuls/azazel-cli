@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
 use dom_smoothie::Readability;
+use futures::StreamExt;
 use reqwest::Url;
 use reqwest::header::ACCEPT;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,10 @@ pub const DUCKDUCKGO_URL: &str = "https://html.duckduckgo.com";
 const DEFAULT_LIMIT: usize = 8;
 const MAX_LIMIT: usize = 20;
 const SNIPPET_CHARS: usize = 500;
+/// The most queries one call may carry.
+pub const MAX_QUERIES: usize = 5;
+/// Queries of one call sent at the same time.
+pub const CONCURRENT_QUERIES: usize = 3;
 
 /// The backends that need an API key, in the order `auto` tries them, with the variable holding it.
 static KEYED: [(&str, &str); 3] = [
@@ -630,7 +635,10 @@ impl WebSearchTool {
 
 #[derive(Deserialize)]
 struct SearchInput {
-    query: String,
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    queries: Vec<String>,
     #[serde(default)]
     limit: Option<usize>,
     #[serde(default)]
@@ -648,6 +656,24 @@ fn bare_domain(site: &str) -> Option<String> {
         .unwrap_or(site)
         .trim_end_matches('/');
     (!site.is_empty()).then(|| site.to_string())
+}
+
+/// What a call searches for: `query`, then `queries`, without blanks and repeats.
+fn wanted(query: Option<String>, queries: Vec<String>) -> Result<Vec<String>, String> {
+    let mut wanted: Vec<String> = Vec::new();
+    for query in query.into_iter().chain(queries) {
+        let query = query.trim();
+        if !query.is_empty() && !wanted.iter().any(|seen| seen == query) {
+            wanted.push(query.to_string());
+        }
+    }
+    match wanted.len() {
+        0 => Err("query is empty".to_string()),
+        count if count > MAX_QUERIES => Err(format!(
+            "{count} queries in one call; at most {MAX_QUERIES} are searched at once"
+        )),
+        _ => Ok(wanted),
+    }
 }
 
 fn render(query: &str, hits: &[SearchHit]) -> String {
@@ -680,10 +706,12 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web. Returns numbered results, each with title, URL and snippet. `site` keeps \
-         results to one domain (`docs.rs`); `recency` keeps results from the last `day`, `week`, `month` \
-         or `year`; `limit` is the number of results (default 8, at most 20). Snippets are excerpts: \
-         read a result with `web_fetch` before relying on it."
+        "Search the web. Returns numbered results, each with title, URL and snippet. Give one `query`, \
+         or up to 5 `queries` to search at once: each gets its own `## <query>` section, and one that \
+         fails says so in its section. `site` keeps results to one domain (`docs.rs`); `recency` keeps \
+         results from the last `day`, `week`, `month` or `year`; `limit` is the number of results per \
+         query (default 8, at most 20). Snippets are excerpts: read a result with `web_fetch` before \
+         relying on it."
     }
 
     fn schema(&self) -> Value {
@@ -691,11 +719,16 @@ impl Tool for WebSearchTool {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
+                "queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": MAX_QUERIES,
+                    "description": "Several searches in one call, in place of or beside `query`"
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
                 "site": {"type": "string"},
                 "recency": {"type": "string", "enum": ["day", "week", "month", "year"]}
-            },
-            "required": ["query"]
+            }
         })
     }
 
@@ -723,31 +756,73 @@ impl Tool for WebSearchTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        let query = SearchQuery {
-            query: input.query.trim().to_string(),
-            limit: input.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
-            site: input.site.as_deref().and_then(bare_domain),
-            recency: input.recency,
+        let wanted = match wanted(input.query, input.queries) {
+            Ok(wanted) => wanted,
+            Err(error) => return ToolOutput::error(error),
         };
-        if query.query.is_empty() {
-            return ToolOutput::error("query is empty");
-        }
+        let limit = input.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+        let site = input.site.as_deref().and_then(bare_domain);
         let backend = match &self.backend {
             Ok(backend) => backend,
             Err(reason) => return ToolOutput::error(reason.clone()),
         };
-        let found = tokio::select! {
-            _ = ctx.cancel.cancelled() => return ToolOutput::error("aborted by user"),
-            found = backend.search(&self.client, &query) => found,
-        };
-        match found {
-            Ok(mut hits) => {
-                hits.truncate(query.limit);
-                let details = json!({"backend": backend.name(), "results": hits});
-                ToolOutput::text(render(&query.query, &hits)).with_details(details)
+        let searches = futures::stream::iter(wanted.into_iter().map(|query| {
+            let query = SearchQuery {
+                query,
+                limit,
+                site: site.clone(),
+                recency: input.recency,
+            };
+            async move {
+                let found = backend.search(&self.client, &query).await.map(|mut hits| {
+                    hits.truncate(limit);
+                    hits
+                });
+                (query.query, found)
             }
-            Err(error) => ToolOutput::error(error),
+        }))
+        .buffered(CONCURRENT_QUERIES)
+        .collect::<Vec<_>>();
+        let mut found = tokio::select! {
+            _ = ctx.cancel.cancelled() => return ToolOutput::error("aborted by user"),
+            found = searches => found,
+        };
+
+        // One query answers as it always did.
+        if found.len() == 1 {
+            return match found.remove(0) {
+                (query, Ok(hits)) => {
+                    let details = json!({"backend": backend.name(), "results": hits});
+                    ToolOutput::text(render(&query, &hits)).with_details(details)
+                }
+                (_, Err(error)) => ToolOutput::error(error),
+            };
         }
+        let mut text = String::new();
+        let mut details = Vec::new();
+        let all_failed = found.iter().all(|(_, found)| found.is_err());
+        for (query, found) in &found {
+            if !text.is_empty() {
+                text.push_str("\n\n");
+            }
+            text.push_str(&format!("## {query}\n"));
+            match found {
+                Ok(hits) => {
+                    text.push_str(&render(query, hits));
+                    details.push(json!({"query": query, "results": hits}));
+                }
+                Err(error) => {
+                    text.push_str(error);
+                    details.push(json!({"query": query, "error": error}));
+                }
+            }
+        }
+        let output = if all_failed {
+            ToolOutput::error(text)
+        } else {
+            ToolOutput::text(text)
+        };
+        output.with_details(json!({"backend": backend.name(), "queries": details}))
     }
 }
 
@@ -791,6 +866,27 @@ mod tests {
             plain("Vec&lt;T&gt; &amp; <strong>Option</strong>&#x27;s"),
             "Vec<T> & Option's"
         );
+    }
+
+    #[test]
+    fn a_call_searches_its_query_and_queries_once_each_up_to_five() {
+        let list = |queries: &[&str]| queries.iter().map(|q| q.to_string()).collect::<Vec<_>>();
+        assert_eq!(wanted(Some(" one ".into()), Vec::new()), Ok(list(&["one"])));
+        assert_eq!(
+            wanted(Some("one".into()), list(&["two", " ", "one", "three"])),
+            Ok(list(&["one", "two", "three"]))
+        );
+        assert_eq!(wanted(None, list(&["a", "b"])), Ok(list(&["a", "b"])));
+        assert_eq!(wanted(None, Vec::new()).unwrap_err(), "query is empty");
+        assert_eq!(
+            wanted(Some("  ".into()), list(&[""])).unwrap_err(),
+            "query is empty"
+        );
+        assert_eq!(
+            wanted(Some("a".into()), list(&["b", "c", "d", "e", "f"])).unwrap_err(),
+            "6 queries in one call; at most 5 are searched at once"
+        );
+        assert!(wanted(None, list(&["a", "b", "c", "d", "e"])).is_ok());
     }
 
     #[test]

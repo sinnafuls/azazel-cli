@@ -383,7 +383,7 @@ fn push_line(buf: &mut String, line: &str) {
 }
 
 /// Guarantees that a line occupies exactly one terminal row.
-fn fit(line: Line, width: usize) -> Line {
+pub(crate) fn fit(line: Line, width: usize) -> Line {
     // Control characters other than ESC would move the cursor behind the renderer's back.
     let moves_cursor = |c: char| c.is_control() && c != '\x1b';
     let line = if line.contains(moves_cursor) {

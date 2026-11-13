@@ -10,7 +10,7 @@ use azazel_core::commands::split_args;
 use azazel_core::config::EditorMode;
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
 use azazel_tools::Foreground;
-use azazel_tui::{Draft, Line, Role, Vim};
+use azazel_tui::{Draft, Glyph, GlyphLevel, Line, Role, Vim};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::overlay::Kind;
@@ -315,26 +315,30 @@ impl Tui {
 
     /// One muted row per queued message and one for stashed drafts, shown above the input.
     pub(super) fn waiting_lines(&self, width: usize) -> Vec<Line> {
+        let glyphs = self.theme.glyphs();
+        let muted = |row: &str| {
+            let cut = azazel_tui::text::truncate(row, width, glyphs.get(Glyph::Ellipsis));
+            self.theme.paint(Role::Muted, &cut)
+        };
         let mut lines: Vec<Line> = self
             .queued
             .texts()
             .map(|text| {
-                let row = format!("⏵ queued: {}", first_line(text));
-                self.theme
-                    .paint(Role::Muted, &azazel_tui::text::truncate(&row, width, "…"))
+                muted(&format!(
+                    "{}queued: {}",
+                    glyphs.prefix(Glyph::Queued),
+                    first_line(text)
+                ))
             })
             .collect();
         if !self.stashed.is_empty() {
             let count = self.stashed.len();
-            let row = format!(
-                "{count} draft{} stashed · ctrl+s on an empty input brings {} back",
+            lines.push(muted(&format!(
+                "{count} draft{} stashed{}ctrl+s on an empty input brings {} back",
                 if count == 1 { "" } else { "s" },
+                glyphs.get(Glyph::Separator),
                 if count == 1 { "it" } else { "the last one" }
-            );
-            lines.push(
-                self.theme
-                    .paint(Role::Muted, &azazel_tui::text::truncate(&row, width, "…")),
-            );
+            )));
         }
         lines
     }
@@ -346,8 +350,9 @@ impl Tui {
         let images = std::mem::take(&mut self.images);
         self.queued.push(text, images);
         self.notice = Some(format!(
-            "queued until the agent finishes ({} waiting) · alt+up takes it back",
-            self.queued.len()
+            "queued until the agent finishes ({} waiting){}alt+up takes it back",
+            self.queued.len(),
+            self.theme.glyph(Glyph::Separator)
         ));
     }
 
@@ -667,10 +672,34 @@ impl Tui {
 
     // ------------------------------------------------------------ settings that apply at once
 
-    /// Applies a setting the settings menu just saved to the running UI.
+    /// Applies a setting the settings menu just saved to the running UI. The appearance
+    /// settings are kept in the UI's own copy of the configuration, where whatever draws reads
+    /// them.
     pub(super) fn apply_setting(&mut self, path: &str, value: &toml::Value) {
+        let tui = &mut self.env.config.tui;
         match (path, value) {
             ("tui.theme", toml::Value::String(name)) => self.set_theme(name),
+            ("tui.glyphs", toml::Value::String(set)) => {
+                if let Ok(setting) = set.parse() {
+                    tui.glyphs = setting;
+                }
+                // `AZAZEL_GLYPHS` still wins, as it did when the UI opened.
+                let level = GlyphLevel::detect(set, |name| std::env::var(name).ok());
+                self.theme = self.theme.clone().with_glyphs(level);
+            }
+            ("tui.indicator", toml::Value::String(mode)) => {
+                if let Ok(mode) = mode.parse() {
+                    tui.indicator = mode;
+                }
+            }
+            ("tui.session_accent", toml::Value::Boolean(on)) => tui.session_accent = *on,
+            ("tui.tool_style", toml::Value::String(style)) => {
+                if let Ok(style) = style.parse() {
+                    tui.tool_style = style;
+                }
+            }
+            ("tui.redact", toml::Value::Boolean(on)) => tui.redact = *on,
+            ("tui.popups", toml::Value::Boolean(on)) => tui.popups = *on,
             ("tui.show_thinking", toml::Value::Boolean(on)) => self.show_thinking = *on,
             ("tui.expand_tools", toml::Value::Boolean(on)) => self.expand_tools = *on,
             ("editor.mode", toml::Value::String(mode)) => self.set_vim(mode == "vim"),

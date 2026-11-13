@@ -1,12 +1,17 @@
-//! Modal prompts shown in place of the input line: pick from a list, or type a line.
+//! Modal prompts: pick from a list, or type a line. Each is drawn in a box, which the UI shows
+//! as a popup over the window or, where there is no room for one, in place of the input.
 
+use std::cell::Cell;
 use std::path::PathBuf;
 
 use azazel_core::permissions::{Rule, RuleKind, SourcedRule};
 use azazel_core::session::SessionSummary;
 use azazel_core::{ApprovalDecision, PlanDecision, UiError};
-use azazel_tui::components::composer;
-use azazel_tui::{Editor, KeyCombo, Line, Role, SelectItem, SelectList, Theme, text};
+use azazel_tui::components::markdown;
+use azazel_tui::components::overlay::Frame;
+use azazel_tui::{
+    Editor, Glyph, GlyphLevel, Hint, KeyCombo, Line, Role, SelectItem, SelectList, Theme, text,
+};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::bridge::Reply;
@@ -72,6 +77,8 @@ pub enum Action {
     Thinking,
     Mode,
     Theme(Vec<String>),
+    /// `/glyphs`: the symbol set of each row; `None` is `auto`.
+    Glyphs(Vec<Option<GlyphLevel>>),
     /// The session file of each row; choosing one resumes it.
     Resume(Vec<PathBuf>),
     /// A session picker (`/resume`, `/consult`): the session of each row, and what the picker
@@ -190,8 +197,16 @@ pub enum Kind {
 
 pub struct Overlay {
     pub title: String,
-    /// Plain text shown above the list or input.
+    /// Text shown above the list or input: plain paragraphs, or Markdown when `markdown` is set.
     pub body: Vec<String>,
+    /// The body is Markdown (a plan) and is rendered as the transcript renders a reply.
+    pub markdown: bool,
+    /// A paragraph under the body in the warning colour. It is never cut away with the body.
+    pub warning: Option<String>,
+    /// What is asked would destroy work: the box is drawn in the warning colour.
+    pub destructive: bool,
+    /// The last render had to cut the body, so `ctrl+o` shows all of it.
+    cut: Cell<bool>,
     pub kind: Kind,
     pub action: Action,
     /// Keys that act on the selected row without closing the overlay, each with the word the
@@ -213,6 +228,8 @@ pub enum Outcome {
         index: usize,
         key: usize,
     },
+    /// `ctrl+o` on a body that does not fit the box: show all of it full screen.
+    ReadBody,
 }
 
 /// A key as the hint line names it: `S` rather than `shift+s`.
@@ -225,7 +242,12 @@ fn key_label(combo: &KeyCombo) -> String {
     }
 }
 
-const MAX_BODY_LINES: usize = 14;
+/// The most rows of a list a box shows at once.
+const MAX_LIST_ROWS: usize = 16;
+/// Rows kept for the list or the input when a long body competes with them.
+const KEPT_FOR_LIST: usize = 6;
+/// The most rows a box takes when it stands in place of the input instead of being a popup.
+pub const INLINE_ROWS: usize = 26;
 
 impl Overlay {
     /// Starts a list with row `index` selected instead of the first.
@@ -243,14 +265,27 @@ impl Overlay {
         filterable: bool,
         action: Action,
     ) -> Self {
-        Overlay {
-            title: title.into(),
+        Overlay::new(
+            title.into(),
             body,
-            kind: Kind::Select {
+            Kind::Select {
                 list: SelectList::new(items),
                 filterable,
                 filter: String::new(),
             },
+            action,
+        )
+    }
+
+    fn new(title: String, body: Vec<String>, kind: Kind, action: Action) -> Self {
+        Overlay {
+            title,
+            body,
+            markdown: false,
+            warning: None,
+            destructive: false,
+            cut: Cell::new(false),
+            kind,
             action,
             keys: Vec::new(),
         }
@@ -262,17 +297,34 @@ impl Overlay {
         self
     }
 
+    /// Adds a paragraph in the warning colour under the body.
+    pub fn with_warning(mut self, warning: Option<String>) -> Self {
+        self.warning = warning.filter(|warning| !warning.trim().is_empty());
+        self
+    }
+
+    /// Draws the box in the warning colour when what is asked would destroy work.
+    pub fn destructive(mut self, destructive: bool) -> Self {
+        self.destructive = destructive;
+        self
+    }
+
+    /// Renders the body as Markdown.
+    pub fn markdown(mut self) -> Self {
+        self.markdown = true;
+        self
+    }
+
     pub fn input(title: impl Into<String>, body: Vec<String>, action: Action) -> Self {
-        Overlay {
-            title: title.into(),
+        Overlay::new(
+            title.into(),
             body,
-            kind: Kind::Input {
+            Kind::Input {
                 editor: Editor::new(),
                 secret: false,
             },
             action,
-            keys: Vec::new(),
-        }
+        )
     }
 
     /// An input whose text is shown as dots, for API keys and passwords.
@@ -323,6 +375,9 @@ impl Overlay {
                     .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
                 Kind::Input { .. } => Outcome::Hotkey { index: 0, key },
             };
+        }
+        if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
+            return Outcome::ReadBody;
         }
         match &mut self.kind {
             Kind::Select {
@@ -387,74 +442,207 @@ impl Overlay {
         }
     }
 
-    /// The overlay's rows, at most `max_rows`, and the cursor position within them when it has one.
-    pub fn render(&self, width: usize, max_rows: usize, theme: &Theme) -> (Vec<Line>, Option<(u16, u16)>) {
-        // Framed like the input it stands in for: the title rides the rule above, the key hints
-        // the rule below.
-        let title = theme.paint(Role::Accent, &self.title);
-        let mut lines = vec![composer::rule(width, Some(&title), None, Role::Border, theme)];
-        let prompt = theme.paint(Role::Accent, "❯ ");
-        let mut body: Vec<Line> = Vec::new();
-        for raw in &self.body {
-            if raw.is_empty() {
-                body.push(String::new());
-            } else {
-                body.extend(text::wrap(raw, width));
+    /// The body as the full-screen viewer shows it when the box cannot hold all of it.
+    pub fn body_text(&self) -> String {
+        let mut text = self.body.join("\n");
+        if let Some(warning) = &self.warning {
+            text.push_str("\n\n");
+            text.push_str(warning);
+        }
+        text
+    }
+
+    /// The key hints for the bottom edge of the box.
+    fn hints(&self, theme: &Theme) -> Vec<Hint> {
+        let mut hints = Vec::new();
+        match &self.kind {
+            Kind::Select { filterable, .. } => {
+                if *filterable {
+                    hints.push(Hint::new("type", "to filter"));
+                }
+                let arrows = format!("{}{}", theme.glyph(Glyph::MoreUp), theme.glyph(Glyph::MoreDown));
+                hints.push(Hint::new(arrows, "move"));
+                hints.push(Hint::new("enter", "pick"));
+            }
+            Kind::Input { secret, .. } => {
+                if *secret {
+                    hints.push(Hint::new("", "hidden while you type"));
+                }
+                hints.push(Hint::new("enter", "confirm"));
             }
         }
-        let body_room = MAX_BODY_LINES.min(max_rows.saturating_sub(6));
-        let hidden = body.len().saturating_sub(body_room);
-        lines.extend(body.into_iter().take(body_room));
-        if hidden > 0 {
-            lines.push(theme.paint(Role::Muted, &format!("… {hidden} more lines")));
+        for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
+            hints.push(Hint::new(key_label(combo), *what));
         }
-        let mut cursor = None;
-        let hint = match &self.kind {
-            Kind::Select {
-                list,
-                filterable,
-                filter,
-            } => {
-                if *filterable {
-                    lines.push(format!("{} {filter}", theme.paint(Role::Muted, "filter:")));
-                    let column = text::width("filter: ") + text::width(filter);
-                    cursor = Some((lines.len() as u16 - 1, column.min(width.saturating_sub(1)) as u16));
-                }
-                let rows = max_rows.saturating_sub(lines.len() + 1).clamp(1, 12);
-                lines.extend(list.render(width, rows, theme));
-                if *filterable {
-                    "type to filter · ↑↓ move · enter choose"
+        if self.cut.get() {
+            hints.push(Hint::new("ctrl+o", "read all"));
+        }
+        hints.push(Hint::new("esc", "cancel"));
+        hints
+    }
+
+    /// The overlay as a box `width` columns wide and at most `max_rows` rows tall, and the cursor
+    /// position within it when it has one. The title rides the top edge, the key hints the
+    /// bottom edge; the body comes first, then the list or the input. A body that does not fit
+    /// is cut, with a row that says how much is missing.
+    pub fn render(&self, width: usize, max_rows: usize, theme: &Theme) -> (Vec<Line>, Option<(u16, u16)>) {
+        let mut frame = Frame::new(&self.title, width);
+        if self.destructive {
+            frame.border = Role::Warning;
+        }
+        let inner = Frame::inner_width(width).max(1);
+        let interior = max_rows.saturating_sub(frame.chrome_rows()).max(1);
+
+        let mut body: Vec<Line> = if self.markdown {
+            markdown::render(&self.body.join("\n"), inner, theme)
+        } else {
+            // What a tool or a model put into the body (a command, a path) is shown as text:
+            // nothing in it may move the cursor or colour the box.
+            let mut lines = Vec::new();
+            for raw in &self.body {
+                if raw.is_empty() {
+                    lines.push(String::new());
                 } else {
-                    "↑↓ move · enter choose"
+                    lines.extend(text::wrap(&text::sanitize(raw), inner));
                 }
+            }
+            lines
+        };
+        let mut warning: Vec<Line> = Vec::new();
+        if let Some(note) = &self.warning {
+            if !body.is_empty() {
+                warning.push(String::new());
+            }
+            warning.extend(
+                text::wrap(&text::sanitize(note), inner)
+                    .iter()
+                    .map(|line| theme.paint(Role::Warning, line)),
+            );
+        }
+        // The list or the input keeps some rows whatever the body needs, and one blank row
+        // sets them apart from it.
+        let kept = match &self.kind {
+            Kind::Select { list, filterable, .. } => {
+                list.len().clamp(1, KEPT_FOR_LIST) + usize::from(*filterable)
+            }
+            Kind::Input { secret: true, .. } => 1,
+            Kind::Input { .. } => 3,
+        };
+        let has_body = !body.is_empty() || !warning.is_empty();
+        let text_room = interior.saturating_sub(kept + usize::from(has_body));
+        // The warning stays as long as there is any room at all; the body is cut before it.
+        if warning.len() > text_room {
+            if warning.first().is_some_and(String::is_empty) {
+                warning.remove(0);
+            }
+            warning.truncate(text_room);
+        }
+        let room = text_room - warning.len();
+        let hidden = body.len().saturating_sub(room);
+        self.cut.set(hidden > 0);
+        if hidden > 0 {
+            // The row that says so takes the place of one more line.
+            let shown = room.saturating_sub(1);
+            let more = format!(
+                "{} {} more lines",
+                theme.glyph(Glyph::Ellipsis),
+                body.len() - shown
+            );
+            body.truncate(shown);
+            if room > 0 {
+                body.push(theme.paint(Role::Muted, &more));
+            }
+        }
+        let mut rows = body;
+        rows.append(&mut warning);
+        if has_body && !rows.is_empty() {
+            rows.push(String::new());
+        }
+
+        let prompt = theme.paint(Role::Accent, &theme.glyphs().prefix(Glyph::Prompt));
+        let mut cursor = None;
+        match &self.kind {
+            Kind::Select { list, filterable, .. } => {
+                if *filterable {
+                    let (line, column) = list.filter_row(inner, theme);
+                    cursor = Some((rows.len(), usize::from(column)));
+                    rows.push(line);
+                }
+                let room = interior.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
+                let view = list.view(inner, room, theme);
+                frame.scrollbar = view.scroll.map(|scroll| (rows.len(), scroll));
+                rows.extend(view.lines);
             }
             Kind::Input {
                 editor,
                 secret: false,
             } => {
-                let room = max_rows.saturating_sub(lines.len() + 1).max(1);
-                let view = editor.view(width, room, theme, &prompt);
-                cursor = Some((lines.len() as u16 + view.cursor.0, view.cursor.1));
-                lines.extend(view.lines);
-                "enter confirm"
+                let room = interior.saturating_sub(rows.len()).max(1);
+                let view = editor.view(inner, room, theme, &prompt);
+                cursor = Some((
+                    rows.len() + usize::from(view.cursor.0),
+                    usize::from(view.cursor.1),
+                ));
+                rows.extend(view.lines);
             }
             Kind::Input { editor, secret: true } => {
                 // One dot per character, so a typo can still be counted, never read.
-                let dots = editor.text().chars().count().min(width.saturating_sub(3));
+                let lead = text::width(&prompt);
+                let dots = editor.text().chars().count().min(inner.saturating_sub(lead + 1));
                 let before = editor.text()[..editor.cursor()].chars().count().min(dots);
-                cursor = Some((lines.len() as u16, (2 + before) as u16));
-                lines.push(format!("{prompt}{}", "•".repeat(dots)));
-                "hidden while you type · enter confirm"
+                cursor = Some((rows.len(), lead + before));
+                rows.push(format!("{prompt}{}", theme.glyph(Glyph::Bullet).repeat(dots)));
             }
-        };
-        let mut hint = hint.to_string();
-        for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
-            hint.push_str(&format!(" · {} {what}", key_label(combo)));
         }
-        hint.push_str(" · esc cancel");
-        let hint = theme.paint(Role::Muted, &hint);
-        lines.push(composer::rule(width, Some(&hint), None, Role::Border, theme));
-        (lines, cursor)
+
+        let hints = self.hints(theme);
+        frame.hints = &hints;
+        let (top, left) = frame.origin();
+        let cursor = cursor.map(|(row, column)| ((row + top) as u16, (column + left) as u16));
+        (frame.render(&rows, theme), cursor)
+    }
+}
+
+/// What an approval shows above its choices: the command of a call that runs one, whole (its
+/// subjects name only the programs in it, and the box covers the card that shows the rest);
+/// else what the call touches; else its arguments.
+pub fn approval_body(subjects: &[String], input: &serde_json::Value) -> Vec<String> {
+    if let Some(command) = input.get("command").and_then(serde_json::Value::as_str)
+        && !command.trim().is_empty()
+    {
+        return vec![command.trim_end().to_string()];
+    }
+    if subjects.is_empty() {
+        return serde_json::to_string_pretty(input)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect();
+    }
+    subjects.to_vec()
+}
+
+/// The longest first line of a prompt that still serves as the title of its box.
+const MAX_TITLE: usize = 48;
+
+/// A prompt as the title and body of its box. A short first line is the title and the lines
+/// after it the body; a prompt whose first line is long is all body under the title `fallback`.
+pub fn heading(prompt: &str, fallback: &str) -> (String, Vec<String>) {
+    let mut lines = prompt.trim().lines();
+    let first = lines.next().unwrap_or_default().trim();
+    if first.is_empty() || text::width(first) > MAX_TITLE {
+        let body = prompt.trim().lines().map(str::to_string).collect();
+        return (fallback.to_string(), body);
+    }
+    (first.to_string(), lines.map(str::to_string).collect())
+}
+
+/// One option of a list as its row: what follows a tab is the detail shown beside the label
+/// (`Theme<tab>dark`).
+pub fn option_item(option: &str) -> SelectItem {
+    match option.split_once('\t') {
+        Some((label, detail)) => SelectItem::new(label.trim_end(), detail.trim()),
+        None => SelectItem::new(option, ""),
     }
 }
 
@@ -487,7 +675,7 @@ pub fn ask_items(options: &[String], picked: &[bool], multi: bool) -> Vec<Select
     let mut items: Vec<SelectItem> = options
         .iter()
         .zip(picked)
-        .map(|(option, on)| SelectItem::new(format!("[{}] {option}", if *on { 'x' } else { ' ' }), ""))
+        .map(|(option, on)| SelectItem::new(option.as_str(), "").checked(*on))
         .collect();
     items.push(SelectItem::new("Done", "confirm the selection"));
     items
@@ -651,7 +839,7 @@ mod tests {
         let last = text::strip_ansi(&lines[lines.len() - 1]);
         assert!(
             last.starts_with(
-                "── ↑↓ move · enter choose · m message · S stop all · ctrl+d delete · esc cancel ─"
+                "╰─ ↑↓ move · enter pick · m message · S stop all · ctrl+d delete · esc cancel ─"
             ),
             "{last}"
         );
@@ -687,23 +875,433 @@ mod tests {
         }
     }
 
+    fn shown(lines: &[Line]) -> Vec<String> {
+        lines.iter().map(|line| text::strip_ansi(line)).collect()
+    }
+
     #[test]
     fn render_fits_the_given_rows_and_places_the_cursor_on_the_input() {
         let theme = Theme::dark();
         let body: Vec<String> = (0..40).map(|i| format!("body {i}")).collect();
         let overlay = Overlay::input("Feedback", body, Action::Mode);
         let (lines, cursor) = overlay.render(40, 20, &theme);
-        assert!(lines.len() <= 20, "{}", lines.len());
-        assert!(lines.iter().all(|l| text::width(l) <= 40));
+        // A one-line input needs less than the rows kept for it: the box is as tall as its
+        // content.
+        assert_eq!(lines.len(), 18);
+        assert!(lines.iter().all(|l| text::width(l) == 40));
+        let rows = shown(&lines);
+        // The title rides the top edge and the key hints the bottom edge.
+        assert_eq!(rows[0], format!("╭─ Feedback {}╮", "─".repeat(27)));
+        assert_eq!(rows[1], format!("│ body 0{}│", " ".repeat(31)));
+        // 18 rows inside at most: 3 kept for the input, a blank row, 13 lines of body and the
+        // row that says how many more there are.
+        assert_eq!(rows[13], format!("│ body 12{}│", " ".repeat(30)));
+        assert_eq!(rows[14], format!("│ … 27 more lines{}│", " ".repeat(22)));
+        assert_eq!(rows[15], format!("│{}│", " ".repeat(38)));
         let (row, column) = cursor.unwrap();
-        assert!(text::strip_ansi(&lines[row as usize]).starts_with('❯'));
-        assert_eq!(column, 2);
-        let shown = text::strip_ansi(&lines.join("\n"));
-        assert!(shown.contains("more lines"));
-        // The title rides the rule above and the key hints the rule below.
-        assert!(shown.starts_with("── Feedback ─"), "{shown}");
-        let last = text::strip_ansi(&lines[lines.len() - 1]);
-        assert!(last.starts_with("── enter confirm · esc cancel ─"), "{last}");
-        assert_eq!(text::width(&last), 40);
+        assert_eq!((row, column), (16, 4));
+        assert!(rows[16].starts_with("│ ❯"), "{}", rows[16]);
+        assert!(
+            rows[17].starts_with("╰─ enter confirm · ctrl+o read all ─"),
+            "{}",
+            rows[17]
+        );
+    }
+
+    #[test]
+    fn every_kind_of_box_fits_any_width_and_height() {
+        let theme = Theme::dark();
+        let long: Vec<SelectItem> = (0..40)
+            .map(|i| SelectItem::new(format!("provider/model-{i}"), "ctx 200k · $3/$15"))
+            .collect();
+        let body = vec![
+            "a paragraph that is long enough to be wrapped inside of a narrow box, more than once"
+                .to_string(),
+            String::new(),
+            "second".to_string(),
+        ];
+        let mut secret = Overlay::secret("Key", body.clone(), Action::Mode);
+        secret.on_paste("sk-secret-secret");
+        let mut input = Overlay::input("Why?", body.clone(), Action::Mode);
+        input.on_paste("line one\nline two");
+        let overlays = [
+            Overlay::select("Model", body.clone(), long, true, Action::Mode),
+            Overlay::select(
+                "Confirm",
+                body.clone(),
+                items(&["Yes", "No"]),
+                false,
+                Action::Mode,
+            )
+            .with_warning(Some("this deletes files outside the project".to_string()))
+            .destructive(true),
+            Overlay::select(
+                "Plan review",
+                vec!["# Plan\n\n- one\n- two\n\n```rust\nfn main() {}\n```".to_string()],
+                items(&["Approve", "Revise"]),
+                false,
+                Action::Mode,
+            )
+            .markdown(),
+            input,
+            secret,
+        ];
+        for overlay in &overlays {
+            for width in 5..=160 {
+                for max_rows in [4, 8, 20, 60] {
+                    let (lines, cursor) = overlay.render(width, max_rows, &theme);
+                    assert!(
+                        lines.len() <= max_rows.max(4),
+                        "{} at {width}x{max_rows}",
+                        overlay.title
+                    );
+                    for line in &lines {
+                        assert_eq!(text::width(line), width, "{} at {width}: {line:?}", overlay.title);
+                    }
+                    if let Some((row, column)) = cursor {
+                        assert!(
+                            usize::from(row) < lines.len(),
+                            "{} at {width}x{max_rows}",
+                            overlay.title
+                        );
+                        assert!(
+                            usize::from(column) < width,
+                            "{} at {width}x{max_rows}",
+                            overlay.title
+                        );
+                    }
+                }
+            }
+            // Too narrow for a frame: bare rows that still fit.
+            for width in 0..5 {
+                for line in overlay.render(width, 20, &theme).0 {
+                    assert!(text::width(&line) <= width);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_filterable_list_has_a_filter_row_a_match_count_and_a_scrollbar() {
+        let theme = Theme::dark();
+        let models: Vec<SelectItem> = (0..40)
+            .map(|i| SelectItem::new(format!("provider/model-{i:02}"), "ctx 200k"))
+            .collect();
+        let mut overlay = Overlay::select(
+            "Model",
+            vec!["current: x".to_string()],
+            models,
+            true,
+            Action::Mode,
+        );
+        let (lines, cursor) = overlay.render(50, 12, &theme);
+        let rows = shown(&lines);
+        assert_eq!(
+            rows,
+            [
+                "╭─ Model ────────────────────────────────────────╮",
+                "│ current: x                                     │",
+                "│                                                │",
+                "│ ⌕                                        40/40 │",
+                "│ ▌ provider/model-00  ctx 200k                 ┃│",
+                "│   provider/model-01  ctx 200k                 ││",
+                "│   provider/model-02  ctx 200k                 ││",
+                "│   provider/model-03  ctx 200k                 ││",
+                "│   provider/model-04  ctx 200k                 ││",
+                "│   provider/model-05  ctx 200k                 ││",
+                "│   provider/model-06  ctx 200k                 ││",
+                "╰─ type to filter · ↑↓ move · enter pick ────────╯",
+            ]
+        );
+        // The typing cursor stands on the filter row, after the search symbol.
+        assert_eq!(cursor, Some((3, 4)));
+
+        overlay_type(&mut overlay, "model-3");
+        let (lines, cursor) = overlay.render(50, 12, &theme);
+        let rows = shown(&lines);
+        assert_eq!(rows[3], "│ ⌕ model-3                                13/40 │");
+        assert_eq!(cursor, Some((3, 11)));
+        assert!(rows[4].starts_with("│ ▌ provider/model-3"), "{}", rows[4]);
+        // A tall box shows all 13 matches, and no bar since they fit.
+        let (lines, _) = overlay.render(50, 60, &theme);
+        assert_eq!(lines.len(), 18);
+        assert!(!shown(&lines).iter().any(|row| row.contains('━')));
+    }
+
+    #[test]
+    fn a_destructive_approval_has_a_warning_border_and_keeps_its_note_when_the_body_is_cut() {
+        let theme = Theme::dark();
+        let subjects: Vec<String> = (0..30).map(|i| format!("rm -rf /data/set-{i}")).collect();
+        let build = |destructive: bool| {
+            Overlay::select(
+                "lead wants to use shell",
+                subjects.clone(),
+                items(&["Allow once", "Deny", "Deny and say what to do instead"]),
+                false,
+                Action::Mode,
+            )
+            .with_warning(Some("this command deletes files outside the project".to_string()))
+            .destructive(destructive)
+            .starting_at(1)
+        };
+        let (lines, cursor) = build(true).render(60, 14, &theme);
+        assert_eq!(cursor, None);
+        let rows = shown(&lines);
+        assert_eq!(rows.len(), 14);
+        // 12 rows inside: 3 options, a blank row, a blank row and the note, and 6 for the
+        // subjects, the last of which says how many are missing.
+        assert!(rows[1].starts_with("│ rm -rf /data/set-0 "), "{}", rows[1]);
+        assert!(rows[5].starts_with("│ rm -rf /data/set-4 "), "{}", rows[5]);
+        assert!(rows[6].starts_with("│ … 25 more lines "), "{}", rows[6]);
+        assert!(rows[8].starts_with("│ this command deletes files outside the project"));
+        assert!(rows[10].starts_with("│   Allow once"), "{}", rows[10]);
+        assert!(rows[11].starts_with("│ ▌ Deny "), "{}", rows[11]);
+        assert!(
+            rows[13].starts_with("╰─ ↑↓ move · enter pick · ctrl+o read all · esc cancel ─"),
+            "{}",
+            rows[13]
+        );
+        // The note and the whole border are in the warning colour.
+        let warning = theme.fg(Role::Warning);
+        assert!(lines[8].contains(&warning));
+        for line in &lines {
+            assert!(line.contains(&warning), "{line:?}");
+            assert!(!line.contains(&theme.fg(Role::Border)), "{line:?}");
+        }
+        // The same request without the danger: the usual border, the note still stands out.
+        let (calm, _) = build(false).render(60, 14, &theme);
+        assert_eq!(shown(&calm), rows);
+        assert!(calm[0].contains(&theme.fg(Role::Border)));
+        assert!(!calm[0].contains(&warning));
+        assert!(calm[8].contains(&warning));
+    }
+
+    #[test]
+    fn ctrl_o_asks_for_the_whole_body_only_when_the_box_cut_it() {
+        let ctrl_o = KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(KeyCode::Char('o'))
+        };
+        let theme = Theme::dark();
+        let body: Vec<String> = (0..30).map(|i| format!("step {i}")).collect();
+        let mut plan = Overlay::select(
+            "Plan review",
+            body,
+            items(&["Approve", "Revise"]),
+            false,
+            Action::Mode,
+        )
+        .with_warning(Some("careful".to_string()));
+        // Nothing has been drawn yet, so nothing is known to be cut.
+        assert!(matches!(plan.on_key(&ctrl_o), Outcome::Pending));
+        plan.render(60, 12, &theme);
+        assert!(matches!(plan.on_key(&ctrl_o), Outcome::ReadBody));
+        assert!(plan.body_text().starts_with("step 0\nstep 1\n"));
+        assert!(plan.body_text().ends_with("step 29\n\ncareful"));
+        // In a box tall enough for all of it the key does nothing and is not offered.
+        let (lines, _) = plan.render(60, 60, &theme);
+        assert!(matches!(plan.on_key(&ctrl_o), Outcome::Pending));
+        assert!(!shown(&lines).last().unwrap().contains("ctrl+o"));
+
+        // A filter does not take the chord for typing.
+        let many: Vec<SelectItem> = (0..20)
+            .map(|i| SelectItem::new(format!("item {i}"), ""))
+            .collect();
+        let mut list = Overlay::select("Pick", vec!["short".to_string()], many, true, Action::Mode);
+        list.render(60, 12, &theme);
+        assert!(matches!(list.on_key(&ctrl_o), Outcome::Pending));
+        assert!(matches!(list.on_key(&key(KeyCode::Enter)), Outcome::Chosen(0)));
+    }
+
+    #[test]
+    fn a_markdown_body_is_rendered_and_a_secret_is_dots() {
+        let theme = Theme::dark();
+        let plan = Overlay::select(
+            "Plan review",
+            vec!["# Steps\n\n1. **Read** the parser\n2. Fix it".to_string()],
+            items(&["Approve and run", "Revise"]),
+            false,
+            Action::Mode,
+        )
+        .markdown();
+        let rows = shown(&plan.render(50, 20, &theme).0);
+        assert!(rows.iter().any(|row| row.starts_with("│ Steps")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|row| row.contains("1. Read the parser")),
+            "{rows:#?}"
+        );
+        assert!(!rows.iter().any(|row| row.contains("**")), "{rows:#?}");
+
+        let mut secret = Overlay::secret("Input", vec!["API key for x".to_string()], Action::Mode);
+        secret.on_paste("sk-12345");
+        let (lines, cursor) = secret.render(44, 20, &theme);
+        let rows = shown(&lines);
+        assert_eq!(rows[3], format!("│ ❯ ●●●●●●●●{}│", " ".repeat(31)));
+        assert_eq!(cursor, Some((3, 12)));
+        assert!(!rows.join("\n").contains("sk-"));
+        assert_eq!(rows[4], "╰─ hidden while you type · enter confirm ──╯");
+    }
+
+    #[test]
+    fn an_approval_shows_the_whole_command_or_what_the_call_touches() {
+        let subjects = vec!["cat".to_string()];
+        let heredoc = serde_json::json!({"command": "cat <<'EOF' > notes.txt\nline\nEOF\n"});
+        assert_eq!(
+            approval_body(&subjects, &heredoc),
+            ["cat <<'EOF' > notes.txt\nline\nEOF"]
+        );
+        let write = serde_json::json!({"path": "src/a.rs", "content": "fn main() {}"});
+        assert_eq!(approval_body(&["src/a.rs".to_string()], &write), ["src/a.rs"]);
+        // Nothing to name: the arguments as they are.
+        let other = serde_json::json!({"query": "x"});
+        assert_eq!(approval_body(&[], &other), ["{", "  \"query\": \"x\"", "}"]);
+        assert_eq!(
+            approval_body(&subjects, &serde_json::json!({"command": "  "})),
+            ["cat"]
+        );
+    }
+
+    #[test]
+    fn a_body_from_a_tool_cannot_break_the_box() {
+        let theme = Theme::dark();
+        let command = "cat <<'EOF' > notes.txt\n\tindented\x1b[31m red\x1b[0m\r\nbell\x07 here\nEOF";
+        let overlay = Overlay::select(
+            "lead wants to use shell",
+            vec![command.to_string()],
+            items(&["Allow once", "Deny"]),
+            false,
+            Action::Mode,
+        )
+        .with_warning(Some("careful:\tthis \x1b[1mwrites\x1b[0m a file".to_string()));
+        let (lines, _) = overlay.render(50, 20, &theme);
+        let rows = shown(&lines);
+        assert_eq!(
+            rows[1..7],
+            [
+                "│ cat <<'EOF' > notes.txt                        │",
+                "│     indented red                               │",
+                "│ bell here                                      │",
+                "│ EOF                                            │",
+                "│                                                │",
+                "│ careful:    this writes a file                 │",
+            ]
+        );
+        for line in &lines {
+            assert_eq!(text::width(line), 50);
+            assert!(!line.contains(['\n', '\r', '\t', '\x07']), "{line:?}");
+        }
+        // The colours a body brought along are gone.
+        for line in &lines[1..7] {
+            assert!(
+                !line.contains("\x1b[31m") && !line.contains("\x1b[1m"),
+                "{line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prompt_gives_the_box_its_title_and_its_options_their_details() {
+        assert_eq!(
+            heading("Which role?", "Choose"),
+            ("Which role?".to_string(), Vec::<String>::new())
+        );
+        assert_eq!(
+            heading(
+                "Settings\ncredentials for: anthropic\ndefault model: none",
+                "Choose"
+            ),
+            (
+                "Settings".to_string(),
+                vec![
+                    "credentials for: anthropic".to_string(),
+                    "default model: none".to_string()
+                ]
+            )
+        );
+        // A first line too long for a border is body text under the usual title.
+        let long = "Paste the code the browser shows after you have signed in to your account";
+        assert_eq!(
+            heading(long, "Input"),
+            ("Input".to_string(), vec![long.to_string()])
+        );
+        assert_eq!(heading("", "Input"), ("Input".to_string(), Vec::<String>::new()));
+
+        assert_eq!(option_item("Theme\tdark"), SelectItem::new("Theme", "dark"));
+        assert_eq!(option_item("Done"), SelectItem::new("Done", ""));
+    }
+
+    #[test]
+    fn an_approval_offers_what_can_hold_for_its_call() {
+        let labels = |rule: Option<&str>, destructive: bool| {
+            let (items, rows) = approval_rows(rule, destructive);
+            assert_eq!(items.len(), rows.len());
+            let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
+            (labels, rows)
+        };
+        // A rule that covers the call can be given for the session or for good.
+        let (shown, rows) = labels(Some("shell(cargo test:*)"), false);
+        assert_eq!(
+            shown,
+            [
+                "Allow once",
+                "Allow this session",
+                "Always allow shell(cargo test:*)",
+                "Deny",
+                "Deny and say why"
+            ]
+        );
+        assert_eq!(
+            rows,
+            [
+                ApprovalRow::Once,
+                ApprovalRow::Session,
+                ApprovalRow::Always,
+                ApprovalRow::Deny,
+                ApprovalRow::DenyWhy
+            ]
+        );
+        // Without one, and for a call that destroys work whatever rule there is, it is this
+        // call or nothing.
+        let once = [ApprovalRow::Once, ApprovalRow::Deny, ApprovalRow::DenyWhy];
+        assert_eq!(labels(None, false).1, once);
+        assert_eq!(labels(Some("shell(git reset:*)"), true).1, once);
+        assert_eq!(labels(None, true).0, ["Allow once", "Deny", "Deny and say why"]);
+    }
+
+    #[test]
+    fn a_multi_choice_question_has_check_boxes_that_toggle() {
+        let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        let options = vec!["tests".to_string(), "docs".to_string()];
+        let picked = vec![false; 2];
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut overlay = Overlay::select(
+            "The agent asks",
+            vec!["What should change?".to_string()],
+            ask_items(&options, &picked, true),
+            false,
+            Action::Ask {
+                reply,
+                options,
+                multi: true,
+                picked,
+                other: None,
+            },
+        );
+        overlay.on_key(&key(KeyCode::Down));
+        assert!(overlay.toggle(1));
+        let rows = shown(&overlay.render(44, 20, &theme).0);
+        assert_eq!(
+            rows,
+            [
+                "+- The agent asks -------------------------+",
+                "| What should change?                      |",
+                "|                                          |",
+                "|   [ ] tests                              |",
+                "| > [x] docs                               |",
+                "|   Done  confirm the selection            |",
+                "+- ^v move | enter pick | esc cancel ------+",
+            ]
+        );
+        assert!(rows.iter().all(|row| row.is_ascii()));
     }
 }

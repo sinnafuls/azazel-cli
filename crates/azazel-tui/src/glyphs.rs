@@ -131,6 +131,10 @@ glyphs! {
     /// Before the count of running agents.
     Agents => "\u{f0c0}", "⇶", "";
     Goal => "\u{f024}", "⚑", "goal:";
+    /// Before the label of an entry of the session tree.
+    Label => "\u{f02b}", "⚑", "#";
+    /// Marks a favourite model.
+    Favourite => "\u{f005}", "★", "*";
     Branch => "\u{e0a0}", "⑂", "git:";
     Folder => "\u{f115}", "", "";
     File => "\u{f15b}", "", "";
@@ -154,7 +158,13 @@ glyphs! {
     TreeLast => "└─", "└─", "`-";
     TreeLine => "│", "│", "|";
     ProgressFull => "━", "━", "=";
+    /// The track of a vertical scrollbar.
+    ScrollTrack => "│", "│", "|";
+    /// The thumb of a vertical scrollbar.
+    ScrollThumb => "┃", "┃", "#";
     ProgressEmpty => "─", "─", "-";
+    /// The half-filled cell at the head of a progress bar.
+    ProgressHead => "╸", "╸", ">";
     CheckOn => "\u{f14a}", "▣", "[x]";
     CheckOff => "\u{f096}", "□", "[ ]";
     RadioOn => "\u{f192}", "◉", "(o)";
@@ -223,6 +233,9 @@ const ASCII_TABLE: TableChars = TableChars {
     vertical: "|",
 };
 
+const BULLETS: [&str; 3] = ["•", "◦", "▪"];
+const ASCII_BULLETS: [&str; 3] = ["*", "-", "+"];
+
 const BRAILLE: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 const ASCII_SPINNER: &[&str] = &["-", "\\", "|", "/"];
 
@@ -270,6 +283,14 @@ impl Glyphs {
         match self.level {
             GlyphLevel::Ascii => ASCII_SPINNER,
             _ => BRAILLE,
+        }
+    }
+
+    /// The bullets of a list, one per nesting depth, used in turn.
+    pub fn bullets(self) -> [&'static str; 3] {
+        match self.level {
+            GlyphLevel::Ascii => ASCII_BULLETS,
+            _ => BULLETS,
         }
     }
 
@@ -337,6 +358,7 @@ mod tests {
         }
         let ascii = Glyphs::new(GlyphLevel::Ascii);
         assert!(ascii.spinner().iter().all(|frame| frame.is_ascii()));
+        assert!(ascii.bullets().iter().all(|bullet| bullet.is_ascii()));
         assert!(ascii.border().top_left.is_ascii() && ascii.table().middle[1].is_ascii());
     }
 

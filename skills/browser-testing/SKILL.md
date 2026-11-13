@@ -22,7 +22,7 @@ The `browser` tool drives a real Chromium. Use it to observe what a user would g
 
    Find the element you need by role and name, and use its `ref`.
 3. **Act** on a ref: `click`, `type` (with `submit: true` to press Enter), `hover`, `key`, `scroll`.
-4. **Wait** for the consequence, not for time: `wait { for: "text:Dashboard" }`, `wait { for: "#results li" }`, `wait { for: "load" }` or `wait { for: "idle" }` (no network activity).
+4. **Wait** for the consequence, not for time: `wait { for: "text:Dashboard" }`, `wait { for: "role:button \"Undo\"" }` (role and name as a snapshot line shows them), `wait { for: "url:contains:/dashboard" }`, `wait { for: "title:contains:Inbox" }`, `wait { for: "gone:.spinner" }` (the element has left the page), `wait { for: "#results li" }`, `wait { for: "load" }` or `wait { for: "idle" }` (no network activity).
 5. **Assert** by reading: take a fresh `snapshot` and look for the expected node, or `eval` an expression that returns the fact (`document.title`, `location.pathname`, `document.querySelectorAll("tr").length`).
 6. **Check health**: `console` for errors and uncaught exceptions, `network` for failed or unexpected requests.
 7. **Capture**: `screenshot` (add `full_page: true`, or `ref`/`selector` for one element) for anything visual and for evidence.

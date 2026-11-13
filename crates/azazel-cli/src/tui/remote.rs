@@ -26,13 +26,12 @@ use azazel_protocol::{
 };
 use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
-use azazel_tui::components::format_tokens;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::backend::{Backend, Facts, Go, Incoming, Moved};
+use super::backend::{Backend, Billing, Facts, Go, Incoming, Moved};
 use super::bridge::UiRequest;
 use super::overlay::RewindPoint;
 use super::{Internal, btw, slash};
@@ -763,7 +762,9 @@ impl Backend for Remote {
                     },
                 })
                 .collect(),
-            usage: None,
+            // How the other process pays is not part of its state: what it reports as cost
+            // is shown, and nothing when it reports none.
+            billing: Billing::Metered,
         }
     }
 
@@ -814,7 +815,8 @@ impl Backend for Remote {
             .collect();
         let models: Vec<ModelRow> = ask(&self.client, Command::ListModels).await.unwrap_or_default();
         rows.extend(models.into_iter().map(|model| {
-            let detail = format!("{} context", format_tokens(model.context_window));
+            // What the models cost is known where the session runs, not here.
+            let detail = crate::settings::model_detail(model.context_window, None, false);
             (model.model, detail)
         }));
         rows

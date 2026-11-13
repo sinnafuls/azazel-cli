@@ -17,18 +17,18 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 
 | Name | Model role | Tools | Turn limit | Purpose |
 |---|---|---|---|---|
-| `scout` | `@scout` → `@smol` | `read`, `glob`, `grep`, `semantic_search`, `web_search`, `web_fetch` | 40 | Fast read-only exploration: where something lives, how it works |
+| `scout` | `@scout` → `@smol` | `read`, `glob`, `grep`, `semantic_search`, `web_search`, `web_fetch`, `web_grep` | 40 | Fast read-only exploration: where something lives, how it works |
 | `planner` | `@planner` → `@plan` | scout's tools, plus `write` and `edit` limited to `.azazel/plans/**` | 80 | Writes an implementation plan file before code is touched |
 | `coder` | `@coder` → `@default` | all; may spawn `scout` | 150 | Implements a scoped change and proves it by building and testing |
 | `tester` | `@tester` → `@default` | all | 120 | Writes and runs tests, reports precise failures |
 | `reviewer` | `@reviewer` → `@slow` | `read`, `glob`, `grep`, `shell` limited to `git diff`, `git log`, `git show` | 80 | Independent review of a diff |
 | `verifier` | `@verifier` → `@verify` | `read`, `glob`, `grep`, `shell`; `write` and `edit` disallowed | 80 | Checks a claim of completion by running commands (see [goals](goals.md)) |
-| `researcher` | `@researcher` → `@default` | `web_search`, `web_fetch`, `browser`, `read` | 80 | Research outside the repository, with sources |
+| `researcher` | `@researcher` → `@default` | `web_search`, `web_fetch`, `web_grep`, `browser`, `read` | 80 | Research outside the repository, with sources |
 | `designer` | `@designer` → `@default` | all; skill `frontend-design`; may spawn `scout` | 150 | UI work checked in a real browser |
 | `artist` | `@artist` → `@default` | `generate_image`, `generate_video`, `generate_3d`, `generate_audio`, `sprite_sheet`, `read`, `write`, `shell` | 100 | Produces image, video, 3D and audio assets |
 | `playtester` | `@playtester` → `@vision` | `shell`, `job`, `screen`, `browser`, `read` | 80 | Runs and plays a build, reports defects with frames |
 
-Every built-in agent has a role of its own, named after it, which falls back to the general role shown after the arrow until you set it. The lead uses the role `lead`, which falls back to `default`. Give any of them a model in `/settings` → *Models for the lead and each agent*, or in `config.toml`:
+Every built-in agent has a role of its own, named after it, which falls back to the general role shown after the arrow until you set it. The lead uses the role `lead`, which falls back to `default`. Give any of them a model in `/settings` → *Models for each role*, or in `config.toml`:
 
 ```toml
 [roles]
@@ -171,7 +171,7 @@ nothing on standard output and exits `1`. A schema that cannot be read or is not
 
 In coordinator mode the lead plans and delegates and does none of the work itself. It is offered the
 orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `skill`, the memory tools, `semantic_search`,
-`web_search` and `web_fetch`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
+`web_search`, `web_fetch` and `web_grep`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
 `job`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
 plan first, delegate independent pieces in one `task` call, read every report critically, and verify through
 agents. Sub-agents are not affected.

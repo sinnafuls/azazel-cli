@@ -11,11 +11,14 @@ mod input;
 mod overlay;
 mod pager;
 mod panels;
+mod popup;
 mod probe;
 mod quick;
+mod rate;
 mod remote;
 mod sessions;
 mod slash;
+mod statusline;
 mod team;
 mod terminal;
 pub(crate) mod view;
@@ -39,18 +42,20 @@ use azazel_core::{
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
-    composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
+    composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo, tool_card,
 };
+use azazel_tui::modal;
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
-    ColorDepth, Composer, Draft, Editor, Floor, Frame, GlyphLevel, HistoryItem, Keymap, Line, Renderer, Role,
-    SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys,
-    enable_enhanced_keys, text,
+    ColorDepth, Composer, Draft, Editor, Floor, Frame, Glyph, GlyphLevel, HistoryItem, Keymap, Line,
+    Renderer, Role, SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim,
+    disable_enhanced_keys, enable_enhanced_keys, text,
 };
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream,
+    KeyCode, KeyEvent, KeyEventKind,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -75,11 +80,17 @@ const COMPLETION_ROWS: usize = 8;
 /// How the note about a `!command` the user ran starts in the agent's context.
 pub(crate) const SHELL_NOTE: &str = "I ran `";
 
-/// Puts the terminal into raw mode and restores it when dropped, however the UI ends.
+/// Puts the terminal into raw mode and restores it when dropped, however the UI ends. It is
+/// also the one owner of the alternate screen, which popups and the full-screen viewer share:
+/// whoever ends the UI, or hands the terminal to another program, leaves it through here.
 struct TerminalGuard {
     enhanced_keys: bool,
     /// The terminal is ours: raw mode, bracketed paste and enhanced keys are on.
     active: bool,
+    /// The alternate screen is showing.
+    alt: bool,
+    /// The mouse is reported to azazel (the wheel, in the full-screen viewer).
+    mouse: bool,
 }
 
 impl TerminalGuard {
@@ -87,9 +98,50 @@ impl TerminalGuard {
         let mut guard = TerminalGuard {
             enhanced_keys: false,
             active: false,
+            alt: false,
+            mouse: false,
         };
         guard.take()?;
         Ok(guard)
+    }
+
+    /// Switches to the alternate screen. False when it was showing already, in which case
+    /// whoever entered it leaves it.
+    fn enter_alt(&mut self) -> bool {
+        if self.alt {
+            return false;
+        }
+        let _ = crossterm::execute!(io::stdout(), EnterAlternateScreen);
+        self.alt = true;
+        true
+    }
+
+    /// Goes back to the screen with the transcript, which is as it was left.
+    fn leave_alt(&mut self) {
+        self.capture_mouse(false);
+        if std::mem::take(&mut self.alt) {
+            let mut out = io::stdout();
+            // Whatever painted there may have hidden the cursor; the inline renderer believes
+            // it is showing.
+            let _ = out.write_all(b"\x1b[?25h");
+            let _ = crossterm::execute!(out, LeaveAlternateScreen);
+        }
+    }
+
+    fn in_alt(&self) -> bool {
+        self.alt
+    }
+
+    /// Has the terminal report the mouse to azazel, or stops that.
+    fn capture_mouse(&mut self, on: bool) {
+        if self.mouse == on {
+            return;
+        }
+        self.mouse = on;
+        let _ = match on {
+            true => crossterm::execute!(io::stdout(), EnableMouseCapture),
+            false => crossterm::execute!(io::stdout(), DisableMouseCapture),
+        };
     }
 
     fn take(&mut self) -> io::Result<()> {
@@ -106,6 +158,8 @@ impl TerminalGuard {
     /// Hands the terminal back as a shell would have it (cooked mode, no bracketed paste, no
     /// enhanced keys), for a program that takes it over for a while or for exit.
     fn suspend(&mut self) {
+        // Another program, or the shell after a crash, must never find the alternate screen.
+        self.leave_alt();
         if !std::mem::take(&mut self.active) {
             return;
         }
@@ -248,6 +302,13 @@ pub struct Tui {
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
+    /// The popup screen, while it is up.
+    popup: Option<popup::Popup>,
+    /// What was written to the transcript lately, to paint behind a popup.
+    backdrop: popup::Backdrop,
+    /// Rows the input and what is pinned around it took in the last inline frame: where the
+    /// transcript ended on the screen.
+    pinned_rows: usize,
     /// The side question (`/btw`) being answered; it stands in for the input.
     btw: Option<btw::Panel>,
     waiting: VecDeque<UiRequest>,
@@ -257,6 +318,8 @@ pub struct Tui {
     files: Option<Vec<String>>,
     busy: bool,
     busy_since: Instant,
+    /// How fast the lead writes, for the status line.
+    rate: rate::Rate,
     show_thinking: bool,
     expand_tools: bool,
     images: Vec<Block>,
@@ -418,6 +481,9 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         tools: Vec::new(),
         overlay: None,
         deferred: VecDeque::new(),
+        popup: None,
+        backdrop: popup::Backdrop::default(),
+        pinned_rows: popup::PLAIN_PINNED_ROWS,
         btw: None,
         waiting: VecDeque::new(),
         held: VecDeque::new(),
@@ -425,6 +491,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         files: None,
         busy: false,
         busy_since: Instant::now(),
+        rate: rate::Rate::default(),
         show_thinking: tui_config.show_thinking,
         expand_tools: tui_config.expand_tools,
         images: Vec::new(),
@@ -537,24 +604,26 @@ impl Tui {
         } else {
             model
         };
-        let name = match self.session.name() {
-            Some(name) => format!(" · {name}"),
-            None => String::new(),
-        };
-        let place = match self.backend.place() {
-            Some(place) => format!(" · {place}"),
-            None => String::new(),
-        };
-        let heading = format!(
-            "azazel {} · {model} · {}{name}{place}",
-            env!("CARGO_PKG_VERSION"),
-            self.backend.cwd().display()
-        );
-        let lines = view::styled(&heading, Role::Accent, width, &self.theme);
+        let separator = self.theme.glyph(Glyph::Separator);
+        let mut heading = vec![
+            format!("azazel {}", env!("CARGO_PKG_VERSION")),
+            model,
+            self.backend.cwd().display().to_string(),
+        ];
+        heading.extend(self.session.name());
+        heading.extend(self.backend.place());
+        let lines = view::styled(&heading.join(separator), Role::Accent, width, &self.theme);
         self.say(lines);
-        self.info(
-            "enter sends · shift+enter adds a line · / commands · @ files · ! shell · /settings accounts and models · ctrl+c twice quits",
-        );
+        let keys = [
+            "enter sends",
+            "shift+enter adds a line",
+            "/ commands",
+            "@ files",
+            "! shell",
+            "/settings accounts and models",
+            "ctrl+c twice quits",
+        ];
+        self.info(&keys.join(separator));
         let skipped = match self.backend.local() {
             Some(local) => local.app.ignored_settings.join(", "),
             None => String::new(),
@@ -600,6 +669,9 @@ impl Tui {
     async fn main_loop(&mut self) {
         let mut ticker = tokio::time::interval(spinner::INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The working indicator moves a cell at a time, which takes more frames than a spinner.
+        let mut sweep = tokio::time::interval(shimmer::INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.quit {
             if self
                 .overlay
@@ -615,6 +687,7 @@ impl Tui {
                 tracing::error!("terminal write failed: {e}");
                 break;
             }
+            let popup_deadline = self.popup_deadline();
             tokio::select! {
                 event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
@@ -640,6 +713,7 @@ impl Tui {
                 }
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
+                _ = sweep.tick(), if self.busy && self.indicator() != shimmer::Mode::Static => {}
                 _ = ticker.tick(),
                     if self.busy
                         || self.agents_active()
@@ -648,7 +722,15 @@ impl Tui {
                         || self.voice_animates() => {}
                 // Something to tell the terminal although nothing happens: see `tell_terminal`.
                 _ = wake_at(self.attention.next_wake()) => {}
+                // The popup screen is left a moment after its box closed.
+                _ = wake_at(popup_deadline) => {}
             }
+        }
+        // A popup that is still up gives the screen back, and what was said behind it reaches
+        // the transcript.
+        if self.popup.is_some() {
+            self.quit = true;
+            let _ = self.draw();
         }
     }
 
@@ -679,9 +761,17 @@ impl Tui {
     /// into them.
     fn draw(&mut self) -> io::Result<()> {
         self.tell_terminal();
+        // An overlay shown as a popup has the whole window; the transcript waits.
+        if self.draw_popup()? {
+            return Ok(());
+        }
         let history = std::mem::take(&mut self.transcript);
+        self.backdrop.record(&history);
         let (_, rows) = self.renderer.size();
         let (mut viewport, pinned, cursor) = self.viewport();
+        if self.overlay.is_none() && self.btw.is_none() {
+            self.pinned_rows = pinned.len();
+        }
         let written = history.iter().map(HistoryItem::rows).sum();
         let filler = self.floor.pad(written, viewport.len() + pinned.len(), rows);
         viewport.resize(viewport.len() + filler, String::new());
@@ -696,86 +786,75 @@ impl Tui {
 
     /// Session facts on the left, the model and its thinking level against the right edge.
     fn status_line(&self, width: usize) -> Line {
-        let theme = &self.theme;
-        let muted = |text: &str| theme.paint(Role::Muted, text);
         let status = self.backend.status();
         let facts = self.backend.facts();
-        let mode = self.backend.mode();
-        let mut left = vec![match mode {
-            PermissionMode::Plan => theme.paint(Role::ModePlan, &format!("⏸ {mode}")),
-            PermissionMode::Ask => muted(&mode.to_string()),
-            PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &format!("⏵⏵ {mode}")),
-            PermissionMode::Auto => theme.paint(Role::ModeAuto, &format!("⏵⏵ {mode}")),
-        }];
-        if facts.coordinator {
-            left.push(theme.paint(Role::Accent, "coordinator"));
-        }
-        if let Some(branch) = &self.branch {
-            left.push(muted(&format!("⑂ {branch}")));
-        }
-        let cwd = &self.backend.cwd();
-        let shown = match std::env::home_dir()
-            .and_then(|home| cwd.strip_prefix(home).ok().map(|rest| rest.to_path_buf()))
-        {
-            Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-            Some(rest) => format!("~/{}", rest.to_string_lossy().replace('\\', "/")),
-            None => cwd.display().to_string(),
-        };
-        left.push(muted(&shown));
-        if let Some(percent) = (status.context_tokens * 100).checked_div(status.context_window) {
-            let role = status::context_role(percent).unwrap_or(Role::Muted);
-            left.push(theme.paint(role, &format!("◫ {percent}%")));
-        }
-        if let Some(cost) = status.usage.cost_usd {
-            left.push(muted(&format!("${cost:.2}")));
-        }
-        if let Some(nearly_full) = &facts.usage {
-            left.push(theme.paint(Role::Warning, &format!("◔ {nearly_full}")));
-        }
-        match self.active_agents() {
-            0 => {}
-            1 => left.push(theme.paint(Role::Accent, "⇶ 1 agent")),
-            n => left.push(theme.paint(Role::Accent, &format!("⇶ {n} agents"))),
-        }
-        if let Some(goal) = &facts.goal {
-            left.push(theme.paint(Role::Accent, &format!("⚑ {goal}")));
-        }
-
+        let cwd = statusline::display_path(&self.backend.cwd(), std::env::home_dir().as_deref());
         let model = self.model_label();
-        let model = if model.is_empty() {
-            "no model".to_string()
-        } else {
-            model
-        };
-        let tier = match facts.tier {
-            Some(tier) => format!("{} · ", crate::routing::tier_word(tier)),
-            None => String::new(),
-        };
-        let right = format!(
-            "{} {}{}",
-            theme.paint(Role::Accent, "⬢"),
-            muted(&format!("{model} · {tier}")),
-            theme.paint(Role::Thinking, &status.thinking.to_string()),
-        );
-        status::render(&left, &right, width, theme)
+        statusline::StatusLine {
+            mode: self.backend.mode(),
+            coordinator: facts.coordinator,
+            branch: self.branch.as_deref(),
+            cwd: &cwd,
+            context: (status.context_tokens * 100).checked_div(status.context_window),
+            rate: self.rate.current(Instant::now()),
+            busy: self.busy,
+            cost: status.usage.cost_usd,
+            warn_cost: self.env.config.limits.warn_cost_usd,
+            billing: &facts.billing,
+            agents: self.active_agents(),
+            goal: facts.goal.as_deref(),
+            model: &model,
+            tier: facts.tier.map(crate::routing::tier_word),
+            thinking: &status.thinking.to_string(),
+        }
+        .render(width, &self.theme)
     }
 
-    /// What the lead is doing, for the rule above the input; nothing while it is idle.
+    /// How the working indicator moves, as `tui.indicator` says.
+    fn indicator(&self) -> shimmer::Mode {
+        match self.env.config.tui.indicator {
+            azazel_core::config::Indicator::Shimmer => shimmer::Mode::Shimmer,
+            azazel_core::config::Indicator::Kitt => shimmer::Mode::Kitt,
+            azazel_core::config::Indicator::Static => shimmer::Mode::Static,
+        }
+    }
+
+    /// What the lead is doing, for the rule above the input; nothing while it is idle. The
+    /// words say what it is at (`running shell`, `thinking`), or are the phrases of
+    /// `tui.indicator_text` in turn while no tool runs; a band of light passes over them.
     fn activity(&self) -> Option<String> {
         if !self.busy {
             return None;
         }
-        let what = match self.tools.last() {
-            Some(tool) => format!("running {}", tool.name),
-            None if !self.stream.thinking.is_empty() && !self.stream.saw_text => "thinking".to_string(),
-            None => "working".to_string(),
+        let config = &self.env.config.tui;
+        let mode = self.indicator();
+        let since = self.busy_since.elapsed();
+        let tick = shimmer::tick_at(since);
+        let running = self.tools.last().map(|tool| format!("running {}", tool.name));
+        let (what, phase) = match &running {
+            Some(running) => (running.as_str(), tick),
+            None => shimmer::phrase(&config.indicator_text, tick, mode).unwrap_or({
+                if !self.stream.thinking.is_empty() && !self.stream.saw_text {
+                    ("thinking", tick)
+                } else {
+                    ("working", tick)
+                }
+            }),
         };
-        let elapsed = format_elapsed(self.busy_since.elapsed());
+        let accent = config.session_accent.then(|| {
+            let name = self.session.name().unwrap_or_else(|| self.session.id());
+            shimmer::session_accent(&name)
+        });
+        let separator = self.theme.glyph(Glyph::Separator);
         Some(format!(
-            "{} {}",
-            self.theme.paint(Role::Accent, Spinner::now()),
+            "{} {}{}",
             self.theme
-                .paint(Role::Muted, &format!("{what} · {elapsed} · esc to interrupt")),
+                .paint(Role::Accent, Spinner::now_in(self.theme.glyphs())),
+            shimmer::sweep(what, phase, mode, accent, &self.theme),
+            self.theme.paint(
+                Role::Muted,
+                &format!("{separator}{}{separator}esc to interrupt", format_elapsed(since))
+            ),
         ))
     }
 
@@ -821,7 +900,10 @@ impl Tui {
         let mut bottom: Vec<Line> = Vec::new();
         let mut cursor;
         if let Some(overlay) = &self.overlay {
-            let (lines, at) = overlay.render(width, height.saturating_sub(2).max(4), &self.theme);
+            // No popup (the window is too small, or they are off): the box stands in for the
+            // input.
+            let room = height.saturating_sub(2).clamp(4, overlay::INLINE_ROWS);
+            let (lines, at) = overlay.render(modal::box_width(width), room, &self.theme);
             cursor = at;
             bottom.extend(lines);
         } else if let Some(panel) = &mut self.btw {
@@ -842,8 +924,9 @@ impl Tui {
             }
             let rule = self.rule_role();
             let activity = self.voice_status().or_else(|| self.rule_status());
+            let prompt = self.theme.glyphs().prefix(Glyph::Prompt);
             let composer = Composer {
-                prompt: "❯ ",
+                prompt: &prompt,
                 prompt_role: if rule == Role::Border { Role::Accent } else { rule },
                 placeholder: if self.busy {
                     "Steer the agent, alt+enter queues a follow-up"
@@ -876,6 +959,17 @@ impl Tui {
         cursor = cursor.map(|(row, column)| (row + pinned.len() as u16, column));
         pinned.extend(bottom);
 
+        let mut top = self.in_flight(width);
+        // The live region never outgrows the screen: what is in flight gives way first.
+        if top.len() > room {
+            top.drain(..top.len() - room);
+        }
+        (top, pinned, cursor)
+    }
+
+    /// What the lead is saying and doing right now: the unfinished end of its reply, its
+    /// thinking and the tool calls that are running. It follows the transcript.
+    fn in_flight(&self, width: usize) -> Vec<Line> {
         let mut top: Vec<Line> = Vec::new();
         if self.busy {
             top.extend(self.stream.markdown.tail(width, &self.theme));
@@ -899,11 +993,7 @@ impl Tui {
                 ));
             }
         }
-        // The live region never outgrows the screen: what is in flight gives way first.
-        if top.len() > room {
-            top.drain(..top.len() - room);
-        }
-        (top, pinned, cursor)
+        top
     }
 
     // ------------------------------------------------------------ agent events
@@ -915,9 +1005,14 @@ impl Tui {
                 self.busy = true;
                 self.busy_since = Instant::now();
                 self.run_failed = false;
+                self.rate.reset();
             }
-            AgentEvent::MessageStart => self.stream = StreamView::default(),
+            AgentEvent::MessageStart => {
+                self.stream = StreamView::default();
+                self.rate.abandon();
+            }
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
+                self.rate.text(&delta, Instant::now());
                 self.open_reply();
                 self.stream.saw_text = true;
                 self.stream.markdown.push(&delta);
@@ -930,8 +1025,10 @@ impl Tui {
                 self.say_items(finished);
             }
             AgentEvent::Stream(StreamEvent::ThinkingDelta { delta, .. }) => {
+                self.rate.text(&delta, Instant::now());
                 self.stream.thinking.push_str(&delta)
             }
+            AgentEvent::Stream(StreamEvent::ToolCallDelta { delta, .. }) => self.rate.arguments(&delta),
             AgentEvent::Stream(StreamEvent::BlockEnd {
                 block: Block::Thinking { .. },
                 ..
@@ -943,6 +1040,8 @@ impl Tui {
                 }
             }
             AgentEvent::MessageEnd { message } => {
+                let output = message.meta.as_ref().map_or(0, |meta| meta.usage.output);
+                self.rate.end(output, Instant::now());
                 self.voice_reply(&message);
                 if !self.stream.saw_text && !message.text().trim().is_empty() {
                     self.open_reply();
@@ -956,6 +1055,7 @@ impl Tui {
             }
             AgentEvent::Retry { attempt, model } => {
                 self.stream = StreamView::default();
+                self.rate.abandon();
                 self.info(&format!("{model} did not answer; retrying (attempt {attempt})"));
             }
             AgentEvent::Fallback { from, to } => {
@@ -980,6 +1080,7 @@ impl Tui {
                 drop(diagrams);
                 self.say_items(rest);
                 self.stream = StreamView::default();
+                self.rate.abandon();
                 self.info(&format!("rule {name} stopped the reply; retrying"));
             }
             AgentEvent::ToolStart { call_id, name, input } => {
@@ -1065,6 +1166,7 @@ impl Tui {
         self.busy = false;
         self.tools.clear();
         self.stream = StreamView::default();
+        self.rate.abandon();
         // The agent may have switched branches.
         self.branch = self.backend.branch();
         if let Some(chain) = self.restore_chain.take() {
@@ -1129,7 +1231,10 @@ impl Tui {
         let from = shown.len().saturating_sub(40);
         let mut display = shown[from..].join("\n");
         if from > 0 {
-            display = format!("… {from} earlier lines\n{display}");
+            display = format!(
+                "{} {from} earlier lines\n{display}",
+                self.theme.glyph(Glyph::Ellipsis)
+            );
         }
         self.info(&format!("{display}\n{status}"));
     }
@@ -1249,10 +1354,14 @@ impl Tui {
             } => {
                 // A long list (every model of a provider) is easier to search than to scroll.
                 let filterable = options.len() > 12;
-                let items = options.iter().map(|o| SelectItem::new(o.as_str(), "")).collect();
+                let items = options
+                    .iter()
+                    .map(|option| overlay::option_item(option))
+                    .collect();
+                let (title, body) = overlay::heading(&prompt, "Choose");
                 self.overlay = Some(Overlay::select(
-                    "Choose",
-                    vec![prompt],
+                    title,
+                    body,
                     items,
                     filterable,
                     Action::UiSelect { reply },
@@ -1264,35 +1373,32 @@ impl Tui {
                 reply,
             } => {
                 let action = Action::UiInput { reply };
+                let (title, body) = overlay::heading(&prompt, "Input");
                 self.overlay = Some(match secret {
-                    true => Overlay::secret("Input", vec![prompt], action),
-                    false => Overlay::input("Input", vec![prompt], action),
+                    true => Overlay::secret(title, body, action),
+                    false => Overlay::input(title, body, action),
                 });
             }
             UiRequest::Approval { request, reply } => {
-                let mut body: Vec<String> = if request.subjects.is_empty() {
-                    serde_json::to_string_pretty(&request.input)
-                        .unwrap_or_default()
-                        .lines()
-                        .map(str::to_string)
-                        .collect()
-                } else {
-                    request.subjects.clone()
-                };
-                if let Some(note) = &request.note {
-                    body.push(String::new());
-                    body.push(note.clone());
-                }
+                let body = overlay::approval_body(&request.subjects, &request.input);
                 let (items, rows) = approval_rows(request.rule.as_deref(), request.destructive);
                 let title = format!("{} wants to use {}", request.agent.id, request.tool);
                 // A stray Enter must not approve a command that destroys work: start on "Deny".
                 let deny = rows.iter().position(|row| *row == ApprovalRow::Deny);
                 let start = deny.filter(|_| request.destructive).unwrap_or(0);
                 let action = Action::Approval { reply, rows };
-                self.overlay = Some(Overlay::select(title, body, items, false, action).starting_at(start));
+                // The note stands out under the subjects; a call that destroys work has the
+                // whole box in the warning colour.
+                self.overlay = Some(
+                    Overlay::select(title, body, items, false, action)
+                        .starting_at(start)
+                        .with_warning(request.note.clone())
+                        .destructive(request.destructive),
+                );
             }
             UiRequest::Plan { path, plan, reply } => {
-                // The plan itself goes into the transcript, where it can be scrolled and re-read.
+                // The plan goes into the transcript, where it stays to be scrolled and re-read,
+                // and into the box, where it is read now: ctrl+o shows all of a long one.
                 let width = self.width();
                 let mut lines = view::styled(
                     &format!("Plan: {}", path.display()),
@@ -1303,14 +1409,10 @@ impl Tui {
                 lines.extend(markdown::render(&plan, width, &self.theme));
                 self.say(lines);
                 let items = pick(&["Approve and run", "Revise"]);
-                let body = vec!["The plan is shown above.".to_string()];
-                self.overlay = Some(Overlay::select(
-                    "Plan review",
-                    body,
-                    items,
-                    false,
-                    Action::Plan { reply },
-                ));
+                self.overlay = Some(
+                    Overlay::select("Plan review", vec![plan], items, false, Action::Plan { reply })
+                        .markdown(),
+                );
             }
         }
     }
@@ -1373,6 +1475,9 @@ impl Tui {
             }
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
+            }
+            if matches!(outcome, Outcome::ReadBody) {
+                return self.read_overlay_body().await;
             }
             if !matches!(outcome, Outcome::Pending)
                 && let Some(overlay) = self.overlay.take()
@@ -1593,7 +1698,10 @@ impl Tui {
         let echo = if share { "!" } else { "!!" };
         let lines = view::user_prompt(&format!("{echo}{command}"), self.width(), &self.theme);
         self.say(lines);
-        self.notice = Some(format!("running `{command}`…"));
+        self.notice = Some(format!(
+            "running `{command}`{}",
+            self.theme.glyph(Glyph::Ellipsis)
+        ));
         self.backend.shell(command, share, self.internal_tx.clone());
     }
 
@@ -1695,7 +1803,7 @@ impl Tui {
             Outcome::Chosen(index) => (index, String::new()),
             Outcome::Text(typed) => (0, typed),
             // Handled where the key was pressed; the overlay stays open.
-            Outcome::Hotkey { .. } => return,
+            Outcome::Hotkey { .. } | Outcome::ReadBody => return,
         };
         match action {
             Action::AskFree { reply } => drop(reply.send(Ok(vec![typed]))),
@@ -1780,6 +1888,11 @@ impl Tui {
             Action::Theme(names) => {
                 if let Some(name) = names.get(choice) {
                     self.set_theme(name);
+                }
+            }
+            Action::Glyphs(levels) => {
+                if let Some(level) = levels.get(choice) {
+                    self.choose_glyphs(*level);
                 }
             }
             Action::Resume(paths) => {

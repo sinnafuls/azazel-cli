@@ -24,7 +24,7 @@ Hook arrays concatenate across config layers: hooks from `~/.azazel/config.toml`
 | Field | Default | Meaning |
 |---|---|---|
 | `matcher` | every tool | Regular expression that must match the whole tool name: `shell`, `write\|edit`, `mcp__github__.*`. Empty or `*` matches every tool. Tool events only |
-| `if` | none | A permission rule (`tool` or `tool(pattern)`) the call must match: the simple commands of a `shell` call, the `path` of `read`/`write`/`edit`, `domain:<host>` of `web_fetch`. Tool events only |
+| `if` | none | A permission rule (`tool` or `tool(pattern)`) the call must match: the simple commands of a `shell` call, the `path` of `read`/`write`/`edit`, `domain:<host>` of `web_fetch` and `web_grep`. Tool events only |
 | `type` | `command` | `command`, `http`, `prompt` or `agent` |
 | `command` | | Shell command (type `command`) |
 | `url`, `headers` | | Endpoint and request headers (type `http`) |

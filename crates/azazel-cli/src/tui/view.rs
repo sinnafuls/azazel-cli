@@ -6,7 +6,7 @@ use std::time::Duration;
 use azazel_agent::ToolOutput;
 use azazel_ai::{Block, Message, Role as MessageRole};
 use azazel_tui::components::{diff, format_duration, markdown, tool_card};
-use azazel_tui::{Card, CardState, Line, Role, Theme, text};
+use azazel_tui::{Card, CardState, GlyphLevel, Line, Role, Theme, text};
 use serde_json::Value;
 
 /// Output lines shown in the card of a finished tool call unless expanded.
@@ -60,13 +60,15 @@ const BANNER_NARROW: [&str; 5] = [
 ];
 const TAGLINE: &str = "a team of coding agents in your terminal";
 
-/// The opening banner: block letters with their shadow in a quieter colour, thin letters when the
-/// terminal is narrower, nothing when even those do not fit.
+/// The opening banner: block letters with their shadow in a quieter colour; thin letters of
+/// plain ASCII when the terminal is narrower or the glyph level is `ascii`; nothing when even
+/// those do not fit.
 pub fn banner(width: usize, theme: &Theme) -> Vec<Line> {
     let wide = text::width(BANNER_WIDE[0]);
     let narrow = text::width(BANNER_NARROW[1]);
+    let blocks = theme.glyphs().level() != GlyphLevel::Ascii;
     let mut lines = vec![String::new()];
-    if width > wide + 2 {
+    if blocks && width > wide + 2 {
         for row in BANNER_WIDE {
             lines.push(format!(" {}", two_tone(row, theme)));
         }
@@ -144,7 +146,20 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "read" | "write" | "edit" | "plan_submit" => field("path"),
         "glob" | "grep" => field("pattern"),
         "web_fetch" => field("url"),
-        "web_search" | "memory_search" | "semantic_search" | "tool_search" => field("query"),
+        "web_grep" => {
+            field("pattern").map(|pattern| format!("{pattern} in {}", field("url").unwrap_or_default()))
+        }
+        "web_search" => {
+            let queries = input.get("queries").and_then(Value::as_array);
+            let all: Vec<&str> = input
+                .get("query")
+                .and_then(Value::as_str)
+                .into_iter()
+                .chain(queries.into_iter().flatten().filter_map(Value::as_str))
+                .collect();
+            (!all.is_empty()).then(|| all.join(" | "))
+        }
+        "memory_search" | "semantic_search" | "tool_search" => field("query"),
         "skill" => field("name"),
         "run_code" => field("code").map(|code| {
             let lines = code.trim().lines().count();
@@ -382,6 +397,33 @@ mod tests {
         assert_eq!(tool_summary("todo", &json!({"items": [1, 2]})), "2 items");
         assert_eq!(
             tool_summary(
+                "ask_user",
+                &json!({"question": "Which colour?", "options": ["red", "blue", "green"]})
+            ),
+            "Which colour? (3 options)"
+        );
+        assert_eq!(
+            tool_summary("ask_user", &json!({"question": "Paint it?", "type": "confirm"})),
+            "Paint it?"
+        );
+        assert_eq!(
+            tool_summary(
+                "web_grep",
+                &json!({"url": "https://docs.rs/tokio", "pattern": "select!"})
+            ),
+            "select! in https://docs.rs/tokio"
+        );
+        assert_eq!(tool_summary("web_search", &json!({"query": "one"})), "one");
+        assert_eq!(
+            tool_summary(
+                "web_search",
+                &json!({"query": "one", "queries": ["two", "three"]})
+            ),
+            "one | two | three"
+        );
+        assert_eq!(tool_summary("web_search", &json!({"queries": ["two"]})), "two");
+        assert_eq!(
+            tool_summary(
                 "task",
                 &json!({"agents": [{"agent": "scout"}, {"agent": "tester"}]})
             ),
@@ -399,6 +441,35 @@ mod tests {
         for line in &lines[1..] {
             assert!(line.starts_with(&theme.bg(Role::UserBg)), "{line:?}");
         }
+    }
+
+    #[test]
+    fn the_banner_is_block_letters_or_thin_ascii_by_glyph_level_and_width() {
+        let unicode = Theme::dark();
+        let wide = plain(&banner(100, &unicode));
+        assert_eq!(wide.len(), 9, "{wide:?}");
+        assert!(wide[1].contains("█████╗"), "{wide:?}");
+        assert_eq!(wide[7], format!(" {TAGLINE}"));
+        // The same letters with a Nerd Font; thin ones where the terminal is narrow.
+        let nerd = Theme::dark().with_glyphs(GlyphLevel::Nerd);
+        assert_eq!(plain(&banner(100, &nerd)), wide);
+        let narrow = plain(&banner(45, &unicode));
+        assert_eq!(narrow.len(), 8, "{narrow:?}");
+        assert!(narrow[2].contains("____ _____"), "{narrow:?}");
+
+        // Plain ASCII asks for thin letters however wide the terminal is.
+        let ascii = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        assert_eq!(plain(&banner(100, &ascii)), narrow);
+        for width in 0..120 {
+            for line in plain(&banner(width, &ascii)) {
+                assert!(line.is_ascii(), "width {width}: {line:?}");
+                assert!(text::width(&line) <= width, "width {width}: {line:?}");
+            }
+            for line in banner(width, &unicode) {
+                assert!(text::width(&line) <= width, "width {width}: {line:?}");
+            }
+        }
+        assert!(banner(30, &unicode).is_empty(), "too narrow for either");
     }
 
     /// The rows of a card without its side borders and padding.
