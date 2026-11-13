@@ -72,7 +72,7 @@ The colour of the rules tells you what `Enter` will do:
 
 ### Popups
 
-Questions from agents, approval prompts, plan reviews, pickers and every step of `/settings` open as a box in
+Questions from agents, approval prompts, plan reviews, pickers and the `/settings` screen open as a box in
 the middle of the window, over the transcript, which is dimmed behind it:
 
 ```
@@ -546,7 +546,7 @@ Models, permissions and setup:
 | `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
 | `/dirs` | List the directories agents may work in |
 | `/changelog [version]` | What changed in each release, or only since `version`, in the [viewer](#transcript-viewer) |
-| `/settings` | Sign in, add API keys, choose models and change settings; see [settings menu](#settings-menu) |
+| `/settings` | Sign in, add API keys, choose models and change every setting; see [settings](#settings) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
 | `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
@@ -781,7 +781,7 @@ so and the request is shown when you return.
 
 azazel tells the terminal what the session is doing, and calls for you when it needs you and you are looking
 elsewhere. Everything here is in the `[notify]` table of the [configuration](configuration.md) and in the
-Notifications section of the [settings menu](#settings-menu).
+Appearance page of the [settings](#settings).
 
 | What | When | Setting |
 |---|---|---|
@@ -872,28 +872,100 @@ With the feature:
 - The first diagram of a run takes a moment longer than the next: the layout measures its text once with a
   font of the system.
 
-## Settings menu
+## Settings
 
-`/settings` opens with signing in, API keys and models, followed by one section per group of everyday settings.
-Each change is saved at once in `~/.azazel/config.toml` (comments and everything else in the file are kept).
-Typing nothing for a text setting puts it back on its default. A project's own configuration still wins over
-these values inside that project.
+`/settings` opens one screen with every setting azazel has, on ten pages behind a row of tabs:
 
-| Section | Settings |
+```
+╭─ Settings ───────────────────────────────────────────────────────────────────────────────────────╮
+│ … Models  Appearance 2  Status line  Input  Permissions  Tools  Sessions  Usage  Advanced        │
+│ Colours, symbols, the working indicator and how azazel gets your atte…  saves to the home config │
+│                                                                                                  │
+│ Interface                                                                                       ┃│
+│ ▌ Theme                            tokyo-night                                          ●  home ┃│
+│   Symbols                          auto                                                         ┃│
+│   Working indicator                shimmer                                                      ┃│
+│   Indicator phrases                (none)                                                       ┃│
+│   Session colour in the indicator  off                                                          ┃│
+│   Tool calls                       card                                                         ┃│
+│   Hide secrets in what is shown    on                                                       env ┃│
+│   Menus and questions as popups    off                                                  ●  flag ┃│
+│   Inline images                    auto                                                         ┃│
+│   Show the model's thinking        off                                                          ┃│
+│   Show tool output in full         off                                                          ┃│
+│ Notifications                                                                                   ┃│
+│   Ring the terminal bell           on                                                           ││
+│   Desktop notifications            auto                                                         ││
+│   Session in the terminal title    on                                                           ││
+│                                                                                                  │
+│ The colours of the UI: a built-in theme or a file in ~/.azazel/themes.                           │
+│                                                                                                  │
+│ tui.theme · default dark · set in the home config                                                │
+╰─ tab page · ↑↓ move · enter edit · / search · r reset · p to project · esc close ────────────────╯
+```
+
+| Page | What is on it |
 |---|---|
-| Appearance | theme\*, symbols\*, working indicator\*, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\* |
-| Editor | emacs or Vim keys\*, external editor command\*, paste fold length\* |
-| Permissions | the mode sessions start in, what destructive commands need |
-| Notifications | bell, desktop notifications, terminal title, tab progress, minimum run length, keep awake |
-| Limits | cost cap, cost warning, turn cap |
-| Sessions | automatic names, restoring model and thinking on resume, retention |
-| Memory | on or off, saving memories from conversations, indexing the project |
-| Updates | daily check, automatic install |
-| Voice | transcription and speech models, voice, send at once, longest recording |
-| Team | coordinator mode, agents at the same time, advisor and its model |
+| Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
+| Models | The default model and the model of every role, favourite models, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
+| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
+| Status line | Preset, left and right segments, separator, segment options, command |
+| Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
+| Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |
+| Tools | Disabled tools, result size, shell and its time limit, redaction for the model; formatters and checkers after a write, the findings report, the read guard, the secret scan; language servers; MCP; web search and the browser; media models; verification and goals |
+| Sessions | Automatic names, restoring model and thinking on resume, retention, interrupted runs; checkpoints; compaction; memory; nested context files and the rule files of other tools |
+| Usage | Subscription usage (spending resets unattended, how often usage is fetched, e-mail addresses) and the cost and turn limits |
+| Advanced | Coordinator mode and team size, schedules and loops, updates, trace export, and the tables only the config file edits |
 
-Settings marked \* change the running UI at once. The others are saved and say "applies to the next session".
-The keys behind each row are described in [configuration](configuration.md).
+Settings marked \* change the running UI at once. The others are saved and apply to the next session; the last
+row under the list says so. The keys behind each row are described in [configuration](configuration.md).
+
+A row shows the name of a setting, the value in effect, `●` when that is not the default, and the layer the
+value comes from: `home` (`~/.azazel/config.toml`), `project`, `local` (`config.local.toml`), `env` (an
+`AZAZEL_<TABLE>__<KEY>` variable) or `flag` (`--set` and the other flags); a value no layer sets has none. The
+number beside a tab is how many settings of that page are not on their default. Under the list stand what the
+selected setting does, then its key, its default and who sets it.
+
+| Key | What it does |
+|---|---|
+| `Tab`, `Right` | The next page. Each page keeps the row it was left on |
+| `Shift+Tab`, `Left` | The page before |
+| `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End` | Move over the settings of the page |
+| `Enter`, `Space` | Edit the selected setting (below) |
+| `/` | Search all pages: what you type is looked for in the names, keys, values and descriptions of every setting, every word of it. The matches stand under the name of their page and the tabs count them. `Enter` edits a match; `Esc` ends the search on the page of the selected match, with it selected |
+| `r` | Reset: take the setting out of the file changes go to, which puts it back on its default unless another layer sets it |
+| `p` | Save changes to `<project>/.azazel/config.toml` instead of `~/.azazel/config.toml`, and back. Only in a [trusted](configuration.md#trust) project |
+| `Esc` | Close. What changed is listed in the transcript |
+
+What `Enter` does depends on the setting:
+
+| Setting | Editor |
+|---|---|
+| On or off | Flips at once |
+| One of several values (theme, symbols, modes) | A list of the values, starting on the one in use. For the settings marked \* each value is shown in the running UI as you move over it; `Enter` keeps it, `Esc` puts back what applied |
+| A number or a text | An input holding the value in use. `Enter` saves; a value the configuration refuses stays in the input with the reason. Nothing typed puts a text back on its default |
+| A list (favourites, rules, phrases) | Its entries. `Enter` edits an entry, or adds one on the last row; `a` adds, `d` removes, `[` and `]` move the entry up and down. Every change is saved as it is made |
+| A table (formatters, checkers, language servers, account order) | Its entries as `name = value`, edited like a list. A value is text, or TOML where the key takes more: `rust = { command = "rust-analyzer", extensions = ["rs"] }` |
+| A role on the Models page | The model picker: a provider, then one of its models. Every role but `default` also offers to go back to the role it falls back to |
+
+Each change is saved at once (comments and everything else in the file are kept). A value that is the default
+is taken out of the file instead of written, unless a file below says something else. Where a layer above the
+file sets the same key (the project's config, an `AZAZEL_` variable, a flag), the row keeps showing what applies
+and the line that confirms the change says who sets it. The permission rules of all layers are joined, so their
+editors hold only the rules of the file changes go to. Making `bypass` the mode every session starts in is asked
+about, with `No` first.
+
+Signing in, adding a key, signing out and choosing a model ask their questions in boxes of their own and come
+back to the screen where it was. After the first sign-in or key, it goes straight on to choosing a default
+model. Credentials are kept in `~/.azazel/auth.json` and a model chosen for a role in `~/.azazel/config.toml`,
+whichever file `p` has chosen for the other settings.
+
+`[providers]`, `[models]`, `[presets]`, `[hooks]`, `[[stream_rules]]` and `[embeddings]` are tables of tables
+or lists of tables: the Advanced page lists them with what sets them and why they are edited in the file.
+
+In a session that runs in another process (`azazel attach`, SSH) and for RPC clients, `/settings` shows the same
+pages as a chain of menus: the pages, then the settings of one with their values, then the value. There a list
+is typed with commas between its entries and a table one `name = value` at a time (`name =` removes an entry).
 
 ## Symbols
 
