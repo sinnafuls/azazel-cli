@@ -242,6 +242,14 @@ impl Router {
         self.providers.get(id)
     }
 
+    /// Whether the provider of `model` searches the web itself, so a request to it may carry
+    /// [`crate::types::HostedTool::WebSearch`].
+    pub fn hosts_web_search(&self, model: &ModelRef) -> bool {
+        self.providers
+            .get(&model.provider)
+            .is_some_and(|provider| provider.hosts_web_search())
+    }
+
     /// Provider ids, sorted.
     pub fn provider_ids(&self) -> Vec<&str> {
         let mut ids: Vec<&str> = self.providers.keys().map(String::as_str).collect();
@@ -874,6 +882,7 @@ mod tests {
                     stop: crate::types::StopReason::Stop,
                     response_id: None,
                     duration_ms: 0,
+                    sources: Vec::new(),
                 },
             );
             Ok(Box::pin(futures::stream::iter([StreamEvent::Done { message }])))

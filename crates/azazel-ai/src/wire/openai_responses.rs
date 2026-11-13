@@ -2,6 +2,11 @@
 //!
 //! Requests are stateless (`store: false`): the whole conversation is sent as input items, and
 //! reasoning items come back with encrypted content so they can be replayed.
+//!
+//! A hosted web search ([`HostedTool::WebSearch`]) is the `web_search` tool, which OpenAI, the
+//! ChatGPT backend and xAI all take in this format. The pages come back as `url_citation`
+//! annotations on the answer's text; xAI also lists every page it opened in the response's
+//! `citations`.
 
 use std::collections::BTreeMap;
 
@@ -13,13 +18,13 @@ use crate::error::AiError;
 use crate::limits::Window;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
-use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, Usage, WireApi};
+use crate::types::{AssistantMeta, Block, HostedTool, Message, Request, Role, StopReason, Usage, WireApi};
 use crate::wire::openai_chat::{
     self, ErrorInfo, STREAM_ENDED, data_url, parse_arguments, request_headers, service_tier, system_text,
     temperature,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
-use crate::wire::{Decoder, apply_extra_body};
+use crate::wire::{Decoder, Sources, apply_extra_body};
 
 pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Value {
     let mut body = Map::new();
@@ -31,20 +36,17 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     body.insert("input".into(), Value::Array(input_items(provider, req)));
     body.insert("stream".into(), json!(true));
     body.insert("store".into(), json!(false));
-    if !req.tools.is_empty() {
-        let tools = req
-            .tools
-            .iter()
-            .map(|tool| {
-                json!({
-                    "type": "function",
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.schema,
-                    "strict": false,
-                })
-            })
-            .collect();
+    let functions = req.tools.iter().map(|tool| {
+        json!({
+            "type": "function",
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": tool.schema,
+            "strict": false,
+        })
+    });
+    let tools: Vec<Value> = functions.chain(req.hosted.iter().map(hosted_tool)).collect();
+    if !tools.is_empty() {
         body.insert("tools".into(), Value::Array(tools));
     }
     if let Some(limit) = req.max_output {
@@ -96,6 +98,7 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
         usage: Usage::default(),
         blocks: Vec::new(),
         items: BTreeMap::new(),
+        sources: Sources::default(),
     })
 }
 
@@ -148,6 +151,17 @@ pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
 // ---------------------------------------------------------------------------------------------
 // Request mapping
 // ---------------------------------------------------------------------------------------------
+
+/// A built-in tool as the API names it.
+fn hosted_tool(tool: &HostedTool) -> Value {
+    match tool {
+        // The API has no limit on the number of searches to pass on.
+        HostedTool::WebSearch { domains, .. } if domains.is_empty() => json!({"type": "web_search"}),
+        HostedTool::WebSearch { domains, .. } => {
+            json!({"type": "web_search", "filters": {"allowed_domains": domains}})
+        }
+    }
+}
 
 fn input_items(provider: &ProviderConfig, req: &Request) -> Vec<Value> {
     let mut items = Vec::new();
@@ -354,6 +368,8 @@ struct ResponsesDecoder {
     /// Finished blocks by block index; `None` while a block is still streaming.
     blocks: Vec<Option<Block>>,
     items: BTreeMap<u64, Item>,
+    /// The pages a hosted web search cited in the answer.
+    sources: Sources,
 }
 
 fn allocate(blocks: &mut Vec<Option<Block>>) -> usize {
@@ -431,6 +447,54 @@ fn reasoning_text(item: &Value) -> String {
     }
 }
 
+/// A `url_citation` annotation as `(url, title)`. xAI puts the citation's number where OpenAI
+/// puts the page title; a number is no title.
+fn url_citation(annotation: &Value) -> Option<(&str, &str)> {
+    if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
+        return None;
+    }
+    let url = text_field(annotation, "url")?;
+    let title = text_field(annotation, "title")
+        .filter(|title| title.parse::<u64>().is_err())
+        .unwrap_or_default();
+    Some((url, title))
+}
+
+/// What the answer says where it cites a page: the paragraph around the citation at
+/// characters `at`, without the citation marks (`spans`, every annotation of the text) in it.
+/// The annotation covers only its own mark (`([site](url))`, `[[1]](url)`), so the claim it
+/// belongs to is the text beside it.
+fn cited_paragraph(text: &[char], spans: &[(usize, usize)], at: (usize, usize)) -> String {
+    let keep = |range: std::ops::Range<usize>| -> String {
+        range
+            .filter(|index| !spans.iter().any(|(from, to)| (*from..*to).contains(index)))
+            .map(|index| text[index])
+            .collect()
+    };
+    let line_start = |before: usize| {
+        text[..before]
+            .iter()
+            .rposition(|c| *c == '\n')
+            .map_or(0, |i| i + 1)
+    };
+    let (from, to) = (at.0.min(text.len()), at.1.min(text.len()));
+    let start = line_start(from);
+    let end = text[to..]
+        .iter()
+        .position(|c| *c == '\n')
+        .map_or(text.len(), |i| to + i);
+    let paragraph = keep(start..end);
+    if !paragraph.trim().is_empty() {
+        return paragraph;
+    }
+    // A citation on a line of its own belongs to the paragraph above it.
+    let above = text[..start]
+        .iter()
+        .rposition(|c| !c.is_whitespace())
+        .map_or(0, |i| i + 1);
+    keep(line_start(above)..above)
+}
+
 fn parse_usage(usage: &Value) -> Usage {
     let count = |pointer: &str| usage.pointer(pointer).and_then(Value::as_u64).unwrap_or(0);
     let cache_read = count("/input_tokens_details/cached_tokens");
@@ -464,7 +528,7 @@ fn failure(response: Option<&Value>) -> AiError {
 }
 
 impl ResponsesDecoder {
-    fn meta(&self, stop: StopReason) -> AssistantMeta {
+    fn meta(&mut self, stop: StopReason) -> AssistantMeta {
         AssistantMeta {
             provider: self.provider.clone(),
             model: self.model.clone(),
@@ -473,6 +537,31 @@ impl ResponsesDecoder {
             stop,
             response_id: self.response_id.clone(),
             duration_ms: 0,
+            sources: self.sources.finish(),
+        }
+    }
+
+    /// The pages the text parts of a finished message item cite, each with the paragraph of
+    /// the answer that cites it.
+    fn note_citations(&mut self, item: &Value) {
+        let parts = item.get("content").and_then(Value::as_array);
+        for part in parts.into_iter().flatten() {
+            let Some(annotations) = part.get("annotations").and_then(Value::as_array) else {
+                continue;
+            };
+            let text: Vec<char> = text_field(part, "text").unwrap_or_default().chars().collect();
+            let span = |annotation: &Value| {
+                let index = |name: &str| usize::try_from(annotation.get(name)?.as_u64()?).ok();
+                Some((index("start_index")?, index("end_index")?)).filter(|(from, to)| from <= to)
+            };
+            let spans: Vec<(usize, usize)> = annotations.iter().filter_map(span).collect();
+            for annotation in annotations {
+                let Some((url, title)) = url_citation(annotation) else {
+                    continue;
+                };
+                let paragraph = span(annotation).map(|at| cited_paragraph(&text, &spans, at));
+                self.sources.cite(url, title, &paragraph.unwrap_or_default());
+            }
         }
     }
 
@@ -591,6 +680,7 @@ impl ResponsesDecoder {
         if !item.done {
             match item.kind {
                 Kind::Message => {
+                    self.note_citations(json);
                     let mut text = message_text(json);
                     if text.is_empty() {
                         text = std::mem::take(&mut item.buffer);
@@ -645,6 +735,13 @@ impl ResponsesDecoder {
 
     fn complete(&mut self, response: Option<&Value>, out: &mut Vec<StreamEvent>) {
         self.note_response(response);
+        // xAI: every page its search tools opened, cited or not.
+        let opened = response
+            .and_then(|response| response.get("citations"))
+            .and_then(Value::as_array);
+        for url in opened.into_iter().flatten().filter_map(Value::as_str) {
+            self.sources.found(url, "");
+        }
         // Items the provider never closed end with what was streamed.
         for item in self.items.values().filter(|item| !item.done) {
             if let Some(index) = item.index
@@ -736,6 +833,13 @@ impl Decoder for ResponsesDecoder {
                 self.reasoning_delta(&payload, "content_index", delta, &mut out);
             }
             "response.function_call_arguments.delta" => self.arguments_delta(&payload, delta, &mut out),
+            // The finished item repeats the annotation with the text it sits in; this keeps the
+            // page when the item never finishes.
+            "response.output_text.annotation.added" => {
+                if let Some((url, title)) = payload.get("annotation").and_then(url_citation) {
+                    self.sources.cite(url, title, "");
+                }
+            }
             "response.output_item.done" => {
                 if let (Some(key), Some(item)) = (output_index(&payload), payload.get("item")) {
                     self.item_done(key, item, &mut out);

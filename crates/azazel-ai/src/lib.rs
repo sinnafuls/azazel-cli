@@ -30,6 +30,6 @@ pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
 pub use stall::StallLimits;
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
-    AssistantMeta, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request, Role,
-    StopReason, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
+    AssistantMeta, Block, HostedTool, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request,
+    Role, StopReason, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WebSource, WireApi,
 };

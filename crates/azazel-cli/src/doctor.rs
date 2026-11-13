@@ -366,12 +366,39 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     let backend = azazel_tools::web::active_backend(&config.web.search, &config.web.searxng_url, &|name| {
         std::env::var(name).ok()
     });
-    match backend {
-        "none" => report.warn(format!(
+    // The lead's provider answers first when it has a search tool of its own.
+    let lead = router
+        .resolve(&[ModelSpec::Role("default".to_string())])
+        .into_iter()
+        .next();
+    let searches = |model: &azazel_ai::ModelRef| {
+        presets::resolve(&config.providers)
+            .unwrap_or_default()
+            .iter()
+            .any(|provider| provider.id == model.provider && azazel_ai::wire::hosted_api(provider).is_some())
+    };
+    let hosted = lead
+        .as_ref()
+        .filter(|model| searches(model))
+        .map(azazel_ai::ModelRef::key);
+    let provider =
+        azazel_tools::web::ProviderSearch::from_config(&config.web.search, config.web.provider_search);
+    match (provider, hosted, backend) {
+        (azazel_tools::web::ProviderSearch::Only, Some(model), _) => {
+            report.ok(format!("web search: provider ({model})"));
+        }
+        (azazel_tools::web::ProviderSearch::Only, None, _) => report.warn(format!(
+            "web search: `provider` is set, but {} has no web search of its own, so every search fails",
+            lead.map_or_else(|| "no model".to_string(), |model| model.key()),
+        )),
+        (azazel_tools::web::ProviderSearch::First, Some(model), name) => {
+            report.ok(format!("web search: provider ({model}), then {name}"));
+        }
+        (_, _, "none") => report.warn(format!(
             "web search: `{}` is not a search backend",
             config.web.search
         )),
-        name => report.ok(format!("web search: {name}")),
+        (_, _, name) => report.ok(format!("web search: {name}")),
     }
     #[cfg(feature = "lsp")]
     {

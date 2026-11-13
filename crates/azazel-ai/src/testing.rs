@@ -15,9 +15,12 @@ use crate::catalog::ModelInfo;
 use crate::error::AiError;
 use crate::provider::Provider;
 use crate::stream::{EventStream, StreamEvent};
-use crate::types::{AssistantMeta, Block, Message, Request, StopReason, Usage, WireApi};
+use crate::types::{AssistantMeta, Block, Message, Request, StopReason, Usage, WebSource, WireApi};
 
 pub const MOCK_PROVIDER_ID: &str = "mock";
+/// The queue that answers requests carrying hosted tools, whatever model they name. A script
+/// with this queue makes the provider one that searches the web itself.
+pub const MOCK_SEARCH_QUEUE: &str = "web_search";
 
 /// One scripted response. Give either `events` (verbatim) or `reply` (expanded into events).
 /// A step whose first event is `error` fails the call before anything is streamed.
@@ -43,6 +46,9 @@ pub struct MockReply {
     pub tool_calls: Vec<MockToolCall>,
     #[serde(default)]
     pub usage: Usage,
+    /// What a hosted web search found, for a step of the [`MOCK_SEARCH_QUEUE`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<WebSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -79,7 +85,19 @@ impl MockStep {
             reply: Some(MockReply {
                 text: text.into(),
                 tool_calls,
-                usage: Usage::default(),
+                ..MockReply::default()
+            }),
+            ..MockStep::default()
+        }
+    }
+
+    /// The answer of a hosted web search: `text` with the pages it cites.
+    pub fn search(text: impl Into<String>, sources: Vec<WebSource>) -> Self {
+        MockStep {
+            reply: Some(MockReply {
+                text: text.into(),
+                sources,
+                ..MockReply::default()
             }),
             ..MockStep::default()
         }
@@ -165,6 +183,7 @@ impl MockStep {
             stop,
             response_id: None,
             duration_ms: 0,
+            sources: reply.sources,
         };
         events.push(StreamEvent::Done {
             message: Message::assistant(content, meta),
@@ -248,6 +267,10 @@ impl Provider for MockProvider {
         MOCK_PROVIDER_ID
     }
 
+    fn hosts_web_search(&self) -> bool {
+        locked(&self.queues).contains_key(MOCK_SEARCH_QUEUE)
+    }
+
     async fn stream(
         &self,
         model: &ModelInfo,
@@ -271,13 +294,14 @@ impl Provider for MockProvider {
             }
         }
         drop(requests);
-        let step = locked(&self.queues)
-            .get_mut(&model.id)
-            .and_then(VecDeque::pop_front);
+        let queue = match req.hosted.is_empty() {
+            true => model.id.as_str(),
+            false => MOCK_SEARCH_QUEUE,
+        };
+        let step = locked(&self.queues).get_mut(queue).and_then(VecDeque::pop_front);
         let Some(step) = step else {
             return Err(AiError::InvalidRequest(format!(
-                "mock script exhausted for {}",
-                model.id
+                "mock script exhausted for {queue}"
             )));
         };
         let delay = Duration::from_millis(step.delay_ms);

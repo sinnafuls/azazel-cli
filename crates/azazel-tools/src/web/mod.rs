@@ -12,8 +12,8 @@ use azazel_core::{ExtError, Extension, Registrar};
 pub use fetch::{Fetcher, Format, MAX_BODY_BYTES, MAX_REDIRECTS, UrlScheme, WebFetchTool};
 pub use grep::WebGrepTool;
 pub use search::{
-    Brave, DuckDuckGo, Exa, Recency, SearchBackend, SearchHit, SearchQuery, Searxng, Tavily, WebSearchTool,
-    active_backend, backend_from_config,
+    Brave, DuckDuckGo, Exa, PROVIDER, ProviderSearch, Recency, SearchBackend, SearchHit, SearchQuery,
+    Searxng, Tavily, WebSearchTool, active_backend, backend_from_config,
 };
 
 const USER_AGENT: &str = concat!("azazel/", env!("CARGO_PKG_VERSION"));
@@ -22,10 +22,13 @@ const TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Registers `web_search`, `web_fetch`, `web_grep` and the `http` and `https` schemes.
 pub struct WebExt {
-    /// Config `web.search`: `auto`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`.
+    /// Config `web.search`: `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or
+    /// `duckduckgo`.
     pub search: String,
     /// Config `web.searxng_url`.
     pub searxng_url: String,
+    /// Config `web.provider_search`: whether `auto` asks the lead's provider first.
+    pub provider_search: bool,
 }
 
 impl Extension for WebExt {
@@ -38,7 +41,10 @@ impl Extension for WebExt {
         let backend = backend_from_config(&self.search, &self.searxng_url, &env);
         let client = search::http_client().map_err(ExtError)?;
         let fetcher = Arc::new(Fetcher::new().map_err(ExtError)?);
-        r.tool(Arc::new(WebSearchTool::new(backend, client)));
+        let provider = ProviderSearch::from_config(&self.search, self.provider_search);
+        r.tool(Arc::new(
+            WebSearchTool::new(backend, client).with_provider(provider),
+        ));
         r.tool(Arc::new(WebFetchTool::new(fetcher.clone())));
         r.tool(Arc::new(WebGrepTool::new(fetcher.clone())));
         r.scheme(Arc::new(UrlScheme::http(fetcher.clone())));

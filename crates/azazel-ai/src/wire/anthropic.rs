@@ -8,7 +8,10 @@
 //! - an assistant turn is replayed block for block in its original order, thinking blocks included;
 //! - the priority tier is fast mode, `speed: "fast"` (the `service_tier` member is legacy and only
 //!   chooses between committed and standard capacity); the models on which fast mode is a preview
-//!   also need the `fast-mode-2026-02-01` beta header.
+//!   also need the `fast-mode-2026-02-01` beta header;
+//! - a hosted web search ([`HostedTool::WebSearch`]) is the `web_search_20250305` server tool, the
+//!   version every platform serves and the one that returns its results as plain blocks. The pages
+//!   come back as `web_search_tool_result` blocks and as `citations` on the text that uses them.
 
 use std::collections::HashMap;
 
@@ -22,11 +25,11 @@ use crate::limits::{REJECTED, Window};
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{
-    AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, SystemPart, ThinkingLevel,
-    Tier, ToolSpec, Usage, WireApi,
+    AssistantMeta, Block, HostedTool, INVALID_JSON_KEY, Message, Request, Role, StopReason, SystemPart,
+    ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
-use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
+use crate::wire::{Decoder, KeyHeader, Sources, add_headers, apply_extra_body};
 
 /// Latest stable API version. It removed the sampling parameters (`temperature`, `top_p`, `top_k`).
 const API_VERSION: &str = "2026-10-21";
@@ -46,13 +49,18 @@ const ANSWER_RESERVE: u32 = 1024;
 /// Largest page the list-models endpoint serves.
 const MODELS_PAGE_SIZE: u32 = 1000;
 
+/// The web search server tool without dynamic filtering: later versions run the search from
+/// code execution and may leave the result blocks out of the response.
+const WEB_SEARCH_TOOL: &str = "web_search_20250305";
+
 const USER: &str = "user";
 const ASSISTANT: &str = "assistant";
 
 pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Value {
     let mut breakpoints = MAX_CACHE_BREAKPOINTS;
     let system = system_blocks(&req.system, &mut breakpoints);
-    let tools = tool_definitions(&req.tools, &mut breakpoints);
+    let mut tools = tool_definitions(&req.tools, &mut breakpoints);
+    tools.extend(req.hosted.iter().map(hosted_definition));
     let mut messages = wire_messages(&provider.id, &req.messages);
     for message in messages.iter_mut().rev().filter(|m| m.role == USER).take(2) {
         if let Some(block) = message.content.last_mut() {
@@ -176,6 +184,7 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
         usage: Usage::default(),
         stop_reason: None,
         response_id: None,
+        sources: Sources::default(),
     })
 }
 
@@ -604,6 +613,24 @@ fn tool_definitions(tools: &[ToolSpec], breakpoints: &mut usize) -> Vec<Value> {
     definitions
 }
 
+/// A server tool as the API names it. The search limits go on the tool itself.
+fn hosted_definition(tool: &HostedTool) -> Value {
+    match tool {
+        HostedTool::WebSearch { domains, max_uses } => {
+            let mut definition = Map::new();
+            definition.insert("type".to_string(), json!(WEB_SEARCH_TOOL));
+            definition.insert("name".to_string(), json!("web_search"));
+            if let Some(max_uses) = max_uses {
+                definition.insert("max_uses".to_string(), json!(max_uses));
+            }
+            if !domains.is_empty() {
+                definition.insert("allowed_domains".to_string(), json!(domains));
+            }
+            Value::Object(definition)
+        }
+    }
+}
+
 fn mark_cached(block: &mut Value, breakpoints: &mut usize) {
     if *breakpoints == 0 {
         return;
@@ -680,11 +707,15 @@ struct MessagesDecoder {
     usage: Usage,
     stop_reason: Option<String>,
     response_id: Option<String>,
+    /// The pages of a hosted web search: what its result blocks list and what the text cites.
+    sources: Sources,
 }
 
 struct OpenBlock {
     index: usize,
     kind: OpenKind,
+    /// The `web_search_result_location` citations of a text block.
+    citations: Vec<Value>,
 }
 
 enum OpenKind {
@@ -751,8 +782,12 @@ impl MessagesDecoder {
         let index = self.blocks.len();
         self.blocks.push(None);
         let field = |key: &str| text_field(start, key);
+        let mut citations = Vec::new();
         let kind = match start.get("type").and_then(Value::as_str).unwrap_or_default() {
             "text" => {
+                if let Some(Value::Array(given)) = start.get("citations") {
+                    citations.clone_from(given);
+                }
                 let text = field("text");
                 if !text.is_empty() {
                     let delta = text.clone();
@@ -786,12 +821,29 @@ impl MessagesDecoder {
                     input: start.get("input").cloned().unwrap_or(Value::Null),
                 }
             }
-            _ => OpenKind::Opaque {
-                item: start.clone(),
-                json: String::new(),
-            },
+            other => {
+                if other == "web_search_tool_result" {
+                    // A failed search carries an error object here instead of a list.
+                    let results = start.get("content").and_then(Value::as_array);
+                    for result in results.into_iter().flatten() {
+                        let field = |key: &str| result.get(key).and_then(Value::as_str).unwrap_or_default();
+                        self.sources.found(field("url"), field("title"));
+                    }
+                }
+                OpenKind::Opaque {
+                    item: start.clone(),
+                    json: String::new(),
+                }
+            }
         };
-        self.open.insert(api_index, OpenBlock { index, kind });
+        self.open.insert(
+            api_index,
+            OpenBlock {
+                index,
+                kind,
+                citations,
+            },
+        );
     }
 
     fn block_delta(&mut self, payload: &Value, out: &mut Vec<StreamEvent>) {
@@ -824,6 +876,11 @@ impl MessagesDecoder {
             ("signature_delta", OpenKind::Thinking { signature, .. }) => {
                 signature.push_str(fragment("signature"));
             }
+            ("citations_delta", OpenKind::Text(_)) => {
+                if let Some(citation) = delta.get("citation") {
+                    open.citations.push(citation.clone());
+                }
+            }
             ("input_json_delta", OpenKind::Tool { json, .. }) => {
                 let delta = fragment("partial_json");
                 if !delta.is_empty() {
@@ -844,7 +901,16 @@ impl MessagesDecoder {
 
     fn close(&mut self, open: OpenBlock, out: &mut Vec<StreamEvent>) {
         let block = match open.kind {
-            OpenKind::Text(text) => Block::Text { text },
+            OpenKind::Text(text) => {
+                for citation in &open.citations {
+                    let field = |key: &str| citation.get(key).and_then(Value::as_str).unwrap_or_default();
+                    // What the page says, or else what the answer says with it.
+                    let quoted = Some(field("cited_text")).filter(|quoted| !quoted.trim().is_empty());
+                    self.sources
+                        .cite(field("url"), field("title"), quoted.unwrap_or(&text));
+                }
+                Block::Text { text }
+            }
             OpenKind::Thinking { text, signature } => Block::Thinking {
                 text,
                 signature: Some(signature).filter(|s| !s.is_empty()),
@@ -898,7 +964,7 @@ impl MessagesDecoder {
         }
     }
 
-    fn meta(&self, stop: StopReason) -> AssistantMeta {
+    fn meta(&mut self, stop: StopReason) -> AssistantMeta {
         AssistantMeta {
             provider: self.provider.clone(),
             model: self.model.clone(),
@@ -907,6 +973,7 @@ impl MessagesDecoder {
             stop,
             response_id: self.response_id.clone(),
             duration_ms: 0,
+            sources: self.sources.finish(),
         }
     }
 

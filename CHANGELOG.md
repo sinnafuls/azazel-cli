@@ -61,9 +61,20 @@ GitHub are its section here.
 - Named prompts: `request_id` on the RPC `prompt`, `azazel bg --request-id <id>` and `_meta.requestId` on an
   ACP `session/prompt`. A prompt sent again under the same name starts nothing and answers with the state of
   the run the first one started, for as long as the session exists.
+- `web_search` asks the lead's own model provider to search when it has a search tool: Anthropic's
+  `web_search` server tool, the `web_search` tool of the Responses API (OpenAI, the ChatGPT login, xAI) and
+  Gemini's Google Search grounding. It needs no search key and works on a subscription login. Each query is
+  one request on the lead's model; the numbered results are read from the pages its answer cites. A search
+  that fails, or cites nothing, is answered by the configured backend instead. `[web] search = "provider"`
+  uses the provider alone, `provider_search = false` leaves it out, and `/cost` counts the requests under
+  `web_search`.
 
 ### Changed
 
+- `[web] search = "auto"` now tries the lead's provider first, then `brave`, `tavily`, `exa`, `searxng` and
+  `duckduckgo` as before. `azazel doctor` names who answers: `web search: provider (<model>), then <backend>`.
+- The details of a `web_search` result name the backend of each query, and `provider_error` when the
+  provider's search was passed over.
 - The permission mode `ask` is now called `manual`, everywhere a mode is named: `permissions.mode`, `--mode`,
   `/mode`, RPC `set_mode` and `get_state`, ACP session modes, the `permission_mode` of hooks, `ctx.mode` in
   Luau. The old name is refused with a message that names the new one. The `ask` list of rules is unchanged.
