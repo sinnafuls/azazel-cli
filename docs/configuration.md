@@ -194,6 +194,10 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |
 | | `api_key_env` | `""` | Environment variable holding the backend's key |
 | | `content` | `false` | Send prompt and reply text, tool input and tool output, not only the shape of each step |
+| `[usage]` | `auto_reset` | `false` | Spend a banked usage reset without asking when nobody is there to ask (print mode, background sessions, schedules) |
+| | `poll_secs` | `300` | How often the usage of subscription accounts is fetched while a session is open; `0` never |
+| | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` |
+| `[accounts]` | `order` | `{}` | Provider id to account labels in the order they are tried, such as `{ anthropic = ["work", "default"] }` |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
@@ -223,6 +227,12 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
+| | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together |
+| `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full` |
+| | `left`, `right` | `[]` | Segment names on each side, in order; empty takes the preset's |
+| | `separator` | `"dot"` | Between segments: `dot`, `bar`, `powerline` or `space` |
+| | `segments.<name>` | `{}` | Options of one segment, such as `[statusline.segments.path] style = "short"` |
+| | `command` | `""` | A program whose output replaces the left side of the status line; empty runs nothing |
 | `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
 | | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |
 | | `fold_paste_lines` | `10` | Pastes longer than this many lines fold into one token; `0` never folds |
@@ -299,7 +309,7 @@ back. A project needs a trust decision when it has any of:
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
 is `bypass`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
-`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`.
+`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it
