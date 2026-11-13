@@ -5,6 +5,7 @@
 mod backend;
 mod bridge;
 mod btw;
+mod calls;
 mod clip;
 mod gitcmd;
 mod input;
@@ -298,6 +299,8 @@ pub struct Tui {
     branch: Option<String>,
     stream: StreamView,
     tools: Vec<RunningTool>,
+    /// Finished tool calls that are not in the transcript yet, and the last that are.
+    calls: calls::Calls,
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
@@ -478,6 +481,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         branch,
         stream: StreamView::default(),
         tools: Vec::new(),
+        calls: calls::Calls::default(),
         overlay: None,
         deferred: VecDeque::new(),
         popup: None,
@@ -958,6 +962,7 @@ impl Tui {
         cursor = cursor.map(|(row, column)| (row + pinned.len() as u16, column));
         pinned.extend(bottom);
 
+        self.fit_calls(width);
         let mut top = self.in_flight(width);
         // The live region never outgrows the screen: what is in flight gives way first.
         if top.len() > room {
@@ -977,20 +982,13 @@ impl Tui {
                 let from = wrapped.len().saturating_sub(4);
                 top.extend(wrapped.into_iter().skip(from));
             }
-            if !self.tools.is_empty() && !self.after_card {
+            // Calls in flight, and in the compact style the ones before them whose group is
+            // still growing.
+            let calls = self.live_calls(width);
+            if !calls.is_empty() && !self.after_card {
                 top.push(String::new());
             }
-            for tool in &self.tools {
-                let summary = view::tool_summary(&tool.name, &tool.input);
-                top.extend(tool_card::running(
-                    &tool.name,
-                    &summary,
-                    &tool.tail,
-                    tool.started.elapsed(),
-                    width,
-                    &self.theme,
-                ));
-            }
+            top.extend(calls);
         }
         top
     }
@@ -1105,18 +1103,13 @@ impl Tui {
             } => {
                 if let Some(at) = self.tools.iter().position(|t| t.call_id == call_id) {
                     let tool = self.tools.remove(at);
-                    let lines = view::tool_done(
-                        &tool.name,
-                        &tool.input,
-                        &output,
-                        Duration::from_millis(duration_ms),
-                        self.expand_tools,
-                        self.local_cwd().as_deref(),
-                        width,
-                        &self.theme,
-                    );
-                    self.say_card(lines);
-                    self.show_images(&output);
+                    self.tool_finished(calls::Finished {
+                        agent: None,
+                        name: tool.name,
+                        input: tool.input,
+                        output,
+                        elapsed: Duration::from_millis(duration_ms),
+                    });
                 }
             }
             AgentEvent::Compaction {
@@ -1162,6 +1155,7 @@ impl Tui {
     }
 
     fn end_of_run(&mut self) {
+        self.flush_calls();
         self.busy = false;
         self.tools.clear();
         self.stream = StreamView::default();
@@ -1532,6 +1526,11 @@ impl Tui {
             }
             Some("toggle_tool_output") => {
                 self.expand_tools = !self.expand_tools;
+                if self.expand_tools {
+                    self.expand_calls();
+                } else {
+                    self.restyle_calls();
+                }
                 self.notice = Some(format!(
                     "tool output: {}",
                     if self.expand_tools {
@@ -2011,6 +2010,7 @@ impl Tui {
         self.sync().await;
         self.follow = None;
         self.followed_tools.clear();
+        self.forget_calls();
         self.busy = false;
         self.tools.clear();
         self.stream = StreamView::default();

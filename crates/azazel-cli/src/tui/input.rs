@@ -709,6 +709,7 @@ impl Tui {
             }
             _ => {}
         }
+        self.restyle_calls();
     }
 }
 

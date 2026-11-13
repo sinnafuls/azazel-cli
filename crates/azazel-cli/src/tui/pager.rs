@@ -34,6 +34,8 @@ pub enum Source {
         name: String,
         input: Value,
         output: ToolOutput,
+        /// Hide what looks like a secret in it (`tui.redact`).
+        redact: bool,
     },
     /// The unified diff of one file (`/diff`). `[` and `]` jump between these.
     Diff { file: String, text: String },
@@ -66,19 +68,32 @@ impl Source {
                 source: text.clone(),
                 ..Item::default()
             },
-            Source::Tool { name, input, output } => {
+            Source::Tool {
+                name,
+                input,
+                output,
+                redact,
+            } => {
+                let call = view::Call {
+                    agent: None,
+                    name,
+                    input,
+                    output,
+                    elapsed: None,
+                };
+                let show = view::Show {
+                    expanded: true,
+                    redact: *redact,
+                    cwd: None,
+                };
                 let mut lines = vec![String::new()];
-                lines.extend(view::tool_card(
-                    name, input, output, None, true, None, width, theme,
-                ));
-                let said = output.text_content();
+                lines.extend(view::tool_card(call, show, width, theme));
+                // What is copied is what is shown.
+                let said = view::redacted(output.text_content(), *redact);
+                let summary = view::redacted(view::tool_summary(name, input), *redact);
                 Item {
                     lines,
-                    source: format!(
-                        "`{name}` {}\n\n```\n{}\n```",
-                        view::tool_summary(name, input),
-                        said.trim_end()
-                    ),
+                    source: format!("`{name}` {summary}\n\n```\n{}\n```", said.trim_end()),
                     ..Item::default()
                 }
             }
@@ -222,6 +237,8 @@ impl Tui {
     /// The session branch as the viewer shows it: prompts, replies, tool calls with their
     /// results, and thinking when it is shown in the transcript too.
     fn transcript_sources(&self) -> Vec<Source> {
+        let redact = self.env.config.tui.redact;
+        let shown = |text: String| view::redacted(text, redact);
         let branch = self.session.branch(None);
         let mut results: HashMap<String, ToolOutput> = HashMap::new();
         for entry in &branch {
@@ -258,34 +275,39 @@ impl Tui {
                             .filter(|block| matches!(block, Block::Image { .. }))
                             .count();
                         if super::slash::is_note(&text) {
-                            sources.push(Source::Note(text));
+                            sources.push(Source::Note(shown(text)));
                         } else if !text.trim().is_empty() || images > 0 {
                             let attached = match images {
                                 0 => String::new(),
                                 1 => "\n[1 image]".to_string(),
                                 n => format!("\n[{n} images]"),
                             };
-                            sources.push(Source::Prompt(format!("{}{attached}", text.trim_end())));
+                            sources.push(Source::Prompt(shown(format!("{}{attached}", text.trim_end()))));
                         }
                     }
                     MessageRole::Assistant => {
                         for block in message.content {
                             match block {
                                 Block::Text { text } if !text.trim().is_empty() => {
-                                    sources.push(Source::Markdown(text));
+                                    sources.push(Source::Markdown(shown(text)));
                                 }
                                 Block::Thinking {
                                     text,
                                     redacted: false,
                                     ..
                                 } if self.show_thinking && !text.trim().is_empty() => {
-                                    sources.push(Source::Thinking(text));
+                                    sources.push(Source::Thinking(shown(text)));
                                 }
                                 Block::ToolCall { id, name, input, .. } => {
                                     let output = results
                                         .remove(&id)
                                         .unwrap_or_else(|| ToolOutput::error("(no result was recorded)"));
-                                    sources.push(Source::Tool { name, input, output });
+                                    sources.push(Source::Tool {
+                                        name,
+                                        input,
+                                        output,
+                                        redact,
+                                    });
                                 }
                                 _ => {}
                             }
@@ -297,7 +319,7 @@ impl Tui {
                     sources.push(Source::Note(
                         "the conversation up to here was summarised for the model:".to_string(),
                     ));
-                    sources.push(Source::Markdown(summary));
+                    sources.push(Source::Markdown(shown(summary)));
                 }
                 EntryKind::ModelChange { chain } => {
                     let models: Vec<String> = chain.iter().map(ToString::to_string).collect();

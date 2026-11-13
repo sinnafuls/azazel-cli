@@ -243,7 +243,7 @@ impl Tui {
                 self.notice = Some("compacting…".to_string());
             }
             "clear" => self.clear_screen(),
-            "export" => match self.backend.export(args).await {
+            "export" => match self.backend.export(args, self.env.config.tui.redact).await {
                 Ok(file) => self.info(&format!("exported to {file}")),
                 Err(why) => self.fail(&why),
             },

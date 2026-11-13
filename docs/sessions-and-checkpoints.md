@@ -193,6 +193,10 @@ Export formats:
 | HTML | One file with its own styles and no scripts: messages, tool calls with their output (diffs coloured) and thinking folded under `<details>`, images inline |
 | JSON lines | The branch's entries exactly as stored in the session file |
 
+With `tui.redact` on (the default), what looks like a secret is replaced by `[redacted:<kind>]` in a Markdown
+or HTML export, as it is [on screen](tui.md#hiding-secrets). A JSON lines export holds the entries as stored,
+secrets included, so that it opens as a session again: mind where you send it.
+
 With `[session] retention_days = N` (0, the default, keeps everything), sessions of the project not used for `N`
 days are deleted in the background when azazel starts, at most once a day. Pinned sessions and the open one are
 kept.

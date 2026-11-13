@@ -17,6 +17,7 @@ icy_sixel = { workspace = true, optional = true }
 image = { workspace = true, optional = true }
 nucleo-matcher.workspace = true
 pulldown-cmark.workspace = true
+regex.workspace = true
 similar.workspace = true
 syntect.workspace = true
 thiserror.workspace = true

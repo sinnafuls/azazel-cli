@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use azazel_core::paths::canonical;
 use azazel_core::session::SessionSummary;
-use azazel_core::{Paths, SessionStore};
+use azazel_core::{Config, LoadOptions, Paths, SessionStore, TrustStore};
 use serde_json::json;
 
 use crate::cli::SessionsAction;
@@ -252,6 +252,19 @@ pub fn run(action: &SessionsAction, paths: &Paths) -> u8 {
     }
 }
 
+/// `tui.redact` as the configuration has it, for an export made outside a session. On unless
+/// it is turned off; the project's own configuration counts when the project is trusted.
+fn redact_exports(paths: &Paths) -> bool {
+    let options = LoadOptions {
+        trusted: TrustStore::new(paths.trust_file())
+            .decision(&paths.project_root)
+            .unwrap_or(false),
+        overrides: toml::Table::new(),
+        env: std::env::vars().collect(),
+    };
+    Config::load(paths, &options).map_or(true, |loaded| loaded.config.tui.redact)
+}
+
 /// `azazel export [ID] [--format] [-o FILE]`: the latest session of this project when no id is
 /// given; the format from `--format`, else the file's extension, else Markdown.
 pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, output: Option<&Path>) -> u8 {
@@ -277,7 +290,7 @@ pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, outp
     let format = format
         .or_else(|| output.and_then(Format::from_path))
         .unwrap_or(Format::Markdown);
-    let text = render(&store, format);
+    let text = render(&store, format, redact_exports(paths));
     match output {
         Some(path) if path == Path::new("-") => {
             print!("{text}");

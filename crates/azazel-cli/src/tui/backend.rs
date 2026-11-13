@@ -243,7 +243,8 @@ pub(crate) trait Backend: Send {
     async fn retry(&mut self, again: Again) -> Result<Moved, String>;
 
     /// Writes the conversation to a file named as typed; returns the file.
-    async fn export(&mut self, path: &str) -> Result<String, String>;
+    /// Writes the conversation to `path`; `redact` hides what looks like a secret in it.
+    async fn export(&mut self, path: &str, redact: bool) -> Result<String, String>;
 
     // ------------------------------------------------------------ beside the conversation
 
@@ -740,7 +741,7 @@ impl Backend for Local {
         Ok(moved)
     }
 
-    async fn export(&mut self, path: &str) -> Result<String, String> {
+    async fn export(&mut self, path: &str, redact: bool) -> Result<String, String> {
         use crate::export::{Format, default_file_name, render};
         let session = &self.active.session;
         let cwd = &self.app.paths.cwd;
@@ -750,7 +751,7 @@ impl Backend for Local {
             cwd.join(path)
         };
         let format = Format::from_path(&file).unwrap_or(Format::Markdown);
-        std::fs::write(&file, render(session, format))
+        std::fs::write(&file, render(session, format, redact))
             .map_err(|e| format!("could not write {}: {e}", file.display()))?;
         Ok(file.display().to_string())
     }
