@@ -171,6 +171,64 @@ The secret itself is never read from the scan's output, shown or sent to a model
 
 `azazel doctor` lists the built-in checkers that are installed (`checks on write: clippy (rs), shellcheck (sh, bash)`), names each one that is off for lack of trust (`checks on write: clippy (rs): off, the project is not trusted`), warns about a `[tools.check]` program that is missing, and says whether secrets are scanned for and, if not, why. `[tools.check]` and `[tools.scan]` name or start programs, so a project's config can set them only when the project is trusted.
 
+## Guards
+
+Three guards watch the quality of a turn. They are not about permission: they run in every [mode](permissions.md), for the lead and, where it says so, for the agents it starts.
+
+```toml
+[guards]
+done_check = true   # send the lead back when it stops on unchecked changes
+stuck_after = 3     # note on a shell command that failed this often in a row; 0 is off
+runaway = true      # stop a reply that repeats itself
+```
+
+### Done-check
+
+When the lead is about to stop, and `write` or `edit` changed files since your last prompt (the lead's calls or those of the agents it started), azazel looks for a check that ran after the last change. If there is none, the lead is told once, as a user message, and takes one more round:
+
+```
+<done-check>
+2 files changed in this turn and nothing has run since that shows the change works: src/config.rs, src/main.rs
+</done-check>
+This is an automatic note, not a message from the user. Prove the change: run the project's tests, its build or its linter now and say what they showed. If nothing can check it, say plainly in your answer that the change is unverified.
+```
+
+The transcript shows `done-check: 2 files changed and nothing run since; the agent was asked to verify`. A change counts as checked when, after it:
+
+| What ran | Examples |
+|---|---|
+| A `shell` command that is, or contains, one of `[verify] commands` | whatever your project's checks are called |
+| A test runner, compiler, linter or type checker | `pytest`, `jest`, `tsc`, `eslint`, `ruff`, `mypy`, `make`, `shellcheck` |
+| A build tool told to build, test, check or run | `cargo test`, `cargo clippy`, `npm run lint`, `go vet ./...`, `./gradlew build`, `cmake --build build` |
+| The program itself | `python script.py`, `node dist/index.js`, `./run.sh`, `cargo run` |
+| [Checks on write](#checks-on-write), on every changed file, without an error | the built-in checkers or `[tools.check]` |
+| `goal_done` | the [goal](goals.md)'s own verification |
+
+- The command has to have run, not passed: an agent that saw its tests fail knows where it stands. A check that ran before the last change does not count.
+- Prose is not checked: files ending in `.md`, `.mdx`, `.markdown`, `.txt`, `.rst`, `.adoc` or `.org` never cause the note.
+- Only changes made with `write` and `edit` are seen. What a `shell` command changes (a formatter, `sed -i`) or `ast_grep` applies is not.
+- The note comes once per prompt, after the [report of the checks on write](#the-report-when-the-lead-stops) and before a goal's check and your `stop` hooks. With `[verify] on_stop = true` azazel runs the project's checks itself at every stop, and there is no done-check.
+
+### Stuck
+
+A `shell` command that ends with an exit code other than 0, is killed or times out has failed. When an agent's same command fails `stuck_after` times in a row within one prompt, the result of that call ends with:
+
+```
+[stuck] this command has failed 3 times in a row in this turn. Running it again will fail the same way: form a new hypothesis about the cause and test that before trying this again.
+```
+
+- Commands are compared without their white space and without what only shapes their output: a trailing `2>&1`, a last `| tail ...` or `| head ...`.
+- The note comes again at every further multiple (the 6th failure, the 9th). A run of the command that succeeds starts the count again, and so does your next prompt.
+- Each agent has its own counts.
+
+### Runaway
+
+A model can fall into a loop and write the same paragraph over and over until its output limit. While a reply is written, azazel looks at its end: when the same block of 200 characters or more stands there three times in a row, the reply is stopped like a reply that matched a [stream rule](rules.md#stream-rules): the request is cancelled, nothing of the reply is kept or stored, the model is told what it repeated, and the request is sent again. The transcript says `rule runaway stopped the reply; retrying`.
+
+- A short phrase repeated often enough to fill three such blocks counts too. Rulers, blank lines and other runs without a letter or a digit do not, and neither do lines that share a shape but differ, such as the rows of a table.
+- The model's thinking is watched the same way.
+- At most two replies are withdrawn per prompt, stream rules included; after that the reply stands.
+
 ## Search
 
 | Tool | Input | Behaviour |

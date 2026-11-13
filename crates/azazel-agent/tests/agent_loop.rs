@@ -254,6 +254,7 @@ fn start(setup: Setup) -> Session {
         cooldown: Duration::from_secs(300),
         base_delay: Duration::from_millis(1),
         max_jitter: Duration::ZERO,
+        max_stalls: 3,
     };
     let router = Arc::new(Router::new(vec![mock.clone()], catalog, setup.roles, policy));
     let recorder = Arc::new(Recorder::default());
@@ -1239,6 +1240,74 @@ async fn a_stream_that_fails_part_way_is_discarded_and_retried() {
     assert_eq!(finals, ["complete"]);
     // The discarded partial never reached the transcript.
     assert_eq!(session.recorder.messages.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_reply_that_stalls_is_dropped_and_the_retry_says_how_long_the_model_was_silent() {
+    let mut session = start(Setup::default());
+    let stalled = |secs: u64| StreamEvent::Error {
+        error: AiError::Stalled { secs },
+        partial: None,
+    };
+    // Silent from the start, then silent after half a reply, then the reply.
+    session.mock.push(
+        "a",
+        MockStep {
+            events: vec![stalled(20)],
+            ..MockStep::default()
+        },
+    );
+    session.mock.push(
+        "a",
+        MockStep {
+            events: vec![
+                StreamEvent::Start,
+                StreamEvent::TextDelta {
+                    index: 0,
+                    delta: "half of".into(),
+                },
+                stalled(120),
+            ],
+            ..MockStep::default()
+        },
+    );
+    session.mock.push("a", MockStep::text("the whole reply"));
+    let events = session.run("go").await;
+
+    assert_eq!(
+        kinds(&events),
+        [
+            "agent_start",
+            "turn_start 1",
+            "retry",
+            "message_start",
+            "retry",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "idle"
+        ]
+    );
+    let retries: Vec<(u32, Option<u64>)> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::Retry {
+                attempt,
+                stalled_secs,
+                ..
+            } => Some((*attempt, *stalled_secs)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(retries, [(1, Some(20)), (2, Some(120))]);
+    // The model was asked the same thing three times and never saw its half reply; only the
+    // prompt and the whole reply were recorded.
+    let requests = session.mock.requests_for("a");
+    assert_eq!(requests.len(), 3);
+    assert_eq!(requests[0].messages, requests[2].messages);
+    let recorded = session.recorder.messages.lock().unwrap();
+    assert_eq!(recorded.len(), 2);
+    assert_eq!(recorded[1].text(), "the whole reply");
 }
 
 #[tokio::test]

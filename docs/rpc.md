@@ -138,11 +138,11 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `tool_update` | `call_id`, `text` (progress output) |
 | `tool_end` | `call_id`, `output` (`content`, `is_error`, `details?`), `duration_ms` |
 | `turn_end` | |
-| `retry` | `attempt`, `model` |
+| `retry` | `attempt`, `model`, `stalled_secs?`: the message in progress was discarded and the same model is asked again; `stalled_secs` is there when the model had sent nothing for that long ([stalls](models-and-logins.md#stalls)) |
 | `fallback` | `from`, `to` |
 | `account` | `provider`, `from`, `to`, `until` (Unix seconds), `limit`: the provider's account `from` ran out of allowance and requests now use `to` |
 | `tier_dropped` | `model`, `tier`: the model refused the service tier and is asked without one from now on |
-| `rule` | `name`: a [stream rule](rules.md#stream-rules) matched; the message in progress was discarded and the request is sent again |
+| `rule` | `name`: a [stream rule](rules.md#stream-rules) matched, or the reply looped (`runaway`, see [guards](tools.md#guards)); the message in progress was discarded and the request is sent again |
 | `compaction` | `tokens_before`, `tokens_after` |
 | `idle` | `stop`: `stop`, `length`, `tool_use`, `error` or `aborted` |
 | `failed` | `error` |

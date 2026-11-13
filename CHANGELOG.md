@@ -33,6 +33,18 @@ GitHub are its section here.
 - `azazel context [PATH|ID] [--json]` prints the same breakdown for a saved session from the `context.json`
   the session keeps of its last request; over RPC, `run_command context` takes `json` and
   `text <request> <category>`.
+- Stall watchdog: a provider that sends nothing for `retry.first_event_secs` (20) after a request, or for
+  `retry.stall_secs` (120) in the middle of a reply, is given up and the same model asked again after a
+  pause. The half of a reply that had arrived is dropped and never reaches the model. A model that stalls
+  `retry.max_stalls` (3) times within a request is left for the next one in the chain. The transcript and
+  print mode say `no answer from <model> for 20 s; retrying`; the RPC `retry` event carries `stalled_secs`.
+- Done-check (`guards.done_check`): when the lead stops after `write` or `edit` changed code and no build,
+  test, linter, `[verify]` command or clean check on write ran since, it is told once per prompt to prove the
+  change or say plainly that it is unverified.
+- Stuck guard (`guards.stuck_after`): the result of a `shell` command that has failed three times in a row in
+  a turn tells the agent to form a new hypothesis before trying it again.
+- Runaway guard (`guards.runaway`): a reply that repeats a block of 200 characters or more three times in a
+  row is stopped as it is written and asked for again, like a reply that matched a stream rule.
 - Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
   `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose
   process was killed in the middle of a run says so when it is opened again, and `/continue`,
@@ -67,6 +79,8 @@ GitHub are its section here.
   out. An agent without `session_recall` gets the notes as before.
 - `/context` without a request to show says so instead of estimating how full the window is; the status line
   still shows that.
+- A provider's model list that does not answer no longer holds the first request up for minutes: it is given
+  up after `retry.first_event_secs`.
 - `azazel attach` no longer refuses a second client, and `attach --take` disconnects every client.
 - Responses of a background session go to the connection that sent the command, under the id that client
   chose, so two clients need not agree on ids.

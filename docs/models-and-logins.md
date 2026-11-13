@@ -119,6 +119,26 @@ cooldown_secs = 300   # how long a failed model is skipped
 - Context overflow, an invalid request and a user abort are not retried and do not fall back.
 - A used-up usage allowance (a subscription's 5-hour or weekly window, for example) is not retried on the same account. With [several accounts](#several-accounts) the same model is asked again on the next one; otherwise the next model in the chain is tried.
 
+### Stalls
+
+A provider that accepts a request and then sends nothing would otherwise hold a turn for minutes. A watchdog gives such a request up:
+
+```toml
+[retry]
+first_event_secs = 20   # from sending the request to the first sign of a response
+stall_secs = 120        # between two signs of life once the response has begun
+max_stalls = 3          # stalls of one model within a request before moving down the chain
+```
+
+- Anything the provider sends counts as a sign of life, a keep-alive line too. Response headers alone do not: the first limit runs until the body begins.
+- A stalled attempt is dropped whole. What had arrived of the reply is not kept, not stored in the session and never sent back to the model.
+- The same model is asked again after a pause (1 s, doubling per stall, capped at 60 s). The transcript and print mode say `no answer from <model> for 20 s; retrying (attempt 1)`.
+- Stalls have their own count: they do not use up `max_attempts`. When a model has stalled `max_stalls` times within one request it goes into cooldown and the chain moves on as after any other failure; with one model in the chain the request fails with `no answer for 20 s`.
+- `0` turns a limit off: `first_event_secs = 0` and `stall_secs = 0` wait for as long as the connection lives (the HTTP client gives up a connection that is silent for 5 minutes), and `max_stalls = 0` asks the stalled model again without end.
+- The limits apply to every HTTP provider, Amazon Bedrock, Vertex AI and providers added by extensions. A provider's model list, asked for once when the catalogue does not know a model, is given up after `first_event_secs` too.
+
+A local server that loads a model on the first request can take longer than 20 seconds to begin; raise `first_event_secs` for it, or set it to `0`.
+
 ## Service tiers
 
 Some providers serve a request faster for a higher price, or slower for a lower one. The tier applies to every agent's requests of the run; summaries and other side requests stay at the provider's default.

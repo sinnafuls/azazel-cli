@@ -178,6 +178,17 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
             AgentEvent::TierDropped { model, tier } if format == OutputFormat::Text => {
                 eprintln!("{}", crate::routing::tier_dropped_line(&model, tier));
             }
+            // A stall is a long silence: say that the run has not hung.
+            AgentEvent::Retry {
+                attempt,
+                model,
+                stalled_secs: stalled_secs @ Some(_),
+            } if format == OutputFormat::Text => {
+                eprintln!(
+                    "{}",
+                    crate::routing::retry_line(&model.to_string(), attempt, stalled_secs)
+                );
+            }
             _ => {}
         }
     };

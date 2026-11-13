@@ -26,6 +26,10 @@ pub struct RetryPolicy {
     /// First retry delay; doubles per attempt, capped at 60 s.
     pub base_delay: Duration,
     pub max_jitter: Duration,
+    /// How often one model may stall ([`AiError::Stalled`]) within a request before the router
+    /// moves down the chain. A stall is not one of the `max_attempts`. 0 asks the stalled model
+    /// again for as long as it stalls.
+    pub max_stalls: u32,
 }
 
 impl Default for RetryPolicy {
@@ -35,6 +39,7 @@ impl Default for RetryPolicy {
             cooldown: Duration::from_secs(300),
             base_delay: Duration::from_secs(1),
             max_jitter: Duration::from_millis(250),
+            max_stalls: 3,
         }
     }
 }
@@ -77,6 +82,10 @@ pub enum RouteEvent {
 #[derive(Default)]
 pub struct RouteState {
     failures: HashMap<String, u32>,
+    /// How often each model stalled.
+    stalls: HashMap<String, u32>,
+    /// The pause before the next attempt, after a reply that failed while it was streamed.
+    wait: Option<Duration>,
     /// The model most recently given up on, until the next candidate is announced.
     gave_up: Option<(ModelRef, AiError)>,
     events: Option<UnboundedSender<RouteEvent>>,
@@ -113,6 +122,19 @@ impl RouteState {
             max_attempts.max(*failures + 1)
         };
         *failures
+    }
+
+    /// Counts one stall of `model`. Returns the count.
+    fn stalled(&mut self, model: &ModelRef) -> u32 {
+        let stalls = self.stalls.entry(model.key()).or_insert(0);
+        *stalls += 1;
+        *stalls
+    }
+
+    /// `model` is not asked again for this request.
+    fn give_up(&mut self, model: &ModelRef, max_attempts: u32) {
+        let failures = self.failures.entry(model.key()).or_insert(0);
+        *failures = max_attempts.max(*failures);
     }
 }
 
@@ -292,6 +314,12 @@ impl Router {
         if resolved.is_empty() {
             return Err(AiError::InvalidRequest("no model configured".to_string()));
         }
+        if let Some(delay) = state.wait.take() {
+            tokio::select! {
+                _ = cancel.cancelled() => return Err(AiError::Aborted),
+                _ = tokio::time::sleep(delay) => {}
+            }
+        }
         let open: Vec<&ModelRef> = resolved
             .iter()
             .filter(|m| state.failures(m) < self.policy.max_attempts)
@@ -383,10 +411,9 @@ impl Router {
             {
                 continue;
             }
-            let attempt = state.record(model, &error, self.policy.max_attempts);
-            if attempt >= self.policy.max_attempts {
+            let Some(attempt) = self.next_attempt(model, &error, state) else {
                 return Err(error);
-            }
+            };
             let delay = self.delay(attempt, &error);
             state.emit(RouteEvent::Retry {
                 attempt,
@@ -446,8 +473,25 @@ impl Router {
         true
     }
 
+    /// Books `error` against `model`. Returns the number of the failed attempt when the same
+    /// model is to be asked again, `None` when it is out for this request. A stall has its own
+    /// count, `max_stalls`, and does not use up the model's attempts.
+    fn next_attempt(&self, model: &ModelRef, error: &AiError, state: &mut RouteState) -> Option<u32> {
+        if matches!(error, AiError::Stalled { .. }) {
+            let stalls = state.stalled(model);
+            if self.policy.max_stalls == 0 || stalls < self.policy.max_stalls {
+                return Some(stalls);
+            }
+            state.give_up(model, self.policy.max_attempts);
+            return None;
+        }
+        let attempt = state.record(model, error, self.policy.max_attempts);
+        (attempt < self.policy.max_attempts).then_some(attempt)
+    }
+
     /// Records a failure that arrived after streaming had begun; call [`Router::stream_with`] again
     /// with the same `state` to retry or fall back. Returns true when the same model will be retried.
+    /// After a stall the next call waits out the backoff first.
     pub fn report_stream_failure(&self, model: &ModelRef, error: &AiError, state: &mut RouteState) -> bool {
         if let Some(account) = self
             .accounts
@@ -457,13 +501,17 @@ impl Router {
         {
             return true;
         }
-        let attempt = state.record(model, error, self.policy.max_attempts);
-        if attempt < self.policy.max_attempts {
+        if let Some(attempt) = self.next_attempt(model, error, state) {
+            let delay = match error {
+                AiError::Stalled { .. } => self.delay(attempt, error),
+                _ => Duration::ZERO,
+            };
+            state.wait = (!delay.is_zero()).then_some(delay);
             state.emit(RouteEvent::Retry {
                 attempt,
                 model: model.clone(),
                 error: error.clone(),
-                delay: Duration::ZERO,
+                delay,
             });
             return true;
         }
@@ -557,6 +605,7 @@ mod tests {
             cooldown: Duration::from_secs(300),
             base_delay: Duration::from_millis(1),
             max_jitter: Duration::ZERO,
+            max_stalls: 3,
         }
     }
 
@@ -1059,5 +1108,153 @@ mod tests {
             .stream(&chain(&["mock/c"]), &Request::default(), CancellationToken::new())
             .await;
         assert!(matches!(plain, Err(AiError::InvalidRequest(_))));
+    }
+
+    fn retries(rx: &mut tokio::sync::mpsc::UnboundedReceiver<RouteEvent>) -> Vec<String> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(match event {
+                RouteEvent::Retry { attempt, error, .. } => format!("retry {attempt}: {error}"),
+                RouteEvent::Fallback { from, to, error } => format!("fallback {from} -> {to}: {error}"),
+                other => format!("{other:?}"),
+            });
+        }
+        events
+    }
+
+    #[tokio::test]
+    async fn a_stalled_model_is_asked_again_up_to_the_stall_limit_then_the_chain_moves_on() {
+        let mock = Arc::new(MockProvider::new());
+        for _ in 0..3 {
+            mock.push("a", MockStep::fail(AiError::Stalled { secs: 20 }));
+        }
+        mock.push("a", MockStep::text("a must not be asked a fourth time"));
+        mock.push("b", MockStep::text("from b"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = router(mock.clone(), &[]);
+        let (model, stream) = r
+            .stream_with(
+                &chain(&["mock/a", "mock/b"]),
+                &Request::default(),
+                CancellationToken::new(),
+                &mut RouteState::with_events(tx),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/b");
+        assert_eq!(final_text(stream).await, "from b");
+        assert_eq!(
+            retries(&mut rx),
+            [
+                "retry 1: no answer for 20 s",
+                "retry 2: no answer for 20 s",
+                "fallback mock/a -> mock/b: no answer for 20 s",
+            ]
+        );
+        assert_eq!(mock.requests_for("a").len(), 3);
+    }
+
+    #[tokio::test]
+    async fn stalls_do_not_use_up_the_attempts_of_a_model() {
+        let mock = Arc::new(MockProvider::new());
+        // Two stalls and two other failures: neither count reaches its limit of three.
+        mock.push("a", MockStep::fail(AiError::Stalled { secs: 20 }));
+        mock.push("a", MockStep::fail(AiError::Overloaded));
+        mock.push("a", MockStep::fail(AiError::Stalled { secs: 20 }));
+        mock.push("a", MockStep::fail(AiError::Overloaded));
+        mock.push("a", MockStep::text("fifth time lucky"));
+        let r = router(mock.clone(), &[]);
+        let (model, stream) = r
+            .stream(
+                &chain(&["mock/a", "mock/b"]),
+                &Request::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/a");
+        assert_eq!(final_text(stream).await, "fifth time lucky");
+    }
+
+    #[tokio::test]
+    async fn without_a_stall_limit_a_stalled_model_is_asked_until_it_answers() {
+        let mock = Arc::new(MockProvider::new());
+        for _ in 0..7 {
+            mock.push("a", MockStep::fail(AiError::Stalled { secs: 20 }));
+        }
+        mock.push("a", MockStep::text("at last"));
+        mock.push("b", MockStep::text("never"));
+        let roles = BTreeMap::new();
+        let policy = RetryPolicy {
+            max_stalls: 0,
+            ..policy()
+        };
+        let r = Router::new(vec![mock.clone()], Catalog::default(), roles, policy);
+        let (model, stream) = r
+            .stream(
+                &chain(&["mock/a", "mock/b"]),
+                &Request::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/a");
+        assert_eq!(final_text(stream).await, "at last");
+        assert!(mock.requests_for("b").is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_reply_that_stalls_mid_stream_is_asked_for_again_after_a_pause() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", MockStep::text("second try"));
+        mock.push("b", MockStep::text("from b"));
+        let policy = RetryPolicy {
+            base_delay: Duration::from_secs(1),
+            ..policy()
+        };
+        let r = Router::new(vec![mock.clone()], Catalog::default(), BTreeMap::new(), policy);
+        let model = ModelRef::new("mock", "a");
+        let c = chain(&["mock/a", "mock/b"]);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut state = RouteState::with_events(tx);
+        let stalled = AiError::Stalled { secs: 120 };
+
+        // The first stall: the same model, after the first backoff step.
+        assert!(r.report_stream_failure(&model, &stalled, &mut state));
+        let before = tokio::time::Instant::now();
+        let (asked, stream) = r
+            .stream_with(&c, &Request::default(), CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(before.elapsed(), Duration::from_secs(1));
+        assert_eq!(asked, model);
+        assert_eq!(final_text(stream).await, "second try");
+
+        // The second stall doubles the pause; an abort during it ends the request.
+        assert!(r.report_stream_failure(&model, &stalled, &mut state));
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let aborted = r.stream_with(&c, &Request::default(), cancel, &mut state).await;
+        assert!(matches!(aborted, Err(AiError::Aborted)));
+
+        // The third is the limit: the model is out and the next one answers at once.
+        assert!(!r.report_stream_failure(&model, &stalled, &mut state));
+        assert!(r.in_cooldown(&model));
+        let before = tokio::time::Instant::now();
+        let (asked, stream) = r
+            .stream_with(&c, &Request::default(), CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(before.elapsed(), Duration::ZERO);
+        assert_eq!(asked.to_string(), "mock/b");
+        assert_eq!(final_text(stream).await, "from b");
+        assert_eq!(
+            retries(&mut rx),
+            [
+                "retry 1: no answer for 120 s",
+                "retry 2: no answer for 120 s",
+                "fallback mock/a -> mock/b: no answer for 120 s",
+            ]
+        );
     }
 }

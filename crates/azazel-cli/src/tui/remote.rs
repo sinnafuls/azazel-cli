@@ -190,11 +190,13 @@ pub(crate) fn agent_event(frame: Frame) -> Option<(String, AgentEvent)> {
             agent,
             attempt,
             model: asked,
+            stalled_secs,
         } => (
             agent,
             AgentEvent::Retry {
                 attempt,
                 model: model(&asked)?,
+                stalled_secs,
             },
         ),
         Frame::Fallback { agent, from, to } => (

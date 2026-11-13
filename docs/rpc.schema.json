@@ -1046,6 +1046,15 @@
             },
             "model": {
               "type": "string"
+            },
+            "stalled_secs": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "The model had sent nothing for this many seconds; absent after any other failure."
             }
           },
           "required": [
