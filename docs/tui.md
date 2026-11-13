@@ -99,9 +99,15 @@ ask · ⑂ main · ~/src/app                           ⬢ claude-opus-5-5
 - Some pickers have keys of their own that act on the selected row (`m` in the agent hub, `Ctrl+F` in the model
   picker, `d` in `/permissions`, `Ctrl+R` `Ctrl+D` `Ctrl+P` `Tab` in the session picker, `Alt+L` in `/tree`);
   the bottom edge names them, or a line above the list where they are many.
-- An approval lists what the call touches above the choices. A note about the call (it may cost money, it
-  deletes files) is in the warning colour, and a call that would destroy work has the whole box in that colour
-  and starts on `Deny`.
+- An approval lists what the call touches above the choices: `Allow once`, `Allow this session` and
+  `Always allow <rule>` when a rule covers the call, `Deny`, and `Deny and say why`; see
+  [permissions](permissions.md#the-approval-prompt). A note about the call (it may cost money, it deletes
+  files) is in the warning colour, and a call that would destroy work has the whole box in that colour, starts
+  on `Deny` and can only be allowed once.
+- A question from the agent (`ask_user`) shows what the agent says you need to know, then the question, then
+  the choices: a list to pick from, check boxes with a `Done` row where several may be chosen, `Yes` and `No`,
+  or a line to type on. A list that ends with `Other…` lets you type your own answer instead. `Esc` declines;
+  the agent is told and goes on without an answer.
 - A plan review shows the plan in the box. Text that does not fit (a long plan, a long command) ends with
   `… N more lines`; `Ctrl+O` opens all of it in the [full-screen viewer](#transcript-viewer) and `q` returns to
   the box.
@@ -426,6 +432,7 @@ Skills, extensions and services:
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |
 | `/lsp` | Language servers and their state; see [LSP](lsp.md) |
+| `/allow-edit <path>` | Let the next edit of one file through, whatever the agent has read of it; see [the read guard](tools.md#the-read-guard) |
 | `/voice` | Start recording, or stop and put the transcript in the input; see [voice](voice.md) |
 | `/speak on\|off\|stop` | Read replies aloud, stop doing so, or stop the one being read |
 

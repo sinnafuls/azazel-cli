@@ -1,6 +1,7 @@
 //! Model Context Protocol: server configuration, connections, and the tools, resources and
 //! prompts servers contribute to a session; and azazel itself served to another MCP client.
 
+mod catalog;
 mod client;
 pub mod config;
 mod convert;

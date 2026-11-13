@@ -17,8 +17,8 @@ use azazel_client::{Client, Error};
 use azazel_core::session::{Entry, Header, SessionSummary};
 use azazel_core::side::SideAnswer;
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, CommandOutcome, EntryKind, Level, PermissionMode, PlanDecision,
-    SessionStore, UiError,
+    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Level, PermissionMode,
+    PlanDecision, Question, SessionStore, UiError,
 };
 use azazel_protocol::{
     self as protocol, Attached, BtwAnswer, Command, CommandResult, CommandRow, Decision, Exported, Frame,
@@ -364,25 +364,38 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
         },
         protocol::UiRequest::Ask {
             question,
+            context,
+            expects,
             options,
             multi,
+            allow_freeform,
         } => {
             let (reply, answer) = oneshot::channel();
-            let free = options.is_empty();
+            let kind = match protocol::AskKind::of(expects, &options, multi) {
+                protocol::AskKind::Select => AskKind::Select,
+                protocol::AskKind::Multiselect => AskKind::Multiselect,
+                protocol::AskKind::Text => AskKind::Text,
+                protocol::AskKind::Confirm => AskKind::Confirm,
+            };
             answer_later(
                 client,
                 request_id,
                 answer,
-                move |chosen: Result<Vec<String>, UiError>| match chosen {
-                    Ok(chosen) if free => json!(chosen.first().cloned().unwrap_or_default()),
-                    Ok(chosen) => json!(chosen),
-                    Err(_) => Value::Null,
+                move |chosen: Result<Vec<String>, UiError>| match (chosen, kind) {
+                    (Ok(chosen), AskKind::Text) => json!(chosen.first().cloned().unwrap_or_default()),
+                    (Ok(chosen), AskKind::Confirm) => json!(chosen.first().is_some_and(|said| said == "yes")),
+                    (Ok(chosen), _) => json!(chosen),
+                    (Err(_), _) => Value::Null,
                 },
             );
             UiRequest::Ask {
-                question,
-                options,
-                multi,
+                question: Question {
+                    text: question,
+                    context,
+                    kind,
+                    options,
+                    allow_freeform,
+                },
                 reply,
             }
         }
@@ -507,6 +520,7 @@ async fn pump(
                     // An approval nobody gave is a refusal, as it is with nobody there.
                     let (decision, feedback) = match answer.await.ok().flatten() {
                         Some(ApprovalDecision::AllowOnce) => (Decision::Allow, None),
+                        Some(ApprovalDecision::AllowSession) => (Decision::Session, None),
                         Some(ApprovalDecision::Always) => (Decision::Always, None),
                         Some(ApprovalDecision::Deny { feedback }) => (Decision::Deny, feedback),
                         None => (Decision::Deny, None),

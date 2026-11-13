@@ -77,8 +77,8 @@ does as lines and reads lines from you:
 | You type | Effect |
 |---|---|
 | any text | Sent to the session as a message |
-| `/approve`, `/always`, `/deny [what to do instead]` | Answers the oldest permission request |
-| `/answer <text>` | Answers the oldest question: text, the number of an option, `yes` or `no`. `/answer` alone dismisses it |
+| `/approve`, `/session`, `/always`, `/deny [what to do instead]` | Answers the oldest permission request: once, for the rest of the session, for good, or not at all |
+| `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. `/answer` alone dismisses it |
 | `/abort` | Stops the current work |
 | `/detach` | Leaves; the session goes on (so does the end of the input, and `Ctrl+C`) |
 | `/kill` | Ends the session |

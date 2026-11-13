@@ -46,7 +46,7 @@ A rule is `tool` or `tool(pattern)`. The tool part is a glob over tool names, so
 | Tool | Pattern | Examples |
 |---|---|---|
 | `shell` | Ending in `:*`: a prefix, matching that command alone or followed by a space and anything. Otherwise a glob over the command. | `shell(git diff:*)`, `shell(npm run *)` |
-| `read`, `write`, `edit`, `glob`, `grep`, `lsp` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
+| `read`, `write`, `edit`, `glob`, `grep`, `lsp`, `ast_grep` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
 | `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL and `web_grep` are matched as `web_fetch`, and so is `read` of a `pr://` or `issue://` address (host `github.com`). For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
 | Any other tool | A glob over the tool's subject, if it has one (for `screen`, the action name) | `screen`, `screen(capture)` |
 
@@ -139,12 +139,13 @@ The prompt is titled `<agent> wants to use <tool>` and shows the commands, path 
 | Choice | Effect |
 |---|---|
 | `Allow once` | This call only |
+| `Allow this session` | Allows it, and everything the rule shown under `Always allow` covers, until azazel exits. Nothing is written to a file; the rule is listed by `/permissions` as a session rule and `/forget-approvals` takes it back |
 | `Always allow <rule>` | Allows it and appends the rule to `permissions.allow` in `<project>/.azazel/config.local.toml` |
 | `Deny` | The model is told the user denied the call |
-| `Deny and say what to do instead` | As `Deny`, with your text passed to the model |
+| `Deny and say why` | As `Deny`, with your text passed to the model |
 
 `Esc` denies. The selection starts on `Allow once`, except for a destructive command, where it starts on
-`Deny` and `Always allow` is not offered. The suggested rule is narrow: `shell(cargo test:*)` for a single command with a subcommand, `edit(src/**)` for a file's directory, `web_fetch(domain:<host>)` for a host, the bare tool name for other tools. When no single rule covers the call (a pipeline of several commands, for example) the choice is not offered.
+`Deny` and neither `Allow this session` nor `Always allow` is offered. The suggested rule is narrow: `shell(cargo test:*)` for a single command with a subcommand, `edit(src/**)` for a file's directory, `web_fetch(domain:<host>)` for a host, the bare tool name for other tools. When no single rule covers the call (a pipeline of several commands, for example) neither of the two choices that need a rule is offered.
 
 Sub-agents use the same prompt; the roster shows `waiting for your approval` beside the agent until you answer.
 
@@ -217,4 +218,4 @@ azazel goal "make cargo test pass" --mode auto
 
 A project's own `permissions.allow` counts only if the project is trusted; pass `--trust` for a run in a project you have not trusted interactively. `plan_submit` without a user returns the plan's path and tells the agent to stop and summarise the plan.
 
-`azazel rpc` is not headless in this sense: prompts are sent to the client as `approval_request` events and answered with `approval_response` (`allow`, `always`, `deny`). See [rpc](rpc.md).
+`azazel rpc` is not headless in this sense: prompts are sent to the client as `approval_request` events and answered with `approval_response` (`allow`, `session`, `always`, `deny`). See [rpc](rpc.md).

@@ -142,7 +142,7 @@ thinking = "low"
 | | `check_on_write` | `true` | Run the file's checkers (linters) after `write` and `edit`, when they are installed; see [tools](tools.md#checks-on-write) |
 | | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
-| | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off` |
+| | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
@@ -174,7 +174,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
 | | `defer_threshold` | `40` | Above this many MCP tools, they are found through `tool_search` instead |
-| | `idle_timeout_secs` | `600` | A server started on demand stops after this many seconds without a call |
+| | `idle_timeout_secs` | `600` | A server started on demand (`lifecycle: lazy` in its entry) stops after this many seconds without a call; `0` never stops it. See [mcp](mcp.md#when-servers-start) |
 | `[media]` | `output_dir` | `"assets/generated"` | Where generated files go; see [media and sprites](media-and-sprites.md) |
 | `[media.models]` | `image`, `video`, `model3d`, `audio` | `""` | Model per kind, as `<backend>:<model id>` |
 | `[lsp.servers.<name>]` | `command`, `extensions` | required | Language server program and the file extensions it handles; see [LSP](lsp.md) |

@@ -189,6 +189,12 @@ impl Gate for PermissionGate {
         match answer {
             None => headless(),
             Some(ApprovalDecision::AllowOnce) => GateDecision::Allow { input: rewritten },
+            Some(ApprovalDecision::AllowSession) => {
+                if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok()) {
+                    self.state.allow_for_session(&rule);
+                }
+                GateDecision::Allow { input: rewritten }
+            }
             Some(ApprovalDecision::Always) => {
                 if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok())
                     && let Err(e) = self.state.remember_allow(&rule)

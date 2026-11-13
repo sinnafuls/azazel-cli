@@ -330,7 +330,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     #[cfg(feature = "mcp")]
     {
-        use azazel_mcp::config::{Approval, Transport, apply_approvals, config_files, load};
+        use azazel_mcp::config::{Approval, Lifecycle, Transport, apply_approvals, config_files, load};
         let mut files = packages.mcp_files.clone();
         files.extend(config_files(paths, trusted));
         let mut loaded = load(&files, &paths.project_root, &|name| std::env::var(name).ok());
@@ -340,7 +340,11 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
                 Transport::Stdio { command, .. } => command,
                 Transport::Http { url, .. } => url,
             };
-            let state = if server.enabled { "enabled" } else { "disabled" };
+            let state = match (server.enabled, server.lifecycle) {
+                (false, _) => "disabled",
+                (true, Lifecycle::Eager) => "enabled",
+                (true, Lifecycle::Lazy | Lifecycle::LazyKeepAlive) => "enabled, starts on first use",
+            };
             match server.approval {
                 Approval::Granted => report.ok(format!("mcp server {}: {target} ({state})", server.name)),
                 Approval::Waiting => report.warn(format!(

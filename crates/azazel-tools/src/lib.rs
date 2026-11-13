@@ -27,12 +27,12 @@ use async_trait::async_trait;
 use azazel_core::config::ReadGuard;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::{
-    ArtifactScheme, ArtifactStore, Command, CommandHandler, CommandOutcome, ExtCtx, ExtError, Extension,
-    FileTracker, Registrar, Schemes,
+    ArtifactScheme, ArtifactStore, Command, CommandHandler, CommandOutcome, EventKind, ExtCtx, ExtError,
+    Extension, FileTracker, Registrar, Schemes,
 };
 
 pub use ast_grep::AstGrepTool;
-pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool};
+pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
 pub use read::ReadTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
@@ -123,6 +123,7 @@ impl Extension for CoreToolsExt {
         )));
         r.tool(Arc::new(JobTool::new(jobs)));
         r.tool(Arc::new(TodoTool::new(todos)));
+        r.on(EventKind::Context, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));
         if let Some(program) = ast_grep::program() {
             r.tool(Arc::new(AstGrepTool::new(program, tracker, self.read_guard)));

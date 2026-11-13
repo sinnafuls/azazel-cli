@@ -1,6 +1,6 @@
 # Tools
 
-Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the freshness rule for edits, format on write, checks on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
+Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the read guard for edits, format on write, checks on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
 
 Every call goes through the permission engine first; see [permissions](permissions.md). Each tool declares what a call touches (`read`, `write`, `exec` or `net`), and the permission mode decides from that whether you are asked. When all the calls in one assistant message are read-only they run at the same time; otherwise they run one after another in order.
 
@@ -24,9 +24,30 @@ Fields marked `?` are optional.
 - A directory lists up to 500 entries: `name/` for directories, `name<tab>N bytes` for files.
 - `~/` is expanded. Relative paths start at the agent's working directory.
 
-Freshness rule for `write` and `edit`: an agent may only overwrite a file it has read (or written) and that has not changed since. Otherwise the call fails with `read the file before overwriting it` or `file changed since you last read it; read it again`. The check compares content, not timestamps. Files you attach with `@path` count as read. When one agent writes a file another agent has read, the other agent is told to read it again before editing.
+### The read guard
 
-`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md). When a checker covers it, so are the checker's errors; see [checks on write](#checks-on-write).
+An agent may only change what it has read. For `write` and `edit` that means three things:
+
+- The file must have been read (or written) by this agent and must not have changed since. Otherwise the call fails with `read the file before overwriting it` or `file changed since you last read it; read it again`. The check compares content, not timestamps.
+- `edit` must be of lines the agent has read. A `read` with `offset` and `limit` counts for the lines it returned and no others, and several reads add up. An edit whose `old` text lies on other lines fails with `edit targets lines 40-52 of src/a.rs, which you have not read; read them first`, naming exactly the lines still to read, and writes nothing.
+- `write` over an existing file takes having read all of it: `you have read only part of src/a.rs; read the rest before overwriting it, or change it with edit`.
+
+What counts as read:
+
+- The lines a `read` returned; a read cut off at 2000 lines or 256 KB covers what it showed. The lines `lsp` `read_symbol` returned, and the lines an `ast_grep` preview showed being replaced.
+- Everything the agent wrote itself. After its own edit the lines it wrote are read, and the lines it had read are still read where they now are.
+- A whole file you attach with `@path`, and any read of a notebook.
+- When a file changes under an agent that has read part of it (another agent, you, a formatter), the lines above and below the change are still read after the next read of any part of the file; the changed lines are not. Files of more than 3000 lines are not followed line by line: after a change, only what is read again counts. When format on write rewrites lines the agent had read, the formatted lines count as read.
+
+Notes and logs (`.md`, `.txt`, `.log`) are not held to lines: any read of one lets it be edited or replaced.
+
+`tools.read_guard` sets how much is asked: `range` (the default, as above), `file` (any read of the file lets any of it be changed, as before this guard knew lines) or `off` (nothing has to have been read, and a file that changed since is overwritten without a word).
+
+`/allow-edit <path>` lets the next `edit` or `write` of one file through whatever the agent has read of it, once. An edit that fails for another reason does not use the allowance up.
+
+When one agent writes a file another agent has read, the other agent is told to read it again before editing.
+
+`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. `write` refuses a file name whose stem is a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`, so `aux.c` and `NUL` too) with `` `aux.c` is a reserved Windows device name; pick another file name ``, on every system: such a file cannot be opened on Windows, where the project may be cloned. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md). When a checker covers it, so are the checker's errors; see [checks on write](#checks-on-write).
 
 ### Format on write
 
@@ -156,8 +177,52 @@ The secret itself is never read from the scan's output, shown or sent to a model
 |---|---|---|
 | `glob` | `pattern`, `path?` | Finds files by name, newest first, at most 1000 |
 | `grep` | `pattern`, `path?`, `glob?`, `ignore_case?`, `context?`, `mode?`, `limit?`, `multiline?` | Searches file contents with a Rust regular expression |
+| `ast_grep` | `action`, `pattern`, `lang?`, `paths?`, `rewrite?`, `max_matches?`, `apply?` | Searches code by its syntax tree, or rewrites what matches. Only when [ast-grep](https://ast-grep.github.io) is installed |
 
 Both honour `.gitignore` and other ignore files, include hidden files and skip `.git`. In `glob`, `*.rs` matches at any depth, `src/*.rs` only directly in `src`, and `src/**/*.rs` anywhere below it. `grep` modes are `content` (default, `path:line:text`), `files` (paths only) and `count` (`path:N`); `limit` defaults to 200 results, `context` adds lines around each match, `multiline` lets a pattern span lines. Binary files are skipped and matching lines are clipped at 500 characters.
+
+### `ast_grep`
+
+`ast_grep` runs the external [ast-grep](https://ast-grep.github.io) program, found on `PATH` as `ast-grep` or `sg`. Azazel does not install it. Without it the tool does not exist and `azazel doctor` says `ast_grep: off, ast-grep is not installed`. (On Linux `sg` is usually another program, which runs a command under a group; it is used only when it answers `--version` as ast-grep does.)
+
+A pattern is code with metavariables: `$NAME` stands for any one node of the syntax tree and `$$$NAME` for any number of them, so `console.log($$$ARGS)` matches every call whatever its arguments and `if ($COND) { return $X }` every such statement however it is spaced. `lang` names the language when the pattern could be more than one.
+
+| Input | Meaning |
+|---|---|
+| `action` | `search` or `replace` |
+| `pattern` | The code to match |
+| `lang` | The pattern's language, such as `rust`, `typescript`, `python` |
+| `paths` | Files and directories to look in; the working directory when left out. With `apply`, the files to write |
+| `rewrite` | `replace`: the code that takes the place of each match; it may use the pattern's metavariables |
+| `max_matches` | Matches looked at, in the order of the files and of their places in them: 50 by default, at most 200 |
+| `apply` | `replace`: write the files. Left out or `false`, the call previews |
+
+`search` returns each match as `path:line: <source line>`, with `(+N lines)` when it runs over several, then one indented line per metavariable:
+
+```
+src/api.ts:14: console.log("loaded", user.id)
+  $$$ARGS = "loaded" , user.id
+src/api.ts:31: console.log(err)
+  $$$ARGS = err
+[50 of 312 matches shown; narrow the pattern or the paths, or raise max_matches (at most 200)]
+```
+
+`replace` without `apply` writes nothing. It returns the unified diff of what would change and, in its first line, the call that writes it:
+
+```
+preview: 3 replacements in 2 files, nothing written. To write them, run this again with apply: true and paths: ["src/api.ts","src/app.ts"]
+--- a/src/api.ts
++++ b/src/api.ts
+@@ -12,5 +12,5 @@
+…
+```
+
+`replace` with `apply: true` writes the files named in `paths`, which must be files, not directories: they are what permission is asked for. The replacements are made by azazel from what ast-grep found, not by ast-grep, so each file goes the way of an `edit`: under the file's lock, through the [read guard](#the-read-guard), format on write, checks on write and the language server, and the agents that had read it are told. The result names each file with its number of replacements and carries the same `diagnostics:` and `checks:` blocks an edit would.
+
+- A file is written only when the agent has seen the lines being replaced, in the preview or by reading them, and the file has not changed since. A file that changed after the preview is refused with `file changed since you last read it; read it again`: preview it again.
+- All the files are written or none: one file refused leaves the others untouched, and the error lists every refusal.
+- A match inside another match is left for a second run, and the result says how many were.
+- A search is a read, and so is a preview. Only `apply` is a write. Rules name the tool with a path pattern, such as `ast_grep(src/**)`; see [permissions](permissions.md).
 
 ## Shell and jobs
 
@@ -202,8 +267,29 @@ The tool's description lists the callable tools with their arguments, within abo
 | Tool | Input | Behaviour |
 |---|---|---|
 | `todo` | `items: [{text, status}]` | Replaces the agent's task list. `status` is `pending`, `in_progress` or `done`; at most one item may be `in_progress` |
-| `ask_user` | `question`, `options?`, `multi?` | Asks you a question and waits. Without `options` you type a free answer. Without an interactive user it fails with `no interactive user` |
+| `ask_user` | `question`, `type?`, `context?`, `options?`, `multi?`, `allow_freeform?` | Asks you a question and waits; see below |
 | `plan_submit` | `path` | In plan mode: submits a plan file under `.azazel/plans/` for your approval. See [permissions](permissions.md) |
+
+### The task list
+
+The list is shown above the input while work on it remains, and `/todo` shows or changes it. Two things keep an agent on its plan:
+
+- **It is durable.** The lead's list is rebuilt from the session whenever one is opened: after `-c`, `--session`, `--fork`, `/resume`, `/tree`, `/rewind` and `/fork` it is what the last `todo` call that succeeded on that branch set (or what you changed with `/todo` after it). A compacted session keeps its list. A new session starts with none.
+- **The agent is reminded of it.** While the list has an item that is not `done`, every request ends with a note such as `[Plan] 1/3 done`, followed by the list as `[x]`, `[~]` and `[ ]` lines. The note is added to what is sent and is not part of the session, so it costs no context later and leaves the cached part of the conversation as it is. It stops when every item is done or the list is cleared.
+
+### `ask_user`
+
+| Input | Meaning |
+|---|---|
+| `question` | What is asked |
+| `type` | `select` (one of the options), `multiselect` (any number of them), `text` (a typed answer) or `confirm` (yes or no). Left out, it follows from the rest: `text` without `options`, `multiselect` with `multi: true`, otherwise `select` |
+| `context` | What you need to know to answer; shown above the question |
+| `options` | The choices of a `select` or `multiselect`: 2 to 8, each different from the others whatever its case and spacing. Not allowed for `text` and `confirm` |
+| `allow_freeform` | `select` only: the list ends with `Other…`, which lets you type an answer instead |
+
+A call that breaks one of these rules fails before you are asked anything, with what is wrong (`a `select` question needs 2 to 8 options, not 1`, `the option `red` is offered twice`).
+
+The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
 
 ## Web
 
@@ -219,7 +305,7 @@ Details, search backends and limits: [web and browser](web-and-browser.md).
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `lsp` | `action`, `path`, `line?`, `column?`, `query?`, `new_name?` | `action` is `diagnostics`, `definition`, `references`, `hover`, `symbols` or `rename`. Positions are 1-based. `rename` changes files; the rest only read |
+| `lsp` | `action`, `path`, `line?`, `column?`, `query?`, `new_name?`, `symbol?`, `occurrence?`, `new_path?` | `action` is `diagnostics`, `definition`, `references`, `hover`, `symbols`, `outline`, `read_symbol`, `rename` or `rename_file`. Positions are 1-based. `rename` and `rename_file` change files; the rest only read |
 
 See [lsp](lsp.md).
 
@@ -343,6 +429,7 @@ shell = ""                            # program name or path; empty means auto-r
 format_on_write = false               # run the file's formatter after write and edit
 check_on_write = true                 # run the file's checker after write and edit
 check_report = "delta"                # what the lead is told when it stops: delta, all or off
+read_guard = "range"                  # what must have been read before an edit: range, file or off
 
 [tools.format]                        # file extension to formatter command
 rs = "rustfmt --edition 2024"
@@ -365,6 +452,7 @@ secrets = true                        # scan the project with gitleaks once per 
 | `check_on_write` | `true` | Runs the file's checker after `write` and `edit` when it is installed; see [checks on write](#checks-on-write) |
 | `check` | `{}` | Checker command per file extension, replacing the built-in one; empty turns the check off. Project config: trusted projects only |
 | `check_report` | `"delta"` | What the lead is told when it stops: findings on the lines the turn changed (`delta`), every finding (`all`), or nothing (`off`) |
+| `read_guard` | `"range"` | What an agent must have read of a file before it changes it: the lines an edit changes (`range`), any part of the file (`file`), or nothing (`off`); see [the read guard](#the-read-guard) |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).

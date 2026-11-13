@@ -54,9 +54,42 @@ GitHub are its section here.
   (`tui.popups = false`, or a window under 44x12, keeps them in place of the input).
 - `/glyphs` picks the symbol set from a list in which every row is drawn in its own symbols, and saves it.
 - `Ctrl+O` in a box whose text does not fit (a long plan, a long command) opens all of it full screen.
+- The task list survives: it is rebuilt from the session on `-c`, `--session`, `--fork`, `/resume`, `/tree`,
+  `/rewind` and `/fork`, and while it has open items the agent is reminded of it with every request.
+- `ask_user` takes a `type` (`select`, `multiselect`, `text`, `confirm`), a `context` shown above the
+  question, and `allow_freeform`, which adds an `Other…` row to type an answer.
+- `Allow this session` in the permission prompt allows a rule until azazel exits without saving it (RPC:
+  decision `session`; ACP: option `allow_session`; plain attach: `/session`).
+- MCP servers have a `lifecycle` (`eager`, `lazy`, `lazy-keep-alive`). A `lazy` server is started by the
+  first call into it and stopped after `mcp.idle_timeout_secs` without one; its tools, prompts and
+  instructions are offered meanwhile from `~/.azazel/cache/mcp/`.
+- `includeTools` and `excludeTools` in an MCP server's entry choose which of its tools agents get.
+- Checkpoints: a fork continues the history of its parent, the shadow repository is packed at the end of a
+  session, and `checkpoints.exclude` is applied.
+- The read guard knows lines. `edit` must be of lines the agent has read: a `read` with `offset` and `limit`
+  counts for the lines it returned, several reads add up, and an edit elsewhere is refused with
+  `edit targets lines 40-52 of src/a.rs, which you have not read; read them first`. What an agent read stays
+  read through its own edits and, line by line, through changes made by others.
+  `tools.read_guard = "file"` brings the old rule back and `"off"` removes the guard.
+- `/allow-edit <path>` lets the next edit of one file through, whatever the agent has read of it.
+- `lsp` has three new actions. `outline` lists every symbol of a file with its kind, lines and declaration;
+  `read_symbol` returns the source of one symbol (`Type.method`, or `occurrence` among several of a name),
+  which then counts as read, so an agent can edit a function of a large file without reading the file;
+  `rename_file` moves a file and has the language server update the files that refer to it.
+- `warm_files` of a language server are opened as soon as it starts, and `lsp.write_severity = "warning"`
+  adds the server's warnings to what follows a write.
+- `ast_grep`, when [ast-grep](https://ast-grep.github.io) is installed (`ast-grep` or `sg`): search code by
+  its syntax tree with `$NAME` and `$$$NAME` metavariables, or rewrite what matches. A replacement is
+  previewed as a diff and written with `apply: true` to the files named; each file is written like an edit
+  (read guard, format, checks, language server), and all of them or none. `azazel doctor` says whether it is on.
 
 ### Changed
 
+- `write` over an existing file takes having read all of it; a read of a part is no longer enough
+  (`you have read only part of src/a.rs; read the rest before overwriting it, or change it with edit`). Notes
+  and logs (`.md`, `.txt`, `.log`) still need only a read of any part.
+- Language servers stop after `lsp.idle_secs` (240) without a touched file and start again on the next touch;
+  `/lsp` shows `stopped, idle`.
 - `web_fetch` no longer returns a page of any size in one piece: more than `limit` characters come in parts.
 - Every symbol outside tool cards (the prompt, rules, spinner, status line, todo list, roster, queued
   messages, Markdown bullets, quotes and tables, the transcript viewer, side questions, pickers and popups)
@@ -74,8 +107,21 @@ GitHub are its section here.
 - The model pickers show each model's context window and price (`ctx 200k · $3/$15`), or `subscription` for a
   provider used through a login; the theme picker shows each theme's colours; `/settings` rows show their
   current value in a column of its own.
+- MCP servers that run as a local command are `lazy` by default: they are no longer started with the
+  session. `"lifecycle": "eager"` in an entry keeps the old behaviour.
+- A question the user dismisses, or that nobody can answer, is no longer a failed tool call: `ask_user`
+  returns `the user declined to answer`. Its options are checked (2 to 8, no duplicates).
+- The last choice of the permission prompt is `Deny and say why`.
+- A prompt that changed no file takes no snapshot of its own.
+- RPC: an `ask` request carries `expects`, `context` and `allow_freeform`.
 
 ### Fixed
+
+- `write` refuses file names Windows reserves for devices (`aux.c`, `NUL`, `com1.txt`), on every system.
+- The task list of the previous session no longer stays on screen after `/new` or `/resume`.
+- A `git` that hangs can no longer hold up a prompt: a snapshot is stopped after `checkpoints.timeout_ms`
+  and checkpoints turn off for the session.
+- A rewind that fails part of the way puts the files back as they were.
 
 ## [0.3.0] - 2026-11-13
 

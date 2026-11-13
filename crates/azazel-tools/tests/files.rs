@@ -5,10 +5,14 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
-use azazel_ai::Block;
+use azazel_ai::{Block, Message, Role};
 use azazel_core::config::ReadGuard;
 use azazel_core::process::Shell;
-use azazel_core::{ArtifactStore, CommandOutcome, ExtCtx, Registry};
+use azazel_core::session::{Entry, EntryKind};
+use azazel_core::{
+    ApprovalDecision, ApprovalRequest, ArtifactStore, AskKind, CommandOutcome, ExtCtx, Question, Registry,
+    Ui, UiBridge, UiError,
+};
 use azazel_tools::CoreToolsExt;
 use base64::Engine;
 use serde_json::{Value, json};
@@ -581,8 +585,325 @@ async fn todo_replaces_the_list_per_agent_and_allows_one_item_in_progress() {
         bench.call("todo", json!({"items": []})).await.text_content(),
         "todo list cleared"
     );
+}
 
-    let asked = bench.call("ask_user", json!({"question": "which one?"})).await;
-    assert!(asked.is_error);
-    assert_eq!(asked.text_content(), "no interactive user");
+fn message_entry(id: &str, message: Message) -> Entry {
+    Entry {
+        id: id.into(),
+        parent_id: None,
+        timestamp: String::new(),
+        kind: EntryKind::Message { message },
+    }
+}
+
+fn todo_call(id: &str, items: Value) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: vec![Block::ToolCall {
+            id: id.into(),
+            name: "todo".into(),
+            input: json!({ "items": items }),
+            signature: None,
+        }],
+        meta: None,
+    }
+}
+
+fn result(id: &str, is_error: bool) -> Message {
+    Message::tool(vec![Block::tool_result(id, "ok", is_error)])
+}
+
+#[tokio::test]
+async fn the_task_list_comes_back_from_the_transcript_and_is_put_before_the_agent_while_work_remains() {
+    let bench = bench();
+    let store = bench.registry.services.get::<azazel_tools::TodoStore>().unwrap();
+    let hooks = bench.registry.agent_hooks();
+    let lead = bench.ctx("lead").agent;
+    let sent = async |hooks: &Arc<dyn azazel_agent::AgentHooks>| {
+        let mut messages = vec![Message::user("go on")];
+        hooks.context(&lead, &mut messages).await;
+        messages
+    };
+    // Nothing to remind of: the request is what the transcript holds.
+    assert_eq!(sent(&hooks).await, [Message::user("go on")]);
+
+    let first = json!([{"text": "find the bug", "status": "done"}, {"text": "fix it", "status": "pending"}]);
+    let second =
+        json!([{"text": "find the bug", "status": "done"}, {"text": "fix it", "status": "in_progress"}]);
+    let refused = json!([{"text": "a", "status": "in_progress"}, {"text": "b", "status": "in_progress"}]);
+    let branch = vec![
+        message_entry("1", Message::user("fix the bug")),
+        message_entry("2", todo_call("c1", first)),
+        message_entry("3", result("c1", false)),
+        message_entry("4", todo_call("c2", second)),
+        message_entry("5", result("c2", false)),
+        // A call that was refused changed nothing, and one without a result never ran.
+        message_entry("6", todo_call("c3", refused)),
+        message_entry("7", result("c3", true)),
+        message_entry("8", todo_call("c4", json!([]))),
+    ];
+    store.set("scout-1", store.get("lead"));
+    store.rehydrate("lead", &branch);
+    let items = store.get("lead");
+    assert_eq!(
+        items.iter().map(|item| item.text.as_str()).collect::<Vec<_>>(),
+        ["find the bug", "fix it"]
+    );
+    assert_eq!(items[1].status, azazel_tools::TodoStatus::InProgress);
+    assert!(
+        store.get("scout-1").is_empty(),
+        "an agent of the session before is gone"
+    );
+
+    // The reminder is the last thing sent and is not part of what the agent keeps.
+    let with_plan = sent(&hooks).await;
+    assert_eq!(with_plan.len(), 2);
+    assert_eq!(
+        with_plan[1].text(),
+        "[Plan] 1/2 done (your todo list; keep it current with `todo`)\n[x] find the bug\n[~] fix it"
+    );
+    // Another agent has no list and is told nothing.
+    let mut other = vec![Message::user("look")];
+    hooks.context(&bench.ctx("scout-2").agent, &mut other).await;
+    assert_eq!(other.len(), 1);
+
+    // What the user changed with `/todo` after the agent's last call wins, and a finished list
+    // needs no reminder.
+    let mut branch = branch;
+    let done: Vec<azazel_tools::TodoItem> = items
+        .into_iter()
+        .map(|mut item| {
+            item.status = azazel_tools::TodoStatus::Done;
+            item
+        })
+        .collect();
+    branch.push(Entry {
+        id: "9".into(),
+        parent_id: None,
+        timestamp: String::new(),
+        kind: azazel_tools::todo_entry(&done),
+    });
+    store.rehydrate("lead", &branch);
+    assert_eq!(store.get("lead"), done);
+    assert_eq!(sent(&hooks).await.len(), 1);
+
+    // A branch that never had a list clears the one of the session before.
+    store.rehydrate("lead", &branch[..1]);
+    assert!(store.get("lead").is_empty());
+}
+
+/// Answers every question with what it was given, and keeps the questions.
+struct Scripted {
+    answers: std::sync::Mutex<Vec<Result<Vec<String>, UiError>>>,
+    asked: std::sync::Mutex<Vec<Question>>,
+}
+
+#[async_trait::async_trait]
+impl UiBridge for Scripted {
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
+        self.asked.lock().unwrap().push(question.clone());
+        self.answers.lock().unwrap().remove(0)
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: azazel_core::Level, _: &str) {}
+    async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+        None
+    }
+}
+
+#[tokio::test]
+async fn ask_user_checks_the_question_before_anyone_is_asked() {
+    let bench = bench();
+    let ui = Arc::new(Scripted {
+        answers: std::sync::Mutex::default(),
+        asked: std::sync::Mutex::default(),
+    });
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    for (input, wrong) in [
+        (json!({"question": " "}), "`question` is empty"),
+        (
+            json!({"question": "?", "options": ["only"]}),
+            "a `select` question needs 2 to 8 options, not 1",
+        ),
+        (
+            json!({"question": "?", "type": "multiselect", "options": ["1", "2", "3", "4", "5", "6", "7", "8", "9"]}),
+            "a `multiselect` question needs 2 to 8 options, not 9",
+        ),
+        (
+            json!({"question": "?", "type": "select"}),
+            "a `select` question needs 2 to 8 options, not 0",
+        ),
+        (
+            json!({"question": "?", "options": ["Red", "blue", " red "]}),
+            "the option ` red ` is offered twice",
+        ),
+        (
+            json!({"question": "?", "options": ["a", "Other…"], "allow_freeform": true}),
+            "the option `Other…` is offered twice",
+        ),
+        (
+            json!({"question": "?", "options": ["a", " "]}),
+            "an option is empty",
+        ),
+        (
+            json!({"question": "?", "type": "text", "options": ["a", "b"]}),
+            "a `text` question takes no `options`",
+        ),
+        (
+            json!({"question": "?", "type": "confirm", "options": ["yes", "no"]}),
+            "a `confirm` question takes no `options`",
+        ),
+        (
+            json!({"question": "?", "options": ["a", "b"], "multi": true, "allow_freeform": true}),
+            "`allow_freeform` goes with `select` only, not `multiselect`",
+        ),
+        (
+            json!({"question": "?", "allow_freeform": true}),
+            "`allow_freeform` goes with `select` only, not `text`",
+        ),
+    ] {
+        let refused = bench.call("ask_user", input.clone()).await;
+        assert!(refused.is_error, "{input}");
+        assert_eq!(refused.text_content(), wrong, "{input}");
+    }
+    assert!(
+        ui.asked.lock().unwrap().is_empty(),
+        "a question that is wrong is never shown"
+    );
+}
+
+#[tokio::test]
+async fn ask_user_passes_each_kind_of_question_on_and_a_user_who_declines_is_not_an_error() {
+    let bench = bench();
+    // Nobody there: the agent goes on without an answer.
+    let alone = bench.call("ask_user", json!({"question": "which one?"})).await;
+    assert!(!alone.is_error);
+    assert_eq!(alone.text_content(), "the user declined to answer");
+    let details = alone.details.unwrap();
+    assert_eq!(
+        (&details["cancelled"], &details["reason"], &details["type"]),
+        (&json!(true), &json!("no interactive user"), &json!("text"))
+    );
+
+    let ui = Arc::new(Scripted {
+        answers: std::sync::Mutex::new(vec![
+            Ok(vec!["blue".into()]),
+            Ok(vec!["teal".into()]),
+            Ok(vec!["red".into(), "blue".into()]),
+            Ok(vec!["yes".into()]),
+            Ok(vec!["because".into()]),
+            Err(UiError::Cancelled),
+        ]),
+        asked: std::sync::Mutex::default(),
+    });
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    let colours = json!(["red", "blue"]);
+
+    let picked = bench
+        .call(
+            "ask_user",
+            json!({"question": "Which?", "context": "Two paints are left.", "options": colours}),
+        )
+        .await;
+    assert_eq!(picked.text_content(), "blue");
+    let details = picked.details.unwrap();
+    assert_eq!(
+        (&details["answers"], &details["freeform"], &details["cancelled"]),
+        (&json!(["blue"]), &json!(false), &json!(false))
+    );
+
+    let typed = bench
+        .call(
+            "ask_user",
+            json!({"question": "Which?", "type": "select", "options": colours, "allow_freeform": true}),
+        )
+        .await;
+    assert_eq!(typed.text_content(), "teal");
+    assert_eq!(typed.details.unwrap()["freeform"], true);
+
+    let several = bench
+        .call(
+            "ask_user",
+            json!({"question": "Which?", "options": colours, "multi": true}),
+        )
+        .await;
+    assert_eq!(several.text_content(), "red\nblue");
+
+    let confirmed = bench
+        .call("ask_user", json!({"question": "Paint it?", "type": "confirm"}))
+        .await;
+    assert_eq!(confirmed.text_content(), "yes");
+
+    let said = bench.call("ask_user", json!({"question": "Why?"})).await;
+    assert_eq!(said.text_content(), "because");
+
+    let dismissed = bench
+        .call("ask_user", json!({"question": "Which?", "options": colours}))
+        .await;
+    assert!(!dismissed.is_error);
+    assert_eq!(dismissed.text_content(), "the user declined to answer");
+    let details = dismissed.details.unwrap();
+    assert_eq!(
+        (&details["cancelled"], &details["reason"], &details["answers"]),
+        (
+            &json!(true),
+            &json!("the user dismissed the question"),
+            &Value::Null
+        )
+    );
+
+    let asked = ui.asked.lock().unwrap();
+    let kinds: Vec<(AskKind, bool, usize)> = asked
+        .iter()
+        .map(|question| (question.kind, question.allow_freeform, question.options.len()))
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (AskKind::Select, false, 2),
+            (AskKind::Select, true, 2),
+            (AskKind::Multiselect, false, 2),
+            (AskKind::Confirm, false, 0),
+            (AskKind::Text, false, 0),
+            (AskKind::Select, false, 2),
+        ]
+    );
+    assert_eq!(asked[0].context.as_deref(), Some("Two paints are left."));
+    assert_eq!(asked[3].text, "Paint it?");
+}
+
+#[tokio::test]
+async fn write_refuses_names_windows_keeps_for_devices() {
+    let bench = bench();
+    for name in ["con", "NUL", "aux.rs", "src/Com1.txt", "lpt9.tar.gz", "prn .md"] {
+        let refused = bench.call("write", json!({"path": name, "content": "x"})).await;
+        assert!(refused.is_error, "{name}");
+        assert!(
+            refused
+                .text_content()
+                .ends_with("is a reserved Windows device name; pick another file name"),
+            "{name}: {}",
+            refused.text_content()
+        );
+    }
+    assert!(!bench.path("aux.rs").exists() && !bench.path("src").exists());
+    // Names that only look alike are files like any other.
+    for name in [
+        "console.rs",
+        "com10.txt",
+        "auxiliary/nul_check.rs",
+        "null",
+        "lpt.txt",
+    ] {
+        let written = bench.call("write", json!({"path": name, "content": "x"})).await;
+        assert!(!written.is_error, "{name}: {}", written.text_content());
+    }
 }

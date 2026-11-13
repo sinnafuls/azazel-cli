@@ -261,6 +261,9 @@ pub fn mcp_manager(
     let options = azazel_mcp::Options {
         startup_wait: Duration::from_millis(config.mcp.startup_wait_ms),
         defer_threshold: config.mcp.defer_threshold,
+        idle_timeout: (config.mcp.idle_timeout_secs > 0)
+            .then(|| Duration::from_secs(config.mcp.idle_timeout_secs)),
+        cache_dir: Some(paths.cache_dir().join("mcp")),
     };
     let manager = azazel_mcp::McpManager::new(loaded, services, roots, credentials, options);
     manager.record_approvals(
@@ -951,15 +954,26 @@ impl App {
             &session,
             self.coordinator_forced.swap(false, Ordering::SeqCst),
         );
+        // The task list is the one this branch of the session ended with.
+        if let Some(todos) = self.registry.services.get::<azazel_tools::TodoStore>() {
+            todos.rehydrate("lead", &session.branch(None));
+        }
         *self.current.write().unwrap_or_else(PoisonError::into_inner) = Some(session.clone());
         // Extensions that need the transcript (hooks) find the open session here.
         self.registry.services.insert(session.clone());
         self.registry.bus.set_session(&session_id);
-        let checkpoints = Arc::new(Checkpoints::new(
-            &self.paths,
-            &session_id,
-            &self.config.checkpoints,
-        ));
+        // A fork holds its parent's entries: its own history of snapshots starts at the last
+        // one they name.
+        let seed = session
+            .branch(None)
+            .into_iter()
+            .rev()
+            .find_map(|entry| match entry.kind {
+                EntryKind::Checkpoint { commit, .. } => Some(commit),
+                _ => None,
+            });
+        let checkpoints =
+            Arc::new(Checkpoints::new(&self.paths, &session_id, &self.config.checkpoints).seeded(seed));
 
         let services = self.registry.services.clone();
         let info = AgentInfo {
@@ -1113,6 +1127,7 @@ impl App {
         }
         self.registry.bus.emit(&mut Event::SessionEnd).await;
         self.close(active).await;
+        active.checkpoints.tidy().await;
         if let Some(jobs) = self.registry.services.get::<azazel_tools::Jobs>() {
             jobs.kill_all();
         }

@@ -20,8 +20,8 @@ use azazel_ai::{Block, Message, ModelSpec, Role, ThinkingLevel};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::side::{Side, SideQuestion};
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, CommandOutcome, EntryKind, Level, PermissionMode, PlanDecision,
-    StartSource, Ui, UiBridge, UiError,
+    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Level, PermissionMode,
+    PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
 };
 use azazel_protocol::{
     BtwAnswer, Command, CommandResult, Decision, Frame, Models, PROTOCOL, Request, Response, ShellResult,
@@ -127,13 +127,39 @@ fn level_name(level: Level) -> &'static str {
 
 #[async_trait]
 impl UiBridge for RpcBridge {
-    async fn ask(&self, question: &str, options: &[String], multi: bool) -> Result<Vec<String>, UiError> {
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
         let request = UiRequest::Ask {
-            question: question.to_string(),
-            options: options.to_vec(),
-            multi,
+            question: question.text.clone(),
+            context: question.context.clone(),
+            expects: Some(match question.kind {
+                AskKind::Select => azazel_protocol::AskKind::Select,
+                AskKind::Multiselect => azazel_protocol::AskKind::Multiselect,
+                AskKind::Text => azazel_protocol::AskKind::Text,
+                AskKind::Confirm => azazel_protocol::AskKind::Confirm,
+            }),
+            options: question.options.clone(),
+            multi: question.kind == AskKind::Multiselect,
+            allow_freeform: question.allow_freeform,
         };
-        match self.request(request).await {
+        let answer = self.request(request).await;
+        if question.kind == AskKind::Confirm {
+            // A client that knows no `confirm` shows a text box: the words are taken too.
+            let said = match &answer {
+                Some(Value::Bool(yes)) => Some(*yes),
+                Some(Value::String(word)) => match word.trim().to_ascii_lowercase().as_str() {
+                    "yes" | "y" | "true" => Some(true),
+                    "no" | "n" | "false" => Some(false),
+                    _ => None,
+                },
+                _ => None,
+            };
+            return match said {
+                Some(true) => Ok(vec!["yes".to_string()]),
+                Some(false) => Ok(vec!["no".to_string()]),
+                None => Err(UiError::Cancelled),
+            };
+        }
+        match answer {
             Some(Value::String(one)) => Ok(vec![one]),
             Some(Value::Array(many)) => Ok(many
                 .into_iter()
@@ -422,6 +448,7 @@ impl Session {
             } => {
                 let decision = match decision {
                     Decision::Allow => ApprovalDecision::AllowOnce,
+                    Decision::Session => ApprovalDecision::AllowSession,
                     Decision::Always => ApprovalDecision::Always,
                     Decision::Deny => ApprovalDecision::Deny { feedback },
                 };
