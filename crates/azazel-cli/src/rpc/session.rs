@@ -87,6 +87,10 @@ fn kind_name(kind: &EntryKind) -> &'static str {
         EntryKind::SessionInfo { .. } => "session_info",
         EntryKind::ThinkingChange { .. } => "thinking_change",
         EntryKind::Pin { .. } => "pin",
+        EntryKind::RunStarted { .. } => "run_started",
+        EntryKind::RequestStarted { .. } => "request_started",
+        EntryKind::ToolStarted { .. } => "tool_started",
+        EntryKind::RunEnded { .. } => "run_ended",
     }
 }
 
@@ -226,6 +230,11 @@ impl Session {
                     Some((role.clone(), first.first()?.to_string()))
                 })
                 .collect(),
+            // A run that is being gone on with has no end in the file yet either.
+            interrupted: (!self.busy())
+                .then(|| self.active.session.interrupted_run(None))
+                .flatten()
+                .map(|run| run.describe()),
         }
     }
 
@@ -399,9 +408,20 @@ impl Session {
 
     pub(super) fn tree(&self) -> Vec<TreeRow> {
         let session = &self.active.session;
-        let current: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
-        session
-            .entries()
+        let mut current: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
+        let entries = session.entries();
+        // What a run noted hangs from the branch rather than being on it.
+        for entry in &entries {
+            if entry.kind.is_journal()
+                && entry
+                    .parent_id
+                    .as_ref()
+                    .is_some_and(|parent| current.contains(parent))
+            {
+                current.insert(entry.id.clone());
+            }
+        }
+        entries
             .into_iter()
             .map(|entry| tree_row(entry, &current))
             .collect()

@@ -7,7 +7,9 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
-use azazel_agent::{Agent, AgentConfig, AgentHandle, AgentInfo, ArtifactSink, Limits, Services, UserInput};
+use azazel_agent::{
+    Agent, AgentCmd, AgentConfig, AgentHandle, AgentInfo, ArtifactSink, Limits, Resume, Services, UserInput,
+};
 use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets;
 use azazel_ai::{
@@ -28,6 +30,7 @@ use azazel_core::permissions::shell::guard_env;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::prompt::BasePromptExt;
 use azazel_core::rules::{self, Rules, RulesExt};
+use azazel_core::session::InterruptedRun;
 use azazel_core::side::{Side, SideCosts};
 use azazel_core::skills::{SkillGrantsExt, SkillsExt, standard_roots};
 use azazel_core::{
@@ -234,6 +237,66 @@ fn mock_provider(_: &mut Config) -> Result<Option<Arc<dyn Provider>>> {
     Ok(None)
 }
 
+/// A tool for tests that does nothing for as long as it is told to (`test_wait {"ms": 500}`):
+/// a call that is still running when a test kills the process. Offered in a test build when
+/// `AZAZEL_MOCK_TOOLS` is set.
+#[cfg(feature = "test-support")]
+mod mock_tools {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+    use azazel_core::{ExtError, Extension, Registrar};
+    use serde_json::{Value, json};
+
+    struct Wait;
+
+    #[async_trait]
+    impl Tool for Wait {
+        fn name(&self) -> &str {
+            "test_wait"
+        }
+
+        fn description(&self) -> &str {
+            "Waits for `ms` milliseconds."
+        }
+
+        fn schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "ms": { "type": "integer" } }, "required": ["ms"] })
+        }
+
+        fn access(&self, _: &Value) -> Access {
+            Access::Exec
+        }
+
+        fn subjects(&self, _: &Value) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+            let wait = Duration::from_millis(input["ms"].as_u64().unwrap_or(0));
+            tokio::select! {
+                _ = ctx.cancel.cancelled() => ToolOutput::error("the wait was cut short"),
+                _ = tokio::time::sleep(wait) => ToolOutput::text("waited"),
+            }
+        }
+    }
+
+    pub struct MockToolsExt;
+
+    impl Extension for MockToolsExt {
+        fn id(&self) -> &str {
+            "mock-tools"
+        }
+
+        fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
+            r.tool(Arc::new(Wait));
+            Ok(())
+        }
+    }
+}
+
 /// The MCP servers configured for this run: those of installed packages, then the user's.
 /// Project files count only for a trusted project.
 #[cfg(feature = "mcp")]
@@ -401,6 +464,10 @@ impl App {
             artifacts_dir: paths.artifacts_dir(),
             read_guard: config.tools.read_guard,
         })?;
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("AZAZEL_MOCK_TOOLS").is_some() {
+            registry.load(&mock_tools::MockToolsExt)?;
+        }
         #[cfg(feature = "lsp")]
         registry.load(&azazel_tools::lsp::LspExt {
             root: paths.project_root.clone(),
@@ -1091,6 +1158,14 @@ impl App {
         Ok(Some(lock))
     }
 
+    /// The session that is open.
+    pub fn session(&self) -> Option<Arc<SessionStore>> {
+        self.current
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
     /// Announces a session to extensions. Call once per opened session, before its first prompt.
     pub async fn start(&self, source: StartSource) {
         self.registry.bus.emit(&mut Event::SessionStart { source }).await;
@@ -1106,6 +1181,18 @@ impl App {
     /// attached, the project tree is checkpointed, then the lead starts. `Err` carries the reason
     /// an extension rejected the prompt.
     pub async fn submit(&self, active: &Active, text: String, images: Vec<Block>) -> Result<(), String> {
+        self.submit_as(active, text, images, None).await
+    }
+
+    /// [`App::submit`] of a prompt its sender named: the name is recorded with the run the
+    /// prompt starts, so that the same prompt sent twice can be told from a new one.
+    pub async fn submit_as(
+        &self,
+        active: &Active,
+        text: String,
+        images: Vec<Block>,
+        request_id: Option<String>,
+    ) -> Result<(), String> {
         let mut event = Event::UserPrompt { text, images };
         if let Outcome::Block { reason } = self.registry.bus.emit(&mut event).await {
             return Err(reason);
@@ -1140,8 +1227,26 @@ impl App {
         }
         let mut content = vec![Block::text(text)];
         content.append(&mut images);
-        active.lead.prompt(UserInput { content });
+        active.lead.prompt(UserInput { content, request_id });
         Ok(())
+    }
+
+    /// Goes on with the run of the open session that the end of a process cut short: calls
+    /// without a result get one and the request nobody answered is sent again. `Err` when no
+    /// run was interrupted, or the lead is at work.
+    pub fn continue_run(&self, active: &Active) -> Result<InterruptedRun, String> {
+        if active.lead.status().busy {
+            return Err("the lead is working; there is no interrupted run to go on with".to_string());
+        }
+        let run = active
+            .session
+            .interrupted_run(None)
+            .ok_or("no run of this session was interrupted")?;
+        active.lead.send(AgentCmd::Resume(Resume {
+            run_id: run.run_id.clone(),
+            started: run.started.clone(),
+        }));
+        Ok(run)
     }
 
     /// Stops a session's lead without ending the process-wide session state.

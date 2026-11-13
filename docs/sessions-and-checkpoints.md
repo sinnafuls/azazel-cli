@@ -48,6 +48,16 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `session_info` | The session's name; the newest one counts |
 | `pin` | Whether the session is pinned |
 | `custom` | Extension data |
+| `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any. Its `parentId` is the prompt |
+| `request_started` | A request of the run went out to `model` |
+| `tool_started` | A tool call of the run was let through and began: `callId`, `name`, `input` |
+| `run_ended` | The run ended: `runId` and `stop` (`stop`, `length`, `tool_use`, `error`, `aborted` or `failed`) |
+
+The last four are the journal of a run. Tool results and replies are `message` entries as always; a
+`run_started` with no `run_ended` is a run its process did not finish (see [interrupted runs](#interrupted-runs)).
+Journal entries are notes beside the conversation: each hangs from the entry it was written after, and nothing
+continues from one, so the conversation reads the same with or without them (an azazel from before 0.5 skips
+them).
 
 The entries form a tree. Going back and continuing from an earlier point adds a new branch; nothing is rewritten
 or deleted, so every branch stays in the file. A line that cannot be parsed is skipped with a warning in the log
@@ -96,6 +106,34 @@ holds for `-c`, `--session`, `--fork` and `/resume`, in the UI, in print mode an
 
 The permission mode comes from the current flags and [configuration](configuration.md), not from the session.
 
+## Interrupted runs
+
+A run that ends is recorded as ended, whether the agent finished, failed, or you stopped it with `Esc` or by
+quitting. When the process is killed instead (a crash, a closed terminal, a machine that went down), the session
+file ends in the middle of the run, and the next process that opens the session can go on with it:
+
+- Tool calls of the last reply that have no result get one. A call that had not started yet runs as it would
+  have. A call that had started is run again when it only reads (`read`, `glob`, `grep`, the reading actions of
+  `lsp`, `web_fetch`, `web_search`, `web_grep`, `memory_search`, `semantic_search`, `session_recall`). Any other call that had
+  started (`shell`, `write`, `edit`, an MCP tool, a sub-agent, ...) is not repeated: its result is `interrupted:
+  the process stopped before this call finished; check its effects before retrying`, and the model decides what
+  to do.
+- A request the model never answered is sent again as it was.
+
+| Where | How the run goes on |
+|---|---|
+| The UI | Opening the session says `the last run of this session was interrupted (stopped while shell ran); /continue goes on with it`. `/continue` does so. `azazel -c --continue-run` opens the UI and continues at once |
+| Print mode | `azazel -c -p --continue-run` (or with `--session <id>`) continues instead of sending a prompt, and prints the reply. It fails with `no run of this session was interrupted` when there is nothing to continue |
+| RPC | `get_state` has `interrupted`; the command `continue_run` continues. See [RPC mode](rpc.md) |
+| A background session | `azazel ps` lists it as `interrupted`, and `azazel attach <id>` starts it again and continues. See [background sessions](background-and-remote.md#when-a-background-session-dies) |
+
+Sending a new prompt instead of continuing is fine too: the calls that were left without a result are then
+answered with a note that they may not have run, and the conversation goes on from your prompt. Nothing is
+continued twice, and a run that was gone on with is the same run in the file: it gets its one `run_ended`.
+
+A session copied with `/fork`, `--fork` or `/bg` holds the conversation and nothing of the journal, so a copy
+never has a run to continue; the original keeps its own.
+
 ## Names
 
 A session gets a name in one of these ways:
@@ -112,7 +150,7 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 
 ## Session commands
 
-`/new`, `/resume`, `/tree`, `/fork`, `/retry` and `/handoff` need the agent to be idle (press `Esc` first).
+`/new`, `/resume`, `/tree`, `/fork`, `/retry`, `/continue` and `/handoff` need the agent to be idle (press `Esc` first).
 
 | Command | What it does |
 |---|---|
@@ -124,6 +162,7 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/tree` | Lists every prompt and reply of this session, newest first; `•` marks the current branch. Choosing one of your prompts goes back to before it and puts its text in the input; choosing a reply continues from it. See [labels and filters](#labels-and-filters-in-tree) |
 | `/fork` | Copies the current branch into a new session file and switches to it. The original is unchanged |
 | `/retry` (`F5`) | Goes back to before your last prompt and sends it again, with its images; `@` mentions are read again. It is checkpointed and hooked like any prompt. The first attempt stays in the session as another branch, which `/tree` shows |
+| `/continue` | Goes on with the run that was cut short when the session's process was killed in the middle of it. See [interrupted runs](#interrupted-runs) |
 | `/handoff [what matters]` | Has the current model write a brief of this session (goal, state, decisions, files touched, next steps, open questions), then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown |
 | `/consult [question]` | Pick a saved session and ask it a question. The answer comes from that session's conversation in a single request, shows in a panel (`Enter` on a row closes it, copies it or opens it full screen) and is stored in neither session |
 | `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |

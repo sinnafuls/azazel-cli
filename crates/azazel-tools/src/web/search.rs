@@ -1014,6 +1014,10 @@ impl Tool for WebSearchTool {
         Access::Net
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     /// The host of the configured backend. A search through the lead's provider goes to the
     /// host the session's model requests already go to, which is no subject of its own.
     fn subjects(&self, _: &Value) -> Vec<String> {

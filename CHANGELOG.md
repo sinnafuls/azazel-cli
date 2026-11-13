@@ -45,6 +45,22 @@ GitHub are its section here.
   a turn tells the agent to form a new hypothesis before trying it again.
 - Runaway guard (`guards.runaway`): a reply that repeats a block of 200 characters or more three times in a
   row is stopped as it is written and asked for again, like a reply that matched a stream rule.
+- Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
+  `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose
+  process was killed in the middle of a run says so when it is opened again, and `/continue`,
+  `azazel -c --continue-run` and the RPC command `continue_run` go on with it: calls that only read are run
+  again, other calls that had started are reported to the model as interrupted, and a request that was never
+  answered is sent again.
+- `azazel ps` lists a background session whose process died in the middle of a run as `interrupted`, and
+  `azazel attach <id>` starts it again on the same session, with the options and mode it had, and goes on
+  (`[session] resume_runs = false` makes it wait for `/continue`). `azazel kill <id>` forgets it.
+- Several clients can be attached to one background session at once. Each is told where the session stands
+  when it attaches (`snapshot` in the `attach` response: the reply being written, running tools, queued input,
+  waiting requests) and then sent everything; any of them may prompt, steer or answer, what one types shows
+  on the others (`user_input`), and a request one answers closes on the others (`request_closed`).
+- Named prompts: `request_id` on the RPC `prompt`, `azazel bg --request-id <id>` and `_meta.requestId` on an
+  ACP `session/prompt`. A prompt sent again under the same name starts nothing and answers with the state of
+  the run the first one started, for as long as the session exists.
 - `web_search` asks the lead's own model provider to search when it has a search tool: Anthropic's
   `web_search` server tool, the `web_search` tool of the Responses API (OpenAI, the ChatGPT login, xAI) and
   Gemini's Google Search grounding. It needs no search key and works on a subscription login. Each query is
@@ -76,6 +92,11 @@ GitHub are its section here.
   still shows that.
 - A provider's model list that does not answer no longer holds the first request up for minutes: it is given
   up after `retry.first_event_secs`.
+- `azazel attach` no longer refuses a second client, and `attach --take` disconnects every client.
+- Responses of a background session go to the connection that sent the command, under the id that client
+  chose, so two clients need not agree on ids.
+- A prompt sent after a reply whose tool calls never got a result (a killed process, a conversation taken up
+  in the middle of a run) now answers those calls first, so the provider no longer rejects the request.
 
 ## [0.4.0] - 2026-11-13
 

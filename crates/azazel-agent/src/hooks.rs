@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use azazel_ai::{Message, Request};
+use serde_json::Value;
 
 use crate::event::AgentInfo;
 use crate::inspect::ContextReport;
@@ -69,6 +70,23 @@ pub trait TranscriptSink: Send + Sync {
     /// Records that everything before entry `first_kept` is replaced by `summary`; returns the id
     /// of the compaction entry.
     fn compaction(&self, summary: &str, first_kept: &str, tokens_before: u64) -> String;
+
+    /// Records that a run began: the work one prompt starts. Called right after the prompt's
+    /// message was appended. Returns the run's id, which [`TranscriptSink::run_ended`] repeats.
+    /// `request_id` is the name whoever sent the prompt gave it.
+    fn run_started(&self, _request_id: Option<&str>) -> String {
+        String::new()
+    }
+
+    /// Records that a request went out to `model`.
+    fn request_started(&self, _model: &str) {}
+
+    /// Records that a tool call was let through and is about to run.
+    fn tool_started(&self, _call_id: &str, _name: &str, _input: &Value) {}
+
+    /// Records how the run `run_id` ended: a stop reason, or `failed`. A run without this
+    /// record was cut short by the end of the process.
+    fn run_ended(&self, _run_id: &str, _stop: &str) {}
 
     /// Called with what the lead's newest request is made of: when it is sent, and again when
     /// the provider has counted its tokens. A sink that keeps it lets the request be inspected

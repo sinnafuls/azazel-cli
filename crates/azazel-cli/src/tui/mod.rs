@@ -641,6 +641,9 @@ impl Tui {
         if let Some(notice) = opened.notice {
             self.warn(&notice);
         }
+        if let Some(stopped) = opened.interrupted {
+            self.warn(&backend::interrupted_notice(&stopped));
+        }
     }
 
     /// Shows where a reopened session left off.
@@ -750,6 +753,16 @@ impl Tui {
             }
             Incoming::Request(request) => self.waiting.push_back(request),
             Incoming::Team(event) => self.on_team(event),
+            // What another client of the session typed reads as what was typed here.
+            Incoming::UserInput { kind, text } => {
+                let said = match kind.as_str() {
+                    "prompt" => text,
+                    "steer" => format!("(steer) {text}"),
+                    _ => format!("(follow-up) {text}"),
+                };
+                let lines = view::user_prompt(&said, self.width(), &self.theme);
+                self.say(lines);
+            }
             Incoming::Closed(why) => {
                 self.fail(&why);
                 let _ = self.draw();
@@ -2036,6 +2049,9 @@ impl Tui {
         }
         if let Some(notice) = moved.notice {
             self.warn(&notice);
+        }
+        if let Some(stopped) = moved.interrupted {
+            self.warn(&backend::interrupted_notice(&stopped));
         }
     }
 

@@ -9,7 +9,7 @@
 
 mod session;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -24,8 +24,8 @@ use azazel_core::{
     PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
 };
 use azazel_protocol::{
-    BtwAnswer, Command, CommandResult, Decision, Frame, Models, PROTOCOL, Request, Response, ShellResult,
-    UiRequest,
+    BtwAnswer, Command, CommandResult, Decision, Frame, Models, PROTOCOL, Request, Response, RunState,
+    ShellResult, UiRequest,
 };
 use azazel_team::{Team, TeamEvent};
 use futures::StreamExt;
@@ -292,6 +292,9 @@ struct Session {
     working: bool,
     /// The chain to go back to after a prompt that ran on a command's own model.
     restore_chain: Option<Vec<ModelSpec>>,
+    /// The named prompts this process took, as `(session id, request id)`: one the lead has
+    /// not taken up yet is in no session file.
+    named: HashSet<(String, String)>,
     /// Ends side questions when the session ends.
     cancel: CancellationToken,
 }
@@ -344,7 +347,42 @@ impl Session {
 
     /// Hands a prompt to the lead.
     async fn submit(&mut self, text: String, images: Vec<Block>) -> Result<(), String> {
-        let submitted = self.app.submit(&self.active, text, images).await;
+        self.submit_as(text, images, None).await
+    }
+
+    /// Where the run of the prompt named `request_id` stands, when this session has taken
+    /// such a prompt before.
+    fn run_state(&self, request_id: &str) -> Option<RunState> {
+        let seen = |state: &str, run_id, stop, text| RunState {
+            request_id: Some(request_id.to_string()),
+            run_id,
+            state: state.to_string(),
+            duplicate: true,
+            stop,
+            text,
+        };
+        if let Some(run) = self.active.session.request_run(request_id) {
+            let state = match (&run.stop, self.busy()) {
+                (Some(_), _) => "ended",
+                (None, true) => "running",
+                // Its process ended before it did.
+                (None, false) => "interrupted",
+            };
+            return Some(seen(state, Some(run.run_id), run.stop, run.text));
+        }
+        self.named
+            .contains(&(self.active.session.id(), request_id.to_string()))
+            .then(|| seen("queued", None, None, None))
+    }
+
+    /// Hands the lead a prompt its sender named.
+    async fn submit_as(
+        &mut self,
+        text: String,
+        images: Vec<Block>,
+        request_id: Option<String>,
+    ) -> Result<(), String> {
+        let submitted = self.app.submit_as(&self.active, text, images, request_id).await;
         match submitted {
             Ok(()) => self.working = true,
             Err(_) => {
@@ -377,7 +415,15 @@ impl Session {
         };
         let done = |value: Value| Ok(Some(value));
         match command {
-            Command::Prompt { text, images } => {
+            Command::Prompt {
+                text,
+                images,
+                request_id,
+            } => {
+                // The same prompt again: the run it started the first time is the answer.
+                if let Some(seen) = request_id.as_deref().and_then(|id| self.run_state(id)) {
+                    return data(seen).map(Some);
+                }
                 let images = images
                     .into_iter()
                     .map(|image| Block::Image {
@@ -385,8 +431,36 @@ impl Session {
                         data: image.data,
                     })
                     .collect();
-                self.submit(text, images).await?;
-                done(Value::Null)
+                self.submit_as(text, images, request_id.clone()).await?;
+                let Some(request_id) = request_id else {
+                    return done(Value::Null);
+                };
+                self.named.insert((self.active.session.id(), request_id.clone()));
+                data(RunState {
+                    request_id: Some(request_id),
+                    run_id: None,
+                    state: "queued".to_string(),
+                    duplicate: false,
+                    stop: None,
+                    text: None,
+                })
+                .map(Some)
+            }
+            Command::ContinueRun => {
+                if self.busy() {
+                    return Err("the lead is working; there is no interrupted run to go on with".to_string());
+                }
+                let run = self.app.continue_run(&self.active)?;
+                self.working = true;
+                data(RunState {
+                    request_id: run.request_id,
+                    run_id: Some(run.run_id),
+                    state: "running".to_string(),
+                    duplicate: false,
+                    stop: None,
+                    text: None,
+                })
+                .map(Some)
             }
             Command::Steer { text, images } => {
                 let mut content = vec![Block::text(text)];
@@ -394,7 +468,7 @@ impl Session {
                     mime: image.mime,
                     data: image.data,
                 }));
-                self.active.lead.send(AgentCmd::Steer(UserInput { content }));
+                self.active.lead.send(AgentCmd::Steer(UserInput::blocks(content)));
                 done(Value::Null)
             }
             Command::FollowUp { text } => {
@@ -785,6 +859,7 @@ pub(crate) async fn serve_lines(
         finished,
         working: false,
         restore_chain: None,
+        named: HashSet::new(),
         cancel: CancellationToken::new(),
     };
 

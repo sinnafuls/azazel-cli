@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use azazel_ai::router::{RouteEvent, RouteState};
 use azazel_ai::{
-    AiError, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, Request, Router, StopReason, StreamEvent,
-    SystemPart, ThinkingLevel, Usage,
+    AiError, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, Request, Role, Router, StopReason,
+    StreamEvent, SystemPart, ThinkingLevel, Usage,
 };
 use futures::StreamExt;
 use futures::future::join_all;
@@ -18,7 +18,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::compaction::{self, CompactionSettings, ContextEntry};
-use crate::event::{AgentCmd, AgentEvent, AgentId, AgentInfo, UserInput};
+use crate::event::{AgentCmd, AgentEvent, AgentId, AgentInfo, Resume, UserInput};
 use crate::gate::{Gate, GateDecision};
 use crate::hooks::{AgentHooks, TranscriptSink};
 use crate::inspect::RequestRecord;
@@ -26,6 +26,23 @@ use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource,
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
 pub const ABORTED_TEXT: &str = "aborted by user";
+/// The result of a call that was running when the process ended, once the run is resumed.
+pub const INTERRUPTED_TEXT: &str =
+    "interrupted: the process stopped before this call finished; check its effects before retrying";
+/// The result of a call that is left without one when the conversation goes on past it.
+pub const UNFINISHED_TEXT: &str = "interrupted: this call has no result, so it may not have run or may have run \
+                                   in part; check its effects before retrying";
+
+/// How a run ended, as the transcript records it.
+fn stop_name(stop: StopReason) -> &'static str {
+    match stop {
+        StopReason::Stop => "stop",
+        StopReason::Length => "length",
+        StopReason::ToolUse => "tool_use",
+        StopReason::Error => "error",
+        StopReason::Aborted => "aborted",
+    }
+}
 
 /// Replies a rule may withdraw per prompt; after that the reply stands, so two rules that
 /// contradict each other cannot keep an agent going forever.
@@ -276,6 +293,8 @@ impl Inbox {
             AgentCmd::SetModel(chain) => self.chain = chain,
             AgentCmd::SetThinking(level) => self.thinking = level,
             AgentCmd::Compact { instructions } => self.compact = Some(instructions),
+            // A run is under way: there is none to go on with.
+            AgentCmd::Resume(_) => {}
             AgentCmd::Shutdown => self.stop(),
         }
     }
@@ -358,6 +377,7 @@ impl Actor {
                     self.run_prompt(input).await
                 }
                 AgentCmd::Append(input) => self.core.push(input.into_message()),
+                AgentCmd::Resume(resume) => self.run_resume(resume).await,
                 AgentCmd::Abort => {}
                 AgentCmd::SetModel(chain) => self.inbox.chain = chain,
                 AgentCmd::SetThinking(level) => self.inbox.thinking = level,
@@ -379,17 +399,85 @@ impl Actor {
     }
 
     async fn run_prompt(&mut self, input: UserInput) {
+        let cancel = self.begin();
+        let request_id = input.request_id.clone();
+        self.core.close_open_calls();
+        self.core.push(input.into_message());
+        let run_id = self.core.sink.run_started(request_id.as_deref());
+        let outcome = self.turns(&cancel).await;
+        self.end(&run_id, outcome);
+    }
+
+    /// Goes on with a run the end of the process cut short. Calls of the last reply that have
+    /// no result get one: a call that had not started, or that only reads, is run; any other
+    /// is reported as interrupted. Then the request the model never answered is sent.
+    async fn run_resume(&mut self, resume: Resume) {
+        let cancel = self.begin();
+        let open = self.core.open_calls();
+        let last = self.core.entries.last().map(|entry| &entry.message);
+        let outcome = if !open.is_empty() {
+            let results = self.resume_tools(open, &resume.started, &cancel).await;
+            self.core.push(Message::tool(results));
+            if cancel.is_cancelled() {
+                Ok(StopReason::Aborted)
+            } else {
+                self.turns(&cancel).await
+            }
+        } else if last.is_some_and(|message| message.role != Role::Assistant) {
+            self.turns(&cancel).await
+        } else {
+            // The reply was whole; only the end of the run was not recorded.
+            Ok(last
+                .and_then(|message| message.meta.as_ref())
+                .map_or(StopReason::Stop, |meta| meta.stop))
+        };
+        self.end(&resume.run_id, outcome);
+    }
+
+    async fn resume_tools(
+        &mut self,
+        calls: Vec<Call>,
+        started: &[String],
+        cancel: &CancellationToken,
+    ) -> Vec<Block> {
+        let tools = self.core.tools.tools(&self.core.info);
+        let core = &self.core;
+        let mut results = Vec::with_capacity(calls.len());
+        for call in calls {
+            let tool = tools.iter().find(|tool| tool.name() == call.1).cloned();
+            let again =
+                !started.contains(&call.0) || tool.as_ref().is_some_and(|tool| tool.replay_safe(&call.2));
+            results.push(if again {
+                self.inbox.drive(core.run_tool(call, tool, cancel)).await
+            } else {
+                core.interrupted(call)
+            });
+        }
+        results
+    }
+
+    /// Marks the start of a run and returns the token that ends it.
+    fn begin(&mut self) -> CancellationToken {
         let cancel = CancellationToken::new();
         self.inbox.turn_cancel = cancel.clone();
         locked(&self.core.status).busy = true;
         self.core.emit(AgentEvent::AgentStart);
-        self.core.push(input.into_message());
-        let outcome = self.turns(&cancel).await;
+        cancel
+    }
+
+    fn end(&mut self, run_id: &str, outcome: Result<StopReason, String>) {
         {
             let mut status = locked(&self.core.status);
             status.busy = false;
             status.context_tokens = self.core.estimate();
         }
+        self.core.sink.run_ended(
+            run_id,
+            match &outcome {
+                Ok(stop) => stop_name(*stop),
+                Err(_) => "failed",
+            },
+        );
         self.core.emit(match outcome {
             Ok(stop) => AgentEvent::Idle { stop },
             Err(error) => AgentEvent::Failed { error },
@@ -560,6 +648,7 @@ impl Actor {
                 .await;
             self.core.forward_route_events(&mut route_rx);
             let (model, mut stream) = started?;
+            self.core.sink.request_started(&model.to_string());
             locked(&self.core.status).model = Some(model.clone());
             self.core.emit(AgentEvent::MessageStart);
 
@@ -660,6 +749,54 @@ impl Core {
             message,
             summary: false,
         });
+    }
+
+    /// The calls of the last message that have no result: the reply is the last thing said.
+    fn open_calls(&self) -> Vec<Call> {
+        match self.entries.last() {
+            Some(last) if last.message.role == Role::Assistant => last
+                .message
+                .tool_calls()
+                .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Answers the calls the conversation is about to go on past without a result (the process
+    /// ended while they ran, or the conversation was taken up in the middle of a run), so that
+    /// the next request is one a provider accepts.
+    fn close_open_calls(&mut self) {
+        let results: Vec<Block> = self
+            .open_calls()
+            .into_iter()
+            .map(|(call_id, _, _)| Block::tool_result(call_id, UNFINISHED_TEXT, true))
+            .collect();
+        if !results.is_empty() {
+            self.push(Message::tool(results));
+        }
+    }
+
+    /// The result of a call that was running when the process ended and cannot be run again.
+    fn interrupted(&self, call: Call) -> Block {
+        let (call_id, name, input) = call;
+        self.emit(AgentEvent::ToolStart {
+            call_id: call_id.clone(),
+            name,
+            input,
+        });
+        let output = ToolOutput::error(INTERRUPTED_TEXT);
+        let result = Block::ToolResult {
+            call_id: call_id.clone(),
+            content: output.content.clone(),
+            is_error: true,
+        };
+        self.emit(AgentEvent::ToolEnd {
+            call_id,
+            output,
+            duration_ms: 0,
+        });
+        result
     }
 
     /// Books the usage of a response and anchors the context estimate to it. Call before `push`.
@@ -1018,6 +1155,7 @@ impl Core {
             GateDecision::Allow { input: None } => input,
         };
 
+        self.sink.tool_started(call_id, name, &input);
         let hub = self.hub.clone();
         let update_id = call_id.to_string();
         let ctx = ToolCtx {

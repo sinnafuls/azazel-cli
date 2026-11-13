@@ -97,6 +97,47 @@ pub enum EntryKind {
     Pin {
         pinned: bool,
     },
+    /// A run began: the work one prompt starts. The entry hangs from that prompt. `request_id`
+    /// is the name whoever sent the prompt gave it.
+    #[serde(rename_all = "camelCase")]
+    RunStarted {
+        run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
+    },
+    /// A request of the run went out to this model.
+    RequestStarted {
+        model: String,
+    },
+    /// A tool call of the run was let through and began.
+    #[serde(rename_all = "camelCase")]
+    ToolStarted {
+        call_id: String,
+        name: String,
+        input: Value,
+    },
+    /// The run ended: `stop` is a stop reason, or `failed`. A run without this entry was cut
+    /// short by the end of the process.
+    #[serde(rename_all = "camelCase")]
+    RunEnded {
+        run_id: String,
+        stop: String,
+    },
+}
+
+impl EntryKind {
+    /// Whether the entry belongs to the journal of a run: it says where the run stands and is
+    /// no part of the conversation. Such an entry hangs from the entry it was written after,
+    /// and nothing continues from it.
+    pub fn is_journal(&self) -> bool {
+        matches!(
+            self,
+            EntryKind::RunStarted { .. }
+                | EntryKind::RequestStarted { .. }
+                | EntryKind::ToolStarted { .. }
+                | EntryKind::RunEnded { .. }
+        )
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,6 +206,162 @@ pub struct SessionFacts {
     pub checkpoints: usize,
     pub compactions: usize,
     pub agents: Vec<AgentRun>,
+}
+
+/// A run the end of the process cut short: the last run of a branch, with no record of its end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InterruptedRun {
+    pub run_id: String,
+    /// The name whoever sent the prompt gave it.
+    pub request_id: Option<String>,
+    /// The calls of the last reply that have no result, as `(call id, tool name)`.
+    pub open_calls: Vec<(String, String)>,
+    /// Those of them that had started.
+    pub started: Vec<String>,
+    /// The model a request had gone out to when nothing came back.
+    pub model: Option<String>,
+    /// When the run last wrote anything, RFC 3339.
+    pub at: String,
+}
+
+impl InterruptedRun {
+    /// Where the run stopped, in a few words.
+    pub fn describe(&self) -> String {
+        let running: Vec<&str> = self
+            .open_calls
+            .iter()
+            .filter(|(id, _)| self.started.contains(id))
+            .map(|(_, name)| name.as_str())
+            .collect();
+        match (running.as_slice(), self.open_calls.len(), &self.model) {
+            ([], 0, Some(model)) => format!("stopped while waiting for {model}"),
+            ([], 0, None) => "stopped before the model was asked".to_string(),
+            ([], calls, _) => format!("stopped before {calls} tool call(s) ran"),
+            (running, ..) => format!("stopped while {} ran", running.join(", ")),
+        }
+    }
+}
+
+/// What became of the run a named request started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestRun {
+    pub run_id: String,
+    /// How it ended; `None` while it has not.
+    pub stop: Option<String>,
+    /// The last thing the lead said in it.
+    pub text: Option<String>,
+}
+
+/// The run that was cut short on the branch ending at `leaf`: the last run that began on the
+/// branch, when the file holds no end of it and something is left to do. A run begins at the
+/// prompt its `run_started` entry hangs from.
+fn interrupted(
+    entries: &[Entry],
+    index: &HashMap<String, usize>,
+    leaf: Option<&str>,
+) -> Option<InterruptedRun> {
+    let place = |id: Option<&str>| id.and_then(|id| index.get(id).copied());
+    // The branch from the leaf up, as far as it has been walked.
+    let mut tail: Vec<&Entry> = Vec::new();
+    let mut cursor = place(leaf);
+    // Runs follow each other, so the last one of the branch is the one written last whose
+    // prompt is on the branch. An entry is written after the one it follows: the walk up the
+    // branch need go no further than the prompt looked for.
+    for (at, entry) in entries.iter().enumerate().rev() {
+        let EntryKind::RunStarted { run_id, request_id } = &entry.kind else {
+            continue;
+        };
+        let Some(prompt) = place(entry.parent_id.as_deref()) else {
+            continue;
+        };
+        while let Some(position) = cursor.filter(|position| *position > prompt) {
+            tail.push(&entries[position]);
+            if tail.len() > entries.len() {
+                return None; // a parent cycle in a damaged file
+            }
+            cursor = place(entries[position].parent_id.as_deref());
+        }
+        if cursor == Some(prompt) {
+            tail.push(&entries[prompt]);
+            tail.reverse();
+            return unfinished(entries, index, at, run_id, request_id.as_deref(), &tail);
+        }
+        cursor?;
+    }
+    None
+}
+
+/// What is left of the run whose `run_started` entry is at `at`; `tail` is the branch from the
+/// run's prompt to the leaf.
+fn unfinished(
+    entries: &[Entry],
+    index: &HashMap<String, usize>,
+    at: usize,
+    run_id: &str,
+    request_id: Option<&str>,
+    tail: &[&Entry],
+) -> Option<InterruptedRun> {
+    let ended = entries[at + 1..]
+        .iter()
+        .any(|entry| matches!(&entry.kind, EntryKind::RunEnded { run_id: ended, .. } if ended == run_id));
+    if ended {
+        return None;
+    }
+    let last = tail
+        .iter()
+        .rfind(|entry| matches!(entry.kind, EntryKind::Message { .. }))?;
+    let EntryKind::Message { message } = &last.kind else {
+        return None;
+    };
+    let open_calls: Vec<(String, String)> = match message.role {
+        Role::Assistant => message
+            .tool_calls()
+            .map(|(id, name, _)| (id.to_string(), name.to_string()))
+            .collect(),
+        _ => Vec::new(),
+    };
+    // A reply without calls is whole: there is nothing to go on with.
+    if message.role == Role::Assistant && open_calls.is_empty() {
+        return None;
+    }
+    // What the run noted after its last message, up to whatever was said elsewhere since.
+    let from = index.get(&last.id)? + 1;
+    let noted = entries
+        .iter()
+        .enumerate()
+        .skip(from)
+        .take_while(|(position, entry)| {
+            *position == at
+                || !matches!(
+                    entry.kind,
+                    EntryKind::Message { .. } | EntryKind::RunStarted { .. }
+                )
+        });
+    let (mut started, mut model) = (Vec::new(), None);
+    for (_, entry) in noted {
+        match &entry.kind {
+            EntryKind::ToolStarted { call_id, .. }
+                if open_calls.iter().any(|(id, _)| id == call_id) && !started.contains(call_id) =>
+            {
+                started.push(call_id.clone());
+            }
+            EntryKind::RequestStarted { model: asked } if open_calls.is_empty() => {
+                model = Some(asked.clone())
+            }
+            _ => {}
+        }
+    }
+    Some(InterruptedRun {
+        run_id: run_id.to_string(),
+        request_id: request_id.map(str::to_string),
+        open_calls,
+        started,
+        model,
+        at: tail
+            .last()
+            .map(|entry| entry.timestamp.clone())
+            .unwrap_or_default(),
+    })
 }
 
 /// File in a session's own folder (`<sessions>/<id>/`) that holds what the lead's newest request
@@ -247,8 +444,8 @@ impl SessionStore {
         })
     }
 
-    /// Loads an existing session; the leaf is its last entry. Lines that do not parse are skipped
-    /// and left in place.
+    /// Loads an existing session; the leaf is its last entry that is part of the conversation.
+    /// Lines that do not parse are skipped and left in place.
     pub fn open(path: &Path) -> io::Result<Self> {
         let (header, entries) = read_file(path)?;
         let file = File::options().append(true).open(path)?;
@@ -257,7 +454,12 @@ impl SessionStore {
             .enumerate()
             .map(|(i, e)| (e.id.clone(), i))
             .collect();
-        let leaf = entries.last().map(|e| e.id.clone());
+        // The conversation goes on from what was said last, not from a note about a run.
+        let leaf = entries
+            .iter()
+            .rev()
+            .find(|entry| !entry.kind.is_journal())
+            .map(|entry| entry.id.clone());
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
@@ -311,16 +513,24 @@ impl SessionStore {
         self.lock().leaf.clone()
     }
 
-    /// Moves the leaf; the next append branches from `id` (`None` starts a new root).
+    /// Moves the leaf; the next append branches from `id` (`None` starts a new root). An entry
+    /// of a run's journal stands for the entry it hangs from: nothing continues from a note.
     pub fn set_leaf(&self, id: Option<&str>) -> bool {
         let mut inner = self.lock();
-        match id {
-            Some(id) if !inner.index.contains_key(id) => false,
-            _ => {
-                inner.leaf = id.map(str::to_string);
-                true
-            }
-        }
+        let Some(id) = id else {
+            inner.leaf = None;
+            return true;
+        };
+        let Some(&at) = inner.index.get(id) else {
+            return false;
+        };
+        let entry = &inner.entries[at];
+        let leaf = match entry.kind.is_journal() {
+            true => entry.parent_id.clone(),
+            false => Some(entry.id.clone()),
+        };
+        inner.leaf = leaf;
+        true
     }
 
     pub fn entries(&self) -> Vec<Entry> {
@@ -332,8 +542,9 @@ impl SessionStore {
         inner.index.get(id).map(|&i| inner.entries[i].clone())
     }
 
-    /// Appends below the current leaf, which then moves to the new entry. Returns its id. A write
-    /// failure is logged and the entry is kept in memory so the session can go on.
+    /// Appends below the current leaf, which then moves to the new entry; an entry of a run's
+    /// journal leaves the leaf where it is. Returns the entry's id. A write failure is logged
+    /// and the entry is kept in memory so the session can go on.
     pub fn append(&self, kind: EntryKind) -> String {
         let mut inner = self.lock();
         let id = loop {
@@ -343,6 +554,7 @@ impl SessionStore {
                 break candidate;
             }
         };
+        let aside = kind.is_journal();
         let entry = Entry {
             id: id.clone(),
             parent_id: inner.leaf.clone(),
@@ -362,7 +574,9 @@ impl SessionStore {
         let position = inner.entries.len();
         inner.index.insert(id.clone(), position);
         inner.entries.push(entry);
-        inner.leaf = Some(id.clone());
+        if !aside {
+            inner.leaf = Some(id.clone());
+        }
         id
     }
 
@@ -432,7 +646,70 @@ impl SessionStore {
         context
     }
 
+    /// The run at `leaf` (default: the current leaf) that the end of the process cut short:
+    /// the last run of the branch, when its end was never recorded and something is left to do.
+    pub fn interrupted_run(&self, leaf: Option<&str>) -> Option<InterruptedRun> {
+        let inner = self.lock();
+        interrupted(&inner.entries, &inner.index, leaf.or(inner.leaf.as_deref()))
+    }
+
+    /// [`SessionStore::interrupted_run`] of the branch a session file ends on, read without
+    /// opening the file for writing.
+    pub fn interrupted_in(path: &Path) -> Option<InterruptedRun> {
+        let (_, entries) = read_file(path).ok()?;
+        let index = entries
+            .iter()
+            .enumerate()
+            .map(|(at, entry)| (entry.id.clone(), at))
+            .collect();
+        let leaf = entries.iter().rev().find(|entry| !entry.kind.is_journal());
+        interrupted(&entries, &index, leaf.map(|entry| entry.id.as_str()))
+    }
+
+    /// The run the prompt named `request_id` started, when this session has seen one.
+    pub fn request_run(&self, request_id: &str) -> Option<RequestRun> {
+        let inner = self.lock();
+        let (at, run_id) =
+            inner
+                .entries
+                .iter()
+                .enumerate()
+                .rev()
+                .find_map(|(at, entry)| match &entry.kind {
+                    EntryKind::RunStarted {
+                        run_id,
+                        request_id: Some(named),
+                    } if named == request_id => Some((at, run_id.clone())),
+                    _ => None,
+                })?;
+        let mut run = RequestRun {
+            run_id,
+            stop: None,
+            text: None,
+        };
+        // One agent writes the file and its runs follow each other, so what follows the start
+        // up to the end is the run.
+        for entry in &inner.entries[at + 1..] {
+            match &entry.kind {
+                EntryKind::RunEnded { run_id, stop } if *run_id == run.run_id => {
+                    run.stop = Some(stop.clone());
+                    break;
+                }
+                EntryKind::RunStarted { .. } => break,
+                EntryKind::Message { message }
+                    if message.role == Role::Assistant && !message.text().trim().is_empty() =>
+                {
+                    run.text = Some(message.text());
+                }
+                _ => {}
+            }
+        }
+        Some(run)
+    }
+
     /// Copies the branch ending at `at` (default: the current leaf) into a new session in `dir`.
+    /// The journal of its runs stays behind: a run that goes on, or was cut short, in the
+    /// original is not one of the copy.
     pub fn fork(&self, dir: &Path, at: Option<&str>) -> io::Result<SessionStore> {
         let branch = self.branch(at);
         let (cwd, source) = {
@@ -538,6 +815,10 @@ impl SessionStore {
         };
         let mut children: HashMap<Option<&str>, usize> = HashMap::new();
         for entry in &inner.entries {
+            // A note about a run is no way the conversation went.
+            if entry.kind.is_journal() {
+                continue;
+            }
             *children.entry(entry.parent_id.as_deref()).or_default() += 1;
             match &entry.kind {
                 EntryKind::Message { message } => {
@@ -841,7 +1122,7 @@ fn read_branch(path: &Path) -> io::Result<Vec<Entry>> {
     let (_, entries) = read_file(path)?;
     let by_id: HashMap<&str, &Entry> = entries.iter().map(|e| (e.id.as_str(), e)).collect();
     let mut branch = Vec::new();
-    let mut cursor = entries.last();
+    let mut cursor = entries.iter().rev().find(|entry| !entry.kind.is_journal());
     while let Some(entry) = cursor {
         branch.push(entry.clone());
         if branch.len() > entries.len() {
@@ -928,6 +1209,37 @@ impl TranscriptSink for SessionStore {
         })
     }
 
+    fn run_started(&self, request_id: Option<&str>) -> String {
+        // The tail of a v7 UUID is its random part.
+        let run_id = uuid::Uuid::now_v7().simple().to_string()[20..].to_string();
+        self.append(EntryKind::RunStarted {
+            run_id: run_id.clone(),
+            request_id: request_id.map(str::to_string),
+        });
+        run_id
+    }
+
+    fn request_started(&self, model: &str) {
+        self.append(EntryKind::RequestStarted {
+            model: model.to_string(),
+        });
+    }
+
+    fn tool_started(&self, call_id: &str, name: &str, input: &Value) {
+        self.append(EntryKind::ToolStarted {
+            call_id: call_id.to_string(),
+            name: name.to_string(),
+            input: input.clone(),
+        });
+    }
+
+    fn run_ended(&self, run_id: &str, stop: &str) {
+        self.append(EntryKind::RunEnded {
+            run_id: run_id.to_string(),
+            stop: stop.to_string(),
+        });
+    }
+
     /// Replaces the session's `context.json` in one step. A copy of a session that lives in
     /// another process writes nothing.
     fn request(&self, report: &ContextReport) {
@@ -1002,6 +1314,226 @@ mod tests {
         mirror.message(&assistant("only here"));
         assert_eq!(texts(&mirror.build_context(None)), ["hello", "only here"]);
         assert_eq!(std::fs::metadata(store.path()).unwrap().len(), size);
+    }
+
+    fn calling(calls: &[(&str, &str)]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: calls
+                .iter()
+                .map(|(id, name)| Block::ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    input: json!({}),
+                    signature: None,
+                })
+                .collect(),
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn a_run_without_an_end_is_interrupted_where_its_last_entry_says() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        assert_eq!(store.interrupted_run(None), None);
+
+        // A run that ended is not interrupted, whatever it did.
+        store.message(&Message::user("one"));
+        let first = store.run_started(None);
+        store.request_started("mock/lead");
+        store.message(&assistant("done"));
+        store.run_ended(&first, "stop");
+        assert_eq!(store.interrupted_run(None), None);
+
+        // The process ends while the model is asked: the request is what is left to do.
+        store.message(&Message::user("two"));
+        let run_id = store.run_started(Some("req-1"));
+        store.request_started("mock/lead");
+        let waiting = store.interrupted_run(None).unwrap();
+        assert_eq!(
+            (waiting.run_id.as_str(), waiting.request_id.as_deref()),
+            (run_id.as_str(), Some("req-1"))
+        );
+        assert!(waiting.open_calls.is_empty() && waiting.started.is_empty());
+        assert_eq!(waiting.describe(), "stopped while waiting for mock/lead");
+
+        // Then while tools run: the calls without a result, and which of them had started.
+        store.message(&calling(&[("c1", "read"), ("c2", "shell"), ("c3", "write")]));
+        store.tool_started("c1", "read", &json!({}));
+        store.tool_started("c2", "shell", &json!({ "command": "make" }));
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        for session in [&store, &reopened] {
+            let run = session.interrupted_run(None).unwrap();
+            assert_eq!(
+                run.open_calls,
+                [
+                    ("c1".to_string(), "read".to_string()),
+                    ("c2".to_string(), "shell".to_string()),
+                    ("c3".to_string(), "write".to_string())
+                ]
+            );
+            assert_eq!(run.started, ["c1", "c2"]);
+            assert_eq!(run.describe(), "stopped while read, shell ran");
+        }
+        assert_eq!(
+            SessionStore::interrupted_in(&store.path()),
+            store.interrupted_run(None)
+        );
+
+        // Once the results are in and the reply is whole there is nothing to go on with.
+        store.message(&Message {
+            role: Role::Tool,
+            content: vec![Block::tool_result("c1", "ok", false)],
+            meta: None,
+        });
+        assert!(
+            store
+                .interrupted_run(None)
+                .is_some_and(|run| run.open_calls.is_empty())
+        );
+        store.message(&assistant("all done"));
+        assert_eq!(store.interrupted_run(None), None);
+        store.run_ended(&run_id, "stop");
+        assert_eq!(SessionStore::interrupted_in(&store.path()), None);
+    }
+
+    #[test]
+    fn the_journal_of_a_run_hangs_beside_the_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        let prompt = store.message(&Message::user("go"));
+        let run_id = store.run_started(None);
+        store.request_started("mock/lead");
+        let middle = store.message(&calling(&[("c1", "shell")]));
+        store.tool_started("c1", "shell", &json!({}));
+        let result = store.message(&Message {
+            role: Role::Tool,
+            content: vec![Block::tool_result("c1", "ok", false)],
+            meta: None,
+        });
+        let last = store.message(&assistant("done"));
+        store.run_ended(&run_id, "stop");
+
+        // The conversation is the messages alone: each follows the one before it, and what
+        // the run noted on the way hangs from the message it was noted after.
+        let branch: Vec<String> = store.branch(None).into_iter().map(|entry| entry.id).collect();
+        assert_eq!(branch, [prompt.clone(), middle.clone(), result, last.clone()]);
+        assert_eq!(store.leaf(), Some(last.clone()));
+        let hangs_from = |kind: fn(&EntryKind) -> bool| {
+            store
+                .entries()
+                .into_iter()
+                .find(|entry| kind(&entry.kind))
+                .and_then(|entry| entry.parent_id)
+        };
+        assert_eq!(
+            hangs_from(|kind| matches!(kind, EntryKind::RunStarted { .. })),
+            Some(prompt)
+        );
+        assert_eq!(
+            hangs_from(|kind| matches!(kind, EntryKind::ToolStarted { .. })),
+            Some(middle.clone())
+        );
+        // It is no way the conversation went, and a session opened again goes on from what
+        // was said last, not from the note that the run ended.
+        assert_eq!(store.facts().branch_points, 0);
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        assert_eq!(reopened.leaf(), Some(last.clone()));
+        assert_eq!(reopened.build_context(None), store.build_context(None));
+
+        // A note is no place to continue from: the entry it hangs from is.
+        let noted = store.entries().last().map(|entry| entry.id.clone());
+        assert!(store.set_leaf(noted.as_deref()));
+        assert_eq!(store.leaf(), Some(last.clone()));
+        // Taken up in the middle of the run, the conversation is not that of a run cut
+        // short: the run's end is in the file.
+        assert!(store.set_leaf(Some(&middle)));
+        assert_eq!(store.interrupted_run(None), None);
+        // A copy holds the conversation and nothing of the runs.
+        let fork = store.fork(dir.path(), Some(&middle)).unwrap();
+        assert!(fork.entries().iter().all(|entry| !entry.kind.is_journal()));
+        assert_eq!(fork.interrupted_run(None), None);
+    }
+
+    #[test]
+    fn a_run_cut_short_is_found_from_the_branch_it_is_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        // A run that ended, then one that was cut short while a call ran.
+        let root = store.message(&Message::user("one"));
+        let ended = store.run_started(None);
+        store.message(&assistant("done"));
+        store.run_ended(&ended, "stop");
+        let prompt = store.message(&Message::user("two"));
+        let cut = store.run_started(None);
+        store.message(&calling(&[("c1", "shell")]));
+        store.tool_started("c1", "shell", &json!({}));
+        let cut_leaf = store.leaf();
+        assert_eq!(
+            store.interrupted_run(None).map(|run| run.run_id),
+            Some(cut.clone())
+        );
+
+        // Another branch, from the first prompt: its own run ends; the calls there have the
+        // same ids, as a scripted model's do.
+        assert!(store.set_leaf(Some(&root)));
+        store.message(&Message::user("other"));
+        let other = store.run_started(None);
+        store.message(&calling(&[("c1", "write")]));
+        store.tool_started("c1", "write", &json!({}));
+        store.message(&assistant("did the other thing"));
+        store.run_ended(&other, "stop");
+        assert_eq!(store.interrupted_run(None), None);
+
+        // Back on the first branch the run is still the one that was cut short, with what
+        // it had started and nothing of the other branch.
+        let run = store.interrupted_run(cut_leaf.as_deref()).unwrap();
+        assert_eq!(run.run_id, cut);
+        assert_eq!(run.open_calls, [("c1".to_string(), "shell".to_string())]);
+        assert_eq!(run.started, ["c1"]);
+        // From before its prompt there is no run to go on with.
+        assert_eq!(store.interrupted_run(Some(&root)), None);
+        assert!(store.interrupted_run(Some(&prompt)).is_some());
+    }
+
+    #[test]
+    fn a_named_request_is_found_with_how_its_run_ended() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        assert_eq!(store.request_run("req-1"), None);
+        store.message(&Message::user("go"));
+        let run_id = store.run_started(Some("req-1"));
+        store.message(&assistant("working on it"));
+        assert_eq!(
+            store.request_run("req-1"),
+            Some(RequestRun {
+                run_id: run_id.clone(),
+                stop: None,
+                text: Some("working on it".into())
+            })
+        );
+        store.message(&assistant("done"));
+        store.run_ended(&run_id, "stop");
+        // What another run says later is not this one's.
+        store.message(&Message::user("more"));
+        let other = store.run_started(Some("req-2"));
+        store.message(&assistant("more done"));
+        store.run_ended(&other, "aborted");
+        let reopened = SessionStore::open(&store.path()).unwrap();
+        assert_eq!(
+            reopened.request_run("req-1"),
+            Some(RequestRun {
+                run_id,
+                stop: Some("stop".into()),
+                text: Some("done".into())
+            })
+        );
+        assert_eq!(
+            reopened.request_run("req-2").and_then(|run| run.stop),
+            Some("aborted".to_string())
+        );
+        assert_eq!(reopened.request_run("req-3"), None);
     }
 
     #[test]

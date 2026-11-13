@@ -36,6 +36,12 @@ pub trait Tool: Send + Sync {
     fn concurrency_safe(&self, input: &Value) -> bool {
         matches!(self.access(input), Access::Read)
     }
+    /// Whether this call can be run a second time without harm: it only reads. A call that was
+    /// running when the process ended is run again when the run is resumed if so; any other is
+    /// reported as interrupted.
+    fn replay_safe(&self, _input: &Value) -> bool {
+        false
+    }
     /// Something the user should know before approving this call (that it may cost money, for
     /// example); shown with the approval prompt.
     fn approval_note(&self, _input: &Value) -> Option<String> {

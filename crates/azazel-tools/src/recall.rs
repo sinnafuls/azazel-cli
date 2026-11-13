@@ -501,6 +501,10 @@ impl Tool for SessionRecallTool {
         Access::Read
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, _: &Value) -> Vec<String> {
         Vec::new()
     }
