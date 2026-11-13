@@ -41,7 +41,7 @@ pub use ext::{
 };
 pub use memory::{Memory, MemoryApi, MemoryHit};
 pub use paths::Paths;
-pub use permissions::gate::PermissionGate;
+pub use permissions::gate::{OutputRedactor, PermissionGate};
 pub use permissions::{PermissionState, Rule, RuleKind};
 pub use prompt::{PromptBuilder, SystemPartProvider};
 pub use scheme::{Lines, Scheme, Schemes};

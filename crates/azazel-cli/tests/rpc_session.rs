@@ -532,12 +532,10 @@ fn a_rewind_takes_back_files_and_conversation() {
         .iter()
         .find(|row| row.text.as_deref() == Some("make another"))
         .unwrap();
+    let reply = tree.iter().rfind(|row| row.kind == "message").unwrap();
     assert_eq!(
-        client.error(json!({ "type": "rewind", "entry_id": tree.last().unwrap().id })),
-        format!(
-            "`{}` is neither a checkpoint nor a prompt",
-            tree.last().unwrap().id
-        )
+        client.error(json!({ "type": "rewind", "entry_id": reply.id })),
+        format!("`{}` is neither a checkpoint nor a prompt", reply.id)
     );
 
     // The files only, named by the prompt: the conversation stays, and the lead is told.
@@ -609,7 +607,9 @@ fn what_a_ui_elsewhere_needs_is_answered() {
         .filter(|entry| entry["type"] == "message")
         .collect();
     assert_eq!(messages.len(), 4, "{entries:?}");
-    assert_eq!(copy["leaf"], entries.last().unwrap()["id"]);
+    // The conversation continues from what was said last; what the run noted hangs beside it.
+    assert_eq!(copy["leaf"], messages.last().unwrap()["id"]);
+    assert_eq!(entries.last().unwrap()["type"], "run_ended");
     assert!(std::path::Path::new(copy["path"].as_str().unwrap()).is_file());
 
     let cost = client.ok(json!({ "type": "run_command", "name": "cost" }));

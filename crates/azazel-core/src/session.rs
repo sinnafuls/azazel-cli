@@ -509,16 +509,24 @@ impl SessionStore {
         self.lock().leaf.clone()
     }
 
-    /// Moves the leaf; the next append branches from `id` (`None` starts a new root).
+    /// Moves the leaf; the next append branches from `id` (`None` starts a new root). An entry
+    /// of a run's journal stands for the entry it hangs from: nothing continues from a note.
     pub fn set_leaf(&self, id: Option<&str>) -> bool {
         let mut inner = self.lock();
-        match id {
-            Some(id) if !inner.index.contains_key(id) => false,
-            _ => {
-                inner.leaf = id.map(str::to_string);
-                true
-            }
-        }
+        let Some(id) = id else {
+            inner.leaf = None;
+            return true;
+        };
+        let Some(&at) = inner.index.get(id) else {
+            return false;
+        };
+        let entry = &inner.entries[at];
+        let leaf = match entry.kind.is_journal() {
+            true => entry.parent_id.clone(),
+            false => Some(entry.id.clone()),
+        };
+        inner.leaf = leaf;
+        true
     }
 
     pub fn entries(&self) -> Vec<Entry> {
@@ -1367,9 +1375,13 @@ mod tests {
         // was said last, not from the note that the run ended.
         assert_eq!(store.facts().branch_points, 0);
         let reopened = SessionStore::open(&store.path()).unwrap();
-        assert_eq!(reopened.leaf(), Some(last));
+        assert_eq!(reopened.leaf(), Some(last.clone()));
         assert_eq!(reopened.build_context(None), store.build_context(None));
 
+        // A note is no place to continue from: the entry it hangs from is.
+        let noted = store.entries().last().map(|entry| entry.id.clone());
+        assert!(store.set_leaf(noted.as_deref()));
+        assert_eq!(store.leaf(), Some(last.clone()));
         // Taken up in the middle of the run, the conversation is not that of a run cut
         // short: the run's end is in the file.
         assert!(store.set_leaf(Some(&middle)));

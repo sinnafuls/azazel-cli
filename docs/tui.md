@@ -26,7 +26,7 @@ I'll run the tests first.
 ── ⠹ running edit · 12s · esc to interrupt ─────────────────────────────────
 ❯ Steer the agent, alt+enter queues a follow-up
 ────────────────────────────────────────────────────────────────────────────
-ask · ⑂ main · ~/src/app · ◫ 12% · ↯ 78 tok/s · $0.04    ⬢ provider/model · medium
+manual · ⑂ main · ~/src/app · ◫ 12% · ↯ 78 tok/s · $0.04    ⬢ provider/model · medium
 ```
 
 The input and the status line sit on the last rows of the terminal from the first frame on. When azazel starts,
@@ -63,10 +63,11 @@ The colour of the rules tells you what `Enter` will do:
 
 | Rules | Meaning |
 |---|---|
-| border colour | Permission mode `ask` |
+| border colour | Permission mode `manual` |
 | `mode_plan` colour | Permission mode `plan` |
 | `mode_edits` colour | Permission mode `accept-edits` |
 | `mode_auto` colour | Permission mode `auto` |
+| `error` colour | Permission mode `bypass`: nothing is asked and no guard applies |
 | `bash` colour (pink) | The input starts with `!`: it runs as a shell command |
 
 ### Popups
@@ -85,7 +86,7 @@ the middle of the window, over the transcript, which is dimmed behind it:
   │   openrouter/anthropic/opus   ctx 200k · $15/$75                 │
   ╰─ type to filter · ↑↓ move · enter pick · ctrl+f favourite ───────╯
 ──────────────────────────────────────────────────────────────────────
-ask · ⑂ main · ~/src/app                           ⬢ claude-opus-5-5
+manual · ⑂ main · ~/src/app                        ⬢ claude-opus-5-5
 ```
 
 - The title is in the top edge and the keys are in the bottom edge. The box is nine tenths of the window wide
@@ -232,7 +233,7 @@ The file a `read`, `write` or `edit` card names is a link to that file in termin
 
 | Segment | Shown when | Content |
 |---|---|---|
-| mode | always | The permission mode: `ask`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
+| mode | always | The permission mode: `manual`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, `⚠ bypass`, in the colour of the input rules (`bypass` in the colour of errors) |
 | `coordinator` | [coordinator mode](team.md#coordinator-mode) is on | The lead plans and delegates only |
 | `⑂ branch` | the project is a git repository | The checked-out branch |
 | directory | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
@@ -273,7 +274,7 @@ always stays. Only then is the model shortened, and after that left out.
 | `Esc` | `abort` | Interrupt the lead agent. Twice within a second on an empty, idle input: open `/rewind` |
 | `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits |
 | `Ctrl+D` | `exit` | Exit when the input is empty |
-| `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `ask`, `accept-edits`, `auto` |
+| `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `manual`, `accept-edits`, `auto`. `bypass` is not a step: it is entered with `/mode bypass` and confirmed |
 | `Alt+A` | `agent_hub` | Open the agent hub |
 | `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output; in the [compact style](#compact-style), also write the last group of calls as full cards |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
@@ -448,7 +449,7 @@ Models, permissions and setup:
 |---|---|
 | `/model [name [fallback …]]` | Pick the model, or set a chain; part of a name or `@role` works too |
 | `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `/mode [mode]` | Pick or set the permission mode |
+| `/mode [mode]` | Pick or set the permission mode. `bypass` opens a warning box that starts on `No`; see [permissions](permissions.md#bypass) |
 | `/permissions` | The permission rules in effect and where they come from. `d` removes a rule added in this session or remembered with "always allow"; `a` adds one (`allow shell(cargo test:*)`), for the session or saved. Rules from config files are shown with the file to edit |
 | `/forget-approvals` | Forget every remembered approval and every rule added in this session |
 | `/trust [yes\|no]` | Whether this project is trusted and what that covers; `yes` or `no` records the decision, a restart applies it |

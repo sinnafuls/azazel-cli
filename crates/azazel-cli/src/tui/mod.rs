@@ -882,9 +882,10 @@ impl Tui {
         }
         match self.backend.mode() {
             PermissionMode::Plan => Role::ModePlan,
-            PermissionMode::Ask => Role::Border,
+            PermissionMode::Manual => Role::Border,
             PermissionMode::AcceptEdits => Role::ModeEdits,
             PermissionMode::Auto => Role::ModeAuto,
+            PermissionMode::Bypass => Role::Error,
         }
     }
 
@@ -1389,7 +1390,8 @@ impl Tui {
             }
             UiRequest::Approval { request, reply } => {
                 let body = overlay::approval_body(&request.subjects, &request.input);
-                let (items, rows) = approval_rows(request.rule.as_deref(), request.destructive);
+                let (items, rows) =
+                    approval_rows(request.rule.as_deref(), request.destructive, request.secret);
                 let title = format!("{} wants to use {}", request.agent.id, request.tool);
                 // A stray Enter must not approve a command that destroys work: start on "Deny".
                 let deny = rows.iter().position(|row| *row == ApprovalRow::Deny);
@@ -1533,9 +1535,8 @@ impl Tui {
             Some("clear_or_exit") => self.on_interrupt(),
             Some("exit") if self.editor.is_empty() => self.quit = true,
             Some("cycle_mode") => {
-                let modes = PermissionMode::ALL;
-                let current = modes.iter().position(|m| *m == self.backend.mode()).unwrap_or(0);
-                self.set_mode(modes[(current + 1) % modes.len()]).await;
+                // Bypass is not a step of the cycle: it is entered by name, and confirmed.
+                self.set_mode(self.backend.mode().next()).await;
             }
             Some("toggle_tool_output") => {
                 self.expand_tools = !self.expand_tools;
@@ -1898,6 +1899,11 @@ impl Tui {
                     self.set_mode(*mode).await;
                 }
             }
+            Action::Bypass => {
+                if choice == 1 {
+                    self.apply_mode(PermissionMode::Bypass).await;
+                }
+            }
             Action::Theme(names) => {
                 if let Some(name) = names.get(choice) {
                     self.set_theme(name);
@@ -2040,7 +2046,17 @@ impl Tui {
         }
     }
 
+    /// Changes the session's mode. Entering bypass is asked about first, with "No" as the
+    /// answer a stray key gives.
     async fn set_mode(&mut self, mode: PermissionMode) {
+        let current = self.backend.mode();
+        if mode != PermissionMode::Bypass || current == PermissionMode::Bypass {
+            return self.apply_mode(mode).await;
+        }
+        self.overlay = Some(Overlay::bypass_warning(current));
+    }
+
+    async fn apply_mode(&mut self, mode: PermissionMode) {
         if let Err(why) = self.backend.set_mode(mode).await {
             self.fail(&why);
         }

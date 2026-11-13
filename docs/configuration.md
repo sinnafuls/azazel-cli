@@ -109,11 +109,11 @@ thinking = "low"
 
 | Table | Key | Default | Meaning |
 |---|---|---|---|
-| `[permissions]` | `mode` | `"ask"` | `plan`, `ask`, `accept-edits` or `auto`; see [permissions](permissions.md) |
+| `[permissions]` | `mode` | `"manual"` | `plan`, `manual`, `accept-edits`, `auto` or `bypass`; see [permissions](permissions.md#modes). `ask`, the name `manual` had before 0.5, is refused with a message that says so. A project may set `bypass` only once it is trusted |
 | | `allow`, `ask`, `deny` | `[]` | Rules such as `"shell(cargo build:*)"` |
 | | `additional_dirs` | `[]` | Directories outside the project agents may work in (relative to the project root) |
-| | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`) needs in every mode: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
-| | `secret_paths` | `[]` | Patterns, as in `.gitignore`, added to the built-in list of secret files |
+| | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`, `curl … \| sh`) needs in every mode but `bypass`: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
+| | `secret_paths` | `[]` | Patterns, written like the path of a rule, added to the built-in list of [secret files](permissions.md#secret-files): reading or writing one is asked about in every mode but `bypass` |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
 | | `max_files` | `100000` | Checkpoints turn off for projects with more files than this |
 | | `timeout_ms` | `10000` | Longest one snapshot may take (1000 to 300000); past it checkpoints turn off for the session |
@@ -148,7 +148,7 @@ thinking = "low"
 | | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
-| | `redact_output` | `false` | Replace secrets in tool output with `[redacted:<kind>]` before the model sees them |
+| | `redact_output` | `false` | Replace secrets in tool results with `[redacted:<kind>]` before the model and the session file get them; see [permissions](permissions.md#secrets-in-tool-results) |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
@@ -246,7 +246,8 @@ back. A project needs a trust decision when it has any of:
   or go is installed: checking a file with them runs the project's build scripts, macros or lint configuration;
   see [tools](tools.md#checkers-that-run-the-projects-code)
 
-Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
+Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
+is `bypass`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`.
 
@@ -280,7 +281,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `-p`, `--print` | Run the prompt without the UI and print the result |
 | `--model <SPEC>` | `provider/model[:thinking]`, `@role`, or part of a model's name (`fable`); repeat to add fallbacks. Concrete models become this run's `default` role |
 | `--thinking <LEVEL>` | `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
-| `--mode <MODE>` | Permission mode: `plan`, `ask`, `accept-edits`, `auto` |
+| `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
 | `-r`, `--session <PATH\|ID>` | Open a session by its file or its id (a unique prefix is enough); `--resume` is the old name |

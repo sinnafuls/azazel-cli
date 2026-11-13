@@ -7,11 +7,25 @@ GitHub are its section here.
 
 ### Added
 
+- Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
+  It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
+  with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
+  the project is trusted.
+- Secret files (`.env`, `*.pem`, `*.key`, SSH keys, cloud and package credentials under the home directory,
+  azazel's own login file, and `permissions.secret_paths`) are asked about before an agent reads or writes one,
+  in every mode but `bypass`. A shell command that names one counts (`cat .env`, `curl -d @.env`). The prompt
+  offers `Allow once` and `Allow this session`, never `Always allow`; `grep` over a directory passes them by.
+- A download piped into an interpreter (`curl … | sh`, `iwr … | iex`, `bash <(curl …)`) is a destructive
+  command: asked about in every mode but `bypass`.
+- `tools.redact_output = true` takes secrets out of tool results before the model and the session file get
+  them; the tool card says how many were redacted.
+- RPC: `approval_request` carries `secret`; ACP offers `Allow this file for this session` for a secret file.
 - Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
-  `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose process was killed in the middle of a run says so when it is
-  opened again, and `/continue`, `azazel -c --continue-run` and the RPC command `continue_run` go on with it:
-  calls that only read are run again, other calls that had started are reported to the model as interrupted,
-  and a request that was never answered is sent again.
+  `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose
+  process was killed in the middle of a run says so when it is opened again, and `/continue`,
+  `azazel -c --continue-run` and the RPC command `continue_run` go on with it: calls that only read are run
+  again, other calls that had started are reported to the model as interrupted, and a request that was never
+  answered is sent again.
 - `azazel ps` lists a background session whose process died in the middle of a run as `interrupted`, and
   `azazel attach <id>` starts it again on the same session, with the options and mode it had, and goes on
   (`[session] resume_runs = false` makes it wait for `/continue`). `azazel kill <id>` forgets it.
@@ -25,6 +39,15 @@ GitHub are its section here.
 
 ### Changed
 
+- The permission mode `ask` is now called `manual`, everywhere a mode is named: `permissions.mode`, `--mode`,
+  `/mode`, RPC `set_mode` and `get_state`, ACP session modes, the `permission_mode` of hooks, `ctx.mode` in
+  Luau. The old name is refused with a message that names the new one. The `ask` list of rules is unchanged.
+- One mode governs the whole session. A change of mode applies at once to the lead and to every sub-agent,
+  running ones included; an agent definition can only narrow it (`mode: plan`).
+- `auto` mode keeps every safety guard: it asks about protected paths, secret files and destructive commands.
+- Plan mode refuses a write or a command before a protected path or an `ask` rule can turn it into a question.
+- Approving a plan leaves plan mode only when the session is in it: a plan from an agent whose definition keeps
+  it in plan mode no longer changes the session's mode.
 - `azazel attach` no longer refuses a second client, and `attach --take` disconnects every client.
 - Responses of a background session go to the connection that sent the command, under the id that client
   chose, so two clients need not agree on ids.

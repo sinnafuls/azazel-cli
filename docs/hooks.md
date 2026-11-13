@@ -69,7 +69,7 @@ Hook arrays concatenate across config layers: hooks from `~/.azazel/config.toml`
 | `worktree_remove` | `WorktreeRemove` | `worktree_path`, `agent_id` | Cannot block. Fires when that worktree was removed |
 | `setup` | `Setup` | `trigger`: `init` or `trust` | Cannot block. Fires when `azazel init` finished, and the first time a project runs trusted |
 
-Every hook also receives `session_id`, `transcript_path`, `cwd`, `agent_id` (`lead` or a sub-agent id) and `permission_mode`. `tool_response` is `{ "content": "<text>", "is_error": bool, "details"?: ... }`.
+Every hook also receives `session_id`, `transcript_path`, `cwd`, `agent_id` (`lead` or a sub-agent id) and `permission_mode` (`plan`, `manual`, `accept-edits`, `auto` or `bypass`: the session's mode, or `plan` for an agent whose definition keeps it there). `tool_response` is `{ "content": "<text>", "is_error": bool, "details"?: ... }`.
 
 ```json
 {
@@ -78,7 +78,7 @@ Every hook also receives `session_id`, `transcript_path`, `cwd`, `agent_id` (`le
   "transcript_path": "/home/me/.azazel/projects/app-1a2b3c4d/sessions/....jsonl",
   "cwd": "/home/me/app",
   "agent_id": "lead",
-  "permission_mode": "ask",
+  "permission_mode": "manual",
   "tool_name": "shell",
   "tool_input": { "command": "git commit -m wip" },
   "tool_use_id": "call_1"
@@ -110,7 +110,7 @@ JSON fields:
 | `hookSpecificOutput.updatedInput` | `pre_tool_use` only: an object that replaces the tool's whole input |
 | `hookSpecificOutput.additionalContext` | Text added to the prompt (`user_prompt_submit`, `session_start`) or to the tool result (`post_tool_use`, `post_tool_use_failure`) |
 
-When one answer says several things the strictest wins: `continue: false`, then `deny`, then `block`, then `ask`, then `allow`. An `allow` never overrides a deny rule, the push guard or a protected path, and a rewritten input is checked against them again.
+When one answer says several things the strictest wins: `continue: false`, then `deny`, then `block`, then `ask`, then `allow`. An `allow` never overrides a deny rule, the push guard, a protected path, a secret file or a destructive command, and a rewritten input is checked against them again. In `bypass` mode hooks still run and may still block; `ask` then has no prompt left to keep.
 
 Hooks of one event run in order. The first one that blocks ends the chain; input rewrites accumulate, each hook seeing what the previous ones left.
 

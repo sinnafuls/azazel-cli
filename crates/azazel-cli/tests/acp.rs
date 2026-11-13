@@ -181,13 +181,13 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .block_task()
             .await?;
         let modes = session.modes.clone().unwrap();
-        assert_eq!(modes.current_mode_id.to_string(), "ask");
+        assert_eq!(modes.current_mode_id.to_string(), "manual");
         let offered: Vec<String> = modes
             .available_modes
             .iter()
             .map(|mode| mode.id.to_string())
             .collect();
-        assert_eq!(offered, ["plan", "ask", "accept-edits", "auto"]);
+        assert_eq!(offered, ["plan", "manual", "accept-edits", "auto"]);
         let session_id = session.session_id;
 
         // A prompt with an embedded file: the write needs the user's word, the read does not.
@@ -310,6 +310,15 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .block_task()
             .await;
         assert!(unknown.is_err());
+        // Bypass was not offered, since azazel was not started in it, and is not accepted; the
+        // old name of `manual` is an error too. The mode stays what it was.
+        for refused in ["bypass", "ask"] {
+            let answer = agent
+                .send_request(acp::SetSessionModeRequest::new(session_id.clone(), refused))
+                .block_task()
+                .await;
+            assert!(answer.is_err(), "{refused}");
+        }
 
         // A prompt is cancelled while its reply is on the way.
         let slow = agent.send_request(acp::PromptRequest::new(session_id.clone(), vec![text("slow")]));

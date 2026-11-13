@@ -127,6 +127,14 @@ impl Host for Server {
             model,
             session,
         } = request;
+        // A client is another program, often another agent: it cannot lift the guards for itself.
+        if mode.as_deref() == Some("bypass") {
+            return Err(
+                "bypass mode is not available to an MCP client; the person who starts `azazel mcp serve` \
+                 chooses it with `--mode bypass`"
+                    .to_string(),
+            );
+        }
         let built = build_app(&self.extensions, |cli| {
             if let Some(cwd) = cwd {
                 cli.cwd = Some(PathBuf::from(cwd));

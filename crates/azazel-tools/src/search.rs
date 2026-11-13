@@ -6,6 +6,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_core::PermissionState;
 use globset::{GlobBuilder, GlobMatcher};
 use grep_regex::RegexMatcherBuilder;
 use grep_searcher::{
@@ -236,7 +237,14 @@ impl Sink for Collector<'_> {
     }
 }
 
-fn grep_files(input: &GrepInput, base: &Path, cwd: &Path) -> Result<String, String> {
+/// `withheld` says which files of a directory are left out: the secret files, which are searched
+/// only when the call names one and the user allows it.
+fn grep_files(
+    input: &GrepInput,
+    base: &Path,
+    cwd: &Path,
+    withheld: &dyn Fn(&Path) -> bool,
+) -> Result<String, String> {
     let mut builder = RegexMatcherBuilder::new();
     builder.case_insensitive(input.ignore_case).multi_line(true);
     if input.multiline {
@@ -264,11 +272,17 @@ fn grep_files(input: &GrepInput, base: &Path, cwd: &Path) -> Result<String, Stri
     let limit = input.limit.unwrap_or(DEFAULT_GREP_LIMIT).max(1);
     let mut remaining = limit;
     let mut lines = Vec::new();
+    let mut skipped = 0;
     let files: Box<dyn Iterator<Item = (PathBuf, PathBuf)>> = if base.is_file() {
         let name = base.file_name().map(PathBuf::from).unwrap_or_default();
         Box::new(std::iter::once((base.to_path_buf(), name)))
     } else {
-        Box::new(walk(base))
+        Box::new(walk(base).filter(|(path, relative)| {
+            let wanted = filter.as_ref().is_none_or(|f| f.is_match(relative));
+            let hidden = wanted && withheld(path);
+            skipped += usize::from(hidden);
+            !hidden
+        }))
     };
     for (path, relative) in files {
         if remaining == 0 {
@@ -304,14 +318,25 @@ fn grep_files(input: &GrepInput, base: &Path, cwd: &Path) -> Result<String, Stri
             }
         }
     }
+    let left_out = match skipped {
+        0 => None,
+        1 => Some("[1 secret file was not searched; name it as `path` to search it]".to_string()),
+        n => Some(format!(
+            "[{n} secret files were not searched; name one as `path` to search it]"
+        )),
+    };
     if lines.is_empty() {
-        return Ok("no matches".to_string());
+        return Ok(match left_out {
+            Some(note) => format!("no matches\n{note}"),
+            None => "no matches".to_string(),
+        });
     }
     if remaining == 0 {
         lines.push(format!(
             "[limit of {limit} reached; narrow the search or raise limit]"
         ));
     }
+    lines.extend(left_out);
     Ok(lines.join("\n"))
 }
 
@@ -372,7 +397,11 @@ impl Tool for GrepTool {
             return ToolOutput::error(format!("{}: no such file or directory", base.display()));
         }
         let cwd = ctx.cwd.clone();
-        match tokio::task::spawn_blocking(move || grep_files(&input, &base, &cwd)).await {
+        // Asking about a secret file is the gate's part, and it asks when a call names one. A
+        // search of a directory names none, so it passes them by.
+        let permissions = ctx.services.get::<PermissionState>();
+        let withheld = move |path: &Path| permissions.as_ref().is_some_and(|state| state.withholds(path));
+        match tokio::task::spawn_blocking(move || grep_files(&input, &base, &cwd, &withheld)).await {
             Ok(Ok(text)) => ToolOutput::text(text),
             Ok(Err(error)) => ToolOutput::error(error),
             Err(e) => ToolOutput::error(format!("grep failed: {e}")),
@@ -418,7 +447,7 @@ mod tests {
 
     fn grep(dir: &Path, input: Value) -> String {
         let input: GrepInput = serde_json::from_value(input).unwrap();
-        grep_files(&input, dir, dir).unwrap()
+        grep_files(&input, dir, dir, &|_| false).unwrap()
     }
 
     #[test]
@@ -464,6 +493,42 @@ mod tests {
     }
 
     #[test]
+    fn grep_passes_by_the_files_that_are_withheld_and_says_so() {
+        let dir = tree();
+        std::fs::write(dir.path().join(".env"), "answer=secret\n").unwrap();
+        std::fs::write(dir.path().join("src/.env.local"), "answer=secret\n").unwrap();
+        let secret = |path: &Path| {
+            path.file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with(".env"))
+        };
+        let search = |input: Value, base: &Path| {
+            let input: GrepInput = serde_json::from_value(input).unwrap();
+            grep_files(&input, base, dir.path(), &secret).unwrap()
+        };
+        assert_eq!(
+            search(json!({"pattern": "answer", "mode": "files"}), dir.path()),
+            "src/main.rs\n[2 secret files were not searched; name one as `path` to search it]"
+        );
+        // Only what the search would have read counts, and nothing found is still said.
+        assert_eq!(
+            search(json!({"pattern": "answer=", "glob": "src/*"}), dir.path()),
+            "no matches\n[1 secret file was not searched; name it as `path` to search it]"
+        );
+        assert_eq!(
+            search(
+                json!({"pattern": "answer", "glob": "*.rs", "mode": "files"}),
+                dir.path()
+            ),
+            "src/main.rs"
+        );
+        // A file that is named is the gate's to ask about, not the search's to skip.
+        assert_eq!(
+            search(json!({"pattern": "answer"}), &dir.path().join(".env")),
+            ".env:1:answer=secret"
+        );
+    }
+
+    #[test]
     fn grep_modes_glob_filter_and_limit() {
         let dir = tree();
         let mut files: Vec<String> = grep(dir.path(), json!({"pattern": "fn ", "mode": "files"}))
@@ -491,7 +556,7 @@ mod tests {
         let single: GrepInput = serde_json::from_value(json!({"pattern": "add"})).unwrap();
         let file = dir.path().join("src/util/math.rs");
         assert_eq!(
-            grep_files(&single, &file, dir.path()).unwrap(),
+            grep_files(&single, &file, dir.path(), &|_| false).unwrap(),
             "src/util/math.rs:1:pub fn add(a: i32, b: i32) -> i32 {"
         );
         let spanning = grep(
@@ -505,13 +570,13 @@ mod tests {
 
         let across: GrepInput = serde_json::from_value(json!({"pattern": "a\\nb"})).unwrap();
         assert!(
-            grep_files(&across, dir.path(), dir.path())
+            grep_files(&across, dir.path(), dir.path(), &|_| false)
                 .unwrap_err()
                 .contains("multiline")
         );
         let broken: GrepInput = serde_json::from_value(json!({"pattern": "("})).unwrap();
         assert!(
-            grep_files(&broken, dir.path(), dir.path())
+            grep_files(&broken, dir.path(), dir.path(), &|_| false)
                 .unwrap_err()
                 .starts_with("invalid pattern")
         );

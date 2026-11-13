@@ -282,7 +282,14 @@ impl UiBridge for Bridge {
             "Allow",
             acp::PermissionOptionKind::AllowOnce,
         )];
-        if let Some(rule) = request.rule.as_ref().filter(|_| !request.destructive) {
+        if request.secret && !request.destructive {
+            // A secret file is never allowed for good.
+            options.push(acp::PermissionOption::new(
+                "allow_session",
+                "Allow this file for this session",
+                acp::PermissionOptionKind::AllowAlways,
+            ));
+        } else if let Some(rule) = request.rule.as_ref().filter(|_| !request.destructive) {
             options.push(acp::PermissionOption::new(
                 "allow_session",
                 "Allow for this session",
@@ -412,20 +419,30 @@ impl Session {
         cancel.clone()
     }
 
+    /// Whether the client may switch to `mode`. Bypass needs the user's confirmation, and the
+    /// protocol has no way to ask for one: it is offered only when azazel was started in it
+    /// (`--mode bypass`, or the user's configuration), where that confirmation was given.
+    fn offers(&self, mode: PermissionMode) -> bool {
+        mode != PermissionMode::Bypass
+            || self.app.config.permissions.mode == PermissionMode::Bypass
+            || self.app.permissions.mode() == PermissionMode::Bypass
+    }
+
     fn modes(&self) -> acp::SessionModeState {
         let modes = PermissionMode::ALL
             .iter()
+            .filter(|mode| self.offers(**mode))
             .map(|mode| {
-                let (name, description) = match mode {
-                    PermissionMode::Plan => ("Plan", "Reads and plans; changes nothing"),
-                    PermissionMode::Ask => ("Ask", "Asks before it changes files or runs commands"),
-                    PermissionMode::AcceptEdits => (
-                        "Accept edits",
-                        "Edits files without asking; asks before it runs commands",
-                    ),
-                    PermissionMode::Auto => ("Auto", "Works without asking"),
+                let name = match mode {
+                    PermissionMode::Plan => "Plan",
+                    PermissionMode::Manual => "Manual",
+                    PermissionMode::AcceptEdits => "Accept edits",
+                    PermissionMode::Auto => "Auto",
+                    PermissionMode::Bypass => "Bypass",
                 };
-                acp::SessionMode::new(mode.to_string(), name).description(description.to_string())
+                let summary = mode.summary();
+                let description = format!("{}{}", summary[..1].to_ascii_uppercase(), &summary[1..]);
+                acp::SessionMode::new(mode.to_string(), name).description(description)
             })
             .collect();
         acp::SessionModeState::new(self.app.permissions.mode().to_string(), modes)
@@ -802,6 +819,12 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
                         .to_string()
                         .parse()
                         .map_err(|e: String| Error::invalid_params().data(Value::String(e)))?;
+                    if !session.offers(wanted) {
+                        return Err(Error::invalid_params().data(Value::String(
+                            "bypass mode needs the user's confirmation: start azazel with `--mode bypass`"
+                                .to_string(),
+                        )));
+                    }
                     session.app.permissions.set_mode(wanted);
                     Ok(acp::SetSessionModeResponse::new())
                 });

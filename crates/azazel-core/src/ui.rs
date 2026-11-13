@@ -33,13 +33,17 @@ pub struct ApprovalRequest {
     /// interface should not offer approval as the default answer.
     #[serde(default)]
     pub destructive: bool,
+    /// The call reads or writes a secret file (`.env`, a private key). It can be allowed once
+    /// or for the session; an interface should not offer to remember it.
+    #[serde(default)]
+    pub secret: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
     AllowOnce,
-    /// Allow, and allow what `ApprovalRequest::rule` covers until the session ends. Nothing is
-    /// written to a file.
+    /// Allow, and allow what `ApprovalRequest::rule` covers until the session ends; for a
+    /// secret file, the file. Nothing is written to a file.
     AllowSession,
     /// Allow and remember `ApprovalRequest::rule`.
     Always,
