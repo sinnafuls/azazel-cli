@@ -23,7 +23,8 @@ GitHub are its section here.
   `retry`, `direct`), the model that answered last, and the conversation. The session records the choice
   and, per request, the model it went to with the virtual model behind it (`request_started` has `via`);
   the status line shows `virtual/auto -> provider/model`. Rust extensions use `Registrar::virtual_model`.
-  `examples/extensions/auto_model.luau` is a small router.
+  `examples/extensions/auto_model.luau` is a small router. A virtual model is refused while `--provider`
+  keeps a run to one provider's models.
 - RPC: `State` has `via` and `virtual_models`.
 - Interactive programs: `shell` with `interactive: true` runs a command in a real terminal (a pseudo-terminal;
   ConPTY on Windows) for programs that ask questions, wait for keys or draw a screen: editors, REPLs,
