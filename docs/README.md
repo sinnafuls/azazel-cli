@@ -12,7 +12,7 @@ New here? Read [getting started](getting-started.md) first.
 | [Models and logins](models-and-logins.md) | Providers, roles and fallback chains, thinking levels, API keys, subscription and cloud sign-in |
 | [Permissions](permissions.md) | Permission modes, rules, the approval prompt, destructive commands, the git push guard, plan mode |
 | [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, exporting and sharing, bug reports, compaction, `/rewind` |
-| [Background sessions and remote work](background-and-remote.md) | `azazel bg`, `ps`, `logs`, `attach`, `kill`; working on another machine with `--ssh` |
+| [Background sessions, schedules and remote work](background-and-remote.md) | `azazel bg`, `ps`, `logs`, `attach`, `kill`; `azazel schedule` and triggers; working on another machine with `--ssh` |
 
 ## Working as a team
 

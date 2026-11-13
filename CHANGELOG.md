@@ -7,6 +7,23 @@ GitHub are its section here.
 
 ### Added
 
+- Schedules: `azazel schedule add "0 9 * * 1-5" "<prompt>"`, `add every 10m "<prompt>"` and
+  `add at +2h "<prompt>"` run a prompt at a time, in a background session of its own or, with `--session`,
+  in one session every time; `schedule list`, `rm` and `run` manage them. They are kept per project and
+  handed to the system's scheduler (Task Scheduler, cron, launchd), so nothing of azazel has to be running.
+  A run that was missed is not caught up, and a run is skipped while the one before it is still at work.
+  `[schedule] register = false` keeps them without the system's scheduler, for `azazel schedule run --due`.
+- Triggers: `azazel schedule add --on ci-failure "<prompt>"` runs the prompt when a CI run fails (read
+  with `gh run list` every `schedule.poll_secs` seconds), `--on file:<glob>` when a matching file changes.
+  A session that is open in the project (the UI or a background session) watches for them and gets the
+  prompt as a message; with several open, one of them owns each trigger.
+- `/loop`: `/loop 5 <prompt>` sends a prompt five times, `/loop 10m <prompt>` every ten minutes, and
+  `/loop until "<condition>" <prompt>` until the `smol` role, shown the end of the conversation, says the
+  condition holds. `Esc`, a round that fails and a check that fails stop it; `schedule.loop_max` (50) is
+  the most rounds an interval or a condition takes.
+- The `schedule` tool: an agent adds, lists and removes schedules and triggers; adding and removing ask
+  for permission like a command.
+- `azazel doctor` says which scheduler starts the schedules and whether `gh` is there for a CI trigger.
 - Interactive programs: `shell` with `interactive: true` runs a command in a real terminal (a pseudo-terminal;
   ConPTY on Windows) for programs that ask questions, wait for keys or draw a screen: editors, REPLs,
   installers, `git rebase -i`, logins. The call returns the first screen and a terminal id, and the new `pty`

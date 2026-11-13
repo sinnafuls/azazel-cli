@@ -11,6 +11,7 @@ mod fleet;
 mod form;
 mod gitcmd;
 mod input;
+mod loops;
 mod overlay;
 mod pager;
 mod panels;
@@ -251,6 +252,14 @@ enum Internal {
     CommitDraft(gitcmd::Draft),
     /// A reply to a request made outside the conversation (`/consult`, `/handoff`, `/name`).
     Side(sessions::SideEvent),
+    /// The judge of a `/loop until` has answered.
+    LoopVerdict {
+        id: u64,
+        verdict: Result<crate::loops::Verdict, String>,
+    },
+    /// A trigger of the project happened, or cannot be watched.
+    #[cfg(feature = "detach")]
+    Trigger(crate::schedule::triggers::Event),
     /// A session was shared, a bug report written or its issue opened; or not.
     Sent(share::Sent),
 }
@@ -292,6 +301,10 @@ pub struct Tui {
     queued: Queue,
     /// The lead just finished a run without being interrupted: the next queued message may go.
     run_ended: bool,
+    /// The `/loop` in progress.
+    looping: Option<loops::Looping>,
+    /// How many loops were started, to tell them apart.
+    loop_serial: u64,
     /// Drafts parked with `ctrl+s`, each with the images that were attached to it.
     stashed: Vec<(Draft, Vec<Block>)>,
     /// Keeps the input and the status line on the last rows of the screen.
@@ -493,6 +506,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         favourites: tui_config.favourites.iter().map(ToString::to_string).collect(),
         queued: Queue::default(),
         run_ended: false,
+        looping: None,
+        loop_serial: 0,
         stashed: Vec::new(),
         floor: Floor::new(height),
         transcript: Vec::new(),
@@ -542,6 +557,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         tui.warn(&problem);
     }
     tui.backend.started().await;
+    tui.watch_triggers();
     // A session that is already at work when the UI opens on it shows as working.
     if tui.backend.status().busy {
         tui.busy = true;
@@ -719,6 +735,7 @@ impl Tui {
                 break;
             }
             let popup_deadline = self.popup_deadline();
+            let loop_deadline = self.loop_deadline();
             tokio::select! {
                 event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
@@ -755,6 +772,8 @@ impl Tui {
                 _ = wake_at(self.attention.next_wake()) => {}
                 // The popup screen is left a moment after its box closed.
                 _ = wake_at(popup_deadline) => {}
+                // The next round of a `/loop` is due.
+                _ = wake_at(loop_deadline) => self.loop_tick().await,
                 // A program in a terminal drew something, or started, or ended.
                 _ = term::changed(&mut self.term_changes) => {}
             }
@@ -771,12 +790,20 @@ impl Tui {
         match incoming {
             Incoming::Lead(event) => {
                 let ended = event.is_terminal();
+                let ok = matches!(
+                    &event,
+                    AgentEvent::Idle { stop } if !matches!(stop, StopReason::Aborted | StopReason::Error)
+                );
                 self.on_agent(event);
                 if ended {
                     // What the run added to the session is there to read from now on.
                     self.sync().await;
                 }
+                let waiting = self.queued.len();
                 self.send_queued().await;
+                if ended {
+                    self.loop_after_run(ok, self.queued.len() != waiting).await;
+                }
             }
             Incoming::Request(request) => self.waiting.push_back(request),
             Incoming::Team(event) => self.on_team(event),
@@ -1187,8 +1214,9 @@ impl Tui {
                 // An interrupted run keeps what is queued for the user to send or take back.
                 self.run_ended = stop != StopReason::Aborted;
                 self.voice_run_ended(&stop);
-                // With a message queued the work goes on: nothing to call the user for yet.
-                if self.run_ended && self.queued.is_empty() {
+                // With a message queued, or a loop that sends the next round, the work goes
+                // on: nothing to call the user for yet.
+                if self.run_ended && self.queued.is_empty() && self.looping.is_none() {
                     self.attend_end(None, took);
                 }
                 match stop {
@@ -1268,6 +1296,9 @@ impl Tui {
             Internal::Btw(update) => return self.on_btw(update),
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Side(event) => return self.on_side(event).await,
+            Internal::LoopVerdict { id, verdict } => return self.on_loop_verdict(id, verdict).await,
+            #[cfg(feature = "detach")]
+            Internal::Trigger(event) => return self.on_trigger(event).await,
             Internal::Sent(sent) => return self.on_sent(sent),
             Internal::Command(outcome) => {
                 return match outcome {
@@ -1645,6 +1676,14 @@ impl Tui {
     }
 
     async fn on_escape(&mut self) {
+        // A loop ends with the round it is in.
+        if self.looping.is_some() {
+            self.stop_loop("loop stopped");
+            if self.busy {
+                self.backend.abort();
+            }
+            return;
+        }
         if self.busy {
             self.backend.abort();
             return;

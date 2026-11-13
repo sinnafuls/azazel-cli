@@ -40,6 +40,8 @@ use crate::detach::socket::{self, Accept, Listener};
 use crate::print::{EXIT_FAILED, EXIT_OK};
 use crate::rpc::{self, Waiting};
 use crate::running::{self, Entry, Lock};
+use crate::schedule::Scheduler;
+use crate::schedule::triggers::{self, Dispatch};
 
 /// The ids of the commands the host itself sends the session. Their responses stay here.
 const STATE_ID: &str = "azazel-host:state";
@@ -289,13 +291,14 @@ pub async fn run(app: Arc<App>, active: Active, options: Options) -> u8 {
         return EXIT_FAILED;
     }
     host.settle();
+    let watched = triggers::watch_app(&app);
     let commands = futures::stream::unfold(commands, |mut commands| async {
         let line = commands.recv().await?;
         Some((line, commands))
     });
     tokio::join!(
         rpc::serve_lines(app, active, commands, lines, waiting),
-        host.serve(listener, frames),
+        host.serve(listener, frames, watched),
     );
     let _ = std::fs::remove_file(running::entry_file(&home, &id));
     // A named pipe goes with the listener; a socket file may be left when the listener was
@@ -312,8 +315,16 @@ fn asks(frame: &Value) -> bool {
 }
 
 impl Host {
-    async fn serve(&mut self, listener: Listener, mut frames: mpsc::UnboundedReceiver<Option<String>>) {
+    async fn serve(
+        &mut self,
+        listener: Listener,
+        mut frames: mpsc::UnboundedReceiver<Option<String>>,
+        watched: Option<(Arc<Scheduler>, mpsc::UnboundedReceiver<triggers::Event>)>,
+    ) {
         let (reports, mut msgs) = mpsc::unbounded_channel::<Msg>();
+        // The triggers of the project (`azazel schedule add --on …`), watched while this
+        // session runs.
+        let (scheduler, mut happened) = watched.unzip();
         let mut connections = 0u64;
         let mut tick = tokio::time::interval(TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -340,9 +351,41 @@ impl Host {
                         tokio::time::sleep(Duration::from_millis(100)).await;
                     }
                 },
+                Some(event) = async { happened.as_mut()?.recv().await } => {
+                    if let Some(scheduler) = &scheduler {
+                        self.on_trigger(scheduler, event).await;
+                    }
+                }
                 _ = tick.tick() => self.on_tick(),
             }
         }
+    }
+
+    /// A trigger happened: its prompt goes to the lead, after what the lead is doing, or to a
+    /// background session of its own.
+    async fn on_trigger(&mut self, scheduler: &Scheduler, event: triggers::Event) {
+        let (schedule, text) = match event {
+            triggers::Event::Fire { schedule, text } => (schedule, text),
+            triggers::Event::Note(note) => return self.announce(Level::Warn, note),
+        };
+        match triggers::dispatch(scheduler, &schedule, &text).await {
+            Dispatch::Done(line) => self.announce(Level::Info, line),
+            Dispatch::Here if self.input.is_none() => {}
+            Dispatch::Here => {
+                self.user_input(None, "prompt", &text);
+                self.send(json!({ "id": PROMPT_ID, "type": "prompt", "text": text }));
+                self.refresh();
+            }
+        }
+    }
+
+    /// Says something to whoever listens to the session: its clients and its hooks.
+    fn announce(&self, level: Level, text: String) {
+        let bus = self.app.registry.bus.clone();
+        tokio::spawn(async move {
+            let mut event = Event::Notification { level, text };
+            bus.emit(&mut event).await;
+        });
     }
 
     /// Hands the session a command of the host's own.

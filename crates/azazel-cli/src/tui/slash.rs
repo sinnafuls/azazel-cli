@@ -162,6 +162,11 @@ const BUILTIN: &[(&str, &str)] = &[
         "commit",
         "Commit with a drafted message you can edit: /commit [what to say]",
     ),
+    (
+        "loop",
+        "Send a prompt again and again: /loop 5 <prompt>, /loop 10m <prompt>, /loop until \"<condition>\" <prompt>; \
+         /loop stop ends it",
+    ),
     ("init", "Have the agent write AGENTS.md for this project"),
     ("doctor", "Check the installation and this project's setup"),
     #[cfg(feature = "voice")]
@@ -302,6 +307,7 @@ impl Tui {
             "btw" => self.btw_command(args),
             "diff" => self.diff_command(args).await,
             "commit" => self.commit_command(args).await,
+            "loop" => self.loop_command(args).await,
             "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),

@@ -436,6 +436,24 @@ When you dismiss the question or the form, or nobody is there to answer (print m
 
 With `async: true` the agent does not wait. The call returns `The question is with the user. The answer will reach you as a message; go on with what does not depend on it.` and the question is shown to you like any other. When you answer, the agent that asked receives the answers between `<user-answer>` tags: as a steer message before its next request while it works, as a new prompt when it has stopped. Dismissing the question sends `the user declined to answer` the same way. Use it for a decision that is needed later, while there is other work to do first.
 
+## Schedules
+
+| Tool | Input | Behaviour |
+|---|---|---|
+| `schedule` | `action` (`add`, `list`, `remove`), `when?`, `prompt?`, `session?` (`new`, `this`), `id?` | Adds, lists and removes the [schedules](background-and-remote.md#schedules) of the project |
+
+`add` takes `when` as `azazel schedule add` does (five cron fields, `every 10m`, `at +2h`, `at 17:30`),
+or `on ci-failure` and `on file:<glob>` for a [trigger](background-and-remote.md#triggers), and the
+`prompt` a run is given. A run starts a background session that knows nothing of the conversation, so
+the prompt has to stand on its own; `session: "this"` sends every run to the session the agent works in
+instead. The runs work as the session does at that moment: its model, thinking level, permission mode
+and settings.
+
+`add` and `remove` run things later with nobody watching, so they are asked about like a command
+(access `exec`): in `manual` and `accept-edits` mode you approve them, plan mode refuses them, and a
+run without a user refuses them unless a rule allows `schedule`. `list` only reads. The tool is not in
+builds without background sessions.
+
 ## Recalling the conversation
 
 | Tool | Input | Behaviour |
