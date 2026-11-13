@@ -213,6 +213,7 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
         ("transcript", vec![plain(KeyCode::F(2))]),
         ("retry", vec![plain(KeyCode::F(5))]),
         ("background", vec![ctrl('b')]),
+        ("terminal", vec![plain(KeyCode::F(3))]),
         ("voice", vec![ctrl(' ')]),
     ]
 }
@@ -488,7 +489,7 @@ mod tests {
     #[test]
     fn default_keymap_has_documented_bindings() {
         let keymap = Keymap::defaults();
-        let expected: [(&str, &[&str]); 24] = [
+        let expected: [(&str, &[&str]); 25] = [
             ("submit", &["enter"]),
             ("follow_up", &["alt+enter"]),
             ("newline", &["shift+enter", "ctrl+j"]),
@@ -512,6 +513,7 @@ mod tests {
             ("transcript", &["f2"]),
             ("retry", &["f5"]),
             ("background", &["ctrl+b"]),
+            ("terminal", &["f3"]),
             ("voice", &["ctrl+space"]),
         ];
         assert_eq!(keymap.actions().count(), expected.len());

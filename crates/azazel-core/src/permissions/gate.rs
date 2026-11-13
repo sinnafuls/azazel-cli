@@ -51,25 +51,65 @@ impl PermissionGate {
         }
     }
 
-    fn subject(&self, tool: &dyn Tool, input: &Value) -> Subject {
-        if tool.name() == "shell" {
-            let command = input
-                .get("command")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            let analysis = analyze(&command, self.posix_shell);
-            return Subject {
-                subjects: analysis.subjects(),
-                shell: Some(analysis),
-                command: Some(command),
-            };
-        }
+    /// A command line as what the rules for `shell` are matched against.
+    fn command(&self, command: String) -> Subject {
+        let analysis = analyze(&command, self.posix_shell);
         Subject {
-            subjects: tool.subjects(input),
-            shell: None,
-            command: None,
+            subjects: analysis.subjects(),
+            shell: Some(analysis),
+            command: Some(command),
         }
+    }
+
+    fn subject(&self, tool: &dyn Tool, input: &Value) -> Subject {
+        let command = match tool.name() {
+            "shell" => Some(
+                input
+                    .get("command")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            ),
+            // Typing into a program in a terminal, or stopping it, is allowed where running
+            // that program is: the tool names the command that runs there.
+            "pty" if tool.access(input) == Access::Exec => tool.subjects(input).into_iter().next(),
+            _ => None,
+        };
+        match command {
+            Some(command) => self.command(command),
+            None => Subject {
+                subjects: tool.subjects(input),
+                shell: None,
+                command: None,
+            },
+        }
+    }
+
+    /// What a `pty` call types into a terminal, as the command line it may well be: a shell
+    /// is a program too. It is held to the limits no mode lifts, like a command of `shell`.
+    fn typed(&self, tool: &dyn Tool, input: &Value) -> Option<Subject> {
+        if tool.name() != "pty" {
+            return None;
+        }
+        let text = input.get("text").and_then(Value::as_str)?.trim();
+        (!text.is_empty()).then(|| self.command(text.to_string()))
+    }
+
+    /// The call's subject and what it types, after the checks nothing overrides. The flag says
+    /// whether the call writes to a protected path.
+    fn checked(
+        &self,
+        agent: &AgentInfo,
+        tool: &dyn Tool,
+        input: &Value,
+    ) -> Result<(Subject, Option<Subject>, bool), String> {
+        let subject = self.subject(tool, input);
+        let protected = self.state.precheck(&call(agent, tool, input, &subject))?;
+        let typed = self.typed(tool, input);
+        if let Some(typed) = &typed {
+            self.state.precheck_typed(&call(agent, tool, input, typed))?;
+        }
+        Ok((subject, typed, protected))
     }
 }
 
@@ -78,9 +118,12 @@ fn call<'a>(agent: &'a AgentInfo, tool: &'a dyn Tool, input: &Value, subject: &'
     Call {
         agent,
         // Reading a web address is a fetch, and so is searching the page behind one, so the rules
-        // written for `web_fetch` govern both.
+        // written for `web_fetch` govern both. What is held to a command line (a `pty` call that
+        // acts on a program) is governed by the rules written for `shell`.
         tool: if (tool.name() == "read" && access == Access::Net) || tool.name() == "web_grep" {
             "web_fetch"
+        } else if subject.command.is_some() {
+            "shell"
         } else {
             tool.name()
         },
@@ -97,9 +140,8 @@ impl Gate for PermissionGate {
         let deny = |reason: String| GateDecision::Deny { reason };
 
         // Deny rules, the push guard, protected paths.
-        let mut subject = self.subject(tool, input);
-        let mut protected = match self.state.precheck(&call(agent, tool, input, &subject)) {
-            Ok(protected) => protected,
+        let (mut subject, mut typed, mut protected) = match self.checked(agent, tool, input) {
+            Ok(checked) => checked,
             Err(reason) => return deny(reason),
         };
 
@@ -126,22 +168,34 @@ impl Gate for PermissionGate {
         let input = rewritten.as_ref().unwrap_or(input);
         if rewritten.is_some() {
             // What a handler turned the call into is held to the same hard limits.
-            subject = self.subject(tool, input);
-            protected = match self.state.precheck(&call(agent, tool, input, &subject)) {
-                Ok(protected) => protected,
+            (subject, typed, protected) = match self.checked(agent, tool, input) {
+                Ok(checked) => checked,
                 Err(reason) => return deny(reason),
             };
         }
 
         let the_call = call(agent, tool, input, &subject);
-        let risk = self.state.destructive(&the_call);
+        let typed_call = typed.as_ref().map(|typed| call(agent, tool, input, typed));
+        // What is typed into a terminal is asked about like a command that does the same.
+        let typed_risk = typed_call
+            .as_ref()
+            .and_then(|typed| self.state.destructive(typed));
+        let typed_secret = typed_call.as_ref().and_then(|typed| self.state.secret(typed));
+        let risk = self.state.destructive(&the_call).or(typed_risk);
         // A secret file is asked about like a destructive command, but may be allowed for the
         // session; a command that is both is the stricter of the two.
-        let secret = self.state.secret(&the_call).filter(|_| risk.is_none());
+        let secret = self
+            .state
+            .secret(&the_call)
+            .or(typed_secret.clone())
+            .filter(|_| risk.is_none());
+        let asked_for_typed = typed_risk.is_some() || typed_secret.is_some();
         let rule = match self.state.decide(&the_call, protected, skip_prompt) {
+            // The program may be typed into; this text is asked about all the same.
+            Verdict::Allow if asked_for_typed => None,
             Verdict::Allow => return GateDecision::Allow { input: rewritten },
             Verdict::Deny(reason) => return deny(reason),
-            Verdict::Prompt { rule } => rule,
+            Verdict::Prompt { rule } => rule.filter(|_| !asked_for_typed),
         };
 
         let mut request = Event::PermissionRequest {
@@ -218,6 +272,9 @@ impl Gate for PermissionGate {
             Some(ApprovalDecision::AllowSession) => {
                 if secret.is_some() {
                     self.state.allow_secrets_for_session(&the_call);
+                    if let Some(typed) = &typed_call {
+                        self.state.allow_secrets_for_session(typed);
+                    }
                 } else if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok()) {
                     self.state.allow_for_session(&rule);
                 }

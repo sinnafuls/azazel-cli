@@ -754,6 +754,33 @@ impl PermissionState {
         Ok(protected)
     }
 
+    /// The limits of [`PermissionState::precheck`] for text an agent types into a program in a
+    /// terminal, taken as a command line: deny rules, the push guard, and `destructive =
+    /// "deny"`. What the agent's definition grants was settled by the program it types into.
+    pub fn precheck_typed(&self, call: &Call<'_>) -> Result<(), String> {
+        let cwd = self.cwd_of(call.agent);
+        let ctx = self.ctx(&cwd);
+        if let Some(hit) = self.first_match(RuleKind::Deny, call, &ctx) {
+            return Err(format!(
+                "what you want to type is denied by rule `{}` ({})",
+                hit.rule, hit.source
+            ));
+        }
+        if let (Some(analysis), Some(command)) = (call.shell, call.command)
+            && shell::pushes(command, analysis)
+        {
+            return Err(shell::PUSH_DENIED.to_string());
+        }
+        if self.destructive == DestructivePolicy::Deny
+            && let Some(risk) = self.risk(call, &ctx)
+        {
+            return Err(format!(
+                "what you want to type {risk}; destructive commands are refused here (`[permissions] destructive = \"deny\"`)"
+            ));
+        }
+        Ok(())
+    }
+
     /// What a shell call would destroy, whatever the policy is.
     fn risk(&self, call: &Call<'_>, ctx: &MatchCtx<'_>) -> Option<&'static str> {
         let (analysis, command) = (call.shell?, call.command?);
