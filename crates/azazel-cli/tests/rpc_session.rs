@@ -426,14 +426,19 @@ fn a_shell_line_runs_and_the_session_is_exported() {
 
     let html = client.ok(json!({ "type": "export", "format": "html" }));
     let html_path = PathBuf::from(html["path"].as_str().unwrap());
-    assert_eq!(html_path.parent().unwrap(), client.project());
+    // Canonical on both sides: the temporary directory may sit behind a symlink (macOS `/var`).
+    let canonical = |path: &std::path::Path| dunce::canonicalize(path).unwrap();
+    assert_eq!(
+        canonical(html_path.parent().unwrap()),
+        canonical(&client.project())
+    );
     assert_eq!(html_path.extension().unwrap(), "html");
     let page = std::fs::read_to_string(&html_path).unwrap();
     assert!(page.contains("first") && page.contains("one") && !page.contains("<script"));
     let lines = client.ok(json!({ "type": "export", "path": "saved.jsonl" }));
     assert_eq!(
-        PathBuf::from(lines["path"].as_str().unwrap()),
-        client.project().join("saved.jsonl")
+        canonical(&PathBuf::from(lines["path"].as_str().unwrap())),
+        canonical(&client.project().join("saved.jsonl"))
     );
     let saved = std::fs::read_to_string(client.project().join("saved.jsonl")).unwrap();
     assert!(saved.lines().count() >= 3);
