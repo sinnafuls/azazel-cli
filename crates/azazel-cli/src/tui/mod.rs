@@ -13,9 +13,11 @@ mod pager;
 mod panels;
 mod probe;
 mod quick;
+mod rate;
 mod remote;
 mod sessions;
 mod slash;
+mod statusline;
 mod team;
 mod terminal;
 pub(crate) mod view;
@@ -38,13 +40,13 @@ use azazel_core::{
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
-    composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
+    composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo, tool_card,
 };
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
-    ColorDepth, Composer, Draft, Editor, Floor, Frame, GlyphLevel, HistoryItem, Keymap, Line, Renderer, Role,
-    SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys,
-    enable_enhanced_keys, text,
+    ColorDepth, Composer, Draft, Editor, Floor, Frame, Glyph, GlyphLevel, HistoryItem, Keymap, Line,
+    Renderer, Role, SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim,
+    disable_enhanced_keys, enable_enhanced_keys, text,
 };
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -256,6 +258,8 @@ pub struct Tui {
     files: Option<Vec<String>>,
     busy: bool,
     busy_since: Instant,
+    /// How fast the lead writes, for the status line.
+    rate: rate::Rate,
     show_thinking: bool,
     expand_tools: bool,
     images: Vec<Block>,
@@ -424,6 +428,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         files: None,
         busy: false,
         busy_since: Instant::now(),
+        rate: rate::Rate::default(),
         show_thinking: tui_config.show_thinking,
         expand_tools: tui_config.expand_tools,
         images: Vec::new(),
@@ -536,24 +541,26 @@ impl Tui {
         } else {
             model
         };
-        let name = match self.session.name() {
-            Some(name) => format!(" · {name}"),
-            None => String::new(),
-        };
-        let place = match self.backend.place() {
-            Some(place) => format!(" · {place}"),
-            None => String::new(),
-        };
-        let heading = format!(
-            "azazel {} · {model} · {}{name}{place}",
-            env!("CARGO_PKG_VERSION"),
-            self.backend.cwd().display()
-        );
-        let lines = view::styled(&heading, Role::Accent, width, &self.theme);
+        let separator = self.theme.glyph(Glyph::Separator);
+        let mut heading = vec![
+            format!("azazel {}", env!("CARGO_PKG_VERSION")),
+            model,
+            self.backend.cwd().display().to_string(),
+        ];
+        heading.extend(self.session.name());
+        heading.extend(self.backend.place());
+        let lines = view::styled(&heading.join(separator), Role::Accent, width, &self.theme);
         self.say(lines);
-        self.info(
-            "enter sends · shift+enter adds a line · / commands · @ files · ! shell · /settings accounts and models · ctrl+c twice quits",
-        );
+        let keys = [
+            "enter sends",
+            "shift+enter adds a line",
+            "/ commands",
+            "@ files",
+            "! shell",
+            "/settings accounts and models",
+            "ctrl+c twice quits",
+        ];
+        self.info(&keys.join(separator));
         let skipped = match self.backend.local() {
             Some(local) => local.app.ignored_settings.join(", "),
             None => String::new(),
@@ -599,6 +606,9 @@ impl Tui {
     async fn main_loop(&mut self) {
         let mut ticker = tokio::time::interval(spinner::INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // The working indicator moves a cell at a time, which takes more frames than a spinner.
+        let mut sweep = tokio::time::interval(shimmer::INTERVAL);
+        sweep.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         while !self.quit {
             if self
                 .overlay
@@ -639,6 +649,7 @@ impl Tui {
                 }
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
+                _ = sweep.tick(), if self.busy && self.indicator() != shimmer::Mode::Static => {}
                 _ = ticker.tick(),
                     if self.busy
                         || self.agents_active()
@@ -695,86 +706,75 @@ impl Tui {
 
     /// Session facts on the left, the model and its thinking level against the right edge.
     fn status_line(&self, width: usize) -> Line {
-        let theme = &self.theme;
-        let muted = |text: &str| theme.paint(Role::Muted, text);
         let status = self.backend.status();
         let facts = self.backend.facts();
-        let mode = self.backend.mode();
-        let mut left = vec![match mode {
-            PermissionMode::Plan => theme.paint(Role::ModePlan, &format!("⏸ {mode}")),
-            PermissionMode::Ask => muted(&mode.to_string()),
-            PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &format!("⏵⏵ {mode}")),
-            PermissionMode::Auto => theme.paint(Role::ModeAuto, &format!("⏵⏵ {mode}")),
-        }];
-        if facts.coordinator {
-            left.push(theme.paint(Role::Accent, "coordinator"));
-        }
-        if let Some(branch) = &self.branch {
-            left.push(muted(&format!("⑂ {branch}")));
-        }
-        let cwd = &self.backend.cwd();
-        let shown = match std::env::home_dir()
-            .and_then(|home| cwd.strip_prefix(home).ok().map(|rest| rest.to_path_buf()))
-        {
-            Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
-            Some(rest) => format!("~/{}", rest.to_string_lossy().replace('\\', "/")),
-            None => cwd.display().to_string(),
-        };
-        left.push(muted(&shown));
-        if let Some(percent) = (status.context_tokens * 100).checked_div(status.context_window) {
-            let role = status::context_role(percent).unwrap_or(Role::Muted);
-            left.push(theme.paint(role, &format!("◫ {percent}%")));
-        }
-        if let Some(cost) = status.usage.cost_usd {
-            left.push(muted(&format!("${cost:.2}")));
-        }
-        if let Some(nearly_full) = &facts.usage {
-            left.push(theme.paint(Role::Warning, &format!("◔ {nearly_full}")));
-        }
-        match self.active_agents() {
-            0 => {}
-            1 => left.push(theme.paint(Role::Accent, "⇶ 1 agent")),
-            n => left.push(theme.paint(Role::Accent, &format!("⇶ {n} agents"))),
-        }
-        if let Some(goal) = &facts.goal {
-            left.push(theme.paint(Role::Accent, &format!("⚑ {goal}")));
-        }
-
+        let cwd = statusline::display_path(&self.backend.cwd(), std::env::home_dir().as_deref());
         let model = self.model_label();
-        let model = if model.is_empty() {
-            "no model".to_string()
-        } else {
-            model
-        };
-        let tier = match facts.tier {
-            Some(tier) => format!("{} · ", crate::routing::tier_word(tier)),
-            None => String::new(),
-        };
-        let right = format!(
-            "{} {}{}",
-            theme.paint(Role::Accent, "⬢"),
-            muted(&format!("{model} · {tier}")),
-            theme.paint(Role::Thinking, &status.thinking.to_string()),
-        );
-        status::render(&left, &right, width, theme)
+        statusline::StatusLine {
+            mode: self.backend.mode(),
+            coordinator: facts.coordinator,
+            branch: self.branch.as_deref(),
+            cwd: &cwd,
+            context: (status.context_tokens * 100).checked_div(status.context_window),
+            rate: self.rate.current(Instant::now()),
+            busy: self.busy,
+            cost: status.usage.cost_usd,
+            warn_cost: self.env.config.limits.warn_cost_usd,
+            billing: &facts.billing,
+            agents: self.active_agents(),
+            goal: facts.goal.as_deref(),
+            model: &model,
+            tier: facts.tier.map(crate::routing::tier_word),
+            thinking: &status.thinking.to_string(),
+        }
+        .render(width, &self.theme)
     }
 
-    /// What the lead is doing, for the rule above the input; nothing while it is idle.
+    /// How the working indicator moves, as `tui.indicator` says.
+    fn indicator(&self) -> shimmer::Mode {
+        match self.env.config.tui.indicator {
+            azazel_core::config::Indicator::Shimmer => shimmer::Mode::Shimmer,
+            azazel_core::config::Indicator::Kitt => shimmer::Mode::Kitt,
+            azazel_core::config::Indicator::Static => shimmer::Mode::Static,
+        }
+    }
+
+    /// What the lead is doing, for the rule above the input; nothing while it is idle. The
+    /// words say what it is at (`running shell`, `thinking`), or are the phrases of
+    /// `tui.indicator_text` in turn while no tool runs; a band of light passes over them.
     fn activity(&self) -> Option<String> {
         if !self.busy {
             return None;
         }
-        let what = match self.tools.last() {
-            Some(tool) => format!("running {}", tool.name),
-            None if !self.stream.thinking.is_empty() && !self.stream.saw_text => "thinking".to_string(),
-            None => "working".to_string(),
+        let config = &self.env.config.tui;
+        let mode = self.indicator();
+        let since = self.busy_since.elapsed();
+        let tick = shimmer::tick_at(since);
+        let running = self.tools.last().map(|tool| format!("running {}", tool.name));
+        let (what, phase) = match &running {
+            Some(running) => (running.as_str(), tick),
+            None => shimmer::phrase(&config.indicator_text, tick, mode).unwrap_or({
+                if !self.stream.thinking.is_empty() && !self.stream.saw_text {
+                    ("thinking", tick)
+                } else {
+                    ("working", tick)
+                }
+            }),
         };
-        let elapsed = format_elapsed(self.busy_since.elapsed());
+        let accent = config.session_accent.then(|| {
+            let name = self.session.name().unwrap_or_else(|| self.session.id());
+            shimmer::session_accent(&name)
+        });
+        let separator = self.theme.glyph(Glyph::Separator);
         Some(format!(
-            "{} {}",
-            self.theme.paint(Role::Accent, Spinner::now()),
+            "{} {}{}",
             self.theme
-                .paint(Role::Muted, &format!("{what} · {elapsed} · esc to interrupt")),
+                .paint(Role::Accent, Spinner::now_in(self.theme.glyphs())),
+            shimmer::sweep(what, phase, mode, accent, &self.theme),
+            self.theme.paint(
+                Role::Muted,
+                &format!("{separator}{}{separator}esc to interrupt", format_elapsed(since))
+            ),
         ))
     }
 
@@ -841,8 +841,9 @@ impl Tui {
             }
             let rule = self.rule_role();
             let activity = self.voice_status().or_else(|| self.rule_status());
+            let prompt = self.theme.glyphs().prefix(Glyph::Prompt);
             let composer = Composer {
-                prompt: "❯ ",
+                prompt: &prompt,
                 prompt_role: if rule == Role::Border { Role::Accent } else { rule },
                 placeholder: if self.busy {
                     "Steer the agent, alt+enter queues a follow-up"
@@ -914,9 +915,14 @@ impl Tui {
                 self.busy = true;
                 self.busy_since = Instant::now();
                 self.run_failed = false;
+                self.rate.reset();
             }
-            AgentEvent::MessageStart => self.stream = StreamView::default(),
+            AgentEvent::MessageStart => {
+                self.stream = StreamView::default();
+                self.rate.abandon();
+            }
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
+                self.rate.text(&delta, Instant::now());
                 self.open_reply();
                 self.stream.saw_text = true;
                 self.stream.markdown.push(&delta);
@@ -929,8 +935,10 @@ impl Tui {
                 self.say_items(finished);
             }
             AgentEvent::Stream(StreamEvent::ThinkingDelta { delta, .. }) => {
+                self.rate.text(&delta, Instant::now());
                 self.stream.thinking.push_str(&delta)
             }
+            AgentEvent::Stream(StreamEvent::ToolCallDelta { delta, .. }) => self.rate.arguments(&delta),
             AgentEvent::Stream(StreamEvent::BlockEnd {
                 block: Block::Thinking { .. },
                 ..
@@ -942,6 +950,8 @@ impl Tui {
                 }
             }
             AgentEvent::MessageEnd { message } => {
+                let output = message.meta.as_ref().map_or(0, |meta| meta.usage.output);
+                self.rate.end(output, Instant::now());
                 self.voice_reply(&message);
                 if !self.stream.saw_text && !message.text().trim().is_empty() {
                     self.open_reply();
@@ -955,6 +965,7 @@ impl Tui {
             }
             AgentEvent::Retry { attempt, model } => {
                 self.stream = StreamView::default();
+                self.rate.abandon();
                 self.info(&format!("{model} did not answer; retrying (attempt {attempt})"));
             }
             AgentEvent::Fallback { from, to } => {
@@ -979,6 +990,7 @@ impl Tui {
                 drop(diagrams);
                 self.say_items(rest);
                 self.stream = StreamView::default();
+                self.rate.abandon();
                 self.info(&format!("rule {name} stopped the reply; retrying"));
             }
             AgentEvent::ToolStart { call_id, name, input } => {
@@ -1064,6 +1076,7 @@ impl Tui {
         self.busy = false;
         self.tools.clear();
         self.stream = StreamView::default();
+        self.rate.abandon();
         // The agent may have switched branches.
         self.branch = self.backend.branch();
         if let Some(chain) = self.restore_chain.take() {
@@ -1128,7 +1141,10 @@ impl Tui {
         let from = shown.len().saturating_sub(40);
         let mut display = shown[from..].join("\n");
         if from > 0 {
-            display = format!("… {from} earlier lines\n{display}");
+            display = format!(
+                "{} {from} earlier lines\n{display}",
+                self.theme.glyph(Glyph::Ellipsis)
+            );
         }
         self.info(&format!("{display}\n{status}"));
     }
@@ -1598,7 +1614,10 @@ impl Tui {
         let echo = if share { "!" } else { "!!" };
         let lines = view::user_prompt(&format!("{echo}{command}"), self.width(), &self.theme);
         self.say(lines);
-        self.notice = Some(format!("running `{command}`…"));
+        self.notice = Some(format!(
+            "running `{command}`{}",
+            self.theme.glyph(Glyph::Ellipsis)
+        ));
         self.backend.shell(command, share, self.internal_tx.clone());
     }
 

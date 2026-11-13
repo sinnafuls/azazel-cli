@@ -26,7 +26,7 @@ I'll run the tests first.
 ── ⠹ running edit · 12s · esc to interrupt ─────────────────────────────────
 ❯ Steer the agent, alt+enter queues a follow-up
 ────────────────────────────────────────────────────────────────────────────
-ask · ⑂ main · ~/src/app · ◫ 12% · $0.04          ⬢ provider/model · medium
+ask · ⑂ main · ~/src/app · ◫ 12% · ↯ 78 tok/s · $0.04    ⬢ provider/model · medium
 ```
 
 The input and the status line sit on the last rows of the terminal from the first frame on. When azazel starts,
@@ -54,10 +54,10 @@ The input sits between two full-width rules, with `❯` in front of the first ro
 (`Ask anything, / for commands, @ for files`). The input grows with what you type up to 30 % of the terminal's
 height (at least 5 rows) and scrolls beyond that; the rules then say how much is out of view (`↑ 3 more`).
 
-While the agent is working, the rule above the input carries the working indicator: a spinner, `working` /
-`thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. With [Vim keys](#vim-keys) on, the same
-rule shows `-- NORMAL --` in normal mode. While you dictate it shows `● rec`, the time and a level meter, then
-`transcribing`; see [voice](voice.md).
+While the agent is working, the rule above the input carries the [working indicator](#working-indicator): a
+spinner, `working` / `thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. With
+[Vim keys](#vim-keys) on, the same rule shows `-- NORMAL --` in normal mode. While you dictate it shows
+`● rec`, the time and a level meter, then `transcribing`; see [voice](voice.md).
 
 The colour of the rules tells you what `Enter` will do:
 
@@ -77,6 +77,25 @@ digits `1`-`9` choose a row directly. Some pickers have keys of their own that a
 the agent hub, `Ctrl+F` in the model picker, `d` in `/permissions`, `Ctrl+R` `Ctrl+D` `Ctrl+P` `Tab` in the
 session picker, `Alt+L` in `/tree`); the rule below names them, or a line above the list where they are many. Where an overlay
 asks for text (feedback on a denied call, changes to a plan), `Ctrl+G` opens your editor for it.
+
+### Working indicator
+
+A band of light passes over the words of the working indicator, so a glance tells a run that is alive from a
+terminal that hangs. `tui.indicator` (or `/settings`, Appearance) chooses how it moves:
+
+| `tui.indicator` | Movement |
+|---|---|
+| `shimmer` (default) | A soft band enters from the left, crosses the words one cell per frame and leaves, over and over |
+| `kitt` | One bright cell runs to the end of the words and back, with a fading trail |
+| `static` | Nothing moves but the spinner |
+
+The words are muted, the edge of the band is in the text colour and its centre is bold in the accent colour.
+The band is redrawn about 30 times a second, and only while the agent works; `static` keeps the spinner's 12.
+
+| Key in `[tui]` | Effect |
+|---|---|
+| `indicator_text = ["Working", "Still at it"]` | Phrases shown in turn, one pass of the band each, in place of `working` / `thinking`. A running tool is still named (`running shell`) |
+| `session_accent = true` | The centre of the band takes a colour derived from the session's name instead of the theme's accent: the same name always gives the same colour, so two terminals with two sessions are told apart at a glance. Renaming the session changes it. Every such colour has the same lightness and saturation, and hues that read badly on a dark background (yellow-green, cyan) are left out |
 
 ### Tool cards
 
@@ -102,18 +121,36 @@ The file a `read`, `write` or `edit` card names is a link to that file in termin
 
 | Segment | Shown when | Content |
 |---|---|---|
-| mode | always | The permission mode: `ask`, `⏸ plan`, `⏵⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
+| mode | always | The permission mode: `ask`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, in the colour of the input rules |
 | `coordinator` | [coordinator mode](team.md#coordinator-mode) is on | The lead plans and delegates only |
 | `⑂ branch` | the project is a git repository | The checked-out branch |
-| directory | always | The working directory, with `~` for your home directory |
-| `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 % |
-| `$cost` | the model's prices are known | Money spent in this session |
-| `◔ 5h 84%` | a usage window of the subscription in use is at least 80 % full | The fullest window and how full it is; `/usage` shows them all |
+| directory | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
+| `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 %. On a terminal at least 100 columns wide a bar follows it: `◫ 42% [━━━╸────]` |
+| `↯ N tok/s` | the lead has streamed a reply since your last prompt | How fast the lead writes, in output tokens per second; see below |
+| `$cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
+| `◔ 61% 5h` | the lead answers on a subscription you signed in to | The fullest usage window of the account and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
 | `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
 | `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
 | `⬢ model · level` | always, against the right edge | The model answering and the thinking level |
 
-When the terminal is too narrow for both sides, the model is shortened first, then left out.
+**Speed.** Each reply of the lead is timed from its first text or thinking to its end, so the wait for the
+model to start is not part of the speed. While a reply streams, the number is an estimate (characters received,
+four to a token); when the reply ends, the tokens the provider counted (reasoning included) replace the
+estimate. The segment is in the accent colour while the lead works and stays, muted, after the turn until your
+next prompt. Speeds under 1 tok/s and replies that arrive in one piece are not shown. Sub-agents are not
+measured.
+
+**Cost or usage.** What a session costs is only money when tokens are paid for one by one. When the lead's
+provider is used through a sign-in (`azazel login`, a Claude or ChatGPT subscription), the cost is hidden and
+the usage window is shown instead, as soon as the provider has reported one. With an API key (from
+`--api-key`, the environment, `api_key_command`, the configuration or `auth.json`) the cost is shown. A key in
+the environment wins over a stored sign-in, as it does for the requests themselves. A session that runs in
+another process (`azazel attach`, `--ssh`) shows the cost that process reports, and nothing when it reports
+none.
+
+When the terminal is too narrow for both sides, whole segments leave the left side from its end: the goal
+first, then the agents, the cost or usage, the speed, the context, the directory and the branch. The mode
+always stays. Only then is the model shortened, and after that left out.
 
 ## Keys
 
@@ -539,7 +576,7 @@ these values inside that project.
 
 | Section | Settings |
 |---|---|
-| Appearance | theme\*, inline images, show thinking\*, full tool output\* |
+| Appearance | theme\*, symbols\*, working indicator\*, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\* |
 | Editor | emacs or Vim keys\*, external editor command\*, paste fold length\* |
 | Permissions | the mode sessions start in, what destructive commands need |
 | Notifications | bell, desktop notifications, terminal title, tab progress, minimum run length, keep awake |
@@ -553,9 +590,26 @@ these values inside that project.
 Settings marked \* change the running UI at once. The others are saved and say "applies to the next session".
 The keys behind each row are described in [configuration](configuration.md).
 
+## Symbols
+
+Every icon, frame and tree line the UI draws comes from one of three sets. `tui.glyphs` (or `/settings`,
+Appearance, which changes the running UI at once) chooses the set; `AZAZEL_GLYPHS` overrides it for one run.
+
+| `tui.glyphs` | Draws with |
+|---|---|
+| `unicode` | Symbols every modern terminal font has: `❯ ✔ ✘ ⚠ ⑂ ◫ ↯ ⬢`, rounded frames, braille spinner |
+| `nerd` | The same frames and spinner, with icons from a [Nerd Font](https://www.nerdfonts.com) in place of the symbols. The terminal must use such a font; azazel cannot tell whether it does |
+| `ascii` | Plain ASCII only: `>` for the prompt, `-` rules, tables drawn with `+` and `-`, `[x] [~] [ ]` todo marks, `* - +` bullets, a spinner that turns through `-`, `\`, a vertical bar and `/`, a vertical bar between status segments, `...` where text is cut, words for icons (`git: main`, `ctx 42%`), and the opening banner in thin letters |
+| `auto` (default) | `unicode`, or `ascii` when `LC_ALL`, `LC_CTYPE` or `LANG` names an encoding that is not UTF-8 |
+
+An icon that would only repeat the word beside it is left out at the `ascii` level (`2 agents`, not
+`agents: 2 agents`).
+
 ## Themes
 
-Two themes are built in: `dark` (default) and `light`. Set one for good in [configuration](configuration.md):
+Six themes are built in: `dark` (default), `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark` and
+`dark-daltonized` (success and error in blue and orange instead of green and red). Set one for good in
+[configuration](configuration.md):
 
 ```toml
 [tui]

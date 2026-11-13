@@ -16,7 +16,7 @@ use crate::team::ORCHESTRATION_TOOLS;
 
 /// What a coordinating lead keeps besides the team tools: reading and searching, its to-do list,
 /// questions to the user, skills, memory, and the tools that end a goal, a plan or a typed run.
-pub const COORDINATOR_TOOLS: [&str; 15] = [
+pub const COORDINATOR_TOOLS: [&str; 16] = [
     "read",
     "glob",
     "grep",
@@ -29,6 +29,7 @@ pub const COORDINATOR_TOOLS: [&str; 15] = [
     "semantic_search",
     "web_search",
     "web_fetch",
+    "web_grep",
     "goal_done",
     "goal_blocked",
     "plan_submit",

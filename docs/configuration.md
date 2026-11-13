@@ -190,8 +190,8 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
 | | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
 | | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
-| | `indicator` | `"shimmer"` | How the working indicator moves: `shimmer`, `kitt` or `static` |
-| | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing |
+| | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
+| | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing. A running tool is always named |
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
 | | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row |
 | | `redact` | `true` | Hide what looks like a secret in tool output, the transcript viewer and exports; the model still sees it |

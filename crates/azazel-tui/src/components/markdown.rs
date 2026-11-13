@@ -7,6 +7,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
+use crate::glyphs::Glyph;
 use crate::render::{HistoryItem, Line};
 use crate::term;
 use crate::text;
@@ -16,7 +17,6 @@ const BOLD: &str = "\x1b[1m";
 const ITALIC: &str = "\x1b[3m";
 const UNDERLINE: &str = "\x1b[4m";
 const STRIKE: &str = "\x1b[9m";
-const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 
 /// Renders a Markdown document to lines no wider than `width`.
 ///
@@ -376,7 +376,7 @@ impl<'a, 'h> Writer<'a, 'h> {
             for container in &self.containers {
                 match container {
                     Container::Quote => {
-                        line.push_str(&self.theme.paint(Role::Border, "│"));
+                        line.push_str(&self.theme.paint(Role::Border, self.theme.glyph(Glyph::TreeLine)));
                         line.push(' ');
                     }
                     Container::Item { marker, .. } => {
@@ -441,7 +441,7 @@ impl<'a, 'h> Writer<'a, 'h> {
         for container in &mut self.containers {
             match container {
                 Container::Quote => {
-                    line.push_str(&self.theme.paint(Role::Border, "│"));
+                    line.push_str(&self.theme.paint(Role::Border, self.theme.glyph(Glyph::TreeLine)));
                     line.push(' ');
                 }
                 Container::Item { marker, used } => {
@@ -471,13 +471,17 @@ impl<'a, 'h> Writer<'a, 'h> {
                 *number += 1;
                 marker
             }
-            _ => format!("{} ", BULLETS[depth.saturating_sub(1) % BULLETS.len()]),
+            _ => {
+                let bullets = self.theme.glyphs().bullets();
+                format!("{} ", bullets[depth.saturating_sub(1) % bullets.len()])
+            }
         }
     }
 
     fn rule(&mut self) {
         self.begin_block();
-        let line = self.theme.paint(Role::Border, &"─".repeat(self.avail()));
+        let dash = self.theme.glyphs().border().horizontal;
+        let line = self.theme.paint(Role::Border, &dash.repeat(self.avail()));
         self.emit_line(line);
         self.need_gap = true;
     }
@@ -562,13 +566,14 @@ impl<'a, 'h> Writer<'a, 'h> {
         };
 
         let theme = self.theme;
-        let bar = theme.paint(Role::Border, "│");
-        let rule = |left: &str, middle: &str, right: &str| {
-            let segments: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
+        let grid = theme.glyphs().table();
+        let bar = theme.paint(Role::Border, grid.vertical);
+        let rule = |[left, middle, right]: [&str; 3]| {
+            let segments: Vec<String> = widths.iter().map(|w| grid.horizontal.repeat(w + 2)).collect();
             theme.paint(Role::Border, &format!("{left}{}{right}", segments.join(middle)))
         };
 
-        self.emit_line(rule("┌", "┬", "┐"));
+        self.emit_line(rule(grid.top));
         for (index, row) in table.rows.iter().enumerate() {
             let header = index < table.header_rows;
             let cells: Vec<Vec<String>> = widths
@@ -596,10 +601,10 @@ impl<'a, 'h> Writer<'a, 'h> {
                 self.emit_line(line);
             }
             if index + 1 == table.header_rows && index + 1 < table.rows.len() {
-                self.emit_line(rule("├", "┼", "┤"));
+                self.emit_line(rule(grid.middle));
             }
         }
-        self.emit_line(rule("└", "┴", "┘"));
+        self.emit_line(rule(grid.bottom));
     }
 
     fn finish(mut self) -> Vec<HistoryItem> {
@@ -941,6 +946,35 @@ mod tests {
             "only the double-tilde span is struck through"
         );
         assert!(lines[0].contains(&format!("{STRIKE}old")));
+    }
+
+    #[test]
+    fn the_ascii_level_draws_lists_quotes_rules_and_tables_with_ascii_only() {
+        let theme = Theme::dark().with_glyphs(crate::glyphs::GlyphLevel::Ascii);
+        let source = "- a\n  - b\n    - c\n\n> quoted\n\n---\n\n| Name | Qty |\n|---|---|\n| kiwi | 12 |";
+        assert_eq!(
+            plain(&render(source, 14, &theme)),
+            [
+                "* a",
+                "  - b",
+                "    + c",
+                "",
+                "| quoted",
+                "",
+                "--------------",
+                "",
+                "+------+-----+",
+                "| Name | Qty |",
+                "+------+-----+",
+                "| kiwi | 12  |",
+                "+------+-----+",
+            ]
+        );
+        for width in 1..40 {
+            for line in plain(&render(source, width, &theme)) {
+                assert!(line.is_ascii(), "width {width}: {line:?}");
+            }
+        }
     }
 
     #[test]
