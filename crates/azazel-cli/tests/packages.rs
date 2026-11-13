@@ -172,7 +172,8 @@ fn what_cannot_be_installed_is_explained() {
     let why = String::from_utf8_lossy(&unknown.stderr).to_string();
     assert!(
         why.contains(
-            "`no-such-thing` is not a git URL, `github:<owner>/<repo>`, a directory or a registry name"
+            "`no-such-thing` is not a git URL, `github:<owner>/<repo>`, `npm:<name>`, a directory or a registry \
+             name"
         ),
         "{why}"
     );

@@ -33,6 +33,7 @@ pub mod orchestration;
 pub mod pkg;
 pub mod print;
 pub mod reports;
+pub mod resources;
 pub mod retry;
 pub mod routing;
 pub mod rpc;
@@ -545,7 +546,7 @@ fn provider_setup(
     Vec<azazel_ai::providers::presets::ProviderConfig>,
     azazel_ai::Credentials,
 )> {
-    let loaded = app::config_overrides(cli).and_then(|overrides| {
+    let loaded = app::config_overrides(cli, paths).and_then(|overrides| {
         Config::load(
             paths,
             &LoadOptions {

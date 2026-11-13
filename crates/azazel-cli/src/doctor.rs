@@ -309,6 +309,10 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         }
         _ => {}
     }
+    #[cfg(feature = "lua")]
+    for line in tool_overrides(paths, trusted, &config, &packages) {
+        report.ok(line);
+    }
     let skills = discover(&standard_roots(paths, config.compat.claude, &packages));
     report.ok(format!("skills: {} found", skills.skills.len()));
     for invalid in &skills.invalid {
@@ -517,6 +521,70 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         .findings
         .extend(crate::voice::findings(&config, &credentials));
     report
+}
+
+/// The built-in tools the Luau scripts of this project and of the user replace or wrap, one line
+/// each. The scripts are loaded the way a session loads them, into a registry of their own.
+#[cfg(feature = "lua")]
+fn tool_overrides(
+    paths: &Paths,
+    trusted: bool,
+    config: &Config,
+    packages: &azazel_core::packages::Loaded,
+) -> Vec<String> {
+    use std::sync::Arc;
+
+    use azazel_agent::{AgentInfo, Services};
+    use azazel_core::{ExtCtx, Headless, McpRegistrar, McpServers, Registry, Ui};
+
+    /// Scripts may add MCP servers as they load; here nothing is started.
+    struct NoServers;
+    impl McpRegistrar for NoServers {
+        fn add_server(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let services = Arc::new(Services::new());
+    services.insert(Arc::new(Ui(Arc::new(Headless))));
+    services.insert(Arc::new(McpServers(Arc::new(NoServers))));
+    let registry = Registry::new(ExtCtx {
+        services,
+        cwd: paths.cwd.clone(),
+        session_id: String::new(),
+    });
+    let scripts = azazel_lua::LuaExt::new(
+        paths.clone(),
+        trusted,
+        Arc::new(crate::app::credentials(paths, trusted)),
+        config
+            .permissions
+            .additional_dirs
+            .iter()
+            .map(|dir| paths.project_root.join(dir))
+            .collect(),
+        azazel_lua::Scripts {
+            packaged: packages.scripts.clone(),
+            ..azazel_lua::Scripts::default()
+        },
+    );
+    if let Err(e) = registry.load(&scripts) {
+        return vec![format!("extensions: not loaded, {e}")];
+    }
+    let lead = AgentInfo {
+        id: "lead".into(),
+        def: "lead".into(),
+        parent: None,
+        depth: 0,
+        session_id: String::new(),
+    };
+    let who = crate::reports::overrider;
+    let replaced = registry.tools.replacements(&lead).into_iter();
+    let wrapped = registry.tools.wraps().into_iter();
+    replaced
+        .map(|(by, tool)| format!("tool `{tool}`: replaced by {}", who(&by)))
+        .chain(wrapped.map(|(by, tool)| format!("tool `{tool}`: wrapped by {}", who(&by))))
+        .collect()
 }
 
 /// Runs `azazel doctor`: prints the report; the exit code is 1 when a finding is an error.
