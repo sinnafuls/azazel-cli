@@ -420,6 +420,24 @@ A call that breaks one of these rules fails before you are asked anything, with 
 
 The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
 
+## Schedules
+
+| Tool | Input | Behaviour |
+|---|---|---|
+| `schedule` | `action` (`add`, `list`, `remove`), `when?`, `prompt?`, `session?` (`new`, `this`), `id?` | Adds, lists and removes the [schedules](background-and-remote.md#schedules) of the project |
+
+`add` takes `when` as `azazel schedule add` does (five cron fields, `every 10m`, `at +2h`, `at 17:30`),
+or `on ci-failure` and `on file:<glob>` for a [trigger](background-and-remote.md#triggers), and the
+`prompt` a run is given. A run starts a background session that knows nothing of the conversation, so
+the prompt has to stand on its own; `session: "this"` sends every run to the session the agent works in
+instead. The runs work as the session does at that moment: its model, thinking level, permission mode
+and settings.
+
+`add` and `remove` run things later with nobody watching, so they are asked about like a command
+(access `exec`): in `manual` and `accept-edits` mode you approve them, plan mode refuses them, and a
+run without a user refuses them unless a rule allows `schedule`. `list` only reads. The tool is not in
+builds without background sessions.
+
 ## Recalling the conversation
 
 | Tool | Input | Behaviour |

@@ -1,8 +1,9 @@
-# Background sessions and remote work
+# Background sessions, schedules and remote work
 
 A session does not need a terminal that stays open. `azazel bg` runs a prompt in a background session
 that goes on after you close the terminal; you look in, answer it, or take it over later. The same
-mechanism lets the UI on your machine show a session that runs on another machine over SSH.
+mechanism lets the UI on your machine show a session that runs on another machine over SSH, and
+lets a [schedule](#schedules) run a prompt at a time or when something happens.
 
 There is no daemon. Each background session is one process (`azazel host`, started for you) that ends
 when it is no longer needed. When that process is killed in the middle of its work, the session is
@@ -145,6 +146,7 @@ Everything is under `~/.azazel/run/`:
 | `<id>.sock` | The socket clients connect to (Unix; on Windows a named pipe `\\.\pipe\azazel-<id>`) |
 | `<id>.lock`, `session-<session id>.lock` | Held while the process lives |
 | `req-<hash>.req` | The id of the session a `bg --request-id` started |
+| `schedule-<id>.lock`, `trigger-<id>.lock` | Held by the run of a schedule while it starts, and by the session that watches a trigger |
 
 The directory is readable by you only. Entries of a process that died without cleaning up are removed
 the next time anything lists the sessions, unless it died in the middle of a run (see
@@ -166,6 +168,110 @@ background session. The first command must be `attach`:
 then the requests that still wait for an answer, then everything the session does. Any number of
 programs may be attached at once, each answered on its own connection. `{"type": "stop", "now": true}`
 ends the session and may be sent on any connection, attached or not.
+
+## Schedules
+
+A schedule runs a prompt at a time, with nobody there: every morning, every ten minutes, once in two
+hours. Each run starts a background session like `azazel bg` does, so `azazel ps`, `logs` and `attach`
+work on it as on any other.
+
+```sh
+azazel schedule add "0 9 * * 1-5" "check for outdated dependencies and open a branch that updates them"
+azazel schedule add every 10m "look at the deploy and say what changed"
+azazel schedule add at +2h "run the test suite again and summarise what still fails"
+azazel schedule list
+azazel schedule run 1a2b        # now, whatever the time is
+azazel schedule rm 1a2b
+```
+
+| Command | What it does |
+|---|---|
+| `azazel [flags] schedule add <when> "<prompt>" [--session <id> \| --new]` | Adds a schedule and prints its id. The flags of an ordinary run that say how to work (`--model`, `--thinking`, `--mode`, `--set`, `--add-dir`, `--tools`, ...) are kept with it: every run works that way |
+| `azazel schedule list [--json]` | The schedules of this project: id, when, the next run, what the last run came to, how often it ran, where the prompt goes, the prompt |
+| `azazel schedule rm <id>` | Removes a schedule, from the system's scheduler too |
+| `azazel schedule run <id>` | Runs it now. `--due` runs it only when it is due; `azazel schedule run --due` runs every schedule of the project that is due at this moment |
+
+`<when>` is one of:
+
+| Form | Meaning |
+|---|---|
+| `"<minute> <hour> <day> <month> <weekday>"` | A cron expression, in local time: lists (`1,15`), ranges (`9-17`), steps (`*/15`, `5/20`), month and weekday names (`jan`, `mon-fri`), `7` or `0` for Sunday; when both days are given, either one counts. `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly` work too. Quote it: a shell expands `*` |
+| `every <length>` | Again and again, counted from when the schedule was added: `every 10m`, `every 2h`, `every 1d`, `every 1h30m`. Whole minutes, from one minute to 31 days |
+| `at <time>` | Once: `at +2h`, `at 17:30` (the next time the clock shows it), `at 2026-12-01 09:00`, or a full timestamp. The schedule is removed after its run |
+
+Where the prompt goes:
+
+- By default, and with `--new`, every run starts a background session of its own, named `schedule <id>`.
+  It ends two minutes after it has finished when nobody is attached; what it did stays in `azazel logs`
+  and in its session.
+- With `--session <id>` every run goes to that session. When a background session has it open, the
+  prompt is sent to it: it starts on it at once when it has nothing to do, and after its current work
+  otherwise. When none has, a background session is started on it.
+
+Schedules are kept per project, in `~/.azazel/projects/<project>/schedules.json`, not in the repository:
+a checkout never brings schedules with it.
+
+### Who starts a run
+
+There is no daemon. A schedule is handed to the scheduler of the operating system, which starts
+`azazel schedule run <id> --scheduled` at the times it may be due:
+
+| System | Where the entry is |
+|---|---|
+| Windows | A task `azazel\<id>` of Task Scheduler (`schtasks`), which runs while you are signed in |
+| Linux | A line of your crontab that ends in `# azazel-schedule:<id>` |
+| macOS | A launch agent `~/Library/LaunchAgents/dev.azazel.schedule.<id>.plist` |
+
+azazel itself decides whether the run goes ahead. Where the scheduler cannot say a schedule exactly (a
+cron expression in Task Scheduler, `every 45m` in cron), the entry wakes azazel more often and azazel
+does nothing until the schedule is due.
+
+- **Missed runs are not caught up.** A run whose time passed while the machine was off or asleep is
+  gone: the scheduler is told not to make up for it, and a run that is started more than two minutes
+  late (ten for an `at`) does nothing. An `at` that was missed stays in the list, marked `missed`, until
+  you remove it.
+- **One run at a time.** While the background session the last run started is still at work, the next
+  run is skipped and the list says so. A prompt for a session that still has the last one waiting is
+  not sent a second time. Two runs of one schedule woken at once are told apart by a lock file; one
+  of them goes ahead.
+- **Permissions.** A run has nobody to ask. In `manual` and `accept-edits` mode an approval makes the
+  session wait (`azazel ps` shows `waiting for you`, and you are notified); add the schedule with
+  `--mode auto`, or with allow rules, for work that should go through. See [permissions](permissions.md).
+
+When `schtasks`, `crontab` or `launchctl` is not there, `schedule add` fails and says so. With
+`[schedule] register = false` schedules are kept without the system's scheduler; call
+`azazel schedule run --due` from whatever runs things for you (a systemd timer, a CI job).
+`azazel doctor` says which scheduler is in use.
+
+### Triggers
+
+A trigger runs its prompt when something happens instead of at a time:
+
+```sh
+azazel schedule add --on ci-failure "pull the log of the failed run, find the cause and fix it on a branch"
+azazel schedule add --on "file:src/**/*.rs" "run the tests of what changed and fix what fails"
+```
+
+| Trigger | When it runs |
+|---|---|
+| `--on ci-failure` | A CI run of the project ends in failure. The runs are read with `gh run list` (the GitHub CLI, signed in) every `[schedule] poll_secs` seconds (60). Runs that had failed before anybody watched do not count; the prompt gets the run's name, branch, address and the command that prints what failed |
+| `--on file:<glob>` | A file of the project that matches the glob is added, changed or deleted. Files git ignores are not looked at. The prompt gets the list of changed files, once they have stopped changing for two seconds |
+
+A trigger is watched by a session that is open in the project: the interactive UI, or a background
+session (`azazel bg`, or one a schedule started). Nothing is watched while no session is open, and
+what happened meanwhile does not run later. When several sessions are open, one of them owns each
+trigger, so the prompt runs once.
+
+The prompt goes to the session that saw it happen, as a message of yours: at once when the lead has
+nothing to do, after its current work otherwise. `--session <id>` lets only that session take it;
+`--new` starts a background session for it instead. Files that change while the lead works do not run
+a `file:` trigger: they are the lead's own doing.
+
+### The `schedule` tool and `/loop`
+
+An agent can add, list and remove schedules with the [`schedule` tool](tools.md#schedules); adding and
+removing ask for permission like a command. Inside a session, [`/loop`](tui.md#loops) sends a prompt
+again and again without a schedule.
 
 ## Remote work over SSH
 

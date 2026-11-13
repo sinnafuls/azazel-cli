@@ -461,6 +461,37 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         Some(program) => report.ok(format!("ast_grep: {}", program.display())),
         None => report.ok("ast_grep: off, ast-grep is not installed"),
     }
+    #[cfg(feature = "detach")]
+    {
+        use crate::schedule::{Store, os};
+        let schedules = Store::of(paths).list();
+        let (triggers, timed): (Vec<_>, Vec<_>) =
+            schedules.iter().partition(|schedule| schedule.when.is_trigger());
+        match (config.schedule.register, os::scheduler()) {
+            (false, _) => report.ok(format!(
+                "schedules: {} here, not handed to {} (`schedule.register` is off)",
+                timed.len(),
+                os::Kind::HERE.name()
+            )),
+            (true, Ok(_)) => report.ok(format!(
+                "schedules: {} here, started by {}",
+                timed.len(),
+                os::Kind::HERE.name()
+            )),
+            (true, Err(why)) => report.warn(format!("schedules: {why}")),
+        }
+        let ci = triggers
+            .iter()
+            .any(|schedule| schedule.when == crate::schedule::when::When::CiFailure);
+        if ci && which::which("gh").is_err() {
+            report.warn("trigger on ci-failure: `gh` is not on PATH, so CI runs cannot be looked at");
+        } else if !triggers.is_empty() {
+            report.ok(format!(
+                "triggers: {} here, watched while a session is open",
+                triggers.len()
+            ));
+        }
+    }
     #[cfg(feature = "memory")]
     match &config.embeddings {
         _ if !config.memory.enabled => report.ok("memory: off"),

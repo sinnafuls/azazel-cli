@@ -60,7 +60,9 @@ impl ScheduleTool {
         let when = When::parse(text(input, "when"), &Zoned::now())?;
         let target = match (text(input, "session"), when.is_trigger()) {
             ("this", _) if self.ephemeral => {
-                return Err("this run keeps no session (--no-session), so no schedule can go to it".to_string());
+                return Err(
+                    "this run keeps no session (--no-session), so no schedule can go to it".to_string(),
+                );
             }
             ("this", _) => Target::Session(ctx.session_id.clone()),
             ("new", _) | ("", false) => Target::New,
@@ -142,7 +144,8 @@ impl Tool for ScheduleTool {
 
     fn approval_note(&self, input: &Value) -> Option<String> {
         (text(input, "action") == "add").then(|| {
-            "a schedule runs its prompt later, by itself, with the permissions this session has now".to_string()
+            "a schedule runs its prompt later, by itself, with the permissions this session has now"
+                .to_string()
         })
     }
 

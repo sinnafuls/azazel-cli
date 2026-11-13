@@ -137,8 +137,9 @@ fn changed(before: &Files, after: &Files) -> BTreeSet<String> {
 
 /// The newest CI runs of the project in `root`.
 async fn ci_runs(root: &Path) -> Result<Vec<CiRun>, String> {
-    let gh = which::which("gh")
-        .map_err(|_| "`gh` (the GitHub CLI) is not on PATH, which is how CI runs are looked at".to_string())?;
+    let gh = which::which("gh").map_err(|_| {
+        "`gh` (the GitHub CLI) is not on PATH, which is how CI runs are looked at".to_string()
+    })?;
     let mut command = tokio::process::Command::new(gh);
     command
         .args(["run", "list", "--limit", RUNS_LISTED, "--json"])
@@ -157,7 +158,8 @@ async fn ci_runs(root: &Path) -> Result<Vec<CiRun>, String> {
             said.lines().next().unwrap_or_default()
         ));
     }
-    serde_json::from_slice(&output.stdout).map_err(|e| format!("`gh run list` printed something unexpected: {e}"))
+    serde_json::from_slice(&output.stdout)
+        .map_err(|e| format!("`gh run list` printed something unexpected: {e}"))
 }
 
 enum Watch {
@@ -262,7 +264,8 @@ impl Watcher {
         let poll = Duration::from_secs(self.scheduler.config.poll_secs.max(1));
         let busy = (self.about.busy)();
         for owned in &mut self.owned {
-            let due = |looked: &Option<Instant>, every: Duration| looked.is_none_or(|at| at.elapsed() >= every);
+            let due =
+                |looked: &Option<Instant>, every: Duration| looked.is_none_or(|at| at.elapsed() >= every);
             match &mut owned.watch {
                 Watch::Files {
                     glob,

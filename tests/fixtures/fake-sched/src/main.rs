@@ -31,7 +31,9 @@ fn task_text(path: &str) -> String {
         .chunks_exact(2)
         .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
         .collect();
-    String::from_utf16_lossy(&units).trim_start_matches('\u{feff}').to_string()
+    String::from_utf16_lossy(&units)
+        .trim_start_matches('\u{feff}')
+        .to_string()
 }
 
 fn after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
@@ -45,7 +47,10 @@ fn schtasks(dir: &Path, args: &[String]) -> ExitCode {
         let name = after(args, "/TN").unwrap_or_default();
         let calls = std::fs::read_to_string(dir.join("calls.jsonl")).unwrap_or_default();
         let mut known = false;
-        for call in calls.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()) {
+        for call in calls
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
             let words: Vec<&str> = call["args"]
                 .as_array()
                 .map(|args| args.iter().filter_map(Value::as_str).collect())

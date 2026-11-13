@@ -213,7 +213,9 @@ impl Loop {
             }
             Until::Rounds(_) => Next::Send,
             Until::Every(every) => self.exhausted().unwrap_or_else(|| {
-                let since = self.sent.map_or(Duration::ZERO, |sent| now.saturating_duration_since(sent));
+                let since = self
+                    .sent
+                    .map_or(Duration::ZERO, |sent| now.saturating_duration_since(sent));
                 Next::Wait(every.saturating_sub(since))
             }),
             Until::Condition(_) => Next::Judge,
@@ -596,7 +598,14 @@ mod tests {
         assert!(span("5").is_err());
         let text = |seconds: u64| span_text(Duration::from_secs(seconds));
         assert_eq!(
-            [text(45), text(90), text(600), text(7200), text(172_800), text(5400)],
+            [
+                text(45),
+                text(90),
+                text(600),
+                text(7200),
+                text(172_800),
+                text(5400)
+            ],
             ["45s", "90s", "10m", "2h", "2d", "90m"]
         );
     }

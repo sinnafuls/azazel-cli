@@ -113,7 +113,9 @@ mod stamp {
             }
         }
 
-        pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Timestamp>, D::Error> {
+        pub fn deserialize<'de, D: Deserializer<'de>>(
+            deserializer: D,
+        ) -> Result<Option<Timestamp>, D::Error> {
             Option::<String>::deserialize(deserializer)?
                 .map(|text| text.parse().map_err(serde::de::Error::custom))
                 .transpose()
@@ -231,7 +233,9 @@ impl Store {
         match matches.len() {
             0 => Err(format!("there is no schedule `{wanted}` in this project")),
             1 => Ok(matches.remove(0)),
-            many => Err(format!("`{wanted}` matches {many} schedules; give more of the id")),
+            many => Err(format!(
+                "`{wanted}` matches {many} schedules; give more of the id"
+            )),
         }
     }
 
@@ -273,7 +277,8 @@ fn new_id(taken: &[Schedule]) -> String {
 /// `--home <dir>` when azazel's own files are not where they are by default: what another
 /// process is started with (by the scheduler, or as a background session) to find the same.
 pub fn home_args(cli: &Cli, paths: &Paths) -> Vec<String> {
-    let elsewhere = cli.home.is_some() || std::env::var_os("AZAZEL_HOME").is_some_and(|home| !home.is_empty());
+    let elsewhere =
+        cli.home.is_some() || std::env::var_os("AZAZEL_HOME").is_some_and(|home| !home.is_empty());
     match elsewhere {
         true => vec!["--home".to_string(), paths.home.to_string_lossy().into_owned()],
         false => Vec::new(),
@@ -342,13 +347,22 @@ impl Scheduler {
 
     /// Adds a schedule: one that goes by the clock is handed to the system's scheduler first,
     /// and is not kept when that fails.
-    pub fn add(&self, when: When, prompt: &str, target: Target, args: Vec<String>) -> Result<Schedule, String> {
+    pub fn add(
+        &self,
+        when: When,
+        prompt: &str,
+        target: Target,
+        args: Vec<String>,
+    ) -> Result<Schedule, String> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err("a schedule needs a prompt: what to do when it runs".to_string());
         }
         if target == Target::Open && !when.is_trigger() {
-            return Err("a schedule that goes by the clock runs in a new session, or in one named with --session".to_string());
+            return Err(
+                "a schedule that goes by the clock runs in a new session, or in one named with --session"
+                    .to_string(),
+            );
         }
         let store = self.store();
         let mut schedule = Schedule {
@@ -407,16 +421,22 @@ impl Scheduler {
         let goes = match (&schedule.target, schedule.when.is_trigger()) {
             (Target::New, _) => "starts a background session".to_string(),
             (Target::Session(id), _) => format!("goes to session {id}"),
-            (Target::Open, _) => "goes to the session that is open in this project when it happens".to_string(),
+            (Target::Open, _) => {
+                "goes to the session that is open in this project when it happens".to_string()
+            }
         };
         let how = match (schedule.when.is_trigger(), schedule.registered) {
             (true, _) => "watched while a session is open here".to_string(),
             (false, true) => format!(
                 "next run {}, started by {}",
-                schedule.next(&now).map_or_else(|| "never".to_string(), |next| when::shown(&next)),
+                schedule
+                    .next(&now)
+                    .map_or_else(|| "never".to_string(), |next| when::shown(&next)),
                 os::Kind::HERE.name()
             ),
-            (false, false) => "not handed to the system's scheduler: `azazel schedule run --due` runs it".to_string(),
+            (false, false) => {
+                "not handed to the system's scheduler: `azazel schedule run --due` runs it".to_string()
+            }
         };
         format!("schedule {} ({}): {goes}; {how}", schedule.id, schedule.when)
     }
@@ -442,10 +462,9 @@ pub fn table(schedules: &[Schedule], now: &Zoned) -> String {
                     (_, next) => shown(next),
                 },
                 match (&schedule.last_run, &schedule.last_result) {
-                    (Some(at), Some(result)) => format!(
-                        "{} {result}",
-                        when::shown(&at.to_zoned(now.time_zone().clone()))
-                    ),
+                    (Some(at), Some(result)) => {
+                        format!("{} {result}", when::shown(&at.to_zoned(now.time_zone().clone())))
+                    }
                     (None, Some(result)) => result.clone(),
                     _ => "-".to_string(),
                 },
@@ -520,7 +539,9 @@ pub async fn run(cli: &Cli, paths: &Paths, config: ScheduleConfig, action: &Sche
             let now = Zoned::now();
             let schedules = scheduler.store().list();
             match json {
-                true => schedules.iter().for_each(|schedule| println!("{}", schedule.row(&now))),
+                true => schedules
+                    .iter()
+                    .for_each(|schedule| println!("{}", schedule.row(&now))),
                 false => println!("{}", table(&schedules, &now)),
             }
             Ok(())
@@ -573,15 +594,15 @@ fn add(
     let now = Zoned::now();
     let when = match (on, time.is_empty()) {
         (Some(event), true) => When::parse(&format!("on {event}"), &now),
-        (Some(_), false) => Err(format!(
-            "a schedule runs at a time or on --on, not both; {usage}"
-        )),
+        (Some(_), false) => Err(format!("a schedule runs at a time or on --on, not both; {usage}")),
         (None, true) => Err(format!("when is it to run? {usage}")),
         (None, false) => When::parse(&time.join(" "), &now),
     }
     .map_err(Problem::Usage)?;
     let target = match (session, new, when.is_trigger()) {
-        (Some(wanted), _, _) => Target::Session(session_id(&scheduler.paths, wanted).map_err(Problem::Usage)?),
+        (Some(wanted), _, _) => {
+            Target::Session(session_id(&scheduler.paths, wanted).map_err(Problem::Usage)?)
+        }
         (None, false, true) => Target::Open,
         (None, _, _) => Target::New,
     };

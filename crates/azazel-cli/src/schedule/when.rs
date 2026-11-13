@@ -79,7 +79,9 @@ impl When {
                     .filter_map(|back| minute.checked_sub(back.minutes()).ok())
                     .find(|minute| cron.matches(*minute));
                 let fresh = |hit: DateTime| {
-                    last.is_none_or(|last| floor_minute(last.to_zoned(now.time_zone().clone()).datetime()) < hit)
+                    last.is_none_or(|last| {
+                        floor_minute(last.to_zoned(now.time_zone().clone()).datetime()) < hit
+                    })
                 };
                 match hit {
                     Some(hit) if fresh(hit) => Due::Yes,
@@ -102,7 +104,8 @@ impl When {
                     Some(_) => Due::Yes,
                     // Not there yet; a scheduler that is a few seconds early is let through.
                     None => {
-                        let early = Duration::try_from(at.duration_since(now.timestamp())).unwrap_or(EARLY * 2);
+                        let early =
+                            Duration::try_from(at.duration_since(now.timestamp())).unwrap_or(EARLY * 2);
                         match early <= EARLY {
                             true => Due::Yes,
                             false => Due::No,
@@ -261,7 +264,10 @@ fn field(text: &str, low: u32, high: u32, names: &[&str], what: &str) -> Result<
         let (range, step) = match part.split_once('/') {
             Some((range, step)) => (
                 range,
-                step.parse::<u32>().ok().filter(|step| *step > 0).ok_or_else(|| bad(part))?,
+                step.parse::<u32>()
+                    .ok()
+                    .filter(|step| *step > 0)
+                    .ok_or_else(|| bad(part))?,
             ),
             None => (part, 1),
         };
@@ -340,7 +346,9 @@ impl Cron {
 
     /// Whether the expression matches the minute `at` lies in.
     pub fn matches(&self, at: DateTime) -> bool {
-        self.minutes & (1 << at.minute()) != 0 && self.hours & (1 << at.hour()) != 0 && self.day_matches(at.date())
+        self.minutes & (1 << at.minute()) != 0
+            && self.hours & (1 << at.hour()) != 0
+            && self.day_matches(at.date())
     }
 
     /// The times of a day the expression matches on a day it matches, in order.
@@ -452,7 +460,10 @@ mod tests {
         ] {
             assert_eq!(parse(text).unwrap().to_string(), text);
         }
-        assert_eq!(parse("  0   9 * *   mon-fri ").unwrap().to_string(), "0 9 * * mon-fri");
+        assert_eq!(
+            parse("  0   9 * *   mon-fri ").unwrap().to_string(),
+            "0 9 * * mon-fri"
+        );
     }
 
     #[test]

@@ -158,6 +158,9 @@ thinking = "low"
 | `[guards]` | `done_check` | `true` | Send the lead back once when it stops on changed code and has run no build, test or linter since. See [guards](tools.md#guards) |
 | | `stuck_after` | `3` | Add a note to the result of a `shell` command that has failed this many times in a row in a turn; `0` is off |
 | | `runaway` | `true` | Stop a reply that repeats a block of 200 characters or more three times in a row, and ask again |
+| `[schedule]` | `register` | `true` | Hand [schedules](background-and-remote.md#schedules) to the system's scheduler (Task Scheduler, cron, launchd). Off, they run only when `azazel schedule run --due` is called |
+| | `poll_secs` | `60` | Seconds between two looks at the CI runs for a [`ci-failure` trigger](background-and-remote.md#triggers) |
+| | `loop_max` | `50` | Rounds after which [`/loop`](tui.md#loops) with an interval or a condition stops by itself; `0` is no limit |
 | `[cache]` | `warming` | `"off"` | `idle` keeps Anthropic's prompt cache warm while the session waits for you; see [prompt cache](models-and-logins.md#prompt-cache) |
 | | `warm_minutes` | `30` | How long after the lead's last request the cache is kept warm |
 | | `report_misses` | `false` | Say in the transcript when a request misses the cached prefix, and why; `/cost` lists the misses either way |

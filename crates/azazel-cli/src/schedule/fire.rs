@@ -90,7 +90,8 @@ async fn send(entry: &running::Entry, prompt: &str) -> Result<Fired, String> {
         })
         .await;
     let _ = client.shutdown().await;
-    sent.map(|_| Fired::Sent(entry.id.clone())).map_err(|e| e.to_string())
+    sent.map(|_| Fired::Sent(entry.id.clone()))
+        .map_err(|e| e.to_string())
 }
 
 /// Hands `prompt` to where the schedule's runs go: a new background session, or the session it
@@ -113,7 +114,12 @@ pub async fn deliver(scheduler: &Scheduler, schedule: &Schedule, prompt: &str) -
 }
 
 /// Notes what a delivery came to with the schedule, and returns it as a line.
-pub fn record(scheduler: &Scheduler, schedule: &Schedule, at: Timestamp, fired: &Result<Fired, String>) -> String {
+pub fn record(
+    scheduler: &Scheduler,
+    schedule: &Schedule,
+    at: Timestamp,
+    fired: &Result<Fired, String>,
+) -> String {
     let store = scheduler.store();
     let (result, host) = match fired {
         Ok(Fired::Started(host)) => (format!("started {host}"), Some(host.as_str())),
@@ -134,7 +140,8 @@ pub async fn fire(scheduler: &Scheduler, wanted: &str, scheduled: bool) -> Resul
     let store = scheduler.store();
     let id = store.find(wanted)?.id;
     running::create_run_dir(home).map_err(|e| format!("cannot create the run directory: {e}"))?;
-    let Some(_lock) = Lock::acquire(&lock_file(home, &id)).map_err(|e| format!("cannot lock the schedule: {e}"))?
+    let Some(_lock) =
+        Lock::acquire(&lock_file(home, &id)).map_err(|e| format!("cannot lock the schedule: {e}"))?
     else {
         return Ok(Fired::Skipped(
             "skipped: another run of it is being started".to_string(),
@@ -191,7 +198,9 @@ pub async fn fire(scheduler: &Scheduler, wanted: &str, scheduled: bool) -> Resul
 pub async fn command(scheduler: &Scheduler, id: Option<&str>, due: bool, scheduled: bool) -> u8 {
     let Some(id) = id else {
         if !due {
-            eprintln!("azazel: which schedule? azazel schedule run <id>, or --due for every one that is due now");
+            eprintln!(
+                "azazel: which schedule? azazel schedule run <id>, or --due for every one that is due now"
+            );
             return EXIT_USAGE;
         }
         let mut code = EXIT_OK;

@@ -70,7 +70,10 @@ fn step_of(times: &[(u8, u8)]) -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Wake {
     /// From `start` on, every so many minutes.
-    Repeat { start: DateTime, minutes: u32 },
+    Repeat {
+        start: DateTime,
+        minutes: u32,
+    },
     /// At these times of every day.
     Daily(Vec<(u8, u8)>),
     Once(DateTime),
@@ -98,7 +101,9 @@ fn wake(job: &Job) -> Result<Wake, String> {
             })
         }
         When::At(at) => Ok(Wake::Once(at.to_zoned(job.zone.clone()).datetime())),
-        When::CiFailure | When::File(_) => Err("a trigger is watched by an open session, not by the scheduler".to_string()),
+        When::CiFailure | When::File(_) => {
+            Err("a trigger is watched by an open session, not by the scheduler".to_string())
+        }
     }
 }
 
@@ -236,7 +241,9 @@ fn cron_fields(job: &Job) -> Result<String, String> {
                 at.month()
             ))
         }
-        When::CiFailure | When::File(_) => Err("a trigger is watched by an open session, not by cron".to_string()),
+        When::CiFailure | When::File(_) => {
+            Err("a trigger is watched by an open session, not by cron".to_string())
+        }
     }
 }
 
@@ -299,13 +306,7 @@ fn calendar(cron: &Cron) -> Vec<Vec<(&'static str, u8)>> {
             by_day.extend(product(&[time[0], time[1], time[2], ("Weekday", &weekdays)]));
             by_day
         }
-        _ => product(&[
-            time[0],
-            time[1],
-            time[2],
-            ("Day", &days),
-            ("Weekday", &weekdays),
-        ]),
+        _ => product(&[time[0], time[1], time[2], ("Day", &days), ("Weekday", &weekdays)]),
     }
 }
 
@@ -423,10 +424,16 @@ fn agent_file(id: &str) -> Result<PathBuf, String> {
 fn run(command: &mut Command, input: Option<&str>) -> Result<Output, String> {
     let program = command.get_program().to_string_lossy().into_owned();
     command
-        .stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() })
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = command.spawn().map_err(|e| format!("cannot run {program}: {e}"))?;
+    let mut child = command
+        .spawn()
+        .map_err(|e| format!("cannot run {program}: {e}"))?;
     if let (Some(input), Some(mut stdin)) = (input, child.stdin.take()) {
         std::io::Write::write_all(&mut stdin, input.as_bytes()).map_err(|e| format!("{program}: {e}"))?;
     }
@@ -563,9 +570,16 @@ mod tests {
             anchor: now.datetime(),
             zone: TimeZone::UTC,
             program: PathBuf::from(r"C:\Program Files\azazel\azazel.exe"),
-            args: ["--cwd", r"C:\my work\app", "schedule", "run", "ab12cd34", "--scheduled"]
-                .map(String::from)
-                .to_vec(),
+            args: [
+                "--cwd",
+                r"C:\my work\app",
+                "schedule",
+                "run",
+                "ab12cd34",
+                "--scheduled",
+            ]
+            .map(String::from)
+            .to_vec(),
             wrapper: None,
             about: "azazel schedule ab12cd34: \"check <deps> & report\"".to_string(),
         }
@@ -624,7 +638,9 @@ mod tests {
         );
         assert_eq!(
             between(&xml, "<Arguments>", "</Arguments>"),
-            [r"--headless &quot;C:\Program Files\azazel\azazel.exe&quot; --cwd &quot;C:\my work\app&quot; schedule run ab12cd34 --scheduled"]
+            [
+                r"--headless &quot;C:\Program Files\azazel\azazel.exe&quot; --cwd &quot;C:\my work\app&quot; schedule run ab12cd34 --scheduled"
+            ]
         );
     }
 
@@ -725,9 +741,6 @@ mod tests {
         let plist = launchd_plist(&job("*/5 * 1-20 * *")).unwrap();
         assert!(plist.contains("<key>StartInterval</key>\n  <integer>300</integer>"));
         let plist = launchd_plist(&job("at 2026-12-01 09:05")).unwrap();
-        assert_eq!(
-            between(&plist, "<integer>", "</integer>"),
-            ["5", "9", "1", "12"]
-        );
+        assert_eq!(between(&plist, "<integer>", "</integer>"), ["5", "9", "1", "12"]);
     }
 }

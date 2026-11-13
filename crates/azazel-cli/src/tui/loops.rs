@@ -139,10 +139,7 @@ impl Tui {
             Next::Send => self.loop_send().await,
             Next::Wait(wait) => {
                 if !wait.is_zero() {
-                    self.info(&format!(
-                        "loop: next round in {} (esc stops it)",
-                        wait_text(wait)
-                    ));
+                    self.info(&format!("loop: next round in {} (esc stops it)", wait_text(wait)));
                 }
                 self.loop_wait(wait);
             }
