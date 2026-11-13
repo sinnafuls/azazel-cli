@@ -171,7 +171,7 @@ impl Bench {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_script_reads_two_files_in_one_call_and_returns_one_result() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     bench.write("a.txt", "one\ntwo\nthree\n");
     bench.write("src/b.txt", "only\n");
     let output = bench
@@ -197,7 +197,7 @@ async fn a_script_reads_two_files_in_one_call_and_returns_one_result() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     let output = bench
         .run(
             r#"
@@ -242,7 +242,7 @@ async fn printed_lines_come_before_the_returned_value_and_tables_return_as_json(
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_command_in_ask_mode_with_nobody_to_ask_is_refused_by_the_gate() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     let marker = bench.paths.project_root.join("ran.txt");
     let command = format!("echo ran > \"{}\"", marker.display());
     let refused = bench
@@ -321,7 +321,7 @@ async fn a_busy_loop_stops_at_the_time_limit_while_waiting_for_tools_does_not_co
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_fifty_first_tool_call_fails_and_some_tools_cannot_be_called_at_all() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     bench.write("a.txt", "one\n");
     let output = bench
         .run(
@@ -374,7 +374,7 @@ async fn a_long_result_is_cut_and_kept_whole_as_an_artifact() {
         result_bytes: 1000,
         ..CodeLimits::default()
     };
-    let bench = Bench::new("ask", limits);
+    let bench = Bench::new("manual", limits);
     let output = bench.run("return string.rep('x', 5000)").await;
     let text = output.text_content();
     assert!(
@@ -389,7 +389,7 @@ async fn a_long_result_is_cut_and_kept_whole_as_an_artifact() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn the_description_lists_the_tools_a_script_can_call() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     let tool = bench.registry.tools.get(&lead(), "run_code").unwrap();
     let description = tool.description();
     assert!(description.starts_with("Run a Luau script that calls your other tools"));
@@ -467,7 +467,7 @@ fn load_scripts(bench: &Bench) {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn an_extension_calls_harness_tools_as_the_lead_through_the_gate() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     bench.write("notes.txt", "one\ntwo\n");
     home_script(
         &bench,
@@ -531,7 +531,7 @@ async fn an_extension_calls_harness_tools_as_the_lead_through_the_gate() {
 
 #[test]
 fn the_tool_is_registered_under_its_own_extension() {
-    let bench = Bench::new("ask", CodeLimits::default());
+    let bench = Bench::new("manual", CodeLimits::default());
     assert!(bench.registry.extensions().contains(&"code".to_string()));
     let names: Vec<String> = bench
         .registry

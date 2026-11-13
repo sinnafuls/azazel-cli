@@ -1,5 +1,7 @@
 //! The gate every tool call passes: rules, the push guard, extension handlers, the mode, the user.
+//! On the way back a tool's result passes it too, where secrets are taken out when that is on.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -11,6 +13,14 @@ use super::shell::{ShellAnalysis, analyze};
 use super::{Call, PermissionState, Rule, Verdict};
 use crate::ext::{Event, EventBus, Outcome};
 use crate::ui::{ApprovalDecision, ApprovalRequest, Ui};
+
+/// A service: what takes secrets out of a tool's result before the model and the session file
+/// get it (`[tools] redact_output`). It returns the text with each secret replaced by
+/// `[redacted:<kind>]`, or the text itself when it holds none.
+pub struct OutputRedactor(pub for<'a> fn(&'a str) -> Cow<'a, str>);
+
+/// The mark [`OutputRedactor`] leaves for each secret it hides.
+const REDACTED: &str = "[redacted:";
 
 pub struct PermissionGate {
     state: Arc<PermissionState>,
@@ -125,6 +135,9 @@ impl Gate for PermissionGate {
 
         let the_call = call(agent, tool, input, &subject);
         let risk = self.state.destructive(&the_call);
+        // A secret file is asked about like a destructive command, but may be allowed for the
+        // session; a command that is both is the stricter of the two.
+        let secret = self.state.secret(&the_call).filter(|_| risk.is_none());
         let rule = match self.state.decide(&the_call, protected, skip_prompt) {
             Verdict::Allow => return GateDecision::Allow { input: rewritten },
             Verdict::Deny(reason) => return deny(reason),
@@ -155,12 +168,16 @@ impl Gate for PermissionGate {
         }
 
         let headless = || {
-            deny(match risk {
-                Some(risk) => format!(
+            deny(match (risk, &secret) {
+                (Some(risk), _) => format!(
                     "this command {risk}; it needs the user's confirmation and nobody is here to give it \
                      (`[permissions] destructive = \"allow\"` runs such commands unattended)"
                 ),
-                None => format!(
+                (None, Some(secret)) => format!(
+                    "`{secret}` is a secret file; using it needs the user's confirmation and nobody is \
+                     here to give it"
+                ),
+                (None, None) => format!(
                     "permission required for {}: re-run with --mode auto or add an allow rule",
                     tool.name()
                 ),
@@ -178,8 +195,17 @@ impl Gate for PermissionGate {
                 input: input.clone(),
                 rule: rule.clone(),
                 destructive: risk.is_some(),
+                secret: secret.is_some(),
                 note: risk
                     .map(|risk| format!("destructive: this command {risk}; it is asked about in every mode"))
+                    .or_else(|| {
+                        secret.as_ref().map(|secret| {
+                            format!(
+                                "secret file: `{secret}` may hold credentials; it is asked about in every \
+                                 mode and cannot be allowed for good"
+                            )
+                        })
+                    })
                     .or_else(|| {
                         protected.then(|| "this path is protected and is asked about every time".to_string())
                     })
@@ -190,7 +216,9 @@ impl Gate for PermissionGate {
             None => headless(),
             Some(ApprovalDecision::AllowOnce) => GateDecision::Allow { input: rewritten },
             Some(ApprovalDecision::AllowSession) => {
-                if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok()) {
+                if secret.is_some() {
+                    self.state.allow_secrets_for_session(&the_call);
+                } else if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok()) {
                     self.state.allow_for_session(&rule);
                 }
                 GateDecision::Allow { input: rewritten }
@@ -226,6 +254,9 @@ impl Gate for PermissionGate {
         if let Outcome::Block { reason } = outcome {
             output.content.push(Block::text(reason));
         }
+        if let Some(redactor) = self.services.get::<OutputRedactor>() {
+            redact(output, &redactor);
+        }
         // The file tools report the path they changed, relative to the agent's directory.
         let changed = output
             .details
@@ -243,5 +274,42 @@ impl Gate for PermissionGate {
                 })
                 .await;
         }
+    }
+}
+
+/// Takes the secrets out of the text of a result, and of the diff that goes with it, and notes
+/// how many there were in `details.redacted`, for the interface to say.
+fn redact(output: &mut ToolOutput, redactor: &OutputRedactor) {
+    let mut hidden = 0;
+    let mut clean = |text: &mut String| {
+        if let Cow::Owned(clean) = (redactor.0)(text) {
+            hidden += clean
+                .matches(REDACTED)
+                .count()
+                .saturating_sub(text.matches(REDACTED).count());
+            *text = clean;
+        }
+    };
+    for block in &mut output.content {
+        if let Block::Text { text } = block {
+            clean(text);
+        }
+    }
+    if let Some(Value::String(diff)) = output
+        .details
+        .as_mut()
+        .and_then(|details| details.get_mut("diff"))
+    {
+        clean(diff);
+    }
+    if hidden == 0 {
+        return;
+    }
+    // Details of another shape belong to the tool; the text says what was hidden.
+    if let Value::Object(details) = output
+        .details
+        .get_or_insert_with(|| Value::Object(serde_json::Map::new()))
+    {
+        details.insert("redacted".to_string(), hidden.into());
     }
 }

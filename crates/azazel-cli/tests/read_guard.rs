@@ -253,7 +253,7 @@ fn with_ast_grep_installed_the_lead_searches_and_rewrites_and_its_writes_pass_th
     // preview does.
     let results = sandbox.run(
         &[replace(None), replace(Some(&["src/a.ts", "src/b.ts"]))],
-        &["--mode", "ask"],
+        &["--mode", "manual"],
     );
     assert!(
         results[0].starts_with("preview: 2 replacements in 2 files, "),

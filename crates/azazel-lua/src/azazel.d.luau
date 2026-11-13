@@ -24,7 +24,7 @@ type Ctx = {
 	session_id: string,
 	-- The agent the call is about; "lead" when it is about none.
 	agent_id: string,
-	-- The permission mode: "plan", "ask", "accept-edits" or "auto".
+	-- The permission mode: "plan", "manual", "accept-edits", "auto" or "bypass".
 	mode: string?,
 	ui: Ui,
 }

@@ -446,7 +446,7 @@ pub struct Cli {
     #[arg(long, value_name = "LEVEL", global = true)]
     pub thinking: Option<String>,
 
-    /// Permission mode: plan, ask, accept-edits, auto
+    /// Permission mode: plan, manual, accept-edits, auto, bypass
     #[arg(long, value_name = "MODE", global = true)]
     pub mode: Option<String>,
 
