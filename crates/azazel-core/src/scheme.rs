@@ -6,12 +6,26 @@ use async_trait::async_trait;
 use azazel_agent::{Access, ToolCtx};
 use azazel_ai::Block;
 
+/// The lines a `read` call asks for with `offset` and `limit`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Lines {
+    /// The first line, 1-based.
+    pub offset: Option<usize>,
+    /// The most lines.
+    pub limit: Option<usize>,
+}
+
 #[async_trait]
 pub trait Scheme: Send + Sync {
     /// The part before `://`.
     fn scheme(&self) -> &str;
     /// `rest` is everything after `scheme://`.
     async fn read(&self, rest: &str, ctx: &ToolCtx) -> Result<Vec<Block>, String>;
+    /// [`Scheme::read`] for a call that may name the lines it wants. A scheme whose content is
+    /// not paged by line returns all of it.
+    async fn read_lines(&self, rest: &str, _lines: Lines, ctx: &ToolCtx) -> Result<Vec<Block>, String> {
+        self.read(rest, ctx).await
+    }
     /// What reading `rest` touches, and the subject permission rules are matched against; `None`
     /// leaves the address itself as the subject. A scheme that reaches the network answers
     /// `(Access::Net, Some("domain:<host>"))`, and is then asked about like `web_fetch`.

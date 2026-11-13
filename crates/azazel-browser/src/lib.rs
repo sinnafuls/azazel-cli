@@ -53,7 +53,8 @@ impl Tool for BrowserTool {
                         navigate/back/reload: move the tab. snapshot: the page as `- role \"name\" [ref=eN]` lines. \
                         click/hover: `ref`, `selector` or `x`,`y`. type: `text` into `ref` or `selector` \
                         (the focused element when neither is given), `submit` presses Enter. key: `keys`. \
-                        scroll: `dy` pixels, at `ref` when given. wait: `for`. eval: `expression`. \
+                        scroll: `dy` pixels, at `ref` when given. wait: until `for` holds, so the next action \
+                        meets a settled page. eval: `expression`. \
                         screenshot: the viewport, the `full_page`, or one element. resize: set the tab's \
                         viewport to `width`×`height` CSS pixels (responsive checks). console/network: the \
                         last 100 entries. tabs: list. close: close a tab."
@@ -69,8 +70,9 @@ impl Tool for BrowserTool {
                 "keys": { "type": "string", "description": "One key with optional modifiers: Enter, Escape, ArrowDown, a, Control+A, Shift+Tab" },
                 "hold_ms": { "type": "integer", "minimum": 0, "description": "How long to hold the key down" },
                 "dy": { "type": "number", "description": "Pixels to scroll; positive is down" },
-                "for": { "type": "string", "description": "load, idle (no network activity), a CSS selector, or text:<string>" },
+                "for": { "type": "string", "description": "What wait waits for: load, idle (no network activity), a CSS selector, text:<string>, role:<role> \"<name>\" (as a snapshot line shows it; the name is optional), url:contains:<string>, title:contains:<string>, or gone:<selector> (no element matches any more)" },
                 "timeout_ms": { "type": "integer", "minimum": 0, "description": "Limit for wait (default 10000)" },
+                "poll_ms": { "type": "integer", "minimum": 10, "description": "How often wait looks at the page (default 100)" },
                 "expression": { "type": "string", "description": "JavaScript; promises are awaited; the value comes back as JSON" },
                 "full_page": { "type": "boolean", "description": "Capture the whole page instead of the viewport" },
                 "width": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Viewport width for resize" },

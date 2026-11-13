@@ -1,6 +1,7 @@
-//! `web_search` and `web_fetch`, and the `http`/`https` schemes that let `read` take URLs.
+//! `web_search`, `web_fetch` and `web_grep`, and the `http`/`https` schemes that let `read` take URLs.
 
 pub mod fetch;
+pub mod grep;
 pub mod search;
 
 use std::sync::Arc;
@@ -9,6 +10,7 @@ use std::time::Duration;
 use azazel_core::{ExtError, Extension, Registrar};
 
 pub use fetch::{Fetcher, Format, MAX_BODY_BYTES, MAX_REDIRECTS, UrlScheme, WebFetchTool};
+pub use grep::WebGrepTool;
 pub use search::{
     Brave, DuckDuckGo, Exa, Recency, SearchBackend, SearchHit, SearchQuery, Searxng, Tavily, WebSearchTool,
     active_backend, backend_from_config,
@@ -18,7 +20,7 @@ const USER_AGENT: &str = concat!("azazel/", env!("CARGO_PKG_VERSION"));
 /// Covers one request from connecting to the last byte of the body.
 const TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Registers `web_search`, `web_fetch` and the `http` and `https` schemes.
+/// Registers `web_search`, `web_fetch`, `web_grep` and the `http` and `https` schemes.
 pub struct WebExt {
     /// Config `web.search`: `auto`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`.
     pub search: String,
@@ -38,6 +40,7 @@ impl Extension for WebExt {
         let fetcher = Arc::new(Fetcher::new().map_err(ExtError)?);
         r.tool(Arc::new(WebSearchTool::new(backend, client)));
         r.tool(Arc::new(WebFetchTool::new(fetcher.clone())));
+        r.tool(Arc::new(WebGrepTool::new(fetcher.clone())));
         r.scheme(Arc::new(UrlScheme::http(fetcher.clone())));
         r.scheme(Arc::new(UrlScheme::https(fetcher)));
         Ok(())

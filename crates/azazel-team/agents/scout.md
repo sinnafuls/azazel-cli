@@ -1,7 +1,7 @@
 ---
 name: scout
 description: Use for fast read-only exploration when you need to know where something lives or how it works before deciding what to do.
-tools: read, glob, grep, semantic_search, web_search, web_fetch
+tools: read, glob, grep, semantic_search, web_search, web_fetch, web_grep
 model: "@scout"
 max-turns: 40
 spawns: []
