@@ -47,9 +47,9 @@ GitHub are its section here.
 ### Changed
 
 - `web_fetch` no longer returns a page of any size in one piece: more than `limit` characters come in parts.
-- Every symbol outside tool cards and pickers (the prompt, rules, spinner, status line, todo list, roster,
-  queued messages, Markdown bullets, quotes and tables, the transcript viewer, side questions) follows
-  `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
+- Every symbol outside tool cards (the prompt, rules, spinner, status line, todo list, roster, queued
+  messages, Markdown bullets, quotes and tables, the transcript viewer, side questions, pickers and popups)
+  follows `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
 - The status line shows the cost only when the lead answers with an API key. On a subscription you signed in
   to, it shows the fullest usage window instead (`◔ 61% 5h`), from the first response on rather than only once
   the window is nearly full.
