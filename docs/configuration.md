@@ -261,12 +261,17 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
 | `--trust` | Trust this project's configuration for this run |
+| `--ssh <HOST>` | Work on another machine: azazel runs there and is shown here; see [remote work](background-and-remote.md#remote-work-over-ssh) |
+| `--remote-dir <DIR>`, `--remote-azazel <COMMAND>` | With `--ssh`: the directory to work in there, and how azazel is started there |
+| `--detach`, `--attach <ID>` | With `--ssh`: run the prompt in a background session there, or open one of its background sessions |
+| `--plain` | Show a background session as lines instead of in the full UI (`azazel attach`, `--ssh --attach`) |
 | `--api-key <KEY>` | Key for the provider of the first `--model`, for this run only |
 | `--debug` | Write debug-level logs to `~/.azazel/logs/azazel.log` |
 | `--version`, `--help` | Print the version or the usage |
 
 `--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
-`--tier`, `--preset`, `--coordinator` and `--max-turns` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+`--tier`, `--preset`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and `--plain`
+may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
 unknown tier or preset) exits with status 2.

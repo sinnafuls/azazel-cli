@@ -909,6 +909,38 @@ mod tests {
     }
 
     #[test]
+    fn a_mirror_reads_like_the_session_and_writes_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        let first = store.message(&Message::user("hello"));
+        store.message(&assistant("hi"));
+        store.append(EntryKind::SessionInfo {
+            name: "greeting".into(),
+        });
+        store.set_leaf(Some(&first));
+        let size = std::fs::metadata(store.path()).unwrap().len();
+
+        // As it travels to another process: the header and the entries as JSON, and the leaf.
+        let header: Header = serde_json::from_value(serde_json::to_value(store.header()).unwrap()).unwrap();
+        let entries: Vec<Entry> = store
+            .entries()
+            .iter()
+            .map(|entry| serde_json::from_value(serde_json::to_value(entry).unwrap()).unwrap())
+            .collect();
+        let mirror = SessionStore::mirror(header, entries, store.leaf(), store.path());
+        assert_eq!(mirror.id(), store.id());
+        assert_eq!(mirror.name().as_deref(), Some("greeting"));
+        assert_eq!(mirror.entries(), store.entries());
+        assert_eq!(texts(&mirror.build_context(None)), ["hello"]);
+        assert_eq!(mirror.branch(None), store.branch(None));
+
+        // What is appended to the copy stays in the copy.
+        mirror.message(&assistant("only here"));
+        assert_eq!(texts(&mirror.build_context(None)), ["hello", "only here"]);
+        assert_eq!(std::fs::metadata(store.path()).unwrap().len(), size);
+    }
+
+    #[test]
     fn written_session_reloads_to_the_same_context() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();

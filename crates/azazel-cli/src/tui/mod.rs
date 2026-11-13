@@ -63,6 +63,8 @@ pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
 use overlay::{Action, Outcome, Overlay, ask_items};
+#[cfg(test)]
+pub(crate) use remote::agent_event;
 pub(crate) use remote::{Place, Remote};
 pub(crate) use slash::{REWIND_NOTE, is_note};
 
@@ -330,9 +332,9 @@ pub(crate) fn env_here(cli: &crate::cli::Cli, paths: Paths) -> anyhow::Result<En
         env: std::env::vars().collect(),
     };
     let config = azazel_core::Config::load(&paths, &options)?.config;
-    let credentials = crate::app::credentials(&paths, false).configured(&config.providers);
     Ok(Env {
-        credentials: Arc::new(credentials),
+        #[cfg(feature = "voice")]
+        credentials: Arc::new(crate::app::credentials(&paths, false).configured(&config.providers)),
         paths,
         config,
     })

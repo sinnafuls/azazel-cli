@@ -586,6 +586,105 @@ fn registered_commands_run_and_the_lists_answer() {
 }
 
 #[test]
+fn what_a_ui_elsewhere_needs_is_answered() {
+    let mut client = Client::start(&replies(&["one", "two"]), &[]);
+    std::fs::create_dir_all(client.project().join("src")).unwrap();
+    std::fs::write(client.project().join("src/lib.rs"), "").unwrap();
+    client.prompt("first");
+    client.prompt("second");
+
+    // The session as its file holds it: the header, every entry, and where it continues.
+    let copy = client.ok(json!({ "type": "get_session" }));
+    let state = client.state(json!({ "type": "get_state" }));
+    assert_eq!(copy["header"]["id"], json!(state.session_id));
+    assert_eq!(copy["path"], json!(state.session_file));
+    let entries = copy["entries"].as_array().unwrap();
+    let messages: Vec<&Value> = entries
+        .iter()
+        .filter(|entry| entry["type"] == "message")
+        .collect();
+    assert_eq!(messages.len(), 4, "{entries:?}");
+    assert_eq!(copy["leaf"], entries.last().unwrap()["id"]);
+    assert!(std::path::Path::new(copy["path"].as_str().unwrap()).is_file());
+
+    let cost = client.ok(json!({ "type": "run_command", "name": "cost" }));
+    assert_eq!(cost["outcome"], "show");
+    assert!(
+        cost["text"].as_str().unwrap().starts_with("requests: 2"),
+        "{cost}"
+    );
+    assert_eq!(state.requests, 2);
+
+    // A label on an entry, and going back to before a prompt.
+    let second = messages[2]["id"].as_str().unwrap();
+    client.ok(json!({ "type": "set_label", "entry_id": second, "label": "try again" }));
+    assert_eq!(
+        client.error(json!({ "type": "set_label", "entry_id": "nope", "label": "x" })),
+        "no entry `nope` in this session"
+    );
+    let labels: Vec<TreeRow> = client
+        .tree()
+        .into_iter()
+        .filter(|row| row.kind == "label")
+        .collect();
+    assert_eq!(
+        labels
+            .iter()
+            .map(|row| (row.text.as_deref(), row.target_id.as_deref()))
+            .collect::<Vec<_>>(),
+        [(Some("try again"), Some(second))]
+    );
+    client.state(json!({ "type": "set_leaf", "entry_id": second, "before": true }));
+    assert_eq!(
+        client.messages(),
+        [pair("user", "first"), pair("assistant", "one")]
+    );
+
+    // The reports of the session are commands like any other.
+    let names: Vec<String> = client
+        .ok(json!({ "type": "list_commands" }))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap().to_string())
+        .collect();
+    for name in ["cost", "session", "tools", "fast"] {
+        assert!(names.contains(&name.to_string()), "{name} in {names:?}");
+    }
+    let todo = client.ok(json!({ "type": "run_command", "name": "todo", "args": "add write the tests" }));
+    assert_eq!(todo["text"], " 1. [ ] write the tests");
+    assert_eq!(
+        client.error(json!({ "type": "run_command", "name": "todo", "args": "done 7" })),
+        "usage: /todo done <n>, with n from 1 to 1"
+    );
+
+    // What the status line of a UI shows comes with the state.
+    let state = client.state(json!({ "type": "get_state" }));
+    assert_eq!(
+        state
+            .todo
+            .iter()
+            .map(|item| (item.text.as_str(), item.status.as_str()))
+            .collect::<Vec<_>>(),
+        [("write the tests", "pending")]
+    );
+    assert_eq!(state.roles.get("default").map(String::as_str), Some("mock/lead"));
+    assert!(!state.coordinator && state.goal.is_none());
+
+    let files = client.ok(json!({ "type": "list_files" }));
+    assert_eq!(files, json!(["src/lib.rs"]));
+
+    // A background session's commands are not for a session with one client of its own.
+    let refused = client.error(json!({ "type": "attach" }));
+    assert!(
+        refused.starts_with("this is not a background session"),
+        "{refused}"
+    );
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
 fn moving_between_sessions_waits_for_the_lead() {
     let script = json!({ "lead": [{ "delay_ms": 2000, "reply": { "text": "slow" } }] });
     let mut client = Client::start(&script, &[]);

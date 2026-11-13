@@ -349,7 +349,10 @@ impl Tui {
         let items = rows
             .iter()
             .map(|session| {
-                let background = crate::running::host_of(home, &session.id);
+                // The open session says so itself, wherever it runs.
+                let background = Some(&session.id)
+                    .filter(|id| **id != open)
+                    .and_then(|id| crate::running::host_of(home, id));
                 session_item(session, session.id == open, background.as_deref())
             })
             .collect();

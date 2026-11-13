@@ -60,6 +60,7 @@ struct Shared {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Place {
     /// A background session on this machine.
+    #[cfg(feature = "detach")]
     Background { id: String },
     /// azazel on another machine, started for this connection.
     Ssh { host: String },
@@ -70,6 +71,7 @@ pub(crate) enum Place {
 impl Place {
     fn name(&self) -> String {
         match self {
+            #[cfg(feature = "detach")]
             Place::Background { id } => format!("background session {id}"),
             Place::Ssh { host } => format!("on {host}"),
             Place::SshBackground { host, id } => format!("background session {id} on {host}"),
@@ -79,13 +81,16 @@ impl Place {
     /// The id of the background session, when it is one.
     fn background(&self) -> Option<&str> {
         match self {
-            Place::Background { id } | Place::SshBackground { id, .. } => Some(id),
+            #[cfg(feature = "detach")]
+            Place::Background { id } => Some(id),
+            Place::SshBackground { id, .. } => Some(id),
             Place::Ssh { .. } => None,
         }
     }
 
     fn farewell(&self) -> String {
         match self {
+            #[cfg(feature = "detach")]
             Place::Background { id } => {
                 format!("background session {id} goes on; `azazel attach {id}` returns to it")
             }

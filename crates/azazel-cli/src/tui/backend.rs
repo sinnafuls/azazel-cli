@@ -16,7 +16,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentEvent, AgentStatus, UserInput};
 use azazel_ai::providers::presets;
-use azazel_ai::{Block, Credentials, ModelSpec, ThinkingLevel, Tier};
+use azazel_ai::{Block, ModelSpec, ThinkingLevel, Tier};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
@@ -40,7 +40,8 @@ pub(crate) struct Env {
     pub paths: Paths,
     pub config: Config,
     /// This machine's credentials, for what the UI itself asks of a provider (voice).
-    pub credentials: Arc<Credentials>,
+    #[cfg(feature = "voice")]
+    pub credentials: Arc<azazel_ai::Credentials>,
 }
 
 /// What reaches the UI from the session.
@@ -281,6 +282,7 @@ impl Local {
         Env {
             paths: self.app.paths.clone(),
             config: self.app.config.clone(),
+            #[cfg(feature = "voice")]
             credentials: self.app.credentials.clone(),
         }
     }

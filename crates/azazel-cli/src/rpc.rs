@@ -900,6 +900,19 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_read_back_is_the_event_it_was_written_from() {
+        // What a UI attached from another process draws is what a local one draws.
+        for event in every_event() {
+            let wire = event_json("scout-1", &event);
+            let frame: Frame = serde_json::from_value(wire.clone()).unwrap();
+            let (agent, back) = crate::tui::agent_event(frame).unwrap_or_else(|| panic!("{wire}"));
+            assert_eq!(agent, "scout-1");
+            assert_eq!(event_json(&agent, &back), wire);
+        }
+        assert!(crate::tui::agent_event(Frame::Roster { members: Vec::new() }).is_none());
+    }
+
+    #[test]
     fn a_side_question_leaves_out_calls_that_are_still_open() {
         let call = |id: &str| Block::ToolCall {
             id: id.into(),
