@@ -110,6 +110,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     ("jobs", "Background jobs: read their output or stop them"),
     (
+        "terminals",
+        "Programs agents run in terminals: watch one, type into it or stop it",
+    ),
+    (
         "todo",
         "The agent's task list: /todo, /todo add <text>, /todo done <n>, /todo clear",
     ),
@@ -274,6 +278,7 @@ impl Tui {
             "copy" => self.copy_command(args),
             "vim" => self.toggle_vim(),
             "jobs" => self.open_jobs(),
+            "terminals" => self.open_terminals(),
             "context" if args.is_empty() => self.open_context().await,
             "reload" => self.reload().await,
             "changelog" => match crate::changelog::text((!args.is_empty()).then_some(args)) {
