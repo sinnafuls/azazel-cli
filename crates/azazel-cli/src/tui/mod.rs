@@ -7,6 +7,8 @@ mod bridge;
 mod btw;
 mod calls;
 mod clip;
+mod fleet;
+mod form;
 mod gitcmd;
 mod input;
 mod overlay;
@@ -38,7 +40,7 @@ use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::{
-    ApprovalDecision, AskKind, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
+    ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
@@ -68,7 +70,7 @@ use bridge::UiRequest;
 pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
-use overlay::{Action, ApprovalRow, Outcome, Overlay, approval_rows, ask_items};
+use overlay::{Action, ApprovalRow, Outcome, Overlay, approval_rows};
 #[cfg(test)]
 pub(crate) use remote::agent_event;
 pub(crate) use remote::{Place, Remote};
@@ -335,6 +337,8 @@ pub struct Tui {
     follow: Option<String>,
     /// Tool calls in flight of the followed agent.
     followed_tools: Vec<RunningTool>,
+    /// What every sub-agent has done, and where the keyboard is in the roster.
+    fleet: fleet::Fleet,
     #[cfg(feature = "voice")]
     voice: voice::Voice,
     quit: bool,
@@ -505,6 +509,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         restore_chain: None,
         follow: None,
         followed_tools: Vec::new(),
+        fleet: fleet::Fleet::default(),
         #[cfg(feature = "voice")]
         voice: voice::Voice::default(),
         quit: false,
@@ -916,6 +921,7 @@ impl Tui {
         let (width, height) = (usize::from(columns), usize::from(rows));
         let mut bottom: Vec<Line> = Vec::new();
         let mut cursor;
+        self.refresh_pane(overlay::inner_width(width));
         if let Some(overlay) = &self.overlay {
             // No popup (the window is too small, or they are off): the box stands in for the
             // input.
@@ -963,6 +969,10 @@ impl Tui {
         // Agents at work and the todo list sit right above the input, under one blank row that
         // sets everything pinned to the bottom apart from the transcript. They give way when
         // the screen is too small for them.
+        // The roster takes the keyboard only while the input has it to give.
+        if self.overlay.is_some() || self.btw.is_some() {
+            self.fleet.focus = None;
+        }
         let mut pinned = self.roster_lines(width);
         pinned.extend(self.todo_lines(width));
         let mut room = height.saturating_sub(bottom.len());
@@ -1291,6 +1301,10 @@ impl Tui {
                 None
             }
             UiRequest::Ask { question, .. } => Some(question.text.clone()),
+            UiRequest::Form { questions, .. } => Some(match questions.first() {
+                Some(first) => format!("{} (and {} more questions)", first.text, questions.len() - 1),
+                None => "the agent asks".to_string(),
+            }),
             UiRequest::Confirm { prompt, .. }
             | UiRequest::Select { prompt, .. }
             | UiRequest::Input { prompt, .. } => {
@@ -1314,45 +1328,12 @@ impl Tui {
                 Level::Error => self.fail(&text),
             },
             UiRequest::Ask { question, reply } => {
-                // What the user needs to know comes first, then the question itself.
-                let mut body: Vec<String> = question
-                    .context
-                    .iter()
-                    .flat_map(|context| context.lines().map(str::to_string).chain([String::new()]))
-                    .collect();
-                body.push(question.text.clone());
-                self.overlay = Some(match question.kind {
-                    AskKind::Text => Overlay::input("The agent asks", body, Action::AskFree { reply }),
-                    AskKind::Confirm => {
-                        let action = Action::Ask {
-                            reply,
-                            options: vec!["yes".to_string(), "no".to_string()],
-                            multi: false,
-                            picked: Vec::new(),
-                            other: None,
-                        };
-                        Overlay::select("The agent asks", body, pick(&["Yes", "No"]), false, action)
-                    }
-                    AskKind::Select | AskKind::Multiselect => {
-                        let multi = question.kind == AskKind::Multiselect;
-                        let picked = vec![false; question.options.len()];
-                        let mut items = ask_items(&question.options, &picked, multi);
-                        let other = (question.allow_freeform && !multi).then_some(question.text);
-                        if other.is_some() {
-                            // "Other…", drawn in the symbols in use.
-                            let label = format!("Other{}", self.theme.glyph(Glyph::Ellipsis));
-                            items.push(SelectItem::new(label, "type your own answer"));
-                        }
-                        let action = Action::Ask {
-                            reply,
-                            options: question.options,
-                            multi,
-                            picked,
-                            other,
-                        };
-                        Overlay::select("The agent asks", body, items, false, action)
-                    }
-                });
+                let form = form::Form::new(vec![question], &self.other_row());
+                self.overlay = Some(Overlay::form(form, Action::Ask { reply }));
+            }
+            UiRequest::Form { questions, reply } => {
+                let form = form::Form::new(questions, &self.other_row());
+                self.overlay = Some(Overlay::form(form, Action::Form { reply }));
             }
             UiRequest::Confirm { prompt, reply } => {
                 let items = pick(&["Yes", "No"]);
@@ -1435,6 +1416,11 @@ impl Tui {
         }
     }
 
+    /// The row of a question that lets the user type an answer, drawn in the symbols in use.
+    fn other_row(&self) -> String {
+        format!("Other{}", self.theme.glyph(Glyph::Ellipsis))
+    }
+
     // ------------------------------------------------------------ terminal input
 
     async fn on_terminal(&mut self, event: Event) {
@@ -1486,26 +1472,48 @@ impl Tui {
                 return self.external_editor().await;
             }
             let outcome = overlay.on_key(&key);
-            if let Outcome::Chosen(index) = outcome
-                && overlay.toggle(index)
-            {
-                return;
-            }
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
             }
-            if matches!(outcome, Outcome::ReadBody) {
-                return self.read_overlay_body().await;
+            // The popup of an agent stays open while it is typed to or stopped.
+            match outcome {
+                Outcome::Send(typed) => return self.pane_send(typed).await,
+                Outcome::Stop => return self.pane_stop().await,
+                outcome => return self.overlay_outcome(outcome).await,
             }
-            if !matches!(outcome, Outcome::Pending)
-                && let Some(overlay) = self.overlay.take()
-            {
-                self.finish_overlay(overlay, outcome).await;
-            }
-            return;
         }
         if self.btw.is_some() {
             return self.btw_key(key).await;
+        }
+        // The roster has the keyboard: the key is its, or takes the keyboard back to the input.
+        if self.fleet.focus.is_some() && self.fleet_key(&key).await {
+            return;
+        }
+        self.input_key(key).await;
+    }
+
+    /// What a key did to the open overlay, other than the keys it keeps open for.
+    async fn overlay_outcome(&mut self, outcome: Outcome) {
+        if matches!(outcome, Outcome::ReadBody) {
+            return self.read_overlay_body().await;
+        }
+        if !matches!(outcome, Outcome::Pending)
+            && let Some(overlay) = self.overlay.take()
+        {
+            self.finish_overlay(overlay, outcome).await;
+        }
+    }
+
+    /// A key for the input: completion, the keymap, the editor.
+    async fn input_key(&mut self, key: KeyEvent) {
+        // `down` in an empty input goes to the roster, when agents are at work.
+        if key.code == KeyCode::Down
+            && key.modifiers.is_empty()
+            && self.editor.is_empty()
+            && self.completion.is_none()
+            && self.enter_fleet()
+        {
+            return;
         }
         if let Some(completion) = &mut self.completion {
             match key.code {
@@ -1679,6 +1687,13 @@ impl Tui {
             });
             return;
         }
+        // `@agent text`: for an agent of the team, not for the lead.
+        if let Some((name, text)) = fleet::mention(trimmed)
+            && self.mention(&shown, name, text).await
+        {
+            self.remember(trimmed);
+            return;
+        }
         // Nothing can answer yet: keep what was typed and set a model up first.
         if !self.busy && !self.backend.has_model() {
             self.editor.set_text(&entered);
@@ -1782,11 +1797,16 @@ impl Tui {
             return;
         };
         if !matches!(&self.completion, Some(c) if !c.slash) {
-            let items = self
-                .project_files()
-                .iter()
-                .map(|file| SelectItem::new(file.as_str(), ""))
-                .collect();
+            // At the start of a prompt `@` may name an agent: those come before the files.
+            let mut items = match typed.len() == token.len() {
+                true => self.mention_items(),
+                false => Vec::new(),
+            };
+            items.extend(
+                self.project_files()
+                    .iter()
+                    .map(|file| SelectItem::new(file.as_str(), "")),
+            );
             self.completion = Some(Completion {
                 list: SelectList::new(items),
                 slash: false,
@@ -1824,43 +1844,21 @@ impl Tui {
             Outcome::Cancelled => return action.cancel(),
             Outcome::Chosen(index) => (index, String::new()),
             Outcome::Text(typed) => (0, typed),
+            // The answers of a form go to whoever asked.
+            Outcome::Answers(mut answers) => {
+                return match action {
+                    Action::Ask { reply } => drop(reply.send(Ok(answers.pop().unwrap_or_default()))),
+                    Action::Form { reply } => drop(reply.send(Ok(answers))),
+                    other => other.cancel(),
+                };
+            }
             // Handled where the key was pressed; the overlay stays open.
-            Outcome::Hotkey { .. } | Outcome::ReadBody => return,
+            Outcome::Hotkey { .. } | Outcome::ReadBody | Outcome::Send(_) | Outcome::Stop => return,
         };
         match action {
-            Action::AskFree { reply } => drop(reply.send(Ok(vec![typed]))),
-            Action::Ask {
-                reply,
-                other: Some(question),
-                options,
-                ..
-            } if choice == options.len() => {
-                // "Other…": the answer is typed instead.
-                self.overlay = Some(Overlay::input(
-                    "The agent asks",
-                    vec![question],
-                    Action::AskFree { reply },
-                ));
-            }
-            Action::Ask {
-                reply,
-                options,
-                multi,
-                picked,
-                ..
-            } => {
-                let chosen = if multi {
-                    options
-                        .iter()
-                        .zip(&picked)
-                        .filter(|(_, on)| **on)
-                        .map(|(o, _)| o.clone())
-                        .collect()
-                } else {
-                    options.get(choice).cloned().into_iter().collect()
-                };
-                drop(reply.send(Ok(chosen)));
-            }
+            // A form answers through `Outcome::Answers`; the popup of an agent only closes.
+            action @ (Action::Ask { .. } | Action::Form { .. }) => action.cancel(),
+            Action::AgentPane => {}
             Action::Confirm { reply } => drop(reply.send(Ok(choice == 0))),
             Action::UiSelect { reply } => drop(reply.send(Ok(choice))),
             Action::UiInput { reply } => drop(reply.send(Ok(typed))),
@@ -2038,6 +2036,7 @@ impl Tui {
         self.sync().await;
         self.follow = None;
         self.followed_tools.clear();
+        self.fleet.clear();
         self.forget_calls();
         self.busy = false;
         self.tools.clear();

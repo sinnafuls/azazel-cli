@@ -20,7 +20,7 @@ use azazel_ai::{Block, Message, ModelSpec, Role, ThinkingLevel};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::side::{Side, SideQuestion};
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Level, PermissionMode,
+    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Excerpt, Level, PermissionMode,
     PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
 };
 use azazel_protocol::{
@@ -117,6 +117,58 @@ impl RpcBridge {
     }
 }
 
+/// A question as the protocol carries it.
+fn asked(question: &Question) -> azazel_protocol::Question {
+    let (code, diff) = match &question.excerpt {
+        Some(Excerpt::Code(code)) => (Some(code.clone()), None),
+        Some(Excerpt::Diff(diff)) => (None, Some(diff.clone())),
+        None => (None, None),
+    };
+    azazel_protocol::Question {
+        question: question.text.clone(),
+        header: question.header.clone(),
+        context: question.context.clone(),
+        code,
+        diff,
+        expects: Some(match question.kind {
+            AskKind::Select => azazel_protocol::AskKind::Select,
+            AskKind::Multiselect => azazel_protocol::AskKind::Multiselect,
+            AskKind::Text => azazel_protocol::AskKind::Text,
+            AskKind::Confirm => azazel_protocol::AskKind::Confirm,
+        }),
+        options: question.options.clone(),
+        multi: question.kind == AskKind::Multiselect,
+        recommended: question.recommended.clone(),
+        allow_freeform: question.allow_freeform,
+    }
+}
+
+/// What the client's `value` answers to `question`; `None` when it is no answer to it.
+fn answered(question: &Question, value: Option<Value>) -> Option<Vec<String>> {
+    if question.kind == AskKind::Confirm {
+        // A client that knows no `confirm` shows a text box: the words are taken too.
+        let said = match &value {
+            Some(Value::Bool(yes)) => Some(*yes),
+            Some(Value::String(word)) => match word.trim().to_ascii_lowercase().as_str() {
+                "yes" | "y" | "true" => Some(true),
+                "no" | "n" | "false" => Some(false),
+                _ => None,
+            },
+            _ => None,
+        };
+        return said.map(|yes| vec![if yes { "yes" } else { "no" }.to_string()]);
+    }
+    match value {
+        Some(Value::String(one)) => Some(vec![one]),
+        Some(Value::Array(many)) => Some(
+            many.into_iter()
+                .filter_map(|value| value.as_str().map(str::to_string))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 fn level_name(level: Level) -> &'static str {
     match level {
         Level::Info => "info",
@@ -128,45 +180,24 @@ fn level_name(level: Level) -> &'static str {
 #[async_trait]
 impl UiBridge for RpcBridge {
     async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
-        let request = UiRequest::Ask {
-            question: question.text.clone(),
-            context: question.context.clone(),
-            expects: Some(match question.kind {
-                AskKind::Select => azazel_protocol::AskKind::Select,
-                AskKind::Multiselect => azazel_protocol::AskKind::Multiselect,
-                AskKind::Text => azazel_protocol::AskKind::Text,
-                AskKind::Confirm => azazel_protocol::AskKind::Confirm,
-            }),
-            options: question.options.clone(),
-            multi: question.kind == AskKind::Multiselect,
-            allow_freeform: question.allow_freeform,
+        let answer = self.request(UiRequest::Ask(asked(question))).await;
+        answered(question, answer).ok_or(UiError::Cancelled)
+    }
+
+    async fn ask_form(&self, questions: &[Question]) -> Result<Vec<Vec<String>>, UiError> {
+        let request = UiRequest::Form {
+            questions: questions.iter().map(asked).collect(),
         };
-        let answer = self.request(request).await;
-        if question.kind == AskKind::Confirm {
-            // A client that knows no `confirm` shows a text box: the words are taken too.
-            let said = match &answer {
-                Some(Value::Bool(yes)) => Some(*yes),
-                Some(Value::String(word)) => match word.trim().to_ascii_lowercase().as_str() {
-                    "yes" | "y" | "true" => Some(true),
-                    "no" | "n" | "false" => Some(false),
-                    _ => None,
-                },
-                _ => None,
-            };
-            return match said {
-                Some(true) => Ok(vec!["yes".to_string()]),
-                Some(false) => Ok(vec!["no".to_string()]),
-                None => Err(UiError::Cancelled),
-            };
-        }
-        match answer {
-            Some(Value::String(one)) => Ok(vec![one]),
-            Some(Value::Array(many)) => Ok(many
-                .into_iter()
-                .filter_map(|value| value.as_str().map(str::to_string))
-                .collect()),
-            _ => Err(UiError::Cancelled),
-        }
+        let Some(Value::Array(mut values)) = self.request(request).await else {
+            return Err(UiError::Cancelled);
+        };
+        // A question the client left open, or answered with what is no answer to it, has none.
+        values.resize(questions.len(), Value::Null);
+        Ok(questions
+            .iter()
+            .zip(values)
+            .map(|(question, value)| answered(question, Some(value)).unwrap_or_default())
+            .collect())
     }
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError> {
@@ -507,6 +538,14 @@ impl Session {
             Command::AgentSend { to, message } => {
                 let reached = team(&self.team)?.send_from_user(&to, &message)?;
                 done(json!({ "agents": reached }))
+            }
+            Command::AgentMention { name, text } => {
+                let mentioned = team(&self.team)?.mention(&name, &text).await.transpose()?;
+                data(mentioned.map(|mentioned| azazel_protocol::Mentioned {
+                    agent: mentioned.agent,
+                    started: mentioned.started,
+                }))
+                .map(Some)
             }
             Command::AgentStop { agent } => {
                 let team = team(&self.team)?;
@@ -871,6 +910,11 @@ pub(crate) async fn serve_lines(
             Some(event) = session.events.recv() => session.on_event(event),
             Some(event) = async { Some(team_events.as_mut()?.recv().await) } => match event {
                 Ok(TeamEvent::Agent { id, event }) => out.line(&event_json(&id, &event)),
+                Ok(TeamEvent::Input { id, text }) => out.line(&Frame::UserInput {
+                    kind: "prompt".to_string(),
+                    text,
+                    agent: Some(id),
+                }),
                 Ok(TeamEvent::Roster) => out.line(&Frame::Roster { members: session.roster() }),
                 // Events were missed; the roster says where everyone stands now.
                 Err(RecvError::Lagged(_)) => out.line(&Frame::Roster { members: session.roster() }),

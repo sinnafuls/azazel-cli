@@ -13,7 +13,6 @@ use azazel_tools::Foreground;
 use azazel_tui::{Draft, Glyph, GlyphLevel, Line, Role, Vim};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::overlay::Kind;
 use super::{Tui, first_line, view};
 
 /// Files larger than this are mentioned, never read to see whether they are images.
@@ -418,6 +417,8 @@ impl Tui {
         if let Some(panel) = &mut self.btw {
             return panel.on_paste(pasted);
         }
+        // What is pasted is for the input, wherever the keyboard was.
+        self.fleet.focus = None;
         let home = std::env::home_dir();
         match dropped_files(pasted, home.as_deref()) {
             Some(files) => self.drop_files(&files),
@@ -464,13 +465,10 @@ impl Tui {
     /// Opens the draft (or the text of an input overlay) in the user's editor and takes back
     /// what they saved.
     pub(super) async fn external_editor(&mut self) {
-        let draft = match &self.overlay {
-            Some(overlay) => match &overlay.kind {
-                Kind::Input {
-                    editor,
-                    secret: false,
-                } => editor.expanded(),
-                _ => return,
+        let draft = match &mut self.overlay {
+            Some(overlay) => match overlay.editor_mut() {
+                Some(editor) => editor.expanded(),
+                None => return,
             },
             None => self.editor.expanded(),
         };
@@ -526,7 +524,7 @@ impl Tui {
         let edited = edited.trim_end_matches(['\n', '\r']);
         match &mut self.overlay {
             Some(overlay) => {
-                if let Kind::Input { editor, .. } = &mut overlay.kind {
+                if let Some(editor) = overlay.editor_mut() {
                     editor.set_text(edited);
                 }
             }

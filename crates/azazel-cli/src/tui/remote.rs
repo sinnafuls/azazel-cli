@@ -18,14 +18,14 @@ use azazel_client::{Client, Error};
 use azazel_core::session::{Entry, Header, SessionSummary};
 use azazel_core::side::SideAnswer;
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Level, PermissionMode,
+    ApprovalDecision, ApprovalRequest, AskKind, CommandOutcome, EntryKind, Excerpt, Level, PermissionMode,
     PlanDecision, Question, SessionStore, UiError,
 };
 use azazel_protocol::{
     self as protocol, Attached, BtwAnswer, Command, CommandResult, CommandRow, Decision, Exported, Frame,
     Member, ModelRow, Replay, RewindWhat, SessionCopy, SessionRow, ShellResult, Snapshot, State,
 };
-use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
+use azazel_team::{LEAD, MemberInfo, MemberState, Mentioned, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
@@ -415,6 +415,35 @@ fn answer_later<T: Send + 'static>(
     });
 }
 
+/// A question of the session as the UI asks it.
+fn question(asked: protocol::Question) -> Question {
+    let kind = match asked.kind() {
+        protocol::AskKind::Select => AskKind::Select,
+        protocol::AskKind::Multiselect => AskKind::Multiselect,
+        protocol::AskKind::Text => AskKind::Text,
+        protocol::AskKind::Confirm => AskKind::Confirm,
+    };
+    Question {
+        text: asked.question,
+        header: asked.header,
+        context: asked.context,
+        excerpt: asked.code.map(Excerpt::Code).or(asked.diff.map(Excerpt::Diff)),
+        kind,
+        options: asked.options,
+        recommended: asked.recommended,
+        allow_freeform: asked.allow_freeform,
+    }
+}
+
+/// What the user answered to a question of `kind`, as the `value` the session expects.
+fn answer_value(kind: AskKind, chosen: Vec<String>) -> Value {
+    match kind {
+        AskKind::Text => json!(chosen.first().cloned().unwrap_or_default()),
+        AskKind::Confirm => json!(chosen.first().is_some_and(|said| said == "yes")),
+        AskKind::Select | AskKind::Multiselect => json!(chosen),
+    }
+}
+
 /// Hands a request of the session to the UI, and its answer back to the session.
 fn request(
     client: &Arc<Client>,
@@ -431,43 +460,47 @@ fn request(
             },
             text,
         },
-        protocol::UiRequest::Ask {
-            question,
-            context,
-            expects,
-            options,
-            multi,
-            allow_freeform,
-        } => {
+        protocol::UiRequest::Ask(asked) => {
             let (reply, answer) = oneshot::channel();
-            let kind = match protocol::AskKind::of(expects, &options, multi) {
-                protocol::AskKind::Select => AskKind::Select,
-                protocol::AskKind::Multiselect => AskKind::Multiselect,
-                protocol::AskKind::Text => AskKind::Text,
-                protocol::AskKind::Confirm => AskKind::Confirm,
-            };
+            let question = question(asked);
+            let kind = question.kind;
             answer_later(
                 client,
                 shared,
                 request_id,
                 answer,
-                move |chosen: Result<Vec<String>, UiError>| match (chosen, kind) {
-                    (Ok(chosen), AskKind::Text) => json!(chosen.first().cloned().unwrap_or_default()),
-                    (Ok(chosen), AskKind::Confirm) => json!(chosen.first().is_some_and(|said| said == "yes")),
-                    (Ok(chosen), _) => json!(chosen),
-                    (Err(_), _) => Value::Null,
+                move |chosen: Result<Vec<String>, UiError>| match chosen {
+                    Ok(chosen) => answer_value(kind, chosen),
+                    Err(_) => Value::Null,
                 },
             );
-            UiRequest::Ask {
-                question: Question {
-                    text: question,
-                    context,
-                    kind,
-                    options,
-                    allow_freeform,
+            UiRequest::Ask { question, reply }
+        }
+        protocol::UiRequest::Form { questions } => {
+            let (reply, answer) = oneshot::channel();
+            let questions: Vec<Question> = questions.into_iter().map(question).collect();
+            let kinds: Vec<AskKind> = questions.iter().map(|question| question.kind).collect();
+            answer_later(
+                client,
+                shared,
+                request_id,
+                answer,
+                move |answers: Result<Vec<Vec<String>>, UiError>| match answers {
+                    // A question left open has no value of its kind.
+                    Ok(answers) => Value::Array(
+                        kinds
+                            .iter()
+                            .zip(answers)
+                            .map(|(kind, chosen)| match chosen.is_empty() {
+                                true => Value::Null,
+                                false => answer_value(*kind, chosen),
+                            })
+                            .collect(),
+                    ),
+                    Err(_) => Value::Null,
                 },
-                reply,
-            }
+            );
+            UiRequest::Form { questions, reply }
         }
         protocol::UiRequest::Confirm { prompt } => {
             let (reply, answer) = oneshot::channel();
@@ -629,7 +662,17 @@ async fn pump(
                 }
                 Ok(())
             }
-            Frame::UserInput { kind, text } => {
+            // What a sub-agent was handed belongs to its part of the fleet view.
+            Frame::UserInput {
+                text,
+                agent: Some(id),
+                ..
+            } => incoming.send(Incoming::Team(TeamEvent::Input { id, text })),
+            Frame::UserInput {
+                kind,
+                text,
+                agent: None,
+            } => {
                 shared.stale.store(true, Ordering::SeqCst);
                 incoming.send(Incoming::UserInput { kind, text })
             }
@@ -1206,6 +1249,22 @@ impl Backend for Remote {
         };
         let reached: Value = ask(&self.client, command).await?;
         parsed(reached["agents"].clone())
+    }
+
+    async fn mention(&mut self, name: &str, text: &str) -> Option<Result<Mentioned, String>> {
+        let command = Command::AgentMention {
+            name: name.to_string(),
+            text: text.to_string(),
+        };
+        match ask::<Option<protocol::Mentioned>>(&self.client, command).await {
+            Ok(mentioned) => mentioned.map(|mentioned| {
+                Ok(Mentioned {
+                    agent: mentioned.agent,
+                    started: mentioned.started,
+                })
+            }),
+            Err(why) => Some(Err(why)),
+        }
     }
 
     async fn finish(&mut self) {
