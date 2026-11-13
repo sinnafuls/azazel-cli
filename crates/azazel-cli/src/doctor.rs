@@ -387,6 +387,23 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             report.ok(format!("lsp: {}", ready.join(", ")));
         }
     }
+    if config.tools.check_on_write {
+        let ready = azazel_tools::check::installed();
+        if ready.is_empty() {
+            report.ok("checks on write: none of the built-in checkers is installed");
+        } else {
+            report.ok(format!("checks on write: {}", ready.join(", ")));
+        }
+        for (kind, program) in azazel_tools::check::missing(&config.tools.check) {
+            report.warn(format!("checker for `{kind}` files: `{program}` was not found"));
+        }
+    } else {
+        report.ok("checks on write: off");
+    }
+    match azazel_tools::scan::scanner(config.tools.scan.secrets, config.tools.check_report, trusted) {
+        Ok(gitleaks) => report.ok(format!("secret scan: {}", gitleaks.display())),
+        Err(why) => report.ok(format!("secret scan: {why}")),
+    }
     #[cfg(feature = "memory")]
     match &config.embeddings {
         _ if !config.memory.enabled => report.ok("memory: off"),

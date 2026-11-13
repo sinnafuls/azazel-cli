@@ -16,6 +16,13 @@ GitHub are its section here.
   `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
+- Checks on write: after `write` and `edit` the linter for the file's kind runs on it when it is installed
+  (clippy, ruff, eslint or oxlint, shellcheck, go vet, actionlint, hadolint, or your own from `[tools.check]`).
+  Errors join the tool result; when the lead stops it is told once what was found on the lines the turn
+  changed (`tools.check_report`), with the files that could not be checked.
+- Secret scan: with `gitleaks` installed and a trusted project, the project is scanned once per session in the
+  background and the places found join that report, never the secrets.
+- `azazel doctor` lists the installed checkers and says whether secrets are scanned for.
 
 ### Changed
 

@@ -1186,6 +1186,7 @@ dependencies = [
  "image",
  "lsp-types",
  "pdf-extract",
+ "process-wrap",
  "reqwest",
  "serde",
  "serde_json",
@@ -2550,6 +2551,10 @@ dependencies = [
 
 [[package]]
 name = "fake-audio"
+version = "0.3.0"
+
+[[package]]
+name = "fake-check"
 version = "0.3.0"
 
 [[package]]

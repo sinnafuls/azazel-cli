@@ -75,7 +75,7 @@ src/config.rs:57:9 error cannot find value `timeout` in this scope
 - If the server had not been used yet, the write starts it but does not wait, so the first edit of a session may come back without diagnostics.
 - If nothing arrives in time, the result is returned without a `diagnostics:` block.
 
-This gives the agent immediate feedback without running a build. It does not replace the build and tests; see [goals](goals.md) for the checker.
+This gives the agent immediate feedback without running a build. It does not replace the build and tests; see [goals](goals.md) for the checker. Linters run after a write in the same way and add a `checks:` block; see [checks on write](tools.md#checks-on-write).
 
 ## The `lsp` tool
 
