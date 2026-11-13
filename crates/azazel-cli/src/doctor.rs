@@ -322,6 +322,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             claude_compat: config.compat.claude,
             compat: config.rules.compat,
             stream_rules: config.stream_rules.clone(),
+            include_depth: config.context.include_depth,
         });
         report.ok(format!("rules: {} found", rules.rules.len()));
         for (file, problem) in &rules.problems {

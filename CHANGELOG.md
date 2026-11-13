@@ -69,6 +69,21 @@ GitHub are its section here.
   uses the provider alone, `provider_search = false` leaves it out, and `/cost` counts the requests under
   `web_search`.
 
+- `/cost` reports the prompt cache: the share of the session's input that was read from it, the same per
+  model, and the last requests that missed it with the cause (the model, the tool list, a named part of the
+  system prompt, the thinking level, a rewritten message, or the five minutes a provider keeps an unused
+  cache). `cache.report_misses = true` also says so in the transcript when it happens.
+- `cache.warming = "idle"` keeps Anthropic's prompt cache alive while a session waits for you: shortly before
+  it would expire the lead's last request is sent again for one token, for up to `cache.warm_minutes` after the
+  lead's last request and only when at least 4096 tokens are cached. `/cost` shows the warming requests and
+  when the next one is due. Off by default.
+- The `AGENTS.md` (or `CLAUDE.md`) of a directory other than the one you started in reaches an agent with its
+  first tool call that names a path there, together with those of the directories above it, once per agent
+  and session and within the 64 KB of the context files (`context.nested`).
+- `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
+  file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
+  the project and of `~/.azazel` that hold no credentials can be included.
+
 ### Changed
 
 - `[web] search = "auto"` now tries the lead's provider first, then `brave`, `tavily`, `exa`, `searxng` and
@@ -97,6 +112,11 @@ GitHub are its section here.
   chose, so two clients need not agree on ids.
 - A prompt sent after a reply whose tool calls never got a result (a killed process, a conversation taken up
   in the middle of a run) now answers those calls first, so the provider no longer rejects the request.
+- What changes while a session runs is no longer part of the system prompt: the date and git branch, plan
+  mode, the goal, the memories kept in the prompt and the task list reminder are sent after the conversation
+  as a `<system-note>`, outside what a provider caches. A mode switch, a new goal or a saved memory used to
+  make the next request pay for the whole conversation again; now the cached prefix is read as before.
+- The task list reminder is part of that note instead of a message of its own.
 
 ## [0.4.0] - 2026-11-13
 

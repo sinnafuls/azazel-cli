@@ -16,7 +16,7 @@ use regex::Regex;
 use serde_json::{Map, Value};
 
 use crate::config::StreamRuleConfig;
-use crate::context::ContextFile;
+use crate::context::{ContextFile, Includes};
 use crate::ext::{Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Outcome, Registrar};
 use crate::frontmatter;
 use crate::paths::{Paths, canonical};
@@ -452,6 +452,8 @@ pub struct Sources {
     pub compat: bool,
     /// `[[stream_rules]]`.
     pub stream_rules: Vec<StreamRuleConfig>,
+    /// How deep `@path` includes in rule files are followed (`context.include_depth`).
+    pub include_depth: u32,
 }
 
 /// The rules that were found, and `(file, what is wrong)` for those that were left out.
@@ -493,9 +495,17 @@ fn rule_name(root: &Path, file: &Path, extension: &str) -> String {
 /// called `<origin>:<name>`.
 pub fn load(sources: &Sources) -> Loaded {
     let mut loaded = Loaded::default();
+    let includes = Includes::new(&sources.paths, sources.include_depth);
     let add = |name: String, file: &Path, origin: Origin, loaded: &mut Loaded| {
         let raw = match std::fs::read_to_string(file) {
-            Ok(raw) if !raw.trim().is_empty() => raw,
+            // What the rule includes is part of its text; the frontmatter is not text.
+            Ok(raw) if !raw.trim().is_empty() => match frontmatter::split(&raw) {
+                Some((_, body)) => {
+                    let head = &raw[..raw.len() - body.len()];
+                    format!("{head}{}", includes.expand(file, body))
+                }
+                None => includes.expand(file, &raw),
+            },
             Ok(_) => return,
             Err(e) => {
                 loaded.problems.push((file.display().to_string(), e.to_string()));
@@ -987,6 +997,7 @@ mod tests {
             claude_compat: true,
             compat: true,
             stream_rules: Vec::new(),
+            include_depth: 4,
         }
     }
 
@@ -1126,6 +1137,34 @@ mod tests {
         assert_eq!(braces.paths, ["web/**/*.{ts,tsx}", "/Cargo.toml"]);
         assert!(braces.matches_path("web/app/page.tsx") && braces.matches_path("Cargo.toml"));
         assert!(!braces.matches_path("crates/x/Cargo.toml"));
+    }
+
+    #[test]
+    fn a_rule_file_includes_other_files_in_its_text_and_not_in_its_frontmatter() {
+        let (_tmp, paths) = project();
+        let root = &paths.project_root;
+        write(root, "docs/sql.md", "Never `SELECT *`.");
+        write(root, "paths.md", "docs/**");
+        write(
+            root,
+            ".azazel/rules/db.md",
+            "---\npaths: \"@paths.md\"\n---\nDatabase work:\n@docs/sql.md\n",
+        );
+        let loaded = load(&sources(&paths));
+        let rule = loaded.rules.iter().find(|rule| rule.name == "db").unwrap();
+        assert_eq!(
+            rule.text,
+            "Database work:\n<include file=\"docs/sql.md\">\nNever `SELECT *`.\n</include>"
+        );
+        // The frontmatter is read as it was written.
+        assert!(rule.matches_path("@paths.md") && !rule.matches_path("docs/sql.md"));
+
+        let off = load(&Sources {
+            include_depth: 0,
+            ..sources(&paths)
+        });
+        let rule = off.rules.iter().find(|rule| rule.name == "db").unwrap();
+        assert_eq!(rule.text, "Database work:\n@docs/sql.md");
     }
 
     #[test]

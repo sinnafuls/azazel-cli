@@ -348,6 +348,7 @@ pub(crate) fn prepare(req: &Request, target: &Target<'_>) -> Request {
         cache_key: req.cache_key.clone(),
         tier: req.tier,
         hosted: req.hosted.clone(),
+        tail: req.tail.clone(),
     }
 }
 

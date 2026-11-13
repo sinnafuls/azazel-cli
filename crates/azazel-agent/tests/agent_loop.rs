@@ -1104,12 +1104,30 @@ async fn turn_limit_asks_for_a_final_report_without_tools() {
 #[derive(Default)]
 struct Hooks {
     stop_calls: Mutex<Vec<bool>>,
+    /// Per answered request: how many messages it carried, the chain it went to, the reply.
+    answered: Mutex<Vec<(usize, String, String)>>,
 }
 
 #[async_trait]
 impl AgentHooks for Hooks {
     async fn before_request(&self, _: &AgentInfo, request: &mut Request) {
         request.tools.retain(|t| t.name != "write");
+        request.tail.push(azazel_ai::SystemPart {
+            text: "NOTE".into(),
+            name: "note".into(),
+            cache_boundary: false,
+        });
+    }
+    fn response(&self, _: &AgentInfo, request: &Arc<Request>, chain: &[ModelSpec], message: &Message) {
+        let chain = chain
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.answered
+            .lock()
+            .unwrap()
+            .push((request.messages.len(), chain, message.text()));
     }
     async fn stop(&self, _: &AgentInfo, stop_hook_active: bool) -> Option<String> {
         self.stop_calls.lock().unwrap().push(stop_hook_active);
@@ -1153,6 +1171,21 @@ async fn stop_hook_keeps_the_agent_going_and_withdrawn_tools_cannot_be_called() 
     );
     assert_eq!(last_user_text(&requests[2]), "run the tests first");
     assert_eq!(*hooks.stop_calls.lock().unwrap(), [false, true]);
+    // A note a hook adds for one request is sent with it and never becomes part of the
+    // conversation; each answer is reported with the request it answers.
+    for request in &requests {
+        assert_eq!(request.tail.len(), 1);
+        assert!(request.messages.iter().all(|m| !m.text().contains("NOTE")));
+    }
+    let answered = |messages: usize, reply: &str| (messages, "mock/a".to_string(), reply.to_string());
+    assert_eq!(
+        *hooks.answered.lock().unwrap(),
+        [
+            answered(1, ""),
+            answered(3, "done"),
+            answered(5, "tests pass, really done")
+        ]
+    );
     assert_eq!(kinds(&events).iter().filter(|k| *k == "idle").count(), 1);
 }
 

@@ -320,7 +320,8 @@ fn contents(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Vec<
     let mut names: HashMap<&str, &str> = HashMap::new();
     let mut turns: Vec<(&'static str, Vec<Value>)> = Vec::new();
 
-    for message in &req.messages {
+    let tail = req.tail_message();
+    for message in req.messages.iter().chain(&tail) {
         let role = match message.role {
             Role::Assistant => "model",
             Role::User | Role::Tool => "user",

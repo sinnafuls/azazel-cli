@@ -394,10 +394,14 @@ async fn a_later_session_is_told_what_an_earlier_one_remembered() {
     let second = open(&home, &config);
     let registry = registry(&home, &second, "s2");
 
-    // Preferences and conventions are part of the system prompt; facts are not.
-    let system = registry.prompt.render(&lead("s2")).await;
-    let memory: Vec<&str> = system
+    // Preferences and conventions are put before the agent with every request; facts are not.
+    // They follow the conversation, so that saving one does not change what a provider cached.
+    let sent = registry.prompt.prompt(&lead("s2")).await;
+    assert!(sent.system.iter().all(|part| !part.text.contains("# Memory")));
+    let memory: Vec<&str> = sent
+        .tail
         .iter()
+        .filter(|part| part.name == "memory")
         .map(|part| part.text.as_str())
         .filter(|text| text.starts_with("# Memory"))
         .collect();
@@ -478,7 +482,7 @@ async fn the_memory_part_keeps_the_newest_within_its_budget() {
     let store = ext.store();
     let registry = registry(&home, &ext, "s1");
     // Nothing remembered, no part.
-    assert!(registry.prompt.render(&lead("s1")).await.is_empty());
+    assert!(registry.prompt.prompt(&lead("s1")).await.tail.is_empty());
 
     for n in 0..40 {
         let rule = "wrap lines at one hundred and ten columns ".repeat(5);
@@ -493,8 +497,8 @@ async fn the_memory_part_keeps_the_newest_within_its_budget() {
             .await
             .unwrap();
     }
-    let system = registry.prompt.render(&lead("s1")).await;
-    let part = &system[0].text;
+    let notes = registry.prompt.prompt(&lead("s1")).await.tail;
+    let part = &notes[0].text;
     // About 1200 tokens: the newest conventions are in, the oldest are not.
     assert!(part.contains("Convention number 39:"));
     assert!(!part.contains("Convention number 0:"));

@@ -249,15 +249,22 @@ fn the_task_list_is_back_when_a_session_is_continued_and_the_agent_is_reminded_o
         let output = sandbox.azazel(script, &args);
         assert!(output.status.success(), "{}", stderr(&output));
     };
-    // The last message of each request the scripted provider received.
+    // What each request the scripted provider received ended with: the note about the plan that
+    // follows the conversation, or without one the last message.
     let last_sent = || -> Vec<String> {
         std::fs::read_to_string(sandbox.dir.path().join("requests.jsonl"))
             .unwrap()
             .lines()
             .map(|line| {
                 let request: Value = serde_json::from_str(line).unwrap();
-                let last = request["request"]["messages"].as_array().unwrap().last().unwrap();
-                last["content"][0]["text"]
+                let request = &request["request"];
+                let note = request["tail"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .find(|note| note["name"] == "plan");
+                let last = request["messages"].as_array().unwrap().last().unwrap();
+                note.map_or(&last["content"][0]["text"], |note| &note["text"])
                     .as_str()
                     .unwrap_or_default()
                     .to_string()

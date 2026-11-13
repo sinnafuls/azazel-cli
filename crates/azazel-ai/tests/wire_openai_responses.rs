@@ -649,6 +649,40 @@ fn usage_separates_cache_reads_and_writes_from_input() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
+fn the_notes_of_a_request_follow_the_conversation() {
+    let body = body(&Request {
+        messages: vec![
+            Message::user("hi"),
+            assistant(vec![Block::text("hello")]),
+            Message::user("go on"),
+        ],
+        tail: vec![
+            SystemPart {
+                text: "Date: today".into(),
+                name: "now".into(),
+                cache_boundary: false,
+            },
+            SystemPart {
+                text: "# Plan mode".into(),
+                name: "mode".into(),
+                cache_boundary: false,
+            },
+        ],
+        ..Request::default()
+    });
+    let input = body["input"].as_array().unwrap();
+    assert_eq!(
+        input.last().unwrap(),
+        &json!({"type": "message", "role": "user", "content": [
+            {"type": "input_text", "text": "go on"},
+            {"type": "input_text", "text": "<system-note>\nDate: today\n\n# Plan mode\n</system-note>"},
+        ]})
+    );
+    // They are no part of the instructions, which stay what they were from request to request.
+    assert!(body.get("instructions").is_none());
+}
+
+#[test]
 fn body_is_a_stateless_streaming_request_and_omits_optional_fields() {
     let body = body(&Request {
         messages: vec![Message::user("hi")],

@@ -158,11 +158,11 @@ thinking = "low"
 | `[guards]` | `done_check` | `true` | Send the lead back once when it stops on changed code and has run no build, test or linter since. See [guards](tools.md#guards) |
 | | `stuck_after` | `3` | Add a note to the result of a `shell` command that has failed this many times in a row in a turn; `0` is off |
 | | `runaway` | `true` | Stop a reply that repeats a block of 200 characters or more three times in a row, and ask again |
-| `[cache]` | `warming` | `"off"` | `idle` keeps the provider's prompt cache warm between prompts; `off` does not |
-| | `warm_minutes` | `30` | How long after the last prompt the cache is kept warm |
-| | `report_misses` | `false` | Say when a request misses the cached prefix, and why |
-| `[context]` | `nested` | `true` | Read the `AGENTS.md` of every directory an agent works in, not only the project root's |
-| | `include_depth` | `4` | How deep `@path` includes inside context files are followed; `0` follows none |
+| `[cache]` | `warming` | `"off"` | `idle` keeps Anthropic's prompt cache warm while the session waits for you; see [prompt cache](models-and-logins.md#prompt-cache) |
+| | `warm_minutes` | `30` | How long after the lead's last request the cache is kept warm |
+| | `report_misses` | `false` | Say in the transcript when a request misses the cached prefix, and why; `/cost` lists the misses either way |
+| `[context]` | `nested` | `true` | Give an agent the `AGENTS.md` of every directory it works in, with its first tool call there; see [context files](rules.md#context-files) |
+| | `include_depth` | `4` | How deep `@path` includes inside context files and rule files are followed; `0` follows none |
 | `[rules]` | `compat` | `true` | Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline; see [rules](rules.md) |
 | `[[stream_rules]]` | `pattern` | required | Regular expression matched against a reply as it is written |
 | | `message` | required | What the agent is told when the pattern matches |

@@ -127,7 +127,7 @@ impl Extension for CoreToolsExt {
         )));
         r.tool(Arc::new(JobTool::new(jobs)));
         r.tool(Arc::new(TodoTool::new(todos)));
-        r.on(EventKind::Context, Arc::new(misc::PlanReminder));
+        r.on(EventKind::BeforeRequest, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));
         r.tool(Arc::new(SessionRecallTool));
         if let Some(program) = ast_grep::program() {

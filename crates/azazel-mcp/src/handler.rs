@@ -78,6 +78,7 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         cache_key: None,
         tier: None,
         hosted: Vec::new(),
+        tail: Vec::new(),
     }
 }
 

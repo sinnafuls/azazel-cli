@@ -4,6 +4,7 @@
 pub mod agents;
 pub mod artifacts;
 pub mod builtin;
+pub mod cache;
 pub mod checkpoint;
 pub mod commands;
 pub mod config;
