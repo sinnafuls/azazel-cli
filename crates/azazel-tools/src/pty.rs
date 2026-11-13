@@ -35,7 +35,7 @@ const MIN_SIZE: (u16, u16) = (4, 20);
 /// Programs that may run in terminals at once.
 const MAX_RUNNING: usize = 8;
 /// How long a program that was just started is given to draw something.
-const START_OUTPUT: Duration = Duration::from_secs(5);
+const START_OUTPUT: Duration = Duration::from_secs(3);
 /// How long a program is given to react to what was typed. One that echoes nothing (a
 /// password prompt) costs this much.
 const SEND_OUTPUT: Duration = Duration::from_secs(1);
@@ -620,6 +620,10 @@ impl Terminal {
         } else {
             TerminalState::Exited(code)
         };
+        // Nobody types into a program that has ended: the thread that did the writing ends
+        // with the last sender.
+        self.user_typing.send_replace(false);
+        *locked(&self.input) = thread_channel::channel().0;
         self.changed();
     }
 
@@ -704,7 +708,7 @@ impl Terminal {
         if self.user_typed.swap(false, Ordering::Relaxed) {
             out.push_str("\n[the user typed into this terminal since you last saw it]");
         }
-        if self.user_typing() {
+        if self.running() && self.user_typing() {
             out.push_str("\n[the user has the keyboard of this terminal right now]");
         }
         out
@@ -1076,35 +1080,6 @@ impl Tool for PtyTool {
                 .into_iter()
                 .collect(),
             _ => Vec::new(),
-        }
-    }
-
-    fn approval_note(&self, input: &Value) -> Option<String> {
-        let terminal = self.target(input).ok()?;
-        match Self::action(input)? {
-            "stop" => Some(format!("stops the program in {}", terminal.id)),
-            "send" => {
-                let mut parts = Vec::new();
-                if let Some(text) = input
-                    .get("text")
-                    .and_then(Value::as_str)
-                    .filter(|t| !t.is_empty())
-                {
-                    parts.push(format!("{text:?}"));
-                }
-                let keys = input.get("keys").and_then(Value::as_array);
-                parts.extend(
-                    keys.into_iter()
-                        .flatten()
-                        .filter_map(Value::as_str)
-                        .map(str::to_string),
-                );
-                if input.get("submit").and_then(Value::as_bool) == Some(true) {
-                    parts.push("enter".to_string());
-                }
-                Some(format!("types into {}: {}", terminal.id, parts.join(" ")))
-            }
-            _ => None,
         }
     }
 
@@ -1592,10 +1567,6 @@ mod tests {
         assert_eq!(
             tool.access(&json!({"action": "send", "id": "pty-9"})),
             Access::Read
-        );
-        assert_eq!(
-            tool.approval_note(&json!({"action": "send", "text": "y", "keys": ["tab"], "submit": true})),
-            Some("types into pty-1: \"y\" tab enter".to_string())
         );
 
         let stopped = tool.call(stop, &context).await;

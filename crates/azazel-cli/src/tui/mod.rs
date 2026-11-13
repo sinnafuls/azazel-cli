@@ -21,6 +21,7 @@ mod sessions;
 mod slash;
 mod statusline;
 mod team;
+mod term;
 mod terminal;
 pub(crate) mod view;
 #[cfg(feature = "voice")]
@@ -304,6 +305,13 @@ pub struct Tui {
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
+    /// The terminal of a program an agent runs interactively, while it is on show. An overlay
+    /// comes before it.
+    term: Option<term::TermView>,
+    /// The terminals heard of so far.
+    terms: term::Known,
+    /// Tells when something happens to a terminal.
+    term_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// The popup screen, while it is up.
     popup: Option<popup::Popup>,
     /// What was written to the transcript lately, to paint behind a popup.
@@ -484,6 +492,9 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         calls: calls::Calls::default(),
         overlay: None,
         deferred: VecDeque::new(),
+        term: None,
+        terms: term::Known::default(),
+        term_changes: None,
         popup: None,
         backdrop: popup::Backdrop::default(),
         pinned_rows: popup::PLAIN_PINNED_ROWS,
@@ -510,6 +521,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         quit: false,
         ended: false,
     };
+    tui.term_changes = tui.terminal_changes();
     let opening = tui.attention.open();
     tui.write_out(opening);
     tui.seed_history();
@@ -688,6 +700,7 @@ impl Tui {
             }
             self.waiting.retain(|request| !request.abandoned());
             self.show_next_request();
+            self.follow_terminals();
             self.voice_tick();
             if let Err(e) = self.draw() {
                 tracing::error!("terminal write failed: {e}");
@@ -730,6 +743,8 @@ impl Tui {
                 _ = wake_at(self.attention.next_wake()) => {}
                 // The popup screen is left a moment after its box closed.
                 _ = wake_at(popup_deadline) => {}
+                // A program in a terminal drew something, or started, or ended.
+                _ = term::changed(&mut self.term_changes) => {}
             }
         }
         // A popup that is still up gives the screen back, and what was said behind it reaches
@@ -785,7 +800,7 @@ impl Tui {
         self.backdrop.record(&history);
         let (_, rows) = self.renderer.size();
         let (mut viewport, pinned, cursor) = self.viewport();
-        if self.overlay.is_none() && self.btw.is_none() {
+        if self.overlay.is_none() && self.btw.is_none() && !self.term_open() {
             self.pinned_rows = pinned.len();
         }
         let written = history.iter().map(HistoryItem::rows).sum();
@@ -923,6 +938,12 @@ impl Tui {
             let (lines, at) = overlay.render(modal::box_width(width), room, &self.theme);
             cursor = at;
             bottom.extend(lines);
+        } else if let Some((lines, at)) = self.term_box(
+            modal::box_width(width),
+            height.saturating_sub(2).clamp(4, overlay::INLINE_ROWS),
+        ) {
+            cursor = at;
+            bottom.extend(lines);
         } else if let Some(panel) = &mut self.btw {
             let (lines, at) = panel.render(width, height.saturating_sub(2).max(4), &self.theme);
             cursor = at;
@@ -935,6 +956,7 @@ impl Tui {
                 bottom.extend(view::notice(notice, width, &self.theme));
             }
             bottom.extend(self.waiting_lines(width));
+            bottom.extend(self.terminal_lines(width));
             if !self.images.is_empty() {
                 let label = format!("[{} image(s) attached to the next prompt]", self.images.len());
                 bottom.push(self.theme.paint(Role::Muted, &label));
@@ -1397,7 +1419,11 @@ impl Tui {
                 });
             }
             UiRequest::Approval { request, reply } => {
-                let body = overlay::approval_body(&request.subjects, &request.input);
+                let mut body = overlay::approval_body(&request.subjects, &request.input);
+                if request.tool == "pty" {
+                    // The program in the terminal, then what would be typed into it.
+                    body.push(view::tool_summary("pty", &request.input));
+                }
                 let (items, rows) =
                     approval_rows(request.rule.as_deref(), request.destructive, request.secret);
                 let title = format!("{} wants to use {}", request.agent.id, request.tool);
@@ -1504,6 +1530,9 @@ impl Tui {
             }
             return;
         }
+        if self.term_open() {
+            return self.term_key(&key);
+        }
         if self.btw.is_some() {
             return self.btw_key(key).await;
         }
@@ -1593,6 +1622,7 @@ impl Tui {
                     self.background_shell(&call_id);
                 }
             }
+            Some("terminal") => self.show_newest_terminal(),
             Some("voice") => self.voice_pressed(&key).await,
             _ => {
                 if self.editor.handle_key(&key) {
@@ -1964,6 +1994,11 @@ impl Tui {
                 }
             }
             Action::AgentMessage(id) => self.message_agent(&id, &typed).await,
+            Action::Terminals(ids) => {
+                if let Some(id) = ids.get(choice) {
+                    self.show_terminal(id);
+                }
+            }
             #[cfg(feature = "mcp")]
             Action::McpServer(servers) => {
                 if let Some((name, enabled)) = servers.get(choice) {

@@ -173,7 +173,7 @@ In coordinator mode the lead plans and delegates and does none of the work itsel
 orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `session_recall`, `skill`, the memory tools,
 `semantic_search`,
 `web_search`, `web_fetch` and `web_grep`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
-`job`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
+`job`, `pty`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
 plan first, delegate independent pieces in one `task` call, read every report critically, and verify through
 agents. Sub-agents are not affected.
 

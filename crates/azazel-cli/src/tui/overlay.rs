@@ -118,6 +118,8 @@ pub enum Action {
     Agents(Vec<String>),
     /// A message being typed for this agent.
     AgentMessage(String),
+    /// `/terminals`: the terminal of each row; choosing one shows its screen.
+    Terminals(Vec<String>),
     /// `(server, enabled)` per row.
     #[cfg(feature = "mcp")]
     McpServer(Vec<(String, bool)>),
