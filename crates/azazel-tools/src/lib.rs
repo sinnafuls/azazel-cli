@@ -23,9 +23,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use azazel_core::process::{AgentEnv, Shell};
-use azazel_core::{ArtifactScheme, ArtifactStore, ExtError, Extension, FileTracker, Registrar, Schemes};
+use azazel_core::{
+    ArtifactScheme, ArtifactStore, EventKind, ExtError, Extension, FileTracker, Registrar, Schemes,
+};
 
-pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool};
+pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
 pub use read::ReadTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
@@ -84,6 +86,7 @@ impl Extension for CoreToolsExt {
         )));
         r.tool(Arc::new(JobTool::new(jobs)));
         r.tool(Arc::new(TodoTool::new(todos)));
+        r.on(EventKind::Context, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));
         Ok(())
     }

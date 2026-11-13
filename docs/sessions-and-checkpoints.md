@@ -239,8 +239,11 @@ Because the whole tree is captured, changes made by shell commands are covered a
 and `edit`.
 
 - Files matched by the project's `.gitignore` are neither saved nor restored.
-- `.azazel/worktrees/` (sub-agent worktrees) is excluded.
+- So are the patterns of `checkpoints.exclude`, written like `.gitignore` lines. The default leaves out `.azazel/worktrees/` (sub-agent worktrees); a list of your own replaces it. The list is applied each time a session starts; a file a snapshot already holds stays in the snapshots after it is excluded.
 - Only files under the project root are covered; effects outside it cannot be undone.
+- A prompt that changed no file since the last snapshot takes none of its own: its checkpoint is the snapshot that is already there.
+- A fork continues the history of the session it was copied from, so the prompts it inherited can be rewound to in the fork as well.
+- When a session ends, the repository is packed once it has gathered a few hundred loose objects (`git gc --auto` with `gc.auto` at 256).
 
 ### `/rewind`
 
@@ -255,7 +258,9 @@ rewind:
 | `Conversation only` | Unchanged | Goes back to before that prompt; its text returns to the input |
 
 Restoring files first snapshots the current state, which then shows up in the list as `(files as they were
-before a rewind)`. Choosing it undoes the rewind.
+before a rewind)`. Choosing it undoes the rewind. A rewind that fails part of the way (a file another program
+holds open, a full disk) is taken back: the files are put as they were before it, and the error ends with
+`the files are as they were before the rewind`.
 
 ### When checkpoints are off
 
@@ -266,9 +271,10 @@ before a rewind)`. Choosing it undoes the rewind.
 | The project root is your home directory | `the project root is your home directory` |
 | The project root is a filesystem root | `the project root is a filesystem root` |
 | The first snapshot of a project would add more than `checkpoints.max_files` files (default 100000) | `the project has <n> files, more than checkpoints.max_files (<limit>)` |
+| A `git` command of a snapshot ran longer than `checkpoints.timeout_ms` (default 10000, kept between 1000 and 300000) and was stopped | `git add took longer than 10000 ms (`checkpoints.timeout_ms`)` |
 
-The session carries on without checkpoints. When the cause is found at the first snapshot (no `git`, too many
-files), that prompt shows `checkpoints are off: <reason>` once. `/rewind` then answers
+The session carries on without checkpoints. When the cause is found at a snapshot (no `git`, too many
+files, a `git` that does not finish in time), that prompt shows `checkpoints are off: <reason>` once. `/rewind` then answers
 `nothing to rewind to: <reason>`, and `azazel doctor` reports whether checkpoints are on. Going back in the
 conversation with `/tree` works either way.
 
@@ -276,4 +282,6 @@ conversation with `/tree` works either way.
 [checkpoints]
 enabled = true
 max_files = 100000
+timeout_ms = 10000                  # longest one git command of a snapshot may take
+exclude = [".azazel/worktrees/"]    # patterns left out, as in .gitignore
 ```

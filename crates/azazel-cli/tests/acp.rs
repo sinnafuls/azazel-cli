@@ -217,13 +217,28 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             (&json!("c1"), &json!("edit"))
         );
         assert_eq!(asked[0]["toolCall"]["title"], "write hello.txt");
-        let offered: Vec<&str> = asked[0]["options"]
+        let offered: Vec<(&str, &str)> = asked[0]["options"]
             .as_array()
             .unwrap()
             .iter()
-            .map(|option| option["kind"].as_str().unwrap())
+            .map(|option| {
+                (
+                    option["optionId"].as_str().unwrap(),
+                    option["kind"].as_str().unwrap(),
+                )
+            })
             .collect();
-        assert_eq!(offered, ["allow_once", "allow_always", "reject_once"]);
+        // The protocol has one kind for "from now on": for the session and for good are told
+        // apart by their ids.
+        assert_eq!(
+            offered,
+            [
+                ("allow_once", "allow_once"),
+                ("allow_session", "allow_always"),
+                ("allow_always", "allow_always"),
+                ("reject_once", "reject_once")
+            ]
+        );
 
         // The session is named after its first reply, and the client is told. The name may come
         // before or after this point, so it is waited for before the updates are taken.

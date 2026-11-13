@@ -44,6 +44,9 @@ pub struct Image {
 pub enum Decision {
     /// Allow this call once.
     Allow,
+    /// Allow it, and whatever the request's `rule` covers until the session ends. Nothing is
+    /// saved.
+    Session,
     /// Allow it and remember the request's `rule`.
     Always,
     /// Refuse; `feedback` is passed to the model.
@@ -386,15 +389,53 @@ pub struct Member {
     pub activity: Option<String>,
 }
 
+/// How an `ask` request is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    /// One of the options: a list with the chosen one.
+    Select,
+    /// Any number of the options: a list of the chosen ones.
+    Multiselect,
+    /// A typed answer: a string.
+    Text,
+    /// Yes or no: `true` or `false`.
+    Confirm,
+}
+
+impl AskKind {
+    /// The kind of an `ask` request: what it says it expects, or for a request of a session
+    /// that does not say, what its options imply.
+    pub fn of(expects: Option<AskKind>, options: &[String], multi: bool) -> AskKind {
+        expects.unwrap_or(match (options.is_empty(), multi) {
+            (true, _) => AskKind::Text,
+            (false, true) => AskKind::Multiselect,
+            (false, false) => AskKind::Select,
+        })
+    }
+}
+
 /// A question to the user. Answer with `ui_response` and a `value` of the kind shown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UiRequest {
-    /// Expects a list of the chosen options, or one string when there are no options.
+    /// A question from an agent. Expects what `expects` says: a list of the chosen options
+    /// (`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With
+    /// `allow_freeform`, a string that is none of the options is an answer the user typed.
     Ask {
         question: String,
+        /// What the user needs to know to answer, to be shown with the question.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<String>,
+        /// Always sent; a client reads a request without it with [`AskKind::of`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expects: Option<AskKind>,
+        /// The choices of a `select` or `multiselect`; empty otherwise.
         options: Vec<String>,
+        /// Whether `expects` is `multiselect`.
         multi: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        allow_freeform: bool,
     },
     /// Expects `true` or `false`.
     Confirm { prompt: String },

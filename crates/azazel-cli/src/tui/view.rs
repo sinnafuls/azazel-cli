@@ -170,6 +170,13 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
             field("action").unwrap_or_default(),
             field("id").unwrap_or_default()
         )),
+        "ask_user" => field("question").map(|question| {
+            match input.get("options").and_then(Value::as_array).map(Vec::len) {
+                Some(1) => format!("{question} (1 option)"),
+                Some(count) if count > 0 => format!("{question} ({count} options)"),
+                _ => question,
+            }
+        }),
         "todo" => input
             .get("items")
             .and_then(Value::as_array)
@@ -388,6 +395,17 @@ mod tests {
             "fn main"
         );
         assert_eq!(tool_summary("todo", &json!({"items": [1, 2]})), "2 items");
+        assert_eq!(
+            tool_summary(
+                "ask_user",
+                &json!({"question": "Which colour?", "options": ["red", "blue", "green"]})
+            ),
+            "Which colour? (3 options)"
+        );
+        assert_eq!(
+            tool_summary("ask_user", &json!({"question": "Paint it?", "type": "confirm"})),
+            "Paint it?"
+        );
         assert_eq!(
             tool_summary(
                 "web_grep",

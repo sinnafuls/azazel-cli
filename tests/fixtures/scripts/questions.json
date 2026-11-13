@@ -1,0 +1,41 @@
+{
+  "lead": [
+    {
+      "reply": {
+        "tool_calls": [
+          {
+            "id": "c1",
+            "name": "ask_user",
+            "input": {
+              "question": "Which colour?",
+              "context": "Two paints are left.",
+              "options": ["red", "blue"],
+              "allow_freeform": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [{ "id": "c2", "name": "ask_user", "input": { "question": "Paint it?", "type": "confirm" } }]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [{ "id": "c3", "name": "write", "input": { "path": "notes/a.txt", "content": "teal\n" } }]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [{ "id": "c4", "name": "write", "input": { "path": "notes/b.txt", "content": "dry\n" } }]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [{ "id": "c5", "name": "ask_user", "input": { "question": "Anything else?" } }]
+      }
+    },
+    { "reply": { "text": "Painted." } }
+  ]
+}

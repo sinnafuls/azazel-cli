@@ -66,12 +66,13 @@ When a call needs your word, azazel sends `session/request_permission` for it wi
 | Option | Effect |
 |---|---|
 | `allow_once` | Allow this call |
+| `allow_session` | Allow it and what its rule covers until azazel exits, as "allow this session" does in the terminal. Offered when a rule can express the call |
 | `allow_always` | Allow it and remember the rule, as "always" does in the terminal. Offered when a rule can express the call |
 | `reject_once` | Refuse it |
 
 Dismissing the request refuses the call.
 
-Questions use the same request, with one option per choice: the `ask_user` tool's choices, a yes-or-no confirmation, and the review of a plan (approve it, or keep planning). A question that needs a typed answer cannot be asked this way; the agent is told nobody can answer it.
+Questions use the same request, with one option per choice: the `ask_user` tool's choices (its `context` is the request's text), a yes-or-no confirmation, and the review of a plan (approve it, or keep planning). A question that needs a typed answer cannot be asked this way: the agent is told the user declined to answer, and a choice that would let you type another answer offers its options only.
 
 ## Not in this version
 

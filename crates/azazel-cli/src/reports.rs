@@ -434,6 +434,8 @@ fn todo(app: &App, active: &Active, args: &str) -> Result<String, String> {
     }
     let items = edit_todo(items, args)?;
     let shown = todo_text(&items);
+    // Recorded, so that the list is as the user left it when the session is opened again.
+    active.session.append(azazel_tools::todo_entry(&items));
     store.set(lead, items);
     Ok(shown)
 }

@@ -6,7 +6,8 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, Extension, Level, StartSource, ToolCaller, Ui, UiBridge, UiError,
+    ApprovalDecision, ApprovalRequest, Extension, Level, Question, StartSource, ToolCaller, Ui, UiBridge,
+    UiError,
 };
 use azazel_mcp::serve::{Asker, Host, PromptReply, PromptRequest, READ_ONLY_TOOLS, serve_stdio};
 use serde_json::Value;
@@ -32,7 +33,7 @@ struct ClientBridge(Arc<dyn Asker>);
 
 #[async_trait]
 impl UiBridge for ClientBridge {
-    async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
         Err(UiError::NoUser)
     }
 

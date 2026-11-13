@@ -4,16 +4,14 @@
 use std::path::{Path, PathBuf};
 
 use async_trait::async_trait;
-use azazel_core::{ApprovalDecision, ApprovalRequest, Level, PlanDecision, UiBridge, UiError};
+use azazel_core::{ApprovalDecision, ApprovalRequest, Level, PlanDecision, Question, UiBridge, UiError};
 use tokio::sync::{mpsc, oneshot};
 
 pub type Reply<T> = oneshot::Sender<T>;
 
 pub enum UiRequest {
     Ask {
-        question: String,
-        options: Vec<String>,
-        multi: bool,
+        question: Question,
         reply: Reply<Result<Vec<String>, UiError>>,
     },
     Confirm {
@@ -82,18 +80,10 @@ impl TuiBridge {
 
 #[async_trait]
 impl UiBridge for TuiBridge {
-    async fn ask(&self, question: &str, options: &[String], multi: bool) -> Result<Vec<String>, UiError> {
-        let (question, options) = (question.to_string(), options.to_vec());
-        self.ask_ui(
-            |reply| UiRequest::Ask {
-                question,
-                options,
-                multi,
-                reply,
-            },
-            Err(UiError::NoUser),
-        )
-        .await
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
+        let question = question.clone();
+        self.ask_ui(|reply| UiRequest::Ask { question, reply }, Err(UiError::NoUser))
+            .await
     }
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError> {

@@ -97,14 +97,14 @@ mod tests {
 
     use super::*;
     use crate::ext::{EventBus, Registry};
-    use crate::ui::{ApprovalDecision, ApprovalRequest, PlanDecision, UiBridge, UiError};
+    use crate::ui::{ApprovalDecision, ApprovalRequest, PlanDecision, Question, UiBridge, UiError};
 
     #[derive(Default)]
     struct Notes(Mutex<Vec<String>>);
 
     #[async_trait]
     impl UiBridge for Notes {
-        async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+        async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
             Err(UiError::NoUser)
         }
         async fn confirm(&self, _: &str) -> Result<bool, UiError> {

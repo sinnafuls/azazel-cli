@@ -296,7 +296,7 @@ fn an_approval_raised_with_nobody_attached_is_answered_after_attach() {
             "❯ create hello",
             "→ write hello.txt",
             "? lead wants to use write: hello.txt",
-            "  /approve, /always, or /deny [what to do instead]"
+            "  /approve, /session, /always, or /deny [what to do instead]"
         ]
     );
 

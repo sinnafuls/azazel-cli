@@ -16,6 +16,7 @@ azazel-ai.workspace = true
 azazel-core.workspace = true
 base64.workspace = true
 futures.workspace = true
+globset.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rmcp = { workspace = true, features = ["server", "transport-io"] }

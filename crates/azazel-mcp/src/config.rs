@@ -51,6 +51,67 @@ pub struct RawServer {
     pub oauth: Option<OAuthSettings>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    /// `eager`, `lazy` or `lazy-keep-alive`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<String>,
+    #[serde(rename = "includeTools", skip_serializing_if = "Vec::is_empty")]
+    pub include_tools: Vec<String>,
+    #[serde(rename = "excludeTools", skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tools: Vec<String>,
+}
+
+/// When a server is started and how long it stays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Lifecycle {
+    /// Connected when the session starts, and kept connected.
+    Eager,
+    /// Started by the first call into it and stopped again after `mcp.idle_timeout_secs`
+    /// without one.
+    Lazy,
+    /// Started by the first call into it, then kept connected.
+    LazyKeepAlive,
+}
+
+impl Lifecycle {
+    pub fn name(self) -> &'static str {
+        match self {
+            Lifecycle::Eager => "eager",
+            Lifecycle::Lazy => "lazy",
+            Lifecycle::LazyKeepAlive => "lazy-keep-alive",
+        }
+    }
+}
+
+/// Which of a server's tools agents are offered: `includeTools` and `excludeTools`, globs on the
+/// tool's own name.
+pub struct ToolFilter {
+    include: Option<globset::GlobSet>,
+    exclude: globset::GlobSet,
+}
+
+impl ToolFilter {
+    fn set(key: &str, patterns: &[String]) -> Result<globset::GlobSet, String> {
+        let mut set = globset::GlobSetBuilder::new();
+        for pattern in patterns {
+            set.add(globset::Glob::new(pattern).map_err(|e| format!("`{key}` pattern `{pattern}`: {e}"))?);
+        }
+        set.build().map_err(|e| format!("`{key}`: {e}"))
+    }
+
+    fn new(include: &[String], exclude: &[String]) -> Result<Self, String> {
+        Ok(ToolFilter {
+            include: match include.is_empty() {
+                true => None,
+                false => Some(Self::set("includeTools", include)?),
+            },
+            exclude: Self::set("excludeTools", exclude)?,
+        })
+    }
+
+    /// Whether the tool the server calls `name` is offered.
+    pub fn allows(&self, name: &str) -> bool {
+        self.include.as_ref().is_none_or(|include| include.is_match(name)) && !self.exclude.is_match(name)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,9 +153,26 @@ pub struct ServerConfig {
     pub enabled: bool,
     /// The file the entry came from.
     pub source: PathBuf,
-    /// A hash of the entry as written; an approval holds for one fingerprint.
+    /// A hash of the entry as written; an approval holds for one fingerprint, and so does the
+    /// cached list of what the server offers.
     pub fingerprint: String,
     pub approval: Approval,
+    pub lifecycle: Lifecycle,
+    /// With any, only the tools one of these globs matches are offered.
+    pub include_tools: Vec<String>,
+    /// Tools one of these globs matches are not offered.
+    pub exclude_tools: Vec<String>,
+}
+
+impl ServerConfig {
+    /// The filter `includeTools` and `excludeTools` describe. The patterns were checked when the
+    /// entry was read; one that does not compile now lets everything through.
+    pub fn tool_filter(&self) -> ToolFilter {
+        ToolFilter::new(&self.include_tools, &self.exclude_tools).unwrap_or(ToolFilter {
+            include: None,
+            exclude: globset::GlobSet::empty(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -227,6 +305,18 @@ fn resolve(
             legacy_sse: kind == "sse",
         }
     };
+    // A local program costs a process for as long as it runs; a remote one costs nothing to keep.
+    let lifecycle = match (raw.lifecycle.as_deref(), &transport) {
+        (Some("eager"), _) | (None, Transport::Http { .. }) => Lifecycle::Eager,
+        (Some("lazy"), _) | (None, Transport::Stdio { .. }) => Lifecycle::Lazy,
+        (Some("lazy-keep-alive"), _) => Lifecycle::LazyKeepAlive,
+        (Some(other), _) => {
+            return Err(format!(
+                "unknown lifecycle `{other}` (expected eager, lazy or lazy-keep-alive)"
+            ));
+        }
+    };
+    ToolFilter::new(&raw.include_tools, &raw.exclude_tools)?;
     let mut oauth = raw.oauth.unwrap_or_default();
     oauth.client_id = one(&oauth.client_id)?;
     oauth.scope = one(&oauth.scope)?;
@@ -239,6 +329,9 @@ fn resolve(
         source: source.to_path_buf(),
         fingerprint,
         approval: Approval::Granted,
+        lifecycle,
+        include_tools: raw.include_tools,
+        exclude_tools: raw.exclude_tools,
     })
 }
 
@@ -458,6 +551,67 @@ mod tests {
         assert_eq!(problems["empty"], "needs a `command` or a `url`");
         assert!(problems[broken.display().to_string().as_str()].starts_with("not valid JSON"));
         assert_eq!(loaded.problems.len(), 4);
+    }
+
+    #[test]
+    fn an_entry_says_when_its_server_starts_and_which_tools_it_offers() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mcp.json");
+        std::fs::write(
+            &file,
+            r#"{ "mcpServers": {
+                "local": { "command": "srv" },
+                "local-now": { "command": "srv", "lifecycle": "eager" },
+                "local-kept": { "command": "srv", "lifecycle": "lazy-keep-alive" },
+                "remote": { "url": "https://example.com/mcp" },
+                "remote-later": { "url": "https://example.com/mcp", "lifecycle": "lazy",
+                                  "includeTools": ["get_*", "list"], "excludeTools": ["get_secret"] },
+                "odd": { "command": "srv", "lifecycle": "sometimes" },
+                "bad-glob": { "command": "srv", "excludeTools": ["a{b"] }
+            } }"#,
+        )
+        .unwrap();
+        let loaded = load(&[file], dir.path(), &env);
+        let lifecycles: Vec<(&str, Lifecycle)> = loaded
+            .servers
+            .iter()
+            .map(|server| (server.name.as_str(), server.lifecycle))
+            .collect();
+        assert_eq!(
+            lifecycles,
+            [
+                ("local", Lifecycle::Lazy),
+                ("local-kept", Lifecycle::LazyKeepAlive),
+                ("local-now", Lifecycle::Eager),
+                ("remote", Lifecycle::Eager),
+                ("remote-later", Lifecycle::Lazy),
+            ]
+        );
+        // Everything is offered unless the entry says otherwise.
+        let all = loaded.servers[0].tool_filter();
+        assert!(all.allows("anything"));
+        let some = loaded.servers[4].tool_filter();
+        let offered: Vec<&str> = ["get_user", "get_secret", "list", "list_all", "delete"]
+            .into_iter()
+            .filter(|tool| some.allows(tool))
+            .collect();
+        assert_eq!(offered, ["get_user", "list"]);
+
+        let problems: BTreeMap<&str, &str> = loaded
+            .problems
+            .iter()
+            .map(|(what, why)| (what.as_str(), why.as_str()))
+            .collect();
+        assert_eq!(
+            problems["odd"],
+            "unknown lifecycle `sometimes` (expected eager, lazy or lazy-keep-alive)"
+        );
+        assert!(
+            problems["bad-glob"].starts_with("`excludeTools` pattern `a{b`: "),
+            "{problems:?}"
+        );
+        // A change of the filter is a change of the entry: what was kept of it no longer holds.
+        assert_ne!(loaded.servers[0].fingerprint, loaded.servers[2].fingerprint);
     }
 
     #[test]

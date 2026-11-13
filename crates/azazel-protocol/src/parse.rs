@@ -271,7 +271,7 @@ mod tests {
         );
         assert_eq!(
             error(json!({ "type": "approval_response", "request_id": "r1", "decision": "maybe" })),
-            "`decision` must be one of allow, always, deny"
+            "`decision` must be one of allow, session, always, deny"
         );
         assert_eq!(
             error(json!({ "type": "rewind", "entry_id": "e1", "what": "all" })),
