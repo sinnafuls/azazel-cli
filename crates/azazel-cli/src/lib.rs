@@ -8,6 +8,7 @@ pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
+#[cfg(any(feature = "mcp", feature = "acp"))]
 pub mod headless;
 pub mod hooks;
 pub mod init;

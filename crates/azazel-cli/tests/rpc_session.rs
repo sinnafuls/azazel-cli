@@ -173,7 +173,10 @@ impl Client {
 }
 
 fn replies(texts: &[&str]) -> Value {
-    let steps: Vec<Value> = texts.iter().map(|text| json!({ "reply": { "text": text } })).collect();
+    let steps: Vec<Value> = texts
+        .iter()
+        .map(|text| json!({ "reply": { "text": text } }))
+        .collect();
     json!({ "lead": steps })
 }
 
@@ -205,18 +208,26 @@ fn sessions_are_started_listed_resumed_and_forked() {
     assert_eq!(client.messages(), []);
     client.prompt("second");
 
-    let rows: Vec<SessionRow> = serde_json::from_value(client.ok(json!({ "type": "list_sessions" }))).unwrap();
+    let rows: Vec<SessionRow> =
+        serde_json::from_value(client.ok(json!({ "type": "list_sessions" }))).unwrap();
     assert_eq!(rows.len(), 2, "{rows:?}");
     let alpha = rows.iter().find(|row| row.id == first.session_id).unwrap();
     assert_eq!(
-        (alpha.name.as_deref(), alpha.first_prompt.as_deref(), alpha.prompts),
+        (
+            alpha.name.as_deref(),
+            alpha.first_prompt.as_deref(),
+            alpha.prompts
+        ),
         (Some("alpha"), Some("first"), 1)
     );
     assert!(std::path::Path::new(&alpha.path).is_file());
     let found: Vec<SessionRow> =
         serde_json::from_value(client.ok(json!({ "type": "list_sessions", "query": "TWO" }))).unwrap();
     assert_eq!(found.len(), 1, "{found:?}");
-    assert_eq!((found[0].id.as_str(), found[0].matches.as_slice()), (second.session_id.as_str(), &["two".to_string()][..]));
+    assert_eq!(
+        (found[0].id.as_str(), found[0].matches.as_slice()),
+        (second.session_id.as_str(), &["two".to_string()][..])
+    );
 
     // Back to the first session, by a prefix of its id, then by its file.
     let resumed = client.state(json!({ "type": "resume_session", "session_id": &first.session_id[..13] }));
@@ -224,7 +235,10 @@ fn sessions_are_started_listed_resumed_and_forked() {
         (resumed.session_id.as_str(), resumed.name.as_deref()),
         (first.session_id.as_str(), Some("alpha"))
     );
-    assert_eq!(client.messages(), [pair("user", "first"), pair("assistant", "one")]);
+    assert_eq!(
+        client.messages(),
+        [pair("user", "first"), pair("assistant", "one")]
+    );
     let by_path = client.state(json!({ "type": "resume_session", "path": alpha.path }));
     assert_eq!(by_path.session_id, first.session_id);
     assert!(
@@ -240,7 +254,10 @@ fn sessions_are_started_listed_resumed_and_forked() {
     // A fork is a copy that goes its own way.
     let fork = client.state(json!({ "type": "fork_session" }));
     assert!(fork.session_id != first.session_id && fork.session_id != second.session_id);
-    assert_eq!(client.messages(), [pair("user", "first"), pair("assistant", "one")]);
+    assert_eq!(
+        client.messages(),
+        [pair("user", "first"), pair("assistant", "one")]
+    );
     client.prompt("third");
     assert_eq!(client.messages().len(), 4);
     let last = client.requests().pop().unwrap();
@@ -281,7 +298,12 @@ fn the_tree_is_read_moved_in_and_the_last_prompt_sent_again() {
         .collect();
     assert_eq!(
         shown,
-        [("user", "first"), ("assistant", "one"), ("user", "second"), ("assistant", "two")]
+        [
+            ("user", "first"),
+            ("assistant", "one"),
+            ("user", "second"),
+            ("assistant", "two")
+        ]
     );
 
     // The earlier attempt stays in the file as a branch.
@@ -305,10 +327,16 @@ fn the_tree_is_read_moved_in_and_the_last_prompt_sent_again() {
     assert_eq!(left_behind, ["second", "two"]);
 
     // Continuing from an earlier reply.
-    let one = after.iter().find(|row| row.text.as_deref() == Some("one")).unwrap();
+    let one = after
+        .iter()
+        .find(|row| row.text.as_deref() == Some("one"))
+        .unwrap();
     let state = client.state(json!({ "type": "set_leaf", "entry_id": one.id }));
     assert!(!state.busy);
-    assert_eq!(client.messages(), [pair("user", "first"), pair("assistant", "one")]);
+    assert_eq!(
+        client.messages(),
+        [pair("user", "first"), pair("assistant", "one")]
+    );
     assert_eq!(
         client.error(json!({ "type": "set_leaf", "entry_id": "nope" })),
         "no entry `nope` in this session"
@@ -335,7 +363,11 @@ fn thinking_name_and_tier_are_set_and_the_context_is_compacted() {
         ("high", Some("priority"), None)
     );
     client.ok(json!({ "type": "set_tier", "tier": "standard" }));
-    assert!(client.error(json!({ "type": "set_tier", "tier": "warp" })).contains("warp"));
+    assert!(
+        client
+            .error(json!({ "type": "set_tier", "tier": "warp" }))
+            .contains("warp")
+    );
     assert_eq!(
         client.error(json!({ "type": "set_name", "name": "  " })),
         "`name` must not be empty"
@@ -374,7 +406,10 @@ fn a_shell_line_runs_and_the_session_is_exported() {
 
     let shared = client.ok(json!({ "type": "shell", "command": "echo hi-from-the-shell" }));
     assert_eq!(shared["status"], "exit code: 0");
-    assert!(shared["output"].as_str().unwrap().contains("hi-from-the-shell"), "{shared}");
+    assert!(
+        shared["output"].as_str().unwrap().contains("hi-from-the-shell"),
+        "{shared}"
+    );
     let private = client.ok(json!({ "type": "shell", "command": "echo for-me-only", "share": false }));
     assert!(private["output"].as_str().unwrap().contains("for-me-only"));
     // The lead is told about the first and not about the second.
@@ -385,7 +420,9 @@ fn a_shell_line_runs_and_the_session_is_exported() {
         .map(|(_, text)| text)
         .collect();
     assert_eq!(notes.len(), 1, "{notes:?}");
-    assert!(notes[0].starts_with("I ran `echo hi-from-the-shell` myself:") && notes[0].contains("exit code: 0"));
+    assert!(
+        notes[0].starts_with("I ran `echo hi-from-the-shell` myself:") && notes[0].contains("exit code: 0")
+    );
 
     let html = client.ok(json!({ "type": "export", "format": "html" }));
     let html_path = PathBuf::from(html["path"].as_str().unwrap());
@@ -400,7 +437,11 @@ fn a_shell_line_runs_and_the_session_is_exported() {
     );
     let saved = std::fs::read_to_string(client.project().join("saved.jsonl")).unwrap();
     assert!(saved.lines().count() >= 3);
-    assert!(saved.lines().all(|line| serde_json::from_str::<Value>(line).is_ok()));
+    assert!(
+        saved
+            .lines()
+            .all(|line| serde_json::from_str::<Value>(line).is_ok())
+    );
     let markdown = client.ok(json!({ "type": "export" }));
     assert!(markdown["path"].as_str().unwrap().ends_with(".md"));
     assert!(
@@ -445,7 +486,10 @@ fn a_side_question_is_answered_while_the_lead_works() {
     let asked = requests[1]["messages"].as_array().unwrap().last().unwrap()["content"][0]["text"]
         .as_str()
         .unwrap();
-    assert!(asked.starts_with("<side-question>") && asked.ends_with("what is the answer?"), "{asked}");
+    assert!(
+        asked.starts_with("<side-question>") && asked.ends_with("what is the answer?"),
+        "{asked}"
+    );
     assert_eq!(
         client.messages(),
         [pair("user", "think hard"), pair("assistant", "the slow answer")]
@@ -470,7 +514,10 @@ fn a_rewind_takes_back_files_and_conversation() {
     std::fs::write(client.project().join("kept.txt"), "kept\n").unwrap();
     client.prompt("make a file");
     client.prompt("make another");
-    let (made, more) = (client.project().join("made.txt"), client.project().join("more.txt"));
+    let (made, more) = (
+        client.project().join("made.txt"),
+        client.project().join("more.txt"),
+    );
     assert!(made.is_file() && more.is_file());
 
     let tree = client.tree();
@@ -482,7 +529,10 @@ fn a_rewind_takes_back_files_and_conversation() {
         .unwrap();
     assert_eq!(
         client.error(json!({ "type": "rewind", "entry_id": tree.last().unwrap().id })),
-        format!("`{}` is neither a checkpoint nor a prompt", tree.last().unwrap().id)
+        format!(
+            "`{}` is neither a checkpoint nor a prompt",
+            tree.last().unwrap().id
+        )
     );
 
     // The files only, named by the prompt: the conversation stays, and the lead is told.
@@ -512,7 +562,10 @@ fn registered_commands_run_and_the_lists_answer() {
     let mut client = Client::start(&replies(&[]), &[]);
     let shown = client.ok(json!({ "type": "run_command", "name": "fast", "args": "status" }));
     assert_eq!(shown["outcome"], "show");
-    assert!(shown["text"].as_str().unwrap().starts_with("fast: off"), "{shown}");
+    assert!(
+        shown["text"].as_str().unwrap().starts_with("fast: off"),
+        "{shown}"
+    );
     let on = client.ok(json!({ "type": "run_command", "name": "/fast", "args": "on" }));
     assert_eq!(on["outcome"], "show");
     assert_eq!(client.ok(json!({ "type": "get_state" }))["tier"], "priority");
@@ -542,7 +595,10 @@ fn moving_between_sessions_waits_for_the_lead() {
         (json!({ "type": "new_session" }), "start a new session"),
         (json!({ "type": "fork_session" }), "fork the session"),
         (json!({ "type": "retry" }), "send the last prompt again"),
-        (json!({ "type": "set_leaf", "entry_id": "x" }), "move within the session"),
+        (
+            json!({ "type": "set_leaf", "entry_id": "x" }),
+            "move within the session",
+        ),
     ] {
         assert_eq!(
             client.error(command),
@@ -620,7 +676,10 @@ fn a_script_adds_a_prompt_part_and_acts_on_the_session() {
     assert_eq!(state.chain, ["mock/other", "@default"]);
     assert!(client.tree().iter().any(|row| row.kind == "model_change"));
     let mistake = client.error(json!({ "type": "run_command", "name": "switch", "args": "not a model" }));
-    assert!(mistake.starts_with("/switch: azazel.session.set_model: "), "{mistake}");
+    assert!(
+        mistake.starts_with("/switch: azazel.session.set_model: "),
+        "{mistake}"
+    );
 
     assert_eq!(client.finish(), Some(0));
 }

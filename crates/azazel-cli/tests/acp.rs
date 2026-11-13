@@ -180,7 +180,11 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .await?;
         let modes = session.modes.clone().unwrap();
         assert_eq!(modes.current_mode_id.to_string(), "ask");
-        let offered: Vec<String> = modes.available_modes.iter().map(|mode| mode.id.to_string()).collect();
+        let offered: Vec<String> = modes
+            .available_modes
+            .iter()
+            .map(|mode| mode.id.to_string())
+            .collect();
         assert_eq!(offered, ["plan", "ask", "accept-edits", "auto"]);
         let session_id = session.session_id;
 
@@ -222,15 +226,28 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
         let updates = seen.take();
         assert_eq!(
             kinds(&updates)[..5],
-            ["tool_call", "tool_call_update", "tool_call", "tool_call_update", "agent_message_chunk"],
+            [
+                "tool_call",
+                "tool_call_update",
+                "tool_call",
+                "tool_call_update",
+                "agent_message_chunk"
+            ],
             "{updates:?}"
         );
         assert_eq!(
-            (&updates[0]["toolCallId"], &updates[0]["kind"], &updates[0]["status"]),
+            (
+                &updates[0]["toolCallId"],
+                &updates[0]["kind"],
+                &updates[0]["status"]
+            ),
             (&json!("c1"), &json!("edit"), &json!("in_progress"))
         );
         assert!(
-            updates[0]["locations"][0]["path"].as_str().unwrap().ends_with("hello.txt"),
+            updates[0]["locations"][0]["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("hello.txt"),
             "{}",
             updates[0]
         );
@@ -246,7 +263,10 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             (&diff["oldText"], &diff["newText"]),
             (&Value::Null, &json!("hello from azazel\n"))
         );
-        assert_eq!((&updates[2]["toolCallId"], &updates[2]["kind"]), (&json!("c2"), &json!("read")));
+        assert_eq!(
+            (&updates[2]["toolCallId"], &updates[2]["kind"]),
+            (&json!("c2"), &json!("read"))
+        );
         assert_eq!(updates[4]["content"]["text"], "Wrote and verified hello.txt.");
         // The session is named after its first reply, and the client is told.
         let named = seen
@@ -301,7 +321,9 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
     // The embedded file went to the model with the prompt.
     let requests = std::fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
     let first: Value = serde_json::from_str(requests.lines().next().unwrap()).unwrap();
-    let sent = first["request"]["messages"][0]["content"][0]["text"].as_str().unwrap();
+    let sent = first["request"]["messages"][0]["content"][0]["text"]
+        .as_str()
+        .unwrap();
     assert_eq!(
         sent,
         "create hello\n\n<file path=\"untitled:scratch.rs\">\nfn main() {}\n</file>"
@@ -317,7 +339,10 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .block_task()
             .await?;
         let loaded = agent
-            .send_request(acp::LoadSessionRequest::new(session_id.clone(), project_dir.clone()))
+            .send_request(acp::LoadSessionRequest::new(
+                session_id.clone(),
+                project_dir.clone(),
+            ))
             .block_task()
             .await?;
         assert_eq!(loaded.modes.unwrap().available_modes.len(), 4);
@@ -353,4 +378,79 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
         Ok(())
     })
     .await;
+}
+
+#[tokio::test]
+async fn a_question_is_a_choice_and_the_task_list_is_the_plan() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = project(dir.path());
+    let script = json!({
+        "lead": [
+            { "reply": { "tool_calls": [{ "id": "c1", "name": "ask_user", "input": {
+                "question": "Which colour?", "options": ["red", "blue"]
+            } }] } },
+            { "reply": { "tool_calls": [{ "id": "c2", "name": "todo", "input": { "items": [
+                { "text": "paint it red", "status": "in_progress" },
+                { "text": "let it dry", "status": "pending" }
+            ] } }] } },
+            { "reply": { "text": "Painting." } }
+        ],
+        "smol": [{ "reply": { "text": "Colours" } }]
+    });
+    let seen = Seen::default();
+    let watching = seen.clone();
+    with_agent(dir.path(), &script, seen.clone(), async move |agent| {
+        agent
+            .send_request(acp::InitializeRequest::new(ProtocolVersion::V1))
+            .block_task()
+            .await?;
+        let session = agent
+            .send_request(acp::NewSessionRequest::new(cwd))
+            .block_task()
+            .await?;
+        let done = agent
+            .send_request(acp::PromptRequest::new(session.session_id, vec![text("paint")]))
+            .block_task()
+            .await?;
+        assert_eq!(done.stop_reason, acp::StopReason::EndTurn);
+
+        // The question came as a choice; the test's user takes the first.
+        let asked = watching.permissions.lock().unwrap().clone();
+        assert_eq!(asked.len(), 1, "{asked:?}");
+        assert_eq!(asked[0]["toolCall"]["title"], "Which colour?");
+        let choices: Vec<&str> = asked[0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|option| option["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(choices, ["red", "blue"]);
+
+        let updates = watching.take();
+        let plan = updates
+            .iter()
+            .find(|update| update["sessionUpdate"] == "plan")
+            .unwrap_or_else(|| panic!("no plan in {updates:?}"));
+        assert_eq!(
+            plan["entries"],
+            json!([
+                { "content": "paint it red", "priority": "medium", "status": "in_progress" },
+                { "content": "let it dry", "priority": "medium", "status": "pending" }
+            ])
+        );
+        Ok(())
+    })
+    .await;
+
+    // The answer went back to the model as the tool's result.
+    let requests = std::fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
+    let second: Value = serde_json::from_str(requests.lines().nth(1).unwrap()).unwrap();
+    let result = second["request"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|message| message["role"] == "tool")
+        .unwrap()
+        .to_string();
+    assert!(result.contains("red") && !result.contains("blue"), "{result}");
 }

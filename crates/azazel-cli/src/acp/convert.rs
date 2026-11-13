@@ -29,7 +29,9 @@ pub(super) fn tool_kind(name: &str, access: Option<Access>) -> acp::ToolKind {
 
 /// What a call does, on one line: the tool and what it is about.
 pub(super) fn title(name: &str, input: &Value) -> String {
-    format!("{name} {}", tool_summary(name, input)).trim_end().to_string()
+    format!("{name} {}", tool_summary(name, input))
+        .trim_end()
+        .to_string()
 }
 
 /// The file a call is about, when its input names one.
@@ -293,7 +295,11 @@ mod tests {
         let content = update["content"].as_array().unwrap();
         assert_eq!(content[0]["content"]["text"], "edited f.txt");
         assert_eq!(
-            (&content[1]["type"], &content[1]["oldText"], &content[1]["newText"]),
+            (
+                &content[1]["type"],
+                &content[1]["oldText"],
+                &content[1]["newText"]
+            ),
             (&json!("diff"), &json!("one\ntwo\n"), &json!("one\nTWO\n"))
         );
         let failed = serde_json::to_value(tool_result(dir.path(), "c2", &ToolOutput::error("no"))).unwrap();
@@ -334,7 +340,10 @@ mod tests {
         assert_eq!(tool_kind("shell", None), acp::ToolKind::Execute);
         assert_eq!(tool_kind("web_fetch", None), acp::ToolKind::Fetch);
         assert_eq!(tool_kind("todo", Some(Access::Read)), acp::ToolKind::Other);
-        assert_eq!(tool_kind("mcp__x__deploy", Some(Access::Exec)), acp::ToolKind::Execute);
+        assert_eq!(
+            tool_kind("mcp__x__deploy", Some(Access::Exec)),
+            acp::ToolKind::Execute
+        );
 
         let call = serde_json::to_value(tool_call(
             Path::new("/work"),
@@ -345,8 +354,18 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            (&call["title"], &call["kind"], &call["status"], &call["locations"][0]["line"]),
-            (&json!("read src/lib.rs"), &json!("read"), &json!("in_progress"), &json!(40))
+            (
+                &call["title"],
+                &call["kind"],
+                &call["status"],
+                &call["locations"][0]["line"]
+            ),
+            (
+                &json!("read src/lib.rs"),
+                &json!("read"),
+                &json!("in_progress"),
+                &json!(40)
+            )
         );
 
         let (name, entry) = mcp_entry(acp::McpServer::Stdio(

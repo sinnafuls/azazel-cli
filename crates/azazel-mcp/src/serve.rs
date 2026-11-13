@@ -11,8 +11,8 @@ use azazel_agent::{Tool, ToolOutput};
 use azazel_ai::Block;
 use rmcp::model::{
     CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ElicitRequestParams,
-    ElicitationAction, ElicitationSchema, Implementation, JsonObject, ListToolsResult, PaginatedRequestParams,
-    ServerCapabilities, ServerConfig, ToolAnnotations,
+    ElicitationAction, ElicitationSchema, Implementation, JsonObject, ListToolsResult,
+    PaginatedRequestParams, ServerCapabilities, ServerConfig, ToolAnnotations,
 };
 use rmcp::service::{ElicitationMode, Peer, RequestContext};
 use rmcp::{ErrorData, RoleServer, ServerHandler, ServiceExt};
@@ -61,8 +61,13 @@ pub trait Host: Send + Sync + 'static {
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 
     /// Calls one of [`Host::tools`]. A permission the call needs is asked for through `asker`.
-    async fn call(&self, tool: &str, input: Value, asker: Arc<dyn Asker>, cancel: CancellationToken)
-    -> ToolOutput;
+    async fn call(
+        &self,
+        tool: &str,
+        input: Value,
+        asker: Arc<dyn Asker>,
+        cancel: CancellationToken,
+    ) -> ToolOutput;
 
     /// Runs a session to the end of one prompt. `Err` is why it could not, or how it failed.
     async fn prompt(
@@ -86,10 +91,7 @@ impl Asker for ClientAsker {
         {
             return None;
         }
-        let requested_schema = ElicitationSchema::builder()
-            .required_bool("allow")
-            .build()
-            .ok()?;
+        let requested_schema = ElicitationSchema::builder().required_bool("allow").build().ok()?;
         let asked = self
             .0
             .create_elicitation(ElicitRequestParams::FormElicitationParams {
@@ -247,10 +249,7 @@ impl ServerHandler for Server {
             .into());
         }
         if !self.host.tools().iter().any(|tool| tool.name() == name) {
-            return Err(ErrorData::invalid_params(
-                format!("unknown tool `{name}`"),
-                None,
-            ));
+            return Err(ErrorData::invalid_params(format!("unknown tool `{name}`"), None));
         }
         let output = self
             .host

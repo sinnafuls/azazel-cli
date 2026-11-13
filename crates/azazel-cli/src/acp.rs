@@ -331,9 +331,10 @@ impl Session {
                 let (name, description) = match mode {
                     PermissionMode::Plan => ("Plan", "Reads and plans; changes nothing"),
                     PermissionMode::Ask => ("Ask", "Asks before it changes files or runs commands"),
-                    PermissionMode::AcceptEdits => {
-                        ("Accept edits", "Edits files without asking; asks before it runs commands")
-                    }
+                    PermissionMode::AcceptEdits => (
+                        "Accept edits",
+                        "Edits files without asking; asks before it runs commands",
+                    ),
                     PermissionMode::Auto => ("Auto", "Works without asking"),
                 };
                 acp::SessionMode::new(mode.to_string(), name).description(description.to_string())
@@ -348,19 +349,18 @@ impl Session {
         if agent != LEAD {
             return;
         }
-        let text = |delta: &str| acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(delta)));
+        let text =
+            |delta: &str| acp::ContentChunk::new(acp::ContentBlock::Text(acp::TextContent::new(delta)));
         match event {
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
-                self.shared.update(acp::SessionUpdate::AgentMessageChunk(text(delta)));
+                self.shared
+                    .update(acp::SessionUpdate::AgentMessageChunk(text(delta)));
             }
             AgentEvent::Stream(StreamEvent::ThinkingDelta { delta, .. }) => {
-                self.shared.update(acp::SessionUpdate::AgentThoughtChunk(text(delta)));
+                self.shared
+                    .update(acp::SessionUpdate::AgentThoughtChunk(text(delta)));
             }
-            AgentEvent::ToolStart {
-                call_id,
-                name,
-                input,
-            } => {
+            AgentEvent::ToolStart { call_id, name, input } => {
                 let call = convert::tool_call(
                     &self.app.paths.cwd,
                     call_id,
@@ -408,7 +408,8 @@ impl Session {
                 acp::PlanEntry::new(item.text, acp::PlanEntryPriority::Medium, status)
             })
             .collect();
-        self.shared.update(acp::SessionUpdate::Plan(acp::Plan::new(entries)));
+        self.shared
+            .update(acp::SessionUpdate::Plan(acp::Plan::new(entries)));
     }
 
     /// Tells the client the session's name when it has one the client does not know yet.
@@ -417,8 +418,9 @@ impl Session {
         let mut told = locked(&self.title);
         if name.is_some() && *told != name {
             *told = name.clone();
-            self.shared
-                .update(acp::SessionUpdate::SessionInfoUpdate(acp::SessionInfoUpdate::new().title(name)));
+            self.shared.update(acp::SessionUpdate::SessionInfoUpdate(
+                acp::SessionInfoUpdate::new().title(name),
+            ));
         }
     }
 
@@ -487,9 +489,10 @@ struct Server {
 
 impl Server {
     fn session(&self, id: &acp::SessionId) -> Result<Arc<Session>, Error> {
-        locked(&self.sessions).get(&id.to_string()).cloned().ok_or_else(|| {
-            Error::invalid_params().data(Value::String(format!("no session `{id}` is open")))
-        })
+        locked(&self.sessions)
+            .get(&id.to_string())
+            .cloned()
+            .ok_or_else(|| Error::invalid_params().data(Value::String(format!("no session `{id}` is open"))))
     }
 
     /// Ends a session: its prompt is cancelled, then its agents and servers are stopped.
@@ -509,9 +512,7 @@ impl Server {
     ) -> Result<Arc<Session>, Error> {
         // A session that is loaded again while it is open is closed first: two agents must not
         // write one session file.
-        let open = resume
-            .as_ref()
-            .and_then(|id| locked(&self.sessions).remove(id));
+        let open = resume.as_ref().and_then(|id| locked(&self.sessions).remove(id));
         if let Some(open) = open {
             Server::close(open).await;
         }
@@ -534,7 +535,9 @@ impl Server {
                 }
             }
         }
-        let how = app.requested_session(&cli).map_err(|e| internal(format!("{e:#}")))?;
+        let how = app
+            .requested_session(&cli)
+            .map_err(|e| internal(format!("{e:#}")))?;
         let active = app
             .open(how, app.chain.clone(), app.thinking)
             .await
@@ -628,7 +631,10 @@ impl Server {
 
     /// Ends every session, when the client has gone.
     async fn finish(&self) {
-        let sessions: Vec<Arc<Session>> = locked(&self.sessions).drain().map(|(_, session)| session).collect();
+        let sessions: Vec<Arc<Session>> = locked(&self.sessions)
+            .drain()
+            .map(|(_, session)| session)
+            .collect();
         for session in sessions {
             Server::close(session).await;
         }
@@ -641,10 +647,7 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
         extensions,
         sessions: Mutex::default(),
     });
-    let transport = ByteStreams::new(
-        tokio::io::stdout().compat_write(),
-        tokio::io::stdin().compat(),
-    );
+    let transport = ByteStreams::new(tokio::io::stdout().compat_write(), tokio::io::stdin().compat());
     let (new, load, mode, prompt, cancel) = (
         server.clone(),
         server.clone(),

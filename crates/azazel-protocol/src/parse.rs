@@ -117,12 +117,10 @@ fn expected(schema: &Value, root: &Value) -> String {
 /// `kind`. `None` when the members look right, and the deserializer's own words have to do.
 fn wrong_member(kind: &str, object: &Map<String, Value>) -> Option<String> {
     let root: &Value = &COMMAND_SCHEMA;
-    let variant = root.get("oneOf")?.as_array()?.iter().find(|variant| {
-        variant
-            .pointer("/properties/type/const")
-            .and_then(Value::as_str)
-            == Some(kind)
-    })?;
+    let variant =
+        root.get("oneOf")?.as_array()?.iter().find(|variant| {
+            variant.pointer("/properties/type/const").and_then(Value::as_str) == Some(kind)
+        })?;
     let required: Vec<&str> = variant
         .get("required")
         .and_then(Value::as_array)
@@ -208,7 +206,9 @@ mod tests {
             })
         );
         assert_eq!(
-            Command::from_value(json!({ "type": "prompt", "text": "see", "images": [{ "mime": "image/png", "data": "AA==" }] })),
+            Command::from_value(
+                json!({ "type": "prompt", "text": "see", "images": [{ "mime": "image/png", "data": "AA==" }] })
+            ),
             Ok(Command::Prompt {
                 text: "see".into(),
                 images: vec![Image {
@@ -279,13 +279,19 @@ mod tests {
         );
         // Inside a list the deserializer speaks for itself.
         let inner = error(json!({ "type": "prompt", "text": "x", "images": [{ "mime": "image/png" }] }));
-        assert!(inner.starts_with("`prompt`: ") && inner.contains("data"), "{inner}");
+        assert!(
+            inner.starts_with("`prompt`: ") && inner.contains("data"),
+            "{inner}"
+        );
 
         let (id, not_json) = Request::parse("{oops");
         assert_eq!(id, Value::Null);
         assert!(not_json.unwrap_err().starts_with("not JSON: "));
         let (id, not_object) = Request::parse("[1]");
-        assert_eq!((id, not_object), (Value::Null, Err("a command is a JSON object".into())));
+        assert_eq!(
+            (id, not_object),
+            (Value::Null, Err("a command is a JSON object".into()))
+        );
     }
 
     #[test]

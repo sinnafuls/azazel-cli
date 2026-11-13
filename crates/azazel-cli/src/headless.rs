@@ -37,7 +37,10 @@ pub async fn build_app(
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ended {
     /// The lead is idle and no agent it started still works. `answer` is its last message.
-    Idle { stop: StopReason, answer: String },
+    Idle {
+        stop: StopReason,
+        answer: String,
+    },
     Failed(String),
 }
 

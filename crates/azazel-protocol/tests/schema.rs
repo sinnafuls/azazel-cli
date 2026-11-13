@@ -51,8 +51,10 @@ fn responses_keep_their_wire_form() {
     );
     assert_eq!(serde_json::from_value::<Frame>(wire).unwrap(), failed);
     assert_eq!(
-        serde_json::from_value::<Frame>(json!({ "id": 2, "type": "response", "success": true, "data": null }))
-            .unwrap(),
+        serde_json::from_value::<Frame>(
+            json!({ "id": 2, "type": "response", "success": true, "data": null })
+        )
+        .unwrap(),
         ok
     );
 }

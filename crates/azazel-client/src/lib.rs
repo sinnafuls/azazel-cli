@@ -393,7 +393,11 @@ mod tests {
         }
     }
 
-    fn pair() -> (Server, impl AsyncBufRead + Send + Unpin, impl AsyncWrite + Send + Unpin) {
+    fn pair() -> (
+        Server,
+        impl AsyncBufRead + Send + Unpin,
+        impl AsyncWrite + Send + Unpin,
+    ) {
         let (near, far) = tokio::io::duplex(64 * 1024);
         let (server_in, server_out) = tokio::io::split(far);
         let (client_in, client_out) = tokio::io::split(near);
@@ -412,7 +416,10 @@ mod tests {
                 .say(json!({ "type": "hello", "protocol": PROTOCOL, "version": "9.9.9" }))
                 .await;
             let prompt = server.hear().await;
-            assert_eq!((&prompt["type"], &prompt["text"]), (&json!("prompt"), &json!("go")));
+            assert_eq!(
+                (&prompt["type"], &prompt["text"]),
+                (&json!("prompt"), &json!("go"))
+            );
             server
                 .say(json!({ "id": prompt["id"], "type": "response", "success": true, "data": null }))
                 .await;
@@ -498,7 +505,9 @@ mod tests {
         );
 
         let (mut server, reader, writer) = pair();
-        server.say(json!({ "type": "agent_start", "agent": "lead" })).await;
+        server
+            .say(json!({ "type": "agent_start", "agent": "lead" }))
+            .await;
         let silent = Client::connect(reader, writer).await.err().unwrap();
         assert!(matches!(silent, Error::Protocol(why) if why.contains("did not say hello")));
     }
@@ -509,12 +518,17 @@ mod tests {
         server
             .say(json!({ "type": "hello", "protocol": PROTOCOL, "version": "1" }))
             .await;
-        server.say(json!({ "type": "agent_start", "agent": "lead" })).await;
+        server
+            .say(json!({ "type": "agent_start", "agent": "lead" }))
+            .await;
         server.say(json!({ "type": "turn_end", "agent": "lead" })).await;
         let client = Client::connect(reader, writer).await.unwrap();
         drop(server);
         let mut frames = client.frames();
-        assert_eq!(frames.next().await, Some(Frame::AgentStart { agent: "lead".into() }));
+        assert_eq!(
+            frames.next().await,
+            Some(Frame::AgentStart { agent: "lead".into() })
+        );
         assert_eq!(frames.next().await, Some(Frame::TurnEnd { agent: "lead".into() }));
         assert_eq!(frames.next().await, None);
     }

@@ -94,7 +94,10 @@ fn role_name(role: Role) -> &'static str {
 
 /// The first line of `text` that says something, cut to a row's length.
 fn row_text(text: &str) -> String {
-    let line = text.lines().find(|line| !line.trim().is_empty()).unwrap_or_default();
+    let line = text
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or_default();
     line.trim().chars().take(ROW_TEXT_CHARS).collect()
 }
 
@@ -476,7 +479,8 @@ mod tests {
             // Taken by a rewind: no prompt follows it.
             checkpoint("k3", "ccc"),
         ];
-        let point = |id: &str| rewind_point(&branch, id).map(|(entry, commit, prompt)| (entry.id, commit, prompt));
+        let point =
+            |id: &str| rewind_point(&branch, id).map(|(entry, commit, prompt)| (entry.id, commit, prompt));
         assert_eq!(point("k2"), Ok(("k2".into(), "bbb".into(), "second".into())));
         assert_eq!(point("p2"), Ok(("k2".into(), "bbb".into(), "second".into())));
         assert_eq!(point("p1"), Ok(("k1".into(), "aaa".into(), "first".into())));
@@ -496,10 +500,18 @@ mod tests {
         let current: HashSet<String> = ["m1".to_string()].into();
         let row = tree_row(prompt("m1", "\n  fix the bug  \nand more"), &current);
         assert_eq!(
-            (row.kind.as_str(), row.role.as_deref(), row.text.as_deref(), row.current),
+            (
+                row.kind.as_str(),
+                row.role.as_deref(),
+                row.text.as_deref(),
+                row.current
+            ),
             ("message", Some("user"), Some("fix the bug"), true)
         );
         let row = tree_row(checkpoint("k1", "aaa"), &current);
-        assert_eq!((row.kind.as_str(), row.role, row.current), ("checkpoint", None, false));
+        assert_eq!(
+            (row.kind.as_str(), row.role, row.current),
+            ("checkpoint", None, false)
+        );
     }
 }

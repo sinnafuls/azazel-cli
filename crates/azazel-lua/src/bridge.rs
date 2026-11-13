@@ -244,7 +244,11 @@ impl SystemPartProvider for LuaPrompt {
                 None
             }
             Err(e) => {
-                shared.disable(format!("its prompt part `{}` failed: {}", self.name, describe(&e)));
+                shared.disable(format!(
+                    "its prompt part `{}` failed: {}",
+                    self.name,
+                    describe(&e)
+                ));
                 None
             }
         }

@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ElicitRequestParams, ElicitResult,
-    ElicitationAction, ElicitationCapability, FormElicitationCapability, Implementation,
+    CallToolRequestParams, CallToolResult, ClientCapabilities, ClientConfig, ElicitRequestParams,
+    ElicitResult, ElicitationAction, ElicitationCapability, FormElicitationCapability, Implementation,
 };
 use rmcp::service::{RequestContext, RoleClient, RunningService};
 use rmcp::transport::TokioChildProcess;
@@ -117,7 +117,11 @@ fn texts(result: &CallToolResult) -> Vec<String> {
 
 fn session_files(home: &Path) -> usize {
     let mut count = 0;
-    for project in std::fs::read_dir(home.join("projects")).into_iter().flatten().flatten() {
+    for project in std::fs::read_dir(home.join("projects"))
+        .into_iter()
+        .flatten()
+        .flatten()
+    {
         for file in std::fs::read_dir(project.path().join("sessions"))
             .into_iter()
             .flatten()
@@ -162,7 +166,12 @@ async fn a_client_lists_the_tools_reads_a_file_and_gets_a_reply_to_a_prompt() {
     assert!(unknown.is_err(), "write is not served");
 
     // A prompt runs a session to its end; the reply comes with the id to continue it by.
-    let reply = call(&service, "azazel_prompt", json!({ "prompt": "how long is notes.txt?" })).await;
+    let reply = call(
+        &service,
+        "azazel_prompt",
+        json!({ "prompt": "how long is notes.txt?" }),
+    )
+    .await;
     assert_eq!(reply.is_error, Some(false), "{reply:?}");
     let said = texts(&reply);
     assert_eq!(said[0], "It has two lines.");
@@ -199,11 +208,22 @@ async fn a_client_lists_the_tools_reads_a_file_and_gets_a_reply_to_a_prompt() {
         .iter()
         .map(|message| message["content"][0]["text"].as_str().unwrap())
         .collect();
-    assert_eq!(sent, ["how long is notes.txt?", "It has two lines.", "and in bytes?"]);
+    assert_eq!(
+        sent,
+        ["how long is notes.txt?", "It has two lines.", "and in bytes?"]
+    );
 
-    let failed = call(&service, "azazel_prompt", json!({ "prompt": "x", "session": "ffffffff" })).await;
+    let failed = call(
+        &service,
+        "azazel_prompt",
+        json!({ "prompt": "x", "session": "ffffffff" }),
+    )
+    .await;
     assert_eq!(failed.is_error, Some(true));
-    assert!(texts(&failed)[0].contains("no session with id `ffffffff`"), "{failed:?}");
+    assert!(
+        texts(&failed)[0].contains("no session with id `ffffffff`"),
+        "{failed:?}"
+    );
 
     service.cancel().await.unwrap();
 }

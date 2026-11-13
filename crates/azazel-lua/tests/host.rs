@@ -589,7 +589,10 @@ async fn functions_that_register_are_refused_once_the_script_has_loaded() {
     bench.load(false);
     let (outcome, _) = bench.emit(Event::SessionEnd).await;
     assert_eq!(outcome, Outcome::Continue);
-    assert_eq!(bench.extras().status(), ["command mcp on prompt provider shortcut tool"]);
+    assert_eq!(
+        bench.extras().status(),
+        ["command mcp on prompt provider shortcut tool"]
+    );
     assert_eq!(bench.tool_names(), Vec::<String>::new());
     assert!(bench.registry.command("late").is_none());
     assert!(bench.extras().shortcut("ctrl+l").is_none());
@@ -679,7 +682,8 @@ async fn a_script_adds_parts_to_the_system_prompt() {
         "{status:?}"
     );
 
-    let texts = |parts: Vec<azazel_ai::SystemPart>| parts.into_iter().map(|part| part.text).collect::<Vec<_>>();
+    let texts =
+        |parts: Vec<azazel_ai::SystemPart>| parts.into_iter().map(|part| part.text).collect::<Vec<_>>();
     assert_eq!(
         texts(bench.registry.prompt.render(&lead()).await),
         ["House rule: tabs. Agent lead in session s1."]
@@ -706,7 +710,10 @@ async fn a_script_adds_parts_to_the_system_prompt() {
     );
     // The parts go when the scripts are unloaded, and come back with a reload.
     bench.registry.unload("lua");
-    assert_eq!(texts(bench.registry.prompt.render(&lead()).await), Vec::<String>::new());
+    assert_eq!(
+        texts(bench.registry.prompt.render(&lead()).await),
+        Vec::<String>::new()
+    );
 }
 
 #[tokio::test]
@@ -743,7 +750,8 @@ async fn a_script_reads_and_names_the_open_session() {
     assert!(failure(bench.command("name", "x").await).contains("no session is open"));
 
     let store = Arc::new(
-        azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None).unwrap(),
+        azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None)
+            .unwrap(),
     );
     bench.services.insert(store.clone());
     assert_eq!(bench.shown("name", " demo ").await, "nil -> demo");
