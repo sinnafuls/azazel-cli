@@ -170,7 +170,8 @@ nothing on standard output and exits `1`. A schema that cannot be read or is not
 ## Coordinator mode
 
 In coordinator mode the lead plans and delegates and does none of the work itself. It is offered the
-orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `skill`, the memory tools, `semantic_search`,
+orchestration tools, `read`, `glob`, `grep`, `todo`, `ask_user`, `session_recall`, `skill`, the memory tools,
+`semantic_search`,
 `web_search`, `web_fetch` and `web_grep`, and nothing that edits files or runs commands: no `write`, `edit`, `shell`,
 `job`, `run_code`, no MCP tools. Scripts run for the lead are held to the same list. Its prompt tells it to
 plan first, delegate independent pieces in one `task` call, read every report critically, and verify through

@@ -185,6 +185,52 @@ fn ast_grep_summary(pattern: &str, input: &Value) -> String {
     }
 }
 
+/// What a `session_recall` call asks of the conversation: what it searches for and which entries
+/// it reads.
+fn recall_summary(input: &Value) -> Option<String> {
+    let text = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+    };
+    let ids = |key: &str| -> Vec<&str> {
+        input
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect()
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(query) = text("query") {
+        parts.push(query.to_string());
+    }
+    if let Some(regex) = text("regex") {
+        parts.push(format!("/{regex}/"));
+    }
+    if let [from, to] = ids("range").as_slice() {
+        let end = |id: &str, word: &str| {
+            if id.is_empty() {
+                word.to_string()
+            } else {
+                id.to_string()
+            }
+        };
+        parts.push(format!("{} to {}", end(from, "start"), end(to, "end")));
+    }
+    match ids("expand").as_slice() {
+        [] => {}
+        [one] => parts.push(format!("entry {one}")),
+        many => parts.push(format!("{} entries", many.len())),
+    }
+    if input.get("touched").and_then(Value::as_bool) == Some(true) {
+        parts.push("files touched".to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
 /// What a tool call is about, on one line.
 pub fn tool_summary(name: &str, input: &Value) -> String {
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
@@ -209,6 +255,7 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "lsp" => field("action").map(|action| lsp_summary(&action, input)),
         "ast_grep" => field("pattern").map(|pattern| ast_grep_summary(&pattern, input)),
         "memory_search" | "semantic_search" | "tool_search" => field("query"),
+        "session_recall" => recall_summary(input),
         "skill" => field("name"),
         "run_code" => field("code").map(|code| {
             let lines = code.trim().lines().count();
@@ -943,6 +990,20 @@ mod tests {
         assert_eq!(
             tool_summary("ask_user", &json!({"question": "Paint it?", "type": "confirm"})),
             "Paint it?"
+        );
+        let recall = |input: Value| tool_summary("session_recall", &input);
+        assert_eq!(
+            recall(json!({"query": "parser tests", "limit": 5})),
+            "parser tests"
+        );
+        assert_eq!(
+            recall(json!({"regex": "fn \\w+", "touched": true})),
+            "/fn \\w+/ · files touched"
+        );
+        assert_eq!(recall(json!({"expand": ["1a2b3c4d"]})), "entry 1a2b3c4d");
+        assert_eq!(
+            recall(json!({"expand": ["1a2b3c4d", "5e6f7a8b"], "range": ["", "9c0d1e2f"]})),
+            "start to 9c0d1e2f · 2 entries"
         );
         assert_eq!(
             tool_summary(

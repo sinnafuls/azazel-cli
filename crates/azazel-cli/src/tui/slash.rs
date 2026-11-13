@@ -61,7 +61,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     ("clear", "Clear the screen"),
     ("cost", "Tokens and money spent in this session"),
-    ("context", "How full the context window is"),
+    (
+        "context",
+        "What the last request was made of: tokens by category; enter reads a category's text",
+    ),
     (
         "export",
         "Write the conversation to a file: /export [path.md|.html|.jsonl]",
@@ -266,6 +269,7 @@ impl Tui {
             "copy" => self.copy_command(args),
             "vim" => self.toggle_vim(),
             "jobs" => self.open_jobs(),
+            "context" if args.is_empty() => self.open_context().await,
             "reload" => self.reload().await,
             "changelog" => match crate::changelog::text((!args.is_empty()).then_some(args)) {
                 Ok(text) => {

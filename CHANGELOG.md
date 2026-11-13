@@ -5,6 +5,31 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `session_recall`: an agent reads its own conversation back from the session file, including what a summary
+  replaced and tool results that were elided. It searches by words (best match first) or by regular
+  expression, returns entries in full by id (`expand`) or between two ids (`range`), and lists the files the
+  conversation read and wrote with the entries that did it (`touched`). It only reads, and coordinator mode
+  keeps it.
+- `/context` is an inspector: the lead's last request by category (each part of the system prompt by name,
+  AGENTS and context files, the skill index, memory, tool schemas with each MCP server on its own, messages,
+  tool calls, tool results, images), each with its tokens, its share and a bar. `enter` opens a category's
+  exact text in the full-screen viewer. The numbers use the counter compaction uses and are scaled to the
+  input tokens the provider counted.
+- `azazel context [PATH|ID] [--json]` prints the same breakdown for a saved session from the `context.json`
+  the session keeps of its last request; over RPC, `run_command context` takes `json` and
+  `text <request> <category>`.
+
+### Changed
+
+- An elided tool result now names the entry that holds it,
+  `[result elided: <n> bytes; session_recall expand=<id>]`, and a compaction summary ends with a note naming
+  the newest entry it covers. The summariser sees entry ids and puts them after facts whose detail it leaves
+  out. An agent without `session_recall` gets the notes as before.
+- `/context` without a request to show says so instead of estimating how full the window is; the status line
+  still shows that.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

@@ -632,6 +632,7 @@ fn explicit_output_limit_is_sent_and_temperature_depends_on_api_version() {
 fn system_parts_become_text_blocks_with_a_marker_on_the_last_boundary() {
     let part = |text: &str, cache_boundary: bool| SystemPart {
         text: text.to_string(),
+        name: String::new(),
         cache_boundary,
     };
     let mut req = request(vec![Message::user("hi")]);
@@ -813,6 +814,7 @@ fn cache_markers_cover_the_last_two_user_turns_and_stay_within_four() {
     ]);
     req.system = vec![SystemPart {
         text: "rules".to_string(),
+        name: String::new(),
         cache_boundary: true,
     }];
     req.tools = vec![ToolSpec {

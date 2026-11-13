@@ -93,6 +93,7 @@ impl PromptBuilder {
             }
             out.push(SystemPart {
                 text,
+                name: name.to_string(),
                 cache_boundary: false,
             });
         }
