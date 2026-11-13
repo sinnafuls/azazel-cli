@@ -69,6 +69,7 @@ fn sources(paths: &Paths, trusted: bool) -> Result<Sources, String> {
         files: true,
         claude_compat: config.compat.claude,
         compat: config.rules.compat,
+        include_depth: config.context.include_depth,
         stream_rules: config.stream_rules,
     })
 }

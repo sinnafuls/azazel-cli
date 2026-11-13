@@ -498,7 +498,7 @@ fn auto_prefers_keyed_backends_then_searxng_then_duckduckgo() {
     const BRAVE_KEY: (&str, &str) = ("BRAVE_API_KEY", "b");
     const TAVILY_KEY: (&str, &str) = ("TAVILY_API_KEY", "t");
     const EXA_KEY: (&str, &str) = ("EXA_API_KEY", "e");
-    let cases: [(&str, &str, Vars, &str); 12] = [
+    let cases: [(&str, &str, Vars, &str); 13] = [
         ("auto", "", &[], "duckduckgo"),
         ("", "", &[], "duckduckgo"),
         ("auto", "http://searx.local", &[], "searxng"),
@@ -512,6 +512,8 @@ fn auto_prefers_keyed_backends_then_searxng_then_duckduckgo() {
         ("searxng", "", &[BRAVE_KEY], "searxng"),
         ("exa", "", &[BRAVE_KEY], "exa"),
         ("Tavily", "", &[], "tavily"),
+        // The provider's own search has no backend behind it.
+        ("provider", "http://searx.local", &[BRAVE_KEY], "provider"),
         ("bing", "", &[BRAVE_KEY], "none"),
     ];
     for (search, searxng_url, vars, expected) in cases {
@@ -532,6 +534,7 @@ async fn an_explicit_backend_without_its_key_or_url_errors_naming_what_to_set() 
         ("exa", "EXA_API_KEY"),
         ("searxng", "searxng_url"),
         ("bing", "duckduckgo"),
+        ("provider", "no web search of its own"),
     ] {
         let reason = backend_from_config(search, "", &no_env).err().unwrap();
         assert!(reason.contains(needs), "{search}: {reason}");
@@ -1137,7 +1140,7 @@ async fn several_queries_run_three_at_a_time_and_answer_in_the_order_asked() {
     assert_eq!(queries[1]["results"].as_array().unwrap().len(), 2);
     assert_eq!(
         queries[2],
-        json!({"query": "broken", "error": "slow search returned HTTP 500"})
+        json!({"query": "broken", "backend": "slow", "error": "slow search returned HTTP 500"})
     );
 
     // When every query fails the call has failed.
@@ -1438,6 +1441,7 @@ async fn the_extension_registers_its_tools_and_url_schemes_that_read_as_markdown
         .load(&WebExt {
             search: "searxng".into(),
             searxng_url: server.uri(),
+            provider_search: true,
         })
         .unwrap();
     let ctx = bench.ctx();

@@ -167,7 +167,8 @@ fn messages(req: &Request) -> Vec<Value> {
     }
     // A tool result names the tool it answers, not the call, so remember which call was which.
     let mut tools: HashMap<&str, &str> = HashMap::new();
-    for message in &req.messages {
+    let tail = req.tail_message();
+    for message in req.messages.iter().chain(&tail) {
         match message.role {
             Role::User => out.extend(text_message("user", &message.content)),
             Role::Assistant => out.extend(assistant_message(&message.content, &mut tools)),
@@ -389,6 +390,7 @@ impl OllamaDecoder {
             stop,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         };
         out.push(StreamEvent::Done {
             message: Message::assistant(std::mem::take(&mut self.blocks), meta),

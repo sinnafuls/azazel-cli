@@ -4,6 +4,55 @@ A rule is a Markdown file of instructions for agents. Unlike `AGENTS.md`, which 
 
 For instructions that must run a program, use a [hook](hooks.md). For a pack of instructions the model loads by task, use a [skill](skills-and-commands.md).
 
+## Context files
+
+`AGENTS.md` holds the instructions every agent of a project follows. Azazel reads `~/.azazel/AGENTS.md`, then
+the `AGENTS.md` of each directory from the project root down to the directory you started in, and places them
+in the system prompt in that order. With `[compat] claude = true` (the default) a directory without an
+`AGENTS.md` may have a `CLAUDE.md` instead. The files are read again for every request, so an edit takes effect
+at once. Together with the rules that always apply they are cut at 64 KB; the files nearest the root win.
+
+### Other directories
+
+A directory below or beside the one you started in can have its own `AGENTS.md` (or `CLAUDE.md`). It is not in
+the system prompt. An agent is given it with the result of its first tool call that names a path there, as
+`<context file="...">...</context>` after the tool's own output:
+
+- every instruction file between that path and the project root comes along, the nearest first;
+- the files the system prompt already has are left out;
+- each agent gets a file once per session, and again after a compaction, whose summary does not keep it;
+- all context files of a session share the 64 KB: a file that no longer fits is named, not attached.
+
+Any tool call with a `path` or `paths` argument counts (`read`, `write`, `edit`, `grep`, `glob`, `lsp`,
+`ast_grep`); a shell command does not. An agent working in a worktree is not given the worktree's copy of a
+file its prompt already has. `[context] nested = false` switches this off.
+
+### Including files
+
+A context file or a rule file can pull other files into its text with `@path`:
+
+```markdown
+# Project
+@docs/conventions.md
+Releases follow @docs/release.md, and nothing else.
+```
+
+- A line that is only `@path` is replaced by the file, as `<include file="path">...</include>`. An `@path`
+  inside a sentence stays where it is, and the file follows that line.
+- The path is relative to the file that names it, or else to the project root. `@~/...` is your home directory.
+- An included file may include others, four deep by default (`[context] include_depth`; `0` follows none). A
+  file that includes itself, directly or through others, is refused with a note in its place. A file named a
+  second time is not placed twice.
+- `@word` that names no file is left as it is (`@alice`, `@types/node`), and so is everything in a code span or
+  a fenced code block.
+- Only files of the project and of `~/.azazel` can be included, a file of the project can include files of the
+  project only, and a [secret file](permissions.md#secret-files) (`.env`, `*.pem`, `*.key`, SSH keys, azazel's login file) is never
+  included.
+- Included text counts towards the limit of the file that includes it: 64 KB for the context files together,
+  16 KB for a rule.
+
+`--no-context-files` (and `--bare`) leaves all of this out.
+
 ## Where rules live
 
 | Directory | Scope |

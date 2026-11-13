@@ -171,7 +171,9 @@ fn content_block(block: &Block) -> Result<Option<ContentBlock>, AiError> {
 
 /// The conversation as alternating user and assistant messages; tool results travel as user
 /// content, and neighbours with the same role are joined.
-fn converse_messages(messages: &[Message]) -> Result<Vec<sdk::Message>, AiError> {
+fn converse_messages<'a>(
+    messages: impl IntoIterator<Item = &'a Message>,
+) -> Result<Vec<sdk::Message>, AiError> {
     let mut turns: Vec<(ConversationRole, Vec<ContentBlock>)> = Vec::new();
     for message in messages {
         let role = match message.role {
@@ -276,7 +278,7 @@ fn converse_input(
 
     Ok(ConverseInput {
         system,
-        messages: converse_messages(&req.messages)?,
+        messages: converse_messages(req.messages.iter().chain(&req.tail_message()))?,
         tools,
         inference,
         additional: (!additional.is_empty()).then(|| document(&json!(additional))),
@@ -423,6 +425,7 @@ impl ConverseDecoder {
             stop,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         }
     }
 
@@ -902,6 +905,7 @@ mod tests {
             stop: StopReason::ToolUse,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         };
         let thinking_delta = |delta: &str| StreamEvent::ThinkingDelta {
             index: 0,
@@ -1091,6 +1095,7 @@ mod tests {
                         stop: StopReason::ToolUse,
                         response_id: None,
                         duration_ms: 0,
+                        sources: Vec::new(),
                     },
                 ),
                 Message::tool(vec![Block::ToolResult {
@@ -1110,6 +1115,8 @@ mod tests {
             temperature: Some(0.5),
             cache_key: None,
             tier: None,
+            hosted: Vec::new(),
+            tail: Vec::new(),
         }
     }
 

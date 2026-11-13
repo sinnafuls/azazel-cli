@@ -1,5 +1,6 @@
 //! A provider that speaks one of the HTTP wire APIs.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -346,6 +347,8 @@ pub(crate) fn prepare(req: &Request, target: &Target<'_>) -> Request {
         temperature: req.temperature,
         cache_key: req.cache_key.clone(),
         tier: req.tier,
+        hosted: req.hosted.clone(),
+        tail: req.tail.clone(),
     }
 }
 
@@ -443,30 +446,51 @@ impl Provider for HttpProvider {
         &self.config.id
     }
 
+    fn hosts_web_search(&self) -> bool {
+        wire::hosted_api(&self.config).is_some()
+    }
+
     async fn stream(
         &self,
         model: &ModelInfo,
         req: &Request,
         cancel: CancellationToken,
     ) -> Result<EventStream, AiError> {
-        let wire = wire_for(self.config.api)?;
+        // A request with hosted tools goes out in the format the provider serves them in.
+        let config = match req.hosted.is_empty() {
+            true => Cow::Borrowed(&self.config),
+            false => match wire::hosted_api(&self.config) {
+                Some(api) if api == self.config.api => Cow::Borrowed(&self.config),
+                Some(api) => Cow::Owned(ProviderConfig {
+                    api,
+                    ..self.config.clone()
+                }),
+                None => {
+                    return Err(AiError::InvalidRequest(format!(
+                        "provider {} runs no tools of its own",
+                        self.config.id
+                    )));
+                }
+            },
+        };
+        let wire = wire_for(config.api)?;
         let (auth, account) = self.authorise().await?;
         let target = Target {
-            provider: &self.config.id,
+            provider: &config.id,
             model,
-            api: self.config.api,
+            api: config.api,
         };
         let prepared = prepare(req, &target);
 
         let started = Instant::now();
         let watchdog = Watchdog::start(self.stall);
-        let request = (wire.build_request)(&self.client, &self.config, model, &prepared, &auth);
+        let request = (wire.build_request)(&self.client, &config, model, &prepared, &auth);
         let response = tokio::select! {
             biased;
             sent = self.send_as(&wire, request, &cancel, account.as_deref()) => sent?,
             stalled = watchdog.expired() => return Err(stalled),
         };
-        let decoder = (wire.decoder)(&self.config, model);
+        let decoder = (wire.decoder)(&config, model);
         Ok(framed_stream(
             response,
             wire.framing,

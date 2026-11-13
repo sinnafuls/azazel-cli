@@ -153,6 +153,23 @@ pub struct AssistantMeta {
     pub response_id: Option<String>,
     #[serde(default)]
     pub duration_ms: u64,
+    /// The pages a hosted web search found for this response ([`HostedTool::WebSearch`]), the
+    /// ones the answer cites first. Empty for every other response.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<WebSource>,
+}
+
+/// A page found by a provider's own web search.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSource {
+    pub url: String,
+    /// The page's title; empty when the provider gave none.
+    #[serde(default)]
+    pub title: String,
+    /// What the answer took from the page: the passage the provider quotes from it, or else the
+    /// sentences of the answer that cite it. Empty for a page that was found and not cited.
+    #[serde(default)]
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,7 +428,59 @@ pub struct Request {
     /// The service tier asked for; `None` leaves it to the provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// Tools the provider runs itself while it answers. Only a provider that hosts them takes
+    /// such a request ([`crate::Provider::hosts_web_search`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosted: Vec<HostedTool>,
+    /// Notes that are true for this request only (the date, the mode, a reminder). They are sent
+    /// after the conversation and outside every cache mark, so a note that changes costs nothing
+    /// but its own tokens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail: Vec<SystemPart>,
 }
+
+/// A tool that runs at the provider, inside one response: the model calls it and reads its
+/// results without the client taking part. What it found comes back in
+/// [`AssistantMeta::sources`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum HostedTool {
+    /// The provider's web search: Anthropic's `web_search` server tool, the `web_search` tool of
+    /// the Responses API (OpenAI, xAI), Gemini's Google Search grounding.
+    WebSearch {
+        /// Bare domains (`docs.rs`) results are kept to; empty searches everywhere. Gemini has
+        /// no such filter and searches everywhere.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        domains: Vec<String>,
+        /// The most searches the provider may run for the response, where it takes a limit
+        /// (Anthropic).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_uses: Option<u32>,
+    },
+}
+
+impl Request {
+    /// The tail notes as the text a provider is sent, `None` when there are none.
+    pub fn tail_text(&self) -> Option<String> {
+        let notes: Vec<&str> = self
+            .tail
+            .iter()
+            .map(|note| note.text.trim())
+            .filter(|note| !note.is_empty())
+            .collect();
+        (!notes.is_empty()).then(|| format!("{TAIL_OPEN}\n{}\n{TAIL_CLOSE}", notes.join("\n\n")))
+    }
+
+    /// The tail as the user message that follows the conversation, for the APIs that take it as
+    /// one more message.
+    pub fn tail_message(&self) -> Option<Message> {
+        self.tail_text().map(Message::user)
+    }
+}
+
+/// What the tail notes of a request are wrapped in.
+pub const TAIL_OPEN: &str = "<system-note>";
+pub const TAIL_CLOSE: &str = "</system-note>";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemPart {

@@ -56,6 +56,7 @@ fn assistant(content: Vec<Block>) -> Message {
             stop: StopReason::Stop,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         },
     )
 }

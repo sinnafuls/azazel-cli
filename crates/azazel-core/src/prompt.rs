@@ -16,10 +16,23 @@ pub trait SystemPartProvider: Send + Sync {
 /// Parts that stay byte-identical from request to request, in order. The last one rendered carries
 /// the cache boundary.
 pub const STABLE_PARTS: [&str; 4] = ["identity", "rules", "team", "skills"];
-/// Parts that may change between requests. Parts with other names render between `context_files`
-/// and `memory`, in registration order.
-const VOLATILE_HEAD: [&str; 2] = ["environment", "context_files"];
-const VOLATILE_TAIL: [&str; 2] = ["memory", "mode"];
+/// Parts that change only when the user changes something on disk or in the session's setup.
+/// Parts with other names follow them, in registration order.
+const SESSION_PARTS: [&str; 2] = ["environment", "context_files"];
+/// Parts that change while a session runs: the date and branch, what is remembered, the mode and
+/// the goal. They are not part of the system prompt: they go in the note that follows the
+/// conversation ([`azazel_ai::Request::tail`]), so a change in one of them leaves everything a
+/// provider has cached as it was.
+pub const TAIL_PARTS: [&str; 3] = ["now", "memory", "mode"];
+
+/// What the parts make of one request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Prompt {
+    /// The system prompt.
+    pub system: Vec<SystemPart>,
+    /// The notes for [`azazel_ai::Request::tail`].
+    pub tail: Vec<SystemPart>,
+}
 
 struct Part {
     owner: String,
@@ -52,7 +65,12 @@ impl PromptBuilder {
             .retain(|p| p.owner != owner);
     }
 
+    /// The system prompt alone. A request also carries the tail: see [`PromptBuilder::prompt`].
     pub async fn render(&self, agent: &AgentInfo) -> Vec<SystemPart> {
+        self.prompt(agent).await.system
+    }
+
+    pub async fn prompt(&self, agent: &AgentInfo) -> Prompt {
         let registered: Vec<(String, Arc<dyn SystemPartProvider>)> = {
             let parts = self.parts.read().unwrap_or_else(PoisonError::into_inner);
             parts
@@ -61,19 +79,19 @@ impl PromptBuilder {
                 .collect()
         };
         let fixed = |name: &str| {
-            STABLE_PARTS.contains(&name) || VOLATILE_HEAD.contains(&name) || VOLATILE_TAIL.contains(&name)
+            STABLE_PARTS.contains(&name) || SESSION_PARTS.contains(&name) || TAIL_PARTS.contains(&name)
         };
         let mut order: Vec<&str> = Vec::new();
         order.extend(STABLE_PARTS);
-        order.extend(VOLATILE_HEAD);
+        order.extend(SESSION_PARTS);
         for (name, _) in &registered {
             if !fixed(name) && !order.contains(&name.as_str()) {
                 order.push(name);
             }
         }
-        order.extend(VOLATILE_TAIL);
+        order.extend(TAIL_PARTS);
 
-        let mut out: Vec<SystemPart> = Vec::new();
+        let mut out = Prompt::default();
         let mut boundary = None;
         for name in order {
             let mut text = String::new();
@@ -88,17 +106,22 @@ impl PromptBuilder {
             if text.is_empty() {
                 continue;
             }
-            if STABLE_PARTS.contains(&name) {
-                boundary = Some(out.len());
-            }
-            out.push(SystemPart {
+            let part = SystemPart {
                 text,
                 name: name.to_string(),
                 cache_boundary: false,
-            });
+            };
+            if TAIL_PARTS.contains(&name) {
+                out.tail.push(part);
+                continue;
+            }
+            if STABLE_PARTS.contains(&name) {
+                boundary = Some(out.system.len());
+            }
+            out.system.push(part);
         }
         if let Some(i) = boundary {
-            out[i].cache_boundary = true;
+            out.system[i].cache_boundary = true;
         }
         out
     }
@@ -139,9 +162,13 @@ with `--force`) unless the user asks you to.\n\
 - Do not say work is complete until you have run the project's build or tests and seen them pass. If you \
 could not run them, say so.\n\
 - When a tool call is denied, do not retry it in another form; adjust the plan or ask the user.\n\
-- Keep answers short and concrete. Reference code as `path:line`.";
+- Keep answers short and concrete. Reference code as `path:line`.\n\
+- A `<system-note>` after the conversation is from the harness, not from the user: the date, the \
+branch, the mode you are in, what is remembered, your task list. It is current for this request; \
+act on it and do not answer it.";
 
-/// Operating system, shell, working directory, date and git branch.
+/// Operating system, shell, working directory and project root: what stays the same for a
+/// whole session.
 pub struct Environment {
     pub cwd: PathBuf,
     pub project_root: PathBuf,
@@ -151,17 +178,28 @@ pub struct Environment {
 #[async_trait]
 impl SystemPartProvider for Environment {
     async fn render(&self, _: &AgentInfo) -> Option<String> {
-        let mut text = format!(
-            "# Environment\n- OS: {} ({})\n- Shell: {}\n- Working directory: {}\n- Project root: {}\n- Date: {}",
+        Some(format!(
+            "# Environment\n- OS: {} ({})\n- Shell: {}\n- Working directory: {}\n- Project root: {}",
             std::env::consts::OS,
             std::env::consts::ARCH,
             self.shell,
             self.cwd.display(),
             self.project_root.display(),
-            jiff::Zoned::now().date(),
-        );
+        ))
+    }
+}
+
+/// The date and the git branch: what may be different by the next request.
+pub struct Now {
+    pub project_root: PathBuf,
+}
+
+#[async_trait]
+impl SystemPartProvider for Now {
+    async fn render(&self, _: &AgentInfo) -> Option<String> {
+        let mut text = format!("Date: {}", jiff::Zoned::now().date());
         if let Some(branch) = git_branch(&self.project_root) {
-            text.push_str(&format!("\n- Git branch: {branch}"));
+            text.push_str(&format!("\nGit branch: {branch}"));
         }
         Some(text)
     }
@@ -180,7 +218,8 @@ impl SystemPartProvider for ForLead {
     }
 }
 
-/// Registers the parts every session has: the lead identity, the rules and the environment.
+/// Registers the parts every session has: the lead identity, the rules, the environment, and the
+/// date and branch.
 pub struct BasePromptExt {
     pub cwd: PathBuf,
     pub project_root: PathBuf,
@@ -237,6 +276,12 @@ impl crate::ext::Extension for BasePromptExt {
                 shell: self.shell.clone(),
             }),
         );
+        r.system_part(
+            "now",
+            Arc::new(Now {
+                project_root: self.project_root.clone(),
+            }),
+        );
         Ok(())
     }
 }
@@ -275,7 +320,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn parts_render_in_fixed_order_with_the_boundary_on_the_last_stable_part() {
+    async fn parts_render_in_fixed_order_with_the_boundary_on_the_last_stable_part_and_the_rest_in_the_tail()
+    {
         let builder = PromptBuilder::default();
         // Registered out of order on purpose.
         builder.add("x", "mode", Arc::new(Maybe(Some("MODE"))));
@@ -287,16 +333,24 @@ mod tests {
         builder.add("y", "rules", Arc::new(Maybe(Some("MORE RULES\n"))));
         builder.add("y", "memory", Arc::new(Maybe(Some("  "))));
 
-        let parts = builder.render(&info(0)).await;
+        builder.add("y", "now", Arc::new(Maybe(Some("NOW"))));
+        builder.add("y", "mode", Arc::new(Maybe(Some("GOAL"))));
+
+        let prompt = builder.prompt(&info(0)).await;
+        let parts = &prompt.system;
         let texts: Vec<&str> = parts.iter().map(|p| p.text.as_str()).collect();
-        assert_eq!(
-            texts,
-            [LEAD_IDENTITY, "RULES\n\nMORE RULES", "ENV", "MCP", "MODE"]
-        );
+        assert_eq!(texts, [LEAD_IDENTITY, "RULES\n\nMORE RULES", "ENV", "MCP"]);
+        let names = |parts: &[SystemPart]| -> Vec<String> { parts.iter().map(|p| p.name.clone()).collect() };
+        assert_eq!(names(parts), ["identity", "rules", "environment", "mcp"]);
         assert_eq!(
             parts.iter().map(|p| p.cache_boundary).collect::<Vec<_>>(),
-            [false, true, false, false, false]
+            [false, true, false, false]
         );
+        // What changes while a session runs is no part of the system prompt.
+        assert_eq!(names(&prompt.tail), ["now", "mode"]);
+        let notes: Vec<&str> = prompt.tail.iter().map(|p| p.text.as_str()).collect();
+        assert_eq!(notes, ["NOW", "MODE\n\nGOAL"]);
+        assert_eq!(builder.render(&info(0)).await, prompt.system);
 
         // A sub-agent has no lead identity; the boundary still closes the stable prefix.
         let sub = builder.render(&info(1)).await;

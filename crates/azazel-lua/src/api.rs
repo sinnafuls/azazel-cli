@@ -115,7 +115,7 @@ pub(crate) fn install(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
 
 /// Names of the system prompt's own parts. Their order and the prompt cache depend on them, so a
 /// script adds parts under names of its own.
-const BUILT_IN_PARTS: [&str; 8] = [
+const BUILT_IN_PARTS: [&str; 10] = [
     "identity",
     "rules",
     "team",
@@ -124,6 +124,8 @@ const BUILT_IN_PARTS: [&str; 8] = [
     "context_files",
     "memory",
     "mode",
+    "now",
+    "plan",
 ];
 
 /// `tool`, `on`, `command`, `prompt`, `shortcut`, `provider` and `mcp`.

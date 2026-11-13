@@ -35,6 +35,7 @@ use crate::credentials::Auth;
 use crate::providers::presets::{AuthStyle, ProviderConfig};
 use crate::sse::{JsonLines, SseParser};
 use crate::stream::StreamEvent;
+use crate::types::{WebSource, WireApi};
 
 /// The header a wire API takes an API key in when the provider does not say otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,149 @@ pub(crate) fn add_headers(
             _ => tracing::warn!(provider = %provider.id, header = %name, "ignoring invalid header"),
         }
     }
+}
+
+/// The built-in providers that run a web search themselves, and the hosts they answer at, so a
+/// provider configured under another name at the same address counts too.
+const SEARCH_PROVIDERS: [&str; 7] = [
+    "anthropic",
+    "google",
+    "google-gemini-cli",
+    "openai",
+    "openai-codex",
+    "xai",
+    "xai-oauth",
+];
+const SEARCH_HOSTS: [&str; 6] = [
+    "api.anthropic.com",
+    "api.openai.com",
+    "api.x.ai",
+    "chatgpt.com",
+    "cloudcode-pa.googleapis.com",
+    "generativelanguage.googleapis.com",
+];
+
+/// The wire API a request with hosted tools ([`crate::types::HostedTool`]) is written in for
+/// `provider`, or `None` when the provider runs no tools itself. The request shapes are in
+/// [`anthropic`] (the `web_search` server tool), [`openai_responses`] (the `web_search` tool, at
+/// OpenAI, the ChatGPT backend and xAI) and [`google`] (Google Search grounding).
+///
+/// xAI serves its search tool on the Responses endpoint only, so such a request goes there even
+/// for the provider whose conversations use Chat Completions.
+pub fn hosted_api(provider: &ProviderConfig) -> Option<WireApi> {
+    let host = provider
+        .base_url
+        .split_once("://")
+        .map_or("", |(_, rest)| rest)
+        .split(['/', ':'])
+        .next()
+        .unwrap_or_default();
+    if !SEARCH_PROVIDERS.contains(&provider.id.as_str()) && !SEARCH_HOSTS.contains(&host) {
+        return None;
+    }
+    match provider.api {
+        WireApi::AnthropicMessages
+        | WireApi::OpenAiResponses
+        | WireApi::GoogleGenerative
+        | WireApi::GoogleGeminiCli => Some(provider.api),
+        WireApi::OpenAiChat if provider.id == "xai" || host == "api.x.ai" => Some(WireApi::OpenAiResponses),
+        _ => None,
+    }
+}
+
+/// The pages of a hosted web search, gathered while a response is decoded, in the order
+/// [`crate::types::AssistantMeta::sources`] promises: the pages the answer cites, in the order
+/// it first cites them, then the pages the search found and the answer did not use.
+#[derive(Default)]
+pub(crate) struct Sources {
+    cited: Vec<WebSource>,
+    found: Vec<WebSource>,
+}
+
+impl Sources {
+    /// A page the search returned.
+    pub(crate) fn found(&mut self, url: &str, title: &str) {
+        let url = untracked(url);
+        if url.is_empty() || self.found.iter().any(|page| page.url == url) {
+            return;
+        }
+        self.found.push(WebSource {
+            url: url.to_string(),
+            title: title.trim().to_string(),
+            snippet: String::new(),
+        });
+    }
+
+    /// A citation of the page at `url`. `passage` is what the citation is about: the text quoted
+    /// from the page, or the part of the answer the page supports. Passages of one page are
+    /// joined in citation order.
+    pub(crate) fn cite(&mut self, url: &str, title: &str, passage: &str) {
+        let (url, title, passage) = (untracked(url), title.trim(), passage.trim());
+        let url = url.as_str();
+        if url.is_empty() {
+            return;
+        }
+        let known = match self.cited.iter().position(|page| page.url == url) {
+            Some(known) => known,
+            None => {
+                self.cited.push(WebSource {
+                    url: url.to_string(),
+                    ..WebSource::default()
+                });
+                self.cited.len() - 1
+            }
+        };
+        let page = &mut self.cited[known];
+        if page.title.is_empty() {
+            page.title = title.to_string();
+        }
+        if !passage.is_empty() && !page.snippet.contains(passage) {
+            if !page.snippet.is_empty() {
+                page.snippet.push_str(" … ");
+            }
+            page.snippet.push_str(passage);
+        }
+    }
+
+    /// The pages gathered so far; leaves the collection empty.
+    pub(crate) fn finish(&mut self) -> Vec<WebSource> {
+        let mut pages = std::mem::take(&mut self.cited);
+        for page in std::mem::take(&mut self.found) {
+            match pages.iter_mut().find(|cited| cited.url == page.url) {
+                Some(cited) if cited.title.is_empty() => cited.title = page.title,
+                Some(_) => {}
+                None => pages.push(page),
+            }
+        }
+        pages
+    }
+}
+
+/// `url` without the `utm_*` tracking parameters a search adds to every page it returns
+/// (OpenAI adds `utm_source=openai`), so a page is the same link however it was found.
+fn untracked(url: &str) -> String {
+    let url = url.trim();
+    let (base, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base, Some(fragment)),
+        None => (url, None),
+    };
+    let Some((path, query)) = base.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !pair.to_ascii_lowercase().starts_with("utm_"))
+        .collect();
+    let mut out = path.to_string();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Writes the provider's `extra_body` into a request body, member by member, replacing what the
@@ -167,4 +311,21 @@ pub fn decode_lines(bytes: &[u8], decoder: &mut dyn Decoder) -> Vec<StreamEvent>
     }
     events.extend(decoder.finish());
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_parameters_are_dropped_and_a_page_is_one_source() {
+        let mut sources = Sources::default();
+        sources.cite("https://docs.rs/x?utm_source=openai", "X", "one");
+        sources.cite("https://docs.rs/x", "", "two");
+        sources.found("https://a.example/p?q=1&UTM_medium=m#part", "A");
+        let pages = sources.finish();
+        let urls: Vec<&str> = pages.iter().map(|page| page.url.as_str()).collect();
+        assert_eq!(urls, ["https://docs.rs/x", "https://a.example/p?q=1#part"]);
+        assert_eq!(pages[0].snippet, "one … two");
+    }
 }

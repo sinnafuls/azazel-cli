@@ -1,6 +1,6 @@
 # Web search, web fetch and the browser
 
-Agents reach the web in three ways: `web_search` asks a search service, `web_fetch` downloads one URL and returns its main content as text (with `web_grep` to search that text), and `browser` drives a real Chromium-based browser for pages that need scripts, clicks or screenshots. `web_search`, `web_fetch` and `web_grep` are always present; `browser` is part of the default build (cargo feature `browser`).
+Agents reach the web in three ways: `web_search` asks the model provider's own search or a search service, `web_fetch` downloads one URL and returns its main content as text (with `web_grep` to search that text), and `browser` drives a real Chromium-based browser for pages that need scripts, clicks or screenshots. `web_search`, `web_fetch` and `web_grep` are always present; `browser` is part of the default build (cargo feature `browser`).
 
 ## `web_search`
 
@@ -32,19 +32,49 @@ A query that fails says so in its section and the others keep their results; the
 
 ```toml
 [web]
-search = "auto"        # auto | brave | tavily | exa | searxng | duckduckgo
-searxng_url = ""       # address of a SearXNG instance, e.g. "https://search.example.org"
+search = "auto"          # auto | provider | brave | tavily | exa | searxng | duckduckgo
+searxng_url = ""         # address of a SearXNG instance, e.g. "https://search.example.org"
+provider_search = true   # whether `auto` asks the lead's provider first
 ```
 
 | Backend | Needs |
 |---|---|
+| `provider` | A lead model whose provider searches the web itself; see [the provider's own search](#the-providers-own-search) |
 | `brave` | env `BRAVE_API_KEY` |
 | `tavily` | env `TAVILY_API_KEY` |
 | `exa` | env `EXA_API_KEY` |
 | `searxng` | `web.searxng_url`; the instance must have the `json` output format enabled |
 | `duckduckgo` | Nothing. Uses the keyless HTML results page, which may answer with a bot challenge under load |
 
-`auto` (the default) picks the first of `brave`, `tavily`, `exa` whose key is set, then `searxng` when `searxng_url` is set, then `duckduckgo`. Naming a backend explicitly without its key or URL makes every `web_search` call fail with a message naming what to set. `azazel doctor` prints the backend in use as `web search: <name>`.
+`auto` (the default) asks the lead's provider first when it has a search tool, and otherwise, or when that search fails, the first of `brave`, `tavily`, `exa` whose key is set, then `searxng` when `searxng_url` is set, then `duckduckgo`. `provider_search = false` takes the provider out of `auto`. Naming a backend explicitly uses that backend alone; without its key or URL every `web_search` call fails with a message naming what to set. `azazel doctor` prints who answers, for example `web search: provider (anthropic/claude-opus-5-5), then duckduckgo` or `web search: brave`.
+
+### The provider's own search
+
+Several providers run a web search on their side when a request asks for it. `web_search` uses that search when the lead's model is at one of them, so a search needs no key of its own and works on a subscription login:
+
+| Provider | What is asked for |
+|---|---|
+| `anthropic` (API key or Claude subscription) | The Messages API's `web_search` server tool (`web_search_20250305`) |
+| `openai`, `openai-codex` (ChatGPT login) | The Responses API's `web_search` tool |
+| `google`, `google-gemini-cli` | Grounding with Google Search (`googleSearch`) |
+| `xai`, `xai-oauth` | The `web_search` tool of xAI's Responses endpoint, also when the model converses over Chat Completions |
+
+A provider you configure under another name counts when its address is one of these vendors' own (`api.anthropic.com`, `api.openai.com`, `chatgpt.com`, `generativelanguage.googleapis.com`, `cloudcode-pa.googleapis.com`, `api.x.ai`). Gateways and compatible endpoints (OpenRouter, Bedrock, Vertex, Azure, local servers) are not asked.
+
+Each query is one request of its own on the lead's first model, with the lead's credentials, whichever agent called the tool. It carries no part of the conversation: only the query, `site`, `recency` and `limit`, and an instruction to search and cite. The model's thinking level is left off. The results are read from the citations of the answer, not from its wording:
+
+- title and URL are the cited page's;
+- the snippet is the passage the provider quotes from the page (Anthropic), or else the sentences of the answer that cite it (OpenAI, xAI, Gemini);
+- pages the search found and the answer did not cite follow, without a snippet;
+- Gemini names pages by redirect links on `vertexaisearch.cloud.google.com`; each is asked where it leads and replaced by that address, and kept as it is when it does not answer.
+
+The domain of `site` is passed to the provider as a filter where it has one (Anthropic, OpenAI, xAI), and results outside the site, or outside the path it names, are dropped in any case. `recency` is part of the request's wording; no provider takes it as a filter.
+
+The search falls back to the configured backend, per query, when the request fails, takes longer than 90 seconds, or its answer cites no page. The result's details then name the backend that answered and carry the provider's failure as `provider_error`. With `search = "provider"` there is no fallback: the failure is the result, and a lead whose provider has no search tool makes every call fail with a message saying so.
+
+What the requests cost in tokens is counted in the session's spend and shown by `/cost` under `web_search`. Providers also bill each search they run (Anthropic and OpenAI per search, on top of tokens); that fee is not in azazel's figures. Anthropic is told to run at most 2 searches per query.
+
+Permission rules see `web_search` as network access to the configured backend's host (`domain:html.duckduckgo.com` under `auto` with no key). The provider's own search goes to the host the session's model requests already go to and adds no subject.
 
 ## `web_fetch`
 

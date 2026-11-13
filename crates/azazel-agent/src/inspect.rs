@@ -201,7 +201,8 @@ fn groups(request: &Request, with_text: bool) -> Vec<Group> {
         list: Vec::new(),
         with_text,
     };
-    for part in &request.system {
+    // The notes that follow the conversation are instructions like the system prompt's parts.
+    for part in request.system.iter().chain(&request.tail) {
         groups.add(System, &part.name, estimate_text(&part.text), || {
             part.text.clone()
         });

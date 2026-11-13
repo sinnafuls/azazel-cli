@@ -16,6 +16,7 @@ use azazel_ai::{
     Block, Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, StallLimits, ThinkingLevel,
 };
 use azazel_core::agents;
+use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, command_roots, expand_mentions};
 use azazel_core::config::set_override;
@@ -478,6 +479,7 @@ impl App {
         registry.load(&azazel_tools::web::WebExt {
             search: config.web.search.clone(),
             searxng_url: config.web.searxng_url.clone(),
+            provider_search: config.web.provider_search,
         })?;
         registry.load(&crate::login::LoginExt {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
@@ -520,6 +522,7 @@ impl App {
             claude_compat: compat,
             compat: config.rules.compat,
             stream_rules: config.stream_rules.clone(),
+            include_depth: config.context.include_depth,
         }));
         registry.load(&RulesExt { rules: rules.clone() })?;
         if !cli.skips(Discovery::ContextFiles) {
@@ -527,6 +530,8 @@ impl App {
                 paths: paths.clone(),
                 claude_compat: compat,
                 rules: Some(rules),
+                nested: config.context.nested,
+                include_depth: config.context.include_depth,
             })?;
         }
         if !cli.skips(Discovery::Skills) {
@@ -818,6 +823,21 @@ impl App {
             caller.scope_agent("lead", lead_tools.clone());
         }
         let side_costs = Arc::new(SideCosts::default());
+        // What the prompt cache did for each request; with `cache.warming` it is also kept alive
+        // while the session waits for its user.
+        let cache = Arc::new(CacheLedger::new(&config.cache));
+        services.insert(cache.clone());
+        if cache.warms() {
+            tokio::spawn(
+                Warmer {
+                    ledger: cache,
+                    router: router.clone(),
+                    costs: side_costs.clone(),
+                    services: services.clone(),
+                }
+                .run(),
+            );
+        }
         services.insert(Arc::new(Side {
             router: router.clone(),
             prompt: registry.prompt.clone(),
@@ -1112,6 +1132,12 @@ impl App {
         let woken = lead.clone();
         services.insert(Arc::new(azazel_core::hooks::Wake(Arc::new(move |text| {
             woken.steer(UserInput::text(text));
+        }))));
+        // Requests made on the lead's model from outside its conversation (a web search through
+        // its provider) follow the model it is on now.
+        let asked = lead.clone();
+        services.insert(Arc::new(azazel_core::side::LeadModel(Arc::new(move || {
+            asked.status().chain
         }))));
         if let Some(goals) = services.get::<Goals>() {
             goals.attach(lead.clone(), session.clone(), checkpoints.clone());
