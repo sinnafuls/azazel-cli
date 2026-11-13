@@ -27,6 +27,7 @@ pub fn next<'a>(reader: &mut quick_xml::Reader<&'a [u8]>) -> Option<Event<'a>> {
 }
 
 /// The name of an element without its namespace prefix: `p` of `w:p`.
+#[cfg(any(feature = "office", test))]
 pub fn local(name: &[u8]) -> &[u8] {
     match name.iter().rposition(|byte| *byte == b':') {
         Some(colon) => &name[colon + 1..],

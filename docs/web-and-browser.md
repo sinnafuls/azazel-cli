@@ -104,7 +104,7 @@ Limits:
 | Redirects | At most 5, each target checked like the first URL |
 | Timeout | 30 seconds per request |
 | Body size | 5 MB; larger responses are refused |
-| Cache | Results are kept in memory for 15 minutes per URL and format (the URL fragment is ignored) |
+| Cache | Results are kept in memory for 15 minutes per URL and format (the URL fragment is ignored, except the lines a GitHub file address names) |
 
 ### Long pages
 
