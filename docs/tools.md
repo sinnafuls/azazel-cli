@@ -10,7 +10,7 @@ Fields marked `?` are optional.
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, a directory or a `scheme://` address |
+| `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, an Office or mail file, a directory or a `scheme://` address |
 | `write` | `path`, `content` | Creates a file or replaces its whole content. Parent directories are created |
 | `edit` | `path`, `edits: [{old, new, replace_all?}]` | Exact text replacement in an existing file |
 
@@ -21,8 +21,45 @@ Fields marked `?` are optional.
 - PNG, JPEG, WebP and GIF files are returned as images, scaled down when their long side exceeds 1568 px.
 - A PDF comes back as its text, each page under a `--- page N ---` line. One call returns at most 20 pages; `pages` picks them (`"3"` or `"2-6"`), and a partial read ends with `[pages 1-20 of 57; continue with pages="21-40"]`. A PDF without a text layer returns `this PDF has no extractable text (it is probably scanned)`. A PDF cannot be edited, so reading one does not count as having read it for `write`.
 - A notebook (`.ipynb`) comes back cell by cell: `# cell 4 [code]`, the cell's source, then `--- output ---` and its text outputs, each cut at 2000 characters. An image output is named in a line such as `[image output: cell 4 image 1, image/png, 5120 bytes]`, and the first image of the cells shown is attached to the result (a model without vision gets a note in its place). `offset` and `limit` count cells; a partial read ends with `[cells 1-12 of 40; continue with offset=13]`.
+- A Word, PowerPoint or Excel file and a mail message are converted; see [Office and mail files](#office-and-mail-files).
 - A directory lists up to 500 entries: `name/` for directories, `name<tab>N bytes` for files.
 - `~/` is expanded. Relative paths start at the agent's working directory.
+
+### Office and mail files
+
+`read` of a `.docx`, `.pptx`, `.xlsx`, `.msg` or `.eml` file (also `.docm`, `.pptm`, `.xlsm`) converts it into a directory under the project's artifacts directory, `~/.azazel/projects/<slug>/artifacts/<file name>-<hash>/`, and returns where that is, the files in it and an outline of the Markdown:
+
+```text
+/work/q3/report.docx is a Word document (36299 bytes). It was converted to Markdown in /home/you/.azazel/projects/q3/artifacts/report.docx-29d79928:
+report.md	26 lines
+images/image1.png	76 bytes
+
+Outline of report.md; `L` is the line, which `offset` takes when reading this file or report.md:
+L1	# Quarterly report
+L5	## Revenue
+L14	## Risks
+L19	### Next steps
+```
+
+A Markdown file of at most 8000 characters follows whole. For a longer one, `read` the document again (or the Markdown file) with `offset` set to a line of the outline: the result is those lines of the Markdown, numbered like any text file. The outline holds at most 200 headings and the file list 40 files.
+
+| File | The Markdown | Beside it |
+|---|---|---|
+| `.docx` | Headings (by the name of their style, so documents in any language work; a document with a title has its headings one level below it), paragraphs with bold, italic and links, bulleted and numbered lists, tables, text boxes | `images/`: the pictures, linked from where they stand |
+| `.pptx` | `# Slide N: <title>` per slide in the order of the show, the points of each placeholder as a list, text boxes, tables, and the speaker's notes as `Notes: ...` | `images/`: the pictures |
+| `.xlsx` | `# Sheet N: <name>` per sheet with its size and its first 20 rows and 12 columns as a table | `sheets/<N>-<name>.csv`: every sheet whole, a line per row (an empty row is an empty line) |
+| `.eml`, `.msg` | The subject as the heading, `From`, `To`, `Cc` and `Date`, then `## Message` and `## Attachments` | `attachments/`: every attachment under its own name |
+
+What is and is not converted:
+
+- A spreadsheet cell is the value Excel last computed: a formula is its result, a date cell is `2026-03-01` or `2026-03-15 14:30:00`, a number is shown with the 15 digits Excel shows. A formula no program ever computed (a file written by a library) is the formula itself, `=SUM(B2:B3)`. Hidden sheets are converted and marked `hidden`; charts are not.
+- Headers, footers, footnotes and comments of a document, and charts and diagrams of a presentation, are left out.
+- The text of a message is its plain-text part; a message that only has HTML is converted from that, and an Outlook message that only has RTF from that. A message forwarded as an attachment of a `.eml` file becomes `attachments/message-N.eml`, which `read` takes like any other; a message inside a `.msg` file follows the outer one in the same Markdown file, one heading level down.
+- The directory is named after the file and its content: the same file is converted once, and a changed one again. These files cannot be edited, so reading one does not count as having read it for `write`.
+- A file that only has the extension (a text file called `notes.docx`) is read as the text it is. The old binary formats (`.doc`, `.xls`, `.ppt`) are not read.
+- Files other than the Markdown are read with the usual tools: `read` an image or a CSV, `grep` the directory.
+
+A build without the cargo feature `office` (part of the default build) reports these files as binary.
 
 ### The read guard
 
@@ -418,7 +455,7 @@ square brackets the summary puts after facts it shortened.
 | Tool | Input | Behaviour |
 |---|---|---|
 | `web_search` | `query` or `queries` (at most 5), `limit?`, `site?`, `recency?` | Numbered results with title, URL and snippet; several queries run at once and get a section each. `limit` defaults to 8 (at most 20); `recency` is `day`, `week`, `month` or `year`. Answered by the search tool of the lead's provider when it has one, else by the configured backend; see [web and browser](web-and-browser.md#the-providers-own-search) |
-| `web_fetch` | `url`, `format?`, `offset?`, `limit?` | Fetches an http or https URL. `format` is `markdown` (default), `text` or `raw`. A long page comes in parts: `offset` is the first line, `limit` the most characters (default 30000). A PDF comes back as its text |
+| `web_fetch` | `url`, `format?`, `offset?`, `limit?` | Fetches an http or https URL. `format` is `markdown` (default), `text` or `raw`. A long page comes in parts: `offset` is the first line, `limit` the most characters (default 30000). A PDF comes back as its text, a GitHub address as what it names (a repository is cloned), a YouTube video as its captions |
 | `web_grep` | `url`, `pattern`, `ignore_case?`, `literal?`, `context?`, `limit?`, `format?` | Searches the page at a URL line by line and returns the matching lines with their numbers, from the same cache as `web_fetch` |
 | `http` | `url`, `method?`, `headers?`, `body?` or `json?`, `service?`, `limit?`, `timeout_secs?` | One request to a web API: status, response headers and body. The credential stored for the host with `azazel secrets add` is added to the request and taken out of the result; the agent never sees it |
 
@@ -525,7 +562,7 @@ The agent reads the rest with `read artifact://<call id>`. The same directory ho
 | `agent://<id>` | The latest report of an agent |
 | `agent://<id>/transcript` | What the agent did: one line per tool call and the full text of what it said |
 | `mcp://<server>/<resource uri>` | A resource of an MCP server |
-| `http://...`, `https://...` | The page as Markdown, through the `web_fetch` pipeline; `offset` and `limit` of `read` page it by line. Permission rules for `web_fetch` apply |
+| `http://...`, `https://...` | The page as Markdown, through the `web_fetch` pipeline, [GitHub and YouTube addresses](web-and-browser.md#github-addresses) included; `offset` and `limit` of `read` page it by line. Permission rules for `web_fetch` apply |
 | `session://` | The open session: id, file, name, when it was created, message counts, and up to 20 other sessions of the project |
 | `session://<id>` | Another session of the project (a unique start of its id is enough), in the same condensed form as `agent://<id>/transcript` |
 | `job://` | The background jobs, one per line |

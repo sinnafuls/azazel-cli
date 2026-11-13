@@ -9,6 +9,8 @@ pub mod guards;
 pub mod lsp;
 pub mod misc;
 pub mod notebook;
+#[cfg(feature = "office")]
+pub mod office;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod pty;
@@ -21,6 +23,7 @@ pub mod shell;
 pub mod util;
 pub mod web;
 pub mod write;
+mod xml;
 
 use std::path::PathBuf;
 use std::sync::Arc;

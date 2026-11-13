@@ -27,6 +27,7 @@ default = [
     "media",
     "lsp",
     "pdf",
+    "office",
     "bedrock",
     "vertex",
     "voice",
@@ -43,6 +44,7 @@ screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
 lsp = ["azazel-tools/lsp"]
 pdf = ["azazel-tools/pdf"]
+office = ["azazel-tools/office"]
 bedrock = ["azazel-ai/bedrock"]
 vertex = ["azazel-ai/vertex"]
 voice = ["dep:cpal", "reqwest/multipart"]

@@ -2,22 +2,26 @@
 //! the `http` tool for requests to web APIs.
 
 pub mod fetch;
+pub mod github;
 pub mod grep;
 pub mod http;
 pub mod search;
+pub mod youtube;
 
 use std::sync::Arc;
 use std::time::Duration;
 
 use azazel_core::{ExtError, Extension, Registrar};
 
-pub use fetch::{Fetcher, Format, MAX_BODY_BYTES, MAX_REDIRECTS, UrlScheme, WebFetchTool};
+pub use fetch::{Fetcher, Format, MAX_BODY_BYTES, MAX_REDIRECTS, Sites, UrlScheme, WebFetchTool};
+pub use github::GitHub;
 pub use grep::WebGrepTool;
 pub use http::{HttpExt, HttpTool, Redact};
 pub use search::{
     Brave, DuckDuckGo, Exa, PROVIDER, ProviderSearch, Recency, SearchBackend, SearchHit, SearchQuery,
     Searxng, Tavily, WebSearchTool, active_backend, backend_from_config,
 };
+pub use youtube::YouTube;
 
 const USER_AGENT: &str = concat!("azazel/", env!("CARGO_PKG_VERSION"));
 /// Covers one request from connecting to the last byte of the body.

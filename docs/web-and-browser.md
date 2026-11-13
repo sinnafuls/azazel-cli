@@ -92,6 +92,7 @@ Behaviour:
 - A PDF (by its content type, or by its first bytes when the server names no useful type) comes back as its text, every page under a `--- page N ---` line. The file is also saved under the project's artifacts directory, and the first line of the result names it: `<url> is a PDF (<n> bytes), saved to <path>`. A PDF without a text layer is saved and the result says why there is no text. A build without the `pdf` feature saves the file and says it cannot read it.
 - Anything else (images, archives) is saved under the project's artifacts directory and the path is returned.
 - Pages that build their content with scripts come back empty; use `browser` for those.
+- A [GitHub address](#github-addresses) is read for what it names, and a [YouTube video](#youtube-videos) comes back as its captions. `format: "raw"` turns both off and returns the page.
 
 Limits:
 
@@ -103,7 +104,7 @@ Limits:
 | Redirects | At most 5, each target checked like the first URL |
 | Timeout | 30 seconds per request |
 | Body size | 5 MB; larger responses are refused |
-| Cache | Results are kept in memory for 15 minutes per URL and format (the URL fragment is ignored) |
+| Cache | Results are kept in memory for 15 minutes per URL and format (the URL fragment is ignored, except the lines a GitHub file address names) |
 
 ### Long pages
 
@@ -115,9 +116,62 @@ A page that fits `limit` is returned whole. A longer one comes in parts that end
 
 Calling again with that `offset` returns the next part from the cache, without another request; the last part ends with `[lines 1650-1830 of 1830]`. A single line longer than `limit` (a minified file) is cut, and the trailer gives its full length. An `offset` past the last line is an error that names the line count.
 
+### GitHub addresses
+
+GitHub's pages are built by scripts, so a fetch of one returns little. `web_fetch` (and `read` of the URL, and `web_grep`) instead answers these addresses with what they name:
+
+| Address | Returns |
+|---|---|
+| `github.com/<owner>/<repo>` | The repository, cloned: its description, the path of the clone, its file tree and its README |
+| `.../tree/<ref>/<path>` | The directory at that branch, tag or commit: `name/` for directories, `name<tab>N bytes` for files |
+| `.../blob/<ref>/<path>` | The file. With `#L10-L20` at the end, those lines |
+| `.../raw/<ref>/<path>`, `raw.githubusercontent.com/...` | The file |
+| `.../pull/<n>` | The pull request: title, state, branches, size, description, changed files, reviews, comments on lines, comments |
+| `.../pull/<n>/files`, `.../pull/<n>.diff` | The pull request's diff |
+| `.../issues/<n>` | The issue with its comments (the first 100) |
+| `.../actions/runs/<id>` | The run: workflow, conclusion, branch, commit, its jobs, and for each failed job the log of its failed steps |
+| `.../actions/runs/<id>/job/<job id>` | The same for one job |
+
+Every other page of the site (releases, commits, search, profiles) is fetched as the page it is.
+
+How GitHub is reached:
+
+- With the [`gh`](https://cli.github.com) program on `PATH` and signed in (`gh auth login`), everything goes through it: `gh api` for files, directories, pull requests, issues and runs, and `gh repo clone` for a repository. Private repositories work, with the account `gh` is signed in to. Whether there is a login is asked once per session (`gh auth token`; the token itself is never read).
+- Otherwise GitHub is asked without a login: its REST API for directories, pull requests, issues and runs, `raw.githubusercontent.com` for files, and `git clone` for a repository. Only public repositories work, GitHub allows 60 API requests an hour (the error says so when they are used up), and it gives the logs of an Actions run only to a login.
+
+A repository address:
+
+- The repository is cloned one commit deep (`--depth=1 --single-branch --no-tags`, default branch) into `~/.azazel/projects/<slug>/artifacts/github/<owner>-<repo>`, and the result names that path: the files are then read and searched with `read`, `grep` and `glob`, with no further request. A clone that is already there is used as it is.
+- The tree shows as many levels as fit 250 lines; a directory that is not opened shows the number of files in it. The README is cut at 60000 characters.
+- A clone may take 3 minutes and never asks for a password. A repository GitHub reports as larger than 500 MB is not cloned, nor is any when `git` is not installed: the result says why and lists the tree and the README from the API instead.
+
+An Actions run:
+
+- Each job is one line with its conclusion and the step that failed. For up to 5 failed jobs, the lines each failed step logged follow, the last 150 of a longer step, and the whole log of the job is saved under the artifacts directory, where `grep` reaches it. A log is at most 32 MB. GitHub keeps logs for a limited time (90 days by default); for an older run the result says the log is gone.
+
+A branch name with slashes (`feature/login`) cannot be told from a path in a `tree` or `blob` address. For a directory, and for a file read through `gh`, the shortest branch name is tried first, then longer ones, up to four parts; without a login GitHub's file server takes the address as it is.
+
+These addresses are fetches of `github.com`: the same permission rule, `web_fetch(domain:github.com)`, covers them, including the clone.
+
+### YouTube videos
+
+The address of a video (`youtube.com/watch?v=...`, `youtu.be/...`, `/shorts/`, `/live/`, `/embed/`) returns its captions as a transcript:
+
+```text
+# Me at the zoo
+jawed · 0:19 · https://www.youtube.com/watch?v=jNQXAC9IVRw
+Captions: English (not shown: German)
+
+[0:01] All right, so here we are, in front of the elephants the cool thing about these guys is that they have really... really really long trunks and that's cool (baaaaaaaaaaahhh!!) and that's pretty much all there is to say
+```
+
+- Each line starts with the time it is said at (`m:ss`, or `h:mm:ss` from an hour on) and gathers captions until it holds 200 characters or covers 30 seconds.
+- Captions a person wrote are taken before the ones YouTube generates from the sound, and English before other languages; the other tracks are named.
+- A video without captions, and one that cannot be played without signing in, is an error that says so. Channels, playlists and search pages are fetched as pages.
+
 ### URLs in `read`
 
-The `read` tool accepts `http://` and `https://` paths and returns the page as Markdown through the same fetcher, with the same limits and cache. Its `offset` (first line) and `limit` (most lines) page a long page the same way, 30000 characters at a time, with the same trailer.
+The `read` tool accepts `http://` and `https://` paths and returns the page as Markdown through the same fetcher, with the same limits and cache, GitHub addresses and YouTube videos included. Its `offset` (first line) and `limit` (most lines) page a long page the same way, 30000 characters at a time, with the same trailer.
 
 ### Permissions
 
