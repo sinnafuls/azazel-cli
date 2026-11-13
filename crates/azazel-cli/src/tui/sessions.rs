@@ -874,18 +874,20 @@ impl Tui {
                             .iter()
                             .map(|label| SelectItem::new(*label, ""))
                             .collect();
-                        let width = self.width();
-                        self.overlay = Some(Overlay::select(
-                            format!("Answer from {session}"),
-                            wrapped(answer.text.trim(), width),
-                            items,
-                            false,
-                            Action::SideAnswer {
-                                title: format!("Answer from {session}"),
-                                question,
-                                answer: answer.text.trim().to_string(),
-                            },
-                        ));
+                        self.overlay = Some(
+                            Overlay::select(
+                                format!("Answer from {session}"),
+                                vec![answer.text.trim().to_string()],
+                                items,
+                                false,
+                                Action::SideAnswer {
+                                    title: format!("Answer from {session}"),
+                                    question,
+                                    answer: answer.text.trim().to_string(),
+                                },
+                            )
+                            .markdown(),
+                        );
                     }
                 }
             }
@@ -1172,10 +1174,13 @@ mod tests {
         .with_keys(session_keys());
         let (lines, _) = overlay.render(100, 20, &azazel_tui::Theme::dark());
         let shown: Vec<String> = lines.iter().map(|line| text::strip_ansi(line)).collect();
-        assert!(shown[1].starts_with("ctrl+r rename · ctrl+d delete"), "{shown:?}");
+        assert!(
+            shown[1].starts_with("│ ctrl+r rename · ctrl+d delete"),
+            "{shown:?}"
+        );
         let hint = shown.last().unwrap();
         assert!(
-            hint.starts_with("── type to filter · ↑↓ move · enter choose · esc cancel ─"),
+            hint.starts_with("╰─ type to filter · ↑↓ move · enter pick · esc cancel ─"),
             "{hint}"
         );
         // Both lists filter as you type: none of their keys may be a plain letter.

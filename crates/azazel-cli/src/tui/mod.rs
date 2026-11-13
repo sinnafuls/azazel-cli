@@ -11,6 +11,7 @@ mod input;
 mod overlay;
 mod pager;
 mod panels;
+mod popup;
 mod probe;
 mod quick;
 mod remote;
@@ -40,6 +41,7 @@ use azazel_tools::TodoStatus;
 use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
 };
+use azazel_tui::modal;
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
     ColorDepth, Composer, Draft, Editor, Floor, Frame, GlyphLevel, HistoryItem, Keymap, Line, Renderer, Role,
@@ -47,9 +49,10 @@ use azazel_tui::{
     enable_enhanced_keys, text,
 };
 use crossterm::event::{
-    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream,
+    KeyCode, KeyEvent, KeyEventKind,
 };
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
 use serde_json::Value;
 use tokio::sync::mpsc;
@@ -74,11 +77,17 @@ const COMPLETION_ROWS: usize = 8;
 /// How the note about a `!command` the user ran starts in the agent's context.
 pub(crate) const SHELL_NOTE: &str = "I ran `";
 
-/// Puts the terminal into raw mode and restores it when dropped, however the UI ends.
+/// Puts the terminal into raw mode and restores it when dropped, however the UI ends. It is
+/// also the one owner of the alternate screen, which popups and the full-screen viewer share:
+/// whoever ends the UI, or hands the terminal to another program, leaves it through here.
 struct TerminalGuard {
     enhanced_keys: bool,
     /// The terminal is ours: raw mode, bracketed paste and enhanced keys are on.
     active: bool,
+    /// The alternate screen is showing.
+    alt: bool,
+    /// The mouse is reported to azazel (the wheel, in the full-screen viewer).
+    mouse: bool,
 }
 
 impl TerminalGuard {
@@ -86,9 +95,50 @@ impl TerminalGuard {
         let mut guard = TerminalGuard {
             enhanced_keys: false,
             active: false,
+            alt: false,
+            mouse: false,
         };
         guard.take()?;
         Ok(guard)
+    }
+
+    /// Switches to the alternate screen. False when it was showing already, in which case
+    /// whoever entered it leaves it.
+    fn enter_alt(&mut self) -> bool {
+        if self.alt {
+            return false;
+        }
+        let _ = crossterm::execute!(io::stdout(), EnterAlternateScreen);
+        self.alt = true;
+        true
+    }
+
+    /// Goes back to the screen with the transcript, which is as it was left.
+    fn leave_alt(&mut self) {
+        self.capture_mouse(false);
+        if std::mem::take(&mut self.alt) {
+            let mut out = io::stdout();
+            // Whatever painted there may have hidden the cursor; the inline renderer believes
+            // it is showing.
+            let _ = out.write_all(b"\x1b[?25h");
+            let _ = crossterm::execute!(out, LeaveAlternateScreen);
+        }
+    }
+
+    fn in_alt(&self) -> bool {
+        self.alt
+    }
+
+    /// Has the terminal report the mouse to azazel, or stops that.
+    fn capture_mouse(&mut self, on: bool) {
+        if self.mouse == on {
+            return;
+        }
+        self.mouse = on;
+        let _ = match on {
+            true => crossterm::execute!(io::stdout(), EnableMouseCapture),
+            false => crossterm::execute!(io::stdout(), DisableMouseCapture),
+        };
     }
 
     fn take(&mut self) -> io::Result<()> {
@@ -105,6 +155,8 @@ impl TerminalGuard {
     /// Hands the terminal back as a shell would have it (cooked mode, no bracketed paste, no
     /// enhanced keys), for a program that takes it over for a while or for exit.
     fn suspend(&mut self) {
+        // Another program, or the shell after a crash, must never find the alternate screen.
+        self.leave_alt();
         if !std::mem::take(&mut self.active) {
             return;
         }
@@ -247,6 +299,16 @@ pub struct Tui {
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
+    /// `tui.popups`: an open overlay is a box over the whole window instead of standing in
+    /// for the input.
+    popups: bool,
+    /// The popup screen, while it is up.
+    popup: Option<popup::Popup>,
+    /// What was written to the transcript lately, to paint behind a popup.
+    backdrop: popup::Backdrop,
+    /// Rows the input and what is pinned around it took in the last inline frame: where the
+    /// transcript ended on the screen.
+    pinned_rows: usize,
     /// The side question (`/btw`) being answered; it stands in for the input.
     btw: Option<btw::Panel>,
     waiting: VecDeque<UiRequest>,
@@ -417,6 +479,10 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         tools: Vec::new(),
         overlay: None,
         deferred: VecDeque::new(),
+        popups: tui_config.popups,
+        popup: None,
+        backdrop: popup::Backdrop::default(),
+        pinned_rows: popup::PLAIN_PINNED_ROWS,
         btw: None,
         waiting: VecDeque::new(),
         held: VecDeque::new(),
@@ -614,6 +680,7 @@ impl Tui {
                 tracing::error!("terminal write failed: {e}");
                 break;
             }
+            let popup_deadline = self.popup_deadline();
             tokio::select! {
                 event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
@@ -647,7 +714,15 @@ impl Tui {
                         || self.voice_animates() => {}
                 // Something to tell the terminal although nothing happens: see `tell_terminal`.
                 _ = wake_at(self.attention.next_wake()) => {}
+                // The popup screen is left a moment after its box closed.
+                _ = wake_at(popup_deadline) => {}
             }
+        }
+        // A popup that is still up gives the screen back, and what was said behind it reaches
+        // the transcript.
+        if self.popup.is_some() {
+            self.quit = true;
+            let _ = self.draw();
         }
     }
 
@@ -678,9 +753,17 @@ impl Tui {
     /// into them.
     fn draw(&mut self) -> io::Result<()> {
         self.tell_terminal();
+        // An overlay shown as a popup has the whole window; the transcript waits.
+        if self.draw_popup()? {
+            return Ok(());
+        }
         let history = std::mem::take(&mut self.transcript);
+        self.backdrop.record(&history);
         let (_, rows) = self.renderer.size();
         let (mut viewport, pinned, cursor) = self.viewport();
+        if self.overlay.is_none() && self.btw.is_none() {
+            self.pinned_rows = pinned.len();
+        }
         let written = history.iter().map(HistoryItem::rows).sum();
         let filler = self.floor.pad(written, viewport.len() + pinned.len(), rows);
         viewport.resize(viewport.len() + filler, String::new());
@@ -820,7 +903,10 @@ impl Tui {
         let mut bottom: Vec<Line> = Vec::new();
         let mut cursor;
         if let Some(overlay) = &self.overlay {
-            let (lines, at) = overlay.render(width, height.saturating_sub(2).max(4), &self.theme);
+            // No popup (the window is too small, or they are off): the box stands in for the
+            // input.
+            let room = height.saturating_sub(2).clamp(4, overlay::INLINE_ROWS);
+            let (lines, at) = overlay.render(modal::box_width(width), room, &self.theme);
             cursor = at;
             bottom.extend(lines);
         } else if let Some(panel) = &mut self.btw {
@@ -875,6 +961,17 @@ impl Tui {
         cursor = cursor.map(|(row, column)| (row + pinned.len() as u16, column));
         pinned.extend(bottom);
 
+        let mut top = self.in_flight(width);
+        // The live region never outgrows the screen: what is in flight gives way first.
+        if top.len() > room {
+            top.drain(..top.len() - room);
+        }
+        (top, pinned, cursor)
+    }
+
+    /// What the lead is saying and doing right now: the unfinished end of its reply, its
+    /// thinking and the tool calls that are running. It follows the transcript.
+    fn in_flight(&self, width: usize) -> Vec<Line> {
         let mut top: Vec<Line> = Vec::new();
         if self.busy {
             top.extend(self.stream.markdown.tail(width, &self.theme));
@@ -898,11 +995,7 @@ impl Tui {
                 ));
             }
         }
-        // The live region never outgrows the screen: what is in flight gives way first.
-        if top.len() > room {
-            top.drain(..top.len() - room);
-        }
-        (top, pinned, cursor)
+        top
     }
 
     // ------------------------------------------------------------ agent events
@@ -1243,10 +1336,14 @@ impl Tui {
             } => {
                 // A long list (every model of a provider) is easier to search than to scroll.
                 let filterable = options.len() > 12;
-                let items = options.iter().map(|o| SelectItem::new(o.as_str(), "")).collect();
+                let items = options
+                    .iter()
+                    .map(|option| overlay::option_item(option))
+                    .collect();
+                let (title, body) = overlay::heading(&prompt, "Choose");
                 self.overlay = Some(Overlay::select(
-                    "Choose",
-                    vec![prompt],
+                    title,
+                    body,
                     items,
                     filterable,
                     Action::UiSelect { reply },
@@ -1258,25 +1355,14 @@ impl Tui {
                 reply,
             } => {
                 let action = Action::UiInput { reply };
+                let (title, body) = overlay::heading(&prompt, "Input");
                 self.overlay = Some(match secret {
-                    true => Overlay::secret("Input", vec![prompt], action),
-                    false => Overlay::input("Input", vec![prompt], action),
+                    true => Overlay::secret(title, body, action),
+                    false => Overlay::input(title, body, action),
                 });
             }
             UiRequest::Approval { request, reply } => {
-                let mut body: Vec<String> = if request.subjects.is_empty() {
-                    serde_json::to_string_pretty(&request.input)
-                        .unwrap_or_default()
-                        .lines()
-                        .map(str::to_string)
-                        .collect()
-                } else {
-                    request.subjects.clone()
-                };
-                if let Some(note) = &request.note {
-                    body.push(String::new());
-                    body.push(note.clone());
-                }
+                let body = overlay::approval_body(&request.subjects, &request.input);
                 let mut items = vec![SelectItem::new("Allow once", "")];
                 if let Some(rule) = &request.rule {
                     items.push(SelectItem::new(
@@ -1294,10 +1380,18 @@ impl Tui {
                     reply,
                     has_rule: request.rule.is_some(),
                 };
-                self.overlay = Some(Overlay::select(title, body, items, false, action).starting_at(start));
+                // The note stands out under the subjects; a call that destroys work has the
+                // whole box in the warning colour.
+                self.overlay = Some(
+                    Overlay::select(title, body, items, false, action)
+                        .starting_at(start)
+                        .with_warning(request.note.clone())
+                        .destructive(request.destructive),
+                );
             }
             UiRequest::Plan { path, plan, reply } => {
-                // The plan itself goes into the transcript, where it can be scrolled and re-read.
+                // The plan goes into the transcript, where it stays to be scrolled and re-read,
+                // and into the box, where it is read now: ctrl+o shows all of a long one.
                 let width = self.width();
                 let mut lines = view::styled(
                     &format!("Plan: {}", path.display()),
@@ -1308,14 +1402,10 @@ impl Tui {
                 lines.extend(markdown::render(&plan, width, &self.theme));
                 self.say(lines);
                 let items = pick(&["Approve and run", "Revise"]);
-                let body = vec!["The plan is shown above.".to_string()];
-                self.overlay = Some(Overlay::select(
-                    "Plan review",
-                    body,
-                    items,
-                    false,
-                    Action::Plan { reply },
-                ));
+                self.overlay = Some(
+                    Overlay::select("Plan review", vec![plan], items, false, Action::Plan { reply })
+                        .markdown(),
+                );
             }
         }
     }
@@ -1378,6 +1468,9 @@ impl Tui {
             }
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
+            }
+            if matches!(outcome, Outcome::ReadBody) {
+                return self.read_overlay_body().await;
             }
             if !matches!(outcome, Outcome::Pending)
                 && let Some(overlay) = self.overlay.take()
@@ -1700,7 +1793,7 @@ impl Tui {
             Outcome::Chosen(index) => (index, String::new()),
             Outcome::Text(typed) => (0, typed),
             // Handled where the key was pressed; the overlay stays open.
-            Outcome::Hotkey { .. } => return,
+            Outcome::Hotkey { .. } | Outcome::ReadBody => return,
         };
         match action {
             Action::AskFree { reply } => drop(reply.send(Ok(vec![typed]))),
@@ -1778,6 +1871,11 @@ impl Tui {
             Action::Theme(names) => {
                 if let Some(name) = names.get(choice) {
                     self.set_theme(name);
+                }
+            }
+            Action::Glyphs(levels) => {
+                if let Some(level) = levels.get(choice) {
+                    self.choose_glyphs(*level);
                 }
             }
             Action::Resume(paths) => {

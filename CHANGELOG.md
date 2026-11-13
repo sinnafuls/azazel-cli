@@ -16,8 +16,21 @@ GitHub are its section here.
   `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
+- Menus, pickers, questions, approvals, plan reviews and every step of `/settings` open as a box in the middle
+  of the window over the dimmed transcript, which is back exactly as it was when the box closes
+  (`tui.popups = false`, or a window under 44x12, keeps them in place of the input).
+- `/glyphs` picks the symbol set from a list in which every row is drawn in its own symbols, and saves it.
+- `Ctrl+O` in a box whose text does not fit (a long plan, a long command) opens all of it full screen.
 
 ### Changed
+
+- Every list has a bar beside the selected row, details in a column of their own, a scrollbar when it is longer
+  than its box and, where it filters as you type, a count of the rows that match.
+- A plan under review is shown in the review box, and a note on an approval stands out in the warning colour;
+  an approval for a call that would destroy work has a warning-coloured frame.
+- The model pickers show each model's context window and price (`ctx 200k · $3/$15`), or `subscription` for a
+  provider used through a login; the theme picker shows each theme's colours; `/settings` rows show their
+  current value in a column of its own.
 
 ### Fixed
 

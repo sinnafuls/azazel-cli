@@ -4,7 +4,7 @@ use std::io::Write;
 
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::{EntryKind, PermissionMode, SessionStore};
-use azazel_tui::{SelectItem, Theme};
+use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, SelectItem, Theme};
 
 use super::backend::Go;
 use super::overlay::{Action, Overlay, RewindPoint};
@@ -67,6 +67,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "Write the conversation to a file: /export [path.md|.html|.jsonl]",
     ),
     ("theme", "Pick the colour theme, or set it: /theme light"),
+    (
+        "glyphs",
+        "Pick the symbols the UI draws with, or set them: /glyphs nerd|unicode|ascii|auto",
+    ),
     ("keys", "List key bindings"),
     (
         "rewind",
@@ -245,6 +249,13 @@ impl Tui {
             },
             "theme" if args.is_empty() => self.open_theme_picker(),
             "theme" => self.set_theme(args),
+            "glyphs" if args.is_empty() => self.open_glyph_picker(),
+            "glyphs" => match glyph_choice(args) {
+                Some(level) => self.choose_glyphs(level),
+                None => self.fail(&format!(
+                    "unknown glyph set `{args}`: nerd, unicode, ascii or auto"
+                )),
+            },
             "keys" => self.show_keys(),
             "rewind" => self.open_rewind().await,
             "permissions" => match args.strip_prefix("add") {
@@ -336,9 +347,13 @@ impl Tui {
             .map(|(spec, detail)| (spec.clone(), SelectItem::new(spec, detail)))
             .unzip();
         // Favourites are marked; ctrl+f on a row adds it to them or takes it out.
+        let star = match self.theme.glyphs().level() {
+            GlyphLevel::Ascii => "*",
+            _ => "★",
+        };
         for (item, spec) in items.iter_mut().zip(&specs) {
             if self.favourites.contains(spec) {
-                item.detail = format!("★ {}", item.detail);
+                item.detail = format!("{star} {}", item.detail);
             }
         }
         let body = vec![format!("current: {}", self.model_label()), self.favourites_line()];
@@ -403,17 +418,87 @@ impl Tui {
             .collect();
         custom.sort();
         names.extend(custom);
+        // Each row shows the colours it would bring: accent, success, warning, error.
+        let dot = self.theme.glyph(Glyph::Bullet);
         let items = names
             .iter()
-            .map(|name| SelectItem::new(name.as_str(), ""))
+            .map(|name| {
+                let (theme, problem) = super::named_theme(&self.env.paths, name);
+                match problem {
+                    Some(_) => SelectItem::new(name.as_str(), "cannot be read"),
+                    None => SelectItem::with_preview(
+                        name.as_str(),
+                        swatches(&theme.with_depth(self.theme.depth()), dot),
+                    ),
+                }
+            })
             .collect();
-        self.overlay = Some(Overlay::select(
-            "Theme",
-            Vec::new(),
-            items,
-            false,
-            Action::Theme(names),
-        ));
+        let current = names.iter().position(|name| *name == self.theme_name);
+        let body = vec![format!("current: {}", self.theme_name)];
+        self.overlay = Some(
+            Overlay::select("Theme", body, items, false, Action::Theme(names))
+                .starting_at(current.unwrap_or(0)),
+        );
+    }
+
+    /// `/glyphs`: the symbol sets, each row drawn in its own symbols so the right one can be
+    /// told by eye. A font without the symbols of a row shows boxes there.
+    fn open_glyph_picker(&mut self) {
+        let mut levels: Vec<Option<GlyphLevel>> = GlyphLevel::ALL.into_iter().map(Some).collect();
+        levels.push(None);
+        let items = levels
+            .iter()
+            .map(|level| match level {
+                Some(level) => SelectItem::new(level.name(), glyph_preview(*level)),
+                None => SelectItem::new("auto", "unicode, or ascii when the locale is not UTF-8"),
+            })
+            .collect();
+        let setting = self.env.config.tui.glyphs.as_str();
+        let mut body = vec![format!(
+            "now: {} · a row that shows boxes needs a font this terminal does not have",
+            self.theme.glyphs().level()
+        )];
+        if std::env::var("AZAZEL_GLYPHS").is_ok_and(|value| value.parse::<GlyphLevel>().is_ok()) {
+            body.push("AZAZEL_GLYPHS is set and wins over the choice made here.".to_string());
+        }
+        let current = levels
+            .iter()
+            .position(|level| level.map_or("auto", GlyphLevel::name) == setting)
+            .or_else(|| {
+                let shown = self.theme.glyphs().level();
+                levels.iter().position(|level| *level == Some(shown))
+            });
+        self.overlay = Some(
+            Overlay::select("Glyphs", body, items, false, Action::Glyphs(levels))
+                .starting_at(current.unwrap_or(0)),
+        );
+    }
+
+    /// Draws with another symbol set from now on and keeps the choice as `tui.glyphs`. `None`
+    /// is `auto`.
+    pub(super) fn choose_glyphs(&mut self, level: Option<GlyphLevel>) {
+        let name = level.map_or("auto", GlyphLevel::name);
+        self.apply_glyphs(name);
+        let saved = crate::init::set_config_value(
+            &self.env.paths.home_config(),
+            &["tui", "glyphs"],
+            Some(toml_edit::value(name)),
+        );
+        let shown = self.theme.glyphs().level();
+        match saved {
+            Ok(()) if level.is_some_and(|level| level != shown) => self.warn(&format!(
+                "glyphs: {name} is saved, but AZAZEL_GLYPHS keeps this terminal on {shown}"
+            )),
+            Ok(()) if level.is_none() => self.info(&format!("glyphs: auto ({shown})")),
+            Ok(()) => self.info(&format!("glyphs: {name}")),
+            Err(e) => self.warn(&format!("glyphs: {name}, for this session only: {e:#}")),
+        }
+    }
+
+    /// Applies a `tui.glyphs` value to the running UI.
+    pub(super) fn apply_glyphs(&mut self, setting: &str) {
+        let level = GlyphLevel::detect(setting, |name| std::env::var(name).ok());
+        self.theme = std::mem::take(&mut self.theme).with_glyphs(level);
     }
 
     /// Moves the session to an entry chosen in the tree and restarts the lead from there. One
@@ -492,6 +577,7 @@ impl Tui {
 
     fn clear_screen(&mut self) {
         self.transcript.clear();
+        self.backdrop.clear();
         self.after_card = false;
         let _ = self.renderer.suspend();
         let out = self.renderer.get_mut();
@@ -525,6 +611,44 @@ impl Tui {
         ));
         self.info(&out);
     }
+}
+
+/// What `/glyphs <name>` names: a level, or `None` for `auto`. `None` when it names neither.
+fn glyph_choice(name: &str) -> Option<Option<GlyphLevel>> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "auto" => Some(None),
+        other => other.parse().ok().map(Some),
+    }
+}
+
+/// A handful of the symbols of `level`, as its row of the glyph picker shows them.
+fn glyph_preview(level: GlyphLevel) -> String {
+    let glyphs = Glyphs::new(level);
+    [
+        Glyph::Success,
+        Glyph::Warning,
+        Glyph::Fail,
+        Glyph::Branch,
+        Glyph::Context,
+        Glyph::Rate,
+        Glyph::Model,
+        Glyph::Prompt,
+    ]
+    .into_iter()
+    .map(|glyph| glyphs.get(glyph))
+    .filter(|symbol| !symbol.is_empty())
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// The accent, success, warning and error colours of `theme` as four dots, for its row of the
+/// theme picker. Nothing in it resets styles, so the band of a selected row holds.
+fn swatches(theme: &Theme, dot: &str) -> String {
+    [Role::Accent, Role::Success, Role::Warning, Role::Error]
+        .into_iter()
+        .map(|role| format!("{}{dot}", theme.fg(role)))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// The checkpoints on the current branch, newest first, each with the prompt it preceded.
@@ -562,4 +686,48 @@ pub(super) fn rewind_points(session: &SessionStore) -> Vec<RewindPoint> {
 /// Whether a user message in the transcript was written by the UI rather than typed as a prompt.
 pub(crate) fn is_note(message: &str) -> bool {
     message.starts_with(SHELL_NOTE) || message.starts_with(REWIND_NOTE)
+}
+
+#[cfg(test)]
+mod tests {
+    use azazel_tui::{RESET, SelectList, text};
+
+    use super::*;
+
+    #[test]
+    fn a_glyph_set_is_named_as_in_the_configuration() {
+        assert_eq!(glyph_choice("nerd"), Some(Some(GlyphLevel::Nerd)));
+        assert_eq!(glyph_choice(" ASCII "), Some(Some(GlyphLevel::Ascii)));
+        assert_eq!(glyph_choice("auto"), Some(None));
+        assert_eq!(glyph_choice("fancy"), None);
+    }
+
+    #[test]
+    fn each_glyph_set_previews_its_own_symbols() {
+        assert_eq!(glyph_preview(GlyphLevel::Unicode), "✔ ⚠ ✘ ⑂ ◫ ↯ ⬢ ❯");
+        // Symbols that are words or nothing at this level are shown as they are, or left out.
+        assert_eq!(glyph_preview(GlyphLevel::Ascii), "[+] [!] [-] git: ctx >");
+        assert!(glyph_preview(GlyphLevel::Ascii).is_ascii());
+        let nerd = glyph_preview(GlyphLevel::Nerd);
+        assert_eq!(nerd.split(' ').count(), 8);
+        assert!(nerd.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)));
+    }
+
+    #[test]
+    fn theme_swatches_carry_the_colours_of_their_theme_through_a_selected_row() {
+        let theme = Theme::builtin("gruvbox-dark").unwrap();
+        let preview = swatches(&theme, "●");
+        assert_eq!(text::strip_ansi(&preview), "● ● ● ●");
+        for role in [Role::Accent, Role::Success, Role::Warning, Role::Error] {
+            assert!(preview.contains(&theme.fg(role)), "{role:?}");
+        }
+        // Nothing in it ends the band of a selected row.
+        assert!(!preview.contains(RESET));
+        let shown = Theme::dark();
+        let list = SelectList::new(vec![SelectItem::with_preview("gruvbox-dark", preview.clone())]);
+        let row = &list.view(40, 5, &shown).lines[0];
+        assert!(row.contains(&preview));
+        assert_eq!(row.matches(RESET).count(), 1);
+        assert_eq!(text::width(row), 40);
+    }
 }

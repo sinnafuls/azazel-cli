@@ -2,7 +2,9 @@
 //! search and copy (a diff, a changelog).
 //!
 //! It takes the alternate screen, so the transcript in the terminal's scrollback is untouched,
-//! and it is the only place where the mouse is reported to azazel (for the wheel).
+//! and it is the only place where the mouse is reported to azazel (for the wheel). Opened from
+//! a popup, which has the alternate screen already, it paints over the popup and hands the
+//! screen back to it.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -13,8 +15,7 @@ use azazel_core::EntryKind;
 use azazel_tui::components::diff;
 use azazel_tui::components::pager::{self, Item, Outcome, Pager, WHEEL_ROWS};
 use azazel_tui::{Role, Theme};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind, MouseEventKind};
-use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen};
+use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use serde_json::Value;
 
 use super::backend::Incoming;
@@ -38,6 +39,8 @@ pub enum Source {
     Diff { file: String, text: String },
     /// A line of muted text: something the UI says, not the conversation.
     Note(String),
+    /// Plain text, as it is: the body of a box that was too long for it.
+    Text(String),
 }
 
 impl Source {
@@ -95,6 +98,17 @@ impl Source {
                 source: text.clone(),
                 ..Item::default()
             },
+            Source::Text(text) => Item {
+                lines: text
+                    .lines()
+                    .flat_map(|line| match line.is_empty() {
+                        true => vec![String::new()],
+                        false => azazel_tui::text::wrap(&azazel_tui::text::sanitize(line), width.max(1)),
+                    })
+                    .collect(),
+                source: text.clone(),
+                ..Item::default()
+            },
         }
     }
 }
@@ -123,7 +137,9 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
         view.to_top();
     }
     let _ = tui.renderer.suspend();
-    let _ = crossterm::execute!(tui.renderer.get_mut(), EnterAlternateScreen, EnableMouseCapture);
+    // A popup may have the alternate screen already; then it stays when the viewer closes.
+    let entered = tui.guard.enter_alt();
+    tui.guard.capture_mouse(true);
     loop {
         if draw(tui, &mut view, width, height).is_err() {
             break;
@@ -169,9 +185,12 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
             },
         }
     }
-    // The viewer hid the cursor; the inline renderer believes it is showing.
-    let _ = tui.renderer.get_mut().write_all(b"\x1b[?25h");
-    let _ = crossterm::execute!(tui.renderer.get_mut(), DisableMouseCapture, LeaveAlternateScreen);
+    tui.guard.capture_mouse(false);
+    if entered {
+        tui.guard.leave_alt();
+    } else {
+        tui.popup_painted_over();
+    }
 }
 
 /// Paints one screen of the viewer.

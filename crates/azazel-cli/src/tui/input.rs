@@ -671,6 +671,8 @@ impl Tui {
     pub(super) fn apply_setting(&mut self, path: &str, value: &toml::Value) {
         match (path, value) {
             ("tui.theme", toml::Value::String(name)) => self.set_theme(name),
+            ("tui.glyphs", toml::Value::String(name)) => self.apply_glyphs(name),
+            ("tui.popups", toml::Value::Boolean(on)) => self.popups = *on,
             ("tui.show_thinking", toml::Value::Boolean(on)) => self.show_thinking = *on,
             ("tui.expand_tools", toml::Value::Boolean(on)) => self.expand_tools = *on,
             ("editor.mode", toml::Value::String(mode)) => self.set_vim(mode == "vim"),

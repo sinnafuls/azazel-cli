@@ -43,7 +43,7 @@ slow    = ["anthropic/claude-opus-4-5:high", "@default"]
 | `verifier` | `@verify` | The `verifier` agent |
 | `playtester` | `@vision` | The `playtester` agent |
 
-The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: `/settings` → "Models for the lead and each agent" writes `[roles] <name> = ["provider/model"]`, and you can write the same by hand.
+The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: `/settings` → "Models for each role" writes `[roles] <name> = ["provider/model"]`, and you can write the same by hand.
 
 You may define further roles and use them anywhere a spec is accepted. When a chain is resolved, roles are expanded in order, a model that already appeared is dropped, and an unknown role or a role that refers back to itself is skipped.
 

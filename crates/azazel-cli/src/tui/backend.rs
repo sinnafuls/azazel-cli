@@ -23,7 +23,6 @@ use azazel_core::skills::invocation_text;
 use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
 use azazel_team::{Goals, MemberInfo, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
-use azazel_tui::components::format_tokens;
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
@@ -477,8 +476,14 @@ impl Backend for Local {
             if !usable {
                 continue;
             }
+            // A provider used through a subscription login is not paid for by the token.
+            let login = configured
+                .iter()
+                .find(|p| p.id == provider)
+                .and_then(|config| self.app.credentials.source(config))
+                .is_some_and(|source| source.starts_with("auth.json (login"));
             for model in router.catalog().for_provider(provider) {
-                let detail = format!("{} context", format_tokens(model.context_window));
+                let detail = crate::settings::model_detail(model.context_window, model.cost.as_ref(), login);
                 rows.push((model.key(), detail));
             }
         }

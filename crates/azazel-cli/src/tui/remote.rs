@@ -26,7 +26,6 @@ use azazel_protocol::{
 };
 use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
-use azazel_tui::components::format_tokens;
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
@@ -800,7 +799,8 @@ impl Backend for Remote {
             .collect();
         let models: Vec<ModelRow> = ask(&self.client, Command::ListModels).await.unwrap_or_default();
         rows.extend(models.into_iter().map(|model| {
-            let detail = format!("{} context", format_tokens(model.context_window));
+            // What the models cost is known where the session runs, not here.
+            let detail = crate::settings::model_detail(model.context_window, None, false);
             (model.model, detail)
         }));
         rows

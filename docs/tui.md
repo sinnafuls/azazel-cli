@@ -69,14 +69,53 @@ The colour of the rules tells you what `Enter` will do:
 | `mode_auto` colour | Permission mode `auto` |
 | `bash` colour (pink) | The input starts with `!`: it runs as a shell command |
 
-Questions from agents, approval prompts, plan reviews and pickers replace the input until answered, framed the
-same way: the title in the rule above, the keys in the rule below. In a picker: `Up`/`Down` move, `Enter` chooses
-and `Esc` cancels; the selected row is marked `→` and highlighted, and a list too long to show ends with its
-position (`(7/20)`). Searchable pickers (models, sessions, prompt history) filter as you type; in the others,
-digits `1`-`9` choose a row directly. Some pickers have keys of their own that act on the selected row (`m` in
-the agent hub, `Ctrl+F` in the model picker, `d` in `/permissions`, `Ctrl+R` `Ctrl+D` `Ctrl+P` `Tab` in the
-session picker, `Alt+L` in `/tree`); the rule below names them, or a line above the list where they are many. Where an overlay
-asks for text (feedback on a denied call, changes to a plan), `Ctrl+G` opens your editor for it.
+### Popups
+
+Questions from agents, approval prompts, plan reviews, pickers and every step of `/settings` open as a box in
+the middle of the window, over the transcript, which is dimmed behind it:
+
+```
+  azazel 0.4.0 · anthropic/claude-opus-5-5 · ~/src/app
+  ╭─ Model ──────────────────────────────────────────────────────────╮
+  │ current: anthropic/claude-opus-5-5                               │
+  │                                                                  │
+  │ ⌕ opus                                                     3/41  │
+  │ ▌ anthropic/claude-opus-5-5   ctx 200k · subscription            │
+  │   anthropic/claude-opus-5     ctx 200k · subscription            │
+  │   openrouter/anthropic/opus   ctx 200k · $15/$75                 │
+  ╰─ type to filter · ↑↓ move · enter pick · ctrl+f favourite ───────╯
+──────────────────────────────────────────────────────────────────────
+ask · ⑂ main · ~/src/app                           ⬢ claude-opus-5-5
+```
+
+- The title is in the top edge and the keys are in the bottom edge. The box is nine tenths of the window wide
+  (at least 44 and at most 100 columns) and as tall as its content, up to four rows less than the window.
+- The selected row has a bar at its left, a background across the row and its label in bold. Details stand in a
+  column of their own and are cut, never wrapped. A list longer than the box scrolls, with a scrollbar inside
+  the right edge.
+- `Up`/`Down` (or `Tab`) move, `PgUp`/`PgDn` move a page, `Enter` picks and `Esc` cancels. Searchable lists
+  (models, sessions, the session tree, prompt history, any list of more than twelve options) have a filter row
+  that shows what you typed and how many rows match (`3/41`); in the others, digits `1`-`9` pick a row directly.
+- Some pickers have keys of their own that act on the selected row (`m` in the agent hub, `Ctrl+F` in the model
+  picker, `d` in `/permissions`, `Ctrl+R` `Ctrl+D` `Ctrl+P` `Tab` in the session picker, `Alt+L` in `/tree`);
+  the bottom edge names them, or a line above the list where they are many.
+- An approval lists what the call touches above the choices. A note about the call (it may cost money, it
+  deletes files) is in the warning colour, and a call that would destroy work has the whole box in that colour
+  and starts on `Deny`.
+- A plan review shows the plan in the box. Text that does not fit (a long plan, a long command) ends with
+  `… N more lines`; `Ctrl+O` opens all of it in the [full-screen viewer](#transcript-viewer) and `q` returns to
+  the box.
+- Where a box asks for text (feedback on a denied call, changes to a plan), `Shift+Enter` adds a line and
+  `Ctrl+G` opens your editor for it. A secret (an API key) shows as dots.
+
+The agent keeps working behind a popup: its reply and its running tools show in the dimmed transcript, and the
+last two rows of the window stay what they are, the working row and the [status line](#status-line). Nothing is
+written to the real transcript while a popup is open. When it closes, the transcript is exactly as it was, and
+what was said meanwhile is added below it.
+
+A window smaller than 44 columns by 12 rows has no room for a popup: there the same box takes the place of the
+input until it is answered. `popups = false` under `[tui]` in [configuration](configuration.md) makes that the
+rule in every window.
 
 ### Tool cards
 
@@ -285,7 +324,8 @@ Session and display:
 | `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
 | `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
 | `/context` | How full the context window is, message count, tools offered |
-| `/theme [name]` | Pick or set the colour theme |
+| `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
+| `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
 | `/keys` | List key bindings |
 | `/quit`, `/exit` | Exit |
 
@@ -416,7 +456,8 @@ git repository and include what shell commands changed. Plain `/diff` needs a gi
 `F2` or `/transcript` opens the conversation of the current branch full screen: your prompts, the replies, tool
 calls with their results, and thinking when it is shown in the transcript. It uses the terminal's alternate
 screen, so the scrollback is as you left it when you return. This is the only place where azazel takes the
-mouse: the wheel scrolls here, and text selection with the mouse works everywhere else as usual.
+mouse: the wheel scrolls here, and text selection with the mouse works everywhere else as usual. The same
+viewer shows the text of a [popup](#popups) that is too long for its box (`Ctrl+O`).
 
 | Key | Effect |
 |---|---|
@@ -555,14 +596,16 @@ The keys behind each row are described in [configuration](configuration.md).
 
 ## Themes
 
-Two themes are built in: `dark` (default) and `light`. Set one for good in [configuration](configuration.md):
+Six themes are built in: `dark` (default), `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark` and
+`dark-daltonized`. Set one for good in [configuration](configuration.md):
 
 ```toml
 [tui]
 theme = "light"
 ```
 
-`/theme` opens a picker and `/theme <name>` switches for the running session.
+`/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
+`/theme <name>` switches for the running session.
 
 A custom theme is a file `~/.azazel/themes/<name>.toml` that maps roles to colours. Every role is optional: a role
 left out keeps the colour of `dark`, or of `light` when the file sets a light `code_bg`.
@@ -588,11 +631,13 @@ diff_del_bg = "#7a2936"
 | `muted` | Notices, hints, details, the status line |
 | `accent` | Headings, the `❯` prompt, spinners, the frame of a running tool card |
 | `success`, `warning`, `error` | State icons, warnings and errors, the frames of interrupted and failed tool cards |
-| `border` | The rules around the input and overlays, quote bars, table lines |
+| `border` | The rules around the input, the frame of a popup, quote bars, table lines |
 | `border_muted` | The frame of a finished tool card |
 | `code_bg` | Background of code blocks |
 | `user_bg`, `user_text` | The band behind your own messages and the text on it |
 | `selected_bg` | Background of the selected row in pickers and completion lists |
+| `surface` | Background inside a [popup](#popups) |
+| `backdrop` | Text of the transcript behind a popup |
 | `diff_add`, `diff_del` | The `+` and `-` signs of a diff |
 | `diff_add_bg`, `diff_del_bg` | Background of added and removed diff lines |
 | `thinking` | The model's reasoning and the thinking level in the status line |
