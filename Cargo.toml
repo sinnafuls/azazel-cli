@@ -177,9 +177,10 @@ windows-sys = { version = "0.61", features = [
 
 # Cloud
 aws-config = "1.13"
-aws-sdk-bedrockruntime = "1.155"
+# Without the default `rustls` feature, which adds a second (legacy hyper 0.14) HTTP stack.
+aws-sdk-bedrockruntime = { version = "1.155", default-features = false, features = ["default-https-client", "rt-tokio"] }
 # The TLS stack of the rest of the binary, instead of a second one.
-gcp_auth = { version = "0.12", default-features = false, features = ["aws-lc-rs"] }
+gcp_auth = { version = "0.12", default-features = false, features = ["ring"] }
 aws-smithy-types = "1.9"
 
 # Binary plumbing
