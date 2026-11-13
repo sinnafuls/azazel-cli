@@ -420,8 +420,28 @@ impl SessionStore {
         Self::create_at(&dir.join(format!("{stamp}_{id}.jsonl")), &id, cwd, parent_session)
     }
 
+    /// Starts `<dir>/<utc-timestamp>_<uuid>.jsonl` for a conversation that began at `created`
+    /// somewhere else: the file name and the header carry that time, so the session sorts where
+    /// it belongs among the others.
+    pub fn create_dated(dir: &Path, cwd: &Path, created: jiff::Timestamp) -> io::Result<Self> {
+        let id = uuid::Uuid::now_v7().to_string();
+        let stamp = created.strftime("%Y%m%dT%H%M%SZ");
+        let path = dir.join(format!("{stamp}_{id}.jsonl"));
+        Self::start(&path, &id, cwd, None, created.to_string())
+    }
+
     /// Starts a transcript at an exact path (sub-agent transcripts).
     pub fn create_at(path: &Path, id: &str, cwd: &Path, parent_session: Option<&Path>) -> io::Result<Self> {
+        Self::start(path, id, cwd, parent_session, now())
+    }
+
+    fn start(
+        path: &Path,
+        id: &str,
+        cwd: &Path,
+        parent_session: Option<&Path>,
+        timestamp: String,
+    ) -> io::Result<Self> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -429,7 +449,7 @@ impl SessionStore {
             kind: HeaderTag::Session,
             version: SESSION_VERSION,
             id: id.to_string(),
-            timestamp: now(),
+            timestamp,
             cwd: cwd.to_string_lossy().into_owned(),
             parent_session: parent_session.map(|p| p.to_string_lossy().into_owned()),
         };
@@ -549,6 +569,15 @@ impl SessionStore {
     /// journal leaves the leaf where it is. Returns the entry's id. A write failure is logged
     /// and the entry is kept in memory so the session can go on.
     pub fn append(&self, kind: EntryKind) -> String {
+        self.append_stamped(kind, now())
+    }
+
+    /// [`SessionStore::append`] for an entry that was written at `at` somewhere else.
+    pub fn append_at(&self, kind: EntryKind, at: jiff::Timestamp) -> String {
+        self.append_stamped(kind, at.to_string())
+    }
+
+    fn append_stamped(&self, kind: EntryKind, timestamp: String) -> String {
         let mut inner = self.lock();
         let id = loop {
             // The tail of a v7 UUID is its random part.
@@ -561,7 +590,7 @@ impl SessionStore {
         let entry = Entry {
             id: id.clone(),
             parent_id: inner.leaf.clone(),
-            timestamp: now(),
+            timestamp,
             kind,
         };
         let written =

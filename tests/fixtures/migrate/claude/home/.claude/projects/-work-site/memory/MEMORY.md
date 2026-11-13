@@ -1,0 +1,2 @@
+- [Testing](feedback_testing.md) — run the visual tests
+- [Role](user_role.md) — front-end developer

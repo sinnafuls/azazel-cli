@@ -220,6 +220,20 @@ impl Form {
         }
     }
 
+    /// Every option of every list that takes several ticked, and the row that confirms them
+    /// under the cursor: a form whose usual answer is "all of it".
+    pub fn all_picked(mut self) -> Form {
+        let other = self.other.clone();
+        for field in &mut self.fields {
+            if field.question.kind == AskKind::Multiselect {
+                field.picked.fill(true);
+                field.list.set_items(field.items(&other));
+                field.list.set_cursor(field.picked.len());
+            }
+        }
+        self
+    }
+
     /// Whether the form has more than one question, and with them tabs and a tab to send from.
     fn several(&self) -> bool {
         self.fields.len() > 1

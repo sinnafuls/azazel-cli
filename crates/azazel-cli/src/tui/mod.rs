@@ -12,6 +12,7 @@ mod form;
 mod gitcmd;
 mod input;
 mod loops;
+mod migrate;
 mod overlay;
 mod pager;
 mod panels;
@@ -262,6 +263,8 @@ enum Internal {
     Trigger(crate::schedule::triggers::Event),
     /// A session was shared, a bug report written or its issue opened; or not.
     Sent(share::Sent),
+    /// A step of `/migrate` finished beside the UI loop.
+    Migrate(migrate::Step),
 }
 
 pub struct Tui {
@@ -1300,6 +1303,7 @@ impl Tui {
             #[cfg(feature = "detach")]
             Internal::Trigger(event) => return self.on_trigger(event).await,
             Internal::Sent(sent) => return self.on_sent(sent),
+            Internal::Migrate(step) => return self.on_migrate(step).await,
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1922,6 +1926,7 @@ impl Tui {
                 return match action {
                     Action::Ask { reply } => drop(reply.send(Ok(answers.pop().unwrap_or_default()))),
                     Action::Form { reply } => drop(reply.send(Ok(answers))),
+                    Action::Migrate(offer) => self.migrate_picked(*offer, &answers),
                     other => other.cancel(),
                 };
             }
@@ -1930,7 +1935,8 @@ impl Tui {
         };
         match action {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
-            action @ (Action::Ask { .. } | Action::Form { .. }) => action.cancel(),
+            action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
+            Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
             Action::AgentPane => {}
             Action::Confirm { reply } => drop(reply.send(Ok(choice == 0))),
             Action::UiSelect { reply } => drop(reply.send(Ok(choice))),

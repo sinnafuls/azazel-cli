@@ -558,6 +558,7 @@ Models, permissions and setup:
 | `/terminals` | Programs agents run in [terminals](#terminals); choose one to watch it, type into it or stop it |
 | `/todo [add <text> \| done <n> \| clear]` | Show the agent's task list, or change it |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
+| `/migrate` | Bring over what pi, omp, jcode, Claude Code and Codex CLI hold: tick the harnesses and the kinds (models, keys, skills, commands, agents, MCP servers, rules, settings, chats, memory), read the plan, confirm; see [migrating](migrating.md) |
 | `/doctor` | Check the installation and this project's setup |
 | `/rules` | List the rule files, when each applies and whether it has in this session; see [rules](rules.md) |
 | `/hooks` | List the hooks, where they come from and how each last ran; see [hooks](hooks.md) |

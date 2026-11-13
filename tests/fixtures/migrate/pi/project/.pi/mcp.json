@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "tickets": {
+      "command": "tickets-mcp",
+      "args": [
+        "--project",
+        "app"
+      ]
+    }
+  }
+}

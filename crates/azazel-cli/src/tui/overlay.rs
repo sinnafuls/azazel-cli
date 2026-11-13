@@ -159,6 +159,10 @@ pub enum Action {
     },
     /// Whether to open an issue with the summary of this report; the second row says yes.
     BugIssue(Box<crate::bug::Report>),
+    /// `/migrate`: the sources and the kinds to bring over, ticked in a form.
+    Migrate(Box<super::migrate::Offer>),
+    /// The plan of a migration; the first row brings it over.
+    MigrateGo(Box<super::migrate::Pick>),
 }
 
 impl Action {

@@ -318,6 +318,35 @@ impl MemoryStore {
         self.insert(text, kind, tags, scope, session, vector).await
     }
 
+    /// Stores memories that were learned in another program, each as `(text, kind)`, all with
+    /// `tags`. One whose text a memory in force in `scope` already has is left out. Returns how
+    /// many were stored and how many were there already. They get their vectors when memories
+    /// are next caught up with the embedding model.
+    pub async fn import(
+        &self,
+        memories: &[(String, &str)],
+        tags: &[String],
+        scope: Scope,
+    ) -> Result<(usize, usize), String> {
+        let mut known: std::collections::HashSet<String> = self
+            .list(scope)
+            .await?
+            .iter()
+            .map(|row| normalized(&row.text))
+            .collect();
+        let (mut stored, mut present) = (0, 0);
+        for (text, kind) in memories {
+            let text = checked(text, kind)?;
+            if !known.insert(normalized(text)) {
+                present += 1;
+                continue;
+            }
+            self.insert(text, kind, tags, scope, None, None).await?;
+            stored += 1;
+        }
+        Ok((stored, present))
+    }
+
     /// Deletes the memory `id` from whichever store holds it; false when neither does.
     pub async fn forget(&self, id: &str) -> Result<bool, String> {
         let mut found = false;

@@ -1,0 +1,24 @@
+[provider]
+default_model = "claude-test-1"
+default_provider = "claude"
+
+[providers.my-api]
+type = "openai-compatible"
+base_url = "https://api.example.net/v1"
+auth = "bearer"
+api_key_env = "MY_API_KEY"
+env_file = "provider-my-api.env"
+default_model = "fast-1"
+models = [{ id = "fast-1", reasoning = true, context_window = 128000, input = ["text", "image"] }]
+
+[display]
+theme = "dark"
+
+[features]
+memory = false
+
+[hooks]
+pre_tool = "~/bin/policy"
+
+[keybindings]
+submit = "ctrl+enter"

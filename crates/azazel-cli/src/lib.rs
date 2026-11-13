@@ -29,6 +29,7 @@ pub mod loops;
 pub mod mcp;
 #[cfg(feature = "memory")]
 pub mod memory;
+pub mod migrate;
 pub mod models;
 pub mod orchestration;
 pub mod pkg;
@@ -361,6 +362,22 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
                 return print::EXIT_FAILED;
             };
             return usage::run(&providers, &credentials, &usage::cache_file(&paths), *json).await;
+        }
+        Some(Sub::Migrate {
+            from,
+            only,
+            dry_run,
+            overwrite,
+            project,
+        }) => {
+            let args = migrate::Args {
+                from,
+                only,
+                dry_run: *dry_run,
+                overwrite: *overwrite,
+                project: project.as_deref(),
+            };
+            return migrate::run(&args, &paths).await;
         }
         Some(Sub::Update { check }) => return update::run(&paths, *check).await,
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),
