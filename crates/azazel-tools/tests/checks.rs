@@ -71,7 +71,7 @@ impl Default for Setup {
 /// - `.chk`: prints what `findings.txt` holds, and exits with 1 when that is anything;
 /// - `.slow`: takes more than a second, then prints what `findings.txt` holds and adds a line
 ///   to `finished.log`;
-/// - `.stuck`: takes three seconds, then adds a line to `finished.log`;
+/// - `.stuck`: takes four seconds, then adds a line to `finished.log`;
 /// - `.bad`: fails without a finding;
 /// - `.gone`: a program that is not installed.
 ///
@@ -108,7 +108,7 @@ fn bench(setup: Setup) -> Bench {
         ),
         (
             "stuck".to_string(),
-            format!("{fixture} --sleep-ms 3000 --log {}", in_root("finished.log")),
+            format!("{fixture} --sleep-ms 4000 --log {}", in_root("finished.log")),
         ),
         (
             "bad".to_string(),
@@ -436,7 +436,7 @@ async fn a_checker_that_outlasts_the_write_goes_on_and_what_it_finds_is_in_the_r
 async fn a_checker_is_ended_at_its_limit_and_by_the_next_prompt() {
     let bench = bench(Setup {
         timeout: Duration::from_millis(200),
-        limit: Duration::from_millis(900),
+        limit: Duration::from_millis(1500),
         ..Setup::default()
     });
     bench.prompt().await;
@@ -460,12 +460,12 @@ async fn a_checker_is_ended_at_its_limit_and_by_the_next_prompt() {
     assert!(
         report.contains(
             "1 file was not checked, so nothing found there does not mean it is clean: \
-             b.stuck (fake-check did not finish within 900 ms)\n"
+             b.stuck (fake-check did not finish within 1500 ms)\n"
         ),
         "{report}"
     );
     // Neither run was left to finish behind the agent's back.
-    tokio::time::sleep(Duration::from_millis(3500)).await;
+    tokio::time::sleep(Duration::from_millis(4500)).await;
     assert!(!bench.path("finished.log").exists());
 
     // Without the report nothing would show what a run in the background finds, so a checker

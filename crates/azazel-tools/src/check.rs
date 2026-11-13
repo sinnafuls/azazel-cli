@@ -654,9 +654,9 @@ struct Job {
     env: Option<Arc<AgentEnv>>,
 }
 
-/// A checker and the directory it runs in. One run of it there goes on in the background at a
-/// time.
-type Place = (String, PathBuf);
+/// A checker, the kind of file it is for and the directory it runs in. One run of it there goes
+/// on in the background at a time.
+type Place = (String, String, PathBuf);
 
 /// The background run of a checker in one place.
 struct Slot {
@@ -1048,18 +1048,6 @@ impl Checks {
         }
     }
 
-    /// Puts `job` behind the run its checker has in the background in the same place, if there
-    /// is one. Returns the job when there is none.
-    fn queue(&self, place: &Place, job: Job) -> Option<Job> {
-        match locked(&self.background).get_mut(place) {
-            Some(slot) => {
-                slot.queue(job);
-                None
-            }
-            None => Some(job),
-        }
-    }
-
     /// Checks `file` after a write that replaced `old` (`None` for a new file) with `new`. Call
     /// it while the file's lock is held. Never fails the write: a checker that is missing or
     /// fails is one note, and so is one that takes longer than the write waits for it; that one
@@ -1089,7 +1077,11 @@ impl Checks {
         if new.len() > MAX_FILE_BYTES {
             return unchecked(&name, "larger than 1 MB".to_string(), None);
         }
-        let place: Place = (name.clone(), runner.cwd.clone());
+        let place: Place = (
+            name.clone(),
+            kind_of(file).unwrap_or_default(),
+            runner.cwd.clone(),
+        );
         let job = Job {
             runner,
             file: file.to_path_buf(),
@@ -1100,8 +1092,18 @@ impl Checks {
         let behind = format!(
             "{name} is still checking an earlier write; what it finds here joins the report when you stop"
         );
-        let Some(job) = self.queue(&place, job) else {
-            return unchecked(&name, still_running, Some(behind));
+        // A run of this checker is in the background here: the file waits behind it. It is
+        // recorded before it is queued, so that the run after this one finds it.
+        let job = {
+            let mut background = locked(&self.background);
+            match background.get_mut(&place) {
+                Some(slot) => {
+                    let checked = unchecked(&name, still_running, Some(behind));
+                    slot.queue(job);
+                    return checked;
+                }
+                None => job,
+            }
         };
         let mut run = Run(Some(tokio::spawn(execute(
             job.runner.clone(),
@@ -1203,11 +1205,11 @@ impl Checks {
         self.report != CheckReport::Off && !locked(&self.turn).reported && *self.busy.borrow() > 0
     }
 
-    /// Returns once no check is running in the background, which no check does for longer than
-    /// its limit.
+    /// Returns once no check is running in the background, or after the time one run and the
+    /// run for what waited behind it may take.
     pub async fn settled(&self) {
         let mut busy = self.busy.subscribe();
-        let _ = tokio::time::timeout(self.limit, busy.wait_for(|busy| *busy == 0)).await;
+        let _ = tokio::time::timeout(self.limit * 2, busy.wait_for(|busy| *busy == 0)).await;
     }
 
     /// What the lead is told when it stops: what the checkers found in the files written in
