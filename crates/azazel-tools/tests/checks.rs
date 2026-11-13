@@ -47,7 +47,10 @@ struct Bench {
 struct Setup {
     on_write: bool,
     report: CheckReport,
+    /// How long a write waits for its checker.
     timeout: Duration,
+    /// How long a checker may run at all.
+    limit: Duration,
     secrets: bool,
 }
 
@@ -57,6 +60,7 @@ impl Default for Setup {
             on_write: true,
             report: CheckReport::Delta,
             timeout: Duration::from_secs(30),
+            limit: Duration::from_secs(30),
             secrets: false,
         }
     }
@@ -65,7 +69,9 @@ impl Default for Setup {
 /// A project where the fixture checks four kinds of file:
 ///
 /// - `.chk`: prints what `findings.txt` holds, and exits with 1 when that is anything;
-/// - `.slow`: takes three seconds, then adds a line to `finished.log`;
+/// - `.slow`: takes more than a second, then prints what `findings.txt` holds and adds a line
+///   to `finished.log`;
+/// - `.stuck`: takes three seconds, then adds a line to `finished.log`;
 /// - `.bad`: fails without a finding;
 /// - `.gone`: a program that is not installed.
 ///
@@ -96,9 +102,13 @@ fn bench(setup: Setup) -> Bench {
         (
             "slow".to_string(),
             format!(
-                "{fixture} --log {log} --sleep-ms 3000 --log {}",
+                "{fixture} --log {log} --sleep-ms 1200 --from {findings} --log {}",
                 in_root("finished.log")
             ),
+        ),
+        (
+            "stuck".to_string(),
+            format!("{fixture} --sleep-ms 3000 --log {}", in_root("finished.log")),
         ),
         (
             "bad".to_string(),
@@ -111,8 +121,10 @@ fn bench(setup: Setup) -> Bench {
             root,
             on_write: setup.on_write,
             configured,
+            trusted: true,
             report: setup.report,
             timeout: setup.timeout,
+            limit: setup.limit,
             gitleaks: setup.secrets.then(|| FIXTURE.clone()),
         })
         .unwrap();
@@ -368,51 +380,105 @@ async fn findings_on_lines_the_turn_left_alone_are_not_reported_but_those_beside
 }
 
 #[tokio::test]
-async fn a_checker_that_runs_out_of_time_is_a_note_and_is_not_run_again_in_the_turn() {
+async fn a_checker_that_outlasts_the_write_goes_on_and_what_it_finds_is_in_the_report() {
     let bench = bench(Setup {
-        timeout: Duration::from_millis(400),
+        timeout: Duration::from_millis(300),
         ..Setup::default()
     });
     bench.prompt().await;
+    bench.findings(&[
+        "a.slow:1:1: error: a is wrong, found late",
+        "b.slow:1:1: warning: b is odd, found later",
+    ]);
     assert_eq!(
         bench.write("a.slow", "a\n").await,
-        "created a.slow (2 bytes); fake-check did not finish within 400 ms"
+        "created a.slow (2 bytes); fake-check is still running; what it finds joins the report when you stop"
     );
+    // One run of a checker in one place at a time: what is written meanwhile waits behind it,
+    // and the write does not.
+    let behind =
+        "fake-check is still checking an earlier write; what it finds here joins the report when you stop";
     assert_eq!(
         bench.write("b.slow", "b\n").await,
-        "created b.slow (2 bytes); fake-check ran out of time earlier in this turn and was not run again"
+        format!("created b.slow (2 bytes); {behind}")
     );
-    // Neither write waited for the checker, which ran once.
-    assert!(!bench.path("finished.log").exists());
+    for (old, new) in [("b", "B"), ("B", "b2")] {
+        let edited = bench
+            .ok(
+                "edit",
+                json!({ "path": "b.slow", "edits": [{ "old": old, "new": new }] }),
+            )
+            .await;
+        assert_eq!(edited, format!("edited b.slow (1 replacement); {behind}"));
+    }
     assert_eq!(bench.runs(), 1);
-    assert_eq!(std::fs::read_to_string(bench.path("b.slow")).unwrap(), "b\n");
+    assert!(!bench.path("finished.log").exists());
 
-    // Files that were not checked are named in the report, which needs a finding to be made.
-    assert_eq!(bench.lead_stops().await, None);
-    bench.findings(&["c.chk:1:1: warning: c is odd"]);
-    bench.write("c.chk", "c\n").await;
+    // The lead's stop waits for both runs: the one that was under way, and one for the file
+    // written three times behind it.
     let report = bench.lead_stops().await.unwrap();
     assert!(
         report.contains(
-            "2 files were not checked, so nothing found there does not mean it is clean: \
-             a.slow (fake-check did not finish within 400 ms), \
-             b.slow (fake-check ran out of time earlier in this turn and was not run again)\n"
+            "The checkers found 1 error, 1 warning in 2 files written in this turn:\n\
+             a.slow: 1 error\n\
+             b.slow: 1 warning\n\
+             On the lines changed in this turn:\n\
+             a.slow:1:1 error a is wrong, found late [fake-check]\n\
+             b.slow:1:1 warning b is odd, found later [fake-check]\n\
+             </checks>"
         ),
         "{report}"
     );
+    assert_eq!(bench.runs(), 2);
+}
 
-    // The next turn gives the checker another go.
+#[tokio::test]
+async fn a_checker_is_ended_at_its_limit_and_by_the_next_prompt() {
+    let bench = bench(Setup {
+        timeout: Duration::from_millis(200),
+        limit: Duration::from_millis(900),
+        ..Setup::default()
+    });
     bench.prompt().await;
-    bench
-        .ok(
-            "edit",
-            json!({ "path": "a.slow", "edits": [{ "old": "a", "new": "A" }] }),
-        )
-        .await;
-    assert_eq!(bench.runs(), 3);
-    // A checker that ran out of time was ended, not left to finish behind the agent's back.
+    let running = "fake-check is still running; what it finds joins the report when you stop";
+    assert_eq!(
+        bench.write("a.stuck", "a\n").await,
+        format!("created a.stuck (2 bytes); {running}")
+    );
+    // A new prompt lets go of what the last turn left running, and has nothing to wait for.
+    bench.prompt().await;
+    assert_eq!(bench.lead_stops().await, None);
+
+    assert_eq!(
+        bench.write("b.stuck", "b\n").await,
+        format!("created b.stuck (2 bytes); {running}")
+    );
+    bench.findings(&["c.chk:1:1: warning: c is odd"]);
+    bench.write("c.chk", "c\n").await;
+    // The stop waits for the checker no longer than the checker may run.
+    let report = bench.lead_stops().await.unwrap();
+    assert!(
+        report.contains(
+            "1 file was not checked, so nothing found there does not mean it is clean: \
+             b.stuck (fake-check did not finish within 900 ms)\n"
+        ),
+        "{report}"
+    );
+    // Neither run was left to finish behind the agent's back.
     tokio::time::sleep(Duration::from_millis(3500)).await;
     assert!(!bench.path("finished.log").exists());
+
+    // Without the report nothing would show what a run in the background finds, so a checker
+    // that makes the write wait too long is ended there.
+    let quiet = bench_with(Setup {
+        timeout: Duration::from_millis(200),
+        report: CheckReport::Off,
+        ..Setup::default()
+    });
+    assert_eq!(
+        quiet.write("a.stuck", "a\n").await,
+        "created a.stuck (2 bytes); fake-check did not finish within 200 ms"
+    );
 }
 
 #[tokio::test]
@@ -444,6 +510,11 @@ async fn a_checker_that_fails_or_is_missing_is_a_note_and_never_fails_the_write(
     assert_eq!(off.write("a.gone", "a\n").await, "created a.gone (2 bytes)");
     assert_eq!(off.runs(), 0);
     assert_eq!(off.lead_stops().await, None);
+}
+
+/// [`bench`], for a test that has a bench of that name already.
+fn bench_with(setup: Setup) -> Bench {
+    bench(setup)
 }
 
 fn bench_off() -> Bench {

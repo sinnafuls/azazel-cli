@@ -111,7 +111,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         }
     };
 
-    let reasons = needs_trust(paths, config.compat.claude);
+    let reasons = needs_trust(paths, config.compat.claude, &config.tools);
     match (
         TrustStore::new(paths.trust_file()).decision(&paths.project_root),
         trusted,
@@ -388,11 +388,23 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         }
     }
     if config.tools.check_on_write {
-        let ready = azazel_tools::check::installed();
-        if ready.is_empty() {
-            report.ok("checks on write: none of the built-in checkers is installed");
-        } else {
-            report.ok(format!("checks on write: {}", ready.join(", ")));
+        let installed = azazel_tools::check::installed(trusted);
+        let named = |used: bool| -> Vec<&str> {
+            let of_kind = installed.iter().filter(|(_, is_used)| *is_used == used);
+            of_kind.map(|(checker, _)| checker.as_str()).collect()
+        };
+        match named(true) {
+            ready if !ready.is_empty() => report.ok(format!("checks on write: {}", ready.join(", "))),
+            _ if installed.is_empty() => {
+                report.ok("checks on write: none of the built-in checkers is installed");
+            }
+            _ => {}
+        }
+        // These run the project's code (build scripts, lint configuration) to check a file.
+        for checker in named(false) {
+            report.ok(format!(
+                "checks on write: {checker}: off, the project is not trusted"
+            ));
         }
         for (kind, program) in azazel_tools::check::missing(&config.tools.check) {
             report.warn(format!("checker for `{kind}` files: `{program}` was not found"));

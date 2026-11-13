@@ -222,6 +222,9 @@ back. A project needs a trust decision when it has any of:
 - one of the gated settings in `.azazel/config.toml` or `.azazel/config.local.toml`
 - `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
+- a `Cargo.toml`, an eslint config file or a `go.mod` at its root, when checks on write are on and clippy, eslint
+  or go is installed: checking a file with them runs the project's build scripts, macros or lint configuration;
+  see [tools](tools.md#checkers-that-run-the-projects-code)
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
@@ -238,6 +241,7 @@ In an untrusted project:
 - gated settings in the two project config files are dropped; everything else in them still applies
 - the project's `models.yml` is not read
 - project extensions, project MCP servers and skill hooks are not loaded
+- the checkers that run the project's code (clippy, eslint, go vet) are off; the others still check what is written
 - API keys in the project's `.env` are not read
 - `` !`command` `` lines in custom commands are left as text
 - context files, rule files, skills, agent definitions and custom commands still load

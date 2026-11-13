@@ -42,13 +42,13 @@ struct Sandbox {
 
 impl Sandbox {
     /// A project and a home, and a directory of programs put first on `PATH`: the fixture under
-    /// the names `shellcheck` and `gitleaks`.
+    /// the names `shellcheck`, `gitleaks`, `cargo` and `cargo-clippy`.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         for sub in ["project/.git", "home", "bin"] {
             std::fs::create_dir_all(dir.path().join(sub)).unwrap();
         }
-        for name in ["shellcheck", "gitleaks"] {
+        for name in ["shellcheck", "gitleaks", "cargo", "cargo-clippy"] {
             let program = dir
                 .path()
                 .join("bin")
@@ -62,7 +62,8 @@ impl Sandbox {
         self.dir.path().join(relative)
     }
 
-    fn command(&self) -> Command {
+    /// `azazel` in this sandbox. `found` is what the stand-in checkers do when they are run.
+    fn command(&self, found: &str) -> Command {
         let mut path = vec![self.path("bin")];
         path.extend(std::env::split_paths(
             &std::env::var_os("PATH").unwrap_or_default(),
@@ -71,7 +72,7 @@ impl Sandbox {
         command
             .env("AZAZEL_HOME", self.path("home"))
             .env("PATH", std::env::join_paths(path).unwrap())
-            .env("FAKE_CHECK_ARGS", FOUND)
+            .env("FAKE_CHECK_ARGS", found)
             .env_remove("ANTHROPIC_API_KEY")
             .env_remove("OPENAI_API_KEY")
             .arg("--cwd")
@@ -81,9 +82,13 @@ impl Sandbox {
 
     /// `azazel -p go` with the lead following `steps`, every request recorded.
     fn run(&self, steps: &Value, args: &[&str]) -> Output {
+        self.run_finding(FOUND, steps, args)
+    }
+
+    fn run_finding(&self, found: &str, steps: &Value, args: &[&str]) -> Output {
         std::fs::write(self.path("script.json"), json!({ "lead": steps }).to_string()).unwrap();
         let _ = std::fs::remove_file(self.path("requests.jsonl"));
-        self.command()
+        self.command(found)
             .env("AZAZEL_MOCK_SCRIPT", self.path("script.json"))
             .env("AZAZEL_MOCK_REQUESTS", self.path("requests.jsonl"))
             .args(["--set", "memory.auto_extract=false"])
@@ -146,9 +151,14 @@ fn stderr(output: &Output) -> String {
 /// The lead writes a shell script to `path`, says it is done, and answers whatever it is told
 /// next.
 fn steps(path: &str) -> Value {
+    writes(path, "#!/bin/sh\necho $1\nnope\n")
+}
+
+/// The lead writes `content` to `path`, says it is done, and answers whatever it is told next.
+fn writes(path: &str, content: &str) -> Value {
     json!([
         { "reply": { "tool_calls": [{ "id": "t1", "name": "write", "input": {
-            "path": path, "content": "#!/bin/sh\necho $1\nnope\n" } }] } },
+            "path": path, "content": content } }] } },
         { "reply": { "text": "done" } },
         { "reply": { "text": "the script is a sketch; left as it is" } }
     ])
@@ -210,7 +220,10 @@ fn a_checker_on_path_checks_what_the_lead_writes_and_the_lead_is_told_the_rest_w
 #[test]
 fn doctor_says_which_checkers_are_installed_and_whether_secrets_are_scanned_for() {
     let sandbox = Sandbox::new();
-    let doctor = |args: &[&str]| stdout(&sandbox.command().args(args).arg("doctor").output().unwrap());
+    let doctor = |args: &[&str]| {
+        let output = sandbox.command(FOUND).args(args).arg("doctor").output();
+        stdout(&output.unwrap())
+    };
     let line = |report: &str, start: &str| {
         report
             .lines()
@@ -259,4 +272,74 @@ fn doctor_says_which_checkers_are_installed_and_whether_secrets_are_scanned_for(
     let report = doctor(&["--trust"]);
     assert_eq!(line(&report, "checks on write:"), "ok    checks on write: off");
     assert_eq!(line(&report, "secret scan:"), "ok    secret scan: off");
+}
+
+#[test]
+fn a_checker_that_runs_the_project_s_code_runs_only_when_the_project_is_trusted() {
+    let sandbox = Sandbox::new();
+    std::fs::create_dir_all(sandbox.path("project/src")).unwrap();
+    std::fs::write(
+        sandbox.path("project/Cargo.toml"),
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    // The stand-in `cargo` notes that it was run and warns about `src/b.rs`.
+    let calls = sandbox.path("cargo-calls.log");
+    let found = format!(
+        "--log\n{}\n--line\nsrc/b.rs:1:8: warning: unused variable: `x`",
+        calls.display()
+    );
+    let code = "pub fn f() {\n    let x = 1;\n}\n";
+
+    // Not trusted: clippy would build and run the project's build scripts, so it is not run,
+    // and nothing is said about the file.
+    let output = sandbox.run_finding(&found, &writes("src/a.rs", code), &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    assert_eq!(requests.len(), 2, "{requests:#?}");
+    assert_eq!(sent(&requests[1], "tool_result"), ["created src/a.rs (30 bytes)"]);
+    assert!(!calls.exists(), "cargo was run in a project that is not trusted");
+
+    // Trusted: it runs, and what it found reaches the lead when it stops.
+    let output = sandbox.run_finding(&found, &writes("src/b.rs", code), &["--trust"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+    let requests = sandbox.requests();
+    assert_eq!(requests.len(), 3, "{requests:#?}");
+    let told = sent(&requests[2], "text");
+    assert!(
+        told.last().unwrap().contains(
+            "On the lines changed in this turn:\n\
+             src/b.rs:1:8 warning unused variable: `x` [clippy]\n\
+             </checks>"
+        ),
+        "{told:#?}"
+    );
+
+    // `doctor` says which of the two it is, and that the project has something to trust.
+    let doctor = |args: &[&str]| {
+        let output = sandbox.command(&found).args(args).arg("doctor").output();
+        stdout(&output.unwrap())
+    };
+    let report = doctor(&[]);
+    assert!(
+        report.contains("ok    checks on write: clippy (rs): off, the project is not trusted\n"),
+        "{report}"
+    );
+    assert!(
+        report.contains(
+            "warn  trust: not decided; the project has Rust code that checks on write would build with \
+             cargo clippy, running its build scripts and macros\n"
+        ),
+        "{report}"
+    );
+    let report = doctor(&["--trust"]);
+    let ready = report
+        .lines()
+        .find(|line| line.contains("checks on write:"))
+        .unwrap();
+    assert!(
+        ready.contains("clippy (rs)") && !report.contains("clippy (rs): off"),
+        "{report}"
+    );
 }

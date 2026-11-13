@@ -493,8 +493,10 @@ impl App {
             root: paths.project_root.clone(),
             on_write: config.tools.check_on_write,
             configured: config.tools.check.clone(),
+            trusted,
             report: config.tools.check_report,
             timeout: azazel_tools::check::TIMEOUT,
+            limit: azazel_tools::check::LIMIT,
             gitleaks: azazel_tools::scan::scanner(
                 config.tools.scan.secrets,
                 config.tools.check_report,

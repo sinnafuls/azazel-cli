@@ -2,9 +2,10 @@
 //! Errors go into the tool result at once; everything found is kept until the lead stops, when
 //! it is told what stands on the lines it changed.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -13,6 +14,7 @@ use azazel_agent::ToolCtx;
 use azazel_core::config::CheckReport;
 use azazel_core::paths::canonical;
 use azazel_core::process::AgentEnv;
+use azazel_core::trust::ESLINT_CONFIGS;
 use azazel_core::{
     Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Level, Outcome, Registrar, Ui,
 };
@@ -20,14 +22,17 @@ use process_wrap::tokio::{CommandWrap, KillOnDrop};
 use serde_json::Value;
 use similar::{DiffOp, TextDiff};
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::Semaphore;
+use tokio::sync::{Semaphore, watch};
+use tokio::task::JoinHandle;
 
 use crate::format::{FILE, words};
 use crate::scan::SecretScan;
 use crate::util::display_path;
 
-/// How long a checker may take on one file.
+/// How long a write waits for its checker. One that takes longer goes on in the background.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a checker may run at all.
+pub const LIMIT: Duration = Duration::from_secs(60);
 /// Checkers running at the same time, over all agents.
 const CONCURRENT: usize = 3;
 /// Larger files are not checked.
@@ -48,35 +53,21 @@ const REAP: Duration = Duration::from_secs(1);
 const DIFF_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// The built-in checkers, for `azazel doctor` and the documentation: the name an agent is told,
-/// the program looked for on `PATH`, and the files it checks.
-pub const BUILTIN: [(&str, &str, &str); 8] = [
-    ("clippy", "cargo-clippy", "rs"),
-    ("ruff", "ruff", "py, pyi"),
-    ("eslint", "eslint", "js, ts"),
-    ("oxlint", "oxlint", "js, ts"),
-    ("shellcheck", "shellcheck", "sh, bash"),
-    ("go vet", "go", "go"),
-    ("actionlint", "actionlint", "workflows"),
-    ("hadolint", "hadolint", "Dockerfile"),
+/// the program looked for on `PATH`, the files it checks, and whether checking runs code of the
+/// project (its build scripts and macros, its lint configuration), which only a trusted project
+/// may have done for it.
+pub const BUILTIN: [(&str, &str, &str, bool); 8] = [
+    ("clippy", "cargo-clippy", "rs", true),
+    ("ruff", "ruff", "py, pyi", false),
+    ("eslint", "eslint", "js, ts", true),
+    ("oxlint", "oxlint", "js, ts", false),
+    ("shellcheck", "shellcheck", "sh, bash", false),
+    ("go vet", "go", "go", true),
+    ("actionlint", "actionlint", "workflows", false),
+    ("hadolint", "hadolint", "Dockerfile", false),
 ];
 
 const SCRIPT_EXTENSIONS: [&str; 8] = ["js", "jsx", "mjs", "cjs", "ts", "tsx", "mts", "cts"];
-
-/// A file of one of these names beside or above a script means the project uses eslint.
-const ESLINT_CONFIGS: [&str; 12] = [
-    "eslint.config.js",
-    "eslint.config.mjs",
-    "eslint.config.cjs",
-    "eslint.config.ts",
-    "eslint.config.mts",
-    "eslint.config.cts",
-    ".eslintrc",
-    ".eslintrc.js",
-    ".eslintrc.cjs",
-    ".eslintrc.json",
-    ".eslintrc.yml",
-    ".eslintrc.yaml",
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -326,7 +317,7 @@ fn parse(style: Style, stdout: &str, stderr: &str) -> Vec<(String, Finding)> {
 }
 
 /// A checker for one file, ready to run.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Runner {
     /// What the agent is told the checker is called.
     name: String,
@@ -412,12 +403,13 @@ fn uses_eslint(file: &Path, root: &Path) -> bool {
         .any(|dir| ESLINT_CONFIGS.iter().any(|name| dir.join(name).is_file()))
 }
 
-/// The built-in checker for a file of `kind`, when its program is installed.
+/// The built-in checker for a file of `kind`, when its program is installed. A checker that runs
+/// the project's code is one only when the project is `trusted`.
 fn builtin(
     kind: &str,
     file: &Path,
     cwd: &Path,
-    root: &Path,
+    (root, trusted): (&Path, bool),
     find: &dyn Fn(&str) -> Option<PathBuf>,
 ) -> Option<Runner> {
     let path = file.to_string_lossy().into_owned();
@@ -434,7 +426,8 @@ fn builtin(
         bases: vec![cwd.to_path_buf()],
     };
     match kind {
-        "rs" => {
+        // cargo builds the package's build scripts and procedural macros, and runs them.
+        "rs" if trusted => {
             let (package, name) = rust_package(file)?;
             find("cargo-clippy")?;
             let mut arguments = vec![
@@ -477,7 +470,8 @@ fn builtin(
             &["-f", "gcc"],
             Style::Gcc,
         )),
-        "go" => {
+        // go builds the package, cgo and all.
+        "go" if trusted => {
             let package = file.parent()?.to_path_buf();
             Some(Runner {
                 name: "go vet".to_string(),
@@ -501,7 +495,11 @@ fn builtin(
             Style::Hadolint,
         )),
         script if SCRIPT_EXTENSIONS.contains(&script) => {
-            let eslint = uses_eslint(file, root).then(|| find("eslint")).flatten();
+            // eslint loads the project's configuration, which is a program; oxlint only reads
+            // the file.
+            let eslint = (trusted && uses_eslint(file, root))
+                .then(|| find("eslint"))
+                .flatten();
             match eslint {
                 Some(eslint) => Some(on_file("eslint", eslint, &["-f", "json"], Style::Eslint)),
                 None => Some(on_file("oxlint", find("oxlint")?, &["-f", "unix"], Style::Unix)),
@@ -511,14 +509,15 @@ fn builtin(
     }
 }
 
-/// The built-in checkers that are installed, each as `name (the files it checks)`.
-pub fn installed() -> Vec<String> {
+/// The built-in checkers that are installed, each as `name (the files it checks)` and whether it
+/// is used: one that runs the project's code is not while the project is not `trusted`.
+pub fn installed(trusted: bool) -> Vec<(String, bool)> {
     let found = |program: &str| which::which(program).is_ok();
     BUILTIN
         .iter()
         // clippy is a subcommand of cargo.
-        .filter(|(_, program, _)| found(program) && (*program != "cargo-clippy" || found("cargo")))
-        .map(|(name, _, kinds)| format!("{name} ({kinds})"))
+        .filter(|(_, program, _, _)| found(program) && (*program != "cargo-clippy" || found("cargo")))
+        .map(|(name, _, kinds, runs_code)| (format!("{name} ({kinds})"), trusted || !runs_code))
         .collect()
 }
 
@@ -631,18 +630,186 @@ struct Written {
 
 #[derive(Default)]
 struct Turn {
+    /// Which turn of the session this is. A check that outlives its turn is dropped.
+    number: u64,
     files: BTreeMap<PathBuf, Written>,
-    /// The kinds of file whose checker ran out of time in this turn, with the directory it ran
-    /// in. It is not run there again until the next prompt.
-    slow: HashSet<(String, PathBuf)>,
     /// The lead has had this turn's report.
     reported: bool,
 }
 
+/// What a run of a checker came to, before anything is picked out for one file.
 enum Ran {
-    Found(Vec<Finding>),
+    /// Every finding, with the file the checker named for it.
+    Found(Vec<(String, Finding)>),
     TimedOut,
     Failed(String),
+}
+
+/// A written file waiting for its check.
+struct Job {
+    runner: Runner,
+    file: PathBuf,
+    /// The turn the file was written in.
+    turn: u64,
+    env: Option<Arc<AgentEnv>>,
+}
+
+/// A checker and the directory it runs in. One run of it there goes on in the background at a
+/// time.
+type Place = (String, PathBuf);
+
+/// The background run of a checker in one place.
+struct Slot {
+    id: u64,
+    task: JoinHandle<()>,
+    /// The files written while it ran, checked when it is done.
+    queued: Vec<Job>,
+}
+
+impl Slot {
+    /// A file written twice is checked once, as it is now.
+    fn queue(&mut self, job: Job) {
+        self.queued.retain(|queued| queued.file != job.file);
+        self.queued.push(job);
+    }
+}
+
+/// Ends a run when it is let go of before it has finished.
+struct Run(Option<JoinHandle<Ran>>);
+
+impl Run {
+    /// What the run came to, however long that takes.
+    async fn finish(mut self, name: &str) -> Ran {
+        match &mut self.0 {
+            Some(run) => run
+                .await
+                .unwrap_or_else(|_| Ran::Failed(format!("{name} could not be run"))),
+            None => Ran::Failed(format!("{name} could not be run")),
+        }
+    }
+}
+
+impl Drop for Run {
+    fn drop(&mut self) {
+        if let Some(run) = &self.0 {
+            run.abort();
+        }
+    }
+}
+
+/// The queued files grouped by command line, in the order they were written: one run of a
+/// checker that looks at a whole package (clippy) serves every file of the package.
+fn batches(queued: Vec<Job>) -> Vec<Vec<Job>> {
+    let mut batches: Vec<Vec<Job>> = Vec::new();
+    for job in queued {
+        let same = batches.iter_mut().find(|batch| {
+            let first = &batch[0].runner;
+            first.program == job.runner.program
+                && first.arguments == job.runner.arguments
+                && first.cwd == job.runner.cwd
+        });
+        match same {
+            Some(batch) => batch.push(job),
+            None => batches.push(vec![job]),
+        }
+    }
+    batches
+}
+
+/// Runs `runner` until it ends or `limit` has passed, when it is ended with everything it
+/// started.
+async fn execute(
+    runner: Runner,
+    env: Option<Arc<AgentEnv>>,
+    permits: Arc<Semaphore>,
+    limit: Duration,
+) -> Ran {
+    let name = &runner.name;
+    let Ok(_permit) = permits.acquire().await else {
+        return Ran::Failed(format!("{name} could not be started"));
+    };
+    // Its own process group or job, so that what it starts (cargo's compilers) ends with it.
+    let mut command = CommandWrap::with_new(&runner.program, |command| {
+        command
+            .args(&runner.arguments)
+            .current_dir(&runner.cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(env) = &env {
+            command.envs(env.vars());
+        }
+    });
+    #[cfg(unix)]
+    command.wrap(process_wrap::tokio::ProcessGroup::leader());
+    #[cfg(windows)]
+    command.wrap(process_wrap::tokio::JobObject);
+    command.wrap(KillOnDrop);
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => return Ran::Failed(format!("{name} could not be started: {e}")),
+    };
+    let (stdout, stderr) = (
+        Capture::of(child.stdout().take()),
+        Capture::of(child.stderr().take()),
+    );
+    let Ok(status) = tokio::time::timeout(limit, child.wait()).await else {
+        let _ = child.start_kill();
+        let _ = tokio::time::timeout(REAP, child.wait()).await;
+        return Ran::TimedOut;
+    };
+    let status = match status {
+        Ok(status) => status,
+        Err(e) => return Ran::Failed(format!("{name} could not be waited for: {e}")),
+    };
+    let (stdout, stderr) = tokio::join!(stdout.text(), stderr.text());
+    let found = parse(runner.style, &stdout, &stderr);
+    if found.is_empty() && !status.success() {
+        let why = stderr
+            .lines()
+            .chain(stdout.lines())
+            .map(str::trim)
+            .find(|line| !line.is_empty());
+        return Ran::Failed(match why {
+            Some(why) => {
+                let why: String = why.chars().take(200).collect();
+                format!("{name} failed: {why}")
+            }
+            None => format!("{name} failed ({status})"),
+        });
+    }
+    Ran::Found(found)
+}
+
+/// What `ran` says of `file`: the findings about it, in order, or why it was not checked.
+fn outcome(runner: &Runner, file: &Path, ran: &Ran, limit: Duration) -> Result<Vec<Finding>, String> {
+    let found = match ran {
+        Ran::Found(found) => found,
+        Ran::TimedOut => return Err(format!("{} did not finish within {}", runner.name, human(limit))),
+        Ran::Failed(why) => return Err(why.clone()),
+    };
+    let file = canonical(file);
+    let mut same: HashMap<&str, bool> = HashMap::new();
+    let mut findings: Vec<Finding> = found
+        .iter()
+        .filter(|(path, _)| {
+            *same.entry(path.as_str()).or_insert_with(|| {
+                let named = Path::new(path);
+                if named.is_absolute() {
+                    canonical(named) == file
+                } else {
+                    runner
+                        .bases
+                        .iter()
+                        .any(|base| canonical(&base.join(named)) == file)
+                }
+            })
+        })
+        .map(|(_, finding)| finding.clone())
+        .collect();
+    findings.sort();
+    findings.dedup();
+    Ok(findings)
 }
 
 /// What a check adds to the result of a write.
@@ -671,10 +838,18 @@ pub struct Checks {
     on_write: bool,
     /// `[tools.check]`: file extension (without the dot) to command.
     configured: BTreeMap<String, String>,
+    /// Whether the project is trusted: only then do the checkers run that run its code.
+    trusted: bool,
     report: CheckReport,
     timeout: Duration,
-    running: Semaphore,
+    limit: Duration,
+    running: Arc<Semaphore>,
     turn: Mutex<Turn>,
+    /// The checks that outlasted the write they were for.
+    background: Mutex<HashMap<Place, Slot>>,
+    /// How many places have a check in the background.
+    busy: watch::Sender<usize>,
+    slots: AtomicU64,
     secrets: Option<Arc<SecretScan>>,
 }
 
@@ -730,10 +905,15 @@ impl Checks {
             root: ext.root.clone(),
             on_write: ext.on_write,
             configured: ext.configured.clone(),
+            trusted: ext.trusted,
             report: ext.report,
             timeout: ext.timeout,
-            running: Semaphore::new(CONCURRENT),
+            limit: ext.limit,
+            running: Arc::new(Semaphore::new(CONCURRENT)),
             turn: Mutex::default(),
+            background: Mutex::default(),
+            busy: watch::Sender::new(0),
+            slots: AtomicU64::new(0),
             secrets: ext
                 .gitleaks
                 .clone()
@@ -751,7 +931,7 @@ impl Checks {
     ) -> Option<Result<Runner, String>> {
         let kind = kind_of(file)?;
         let Some(configured) = self.configured.get(&kind) else {
-            return builtin(&kind, file, cwd, &self.root, find).map(Ok);
+            return builtin(&kind, file, cwd, (&self.root, self.trusted), find).map(Ok);
         };
         let mut words = words(configured);
         if words.is_empty() {
@@ -778,86 +958,6 @@ impl Checks {
             style: Style::Gcc,
             bases: vec![cwd.to_path_buf()],
         }))
-    }
-
-    /// Runs `runner` and returns what it found in `file`.
-    async fn run(&self, runner: &Runner, file: &Path, env: Option<Arc<AgentEnv>>) -> Ran {
-        let name = &runner.name;
-        let Ok(_permit) = self.running.acquire().await else {
-            return Ran::Failed(format!("{name} could not be started"));
-        };
-        // Its own process group or job, so that what it starts (cargo's compilers) ends with it.
-        let mut command = CommandWrap::with_new(&runner.program, |command| {
-            command
-                .args(&runner.arguments)
-                .current_dir(&runner.cwd)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            if let Some(env) = &env {
-                command.envs(env.vars());
-            }
-        });
-        #[cfg(unix)]
-        command.wrap(process_wrap::tokio::ProcessGroup::leader());
-        #[cfg(windows)]
-        command.wrap(process_wrap::tokio::JobObject);
-        command.wrap(KillOnDrop);
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) => return Ran::Failed(format!("{name} could not be started: {e}")),
-        };
-        let (stdout, stderr) = (
-            Capture::of(child.stdout().take()),
-            Capture::of(child.stderr().take()),
-        );
-        let Ok(status) = tokio::time::timeout(self.timeout, child.wait()).await else {
-            let _ = child.start_kill();
-            let _ = tokio::time::timeout(REAP, child.wait()).await;
-            return Ran::TimedOut;
-        };
-        let status = match status {
-            Ok(status) => status,
-            Err(e) => return Ran::Failed(format!("{name} could not be waited for: {e}")),
-        };
-        let (stdout, stderr) = tokio::join!(stdout.text(), stderr.text());
-        let found = parse(runner.style, &stdout, &stderr);
-        if found.is_empty() && !status.success() {
-            let why = stderr
-                .lines()
-                .chain(stdout.lines())
-                .map(str::trim)
-                .find(|line| !line.is_empty());
-            return Ran::Failed(match why {
-                Some(why) => {
-                    let why: String = why.chars().take(200).collect();
-                    format!("{name} failed: {why}")
-                }
-                None => format!("{name} failed ({status})"),
-            });
-        }
-        let file = canonical(file);
-        let mut same: HashMap<String, bool> = HashMap::new();
-        let mut findings: Vec<Finding> = found
-            .into_iter()
-            .filter(|(path, _)| {
-                *same.entry(path.clone()).or_insert_with(|| {
-                    let named = Path::new(path);
-                    if named.is_absolute() {
-                        canonical(named) == file
-                    } else {
-                        runner
-                            .bases
-                            .iter()
-                            .any(|base| canonical(&base.join(named)) == file)
-                    }
-                })
-            })
-            .map(|(_, finding)| finding)
-            .collect();
-        findings.sort();
-        findings.dedup();
-        Ran::Found(findings)
     }
 
     /// Records that `file` was written in this turn, which of its lines the turn changed, and
@@ -889,41 +989,170 @@ impl Checks {
         }
     }
 
+    /// What a check that ran after its write found, when the file is still as that turn wrote
+    /// it.
+    fn settle(&self, job: &Job, ran: &Ran) {
+        let outcome = outcome(&job.runner, &job.file, ran, self.limit);
+        let mut turn = locked(&self.turn);
+        if turn.number != job.turn {
+            return;
+        }
+        if let Some(written) = turn.files.get_mut(&canonical(&job.file)) {
+            match outcome {
+                Ok(findings) => {
+                    written.findings = findings;
+                    written.unchecked = None;
+                }
+                Err(why) => {
+                    written.findings.clear();
+                    written.unchecked = Some(why);
+                }
+            }
+        }
+    }
+
+    /// Sees the run for `first` through in the background, then checks the files written in
+    /// its place meanwhile, until none is left.
+    async fn supervise(self: Arc<Self>, place: Place, id: u64, first: Job, run: Run) {
+        let ran = run.finish(&first.runner.name).await;
+        self.settle(&first, &ran);
+        loop {
+            let queued = {
+                let mut background = locked(&self.background);
+                match background.get_mut(&place) {
+                    Some(slot) if slot.id == id && !slot.queued.is_empty() => {
+                        std::mem::take(&mut slot.queued)
+                    }
+                    Some(slot) if slot.id == id => {
+                        background.remove(&place);
+                        self.busy.send_modify(|busy| *busy = busy.saturating_sub(1));
+                        return;
+                    }
+                    // A new turn has let go of this run.
+                    _ => return,
+                }
+            };
+            for batch in batches(queued) {
+                let job = &batch[0];
+                let ran = execute(
+                    job.runner.clone(),
+                    job.env.clone(),
+                    self.running.clone(),
+                    self.limit,
+                )
+                .await;
+                for job in &batch {
+                    self.settle(job, &ran);
+                }
+            }
+        }
+    }
+
+    /// Puts `job` behind the run its checker has in the background in the same place, if there
+    /// is one. Returns the job when there is none.
+    fn queue(&self, place: &Place, job: Job) -> Option<Job> {
+        match locked(&self.background).get_mut(place) {
+            Some(slot) => {
+                slot.queue(job);
+                None
+            }
+            None => Some(job),
+        }
+    }
+
     /// Checks `file` after a write that replaced `old` (`None` for a new file) with `new`. Call
-    /// it while the file's lock is held. Never fails the write: a checker that is missing, fails
-    /// or takes too long is one note.
-    pub async fn after_write(&self, ctx: &ToolCtx, file: &Path, old: Option<&str>, new: &str) -> Checked {
+    /// it while the file's lock is held. Never fails the write: a checker that is missing or
+    /// fails is one note, and so is one that takes longer than the write waits for it; that one
+    /// goes on in the background, and what it finds is in the report at the end of the turn.
+    pub async fn after_write(
+        self: &Arc<Self>,
+        ctx: &ToolCtx,
+        file: &Path,
+        old: Option<&str>,
+        new: &str,
+    ) -> Checked {
         if !self.on_write {
             return Checked::default();
         }
         let find = |name: &str| which::which(name).ok();
-        let unchecked = |checker: &str, why: String, note: bool| {
-            self.record(file, checker, (old, new), Err(why.clone()));
-            Checked {
-                note: note.then_some(why),
-                block: None,
-            }
+        // `why` is for the report at the end of the turn, `note` for the result of the write.
+        let unchecked = |checker: &str, why: String, note: Option<String>| {
+            self.record(file, checker, (old, new), Err(why));
+            Checked { note, block: None }
         };
         let runner = match self.runner(file, &ctx.cwd, &find) {
             None => return Checked::default(),
             Some(Ok(runner)) => runner,
-            Some(Err(why)) => return unchecked("", why, true),
+            Some(Err(why)) => return unchecked("", why.clone(), Some(why)),
         };
-        let name = runner.name.as_str();
+        let name = runner.name.clone();
         if new.len() > MAX_FILE_BYTES {
-            return unchecked(name, "larger than 1 MB".to_string(), false);
+            return unchecked(&name, "larger than 1 MB".to_string(), None);
         }
-        let scope = (kind_of(file).unwrap_or_default(), runner.cwd.clone());
-        if locked(&self.turn).slow.contains(&scope) {
-            let why = format!("{name} ran out of time earlier in this turn and was not run again");
-            return unchecked(name, why, true);
-        }
-        let ran = tokio::select! {
-            ran = self.run(&runner, file, ctx.services.get::<AgentEnv>()) => ran,
-            _ = ctx.cancel.cancelled() => Ran::Failed(format!("{name} was cancelled")),
+        let place: Place = (name.clone(), runner.cwd.clone());
+        let job = Job {
+            runner,
+            file: file.to_path_buf(),
+            turn: locked(&self.turn).number,
+            env: ctx.services.get::<AgentEnv>(),
         };
-        match ran {
-            Ran::Found(findings) => {
+        let still_running = format!("{name} was still running");
+        let behind = format!(
+            "{name} is still checking an earlier write; what it finds here joins the report when you stop"
+        );
+        let Some(job) = self.queue(&place, job) else {
+            return unchecked(&name, still_running, Some(behind));
+        };
+        let mut run = Run(Some(tokio::spawn(execute(
+            job.runner.clone(),
+            job.env.clone(),
+            self.running.clone(),
+            self.limit,
+        ))));
+        let waited = match &mut run.0 {
+            Some(handle) => tokio::select! {
+                waited = tokio::time::timeout(self.timeout, handle) => waited,
+                _ = ctx.cancel.cancelled() => {
+                    let why = format!("{name} was cancelled");
+                    return unchecked(&name, why.clone(), Some(why));
+                }
+            },
+            None => return Checked::default(),
+        };
+        let ran = match waited {
+            Ok(Ok(ran)) => ran,
+            Ok(Err(_)) => Ran::Failed(format!("{name} could not be run")),
+            // Nothing would show what a run in the background finds.
+            Err(_) if self.report == CheckReport::Off => {
+                let why = format!("{name} did not finish within {}", human(self.timeout));
+                return unchecked(&name, why.clone(), Some(why));
+            }
+            Err(_) => {
+                let checked = unchecked(&name, still_running, None);
+                let mut background = locked(&self.background);
+                // Another write got there while this one waited: one run at a time.
+                if let Some(slot) = background.get_mut(&place) {
+                    slot.queue(job);
+                    return Checked {
+                        note: Some(behind),
+                        ..checked
+                    };
+                }
+                let id = self.slots.fetch_add(1, Ordering::Relaxed);
+                let task = tokio::spawn(self.clone().supervise(place.clone(), id, job, run));
+                let queued = Vec::new();
+                background.insert(place, Slot { id, task, queued });
+                self.busy.send_modify(|busy| *busy += 1);
+                return Checked {
+                    note: Some(format!(
+                        "{name} is still running; what it finds joins the report when you stop"
+                    )),
+                    ..checked
+                };
+            }
+        };
+        match outcome(&job.runner, file, &ran, self.limit) {
+            Ok(findings) => {
                 let shown = display_path(&ctx.cwd, file);
                 let errors: Vec<&Finding> = findings
                     .iter()
@@ -932,30 +1161,53 @@ impl Checks {
                 let mut lines: Vec<String> = errors
                     .iter()
                     .take(MAX_WRITE_ERRORS)
-                    .map(|finding| finding.render(&shown, name))
+                    .map(|finding| finding.render(&shown, &name))
                     .collect();
                 if errors.len() > MAX_WRITE_ERRORS {
                     lines.push(format!("… {} more errors", errors.len() - MAX_WRITE_ERRORS));
                 }
                 let block = (!lines.is_empty()).then(|| format!("checks:\n{}", lines.join("\n")));
-                self.record(file, name, (old, new), Ok(findings));
+                self.record(file, &name, (old, new), Ok(findings));
                 Checked { note: None, block }
             }
-            Ran::TimedOut => {
-                locked(&self.turn).slow.insert(scope);
-                let why = format!("{name} did not finish within {}", human(self.timeout));
-                unchecked(name, why, true)
-            }
-            Ran::Failed(why) => unchecked(name, why, true),
+            Err(why) => unchecked(&name, why.clone(), Some(why)),
         }
+    }
+
+    /// Ends the checks that are still running.
+    fn let_go(&self) {
+        let mut background = locked(&self.background);
+        for (_, slot) in background.drain() {
+            slot.task.abort();
+        }
+        self.busy.send_replace(0);
     }
 
     /// Forgets the turn that ended: a prompt starts a new one.
     pub fn new_turn(&self) {
-        *locked(&self.turn) = Turn::default();
+        self.let_go();
+        {
+            let mut turn = locked(&self.turn);
+            *turn = Turn {
+                number: turn.number + 1,
+                ..Turn::default()
+            };
+        }
         if let Some(secrets) = &self.secrets {
             secrets.start();
         }
+    }
+
+    /// Whether the lead's report has to wait for a check that is still running.
+    pub fn waits(&self) -> bool {
+        self.report != CheckReport::Off && !locked(&self.turn).reported && *self.busy.borrow() > 0
+    }
+
+    /// Returns once no check is running in the background, which no check does for longer than
+    /// its limit.
+    pub async fn settled(&self) {
+        let mut busy = self.busy.subscribe();
+        let _ = tokio::time::timeout(self.limit, busy.wait_for(|busy| *busy == 0)).await;
     }
 
     /// What the lead is told when it stops: what the checkers found in the files written in
@@ -1067,6 +1319,7 @@ impl Checks {
     }
 
     fn end(&self) {
+        self.let_go();
         if let Some(secrets) = &self.secrets {
             secrets.stop();
         }
@@ -1084,8 +1337,15 @@ impl EventHandler for TurnWatch {
             Event::UserPrompt { .. } => self.0.new_turn(),
             Event::SessionEnd => self.0.end(),
             Event::Stop { agent, .. } if agent.depth == 0 => {
+                let ui = ctx.services.get::<Ui>();
+                if self.0.waits() {
+                    if let Some(ui) = &ui {
+                        ui.0.notify(Level::Info, "checks: waiting for a checker that is still running");
+                    }
+                    self.0.settled().await;
+                }
                 if let Some(report) = self.0.report(&ctx.cwd) {
-                    if let Some(ui) = ctx.services.get::<Ui>() {
+                    if let Some(ui) = &ui {
                         ui.0.notify(Level::Info, &report.summary);
                     }
                     return Outcome::Block { reason: report.text };
@@ -1108,8 +1368,13 @@ pub struct ChecksExt {
     pub configured: BTreeMap<String, String>,
     /// `tools.check_report`.
     pub report: CheckReport,
-    /// How long one checker may take: [`TIMEOUT`].
+    /// Whether the project is trusted. A checker that runs the project's code is used only
+    /// then.
+    pub trusted: bool,
+    /// How long a write waits for its checker: [`TIMEOUT`].
     pub timeout: Duration,
+    /// How long a checker may run at all: [`LIMIT`].
+    pub limit: Duration,
     /// The `gitleaks` program, when the project is to be scanned for secrets: what
     /// [`crate::scan::scanner`] found.
     pub gitleaks: Option<PathBuf>,
@@ -1145,6 +1410,10 @@ mod tests {
     }
 
     fn checks(configured: &[(&str, &str)], root: &Path) -> Checks {
+        checks_of(configured, root, true)
+    }
+
+    fn checks_of(configured: &[(&str, &str)], root: &Path, trusted: bool) -> Checks {
         Checks::new(&ChecksExt {
             root: root.to_path_buf(),
             on_write: true,
@@ -1152,8 +1421,10 @@ mod tests {
                 .iter()
                 .map(|(kind, command)| (kind.to_string(), command.to_string()))
                 .collect(),
+            trusted,
             report: CheckReport::Delta,
             timeout: TIMEOUT,
+            limit: LIMIT,
             gitleaks: None,
         })
     }
@@ -1416,6 +1687,67 @@ mod tests {
         assert!(checks.runner(&py, root, &|_| None).is_none());
         assert!(checks.runner(&file("notes.md"), root, &all).is_none());
         assert!(checks.runner(&file("Makefile"), root, &all).is_none());
+
+        // In a project that is not trusted the checkers that run its code are off: no clippy
+        // (build scripts, macros), no go vet (cgo), and oxlint where eslint would load the
+        // project's configuration. The ones that only read the file are as before.
+        let untrusted = checks_of(&[], root, false);
+        let name = |path: &Path| {
+            let runner = untrusted.runner(path, root, &all);
+            runner.map(|runner| runner.unwrap().name)
+        };
+        assert_eq!(name(&lib), None);
+        assert_eq!(name(&root.join("cmd/app/main.go")), None);
+        assert_eq!(name(&ts).as_deref(), Some("oxlint"));
+        assert_eq!(name(&py).as_deref(), Some("ruff"));
+        assert_eq!(name(&sh).as_deref(), Some("shellcheck"));
+        assert_eq!(name(&workflow).as_deref(), Some("actionlint"));
+        assert_eq!(name(&root.join("Dockerfile")).as_deref(), Some("hadolint"));
+    }
+
+    #[test]
+    fn files_queued_behind_a_run_share_a_run_when_their_command_is_the_same() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"demo\"\n").unwrap();
+        let checks = checks(&[], root);
+        let job = |relative: &str| Job {
+            runner: checks.runner(&root.join(relative), root, &all).unwrap().unwrap(),
+            file: root.join(relative),
+            turn: 0,
+            env: None,
+        };
+        // Two files of the package's library are one clippy run; a test file needs
+        // `--all-targets`, and each shell script is handed to shellcheck by name.
+        let queued = ["src/a.rs", "run.sh", "src/b.rs", "tests/it.rs", "other.sh"].map(job);
+        let files: Vec<Vec<PathBuf>> = batches(queued.into())
+            .iter()
+            .map(|batch| batch.iter().map(|job| job.file.clone()).collect())
+            .collect();
+        let at = |relative: &str| root.join(relative);
+        assert_eq!(
+            files,
+            [
+                vec![at("src/a.rs"), at("src/b.rs")],
+                vec![at("run.sh")],
+                vec![at("tests/it.rs")],
+                vec![at("other.sh")],
+            ]
+        );
+
+        // A file written again while it waits is checked once.
+        let mut slot = Slot {
+            id: 0,
+            task: tokio::runtime::Runtime::new().unwrap().spawn(async {}),
+            queued: Vec::new(),
+        };
+        for relative in ["src/a.rs", "run.sh", "src/a.rs"] {
+            slot.queue(job(relative));
+        }
+        let waiting: Vec<PathBuf> = slot.queued.iter().map(|job| job.file.clone()).collect();
+        assert_eq!(waiting, [at("run.sh"), at("src/a.rs")]);
     }
 
     #[test]

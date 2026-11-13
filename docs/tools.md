@@ -69,15 +69,15 @@ src/config.rs:42:17 error mismatched types [E0308] [clippy]
 
 Warnings and notes are not in the result; they are kept for the report the lead gets when it stops (below). What a checker says about other files is dropped. Each line ends with the checker's name, after the code the checker gave the finding when it has one.
 
-These checkers are built in. Each is used only when its program is on `PATH`:
+These checkers are built in. Each is used only when its program is on `PATH`. Three of them run code of the project in order to check it, so they are used only in a project you trust (below):
 
 | Files | Checker | Command |
 |---|---|---|
-| `rs` | clippy | `cargo clippy -p <package> --message-format=short`, run in the directory of the nearest `Cargo.toml` that names a package; `--all-targets` is added for a file under `tests/`, `benches/` or `examples/`. A file that belongs to no package is not checked |
+| `rs` | clippy (trusted projects) | `cargo clippy -p <package> --message-format=short`, run in the directory of the nearest `Cargo.toml` that names a package; `--all-targets` is added for a file under `tests/`, `benches/` or `examples/`. A file that belongs to no package is not checked |
 | `py`, `pyi` | ruff | `ruff check --output-format concise --no-fix <file>` |
-| `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `mts`, `cts` | eslint, else oxlint | `eslint -f json <file>` when an eslint config file (`eslint.config.*`, `.eslintrc*`) is beside the file or above it inside the project; otherwise `oxlint -f unix <file>` |
+| `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `mts`, `cts` | eslint (trusted projects), else oxlint | `eslint -f json <file>` when an eslint config file (`eslint.config.*`, `.eslintrc*`) is beside the file or above it inside the project; otherwise `oxlint -f unix <file>` |
 | `sh`, `bash` | shellcheck | `shellcheck -f gcc <file>` |
-| `go` | go vet | `go vet .` in the file's directory |
+| `go` | go vet (trusted projects) | `go vet .` in the file's directory |
 | `yml`, `yaml` under `.github/workflows` | actionlint | `actionlint -oneline <file>` |
 | `Dockerfile`, `Dockerfile.*`, `*.dockerfile` | hadolint | `hadolint --no-color <file>` |
 
@@ -95,15 +95,23 @@ The command is run directly, without a shell, in the agent's working directory. 
 
 Limits, none of which ever fails the write:
 
-- A checker gets 5 seconds, and what it started ends with it. One that takes longer adds a note to the result, `; clippy did not finish within 5 s`, and is not run again for that kind of file in that directory until your next prompt, so one slow checker costs a turn 5 seconds, not 5 seconds per edit.
+- A write waits 5 seconds for its checker. One that takes longer goes on in the background, and the result says so: `; clippy is still running; what it finds joins the report when you stop`. When the lead stops, the report waits for it. A checker may run for 60 seconds in all; then it is ended with everything it started, and the file is named in the report as not checked.
+- One run of a checker goes on in the background per directory it runs in (per package for clippy). A file written there meanwhile waits behind it, without making its write wait: `; clippy is still checking an earlier write; what it finds here joins the report when you stop`. When the run is done, the files that waited are checked, with one run for all that share a command line, so one clippy run serves every file of a package. A file written several times while it waited is checked once.
+- Your next prompt ends the checks that are still running. With `check_report = "off"` nothing would show what a background run finds, so a checker is ended after the 5 seconds and the result says `; clippy did not finish within 5 s`.
 - A checker that exits with an error and reports nothing adds `; ruff failed: <its first line>`. A checker named in `[tools.check]` that is not installed adds ``; checker `pylint` was not found``.
 - At most 3 checkers run at the same time over all agents. Files larger than 1 MB are not checked.
 
-`cargo clippy` builds the package, so on a large crate it often needs more than 5 seconds, above all the first time. Set `rs = ""` if the note is all you ever get, and rely on the language server's diagnostics and the build.
+`cargo clippy` builds the package, so on a large crate, and the first time on any, it takes longer than a write waits. Its findings then come with the report at the end of the turn instead of with the write.
+
+#### Checkers that run the project's code
+
+To check a file, `cargo clippy` builds and runs the package's build scripts and procedural macros, `eslint` loads the project's configuration file, which is a program, and `go vet` builds the package (with cgo, a C compiler too). That is the project's code running without a tool call you could have refused, so these three are off in a project that is not trusted; for scripts, oxlint is used in the place of eslint. ruff, oxlint, shellcheck, actionlint and hadolint only read the file and run everywhere. A checker you name in your own `[tools.check]` is yours to vouch for and runs everywhere too.
+
+So that a plain Rust, JavaScript or Go project gets its checker, the project counts as having something to trust when checks on write are on, the checker is installed, `[tools.check]` does not replace it, and the project root has a `Cargo.toml` (clippy), an eslint config file (eslint) or a `go.mod` (go vet). The interactive UI then asks once, as it does for hooks and MCP servers; see [trust](configuration.md#trust). Print mode, RPC mode and the subcommands do not ask: there an undecided project gets these checkers only with `--trust`.
 
 #### The report when the lead stops
 
-When the lead is about to stop and the checkers found something in the files written since your last prompt (by the lead or by the agents it started), it is told once, as a user message, and takes one more round:
+When the lead is about to stop, azazel first waits for the checks still running in the background (the transcript says `checks: waiting for a checker that is still running`). If the checkers found something in the files written since your last prompt (by the lead or by the agents it started), the lead is then told once, as a user message, and takes one more round:
 
 ```
 <checks>
@@ -113,7 +121,7 @@ tools/release.py: 2 warnings
 On the lines changed in this turn:
 src/config.rs:42:17 error mismatched types [E0308] [clippy]
 tools/release.py:9:5 warning F841 Local variable `tag` is assigned to but never used [ruff]
-1 file was not checked, so nothing found there does not mean it is clean: src/big.rs (clippy did not finish within 5 s)
+1 file was not checked, so nothing found there does not mean it is clean: web/app.ts (oxlint did not finish within 60 s)
 </checks>
 This is an automatic report, not a message from the user. Fix what your changes caused, say in a line what you leave and why, then finish.
 ```
@@ -140,7 +148,7 @@ deploy/keys.txt:12 aws-access-token
 
 The secret itself is never read from the scan's output, shown or sent to a model. A project that is not a git repository is scanned as files (`--no-git`). At most 20 places are listed; the scan gets 2 minutes and ends with the session. `check_report = "off"` turns the scan off too, since the report is the only place its findings go.
 
-`azazel doctor` lists the built-in checkers that are installed (`checks on write: clippy (rs), shellcheck (sh, bash)`), warns about a `[tools.check]` program that is missing, and says whether secrets are scanned for and, if not, why. `[tools.check]` and `[tools.scan]` name or start programs, so a project's config can set them only when the project is trusted.
+`azazel doctor` lists the built-in checkers that are installed (`checks on write: clippy (rs), shellcheck (sh, bash)`), names each one that is off for lack of trust (`checks on write: clippy (rs): off, the project is not trusted`), warns about a `[tools.check]` program that is missing, and says whether secrets are scanned for and, if not, why. `[tools.check]` and `[tools.scan]` name or start programs, so a project's config can set them only when the project is trusted.
 
 ## Search
 
