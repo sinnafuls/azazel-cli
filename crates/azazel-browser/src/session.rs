@@ -17,13 +17,17 @@ use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
 use crate::launch::{NOT_FOUND, find_binary, launch};
-use crate::page::{self, Key};
+use crate::page::{self, Condition, Key};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
 
 /// How long a page gets to load after `open`, `navigate`, `back` and `reload`.
 const LOAD: Duration = Duration::from_secs(30);
 const DEFAULT_WAIT: Duration = Duration::from_secs(10);
+/// How often `wait` looks at the page when the call names no `poll_ms`.
+const DEFAULT_POLL: Duration = Duration::from_millis(100);
+/// The shortest time between two looks.
+const MIN_POLL: Duration = Duration::from_millis(10);
 /// The network counts as idle once nothing has been in flight for this long.
 const IDLE: Duration = Duration::from_millis(500);
 const LOG_LINES: usize = 100;
@@ -63,6 +67,7 @@ pub struct Input {
     #[serde(rename = "for")]
     pub wait_for: Option<String>,
     pub timeout_ms: Option<u64>,
+    pub poll_ms: Option<u64>,
     pub expression: Option<String>,
     pub full_page: bool,
     pub filter: Option<String>,
@@ -558,52 +563,57 @@ impl Running {
             .unwrap_or(Value::Null))
     }
 
-    /// Waits until `condition` holds: `load`, `idle`, `text:<string>` or a selector.
-    async fn wait(&self, session: &str, condition: &str, limit: Duration) -> Result<String, String> {
-        let expression = if condition == "load" {
-            Some("document.readyState === 'complete'".to_string())
-        } else if condition == "idle" {
-            None
-        } else if let Some(text) = condition.strip_prefix("text:") {
-            let text = Value::String(text.to_string());
-            Some(format!(
-                "!!document.body && document.body.innerText.includes({text})"
-            ))
-        } else {
-            Some(format!(
-                "document.querySelector({}) !== null",
-                Value::String(condition.to_string())
-            ))
-        };
+    /// Whether the page shows a node with `role` (and `name`) in its accessibility tree. False
+    /// while the tree cannot be read, as in the middle of a navigation.
+    async fn shows_role(&self, session: &str, role: &str, name: Option<&str>) -> bool {
+        let tree = self.call(session, "Accessibility.getFullAXTree", json!({})).await;
+        tree.is_ok_and(|reply| {
+            let nodes = reply.get("nodes").and_then(Value::as_array);
+            nodes.is_some_and(|nodes| page::has_role(nodes, role, name))
+        })
+    }
+
+    /// Waits until what `wanted` describes holds (see [`page::condition`]), looking every `poll`.
+    async fn wait(
+        &self,
+        session: &str,
+        wanted: &str,
+        limit: Duration,
+        poll: Duration,
+    ) -> Result<String, String> {
+        let condition = page::condition(wanted)?;
         let begun = Instant::now();
         loop {
-            let met = match &expression {
-                Some(expression) => match self.evaluate(session, expression).await {
+            let met = match &condition {
+                Condition::Script(script) => match self.evaluate(session, script).await {
                     Ok(value) => value == Value::Bool(true),
                     // An invalid selector never becomes valid.
                     Err(why) if why.contains("SyntaxError") => {
-                        return Err(format!("invalid selector `{condition}`"));
+                        return Err(format!("invalid selector `{wanted}`"));
                     }
                     // The page is navigating; ask again.
                     Err(_) => false,
                 },
-                None => {
+                Condition::Idle => {
                     let logs = self.logs.lock().unwrap_or_else(PoisonError::into_inner);
                     logs.get(session).is_none_or(|log| {
                         log.in_flight.is_empty() && log.last_activity.is_none_or(|at| at.elapsed() >= IDLE)
                     })
                 }
+                Condition::Role { role, name } => self.shows_role(session, role, name.as_deref()).await,
             };
             if met {
-                return Ok(format!("`{condition}` after {} ms", begun.elapsed().as_millis()));
+                return Ok(format!("`{wanted}` after {} ms", begun.elapsed().as_millis()));
             }
-            if begun.elapsed() >= limit {
+            let left = limit.saturating_sub(begun.elapsed());
+            if left.is_zero() {
                 return Err(format!(
-                    "`{condition}` did not happen within {} ms",
+                    "`{wanted}` did not happen within {} ms",
                     limit.as_millis()
                 ));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            // The last look comes at the limit, however long the pause between looks.
+            tokio::time::sleep(poll.min(left)).await;
         }
     }
 
@@ -854,7 +864,11 @@ impl Running {
                     "wait" => {
                         let condition = required(&input.wait_for, "for")?;
                         let limit = input.timeout_ms.map_or(DEFAULT_WAIT, Duration::from_millis);
-                        text(self.wait(&session, &condition, limit).await?)
+                        let poll = input
+                            .poll_ms
+                            .map_or(DEFAULT_POLL, Duration::from_millis)
+                            .max(MIN_POLL);
+                        text(self.wait(&session, &condition, limit, poll).await?)
                     }
                     "eval" => {
                         let expression = required(&input.expression, "expression")?;
