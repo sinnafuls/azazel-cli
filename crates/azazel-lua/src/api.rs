@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
-use azazel_agent::{Access, AgentCmd, AgentHandle, ToolCtx, UpdateSink, UserInput};
+use azazel_agent::{Access, AgentCmd, AgentHandle, AgentInfo, ToolCtx, UpdateSink, UserInput};
 use azazel_ai::providers::http::http_client;
 use azazel_ai::{ModelSpec, ProviderConfig, Role, Router, ThinkingLevel, WireApi};
 use azazel_core::process::AgentEnv;
@@ -106,6 +106,7 @@ pub(crate) fn install(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
     azazel.set("state", state(lua, shared)?)?;
     azazel.set("agent", agent(lua, shared)?)?;
     azazel.set("memory", memory(lua, shared)?)?;
+    azazel.set("classify", classify(lua, shared)?)?;
     azazel.set("tools", tools(lua, shared)?)?;
     azazel.set("session", session(lua, shared)?)?;
     azazel.set_readonly(true);
@@ -128,7 +129,7 @@ const BUILT_IN_PARTS: [&str; 10] = [
     "plan",
 ];
 
-/// `tool`, `on`, `command`, `prompt`, `shortcut`, `provider` and `mcp`.
+/// `tool`, `on`, `command`, `prompt`, `shortcut`, `provider`, `router` and `mcp`.
 fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<()> {
     let script = shared.clone();
     let tool = lua.create_function(move |lua, spec: Table| {
@@ -282,6 +283,25 @@ fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<
         Ok(())
     })?;
     azazel.set("provider", provider)?;
+
+    let script = shared.clone();
+    let router = lua.create_function(move |_, (name, route): (String, Function)| {
+        const NAME: &str = "azazel.router";
+        script.registering(NAME)?;
+        let valid = !name.is_empty()
+            && name.len() <= 64
+            && name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.');
+        if !valid {
+            return Err(runtime(format!(
+                "{NAME}: `{name}` is not a model name; use up to 64 letters, digits, `_`, `-` and `.`"
+            )));
+        }
+        script.pending().routers.push((name, route));
+        Ok(())
+    })?;
+    azazel.set("router", router)?;
 
     let script = shared.clone();
     let mcp = lua.create_function(move |lua, spec: Table| {
@@ -699,6 +719,32 @@ fn agent(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
 
     agent.set_readonly(true);
     Ok(agent)
+}
+
+/// `azazel.classify`: a small model picks one of several answers to a question.
+fn classify(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Function> {
+    let script = shared.clone();
+    lua.create_async_function(move |lua, args: (String, Vec<String>, Option<Table>)| {
+        let script = script.clone();
+        // Cancelling the call this runs in ends the request.
+        let cancel = script.current_cancel();
+        async move {
+            const NAME: &str = "azazel.classify";
+            script.running(NAME)?;
+            // Whose request it is does not shape it: it carries no agent's prompt or tools.
+            let agent = match script.services.get::<Team>().and_then(|team| team.lead()) {
+                Some(lead) => lead.info().clone(),
+                None => AgentInfo {
+                    id: azazel_team::LEAD.to_string(),
+                    def: azazel_team::LEAD.to_string(),
+                    parent: None,
+                    depth: 0,
+                    session_id: String::new(),
+                },
+            };
+            crate::models::judge(&lua, &script.services, &agent, NAME, args, cancel).await
+        }
+    })
 }
 
 /// `azazel.memory`: project memory, when the session has it.

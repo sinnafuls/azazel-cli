@@ -546,7 +546,7 @@ fn config_item(value: &toml::Value) -> Option<toml_edit::Item> {
 /// The roles a person can give a model, in the order the menu lists them, with what each is for.
 /// The lead and every built-in agent have a role of their own, which falls back to a general one
 /// until it is set.
-const ROLES: [(&str, &str); 18] = [
+const ROLES: [(&str, &str); 19] = [
     ("lead", "the agent you talk to"),
     ("scout", "fast read-only exploration"),
     ("planner", "writes implementation plans"),
@@ -564,6 +564,7 @@ const ROLES: [(&str, &str); 18] = [
     ("plan", "planning"),
     ("verify", "verification"),
     ("vision", "work that needs to see images"),
+    ("judge", "quick judgements: `classify` in scripts"),
     ("memory", "extracting memories"),
 ];
 

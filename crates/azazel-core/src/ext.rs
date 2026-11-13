@@ -6,7 +6,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentHooks, AgentInfo, Services, Tool, ToolOutput, ToolSource};
-use azazel_ai::{Block, Message, ModelSpec, Provider, Request, SystemPart};
+use azazel_ai::{Block, Message, ModelSpec, Provider, Request, SystemPart, VirtualModel, VirtualModels};
 use serde_json::Value;
 
 use crate::cache::CacheLedger;
@@ -505,6 +505,9 @@ pub struct Registry {
     commands: RwLock<Vec<(String, Command)>>,
     command_sources: RwLock<Vec<(String, Arc<dyn CommandSource>)>>,
     providers: RwLock<Vec<Arc<dyn Provider>>>,
+    /// The virtual models extensions define. The router reads the same set, so one registered
+    /// while the process runs is routed through at once.
+    pub virtual_models: Arc<VirtualModels>,
     /// Ids of the extensions loaded so far, in load order.
     loaded: RwLock<Vec<String>>,
 }
@@ -555,6 +558,7 @@ impl Registry {
             commands: RwLock::default(),
             command_sources: RwLock::default(),
             providers: RwLock::default(),
+            virtual_models: Arc::default(),
             loaded: RwLock::default(),
         }
     }
@@ -590,6 +594,7 @@ impl Registry {
         self.bus.remove_owner(owner);
         self.prompt.remove_owner(owner);
         self.schemes.remove_owner(owner);
+        self.virtual_models.remove_owner(owner);
         self.commands
             .write()
             .unwrap_or_else(PoisonError::into_inner)
@@ -702,6 +707,12 @@ impl Registrar<'_> {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .push(p);
+    }
+
+    /// Makes `virtual/<name>` a model that can be chosen; `m` picks the model of each request
+    /// made with it. A later registration of the same name takes its place.
+    pub fn virtual_model(&mut self, name: &str, m: Arc<dyn VirtualModel>) {
+        self.registry.virtual_models.add(&self.owner, name, m);
     }
 
     pub fn scheme(&mut self, s: Arc<dyn Scheme>) {

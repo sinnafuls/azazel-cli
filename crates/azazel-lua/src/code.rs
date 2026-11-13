@@ -10,13 +10,15 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_core::transcript::activity;
-use azazel_core::{ArtifactStore, ExtError, Extension, Registrar, ToolCaller};
+use azazel_core::{ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch};
+use azazel_team::{MemberState, Team};
+use futures::StreamExt;
 use mlua::chunk::ChunkMode;
-use mlua::{Lua, MultiValue, Table, VmState};
+use mlua::{Function, Lua, MultiValue, Table, VmState};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
-use crate::convert::{from_lua, tool_input};
+use crate::convert::{from_lua, to_lua, tool_input};
 use crate::script::{describe, locked};
 
 pub const NAME: &str = "run_code";
@@ -26,6 +28,21 @@ const LISTING_CHARS: usize = 12_000;
 const MAX_PRINTED_BYTES: usize = 1024 * 1024;
 /// How long a cancelled script gets to wind down the tool call it is waiting for.
 const CANCEL_GRACE: Duration = Duration::from_secs(2);
+/// The tool that starts agents; a script reaches it through `agents.run`.
+const TASK: &str = "task";
+/// The tool that finds tools kept back until they are asked for (those of MCP servers, when
+/// there are many) and makes what it finds callable.
+const TOOL_SEARCH: &str = "tool_search";
+/// Tools `tools.search` returns unless told otherwise, and the most it returns.
+const SEARCH_LIMIT: usize = 8;
+const MAX_SEARCH_LIMIT: usize = 25;
+/// How many calls `parallel` runs at once where no team says (`team.max_parallel`'s default).
+const PARALLEL: usize = 4;
+/// The kind of the session entries `store` writes.
+const STORE_ENTRY: &str = "run_code_store";
+/// The longest key `store` takes, and the most JSON one stored value may be.
+const MAX_KEY_BYTES: usize = 200;
+const MAX_STORED_BYTES: usize = 256 * 1024;
 
 const INTRO: &str = "Run a Luau script that calls your other tools, to do a job of several steps in one call: \
      read a dozen files and return only the lines that matter, search and then filter, make the same \
@@ -33,9 +50,16 @@ const INTRO: &str = "Run a Luau script that calls your other tools, to do a job 
      yourself and returns its result as a string; a call that fails or is refused raises an error, \
      which `pcall` catches. Every call is checked against the permission rules like one you make \
      directly. What the script prints and the value it returns are the result; nothing else comes \
-     back. `json.decode` and `json.encode` are there. Limits: 120 s of script time (waiting for a \
-     tool does not count), 50 tool calls, 64 KB of result. `run_code`, `task` and the other agent \
-     tools cannot be called from a script.";
+     back. `json.decode` and `json.encode` are there. `parallel{ f, g, ... }` runs functions at the \
+     same time and returns what each returned, in the same places. `agents.run(agent, prompt, { \
+     model?, isolation?, schema? })` starts an agent as `task` does and returns its report, or with \
+     a `schema` the value it reported. `classify(question, { \"a\", \"b\", ... }, { model? })` has a \
+     small model pick one choice and returns `{ choice, index, confidence, reason }`. `store(key, \
+     value)` keeps a JSON value in the session for later scripts; `load(key)` reads it. \
+     `tools.search(query)` finds tools not listed below and `tools.describe(name)` returns a tool's \
+     description and parameters. Limits: 120 s of script time (waiting for a tool, an agent or a \
+     model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. \
+     `run_code` and the agent tools cannot be called through `tools`.";
 
 /// What bounds one script.
 #[derive(Debug, Clone, Copy)]
@@ -126,15 +150,23 @@ fn signature(tool: &dyn Tool) -> String {
             format!("{name}{mark}: {}", type_name(property))
         })
         .collect();
-    let description = tool.description();
+    format!(
+        "- {}{{ {} }}: {}",
+        tool.name(),
+        arguments.join(", "),
+        first_sentence(tool.description())
+    )
+}
+
+/// What a tool does, in the first sentence of its description.
+fn first_sentence(description: &str) -> String {
     let sentence = description
         .split_once(". ")
         .map_or(description, |(first, _)| first)
         .lines()
         .next()
         .unwrap_or_default();
-    let sentence: String = sentence.trim_end_matches('.').chars().take(140).collect();
-    format!("- {}{{ {} }}: {sentence}", tool.name(), arguments.join(", "))
+    sentence.trim_end_matches('.').chars().take(140).collect()
 }
 
 /// The description with the tools a script can call: one line each while they fit the budget,
@@ -196,6 +228,15 @@ struct Run {
     /// Bytes `print` dropped because the output was already too long.
     dropped: AtomicUsize,
     limit: Mutex<Limit>,
+    /// How many calls `parallel` runs at once.
+    width: usize,
+    /// Held shared by a call that may run beside others and alone by one that may not, so the
+    /// calls of a `parallel` keep the order an agent's own calls would.
+    turns: tokio::sync::RwLock<()>,
+}
+
+fn runtime(message: impl std::fmt::Display) -> mlua::Error {
+    mlua::Error::runtime(message)
 }
 
 impl Run {
@@ -245,6 +286,11 @@ impl Run {
             return Err(format!("`{name}` cannot be called from a script"));
         }
         let input = tool_input(lua, args).map_err(|e| format!("tools.{name}: {}", describe(&e)))?;
+        Ok(self.gated(name, input).await?.text_content())
+    }
+
+    /// Takes one of the script's calls; `Err` when it has used them up.
+    fn count(&self) -> Result<usize, String> {
         let number = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         if number > self.limits.tool_calls {
             return Err(format!(
@@ -252,28 +298,254 @@ impl Run {
                 self.limits.tool_calls
             ));
         }
+        Ok(number)
+    }
+
+    /// One counted call of tool `name` through the gate, under a call id of its own. A call
+    /// that may run beside others does; one that may not (an edit, a command) waits until no
+    /// other call of the script is running.
+    async fn gated(&self, name: &str, input: Value) -> Result<ToolOutput, String> {
+        let number = self.count()?;
         self.ctx.update.send(activity(name, &input));
         let ctx = ToolCtx {
             call_id: format!("{}.{number}", self.ctx.call_id),
             ..self.ctx.clone()
         };
-        let output = self.caller.call(&ctx, name, input).await;
-        let text = output.text_content();
-        if output.is_error {
-            Err(format!("{name}: {text}"))
+        let shares = self
+            .caller
+            .available(&ctx)
+            .iter()
+            .find(|tool| tool.name() == name)
+            .is_none_or(|tool| tool.concurrency_safe(&input));
+        let output = if shares {
+            let _beside = self.turns.read().await;
+            self.caller.call(&ctx, name, input).await
         } else {
-            Ok(text)
+            let _alone = self.turns.write().await;
+            self.caller.call(&ctx, name, input).await
+        };
+        if output.is_error {
+            Err(format!("{name}: {}", output.text_content()))
+        } else {
+            Ok(output)
+        }
+    }
+
+    /// The tools a script of this agent can call.
+    fn callable(&self) -> Vec<Arc<dyn Tool>> {
+        let mut tools = self.caller.available(&self.ctx);
+        tools.retain(|tool| !blocked(tool.name()));
+        tools
+    }
+
+    /// `tools.search`: the callable tools that match `query`, best first, as `{ name,
+    /// description }` with the first sentence of each description.
+    async fn search_tools(&self, lua: &Lua, query: String, limit: Option<usize>) -> mlua::Result<mlua::Value> {
+        if query.trim().is_empty() {
+            return Err(runtime("tools.search: the query is empty"));
+        }
+        let limit = limit.unwrap_or(SEARCH_LIMIT).clamp(1, MAX_SEARCH_LIMIT);
+        // What `tool_search` finds becomes callable, and is then among the tools ranked here.
+        let held_back = self
+            .caller
+            .available(&self.ctx)
+            .iter()
+            .any(|tool| tool.name() == TOOL_SEARCH);
+        if held_back {
+            let _ = self
+                .gated(TOOL_SEARCH, json!({ "query": query, "limit": limit }))
+                .await;
+        }
+        let tools = self.callable();
+        let documents: Vec<(String, String)> = tools
+            .iter()
+            .map(|tool| (tool.name().to_string(), tool.description().to_string()))
+            .collect();
+        let hits: Vec<Value> = toolsearch::rank(&documents, &query, limit)
+            .into_iter()
+            .filter_map(|index| tools.get(index))
+            .map(|tool| json!({ "name": tool.name(), "description": first_sentence(tool.description()) }))
+            .collect();
+        to_lua(lua, &Value::Array(hits))
+    }
+
+    /// `tools.describe`: everything about one callable tool, or nil when there is none of
+    /// that name.
+    fn describe_tool(&self, lua: &Lua, name: &str) -> mlua::Result<mlua::Value> {
+        let Some(tool) = self.callable().into_iter().find(|tool| tool.name() == name) else {
+            return Ok(mlua::Value::Nil);
+        };
+        let described = json!({
+            "name": tool.name(),
+            "description": tool.description(),
+            "parameters": tool.schema(),
+            "signature": signature(tool.as_ref()).trim_start_matches("- "),
+        });
+        to_lua(lua, &described)
+    }
+
+    /// `agents.run`: starts one agent through the `task` tool, so the call is checked like
+    /// one the agent makes itself, waits for it, and returns `(result, id)`: the value of a
+    /// typed result, else the report.
+    async fn run_agent(
+        &self,
+        lua: &Lua,
+        (def, prompt, options): (String, String, Option<Table>),
+    ) -> mlua::Result<(mlua::Value, String)> {
+        const NAME: &str = "agents.run";
+        let mut agent = json!({ "agent": def, "prompt": prompt });
+        if let Some(options) = options {
+            let options = from_lua(lua, mlua::Value::Table(options))
+                .map_err(|e| runtime(format!("{NAME}: the options: {}", describe(&e))))?;
+            for (key, value) in options.as_object().into_iter().flatten() {
+                if !["model", "isolation", "schema", "name"].contains(&key.as_str()) {
+                    return Err(runtime(format!(
+                        "{NAME}: there is no option `{key}`; the options are model, isolation, schema and name"
+                    )));
+                }
+                agent[key.as_str()] = value.clone();
+            }
+        }
+        let offered = self
+            .caller
+            .available(&self.ctx)
+            .iter()
+            .any(|tool| tool.name() == TASK);
+        let team = self.ctx.services.get::<Team>().filter(|_| offered);
+        let Some(team) = team else {
+            return Err(runtime(format!("{NAME}: this agent cannot start agents")));
+        };
+        let output = self
+            .gated(TASK, json!({ "agents": [agent], "wait": true }))
+            .await
+            .map_err(|why| runtime(format!("{NAME}: {}", why.trim_start_matches("task: "))))?;
+        let finished = output
+            .details
+            .as_ref()
+            .and_then(|details| details.pointer("/agents/0/id"))
+            .and_then(Value::as_str)
+            .and_then(|id| team.result(id))
+            .ok_or_else(|| runtime(format!("{NAME}: the agent left no result")))?;
+        if finished.state != MemberState::Done {
+            return Err(runtime(format!(
+                "{NAME}: agent `{}` {}: {}",
+                finished.id, finished.state, finished.report
+            )));
+        }
+        let value = match finished.json.as_deref().map(serde_json::from_str::<Value>) {
+            Some(Ok(value)) => to_lua(lua, &value)?,
+            _ => mlua::Value::String(lua.create_string(&finished.report)?),
+        };
+        Ok((value, finished.id))
+    }
+
+    /// `parallel`: runs every function of `calls` at once, at most `width` at a time, and
+    /// returns what each returned first under the key its function had. All of them are
+    /// waited for; the first failure is then raised.
+    async fn parallel(&self, lua: &Lua, calls: Table) -> mlua::Result<Table> {
+        let mut keys = Vec::new();
+        let mut functions: Vec<Function> = Vec::new();
+        for pair in calls.pairs::<mlua::Value, mlua::Value>() {
+            let (key, value) = pair?;
+            let mlua::Value::Function(function) = value else {
+                return Err(runtime(format!(
+                    "parallel: every entry must be a function; entry `{}` is not",
+                    key.to_string()?
+                )));
+            };
+            keys.push(key);
+            functions.push(function);
+        }
+        let results: Vec<mlua::Result<mlua::Value>> = futures::stream::iter(
+            functions
+                .into_iter()
+                .map(|function| function.call_async::<mlua::Value>(())),
+        )
+        .buffered(self.width)
+        .collect()
+        .await;
+        let out = lua.create_table()?;
+        let mut failure = None;
+        for (key, result) in keys.into_iter().zip(results) {
+            match result {
+                Ok(value) => out.raw_set(key, value)?,
+                Err(e) if failure.is_none() => {
+                    failure = Some(format!("parallel: entry `{}`: {}", key.to_string()?, describe(&e)));
+                }
+                Err(_) => {}
+            }
+        }
+        match failure {
+            Some(failure) => Err(runtime(failure)),
+            None => Ok(out),
+        }
+    }
+
+    fn session(&self, function: &str) -> mlua::Result<Arc<SessionStore>> {
+        self.ctx
+            .services
+            .get::<SessionStore>()
+            .ok_or_else(|| runtime(format!("{function}: no session is open")))
+    }
+
+    /// `store`: records `value` under `key` where the conversation is now, so that later
+    /// scripts on this branch of the session find it. `nil` forgets the key.
+    fn store(&self, lua: &Lua, key: String, value: mlua::Value) -> mlua::Result<()> {
+        const NAME: &str = "store";
+        if key.is_empty() || key.len() > MAX_KEY_BYTES {
+            return Err(runtime(format!(
+                "{NAME}: the key must be 1 to {MAX_KEY_BYTES} bytes long"
+            )));
+        }
+        let value = match value {
+            mlua::Value::Nil => Value::Null,
+            value => from_lua(lua, value).map_err(|e| runtime(format!("{NAME}: `{key}`: {}", describe(&e))))?,
+        };
+        let size = serde_json::to_string(&value).map_or(0, |text| text.len());
+        if size > MAX_STORED_BYTES {
+            return Err(runtime(format!(
+                "{NAME}: the value of `{key}` is {size} bytes of JSON; one value may be {MAX_STORED_BYTES}. Keep \
+                 large data in a file and store its path"
+            )));
+        }
+        self.session(NAME)?.append(EntryKind::Custom {
+            custom_type: STORE_ENTRY.to_string(),
+            data: json!({ "key": key, "value": value }),
+        });
+        Ok(())
+    }
+
+    /// `load`: what was last stored under `key` on this branch of the session, or nil.
+    fn load(&self, lua: &Lua, key: &str) -> mlua::Result<mlua::Value> {
+        let stored = self.session("load")?.latest(None, |entry| match &entry.kind {
+            EntryKind::Custom { custom_type, data }
+                if custom_type == STORE_ENTRY && data.get("key").and_then(Value::as_str) == Some(key) =>
+            {
+                Some(data.get("value").cloned().unwrap_or(Value::Null))
+            }
+            _ => None,
+        });
+        match stored {
+            Some(value) => to_lua(lua, &value),
+            None => Ok(mlua::Value::Nil),
         }
     }
 }
 
 /// `tools`: indexing it with a tool's name gives a function that calls the tool. A failure is
 /// raised from Luau, so that the script gets a plain string naming the line of the call.
+/// `tools.search` and `tools.describe` take a string; called with a table they are the tools of
+/// those names, if there are any.
 const TOOLS: &str = r#"
-local call = ...
+local call, search, describe = ...
+local finders = { search = search, describe = describe }
 return setmetatable({}, {
     __index = function(_, name)
-        return function(args)
+        local find = finders[name]
+        return function(args, ...)
+            if find ~= nil and type(args) ~= "table" then
+                return find(args, ...)
+            end
             local ok, text = call(name, args)
             if not ok then
                 error(text, 2)
@@ -284,7 +556,8 @@ return setmetatable({}, {
 })
 "#;
 
-/// The globals of a script: `tools`, `print` and `json`.
+/// The globals of a script: `tools`, `agents`, `parallel`, `classify`, `store`, `load`, `print`
+/// and `json`.
 fn install(lua: &Lua, run: &Arc<Run>) -> mlua::Result<()> {
     // Luau's `require` reads source files from disk; a script reaches files through `tools` only.
     lua.globals().raw_set("require", mlua::Nil)?;
@@ -298,9 +571,56 @@ fn install(lua: &Lua, run: &Arc<Run>) -> mlua::Result<()> {
             })
         }
     })?;
-    let tools: Table = lua.load(TOOLS).set_name("=tools").call(call)?;
+    let state = run.clone();
+    let search = lua.create_async_function(move |lua, (query, limit): (String, Option<usize>)| {
+        let state = state.clone();
+        async move { state.search_tools(&lua, query, limit).await }
+    })?;
+    let state = run.clone();
+    let describe_tool = lua.create_function(move |lua, name: String| state.describe_tool(lua, &name))?;
+    let tools: Table = lua
+        .load(TOOLS)
+        .set_name("=tools")
+        .call((call, search, describe_tool))?;
     tools.set_readonly(true);
     lua.globals().set("tools", tools)?;
+
+    let agents = lua.create_table()?;
+    let state = run.clone();
+    let start = lua.create_async_function(move |lua, args: (String, String, Option<Table>)| {
+        let state = state.clone();
+        async move { state.run_agent(&lua, args).await }
+    })?;
+    agents.set("run", start)?;
+    agents.set_readonly(true);
+    lua.globals().set("agents", agents)?;
+
+    let state = run.clone();
+    let parallel = lua.create_async_function(move |lua, calls: Table| {
+        let state = state.clone();
+        async move { state.parallel(&lua, calls).await }
+    })?;
+    lua.globals().set("parallel", parallel)?;
+
+    let state = run.clone();
+    let classify = lua.create_async_function(move |lua, args: (String, Vec<String>, Option<Table>)| {
+        let state = state.clone();
+        async move {
+            state.count().map_err(runtime)?;
+            state.ctx.update.send("classify".to_string());
+            let (services, agent, cancel) = (&state.ctx.services, &state.ctx.agent, state.ctx.cancel.clone());
+            crate::models::judge(&lua, services, agent, "classify", args, cancel).await
+        }
+    })?;
+    lua.globals().set("classify", classify)?;
+
+    let state = run.clone();
+    let store =
+        lua.create_function(move |lua, (key, value): (String, mlua::Value)| state.store(lua, key, value))?;
+    lua.globals().set("store", store)?;
+    let state = run.clone();
+    let load = lua.create_function(move |lua, key: String| state.load(lua, &key))?;
+    lua.globals().set("load", load)?;
 
     let state = run.clone();
     let print = lua.create_function(move |_, values: MultiValue| state.print(values))?;
@@ -486,6 +806,10 @@ impl Tool for RunCodeTool {
         let Some(caller) = ctx.services.get::<ToolCaller>() else {
             return ToolOutput::error("scripts cannot call tools in this session");
         };
+        let width = ctx
+            .services
+            .get::<Team>()
+            .map_or(PARALLEL, |team| team.max_parallel());
         let run = Arc::new(Run {
             ctx: ctx.clone(),
             caller,
@@ -494,6 +818,8 @@ impl Tool for RunCodeTool {
             printed: Mutex::default(),
             dropped: AtomicUsize::new(0),
             limit: Mutex::default(),
+            width,
+            turns: tokio::sync::RwLock::default(),
         });
         // On a thread of its own: a script that computes for a while must not hold up the
         // threads every other agent and the interface run on.

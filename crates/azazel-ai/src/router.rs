@@ -10,12 +10,13 @@ use tokio_util::sync::CancellationToken;
 
 use crate::catalog::{Catalog, ModelInfo};
 use crate::credentials::Credentials;
+use crate::dispatch::{RouteReason, RouteRequest, VirtualModels, is_virtual};
 use crate::error::AiError;
 use crate::limits::LimitStore;
 use crate::provider::Provider;
 use crate::providers::http::blocked_until;
 use crate::stream::EventStream;
-use crate::types::{ModelRef, ModelSpec, Request, Tier};
+use crate::types::{ModelRef, ModelSpec, Request, Role, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
@@ -88,6 +89,12 @@ pub struct RouteState {
     wait: Option<Duration>,
     /// The model most recently given up on, until the next candidate is announced.
     gave_up: Option<(ModelRef, AiError)>,
+    /// The latest failure booked against a model, for a virtual model asked to route the retry.
+    failed: Option<(ModelRef, AiError)>,
+    /// The request comes from outside an agent's conversation.
+    direct: bool,
+    /// The virtual model the latest stream was dispatched by.
+    via: Option<ModelRef>,
     events: Option<UnboundedSender<RouteEvent>>,
 }
 
@@ -101,6 +108,12 @@ impl RouteState {
             events: Some(events),
             ..Self::default()
         }
+    }
+
+    /// The virtual model that picked the model of the stream [`Router::stream_with`] returned
+    /// last; `None` when the chain named that model itself.
+    pub fn via(&self) -> Option<&ModelRef> {
+        self.via.as_ref()
     }
 
     fn emit(&self, event: RouteEvent) {
@@ -154,6 +167,8 @@ pub struct Router {
     tier: RwLock<Option<Tier>>,
     /// Models that refused a tier; they are asked without one for the rest of the process.
     tierless: Mutex<HashSet<String>>,
+    /// The virtual models a chain may name; each picks the models of a request made with it.
+    virtuals: Arc<VirtualModels>,
 }
 
 /// Whether `error` is a model saying it does not take the service tier of the request.
@@ -185,6 +200,7 @@ impl Router {
             limits: Arc::default(),
             tier: RwLock::default(),
             tierless: Mutex::default(),
+            virtuals: Arc::default(),
         }
     }
 
@@ -194,6 +210,27 @@ impl Router {
         self.limits = credentials.limits().clone();
         self.accounts = Some(credentials);
         self
+    }
+
+    /// Routes `virtual/<name>` through the models registered in `virtuals`, now and later.
+    pub fn with_virtual(mut self, virtuals: Arc<VirtualModels>) -> Self {
+        self.virtuals = virtuals;
+        self
+    }
+
+    /// Names of the registered virtual models, sorted; each is usable as `virtual/<name>`.
+    pub fn virtual_models(&self) -> Vec<String> {
+        self.virtuals.names()
+    }
+
+    /// The model whose limits (context window, prices) hold for a conversation on `chain`: its
+    /// first model, or for a virtual one the model that answered last, when one has.
+    pub fn limits_model(&self, chain: &[ModelSpec], answered: Option<&ModelRef>) -> Option<ModelRef> {
+        let first = self.resolve(chain).into_iter().next()?;
+        match answered {
+            Some(answered) if is_virtual(&first) => Some(answered.clone()),
+            _ => Some(first),
+        }
     }
 
     /// What the providers reported about each account's usage windows, and which accounts are
@@ -307,7 +344,11 @@ impl Router {
         req: &Request,
         cancel: CancellationToken,
     ) -> Result<(ModelRef, EventStream), AiError> {
-        self.stream_with(chain, req, cancel, &mut RouteState::new()).await
+        let mut state = RouteState {
+            direct: true,
+            ..RouteState::default()
+        };
+        self.stream_with(chain, req, cancel, &mut state).await
     }
 
     /// Like [`Router::stream`], continuing from the failures already recorded in `state`.
@@ -322,6 +363,8 @@ impl Router {
         if resolved.is_empty() {
             return Err(AiError::InvalidRequest("no model configured".to_string()));
         }
+        let (resolved, routes) = self.dispatch(resolved, req, state).await?;
+        state.via = None;
         if let Some(delay) = state.wait.take() {
             tokio::select! {
                 _ = cancel.cancelled() => return Err(AiError::Aborted),
@@ -344,7 +387,13 @@ impl Router {
                 });
             }
             let error = match self.try_model(model, req, &cancel, state).await {
-                Ok(stream) => return Ok((model.clone(), stream)),
+                Ok(stream) => {
+                    state.via = routes
+                        .iter()
+                        .find(|(to, _)| to.provider == model.provider && to.model == model.model)
+                        .map(|(_, via)| via.clone());
+                    return Ok((model.clone(), stream));
+                }
                 Err(e @ (AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Aborted)) => {
                     return Err(e);
                 }
@@ -358,6 +407,98 @@ impl Router {
             None => Err(AiError::InvalidRequest(
                 "every configured model has failed for this request".to_string(),
             )),
+        }
+    }
+
+    /// Replaces every virtual model of `resolved` by the models it picks for `req`, in its
+    /// place. The second list says which virtual model picked which model; it is empty for a
+    /// chain without virtual models. A virtual model that is not registered, fails, or names
+    /// nothing usable is left out; when nothing is left the request fails with its reason.
+    async fn dispatch(
+        &self,
+        resolved: Vec<ModelRef>,
+        req: &Request,
+        state: &RouteState,
+    ) -> Result<(Vec<ModelRef>, Vec<(ModelRef, ModelRef)>), AiError> {
+        if !resolved.iter().any(is_virtual) {
+            return Ok((resolved, Vec::new()));
+        }
+        let reason = if state.direct {
+            RouteReason::Direct
+        } else if state.failed.is_some() {
+            RouteReason::Retry
+        } else if req.messages.last().is_none_or(|last| last.role == Role::User) {
+            RouteReason::User
+        } else {
+            RouteReason::Continuation
+        };
+        let previous = req.messages.iter().rev().find_map(|message| {
+            let meta = message.meta.as_ref()?;
+            Some(ModelRef::new(meta.provider.as_str(), meta.model.as_str()))
+        });
+        let mut out: Vec<ModelRef> = Vec::new();
+        let mut routes = Vec::new();
+        let mut problem = None;
+        let known = |out: &[ModelRef], model: &ModelRef| {
+            out.iter()
+                .any(|m| m.provider == model.provider && m.model == model.model)
+        };
+        for model in resolved {
+            if !is_virtual(&model) {
+                if !known(&out, &model) {
+                    out.push(model);
+                }
+                continue;
+            }
+            let picked = match self.virtuals.get(&model.model) {
+                Some(route) => {
+                    let request = RouteRequest {
+                        name: &model.model,
+                        reason,
+                        thinking: model.thinking.unwrap_or(req.thinking),
+                        previous: previous.clone(),
+                        failed: state.failed.as_ref().map(|(model, error)| (model, error)),
+                        request: req,
+                    };
+                    route.route(&request).await.and_then(|route| {
+                        let picked: Vec<ModelRef> = self
+                            .resolve(&route.chain)
+                            .into_iter()
+                            .filter(|picked| !is_virtual(picked))
+                            .map(|mut picked| {
+                                picked.thinking = picked.thinking.or(route.thinking);
+                                picked
+                            })
+                            .collect();
+                        match picked.is_empty() {
+                            true => Err("it named no model that is configured".to_string()),
+                            false => Ok(picked),
+                        }
+                    })
+                }
+                None => Err("no extension that is loaded defines it".to_string()),
+            };
+            match picked {
+                Ok(picked) => {
+                    for mut to in picked {
+                        if known(&out, &to) {
+                            continue;
+                        }
+                        // The level chosen with the virtual model holds unless the pick says otherwise.
+                        to.thinking = to.thinking.or(model.thinking);
+                        routes.push((to.clone(), model.clone()));
+                        out.push(to);
+                    }
+                }
+                Err(why) => {
+                    tracing::warn!("{} picked no model: {why}", model.key());
+                    problem.get_or_insert(format!("{}: {why}", model.key()));
+                }
+            }
+        }
+        match (out.is_empty(), problem) {
+            (true, Some(problem)) => Err(AiError::InvalidRequest(problem)),
+            _ => Ok((out, routes)),
         }
     }
 
@@ -485,6 +626,7 @@ impl Router {
     /// model is to be asked again, `None` when it is out for this request. A stall has its own
     /// count, `max_stalls`, and does not use up the model's attempts.
     fn next_attempt(&self, model: &ModelRef, error: &AiError, state: &mut RouteState) -> Option<u32> {
+        state.failed = Some((model.clone(), error.clone()));
         if matches!(error, AiError::Stalled { .. }) {
             let stalls = state.stalled(model);
             if self.policy.max_stalls == 0 || stalls < self.policy.max_stalls {
@@ -1265,5 +1407,234 @@ mod tests {
                 "fallback mock/a -> mock/b: no answer for 120 s",
             ]
         );
+    }
+
+    /// A virtual model that answers with a fixed pick per reason and notes what it was asked.
+    struct ByReason {
+        picks: Vec<(RouteReason, &'static str)>,
+        asked: Mutex<Vec<String>>,
+    }
+
+    impl ByReason {
+        fn new(picks: &[(RouteReason, &'static str)]) -> Arc<ByReason> {
+            Arc::new(ByReason {
+                picks: picks.to_vec(),
+                asked: Mutex::default(),
+            })
+        }
+
+        fn asked(&self) -> Vec<String> {
+            self.asked.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::dispatch::VirtualModel for ByReason {
+        async fn route(&self, request: &RouteRequest<'_>) -> Result<crate::dispatch::Route, String> {
+            let previous = request.previous.as_ref().map(ToString::to_string);
+            let failed = request
+                .failed
+                .map(|(model, error)| format!("{model} ({error})"));
+            self.asked.lock().unwrap().push(format!(
+                "{} {} {} previous={} failed={} text={}",
+                request.name,
+                request.reason.as_str(),
+                request.thinking,
+                previous.as_deref().unwrap_or("-"),
+                failed.as_deref().unwrap_or("-"),
+                request.last_user_text().as_deref().unwrap_or("-"),
+            ));
+            let pick = self
+                .picks
+                .iter()
+                .find(|(reason, _)| *reason == request.reason)
+                .map(|(_, pick)| *pick)
+                .ok_or("nothing to pick for this reason")?;
+            if pick == "fail" {
+                return Err("the router broke".to_string());
+            }
+            // `provider/model ...` with an optional `!level` for the whole pick.
+            let (chain, thinking) = match pick.split_once('!') {
+                Some((chain, level)) => (chain, Some(level.parse().unwrap())),
+                None => (pick, None),
+            };
+            Ok(crate::dispatch::Route {
+                chain: chain.split(' ').map(|spec| spec.parse().unwrap()).collect(),
+                thinking,
+            })
+        }
+    }
+
+    fn with_virtual(mock: Arc<MockProvider>, name: &str, route: Arc<ByReason>) -> Router {
+        let virtuals = Arc::new(VirtualModels::default());
+        virtuals.add("test", name, route);
+        router(mock, &[("cheap", &["mock/small"])]).with_virtual(virtuals)
+    }
+
+    fn asking(text: &str) -> Request {
+        Request {
+            messages: vec![crate::types::Message::user(text)],
+            ..Request::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_virtual_model_picks_the_model_of_each_request_and_the_route_is_reported() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("small", MockStep::text("from small"));
+        mock.push("big", MockStep::text("from big"));
+        let route = ByReason::new(&[
+            (RouteReason::User, "@cheap"),
+            (RouteReason::Continuation, "mock/big!high"),
+        ]);
+        let r = with_virtual(mock.clone(), "auto", route.clone());
+        let c = chain(&["virtual/auto:low"]);
+
+        // What the user wrote goes where the router sends it; a role is as good as a model.
+        let mut state = RouteState::new();
+        let (model, stream) = r
+            .stream_with(&c, &asking("rename x"), CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/small:low");
+        assert_eq!(state.via().map(ToString::to_string).as_deref(), Some("virtual/auto:low"));
+        let reply = match stream.collect::<Vec<_>>().await.pop() {
+            Some(StreamEvent::Done { message }) => message,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(reply.text(), "from small");
+        // The level chosen with the virtual model reached the model that had none of its own.
+        assert_eq!(mock.requests_for("small")[0].thinking, ThinkingLevel::Low);
+
+        // The request after a tool result is a continuation and knows who answered before.
+        let mut after_tools = asking("rename x");
+        after_tools.messages.push(reply);
+        after_tools
+            .messages
+            .push(crate::types::Message::tool(vec![crate::types::Block::tool_result(
+                "c1", "done", false,
+            )]));
+        let mut state = RouteState::new();
+        let (model, _) = r
+            .stream_with(&c, &after_tools, CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/big:high");
+        assert_eq!(mock.requests_for("big")[0].thinking, ThinkingLevel::High);
+        assert_eq!(
+            route.asked(),
+            [
+                "auto user low previous=- failed=- text=rename x",
+                "auto continuation low previous=mock/small failed=- text=rename x",
+            ]
+        );
+
+        // A chain of real models is not dispatched by anything.
+        mock.push("big", MockStep::text("direct"));
+        let mut state = RouteState::new();
+        let (model, _) = r
+            .stream_with(
+                &chain(&["mock/big"]),
+                &asking("x"),
+                CancellationToken::new(),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        assert_eq!((model.to_string().as_str(), state.via()), ("mock/big", None));
+    }
+
+    #[tokio::test]
+    async fn a_retry_is_routed_again_with_the_model_that_failed() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("small", MockStep::text("cut short"));
+        mock.push("big", MockStep::text("whole"));
+        let route = ByReason::new(&[(RouteReason::User, "mock/small"), (RouteReason::Retry, "mock/big")]);
+        let r = with_virtual(mock, "auto", route.clone());
+        let c = chain(&["virtual/auto"]);
+        let mut state = RouteState::new();
+        let (model, _) = r
+            .stream_with(&c, &asking("go"), CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        // The reply broke off while it was streamed: the same request goes out again.
+        r.report_stream_failure(&model, &AiError::Overloaded, &mut state);
+        let (model, stream) = r
+            .stream_with(&c, &asking("go"), CancellationToken::new(), &mut state)
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/big");
+        assert_eq!(final_text(stream).await, "whole");
+        assert_eq!(
+            route.asked()[1],
+            "auto retry off previous=- failed=mock/small (provider overloaded) text=go"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_virtual_model_that_cannot_pick_fails_the_request_unless_the_chain_goes_on() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("big", MockStep::text("fallback"));
+        let route = ByReason::new(&[(RouteReason::Direct, "fail"), (RouteReason::User, "virtual/auto")]);
+        let r = with_virtual(mock.clone(), "auto", route.clone());
+
+        // `stream` is a request from outside a conversation.
+        let failed = r
+            .stream(&chain(&["virtual/auto"]), &asking("x"), CancellationToken::new())
+            .await;
+        assert_eq!(
+            failed.err(),
+            Some(AiError::InvalidRequest(
+                "virtual/auto: the router broke".to_string()
+            ))
+        );
+        assert_eq!(route.asked(), ["auto direct off previous=- failed=- text=x"]);
+
+        // A virtual model cannot hand the request to a virtual model, and one nobody registered
+        // picks nothing either.
+        for (spec, why) in [
+            ("virtual/auto", "virtual/auto: it named no model that is configured"),
+            ("virtual/gone", "virtual/gone: no extension that is loaded defines it"),
+        ] {
+            let failed = r
+                .stream_with(
+                    &chain(&[spec]),
+                    &asking("x"),
+                    CancellationToken::new(),
+                    &mut RouteState::new(),
+                )
+                .await;
+            assert_eq!(failed.err(), Some(AiError::InvalidRequest(why.to_string())));
+        }
+
+        // With a model after it in the chain, the request goes there.
+        let mut state = RouteState::new();
+        let (model, stream) = r
+            .stream_with(
+                &chain(&["virtual/gone", "mock/big"]),
+                &asking("x"),
+                CancellationToken::new(),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.to_string(), "mock/big");
+        assert_eq!(state.via(), None);
+        assert_eq!(final_text(stream).await, "fallback");
+    }
+
+    #[test]
+    fn the_limits_of_a_virtual_model_are_those_of_the_model_that_answered_last() {
+        let r = with_virtual(Arc::new(MockProvider::new()), "auto", ByReason::new(&[]));
+        let answered: ModelRef = "mock/big".parse().unwrap();
+        let limits = |spec: &str, answered: Option<&ModelRef>| {
+            r.limits_model(&chain(&[spec]), answered)
+                .map(|model| model.to_string())
+        };
+        assert_eq!(limits("virtual/auto", None).as_deref(), Some("virtual/auto"));
+        assert_eq!(limits("virtual/auto", Some(&answered)).as_deref(), Some("mock/big"));
+        assert_eq!(limits("@cheap", Some(&answered)).as_deref(), Some("mock/small"));
+        assert_eq!(limits("@nothing", Some(&answered)), None);
+        assert_eq!(r.virtual_models(), ["auto"]);
     }
 }

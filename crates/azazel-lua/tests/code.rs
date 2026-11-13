@@ -4,26 +4,28 @@
 //! gate, and a script stays inside its limits.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::{
-    Agent, AgentConfig, AgentInfo, CompactionSettings, Gate, GateDecision, Limits, Services, Tool, ToolCtx,
-    ToolOutput, ToolSource, UpdateSink,
+    Access, Agent, AgentConfig, AgentInfo, CompactionSettings, Gate, GateDecision, Limits, Services, Tool,
+    ToolCtx, ToolOutput, ToolSource, UpdateSink,
 };
-use azazel_ai::testing::MockProvider;
-use azazel_ai::{Catalog, Credentials, Provider, RetryPolicy, Router, ThinkingLevel};
+use azazel_ai::testing::{MockProvider, MockStep};
+use azazel_ai::{Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, ThinkingLevel};
 use azazel_core::agents::discover;
 use azazel_core::config::set_override;
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
+use azazel_core::side::{Side, SideCosts};
 use azazel_core::{
-    Config, ExtCtx, Headless, LoadOptions, Paths, PermissionGate, PermissionState, Registry, SessionStore,
-    ToolCaller, Ui,
+    Config, EntryKind, ExtCtx, Headless, LoadOptions, Paths, PermissionGate, PermissionState, Registry,
+    SessionStore, ToolCaller, Ui,
 };
 use azazel_lua::{CodeExt, CodeLimits, LuaExt};
-use azazel_team::{BUILTIN_AGENTS, Team, TeamDeps};
+use azazel_team::{BUILTIN_AGENTS, Team, TeamDeps, TeamExt};
 use azazel_tools::CoreToolsExt;
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -405,7 +407,12 @@ async fn the_description_lists_the_tools_a_script_can_call() {
 
 /// A session with a team and a lead agent, which `azazel.tools.call` acts for.
 async fn with_lead(bench: &Bench) -> azazel_agent::AgentHandle {
-    let providers: Vec<Arc<dyn Provider>> = vec![Arc::new(MockProvider::new())];
+    with_lead_on(bench, Arc::new(MockProvider::new())).await
+}
+
+/// [`with_lead`] with the models of `mock` to run sub-agents on.
+async fn with_lead_on(bench: &Bench, mock: Arc<MockProvider>) -> azazel_agent::AgentHandle {
+    let providers: Vec<Arc<dyn Provider>> = vec![mock];
     let router = Arc::new(Router::new(
         providers,
         Catalog::default(),
@@ -449,7 +456,8 @@ async fn with_lead(bench: &Bench) -> azazel_agent::AgentHandle {
         limits: Limits::default(),
         compaction: CompactionSettings::default(),
     });
-    team.attach(agent.clone(), session);
+    team.attach(agent.clone(), session.clone());
+    bench.services.insert(session);
     agent
 }
 
@@ -541,4 +549,526 @@ fn the_tool_is_registered_under_its_own_extension() {
         .map(|tool| tool.name().to_string())
         .collect();
     assert!(names.contains(&"run_code".to_string()), "{names:?}");
+}
+
+/// A tool that takes a moment and notes how many of its calls ran at the same time.
+struct Slow {
+    name: &'static str,
+    access: Access,
+    running: AtomicUsize,
+    peak: AtomicUsize,
+}
+
+impl Slow {
+    fn new(name: &'static str, access: Access) -> Arc<Slow> {
+        Arc::new(Slow {
+            name,
+            access,
+            running: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for Slow {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "Waits a moment. For tests."
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object", "properties": {"n": {"type": "integer"}}})
+    }
+    fn access(&self, _: &Value) -> Access {
+        self.access
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.peak.fetch_max(now, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        match input.get("n").and_then(Value::as_i64) {
+            Some(13) => ToolOutput::error("thirteen is refused"),
+            Some(n) => ToolOutput::text(format!("{}", n * 10)),
+            None => ToolOutput::text("no n"),
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn parallel_runs_calls_at_the_same_time_and_returns_results_in_their_places() {
+    let bench = Bench::new("auto", CodeLimits::default());
+    let nap = Slow::new("nap", Access::Read);
+    let touch = Slow::new("touch", Access::Write);
+    bench.registry.tools.add("test", nap.clone());
+    bench.registry.tools.add("test", touch.clone());
+
+    // Six calls, four at a time where no team sets another width: two rounds, not six.
+    let started = std::time::Instant::now();
+    let output = bench
+        .run(
+            r#"
+            local calls = {}
+            for n = 1, 6 do
+                calls[n] = function() return tools.nap({ n = n }) end
+            end
+            return table.concat(parallel(calls), " ")
+            "#,
+        )
+        .await;
+    assert_eq!(output.text_content(), "10 20 30 40 50 60");
+    assert_eq!(nap.peak.load(Ordering::SeqCst), 4);
+    assert!(started.elapsed() < Duration::from_millis(700), "{:?}", started.elapsed());
+    assert_eq!(output.details, Some(json!({ "tool_calls": 6 })));
+    // Every call passed the gate under an id of its own.
+    let mut seen = bench.seen();
+    seen.sort();
+    assert_eq!(
+        seen,
+        ["nap c1.1", "nap c1.2", "nap c1.3", "nap c1.4", "nap c1.5", "nap c1.6"]
+    );
+
+    // Named entries keep their names, and what is not a tool call runs as well.
+    let named = bench
+        .run(
+            r#"
+            local got = parallel({
+                first = function() return tools.nap({ n = 1 }) end,
+                plain = function() return 7 end,
+            })
+            return got.first .. " " .. got.plain
+            "#,
+        )
+        .await;
+    assert_eq!(named.text_content(), "10 7");
+
+    // A call that changes something waits until it is alone, as it would for the agent itself.
+    let alone = bench
+        .run(
+            r#"
+            local got = parallel({
+                function() return tools.touch({ n = 1 }) end,
+                function() return tools.touch({ n = 2 }) end,
+                function() return tools.touch({ n = 3 }) end,
+            })
+            return table.concat(got, " ")
+            "#,
+        )
+        .await;
+    assert_eq!(alone.text_content(), "10 20 30");
+    assert_eq!(touch.peak.load(Ordering::SeqCst), 1);
+
+    // One failure is raised once the others have finished; `pcall` inside keeps the rest.
+    let failed = bench
+        .run(
+            r#"
+            return parallel({
+                function() return tools.nap({ n = 1 }) end,
+                function() return tools.nap({ n = 13 }) end,
+            })
+            "#,
+        )
+        .await;
+    assert!(failed.is_error);
+    assert_eq!(
+        failed.text_content(),
+        "script error: parallel: entry `2`: run_code:4: nap: thirteen is refused"
+    );
+    let kept = bench
+        .run(
+            r#"
+            local got = parallel({
+                function() return tools.nap({ n = 1 }) end,
+                function() return select(2, pcall(tools.nap, { n = 13 })) end,
+            })
+            return got[1] .. " / " .. got[2]
+            "#,
+        )
+        .await;
+    assert_eq!(kept.text_content(), "10 / nap: thirteen is refused");
+    let wrong = bench.run("return parallel({ 1 })").await;
+    assert_eq!(
+        wrong.text_content(),
+        "script error: parallel: every entry must be a function; entry `1` is not"
+    );
+}
+
+/// The team's tools and a lead to act for, with `mock` answering for the agents a script starts.
+async fn with_team(bench: &Bench, mock: Arc<MockProvider>) -> azazel_agent::AgentHandle {
+    bench
+        .registry
+        .load(&TeamExt {
+            defs: Arc::new(discover(BUILTIN_AGENTS, &[])),
+            max_depth: 2,
+        })
+        .unwrap();
+    with_lead_on(bench, mock).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    // Without the team's tools the agent has nothing to start agents with.
+    let early = bench.run(r#"return agents.run("scout", "look around")"#).await;
+    assert_eq!(
+        early.text_content(),
+        "script error: agents.run: this agent cannot start agents"
+    );
+
+    let mock = Arc::new(MockProvider::new());
+    mock.push("one", MockStep::text("there are three files"));
+    mock.push(
+        "typed",
+        MockStep::tools("", &[("r1", "report", json!({ "result": { "count": 3 } }))]),
+    );
+    mock.push("typed", MockStep::text("reported"));
+    let agent = with_team(&bench, mock.clone()).await;
+
+    let report = bench
+        .run(
+            r#"
+            local report, id = agents.run("scout", "count the files", { model = "mock/one" })
+            return id .. ": " .. report
+            "#,
+        )
+        .await;
+    assert_eq!(report.text_content(), "scout-1: there are three files");
+    // The agent got the prompt, and starting it passed the gate as a `task` call.
+    let asked = mock.requests_for("one");
+    assert_eq!(asked[0].messages.last().unwrap().text(), "count the files");
+    assert_eq!(bench.seen(), ["task c1.1"]);
+
+    // With a schema the result is the value the agent reported, as a table.
+    let typed = bench
+        .run(
+            r#"
+            local value = agents.run("scout", "count the files", {
+                model = "mock/typed",
+                schema = {
+                    type = "object",
+                    properties = { count = { type = "integer" } },
+                    required = { "count" },
+                },
+            })
+            return type(value) .. " " .. value.count + 1
+            "#,
+        )
+        .await;
+    assert_eq!(typed.text_content(), "table 4");
+
+    // Agents started from `parallel` work at the same time; each result is in its place.
+    mock.push("a", MockStep::text("alpha").delayed(Duration::from_millis(300)));
+    mock.push("b", MockStep::text("beta").delayed(Duration::from_millis(300)));
+    let started = std::time::Instant::now();
+    let both = bench
+        .run(
+            r#"
+            local got = parallel({
+                function() return agents.run("scout", "a", { model = "mock/a" }) end,
+                function() return agents.run("scout", "b", { model = "mock/b" }) end,
+            })
+            return got[1] .. " " .. got[2]
+            "#,
+        )
+        .await;
+    assert_eq!(both.text_content(), "alpha beta");
+    assert!(started.elapsed() < Duration::from_millis(580), "{:?}", started.elapsed());
+
+    // What `task` refuses is the script's error to catch.
+    let unknown = bench.run(r#"return agents.run("nobody", "x")"#).await;
+    assert!(
+        unknown
+            .text_content()
+            .starts_with("script error: agents.run: no agent definition named `nobody`; there are: "),
+        "{}",
+        unknown.text_content()
+    );
+    let option = bench
+        .run(r#"return agents.run("scout", "x", { wait = false })"#)
+        .await;
+    assert_eq!(
+        option.text_content(),
+        "script error: agents.run: there is no option `wait`; the options are model, isolation, schema and name"
+    );
+    // An agent whose model fails has not done its work: that is an error, with what it said.
+    mock.push("broken", MockStep::fail(azazel_ai::AiError::Auth("no key".into())));
+    let failed = bench
+        .run(r#"return agents.run("scout", "x", { model = "mock/broken", name = "probe" })"#)
+        .await;
+    assert!(failed.is_error);
+    assert!(
+        failed
+            .text_content()
+            .starts_with("script error: agents.run: agent `probe` failed: "),
+        "{}",
+        failed.text_content()
+    );
+    agent.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stored_values_are_kept_in_the_session_and_follow_its_branches() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    let homeless = bench.run(r#"store("k", 1)"#).await;
+    assert_eq!(
+        homeless.text_content(),
+        "script error: store: no session is open"
+    );
+
+    let session =
+        Arc::new(SessionStore::create(&bench.paths.sessions_dir(), &bench.paths.cwd, None).unwrap());
+    bench.services.insert(session.clone());
+    let start = session.append(EntryKind::Message {
+        message: azazel_ai::Message::user("go"),
+    });
+    let first = bench
+        .run(r#"store("cursor", { page = 2, seen = { "a", "b" } }) return load("cursor").page"#)
+        .await;
+    assert_eq!(first.text_content(), "2");
+    // A later script finds it, and so does the session when it is opened again.
+    let later = bench
+        .run(r#"return table.concat(load("cursor").seen, ",") .. " " .. tostring(load("other"))"#)
+        .await;
+    assert_eq!(later.text_content(), "a,b nil");
+    let reopened = Arc::new(SessionStore::open(&session.path()).unwrap());
+    let stored: Vec<Value> = reopened
+        .entries()
+        .into_iter()
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Custom { custom_type, data } if custom_type == "run_code_store" => Some(data),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        stored,
+        [json!({ "key": "cursor", "value": { "page": 2, "seen": ["a", "b"] } })]
+    );
+
+    // The newest value wins; nil forgets the key.
+    bench.run(r#"store("cursor", 5)"#).await;
+    assert_eq!(bench.run(r#"return load("cursor")"#).await.text_content(), "5");
+    let latest = session.leaf();
+    bench.run(r#"store("cursor", nil)"#).await;
+    assert_eq!(
+        bench.run(r#"return tostring(load("cursor"))"#).await.text_content(),
+        "nil"
+    );
+    // Where the conversation goes back to an earlier point, what was stored after it is not seen.
+    session.set_leaf(latest.as_deref());
+    assert_eq!(bench.run(r#"return load("cursor")"#).await.text_content(), "5");
+    session.set_leaf(Some(&start));
+    assert_eq!(
+        bench.run(r#"return tostring(load("cursor"))"#).await.text_content(),
+        "nil"
+    );
+
+    let huge = bench
+        .run(r#"store("big", string.rep("x", 300000))"#)
+        .await;
+    assert!(
+        huge.text_content()
+            .starts_with("script error: store: the value of `big` is 300002 bytes of JSON; one value may be 262144."),
+        "{}",
+        huge.text_content()
+    );
+    let unstorable = bench.run(r#"store("f", print)"#).await;
+    assert!(unstorable.is_error, "{}", unstorable.text_content());
+}
+
+/// What an MCP client with many tools offers: `tool_search`, and a tool only once a search
+/// has found it.
+struct HeldBack {
+    found: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct Finder(Arc<std::sync::atomic::AtomicBool>);
+
+#[async_trait]
+impl Tool for Finder {
+    fn name(&self) -> &str {
+        "tool_search"
+    }
+    fn description(&self) -> &str {
+        "Find tools provided by MCP servers."
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object", "properties": {"query": {"type": "string"}}})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        self.0.store(true, Ordering::SeqCst);
+        ToolOutput::text("found")
+    }
+}
+
+impl ToolSource for HeldBack {
+    fn tools(&self, _: &AgentInfo) -> Vec<Arc<dyn Tool>> {
+        let mut tools: Vec<Arc<dyn Tool>> = vec![Arc::new(Finder(self.found.clone()))];
+        if self.found.load(Ordering::SeqCst) {
+            tools.push(Arc::new(Named(
+                "mcp__tracker__create_ticket",
+                "Files a ticket in the issue tracker. Needs a title.",
+            )));
+        }
+        tools
+    }
+}
+
+/// A tool that says its name and what it was given.
+struct Named(&'static str, &'static str);
+
+#[async_trait]
+impl Tool for Named {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        self.1
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object", "properties": {"title": {"type": "string"}}, "required": ["title"]})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text(format!("{} got {input}", self.0))
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_script_finds_and_describes_tools_that_are_not_listed() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    bench.registry.tools.add_source(
+        "test",
+        Arc::new(HeldBack {
+            found: Arc::default(),
+        }),
+    );
+    bench
+        .registry
+        .tools
+        .add("test", Arc::new(Named("search", "A tool that happens to be called search.")));
+
+    // The ticket tool is not offered until a search finds it; then it is ranked and callable.
+    let hidden = bench.run(r#"return tools.mcp__tracker__create_ticket({ title = "x" })"#).await;
+    assert!(hidden.is_error, "{}", hidden.text_content());
+    let found = bench
+        .run(
+            r#"
+            local hits = tools.search("file a ticket in the tracker", 3)
+            local first = hits[1]
+            return first.name .. " | " .. first.description .. " | " .. tools[first.name]({ title = "crash" })
+            "#,
+        )
+        .await;
+    assert_eq!(
+        found.text_content(),
+        "mcp__tracker__create_ticket | Files a ticket in the issue tracker | mcp__tracker__create_ticket got \
+         {\"title\":\"crash\"}"
+    );
+
+    // The tools a script cannot call are never found, and the limit is kept.
+    let names = bench
+        .run(
+            r#"
+            local names = {}
+            for _, hit in ipairs(tools.search("run a script or command or start agents task", 25)) do
+                table.insert(names, hit.name)
+            end
+            return #tools.search("read a file", 2) .. " " .. table.concat(names, " ")
+            "#,
+        )
+        .await;
+    let names = names.text_content();
+    assert!(names.starts_with("2 "), "{names}");
+    assert!(names.contains("shell") && !names.contains("run_code"), "{names}");
+    let nothing = bench.run(r#"return #tools.search("zzzqqq")"#).await;
+    assert_eq!(nothing.text_content(), "0");
+
+    let described = bench
+        .run(
+            r#"
+            local read = tools.describe("read")
+            return read.name .. " | " .. tostring(string.find(read.signature, "read{ path: string", 1, true))
+                .. " | " .. read.parameters.properties.path.type .. " | " .. tostring(#read.description > 40)
+                .. " | " .. tostring(tools.describe("nope")) .. " | " .. tostring(tools.describe("run_code"))
+            "#,
+        )
+        .await;
+    assert_eq!(described.text_content(), "read | 1 | string | true | nil | nil");
+
+    // A tool that is itself called `search` is still called with a table of arguments.
+    let own = bench.run(r#"return tools.search({ title = "t" })"#).await;
+    assert_eq!(own.text_content(), "search got {\"title\":\"t\"}");
+    let empty = bench.run(r#"return tools.search("  ")"#).await;
+    assert_eq!(
+        empty.text_content(),
+        "script error: tools.search: the query is empty"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn classify_asks_the_judge_role_and_counts_as_a_call() {
+    let bench = Bench::new("manual", CodeLimits::default());
+    let modelless = bench.run(r#"return classify("q", { "a", "b" })"#).await;
+    assert_eq!(
+        modelless.text_content(),
+        "script error: classify: no model can be asked in this session"
+    );
+
+    let mock = Arc::new(MockProvider::new());
+    mock.push(
+        "judge",
+        MockStep::text(r#"{"choice": 2, "confidence": 0.9, "reason": "nothing crashes"}"#),
+    );
+    mock.push("other", MockStep::text(r#"{"choice": "bug", "confidence": 0.6}"#));
+    let providers: Vec<Arc<dyn Provider>> = vec![mock.clone()];
+    let roles: BTreeMap<String, Vec<ModelSpec>> =
+        BTreeMap::from([("judge".to_string(), vec!["mock/judge".parse().unwrap()])]);
+    bench.services.insert(Arc::new(Side {
+        router: Arc::new(Router::new(providers, Catalog::default(), roles, RetryPolicy::default())),
+        prompt: bench.registry.prompt.clone(),
+        tools: bench.registry.tools.clone(),
+        costs: Arc::new(SideCosts::default()),
+    }));
+
+    let output = bench
+        .run(
+            r#"
+            local answer = classify("Is this a bug report?\nThe docs have a typo.", { "bug", "not a bug" })
+            local second = classify("And this?", { "bug", "not a bug" }, { model = "mock/other" })
+            return string.format("%s %d %.1f %s %s | %s %s", answer.choice, answer.index, answer.confidence,
+                answer.reason, answer.model, second.choice, second.model)
+            "#,
+        )
+        .await;
+    assert_eq!(
+        output.text_content(),
+        "not a bug 2 0.9 nothing crashes mock/judge | bug mock/other"
+    );
+    assert_eq!(output.details, Some(json!({ "tool_calls": 2 })));
+    // The judge was asked the question alone: no prompt of the agent, none of its tools.
+    let asked = &mock.requests_for("judge")[0];
+    assert!(asked.system.is_empty() && asked.tools.is_empty());
+    assert!(asked.messages[0].text().contains("The docs have a typo."));
+
+    let refused = bench.run(r#"return classify("q", { "only" })"#).await;
+    assert_eq!(
+        refused.text_content(),
+        "script error: classify: there are 1 choices; give from 2 to 20"
+    );
 }

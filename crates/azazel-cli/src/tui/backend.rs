@@ -574,6 +574,9 @@ impl Backend for Local {
                 rows.push((format!("@{role}"), first.to_string()));
             }
         }
+        for name in crate::models::virtual_names(router) {
+            rows.push((name, crate::models::VIRTUAL_DETAIL.to_string()));
+        }
         // Providers that can be reached: a credential is present, or none is needed.
         let configured = presets::resolve(&self.app.config.providers).unwrap_or_default();
         for provider in router.provider_ids() {

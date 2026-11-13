@@ -10,6 +10,7 @@ mod code;
 mod confine;
 mod convert;
 mod host;
+mod models;
 mod script;
 
 use std::path::PathBuf;

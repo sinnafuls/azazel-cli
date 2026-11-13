@@ -765,7 +765,9 @@ impl App {
             ..RetryPolicy::default()
         };
         let router = Arc::new(
-            Router::new(providers, catalog, config.roles.clone(), policy).with_accounts(credentials.clone()),
+            Router::new(providers, catalog, config.roles.clone(), policy)
+                .with_accounts(credentials.clone())
+                .with_virtual(registry.virtual_models.clone()),
         );
         router.set_tier(tier);
         // Models named on the command line are this run's `default` role, so that the roles
@@ -776,6 +778,7 @@ impl App {
             let (known, usable) =
                 known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
             let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
+                .and_then(|chain| crate::models::check_virtual(&chain, &router).map(|()| chain))
                 .map_err(UsageError)?;
             if chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
                 config.roles.insert("default".to_string(), chain.clone());
@@ -940,7 +943,9 @@ impl App {
             &self.credentials,
             false,
         );
-        crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)
+        let chain = crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)?;
+        crate::models::check_virtual(&chain, &self.router)?;
+        Ok(chain)
     }
 
     /// A session given as a path to its file, or as its id (a unique prefix) in this project.
@@ -964,12 +969,17 @@ impl App {
     }
 
     /// Whether `chain` names a model this process can use: a configured one whose provider needs
-    /// no key or has a credential (the cloud and script providers find their own).
+    /// no key or has a credential (the cloud and script providers find their own), or a virtual
+    /// model an extension that is loaded defines.
     pub fn has_model(&self, chain: &[ModelSpec]) -> bool {
         let Ok(endpoints) = presets::resolve(&self.config.providers) else {
             return false;
         };
+        let defined = self.router.virtual_models();
         self.router.resolve(chain).iter().any(|model| {
+            if azazel_ai::is_virtual(model) {
+                return defined.contains(&model.model);
+            }
             match endpoints.iter().find(|p| p.id == model.provider) {
                 Some(p) => !p.requires_key || self.credentials.source(p).is_some(),
                 None => true,

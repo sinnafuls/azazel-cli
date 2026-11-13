@@ -788,6 +788,11 @@ impl Team {
         &self.inner.deps.defs
     }
 
+    /// How many sub-agents work at the same time (`team.max_parallel`); the rest wait their turn.
+    pub fn max_parallel(&self) -> usize {
+        self.inner.deps.max_parallel.max(1)
+    }
+
     /// Makes the lead owe a typed result (print mode's `--json-schema`).
     pub fn expect_lead_report(&self, typed: Arc<Typed>) {
         *self

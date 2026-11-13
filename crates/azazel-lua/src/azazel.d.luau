@@ -200,6 +200,36 @@ type McpSpec = {
 	oauth: { clientId: string?, scope: string?, callbackPort: number? }?,
 }
 
+-- What a router is told about the request it picks a model for.
+type RouteRequest = {
+	-- The virtual model's name, without "virtual/".
+	name: string,
+	-- "user": the first request after something the user wrote. "continuation": any other request
+	-- of a turn, such as the one after tool results. "retry": the request is sent again after an
+	-- attempt that failed. "direct": a request from outside a conversation (a summary, a side
+	-- question).
+	reason: "user" | "continuation" | "retry" | "direct",
+	-- The thinking level the request asks for.
+	thinking: string,
+	-- The model that wrote the latest reply of the conversation, as "provider/model".
+	previous: string?,
+	-- For a retry: the model that failed and how.
+	failed: { model: string, error: string }?,
+	-- The latest message the user wrote.
+	text: string?,
+	-- The conversation: the text of each message (its first 2000 characters) and the names of
+	-- the tools an assistant message calls.
+	messages: { { role: "user" | "assistant" | "tool", text: string, tools: { string } } },
+}
+
+-- Where a router sends a request: "provider/model[:thinking]", "@role", a list of them tried in
+-- order, or a table that also sets the thinking level of the models named without one.
+type Route = string | { string } | { model: string | { string }, thinking: string? }
+
+-- The answer of `azazel.classify`. `index` is the position of `choice` in the choices, from 1;
+-- `confidence` is from 0 to 1; `model` is the model that answered.
+type Classification = { choice: string, index: number, confidence: number, reason: string, model: string }
+
 declare azazel: {
 	-- Load only. Adds a tool the agents can call.
 	tool: (spec: ToolSpec) -> (),
@@ -215,6 +245,10 @@ declare azazel: {
 	shortcut: (key: string, handler: (ctx: Ctx) -> ()) -> (),
 	-- Load only. Makes the models of an HTTP endpoint available as `<id>/<model>`.
 	provider: (spec: ProviderSpec) -> (),
+	-- Load only. Makes `virtual/<name>` a model that can be chosen like any other. `route` runs
+	-- before every request made with it and returns where that request goes; it may wait (for
+	-- `azazel.classify`, say). When it errors or names no usable model the request fails.
+	router: (name: string, route: (request: RouteRequest) -> Route) -> (),
 	-- Load only. Adds an MCP server; errors with "MCP unavailable" when MCP is off.
 	mcp: (spec: McpSpec) -> (),
 
@@ -276,6 +310,11 @@ declare azazel: {
 		stop: (id: string) -> { string },
 		list: () -> { Member },
 	},
+
+	-- Waits. Has a small model pick the one of `choices` (2 to 20) that answers `question`: the
+	-- `judge` role, or `options.model`. Errors when the model cannot be asked or its reply
+	-- cannot be read.
+	classify: (question: string, choices: { string }, options: { model: (string | { string })? }?) -> Classification,
 
 	-- Project memory. Both functions wait, and error with "memory unavailable" when memory is off.
 	memory: {

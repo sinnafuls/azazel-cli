@@ -109,6 +109,8 @@ pub struct AgentStatus {
     pub turn: u32,
     /// Model that answered most recently.
     pub model: Option<ModelRef>,
+    /// The virtual model that picked it for that request, when the chain names one.
+    pub via: Option<ModelRef>,
     pub chain: Vec<ModelSpec>,
     pub thinking: ThinkingLevel,
     pub context_tokens: u64,
@@ -651,8 +653,15 @@ impl Actor {
                 .await;
             self.core.forward_route_events(&mut route_rx);
             let (model, mut stream) = started?;
-            self.core.sink.request_started(&model.to_string());
-            locked(&self.core.status).model = Some(model.clone());
+            let via = route.via().cloned();
+            self.core
+                .sink
+                .request_started(&model.to_string(), via.as_ref().map(ToString::to_string).as_deref());
+            {
+                let mut status = locked(&self.core.status);
+                status.model = Some(model.clone());
+                status.via = via;
+            }
             self.core.emit(AgentEvent::MessageStart);
 
             let (mut text, mut thinking) = (String::new(), String::new());
@@ -914,8 +923,10 @@ impl Core {
         chain: &[ModelSpec],
         cancel: &CancellationToken,
     ) -> Result<(), AiError> {
-        let window = match self.router.resolve(chain).first() {
-            Some(model) => self.router.model_info(model).context_window,
+        // A virtual model has no window of its own: that of the model that answered last holds.
+        let answered = locked(&self.status).model.clone();
+        let window = match self.router.limits_model(chain, answered.as_ref()) {
+            Some(model) => self.router.model_info(&model).context_window,
             None => return Ok(()),
         };
         let mut estimate = self.estimate();

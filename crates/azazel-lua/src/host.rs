@@ -15,7 +15,7 @@ use azazel_core::{
 };
 
 use crate::LuaExt;
-use crate::bridge::{LuaCommand, LuaHandler, LuaPrompt, LuaShortcut, LuaTool};
+use crate::bridge::{LuaCommand, LuaHandler, LuaPrompt, LuaRouter, LuaShortcut, LuaTool};
 use crate::confine::Roots;
 use crate::script::{OWNER, Script, Shared, locked};
 
@@ -186,6 +186,13 @@ impl Host {
                     };
                     extras.bind(OWNER, &key, Arc::new(handler));
                 }
+            }
+            for (name, function) in pending.routers {
+                let router = LuaRouter {
+                    script: script.clone(),
+                    function,
+                };
+                r.virtual_model(&name, Arc::new(router));
             }
             // The session's stall limits, when the application set any.
             let stall = r.services().get::<StallLimits>().map(|limits| *limits);

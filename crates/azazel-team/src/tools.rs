@@ -41,6 +41,16 @@ pub fn result_section(finished: &Finished) -> String {
     )
 }
 
+/// Which agents a `task` call ran and how each ended, for a caller that is a program; their
+/// results are read from the team by id.
+fn results_details(results: &[Finished]) -> Value {
+    let agents: Vec<Value> = results
+        .iter()
+        .map(|finished| json!({ "id": finished.id, "status": finished.state.label() }))
+        .collect();
+    json!({ "agents": agents })
+}
+
 /// One line per agent: id, definition, state, time, tokens and cost.
 pub fn roster_table(members: &[MemberInfo]) -> String {
     let mut out = String::new();
@@ -231,7 +241,7 @@ impl Tool for TaskTool {
         match team.wait_all(&ids, &ctx.cancel).await {
             Some(results) => {
                 let sections: Vec<String> = results.iter().map(result_section).collect();
-                ToolOutput::text(sections.join("\n\n"))
+                ToolOutput::text(sections.join("\n\n")).with_details(results_details(&results))
             }
             None => ToolOutput::error("cancelled; the agents this call started were stopped"),
         }

@@ -25,7 +25,7 @@ use crate::catalog::{self, Cached, CachedTool};
 use crate::client::{self, ConnectError};
 use crate::config::{self, Approval, Lifecycle, Loaded, ServerConfig, Transport};
 use crate::handler::{self, Handler};
-use crate::{convert, oauth, search};
+use crate::{convert, oauth};
 
 /// Seconds between attempts to reach a server that failed or went away.
 const RETRY_DELAYS: [u64; 5] = [1, 2, 4, 8, 16];
@@ -1135,7 +1135,7 @@ impl McpManager {
             .iter()
             .map(|tool| (tool.name.clone(), tool.description.clone()))
             .collect();
-        let hits: Vec<SearchHit> = search::rank(&documents, query, limit)
+        let hits: Vec<SearchHit> = azazel_core::toolsearch::rank(&documents, query, limit)
             .into_iter()
             .filter_map(|index| proxies.get(index))
             .map(|tool| SearchHit {
