@@ -229,9 +229,10 @@ cron expression in Task Scheduler, `every 45m` in cron), the entry wakes azazel 
 does nothing until the schedule is due.
 
 - **Missed runs are not caught up.** A run whose time passed while the machine was off or asleep is
-  gone: the scheduler is told not to make up for it, and a run that is started more than two minutes
-  late (ten for an `at`) does nothing. An `at` that was missed stays in the list, marked `missed`, until
-  you remove it.
+  gone: the scheduler is told not to make up for it, and a cron time that azazel is woken for more
+  than two minutes late (ten for an `at`) does nothing. An `every` counts from its last run, so after
+  a pause it runs once, not once for each interval that went by. An `at` that was missed stays in the
+  list, marked `missed`, until you remove it.
 - **One run at a time.** While the background session the last run started is still at work, the next
   run is skipped and the list says so. A prompt for a session that still has the last one waiting is
   not sent a second time. Two runs of one schedule woken at once are told apart by a lock file; one
