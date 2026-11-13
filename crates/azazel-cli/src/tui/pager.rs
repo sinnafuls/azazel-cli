@@ -292,6 +292,7 @@ impl Tui {
 
     /// `f2`, `/transcript`: the whole conversation of this branch, full screen.
     pub(super) async fn open_transcript(&mut self) {
+        self.sync().await;
         let sources = self.transcript_sources();
         if sources.is_empty() {
             return self.info("this session has no messages yet");

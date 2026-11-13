@@ -407,6 +407,89 @@ fn a_taken_session_leaves_no_background_process_and_goes_on_here() {
 }
 
 #[test]
+fn another_program_drives_a_background_session_through_the_bridge() {
+    let sandbox = Sandbox::new(&json!({ "lead": [
+        { "reply": { "text": "First." } },
+        { "reply": { "text": "Second." } },
+    ] }));
+    let id = sandbox.bg(&["--mode", "auto"], "one");
+    sandbox.wait_for_state(&id, "idle");
+
+    let mut bridge = sandbox
+        .azazel(&["rpc", "--attach", &id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .unwrap();
+    let mut commands = bridge.stdin.take().unwrap();
+    let frames = lines_of(bridge.stdout.take().unwrap());
+    let mut next = || -> Value {
+        let line = frames.recv_timeout(LIMIT).expect("a frame within a minute");
+        let frame: Frame = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert_ne!(frame, Frame::Unknown, "{line}");
+        serde_json::from_str(&line).unwrap()
+    };
+    assert_eq!(next()["type"], "hello");
+
+    // Nothing but `attach` and `stop` is taken from a connection that is not the client.
+    writeln!(commands, "{}", json!({ "id": 1, "type": "get_state" })).unwrap();
+    let refused = next();
+    assert_eq!((&refused["id"], &refused["success"]), (&json!(1), &json!(false)));
+    assert!(
+        refused["error"].as_str().unwrap().starts_with("send `attach` first"),
+        "{refused}"
+    );
+
+    // Attaching answers, then replays what was asked for: here, everything.
+    writeln!(commands, "{}", json!({ "id": 2, "type": "attach", "replay": "all" })).unwrap();
+    let attached = next();
+    assert_eq!(attached["success"], true, "{attached}");
+    assert_eq!(attached["data"]["host"], json!(id));
+    let mut replayed = Vec::new();
+    loop {
+        let frame = next();
+        let done = frame["type"] == "idle";
+        replayed.push(frame["type"].as_str().unwrap().to_string());
+        if done {
+            break;
+        }
+    }
+    assert_eq!(replayed.first().map(String::as_str), Some("user_input"), "{replayed:?}");
+    assert!(replayed.contains(&"message_end".to_string()), "{replayed:?}");
+
+    // From here on it is the protocol of `azazel rpc`.
+    writeln!(commands, "{}", json!({ "id": 3, "type": "prompt", "text": "two" })).unwrap();
+    let mut said = String::new();
+    loop {
+        let frame = next();
+        if frame["type"] == "message_end" {
+            said = frame["message"]["content"][0]["text"].as_str().unwrap().to_string();
+        }
+        if frame["type"] == "idle" {
+            break;
+        }
+    }
+    assert_eq!(said, "Second.");
+    writeln!(commands, "{}", json!({ "id": 4, "type": "get_state" })).unwrap();
+    let state = loop {
+        let frame = next();
+        if frame["id"] == 4 {
+            break frame;
+        }
+    };
+    assert_eq!(state["data"]["busy"], false, "{state}");
+
+    // Closing the bridge detaches; the session goes on and the log has both prompts.
+    drop(commands);
+    assert!(bridge.wait().unwrap().success());
+    sandbox.wait_for_state(&id, "idle");
+    let log = sandbox.ok(&["logs", &id]);
+    assert_eq!(log, "\n❯ one\nFirst.\n· done\n\n❯ two\nSecond.\n· done\n");
+    assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
+}
+
+#[test]
 fn a_background_session_with_nothing_to_do_and_nobody_attached_ends() {
     let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "text": "Done." } }] }));
     let host = sandbox

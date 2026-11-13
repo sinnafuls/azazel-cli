@@ -52,6 +52,8 @@ From source (Rust 1.99): clone the repository and run `./install/install.sh` or 
 azazel                               # interactive UI in the current project
 azazel -p "explain src/main.rs"      # one prompt, answer on stdout
 azazel goal "make cargo test pass"   # work until the checker verifies it
+azazel bg "fix the flaky test"       # in the background; azazel attach <id> opens it later
+azazel --ssh build-box               # the same UI on a session that runs on another machine
 azazel doctor                        # what is configured and what is missing
 ```
 
