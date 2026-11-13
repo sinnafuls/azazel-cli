@@ -4,7 +4,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
-use azazel_ai::Block;
+use azazel_ai::services::REDACTED;
+use azazel_ai::{Block, Credentials, Service};
 use azazel_browser::{BrowserSession, BrowserTool, Settings, find_binary};
 use azazel_core::ArtifactStore;
 use base64::Engine;
@@ -45,6 +46,20 @@ function save() {
 </script>
 </body></html>"#;
 
+/// A sign-in form: a user name field that already holds something, a password field, a field
+/// that is neither, and a title that says who signed in.
+const LOGIN_PAGE: &str = r#"<!doctype html>
+<html><head><title>sign in</title></head>
+<body>
+<h1>Sign in</h1>
+<form onsubmit="document.title = 'signed in as ' + document.getElementById('user').value; return false">
+<input id="user" type="email" aria-label="Email" value="old@example.com">
+<input id="pass" type="password" aria-label="Password">
+<input id="note" type="text" aria-label="Note">
+<button>Sign in</button>
+</form>
+</body></html>"#;
+
 /// Serves `page` for every request and returns the address.
 async fn serve(page: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -68,16 +83,20 @@ async fn serve(page: &'static str) -> String {
 struct Bench {
     tool: BrowserTool,
     session: Arc<BrowserSession>,
+    /// Where the site logins of this bench are stored.
+    credentials: Arc<Credentials>,
     ctx: ToolCtx,
 }
 
 impl Bench {
     fn new(dir: &Path) -> Bench {
-        let session = Arc::new(BrowserSession::new(Settings {
+        let credentials = Arc::new(Credentials::new(dir.join("auth.json")));
+        let settings = Settings {
             path: String::new(),
             headless: true,
             profile: dir.join("profile"),
-        }));
+        };
+        let session = Arc::new(BrowserSession::new(settings).with_logins(credentials.clone()));
         let services = Arc::new(Services::default());
         services.insert(Arc::new(ArtifactStore::new(dir.join("artifacts"))));
         let agent = AgentInfo {
@@ -90,6 +109,7 @@ impl Bench {
         Bench {
             tool: BrowserTool(session.clone()),
             session,
+            credentials,
             ctx: ToolCtx {
                 agent_id: agent.id.clone(),
                 session_id: agent.session_id.clone(),
@@ -404,5 +424,123 @@ async fn waits_follow_what_the_page_does_after_an_action() {
         .call(json!({ "action": "wait", "for": "gone:a[", "timeout_ms": 5000 }))
         .await;
     assert_eq!(bad.text_content(), "invalid selector `gone:a[`");
+    bench.session.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_login_is_typed_into_its_own_page_only_and_never_shown() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    const PASSWORD: &str = "hunter2-pass-9";
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(LOGIN_PAGE).await;
+    bench
+        .credentials
+        .store_service(
+            "fixture",
+            Service::site(&format!("{site}/login*"), "me@example.com", PASSWORD).unwrap(),
+        )
+        .unwrap();
+    let value = |id: &str| json!({ "action": "eval", "expression": format!("document.getElementById('{id}').value") });
+
+    // The same form at an address the login was not stored for gets nothing.
+    let elsewhere = bench
+        .ok(json!({ "action": "open", "url": format!("{site}/account?next=/login") }))
+        .await;
+    let refused = bench
+        .call(json!({
+            "action": "fill_login",
+            "ref_user": ref_of(&elsewhere, "\"Email\""),
+            "ref_password": ref_of(&elsewhere, "\"Password\""),
+        }))
+        .await;
+    assert!(refused.is_error);
+    assert!(
+        refused
+            .text_content()
+            .starts_with(&format!("no login is stored for {site}/account;")),
+        "{}",
+        refused.text_content()
+    );
+    assert_eq!(bench.ok(value("pass")).await, "\"\"");
+
+    let page = bench
+        .ok(json!({ "action": "open", "url": format!("{site}/login?next=/account"), "tab": "login" }))
+        .await;
+    let (user, pass, note) = (
+        ref_of(&page, "\"Email\""),
+        ref_of(&page, "\"Password\""),
+        ref_of(&page, "\"Note\""),
+    );
+    // A password goes into a password field or nowhere, and the user name is not typed either.
+    let visible = bench
+        .call(json!({ "action": "fill_login", "ref_user": user, "ref_password": note }))
+        .await;
+    assert_eq!(
+        visible.text_content(),
+        format!("`ref_password` ({note}) is not a password field; nothing was typed")
+    );
+    assert_eq!(bench.ok(value("user")).await, "\"old@example.com\"");
+    assert_eq!(bench.ok(value("note")).await, "\"\"");
+    let missing = bench.call(json!({ "action": "fill_login" })).await;
+    assert!(missing.text_content().contains("needs `ref_user`"));
+
+    let typed = bench
+        .ok(json!({ "action": "fill_login", "ref_user": user, "ref_password": pass, "submit": true }))
+        .await;
+    assert_eq!(
+        typed,
+        "typed the user name and the password of the stored login `fixture` and pressed Enter"
+    );
+    // What was in the field is replaced, and the form was sent with both.
+    assert_eq!(
+        bench
+            .ok(json!({ "action": "eval", "expression": "document.title" }))
+            .await,
+        "\"signed in as me@example.com\""
+    );
+    let matches = format!("document.getElementById('pass').value === '{PASSWORD}'");
+    assert_eq!(
+        bench.ok(json!({ "action": "eval", "expression": matches })).await,
+        "true"
+    );
+
+    // Whatever the agent does next, the page does not give the password back.
+    assert_eq!(bench.ok(value("pass")).await, format!("\"{REDACTED}\""));
+    let shown = bench
+        .ok(json!({ "action": "eval", "expression": "document.getElementById('pass').type = 'text'; 1" }))
+        .await;
+    assert_eq!(shown, "1");
+    let snapshot = bench.ok(json!({ "action": "snapshot" })).await;
+    assert!(snapshot.contains("value=\"me@example.com\""), "{snapshot}");
+    assert!(!snapshot.contains(PASSWORD), "{snapshot}");
+    let thrown = bench
+        .call(json!({
+            "action": "eval",
+            "expression": "throw new Error(document.getElementById('pass').value)",
+        }))
+        .await;
+    assert!(thrown.is_error);
+    assert!(
+        thrown.text_content().contains(REDACTED) && !thrown.text_content().contains(PASSWORD),
+        "{}",
+        thrown.text_content()
+    );
+
+    // One field at a time, for a form that asks for the password on its own page.
+    bench
+        .ok(json!({ "action": "eval", "expression": "document.getElementById('pass').type = 'password'; document.getElementById('pass').value = ''; 1" }))
+        .await;
+    let again = bench.ok(json!({ "action": "snapshot" })).await;
+    assert_eq!(
+        bench
+            .ok(json!({ "action": "fill_login", "ref_password": ref_of(&again, "\"Password\"") }))
+            .await,
+        "typed the password of the stored login `fixture`"
+    );
+
     bench.session.shutdown().await;
 }

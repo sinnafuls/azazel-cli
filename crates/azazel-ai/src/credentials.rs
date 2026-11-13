@@ -531,10 +531,7 @@ impl Credentials {
             return BTreeMap::new();
         };
         serde_json::from_value(section).unwrap_or_else(|e| {
-            tracing::warn!(
-                "ignoring the services in {}: {e}",
-                self.auth_file.display()
-            );
+            tracing::warn!("ignoring the services in {}: {e}", self.auth_file.display());
             BTreeMap::new()
         })
     }
@@ -563,10 +560,7 @@ impl Credentials {
             // A section that cannot be read is not written over: it may be a newer version's.
             Err(e) => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!(
-                    "the services in {} cannot be read: {e}",
-                    self.auth_file.display()
-                ),
+                format!("the services in {} cannot be read: {e}", self.auth_file.display()),
             )),
             Ok(stored) => {
                 let mut services = stored.unwrap_or_default();
@@ -1028,7 +1022,10 @@ mod tests {
         assert_eq!(c.load(), BTreeMap::from([("acme".to_string(), key.clone())]));
         assert_eq!(
             c.services(),
-            BTreeMap::from([("acme-api".to_string(), api.clone()), ("acme.test".to_string(), login)])
+            BTreeMap::from([
+                ("acme-api".to_string(), api.clone()),
+                ("acme.test".to_string(), login)
+            ])
         );
 
         // Storing, changing and forgetting an account keeps the services.
@@ -1038,7 +1035,10 @@ mod tests {
             entries.remove("acme");
         })
         .unwrap();
-        assert_eq!(c.load(), BTreeMap::from([("other#work".to_string(), other.clone())]));
+        assert_eq!(
+            c.load(),
+            BTreeMap::from([("other#work".to_string(), other.clone())])
+        );
         assert_eq!(c.services().len(), 2);
 
         // A service under a name in use takes its place.
@@ -1051,14 +1051,18 @@ mod tests {
         assert!(c.remove_service("acme.test").unwrap().is_some());
         let file: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
-        assert_eq!(file, serde_json::json!({"other#work": {"type": "api_key", "key": "k-2"}}));
+        assert_eq!(
+            file,
+            serde_json::json!({"other#work": {"type": "api_key", "key": "k-2"}})
+        );
     }
 
     #[test]
     fn a_services_section_that_cannot_be_read_is_left_alone() {
         let dir = tempfile::tempdir().unwrap();
         let c = creds(dir.path(), &[]);
-        let written = r#"{"acme": {"type": "api_key", "key": "k-1"}, "services": {"x": {"type": "from-the-future"}}}"#;
+        let written =
+            r#"{"acme": {"type": "api_key", "key": "k-1"}, "services": {"x": {"type": "from-the-future"}}}"#;
         std::fs::write(c.auth_file(), written).unwrap();
         assert!(c.services().is_empty());
         assert_eq!(c.load().len(), 1);
@@ -1066,7 +1070,8 @@ mod tests {
         assert!(c.store_service("acme", service).is_err());
         assert_eq!(std::fs::read_to_string(c.auth_file()).unwrap(), written);
         // The accounts can still change, and the section survives that.
-        c.store("other", Credential::ApiKey { key: "k-2".into() }).unwrap();
+        c.store("other", Credential::ApiKey { key: "k-2".into() })
+            .unwrap();
         let file: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
         assert_eq!(file["services"]["x"]["type"], "from-the-future");

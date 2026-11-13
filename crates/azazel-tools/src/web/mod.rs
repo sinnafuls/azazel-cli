@@ -1,7 +1,9 @@
-//! `web_search`, `web_fetch` and `web_grep`, and the `http`/`https` schemes that let `read` take URLs.
+//! `web_search`, `web_fetch` and `web_grep`, the `http`/`https` schemes that let `read` take URLs, and
+//! the `http` tool for requests to web APIs.
 
 pub mod fetch;
 pub mod grep;
+pub mod http;
 pub mod search;
 
 use std::sync::Arc;
@@ -11,6 +13,7 @@ use azazel_core::{ExtError, Extension, Registrar};
 
 pub use fetch::{Fetcher, Format, MAX_BODY_BYTES, MAX_REDIRECTS, UrlScheme, WebFetchTool};
 pub use grep::WebGrepTool;
+pub use http::{HttpExt, HttpTool, Redact};
 pub use search::{
     Brave, DuckDuckGo, Exa, PROVIDER, ProviderSearch, Recency, SearchBackend, SearchHit, SearchQuery,
     Searxng, Tavily, WebSearchTool, active_backend, backend_from_config,

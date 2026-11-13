@@ -84,7 +84,7 @@ pub fn subject_kind(tool: &str) -> SubjectKind {
     match tool {
         "shell" => SubjectKind::Command,
         "read" | "write" | "edit" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
-        "web_fetch" | "web_grep" | "browser" => SubjectKind::Domain,
+        "web_fetch" | "web_grep" | "browser" | "http" => SubjectKind::Domain,
         _ => SubjectKind::Other,
     }
 }

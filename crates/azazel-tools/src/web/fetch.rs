@@ -64,7 +64,7 @@ fn is_blocked(ip: IpAddr) -> bool {
 }
 
 /// Refuses URLs that are not http or https and hosts written as a blocked address.
-fn check_target(url: &Url) -> Result<(), String> {
+pub(super) fn check_target(url: &Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!(
             "only http and https URLs can be fetched; {url} is a {} URL",
@@ -83,7 +83,7 @@ fn check_target(url: &Url) -> Result<(), String> {
 
 /// Resolves names through the system resolver and fails when any address is blocked, so the
 /// address checked is the address connected to.
-struct GuardedResolver;
+pub(super) struct GuardedResolver;
 
 impl Resolve for GuardedResolver {
     fn resolve(&self, name: Name) -> Resolving {
@@ -106,7 +106,7 @@ impl Resolve for GuardedResolver {
 }
 
 /// The lower-cased media type of a `Content-Type` value, without parameters.
-fn media_type(content_type: &str) -> String {
+pub(super) fn media_type(content_type: &str) -> String {
     content_type
         .split(';')
         .next()
@@ -116,7 +116,7 @@ fn media_type(content_type: &str) -> String {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     Html,
     Text,
     Pdf,
@@ -124,7 +124,7 @@ enum Kind {
 }
 
 /// What a body is, from its media type, or from its bytes when the server named none.
-fn classify(media_type: Option<&str>, body: &[u8]) -> Kind {
+pub(super) fn classify(media_type: Option<&str>, body: &[u8]) -> Kind {
     match media_type.filter(|m| !m.is_empty()) {
         Some("text/html" | "application/xhtml+xml") => Kind::Html,
         Some(m)
@@ -536,7 +536,7 @@ fn save_artifact(url: &Url, body: &[u8], ctx: &ToolCtx) -> Result<PathBuf, Strin
 
 /// Saves a body that cannot be returned as text and says where it is. `what` is what the body is
 /// in place of text, such as `image/png, not text`.
-fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
+pub(super) fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
     match save_artifact(url, body, ctx) {
         Ok(path) => Ok(format!(
             "{url} is {what} ({} bytes). Saved to {}",

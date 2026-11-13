@@ -388,8 +388,9 @@ square brackets the summary puts after facts it shortened.
 | `web_search` | `query` or `queries` (at most 5), `limit?`, `site?`, `recency?` | Numbered results with title, URL and snippet; several queries run at once and get a section each. `limit` defaults to 8 (at most 20); `recency` is `day`, `week`, `month` or `year`. Answered by the search tool of the lead's provider when it has one, else by the configured backend; see [web and browser](web-and-browser.md#the-providers-own-search) |
 | `web_fetch` | `url`, `format?`, `offset?`, `limit?` | Fetches an http or https URL. `format` is `markdown` (default), `text` or `raw`. A long page comes in parts: `offset` is the first line, `limit` the most characters (default 30000). A PDF comes back as its text |
 | `web_grep` | `url`, `pattern`, `ignore_case?`, `literal?`, `context?`, `limit?`, `format?` | Searches the page at a URL line by line and returns the matching lines with their numbers, from the same cache as `web_fetch` |
+| `http` | `url`, `method?`, `headers?`, `body?` or `json?`, `service?`, `limit?`, `timeout_secs?` | One request to a web API: status, response headers and body. The credential stored for the host with `azazel secrets add` is added to the request and taken out of the result; the agent never sees it |
 
-Details, search backends and limits: [web and browser](web-and-browser.md).
+Details, search backends, stored credentials and limits: [web and browser](web-and-browser.md).
 
 ## Language servers
 
@@ -445,7 +446,7 @@ Offered to the lead only, and only while a goal is open. See [goals](goals.md).
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `browser` | `action` plus `url`, `tab`, `ref`, `selector`, `x`, `y`, `text`, `submit`, `keys`, `hold_ms`, `dy`, `for`, `timeout_ms`, `poll_ms`, `expression`, `full_page`, `width`, `height`, `filter` | Drives a Chromium browser. Actions: `open`, `navigate`, `back`, `reload`, `snapshot`, `click`, `hover`, `type`, `key`, `scroll`, `wait`, `eval`, `screenshot`, `resize`, `console`, `network`, `tabs`, `close` |
+| `browser` | `action` plus `url`, `tab`, `ref`, `selector`, `x`, `y`, `text`, `submit`, `keys`, `hold_ms`, `dy`, `for`, `timeout_ms`, `poll_ms`, `expression`, `full_page`, `width`, `height`, `filter`, `ref_user`, `ref_password`, `reason` | Drives a Chromium browser. Actions: `open`, `navigate`, `back`, `reload`, `snapshot`, `click`, `hover`, `type`, `key`, `scroll`, `wait`, `eval`, `screenshot`, `resize`, `console`, `network`, `tabs`, `close`, `fill_login` (types a login stored with `azazel secrets add-site`), `handoff` (shows the browser to you and waits) |
 | `screen` | `action` plus `window`, `display`, `region`, `x`, `y`, `button`, `double`, `from`, `to`, `duration_ms`, `dy`, `keys`, `hold_ms`, `text`, `ms`, `seconds`, `fps` | Captures and operates the desktop. Actions: `windows`, `capture`, `focus`, `click`, `move`, `drag`, `scroll`, `key`, `type`, `wait`, `record` |
 
 See [web and browser](web-and-browser.md) and [screen and playtesting](screen-and-playtesting.md).

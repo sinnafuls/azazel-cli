@@ -348,11 +348,12 @@ impl Service {
                 found.push(value.clone());
                 found.push(in_query(value));
             }
-            Service::Basic { username, password, .. } => {
+            Service::Basic {
+                username, password, ..
+            } => {
                 found.push(password.clone());
-                found.push(
-                    base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}")),
-                );
+                found
+                    .push(base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}")));
             }
             Service::Site { password, .. } => found.push(password.clone()),
         }
@@ -427,11 +428,12 @@ pub fn pick<'a>(
     }
 }
 
-/// The stored login of the page at `page`: the one whose pattern is the longest.
-pub fn login_for<'a>(services: &'a BTreeMap<String, Service>, page: &Url) -> Option<(&'a str, &'a Service)> {
+/// The stored login of the page at the address `page`: the one whose pattern is the longest.
+pub fn login_for<'a>(services: &'a BTreeMap<String, Service>, page: &str) -> Option<(&'a str, &'a Service)> {
+    let page = Url::parse(page).ok()?;
     services
         .iter()
-        .filter(|(_, service)| service.signs_in(page))
+        .filter(|(_, service)| service.signs_in(&page))
         .rev()
         .max_by_key(|(_, service)| service.target().len())
         .map(|(name, service)| (name.as_str(), service))
@@ -536,9 +538,18 @@ mod tests {
     #[test]
     fn the_most_exact_service_is_picked_and_a_named_one_only_for_its_own_host() {
         let services = stored(&[
-            ("everything", Service::header("*.example.com", "X-Key: wide-key").unwrap()),
-            ("work", Service::header("api.example.com", "X-Key: work-key").unwrap()),
-            ("personal", Service::header("api.example.com", "X-Key: personal-key").unwrap()),
+            (
+                "everything",
+                Service::header("*.example.com", "X-Key: wide-key").unwrap(),
+            ),
+            (
+                "work",
+                Service::header("api.example.com", "X-Key: work-key").unwrap(),
+            ),
+            (
+                "personal",
+                Service::header("api.example.com", "X-Key: personal-key").unwrap(),
+            ),
             (
                 "site",
                 Service::site("https://api.example.com/login", "me", "hunter22").unwrap(),
@@ -614,16 +625,20 @@ mod tests {
         assert!(Service::site("https://example.com/", "", "hunter22").is_err());
 
         let services = stored(&[
-            ("a-site", Service::site("https://example.com", "any", "any-password").unwrap()),
+            (
+                "a-site",
+                Service::site("https://example.com", "any", "any-password").unwrap(),
+            ),
             (
                 "b-admin",
                 Service::site("https://example.com/admin/*", "root", "root-password").unwrap(),
             ),
         ]);
-        let found = |address: &str| login_for(&services, &url(address)).map(|(name, _)| name);
+        let found = |address: &str| login_for(&services, address).map(|(name, _)| name);
         assert_eq!(found("https://example.com/admin/login"), Some("b-admin"));
         assert_eq!(found("https://example.com/shop"), Some("a-site"));
         assert_eq!(found("https://elsewhere.test/admin/login"), None);
+        assert_eq!(found("about:blank"), None);
     }
 
     #[test]

@@ -13,8 +13,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_ai::Credentials;
 use azazel_core::{
-    ArtifactStore, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Outcome, Registrar,
+    ArtifactStore, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Outcome, Registrar, Ui,
 };
 use serde_json::{Value, json};
 
@@ -24,7 +25,9 @@ pub use session::{BrowserSession, Input, Settings};
 const DESCRIPTION: &str = "Drive a real Chromium browser: open pages, read them as an accessibility \
 snapshot, click, type, press keys, run JavaScript, take screenshots, and read the console and network \
 log. Start with `open`; act on elements by the `ref` shown in the latest snapshot (refs change with \
-every snapshot), by CSS `selector`, or by `x`,`y`. Use it to check a web app the way a user would.";
+every snapshot), by CSS `selector`, or by `x`,`y`. Use it to check a web app the way a user would. To \
+sign in, use `fill_login`: it types the login the user stored for the page, which you never see; when a \
+page needs the user in person (a login that is not stored, a second factor, a CAPTCHA), use `handoff`.";
 
 /// The `browser` tool.
 pub struct BrowserTool(pub Arc<BrowserSession>);
@@ -47,7 +50,8 @@ impl Tool for BrowserTool {
                     "type": "string",
                     "enum": [
                         "open", "navigate", "back", "reload", "snapshot", "click", "hover", "type", "key",
-                        "scroll", "wait", "eval", "screenshot", "resize", "console", "network", "tabs", "close"
+                        "scroll", "wait", "eval", "screenshot", "resize", "console", "network", "tabs", "close",
+                        "fill_login", "handoff"
                     ],
                     "description": "open: new tab at `url`, returns title, URL and a snapshot. \
                         navigate/back/reload: move the tab. snapshot: the page as `- role \"name\" [ref=eN]` lines. \
@@ -57,9 +61,13 @@ impl Tool for BrowserTool {
                         meets a settled page. eval: `expression`. \
                         screenshot: the viewport, the `full_page`, or one element. resize: set the tab's \
                         viewport to `width`×`height` CSS pixels (responsive checks). console/network: the \
-                        last 100 entries. tabs: list. close: close a tab."
+                        last 100 entries. tabs: list. close: close a tab. fill_login: type the login stored \
+                        for this page into the fields `ref_user` and `ref_password` (either or both; `submit` \
+                        presses Enter); nothing is typed on a page the login is not stored for. handoff: show \
+                        the browser to the user with `reason`, wait until they have finished there, and get \
+                        the page back; `url` opens a page for them first."
                 },
-                "url": { "type": "string", "description": "http(s) URL for open and navigate" },
+                "url": { "type": "string", "description": "http(s) URL for open, navigate and handoff" },
                 "tab": { "type": "string", "description": "Tab name; defaults to the tab used last. With open, names the new tab" },
                 "ref": { "type": "string", "description": "Element ref from the latest snapshot, e.g. e12" },
                 "selector": { "type": "string", "description": "CSS selector, as an alternative to ref" },
@@ -77,7 +85,10 @@ impl Tool for BrowserTool {
                 "full_page": { "type": "boolean", "description": "Capture the whole page instead of the viewport" },
                 "width": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Viewport width for resize" },
                 "height": { "type": "integer", "minimum": 200, "maximum": 8000, "description": "Viewport height for resize" },
-                "filter": { "type": "string", "description": "Substring of the URL, for network" }
+                "filter": { "type": "string", "description": "Substring of the URL, for network" },
+                "ref_user": { "type": "string", "description": "Ref of the user name or e-mail field, for fill_login" },
+                "ref_password": { "type": "string", "description": "Ref of the password field, for fill_login" },
+                "reason": { "type": "string", "description": "What the user is asked to do in the browser, for handoff" }
             },
             "required": ["action"]
         })
@@ -101,7 +112,7 @@ impl Tool for BrowserTool {
             Ok(input) => input,
             Err(e) => return ToolOutput::error(format!("invalid input: {e}")),
         };
-        if matches!(input.action.as_str(), "open" | "navigate")
+        if matches!(input.action.as_str(), "open" | "navigate" | "handoff")
             && let Some(url) = &input.url
             && page::host_of(url).is_none()
             && url != "about:blank"
@@ -109,8 +120,17 @@ impl Tool for BrowserTool {
             return ToolOutput::error(format!("`{url}` is not an http or https URL"));
         }
         let artifacts = ctx.services.get::<ArtifactStore>();
+        let act = async {
+            if input.action != "handoff" {
+                return self.0.act(input, artifacts.as_deref()).await;
+            }
+            match ctx.services.get::<Ui>() {
+                Some(ui) => self.0.handoff(&input, ui.0.as_ref()).await,
+                None => Err("nobody is here to take over the browser".to_string()),
+            }
+        };
         let result = tokio::select! {
-            result = self.0.act(input, artifacts.as_deref()) => result,
+            result = act => result,
             _ = ctx.cancel.cancelled() => Err(ABORTED_TEXT.to_string()),
         };
         match result {
@@ -143,6 +163,8 @@ pub struct BrowserExt {
     pub headless: bool,
     /// The browser's user data directory.
     pub profile: PathBuf,
+    /// Where the logins `fill_login` types are stored.
+    pub logins: Arc<Credentials>,
 }
 
 impl Extension for BrowserExt {
@@ -151,11 +173,12 @@ impl Extension for BrowserExt {
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
-        let session = Arc::new(BrowserSession::new(Settings {
+        let settings = Settings {
             path: self.path.clone(),
             headless: self.headless,
             profile: self.profile.clone(),
-        }));
+        };
+        let session = Arc::new(BrowserSession::new(settings).with_logins(self.logins.clone()));
         r.service(session.clone());
         r.tool(Arc::new(BrowserTool(session.clone())));
         r.on(EventKind::SessionEnd, Arc::new(CloseAtSessionEnd(session)));
@@ -194,6 +217,15 @@ mod tests {
         assert_eq!(
             subjects(json!({ "action": "open", "url": "file:///etc/passwd" })),
             ["open"]
+        );
+        // Typing a stored login and handing the browser over are asked about as themselves.
+        assert_eq!(
+            subjects(json!({ "action": "fill_login", "ref_password": "e4" })),
+            ["fill_login"]
+        );
+        assert_eq!(
+            subjects(json!({ "action": "handoff", "reason": "sign in", "url": "https://docs.rs" })),
+            ["handoff"]
         );
     }
 }
