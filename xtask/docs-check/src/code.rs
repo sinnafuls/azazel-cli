@@ -55,7 +55,8 @@ pub struct Code {
     pub config: BTreeMap<String, Option<String>>,
     pub trust_gated: BTreeSet<String>,
     pub hook_events: BTreeSet<String>,
-    pub key_actions: BTreeSet<String>,
+    /// Keymap action to the keys bound to it by default, as the keymap writes them (`ctrl+l`).
+    pub key_actions: BTreeMap<String, BTreeSet<String>>,
     pub cli: Vec<CliCommand>,
     pub rpc_commands: BTreeSet<String>,
     pub rpc_frames: BTreeSet<String>,
@@ -131,6 +132,18 @@ fn cli() -> Vec<CliCommand> {
     collect_cli(&root, Vec::new(), false, &mut out);
     out.sort_by(|a, b| a.path.cmp(&b.path));
     out
+}
+
+/// Every action of the default keymap with its keys.
+fn key_actions() -> BTreeMap<String, BTreeSet<String>> {
+    let keymap = azazel_tui::keys::Keymap::defaults();
+    keymap
+        .actions()
+        .map(|action| {
+            let keys = keymap.keys_for(action).iter().map(ToString::to_string).collect();
+            (action.to_string(), keys)
+        })
+        .collect()
 }
 
 /// The `type` (or another tag) of every variant of a tagged union in a JSON Schema.
@@ -231,10 +244,7 @@ pub async fn gather(root: &Path) -> Result<Code> {
             .iter()
             .map(ToString::to_string)
             .collect(),
-        key_actions: azazel_tui::keys::Keymap::defaults()
-            .actions()
-            .map(str::to_string)
-            .collect(),
+        key_actions: key_actions(),
         cli: cli(),
         rpc_commands: variants(&schema["$defs"]["Request"], "type"),
         rpc_frames: variants(frames, "type"),

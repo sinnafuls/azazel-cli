@@ -151,7 +151,7 @@ line per difference, naming the page and the name:
 | Every configuration table and key, with its default | The settings tables of `docs/configuration.md`; a page with a ``## `[table]` configuration`` section lists that table's keys too |
 | Trust-gated settings | The `Gated settings:` list in `docs/configuration.md` |
 | Hook events and the fields of a hook | The tables of `docs/hooks.md`, the `Hook events:` list in `docs/configuration.md`, and the built-in skill `skills/azazel-extensions/SKILL.md` |
-| Keymap actions | The key table of `docs/tui.md` |
+| Keymap actions, with the keys bound to each by default | The key table of `docs/tui.md` |
 | Flags of `azazel` | The flags table of `docs/configuration.md` |
 | Subcommands and their actions | The subcommands table of `docs/configuration.md` |
 | Flags of subcommands | A line of a page under `docs/` that names the command and the flag (`azazel sessions prune [--older-than 30d]`) |

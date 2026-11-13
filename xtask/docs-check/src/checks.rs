@@ -359,25 +359,71 @@ pub fn hooks(docs: &Docs, code: &Code, out: &mut Vec<Finding>) {
     }
 }
 
-/// The action names of the key table in `docs/tui.md`.
+/// The key table of `docs/tui.md`: every action of the keymap has a row, and the row names the
+/// keys the action is bound to by default.
 pub fn keymap(docs: &Docs, code: &Code, out: &mut Vec<Finding>) {
     let Some(page) = page(docs, out, TUI) else {
         return;
     };
-    let actions: Named = page
-        .tables()
+    let tables = page.tables();
+    let rows = tables
         .iter()
         .filter(|table| table.headers.get(1).is_some_and(|header| header == "Action name"))
-        .flat_map(|table| column_names(table, 1, "_"))
-        .collect();
-    compare(
-        out,
-        TUI,
-        "keymap action",
-        "the key table",
-        &code.key_actions,
-        &actions,
-    );
+        .flat_map(|table| &table.rows);
+    let mut actions = Named::new();
+    for row in rows {
+        let named: Vec<&str> = code_spans(row.cells.get(1).map(String::as_str).unwrap_or_default())
+            .into_iter()
+            .filter(|span| plain(span, "_"))
+            .collect();
+        for action in &named {
+            actions.entry(action.to_string()).or_insert(row.line);
+        }
+        // A row may hold several actions with a key each; the keys of the row are those of
+        // its actions together.
+        let bound: BTreeSet<&String> = named
+            .iter()
+            .filter_map(|action| code.key_actions.get(*action))
+            .flatten()
+            .collect();
+        if bound.is_empty() {
+            continue;
+        }
+        let mut written = BTreeSet::new();
+        for key in code_spans(row.cells.first().map(String::as_str).unwrap_or_default()) {
+            match key.parse::<azazel_tui::keys::KeyCombo>() {
+                Ok(combo) => {
+                    written.insert(combo.to_string());
+                }
+                Err(_) => out.push(Finding::line(
+                    TUI,
+                    row.line,
+                    format!("`{key}` in the key table is not a key the keymap can bind"),
+                )),
+            }
+        }
+        if !written.iter().eq(bound.iter().copied()) {
+            let list = |keys: Vec<&String>| {
+                let keys: Vec<String> = keys.into_iter().map(|key| format!("`{key}`")).collect();
+                keys.join(", ")
+            };
+            out.push(Finding::line(
+                TUI,
+                row.line,
+                format!(
+                    "{} bound to {} by default and the key table says {}",
+                    match named.as_slice() {
+                        [action] => format!("keymap action `{action}` is"),
+                        actions => format!("the keymap actions `{}` are", actions.join("`, `")),
+                    },
+                    list(bound.into_iter().collect()),
+                    list(written.iter().collect()),
+                ),
+            ));
+        }
+    }
+    let known: BTreeSet<String> = code.key_actions.keys().cloned().collect();
+    compare(out, TUI, "keymap action", "the key table", &known, &actions);
 }
 
 /// The `--flags` named in a piece of text, whole words only.
@@ -760,17 +806,24 @@ pub fn rpc(docs: &Docs, code: &Code, out: &mut Vec<Finding>) {
             frames.entry(name.to_string()).or_insert(heading.line);
         }
     }
-    // `hello` and `response` are shown where the connection and the answers are described.
-    let shown = |name: &str| {
-        let compact = format!("\"type\":\"{name}\"");
-        page.lines
-            .iter()
-            .any(|line| line.replace(' ', "").contains(&compact))
-    };
-    for name in code.rpc_frames.iter().filter(|name| shown(name)) {
-        frames.entry(name.clone()).or_insert(0);
+    // The first line of a connection and the answers to commands are not events: they are shown
+    // as JSON where the page describes starting and responses.
+    let mut section = "";
+    let mut shown: Vec<&str> = Vec::new();
+    for (_, text, _) in page.numbered() {
+        if let Some(heading) = text.strip_prefix("## ") {
+            section = heading.trim();
+        } else if matches!(section, "Starting" | "Responses") {
+            shown.push(text);
+        }
     }
-    let place = "the events table and the frame sections";
+    for name in &code.rpc_frames {
+        let compact = format!("\"type\":\"{name}\"");
+        if shown.iter().any(|line| line.replace(' ', "").contains(&compact)) {
+            frames.entry(name.clone()).or_insert(0);
+        }
+    }
+    let place = "the events table, the frame sections and the JSON under \"Starting\" and \"Responses\"";
     compare(out, RPC, "RPC frame", place, &code.rpc_frames, &frames);
 
     let kinds: Named = tables

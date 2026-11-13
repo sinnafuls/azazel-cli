@@ -9,11 +9,11 @@ GitHub are its section here.
 
 - `cargo xtask docs-check` compares the docs with the code and fails with one line per difference, naming
   the page and the name: configuration tables and keys with their defaults, trust-gated settings, hook
-  events, keymap actions, flags, subcommands and their actions, RPC commands and frames, the Luau API, slash
-  commands and tools, in both directions. It also checks every `azazel …` command line the docs show, that
-  every page is linked from `docs/README.md`, that relative links lead to a file and a heading that exist,
-  that `docs/rpc.schema.json` is current, and that `FEATURES.md` is stamped with the newest release. CI runs
-  it after the tests.
+  events, keymap actions and their default keys, flags, subcommands and their actions, RPC commands and
+  frames, the Luau API, slash commands and tools, in both directions. It also checks every `azazel …`
+  command line the docs show, that every page is linked from `docs/README.md`, that relative links lead to
+  a file and a heading that exist, that `docs/rpc.schema.json` is current, and that `FEATURES.md` is
+  stamped with the newest release. CI runs it after the tests.
 - `AGENTS.md` at the root of the repository, the guide for people and coding agents who change azazel: the
   layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
   scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a

@@ -169,13 +169,39 @@ fn a_default_that_differs_from_the_code_is_reported() {
 }
 
 #[test]
+fn the_keys_of_the_key_table_are_the_default_bindings() {
+    let copy = Copy::new();
+    // A key that is not the action's, one of two keys left out, and a key nothing can bind.
+    copy.edit("docs/tui.md", |text| {
+        text.replace("| `Ctrl+L` | `model_picker` |", "| `Ctrl+K` | `model_picker` |")
+            .replace(
+                "| `Shift+Enter`, `Ctrl+J` | `newline` |",
+                "| `Shift+Enter` | `newline` |",
+            )
+            .replace("| `F5` | `retry` |", "| `F5`, `Hyper+Nope` | `retry` |")
+    });
+    let findings = copy.findings();
+    assert_eq!(findings.len(), 3, "{findings:?}");
+    assert!(findings.iter().all(|finding| finding.starts_with("docs/tui.md:")));
+    assert!(findings[0].ends_with(
+        "keymap action `newline` is bound to `ctrl+j`, `shift+enter` by default and the key table says \
+         `shift+enter`"
+    ));
+    assert!(findings[1].ends_with(
+        "keymap action `model_picker` is bound to `ctrl+l` by default and the key table says `ctrl+k`"
+    ));
+    assert!(findings[2].ends_with("`Hyper+Nope` in the key table is not a key the keymap can bind"));
+}
+
+#[test]
 fn a_new_name_in_the_code_is_reported_on_the_page_that_owns_it() {
     let mut code = code().clone();
     code.config
         .insert("tui.sparkle".to_string(), Some("true".to_string()));
     code.trust_gated.insert("tui.sparkle".to_string());
     code.hook_events.insert("pre_sparkle".to_string());
-    code.key_actions.insert("sparkle".to_string());
+    code.key_actions
+        .insert("sparkle".to_string(), ["f9".to_string()].into());
     code.rpc_commands.insert("sparkle".to_string());
     code.rpc_frames.insert("sparkled".to_string());
     code.luau_api.insert("azazel.sparkle".to_string());
@@ -191,7 +217,7 @@ fn a_new_name_in_the_code_is_reported_on_the_page_that_owns_it() {
         "skills/azazel-extensions/SKILL.md: hook event `pre_sparkle` is in the code and missing from the hook events table",
         "docs/tui.md: keymap action `sparkle` is in the code and missing from the key table",
         "docs/rpc.md: RPC command `sparkle` is in the code and missing from the command tables",
-        "docs/rpc.md: RPC frame `sparkled` is in the code and missing from the events table and the frame sections",
+        "docs/rpc.md: RPC frame `sparkled` is in the code and missing from the events table, the frame sections and the JSON under \"Starting\" and \"Responses\"",
         "docs/extensions.md: Luau function `azazel.sparkle` is in the code and missing from the `Function | Contract` tables",
         "docs/extensions.md: Luau event `sparkle` is in the code and missing from the events table",
         "skills/azazel-extensions/SKILL.md: Luau function `azazel.sparkle` is in the code and missing from the `Function | Contract` tables",
@@ -226,6 +252,8 @@ fn a_name_only_the_docs_have_is_reported_with_its_line() {
         "| `find_files` | `pattern` | Finds files |",
     );
     copy.add_after("docs/rpc.md", "| `abort` |", "| `dance` | | Dances | `null` |");
+    // The example at the end of the page still shows the frame; that does not document it.
+    copy.remove_lines("docs/rpc.md", "| `tool_start` |");
     copy.add_after(
         "docs/extensions.md",
         "| `azazel.notify(text, level?)` |",
@@ -275,7 +303,12 @@ fn a_name_only_the_docs_have_is_reported_with_its_line() {
         "skills/azazel-extensions/SKILL.md",
         "Luau event `user_idle` is in the events table and not in the code",
     );
-    assert_eq!(findings.len(), 7, "{findings:?}");
+    assert!(findings.iter().any(|finding| {
+        finding.starts_with(
+            "docs/rpc.md: RPC frame `tool_start` is in the code and missing from the events table",
+        )
+    }));
+    assert_eq!(findings.len(), 8, "{findings:?}");
 }
 
 #[test]
