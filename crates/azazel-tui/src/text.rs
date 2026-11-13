@@ -5,6 +5,10 @@
 //! every produced line is self-contained: it re-opens the styles and the link active at its
 //! start, and resets the styles and closes the link at its end.
 
+use std::borrow::Cow;
+use std::sync::LazyLock;
+
+use regex::{Regex, RegexSet};
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 use unicode_width::UnicodeWidthStr;
 
@@ -551,6 +555,150 @@ pub fn pad_right(s: &str, target: usize) -> String {
     out
 }
 
+/// Which part of a match is the secret.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mask {
+    /// All of it.
+    All,
+    /// What follows the first group, which is kept: the word `Bearer`.
+    AfterLead,
+    /// The value of an assignment whose name is kept, unless the value is plainly no secret.
+    Assigned,
+}
+
+/// A shape of secret: what it is called in its place, how it is recognised, what is hidden.
+const SECRETS: [(&str, &str, Mask); 11] = [
+    (
+        "private-key",
+        r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?s:.*?)(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\z)",
+        Mask::All,
+    ),
+    ("anthropic-key", r"\bsk-ant-[A-Za-z0-9_-]{20,}", Mask::All),
+    ("openai-key", r"\bsk-[A-Za-z0-9_-]{32,}", Mask::All),
+    ("github-token", r"\bgh[pousr]_[A-Za-z0-9]{30,}", Mask::All),
+    ("github-token", r"\bgithub_pat_[A-Za-z0-9_]{30,}", Mask::All),
+    ("google-key", r"\bAIza[0-9A-Za-z_-]{35}", Mask::All),
+    ("aws-key", r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b", Mask::All),
+    ("slack-token", r"\bxox[baprs]-[A-Za-z0-9-]{10,}", Mask::All),
+    (
+        "jwt",
+        r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}",
+        Mask::All,
+    ),
+    (
+        "bearer",
+        r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}",
+        Mask::AfterLead,
+    ),
+    (
+        "secret",
+        r#"\b([A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD)[A-Z0-9_]*=)(?:"[^"\n]*"|'[^'\n]*'|[^\s"']+)"#,
+        Mask::Assigned,
+    ),
+];
+
+/// Text without one of these holds no secret [`redact`] knows, so it is not searched further.
+const SECRET_HINTS: [&str; 19] = [
+    "PRIVATE KEY",
+    "sk-",
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "AIza",
+    "AKIA",
+    "ASIA",
+    "xox",
+    "eyJ",
+    "earer",
+    "EARER",
+    "KEY",
+    "TOKEN",
+    "SECRET",
+    "PASSW",
+];
+
+struct Secrets {
+    any: RegexSet,
+    each: Vec<Regex>,
+}
+
+static SECRET_PATTERNS: LazyLock<Option<Secrets>> = LazyLock::new(|| {
+    let patterns = SECRETS.iter().map(|(_, pattern, _)| *pattern);
+    Some(Secrets {
+        any: RegexSet::new(patterns.clone()).ok()?,
+        each: patterns.map(Regex::new).collect::<Result<_, _>>().ok()?,
+    })
+});
+
+/// Whether the value of an assignment such as `API_KEY=…` is worth hiding: not a number, a
+/// switch, a reference to a variable or something already hidden.
+fn is_secret_value(value: &str) -> bool {
+    let bare = value.trim_matches(['"', '\'']);
+    !(bare.is_empty()
+        || bare.bytes().all(|b| b.is_ascii_digit())
+        || bare.starts_with(['$', '<'])
+        || bare.starts_with("[redacted:")
+        || ["true", "false", "null", "none"]
+            .iter()
+            .any(|word| bare.eq_ignore_ascii_case(word)))
+}
+
+/// `text` with every match of `pattern` replaced by `[redacted:<kind>]`; `None` when it has none.
+fn mask(text: &str, pattern: &Regex, kind: &str, mask: Mask) -> Option<String> {
+    let mut out: Option<String> = None;
+    let mut copied = 0;
+    for found in pattern.captures_iter(text) {
+        let Some(whole) = found.get(0) else { continue };
+        let from = match mask {
+            Mask::All => whole.start(),
+            Mask::AfterLead | Mask::Assigned => found.get(1).map_or(whole.start(), |lead| lead.end()),
+        };
+        if mask == Mask::Assigned && !is_secret_value(&text[from..whole.end()]) {
+            continue;
+        }
+        let out = out.get_or_insert_with(|| String::with_capacity(text.len()));
+        out.push_str(&text[copied..from]);
+        out.push_str("[redacted:");
+        out.push_str(kind);
+        out.push(']');
+        copied = whole.end();
+    }
+    out.map(|mut out| {
+        out.push_str(&text[copied..]);
+        out
+    })
+}
+
+/// Hides what looks like a secret: each is replaced by `[redacted:<kind>]`. Recognised are API
+/// keys of Anthropic and OpenAI (`sk-ant-…`, `sk-…`), GitHub tokens (`ghp_…`, `gho_…`,
+/// `github_pat_…`), Google keys (`AIza…`), AWS access key ids (`AKIA…`), Slack tokens
+/// (`xoxb-…`), JSON web tokens, `Bearer <token>`, the value of an assignment to a name with
+/// `KEY`, `TOKEN`, `SECRET` or `PASSWORD` in it (`API_KEY=…`), and PEM private key blocks.
+///
+/// This is for what is shown and exported only. Text that holds none of these comes back as it
+/// is, without a copy.
+pub fn redact(text: &str) -> Cow<'_, str> {
+    if !SECRET_HINTS.iter().any(|hint| text.contains(hint)) {
+        return Cow::Borrowed(text);
+    }
+    let Some(secrets) = &*SECRET_PATTERNS else {
+        return Cow::Borrowed(text);
+    };
+    let mut out = Cow::Borrowed(text);
+    // In the order of the table: a key is named for what it is before the assignment it is the
+    // value of is looked at.
+    for index in secrets.any.matches(text) {
+        let (kind, _, how) = SECRETS[index];
+        if let Some(masked) = mask(&out, &secrets.each[index], kind, how) {
+            out = Cow::Owned(masked);
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -774,5 +922,75 @@ mod tests {
         assert_eq!(pad_right("日本", 5), "日本 ");
         assert_eq!(pad_right("\x1b[1mab\x1b[0m", 4), "\x1b[1mab\x1b[0m  ");
         assert_eq!(pad_right("too long", 3), "too long");
+    }
+
+    #[test]
+    fn each_kind_of_secret_is_named_in_its_place() {
+        let key = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0";
+        for (text, shown) in [
+            (
+                format!("key sk-ant-api03-{key} end"),
+                "key [redacted:anthropic-key] end",
+            ),
+            (format!("sk-proj-{key}"), "[redacted:openai-key]"),
+            (format!("ghp_{key}"), "[redacted:github-token]"),
+            (format!("gho_{key}"), "[redacted:github-token]"),
+            (format!("github_pat_11AAAA_{key}"), "[redacted:github-token]"),
+            (format!("AIza{}", &key[..35]), "[redacted:google-key]"),
+            ("id AKIAIOSFODNN7EXAMPLE.".to_string(), "id [redacted:aws-key]."),
+            ("xoxb-1234567890-abcdefghij".to_string(), "[redacted:slack-token]"),
+            (
+                "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.c2lnbmF0dXJlLWJ5dGVz".to_string(),
+                "[redacted:jwt]",
+            ),
+            (
+                format!("Authorization: Bearer {key}"),
+                "Authorization: Bearer [redacted:bearer]",
+            ),
+            (
+                "DB_PASSWORD=hunter2 next".to_string(),
+                "DB_PASSWORD=[redacted:secret] next",
+            ),
+            (
+                "export API_TOKEN=\"two words\"".to_string(),
+                "export API_TOKEN=[redacted:secret]",
+            ),
+            (
+                "-----BEGIN RSA PRIVATE KEY-----\nMIIE\nabc=\n-----END RSA PRIVATE KEY-----\nafter"
+                    .to_string(),
+                "[redacted:private-key]\nafter",
+            ),
+            // A block cut short hides what there is of it.
+            (
+                "-----BEGIN PRIVATE KEY-----\nMIIE".to_string(),
+                "[redacted:private-key]",
+            ),
+        ] {
+            assert_eq!(redact(&text), shown, "{text}");
+        }
+        // A key that is the value of an assignment keeps its own name; several are all hidden.
+        let both = format!("OPENAI_API_KEY=sk-proj-{key}\nANTHROPIC_API_KEY=sk-ant-{key}");
+        assert_eq!(
+            redact(&both),
+            "OPENAI_API_KEY=[redacted:openai-key]\nANTHROPIC_API_KEY=[redacted:anthropic-key]"
+        );
+    }
+
+    #[test]
+    fn text_without_a_secret_is_not_copied() {
+        for clean in [
+            "fn main() { println!(\"hello\"); }",
+            "",
+            // Words the search starts on, without anything to hide after them.
+            "the task-runner and the disk-usage report",
+            "MAX_TOKENS=4096 USE_TOKEN=true API_KEY=$OPENAI_API_KEY PASSWORD=",
+            "let token = sk-short; // a bearer of bad news, eyJ only",
+            "a KEY to the map, the TOKEN ring and one SECRET door",
+        ] {
+            assert!(
+                matches!(redact(clean), Cow::Borrowed(same) if same == clean),
+                "{clean}"
+            );
+        }
     }
 }

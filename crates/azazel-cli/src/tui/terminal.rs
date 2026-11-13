@@ -160,6 +160,8 @@ impl Tui {
     /// Appends items (text rows and blocks) to the transcript.
     pub(super) fn say_items(&mut self, items: Vec<HistoryItem>) {
         if !items.is_empty() {
+            // Whatever is said ends the group of tool calls that was growing.
+            self.flush_calls();
             self.after_card = false;
             self.transcript.extend(items);
         }
@@ -195,6 +197,7 @@ impl Tui {
                 };
                 if let Some(picture) = azazel_tui::image::encode(&bytes, &self.caps, room.0, room.1) {
                     // The card stays the last thing above the picture; what follows starts apart.
+                    self.flush_calls();
                     self.transcript.push(picture);
                     self.after_card = false;
                 }

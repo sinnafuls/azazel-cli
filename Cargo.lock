@@ -1210,6 +1210,7 @@ dependencies = [
  "image",
  "nucleo-matcher",
  "pulldown-cmark",
+ "regex",
  "similar 3.2.1",
  "syntect",
  "thiserror 2.0.21",

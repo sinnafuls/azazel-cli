@@ -1,6 +1,7 @@
 //! Components turn state into [`Line`](crate::render::Line)s for a given width and theme. None of
 //! them writes to the terminal, and every line they return fits the width they were given.
 
+pub mod code;
 pub mod composer;
 pub mod diff;
 pub mod editor;

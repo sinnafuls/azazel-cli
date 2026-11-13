@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::{SyntaxReference, SyntaxSet};
 
 use crate::glyphs::Glyph;
 use crate::render::{HistoryItem, Line};
@@ -664,31 +664,53 @@ static ASSETS: LazyLock<Assets> = LazyLock::new(|| Assets {
 /// Splits code into lines and colours them when the language is known. Each line carries
 /// foreground colours only and no reset, so a background applied around it survives.
 fn highlight(language: &str, source: &str, theme: &Theme) -> Vec<String> {
-    let plain = || source.split('\n').map(str::to_string).collect::<Vec<String>>();
-    if language.is_empty() {
-        return plain();
-    }
-    let assets: &Assets = &ASSETS;
-    let Some(syntax) = assets.syntaxes.find_syntax_by_token(language) else {
-        return plain();
+    let coloured = match language {
+        "" => None,
+        _ => ASSETS
+            .syntaxes
+            .find_syntax_by_token(language)
+            .and_then(|syntax| paint(syntax, source, theme)),
     };
+    coloured.unwrap_or_else(|| source.split('\n').map(str::to_string).collect())
+}
+
+/// The lines of `source` coloured as the kind of file `path` names by its name or extension,
+/// like [`highlight`]; `None` when the kind is not known.
+pub(crate) fn highlight_file(path: &str, source: &str, theme: &Theme) -> Option<Vec<String>> {
+    let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+    let extension = name.rsplit_once('.').map_or("", |(_, extension)| extension);
+    let extension = extension.to_ascii_lowercase();
+    // Close relatives of a language the bundled definitions know.
+    let known = match extension.as_str() {
+        "ts" | "mts" | "cts" | "tsx" | "jsx" | "mjs" | "cjs" => "js",
+        "jsonc" | "json5" => "json",
+        "pyi" => "py",
+        "hh" | "hxx" => "hpp",
+        other => other,
+    };
+    let syntaxes = &ASSETS.syntaxes;
+    let syntax = syntaxes
+        .find_syntax_by_extension(name)
+        .or_else(|| syntaxes.find_syntax_by_extension(known))
+        .filter(|syntax| syntax.name != "Plain Text")?;
+    paint(syntax, source, theme)
+}
+
+fn paint(syntax: &SyntaxReference, source: &str, theme: &Theme) -> Option<Vec<String>> {
+    let assets: &Assets = &ASSETS;
     let theme_name = if theme.is_light() {
         "InspiredGitHub"
     } else {
         "base16-ocean.dark"
     };
-    let Some(colors) = assets.themes.themes.get(theme_name) else {
-        return plain();
-    };
+    let colors = assets.themes.themes.get(theme_name)?;
 
     let mut highlighter = HighlightLines::new(syntax, colors);
     let mut lines = Vec::new();
     for raw in source.split('\n') {
         // The syntax definitions are the newline-aware set and expect each line to end with one.
         let with_newline = format!("{raw}\n");
-        let Ok(regions) = highlighter.highlight_line(&with_newline, &assets.syntaxes) else {
-            return plain();
-        };
+        let regions = highlighter.highlight_line(&with_newline, &assets.syntaxes).ok()?;
         let mut line = String::new();
         for (style, piece) in regions {
             let piece = piece.trim_end_matches('\n');
@@ -715,7 +737,7 @@ fn highlight(language: &str, source: &str, theme: &Theme) -> Vec<String> {
         }
         lines.push(line);
     }
-    lines
+    Some(lines)
 }
 
 /// Renders a Markdown message while it is still arriving.

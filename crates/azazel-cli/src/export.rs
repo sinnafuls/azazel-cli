@@ -1,5 +1,9 @@
 //! Writing a session out: Markdown to read, HTML to share (one file, no scripts), or the branch's
 //! entries as JSON lines. Used by `/export`, `azazel export` and `azazel sessions export`.
+//!
+//! With `tui.redact` on, what looks like a secret is hidden in the Markdown and the HTML. The
+//! JSON lines are the entries as the session stores them, so that the file opens as a session
+//! again: nothing is hidden in those.
 
 use std::fmt::Write as _;
 use std::path::Path;
@@ -8,7 +12,7 @@ use azazel_ai::{Block, Role};
 use azazel_core::SessionStore;
 use azazel_core::session::EntryKind;
 
-use crate::tui::view::tool_summary;
+use crate::tui::view::{redacted, tool_summary};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
@@ -48,11 +52,12 @@ fn title(session: &SessionStore) -> String {
         .unwrap_or_else(|| format!("Session {}", session.id()))
 }
 
-/// The session's current branch in `format`.
-pub fn render(session: &SessionStore, format: Format) -> String {
+/// The session's current branch in `format`; with `redact`, without what looks like a secret
+/// where the format is one to read or share.
+pub fn render(session: &SessionStore, format: Format, redact: bool) -> String {
     match format {
-        Format::Markdown => markdown(session),
-        Format::Html => html(session),
+        Format::Markdown => redacted(markdown(session), redact),
+        Format::Html => html(session, redact),
         Format::Jsonl => session
             .branch(None)
             .iter()
@@ -138,8 +143,10 @@ fn output_block(text: &str) -> String {
     out
 }
 
-fn html(session: &SessionStore) -> String {
-    let title = escape(&title(session));
+fn html(session: &SessionStore, redact: bool) -> String {
+    // Each text is cleared of secrets on its own: a picture's data must stay as it is.
+    let shown = |text: &str| escape(&redacted(text.to_string(), redact));
+    let title = shown(&title(session));
     let mut out = format!(
         "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" \
          content=\"width=device-width,initial-scale=1\"><title>{title}</title><style>{STYLE}</style></head>\
@@ -170,13 +177,13 @@ fn html(session: &SessionStore) -> String {
         for block in &entry.message.content {
             match block {
                 Block::Text { text } if !text.trim().is_empty() => {
-                    let _ = write!(body, "<pre>{}</pre>", escape(text.trim()));
+                    let _ = write!(body, "<pre>{}</pre>", shown(text.trim()));
                 }
                 Block::Thinking { text, .. } if !text.trim().is_empty() => {
                     let _ = write!(
                         body,
                         "<details><summary>thinking</summary><pre>{}</pre></details>",
-                        escape(text.trim())
+                        shown(text.trim())
                     );
                 }
                 Block::Image { mime, data } => {
@@ -188,16 +195,18 @@ fn html(session: &SessionStore) -> String {
                     );
                 }
                 Block::ToolCall { id, name, input, .. } => {
-                    let summary = escape(&format!("{name} {}", tool_summary(name, input)));
+                    let summary = shown(&format!("{name} {}", tool_summary(name, input)));
                     let _ = write!(body, "<details><summary>{summary}</summary>");
                     match result_of(id) {
                         Some((content, is_error)) => {
                             for part in content {
                                 match part {
                                     Block::Text { text } if is_error => {
-                                        let _ = write!(body, "<pre class=\"error\">{}</pre>", escape(text));
+                                        let _ = write!(body, "<pre class=\"error\">{}</pre>", shown(text));
                                     }
-                                    Block::Text { text } => body.push_str(&output_block(text)),
+                                    Block::Text { text } => {
+                                        body.push_str(&output_block(&redacted(text.clone(), redact)));
+                                    }
                                     Block::Image { mime, data } => {
                                         let _ = write!(
                                             body,
@@ -290,7 +299,7 @@ mod tests {
     #[test]
     fn html_is_one_safe_file_with_every_message_once() {
         let (_dir, store) = session();
-        let page = render(&store, Format::Html);
+        let page = render(&store, Format::Html, false);
         assert!(!page.contains("<script"));
         assert!(page.contains("<title>fix &lt;the&gt; tests</title>"));
         assert_eq!(page.matches("please fix it &amp; say so").count(), 1);
@@ -304,12 +313,12 @@ mod tests {
     #[test]
     fn markdown_and_jsonl_follow_the_branch() {
         let (_dir, store) = session();
-        let text = render(&store, Format::Markdown);
+        let text = render(&store, Format::Markdown, false);
         assert!(text.starts_with("# fix <the> tests\n"));
         assert!(text.contains("## You\n\nplease fix it & say so"));
         assert!(text.contains("- `edit` src/a.rs"));
 
-        let lines = render(&store, Format::Jsonl);
+        let lines = render(&store, Format::Jsonl, true);
         assert_eq!(lines.lines().count(), store.branch(None).len());
         let first: serde_json::Value = serde_json::from_str(lines.lines().next().unwrap()).unwrap();
         assert_eq!(first["type"], "session_info");
@@ -317,5 +326,58 @@ mod tests {
 
         assert_eq!(Format::from_path(Path::new("x.HTML")), Some(Format::Html));
         assert_eq!(Format::from_path(Path::new("x.txt")), None);
+    }
+
+    #[test]
+    fn secrets_are_hidden_in_what_is_read_and_kept_in_the_entries() {
+        let key = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), dir.path(), None).unwrap();
+        store.append(EntryKind::Message {
+            message: Message::user(format!("my key is {key}")),
+        });
+        let mut call = assistant("Checking.");
+        call.content.push(Block::ToolCall {
+            id: "c1".into(),
+            name: "shell".into(),
+            input: json!({ "command": "cat .env" }),
+            signature: None,
+        });
+        store.append(EntryKind::Message { message: call });
+        store.append(EntryKind::Message {
+            message: Message::tool(vec![Block::ToolResult {
+                call_id: "c1".into(),
+                content: vec![
+                    Block::text(format!("ANTHROPIC_API_KEY={key}\nDB_PASSWORD=\"hunter two\"")),
+                    // A picture's data is never rewritten, whatever it happens to spell.
+                    Block::Image {
+                        mime: "image/png".into(),
+                        data: format!("AAAA{key}AAAA"),
+                    },
+                ],
+                is_error: false,
+            }]),
+        });
+
+        for format in [Format::Markdown, Format::Html] {
+            let text = render(&store, format, true);
+            assert!(text.contains("my key is [redacted:anthropic-key]"), "{text}");
+            assert_eq!(
+                text.matches(key).count(),
+                usize::from(format == Format::Html),
+                "{text}"
+            );
+            assert!(render(&store, format, false).contains(&format!("my key is {key}")));
+        }
+        let page = render(&store, Format::Html, true);
+        assert!(page.contains("ANTHROPIC_API_KEY=[redacted:anthropic-key]\nDB_PASSWORD=[redacted:secret]"));
+        assert!(
+            page.contains(&format!("base64,AAAA{key}AAAA\"")),
+            "the picture is intact"
+        );
+
+        // The entries are the session itself: the file must open as one again.
+        let lines = render(&store, Format::Jsonl, true);
+        assert_eq!(lines.matches(key).count(), 3);
     }
 }

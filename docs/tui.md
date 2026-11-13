@@ -19,7 +19,7 @@ I'll run the tests first.
 ╭─── ✔ shell cargo test ───────────────────────────────────────────────────╮
 │ test result: FAILED. 11 passed; 1 failed                                 │
 │ … 14 more lines (ctrl+o to expand)                                       │
-╰── 1.4s · exit 101 ───────────────────────────────────────────────────────╯
+╰── 1.4s · exit 101 · 1.9k chars ──────────────────────────────────────────╯
 ╭─── ⠹ edit src/lib.rs ────────────────────────────────────────────────────╮
 ╰── 0s ────────────────────────────────────────────────────────────────────╯
 
@@ -40,7 +40,7 @@ The live region, top to bottom:
 |---|---|---|
 | Streaming reply | the agent is working | The unfinished tail of the current reply; finished blocks move to scrollback |
 | Thinking | thinking is shown (`Ctrl+T`) | The last lines of the model's reasoning, in italics |
-| Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time |
+| Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time. In the [compact style](#compact-style), the group of calls that is still growing instead |
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
 | Input | always | The editor between two rules, with its completion list, notices, queued messages, stashed drafts and an attached-image count above it |
@@ -149,8 +149,74 @@ long the call took and, for `shell`, the exit code. The frame and the icon show 
 | `✘` | error | Failed |
 
 A finished card shows 3 lines of output, or 16 lines of a diff; `… N more lines (ctrl+o to expand)` counts the
-rest. `Ctrl+O` expands tool calls that finish from then on. Diffs have a line-number gutter, and added and
+rest, and the bottom border says how long the whole output is (`4.1k chars`). `Ctrl+O` expands tool calls that
+finish from then on (up to 40 lines of output, all of a diff). Diffs have a line-number gutter, and added and
 removed lines are filled with a background colour.
+
+What reading and searching return is drawn for what it is. None of this changes what the model receives:
+
+| Call | Inside the card |
+|---|---|
+| `read` of a file | A listing: the file's own line numbers in a column, a bar, then the code coloured by its language (taken from the file's extension). Long lines are cut, not wrapped. A file of an unknown kind, and a listing of more than 128 KB, is numbered and left plain. The line that says which part of the file was read (`[lines 40-120 of 900; …]`) closes the listing |
+| `read` of a directory | One level of a tree: `├─ src/` for a directory (bold, accent), `├─ Cargo.toml  1.2 KB` for a file, sizes in a column |
+| `grep` | The name of each file once (bold, accent), under it `NNN │ line` for every line found in it. Where the line holds the text you searched for as it was written, that text is bold in the warning colour; a regular expression is never run again to find it, so a pattern that is more than plain text marks nothing. Lines of context are muted, and `…` stands where lines were skipped. `mode: "files"` is grouped like `glob` |
+| `glob` | Each directory once (bold, accent, `./` for the directory searched), its files indented under it. Directories keep the order of their newest file |
+| `web_grep` | `NNN │ line` rows like `grep`, for the one page |
+
+```text
+╭─── ✔ read src/main.rs ───────────────────╮   ╭─── ✔ grep run ───────────────────────────╮
+│   1 │ fn main() {                        │   │ src/main.rs                              │
+│   2 │     run();                         │   │   2 │     run();                         │
+│   3 │ }                                  │   │ src/lib.rs                               │
+╰── 2ms ───────────────────────────────────╯   │  14 │ pub fn run() {                     │
+                                               ╰── 6ms ───────────────────────────────────╯
+```
+
+With `tui.glyphs = "nerd"`, files and directories in trees and search results have an icon: forty kinds of file
+by extension or name (`rs`, `py`, `ts`, `md`, `Dockerfile`, `.gitignore`, pictures, archives…), a folder, and a
+plain file for everything else. Their colours are roles of the [theme](#themes), so a theme recolours them.
+
+#### Compact style
+
+`tui.tool_style = "compact"` (or `/settings`, Appearance, tool call style) shows a finished call on one row
+instead of a card: the state icon, the tool, what it was about in brackets, then how many lines it returned, how
+long it took and, for `shell`, the exit code. A call that failed or was refused ends with the first line of
+what went wrong. Two or more calls that finish one after another stand as a tree under a row that counts them
+and shows the worst of their states. An edit keeps its diff under its row; nothing else has a body.
+
+```text
+✘ 3 tool calls · 1 failed
+├─ ✔ read (src/main.rs) · 42 lines · 3ms
+├─ ✔ edit (src/main.rs) · 12ms
+│  12 -    old();
+│  12 +    new();
+└─ ✘ shell (cargo test) · 1.4s · exit 101 · error[E0425]: cannot find function `new`
+```
+
+A group grows above the input while its calls come in and is written to the transcript when the agent says
+something else or the run ends. A call that is still running stands in the same tree with a spinner, the time
+it has been running and, under its row, the last 5 lines it printed. `Ctrl+O` writes the calls of the group on screen again as full cards and shows the calls that follow as
+cards until it is pressed again; the [transcript viewer](#transcript-viewer) always shows full cards.
+
+#### Hiding secrets
+
+With `tui.redact` on (the default), what looks like a secret is replaced by `[redacted:<kind>]` in tool cards
+(the summary, the body, a diff and the live output of a running call), in the transcript viewer and what is
+copied from it, and in Markdown and HTML [exports](sessions-and-checkpoints.md). It is a matter of display only:
+the model and the session file keep the text, and a `.jsonl` export is the session as stored, so that it can be
+opened again.
+
+| `<kind>` | Recognised by |
+|---|---|
+| `anthropic-key`, `openai-key` | `sk-ant-…`, `sk-…` (32 characters or more) |
+| `github-token` | `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `ghr_…`, `github_pat_…` |
+| `google-key`, `aws-key`, `slack-token` | `AIza…`, `AKIA…` / `ASIA…`, `xoxb-…` (and `xoxa`, `xoxp`, `xoxr`, `xoxs`) |
+| `jwt` | Three base64 parts that start `eyJ….eyJ….` |
+| `bearer` | The token after `Bearer`; the word stays |
+| `secret` | The value of an assignment to a name in capitals with `KEY`, `TOKEN`, `SECRET` or `PASSWORD` in it (`DB_PASSWORD=…`); the name stays. Numbers, `true`/`false`, and references such as `$OTHER` are left alone |
+| `private-key` | A PEM block from `-----BEGIN … PRIVATE KEY-----` to its end |
+
+This catches the common shapes, not every secret: a password in prose or a key of an unknown shape is shown.
 
 The file a `read`, `write` or `edit` card names is a link to that file in terminals that follow
 [links](#links), and a picture a tool returns is shown under its card where the terminal draws
@@ -203,7 +269,7 @@ always stays. Only then is the model shortened, and after that left out.
 | `Ctrl+D` | `exit` | Exit when the input is empty |
 | `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `ask`, `accept-edits`, `auto` |
 | `Alt+A` | `agent_hub` | Open the agent hub |
-| `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output |
+| `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output; in the [compact style](#compact-style), also write the last group of calls as full cards |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L` | `model_picker` | Pick the model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
@@ -491,7 +557,8 @@ git repository and include what shell commands changed. Plain `/diff` needs a gi
 ## Transcript viewer
 
 `F2` or `/transcript` opens the conversation of the current branch full screen: your prompts, the replies, tool
-calls with their results, and thinking when it is shown in the transcript. It uses the terminal's alternate
+calls with their results as full cards, and thinking when it is shown in the transcript. What looks like a
+secret is [hidden](#hiding-secrets) here as in the cards. It uses the terminal's alternate
 screen, so the scrollback is as you left it when you return. This is the only place where azazel takes the
 mouse: the wheel scrolls here, and text selection with the mouse works everywhere else as usual. The same
 viewer shows the text of a [popup](#popups) that is too long for its box (`Ctrl+O`).
@@ -639,8 +706,8 @@ Appearance, which changes the running UI at once) chooses the set; `AZAZEL_GLYPH
 | `tui.glyphs` | Draws with |
 |---|---|
 | `unicode` | Symbols every modern terminal font has: `❯ ✔ ✘ ⚠ ⑂ ◫ ↯ ⬢`, rounded frames, braille spinner |
-| `nerd` | The same frames and spinner, with icons from a [Nerd Font](https://www.nerdfonts.com) in place of the symbols. The terminal must use such a font; azazel cannot tell whether it does |
-| `ascii` | Plain ASCII only: `>` for the prompt, `-` rules, tables drawn with `+` and `-`, `[x] [~] [ ]` todo marks, `* - +` bullets, a spinner that turns through `-`, `\`, a vertical bar and `/`, a vertical bar between status segments, `...` where text is cut, words for icons (`git: main`, `ctx 42%`), and the opening banner in thin letters |
+| `nerd` | The same frames and spinner, with icons from a [Nerd Font](https://www.nerdfonts.com) in place of the symbols, and an icon before every file and directory in [tool cards](#tool-cards). The terminal must use such a font; azazel cannot tell whether it does |
+| `ascii` | Plain ASCII only: `>` for the prompt, `-` rules, tables and tool cards drawn with `+`, `-` and a vertical bar, `[+] [!] [-]` for the state of a tool call, `[x] [~] [ ]` todo marks, `* - +` bullets, a spinner that turns through `-`, `\`, a vertical bar and `/`, a vertical bar between status segments, `...` where text is cut, words for icons (`git: main`, `ctx 42%`), and the opening banner in thin letters |
 | `auto` (default) | `unicode`, or `ascii` when `LC_ALL`, `LC_CTYPE` or `LANG` names an encoding that is not UTF-8 |
 
 An icon that would only repeat the word beside it is left out at the `ascii` level (`2 agents`, not
