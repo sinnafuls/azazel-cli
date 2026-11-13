@@ -158,7 +158,7 @@ pub(crate) struct Sources {
 impl Sources {
     /// A page the search returned.
     pub(crate) fn found(&mut self, url: &str, title: &str) {
-        let url = url.trim();
+        let url = untracked(url);
         if url.is_empty() || self.found.iter().any(|page| page.url == url) {
             return;
         }
@@ -173,7 +173,8 @@ impl Sources {
     /// from the page, or the part of the answer the page supports. Passages of one page are
     /// joined in citation order.
     pub(crate) fn cite(&mut self, url: &str, title: &str, passage: &str) {
-        let (url, title, passage) = (url.trim(), title.trim(), passage.trim());
+        let (url, title, passage) = (untracked(url), title.trim(), passage.trim());
+        let url = url.as_str();
         if url.is_empty() {
             return;
         }
@@ -211,6 +212,33 @@ impl Sources {
         }
         pages
     }
+}
+
+/// `url` without the `utm_*` tracking parameters a search adds to every page it returns
+/// (OpenAI adds `utm_source=openai`), so a page is the same link however it was found.
+fn untracked(url: &str) -> String {
+    let url = url.trim();
+    let (base, fragment) = match url.split_once('#') {
+        Some((base, fragment)) => (base, Some(fragment)),
+        None => (url, None),
+    };
+    let Some((path, query)) = base.split_once('?') else {
+        return url.to_string();
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty() && !pair.to_ascii_lowercase().starts_with("utm_"))
+        .collect();
+    let mut out = path.to_string();
+    if !kept.is_empty() {
+        out.push('?');
+        out.push_str(&kept.join("&"));
+    }
+    if let Some(fragment) = fragment {
+        out.push('#');
+        out.push_str(fragment);
+    }
+    out
 }
 
 /// Writes the provider's `extra_body` into a request body, member by member, replacing what the
@@ -283,4 +311,21 @@ pub fn decode_lines(bytes: &[u8], decoder: &mut dyn Decoder) -> Vec<StreamEvent>
     }
     events.extend(decoder.finish());
     events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracking_parameters_are_dropped_and_a_page_is_one_source() {
+        let mut sources = Sources::default();
+        sources.cite("https://docs.rs/x?utm_source=openai", "X", "one");
+        sources.cite("https://docs.rs/x", "", "two");
+        sources.found("https://a.example/p?q=1&UTM_medium=m#part", "A");
+        let pages = sources.finish();
+        let urls: Vec<&str> = pages.iter().map(|page| page.url.as_str()).collect();
+        assert_eq!(urls, ["https://docs.rs/x", "https://a.example/p?q=1#part"]);
+        assert_eq!(pages[0].snippet, "one … two");
+    }
 }
