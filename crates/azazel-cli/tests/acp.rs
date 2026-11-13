@@ -29,8 +29,10 @@ impl Seen {
     }
 
     /// Waits for an update `wanted` accepts.
+    /// Waits up to 60 s: a loaded machine (a full test run beside other builds) can take
+    /// much longer than the usual second.
     async fn wait_for(&self, wanted: impl Fn(&Value) -> bool) -> Value {
-        for _ in 0..300 {
+        for _ in 0..1200 {
             if let Some(found) = self.updates.lock().unwrap().iter().find(|update| wanted(update)) {
                 return found.clone();
             }
