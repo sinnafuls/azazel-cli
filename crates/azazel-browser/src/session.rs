@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
-use crate::launch::{NOT_FOUND, find_binary, launch};
+use crate::launch::{LEFT_AT_ONCE, NOT_FOUND, find_binary, launch};
 use crate::page::{self, Condition, Key};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
@@ -44,6 +44,8 @@ const FIELD_KIND: &str = "function() { return this.tagName === 'INPUT' ? (this.t
 const NAME_FIELDS: [&str; 6] = ["text", "email", "tel", "search", "url", "number"];
 /// How long the browser gets to save its profile and leave before it is started again.
 const LEAVE: Duration = Duration::from_secs(5);
+/// The longest pause before the browser is started once more on a profile still held.
+const RETRY_PAUSE: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -317,13 +319,14 @@ impl Running {
         Ok(())
     }
 
-    /// Asks the browser to leave, so it saves its profile; the kill is for one that does not
-    /// answer within `limit`.
-    async fn close(mut self, limit: Duration) {
+    /// Asks the browser to leave, so it saves its profile; the kill is for one that has not
+    /// left within `limit`. Returns the process, which may still be on its way out.
+    async fn close(mut self, limit: Duration) -> Box<dyn ChildWrapper> {
         let close = self.cdp.call(None, "Browser.close", json!({}));
         let _ = tokio::time::timeout(limit, close).await;
         let _ = tokio::time::timeout(limit, self.child.wait()).await;
         let _ = self.child.start_kill();
+        self.child
     }
 
     /// Calls `function` with the page's object `object` as `this` and returns its value.
@@ -1192,6 +1195,22 @@ impl BrowserSession {
         }
     }
 
+    /// Starts the browser on the profile another one has just left. The one that left can hold
+    /// the profile for a moment yet, and the new one then exits at once: it is started again
+    /// after a pause, a few times, each pause twice the last.
+    async fn start_again(&self, headless: bool) -> Result<Running, String> {
+        let mut pause = Duration::from_millis(250);
+        loop {
+            match Running::start(&self.settings, headless).await {
+                Err(why) if why.contains(LEFT_AT_ONCE) && pause <= RETRY_PAUSE => {
+                    tokio::time::sleep(pause).await;
+                    pause *= 2;
+                }
+                started => return started,
+            }
+        }
+    }
+
     /// Hands the browser to the user: it is shown in a window, on the same profile and with the
     /// same tabs, `ui` asks the user to do what `reason` says, and when the user answers the
     /// agent gets the tabs and the page as they are then.
@@ -1218,15 +1237,11 @@ impl BrowserSession {
         let running = match state.take().filter(|running| !running.cdp.is_closed()) {
             Some(hidden) if hidden.headless => {
                 let (pages, current) = (hidden.pages().await, hidden.current.clone());
-                hidden.close(LEAVE).await;
-                let mut shown = match Running::start(&self.settings, headless).await {
-                    Ok(shown) => shown,
-                    // The browser that left may still hold the profile for a moment.
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                        Running::start(&self.settings, headless).await?
-                    }
-                };
+                let mut left = hidden.close(LEAVE).await;
+                // The next browser needs the profile: the whole process tree has to be gone.
+                let _ = tokio::time::timeout(LEAVE, left.wait()).await;
+                drop(left);
+                let mut shown = self.start_again(headless).await?;
                 shown.reopen(pages, current).await?;
                 shown
             }
