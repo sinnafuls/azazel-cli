@@ -364,13 +364,18 @@ impl Router {
             return Err(AiError::InvalidRequest("no model configured".to_string()));
         }
         state.via = None;
-        let (resolved, routes) = self.dispatch(resolved, req, state).await?;
         if let Some(delay) = state.wait.take() {
             tokio::select! {
                 _ = cancel.cancelled() => return Err(AiError::Aborted),
                 _ = tokio::time::sleep(delay) => {}
             }
         }
+        // A cancelled request does not wait for a virtual model to make up its mind.
+        let (resolved, routes) = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(AiError::Aborted),
+            dispatched = self.dispatch(resolved, req, state) => dispatched?,
+        };
         let open: Vec<&ModelRef> = resolved
             .iter()
             .filter(|m| state.failures(m) < self.policy.max_attempts)
@@ -461,8 +466,9 @@ impl Router {
                         request: req,
                     };
                     route.route(&request).await.and_then(|route| {
-                        let picked: Vec<ModelRef> = self
-                            .resolve(&route.chain)
+                        let named = self.resolve(&route.chain);
+                        let nested = named.iter().any(is_virtual);
+                        let picked: Vec<ModelRef> = named
                             .into_iter()
                             .filter(|picked| !is_virtual(picked))
                             .map(|mut picked| {
@@ -471,6 +477,9 @@ impl Router {
                             })
                             .collect();
                         match picked.is_empty() {
+                            true if nested => {
+                                Err("it named a virtual model, which cannot answer".to_string())
+                            }
                             true => Err("it named no model that is configured".to_string()),
                             false => Ok(picked),
                         }
@@ -1597,7 +1606,7 @@ mod tests {
         for (spec, why) in [
             (
                 "virtual/auto",
-                "virtual/auto: it named no model that is configured",
+                "virtual/auto: it named a virtual model, which cannot answer",
             ),
             (
                 "virtual/gone",
@@ -1614,6 +1623,19 @@ mod tests {
                 .await;
             assert_eq!(failed.err(), Some(AiError::InvalidRequest(why.to_string())));
         }
+
+        // A request that is cancelled does not wait for a router.
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let aborted = r
+            .stream_with(
+                &chain(&["virtual/auto"]),
+                &asking("x"),
+                cancel,
+                &mut RouteState::new(),
+            )
+            .await;
+        assert_eq!(aborted.err(), Some(AiError::Aborted));
 
         // With a model after it in the chain, the request goes there.
         let mut state = RouteState::new();
