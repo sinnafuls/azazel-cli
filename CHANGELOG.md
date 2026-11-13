@@ -25,6 +25,18 @@ GitHub are its section here.
   the status line shows `virtual/auto -> provider/model`. Rust extensions use `Registrar::virtual_model`.
   `examples/extensions/auto_model.luau` is a small router.
 - RPC: `State` has `via` and `virtual_models`.
+- Interactive programs: `shell` with `interactive: true` runs a command in a real terminal (a pseudo-terminal;
+  ConPTY on Windows) for programs that ask questions, wait for keys or draw a screen: editors, REPLs,
+  installers, `git rebase -i`, logins. The call returns the first screen and a terminal id, and the new `pty`
+  tool reads the screen (`read`, which can wait for a change, for a text or for the end), types text and keys
+  (`send` with `text`, `keys` such as `ctrl+c` or `down`, and `submit`), and ends the program (`stop`). With
+  `wake_on_exit` the lead is told when the program ends, with its last screen and the saved log
+  (an `artifact://` address).
+- The terminal of such a program opens as a popup and follows it live. `Enter` gives you the keyboard, after
+  which every key goes to the program and the agent's input waits; `Ctrl+G` hands it back, `Esc` hides the
+  box, `Ctrl+X` stops the program. `F3` (`terminal`) and `/terminals` bring a hidden terminal back.
+- Typing into a terminal is decided by the rules for `shell`: it is allowed where the program is, and the text
+  is held to `deny` rules, the push guard and the destructive-command and secret-file checks like a command.
 - Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
   It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
   with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
@@ -101,6 +113,16 @@ GitHub are its section here.
 - `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
   file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
   the project and of `~/.azazel` that hold no credentials can be included.
+- GitHub addresses in `web_fetch`, `web_grep` and `read`: a repository is cloned one commit deep under the
+  artifacts directory and comes back as its file tree, its README and the path of the clone; a directory, a
+  file (with `#L10-L20`, those lines), a pull request (`/files` or `.diff` for the changes), an issue and an
+  Actions run (its jobs and the logs of the failed steps) come from GitHub's API. Everything goes through `gh`
+  when it is signed in, so private repositories work; otherwise GitHub is asked without a login.
+- YouTube videos in `web_fetch` and `read`: the captions as a transcript with the time of each part.
+- `read` converts Word, PowerPoint, Excel and mail files (`.docx`, `.pptx`, `.xlsx`, `.msg`, `.eml`) to
+  Markdown in a directory under the artifacts directory and returns an outline by line; pictures, every sheet
+  as CSV and attachments are files beside it. `offset` and `limit` then read lines of the Markdown. New cargo
+  feature `office`, part of the default build.
 
 ### Changed
 

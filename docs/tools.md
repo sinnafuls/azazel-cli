@@ -10,7 +10,7 @@ Fields marked `?` are optional.
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, a directory or a `scheme://` address |
+| `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, an Office or mail file, a directory or a `scheme://` address |
 | `write` | `path`, `content` | Creates a file or replaces its whole content. Parent directories are created |
 | `edit` | `path`, `edits: [{old, new, replace_all?}]` | Exact text replacement in an existing file |
 
@@ -21,8 +21,45 @@ Fields marked `?` are optional.
 - PNG, JPEG, WebP and GIF files are returned as images, scaled down when their long side exceeds 1568 px.
 - A PDF comes back as its text, each page under a `--- page N ---` line. One call returns at most 20 pages; `pages` picks them (`"3"` or `"2-6"`), and a partial read ends with `[pages 1-20 of 57; continue with pages="21-40"]`. A PDF without a text layer returns `this PDF has no extractable text (it is probably scanned)`. A PDF cannot be edited, so reading one does not count as having read it for `write`.
 - A notebook (`.ipynb`) comes back cell by cell: `# cell 4 [code]`, the cell's source, then `--- output ---` and its text outputs, each cut at 2000 characters. An image output is named in a line such as `[image output: cell 4 image 1, image/png, 5120 bytes]`, and the first image of the cells shown is attached to the result (a model without vision gets a note in its place). `offset` and `limit` count cells; a partial read ends with `[cells 1-12 of 40; continue with offset=13]`.
+- A Word, PowerPoint or Excel file and a mail message are converted; see [Office and mail files](#office-and-mail-files).
 - A directory lists up to 500 entries: `name/` for directories, `name<tab>N bytes` for files.
 - `~/` is expanded. Relative paths start at the agent's working directory.
+
+### Office and mail files
+
+`read` of a `.docx`, `.pptx`, `.xlsx`, `.msg` or `.eml` file (also `.docm`, `.pptm`, `.xlsm`) converts it into a directory under the project's artifacts directory, `~/.azazel/projects/<slug>/artifacts/<file name>-<hash>/`, and returns where that is, the files in it and an outline of the Markdown:
+
+```text
+/work/q3/report.docx is a Word document (36299 bytes). It was converted to Markdown in /home/you/.azazel/projects/q3/artifacts/report.docx-29d79928:
+report.md	26 lines
+images/image1.png	76 bytes
+
+Outline of report.md; `L` is the line, which `offset` takes when reading this file or report.md:
+L1	# Quarterly report
+L5	## Revenue
+L14	## Risks
+L19	### Next steps
+```
+
+A Markdown file of at most 8000 characters follows whole. For a longer one, `read` the document again (or the Markdown file) with `offset` set to a line of the outline: the result is those lines of the Markdown, numbered like any text file. The outline holds at most 200 headings and the file list 40 files.
+
+| File | The Markdown | Beside it |
+|---|---|---|
+| `.docx` | Headings (by the name of their style, so documents in any language work; a document with a title has its headings one level below it), paragraphs with bold, italic and links, bulleted and numbered lists, tables, text boxes | `images/`: the pictures, linked from where they stand |
+| `.pptx` | `# Slide N: <title>` per slide in the order of the show, the points of each placeholder as a list, text boxes, tables, and the speaker's notes as `Notes: ...` | `images/`: the pictures |
+| `.xlsx` | `# Sheet N: <name>` per sheet with its size and its first 20 rows and 12 columns as a table | `sheets/<N>-<name>.csv`: every sheet whole, a line per row (an empty row is an empty line) |
+| `.eml`, `.msg` | The subject as the heading, `From`, `To`, `Cc` and `Date`, then `## Message` and `## Attachments` | `attachments/`: every attachment under its own name |
+
+What is and is not converted:
+
+- A spreadsheet cell is the value Excel last computed: a formula is its result, a date cell is `2026-03-01` or `2026-03-15 14:30:00`, a number is shown with the 15 digits Excel shows. A formula no program ever computed (a file written by a library) is the formula itself, `=SUM(B2:B3)`. Hidden sheets are converted and marked `hidden`; charts are not.
+- Headers, footers, footnotes and comments of a document, and charts and diagrams of a presentation, are left out.
+- The text of a message is its plain-text part; a message that only has HTML is converted from that, and an Outlook message that only has RTF from that. A message forwarded as an attachment of a `.eml` file becomes `attachments/message-N.eml`, which `read` takes like any other; a message inside a `.msg` file follows the outer one in the same Markdown file, one heading level down.
+- The directory is named after the file and its content: the same file is converted once, and a changed one again. These files cannot be edited, so reading one does not count as having read it for `write`.
+- A file that only has the extension (a text file called `notes.docx`) is read as the text it is. The old binary formats (`.doc`, `.xls`, `.ppt`) are not read.
+- Files other than the Markdown are read with the usual tools: `read` an image or a CSV, `grep` the directory.
+
+A build without the cargo feature `office` (part of the default build) reports these files as binary.
 
 ### The read guard
 
@@ -288,10 +325,42 @@ preview: 3 replacements in 2 files, nothing written. To write them, run this aga
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `shell` | `command`, `cwd?`, `timeout_secs?`, `background?`, `description?` | Runs a command in the resolved shell |
+| `shell` | `command`, `cwd?`, `timeout_secs?`, `background?`, `interactive?`, `wake_on_exit?`, `description?` | Runs a command in the resolved shell |
 | `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` |
+| `pty` | `action` (`send`, `read`, `stop`, `list`), `id?`, `text?`, `keys?`, `submit?`, `wait?`, `wait_for?`, `timeout_secs?` | Works with a program `shell` started in a terminal; see [programs in a terminal](#programs-in-a-terminal) |
 
 `shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for an agent can never push to a git remote; see [permissions](permissions.md).
+
+### Programs in a terminal
+
+A program that asks questions, waits for keys or draws a screen (an editor, a REPL, an installer, `git rebase -i`, `ssh`, a login that wants a password) has nothing to talk to in an ordinary `shell` call and hangs until the timeout. `shell` with `interactive: true` runs the command in a real terminal instead: a pseudo-terminal (ConPTY on Windows) whose screen azazel emulates. The call does not wait for the program to end. It returns once the program has drawn something and the screen has been still for a moment:
+
+```
+started pty-1 in a terminal; read its screen, type into it and stop it with the pty tool
+? package name: (demo)
+[pty-1: running for 0s; screen 100x30, cursor at row 1 column 24]
+```
+
+The agent then works with it through `pty`:
+
+| Action | Input | What it does |
+|---|---|---|
+| `read` | `id?`, `wait?`, `wait_for?`, `timeout_secs?` | The screen as text, with the state of the program. Without a wait it answers at once. `wait: "change"` waits until the screen has changed since the agent last saw it, `wait: "exit"` until the program has ended, `wait_for: "text"` until that text is on the screen. A wait gives up after `timeout_secs` (30 by default, at most 1800) and says so; that is not an error |
+| `send` | `id?`, `text?`, `keys?`, `submit?` | Types `text` (a line break in it presses Enter), then presses each of `keys` in order, then Enter when `submit` is true. Returns the screen once it has settled |
+| `stop` | `id?` | Ends the program. Its last screen stays to be read |
+| `list` | | Every terminal of the session with its state and command |
+
+- `id` may be left out while only one terminal is open.
+- Keys are `enter`, `tab`, `esc`, `backspace`, `delete`, `insert`, `up`, `down`, `left`, `right`, `home`, `end`, `pageup`, `pagedown`, `space`, `f1` to `f12` and single characters, with `ctrl+`, `alt+` or `shift+` in front: `ctrl+c`, `alt+x`, `shift+tab`, `ctrl+left`. They are sent as xterm sends them, and the arrow keys follow the mode a full-screen program sets.
+- The screen is 100 columns by 30 rows until the [interface shows it](tui.md#terminals), which gives the program the size of its box. The status line of a result has the size and where the cursor is.
+- With `wake_on_exit: true` the agent need not watch the program. When it ends, the lead gets a message with the last screen and the address of the log: at once if it is working, as a new prompt if it is idle. Only the lead can be woken; a sub-agent waits with `read` and `wait: "exit"`.
+- Everything the program printed is saved: the rows that scrolled off the screen as they do, and the last screen when the program ends. A result names the log once the program has ended (`artifact://pty-<start time>-<n>.log`), and `read` takes that address. What a full-screen program (an editor, a pager) scrolled within its own screen is not output and is not kept.
+- You see the terminal live and can type into it yourself; see [terminals](tui.md#terminals). While you have the keyboard an agent's `send` waits (up to two minutes) for you to hand it back, and the next result the agent gets says that you typed.
+- At most eight programs run in terminals at once. They are ended when the session ends. `timeout_secs` of `shell` does not apply to an interactive command, and `background` cannot be combined with `interactive`: the program goes on after the call returns anyway.
+- An agent whose definition lists its tools needs `pty` beside `shell` to work with what it starts, as it needs `job` for background jobs.
+- A terminal exists in the process the session runs in. A session that runs elsewhere (a background session, `--ssh`) still gives its agents terminals, but the interface attached to it does not show them.
+
+Permissions are those of `shell`: starting the program is a `shell` call like any other, typing into it and stopping it are allowed where running it is, and what is typed is checked like a command. See [permissions](permissions.md#programs-in-a-terminal).
 
 ## Code execution
 
@@ -426,7 +495,7 @@ square brackets the summary puts after facts it shortened.
 | Tool | Input | Behaviour |
 |---|---|---|
 | `web_search` | `query` or `queries` (at most 5), `limit?`, `site?`, `recency?` | Numbered results with title, URL and snippet; several queries run at once and get a section each. `limit` defaults to 8 (at most 20); `recency` is `day`, `week`, `month` or `year`. Answered by the search tool of the lead's provider when it has one, else by the configured backend; see [web and browser](web-and-browser.md#the-providers-own-search) |
-| `web_fetch` | `url`, `format?`, `offset?`, `limit?` | Fetches an http or https URL. `format` is `markdown` (default), `text` or `raw`. A long page comes in parts: `offset` is the first line, `limit` the most characters (default 30000). A PDF comes back as its text |
+| `web_fetch` | `url`, `format?`, `offset?`, `limit?` | Fetches an http or https URL. `format` is `markdown` (default), `text` or `raw`. A long page comes in parts: `offset` is the first line, `limit` the most characters (default 30000). A PDF comes back as its text, a GitHub address as what it names (a repository is cloned), a YouTube video as its captions |
 | `web_grep` | `url`, `pattern`, `ignore_case?`, `literal?`, `context?`, `limit?`, `format?` | Searches the page at a URL line by line and returns the matching lines with their numbers, from the same cache as `web_fetch` |
 
 Details, search backends and limits: [web and browser](web-and-browser.md).
@@ -532,7 +601,7 @@ The agent reads the rest with `read artifact://<call id>`. The same directory ho
 | `agent://<id>` | The latest report of an agent |
 | `agent://<id>/transcript` | What the agent did: one line per tool call and the full text of what it said |
 | `mcp://<server>/<resource uri>` | A resource of an MCP server |
-| `http://...`, `https://...` | The page as Markdown, through the `web_fetch` pipeline; `offset` and `limit` of `read` page it by line. Permission rules for `web_fetch` apply |
+| `http://...`, `https://...` | The page as Markdown, through the `web_fetch` pipeline, [GitHub and YouTube addresses](web-and-browser.md#github-addresses) included; `offset` and `limit` of `read` page it by line. Permission rules for `web_fetch` apply |
 | `session://` | The open session: id, file, name, when it was created, message counts, and up to 20 other sessions of the project |
 | `session://<id>` | Another session of the project (a unique start of its id is enough), in the same condensed form as `agent://<id>/transcript` |
 | `job://` | The background jobs, one per line |
@@ -597,4 +666,4 @@ With `shell` empty, the first of these that exists is used:
 | Linux, macOS | `bash`, then `sh` |
 | Windows | `bash.exe` on `PATH` (the WSL launcher in `System32` is skipped), then the `bash.exe` shipped with Git for Windows, then `pwsh`, then `powershell` |
 
-POSIX shells run the command with `-c`; PowerShell runs it with `-NoProfile -NonInteractive -Command`. The `shell` tool's description tells the model which shell and operating system it is writing for. `azazel doctor` shows the resolved shell.
+POSIX shells run the command with `-c`; PowerShell runs it with `-NoProfile -NonInteractive -Command` (without `-NonInteractive` for a [program in a terminal](#programs-in-a-terminal)). The `shell` tool's description tells the model which shell and operating system it is writing for. `azazel doctor` shows the resolved shell.

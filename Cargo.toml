@@ -7,6 +7,7 @@ members = [
     "tests/fixtures/fake-lsp",
     "tests/fixtures/fake-check",
     "tests/fixtures/fake-sg",
+    "tests/fixtures/fake-gh",
     "tests/fixtures/fake-audio",
     "tests/fixtures/fake-ssh",
     "examples/custom-distro",
@@ -120,6 +121,8 @@ rand = "0.10"
 
 # Processes and shell parsing
 process-wrap = { version = "10", features = ["tokio1"] }
+# A real terminal for programs that ask questions or draw a screen (ConPTY on Windows)
+portable-pty = "0.9"
 # Local sockets (Unix) and named pipes (Windows) for background sessions
 interprocess = { version = "2.4", features = ["tokio"] }
 winsafe = { version = "0.0.29", features = ["kernel"] }
@@ -154,6 +157,11 @@ resvg = { version = "0.50", default-features = false, features = ["text"] }
 notify-rust = "4.19"
 keepawake = "0.6"
 pdf-extract = "0.12"
+# Office and mail files for `read`: OOXML is a zip of XML, an Outlook message a compound file.
+zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
+quick-xml = "0.41"
+cfb = "0.16"
+mail-parser = { version = "1.0", features = ["full_encoding"] }
 xcap = "0.9"
 cpal = "0.18"
 enigo = "0.6"
@@ -177,7 +185,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 tracing-appender = "0.2"
 
-# Test
+# Test (and the screen of a program in a terminal)
 wiremock = "0.6"
 insta = "1.49"
 assert_cmd = "2"

@@ -15,7 +15,7 @@ pub(super) fn tool_kind(name: &str, access: Option<Access>) -> acp::ToolKind {
         "read" => acp::ToolKind::Read,
         "write" | "edit" => acp::ToolKind::Edit,
         "glob" | "grep" | "semantic_search" | "tool_search" | "memory_search" => acp::ToolKind::Search,
-        "shell" | "job" | "run_code" => acp::ToolKind::Execute,
+        "shell" | "job" | "pty" | "run_code" => acp::ToolKind::Execute,
         "web_fetch" | "web_search" => acp::ToolKind::Fetch,
         // A tool of an extension or an MCP server: what it touches is all that is known of it.
         _ => match access {

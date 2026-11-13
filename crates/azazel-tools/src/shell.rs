@@ -1,4 +1,5 @@
-//! `shell` runs commands; `job` manages the ones started in the background.
+//! `shell` runs commands; `job` manages the ones started in the background. A command that
+//! needs a terminal is started in one (see [`crate::pty`]).
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -8,12 +9,14 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_core::hooks::Wake;
 use azazel_core::process::{AgentEnv, Detached, OutputBuffer, RunOptions, Shell, pump_lines, run, spawn};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::pty::{self, Terminals};
 use crate::util::{parse_input, resolve_path};
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -257,6 +260,7 @@ pub struct ShellTool {
     jobs: Arc<Jobs>,
     env: Arc<AgentEnv>,
     foreground: Arc<Foreground>,
+    terminals: Arc<Terminals>,
     description: String,
 }
 
@@ -267,13 +271,19 @@ impl ShellTool {
         jobs: Arc<Jobs>,
         env: Arc<AgentEnv>,
         foreground: Arc<Foreground>,
+        terminals: Arc<Terminals>,
     ) -> Self {
         let description = format!(
             "Run a command in {} on {}. stdout and stderr are returned together, followed by the exit \
              code; long output keeps its first 100 and last 300 lines. The default timeout is {} seconds \
              (`timeout_secs` overrides it). Set `background` to true for servers and other long-running \
-             processes, then use the `job` tool to read their output or stop them. Prefer the dedicated \
-             read, edit, glob and grep tools over shell equivalents.",
+             processes, then use the `job` tool to read their output or stop them. Set `interactive` to \
+             true for a program that asks questions, waits for keys or draws a screen (an editor, a \
+             REPL, an installer, `git rebase -i`): it runs in a real terminal the user sees, the call \
+             returns its first screen and a terminal id at once, and the `pty` tool reads the screen, \
+             types into it and stops it. With `wake_on_exit` you need not watch it: you get a message \
+             with its last screen and its saved log when it ends. Prefer the dedicated read, edit, \
+             glob and grep tools over shell equivalents.",
             shell.name(),
             std::env::consts::OS,
             default_timeout.as_secs()
@@ -284,6 +294,7 @@ impl ShellTool {
             jobs,
             env,
             foreground,
+            terminals,
             description,
         }
     }
@@ -296,6 +307,10 @@ struct ShellInput {
     timeout_secs: Option<u64>,
     #[serde(default)]
     background: bool,
+    #[serde(default)]
+    interactive: bool,
+    #[serde(default)]
+    wake_on_exit: bool,
 }
 
 #[async_trait]
@@ -316,6 +331,8 @@ impl Tool for ShellTool {
                 "cwd": {"type": "string", "description": "Directory to run in; defaults to the working directory"},
                 "timeout_secs": {"type": "integer", "minimum": 1},
                 "background": {"type": "boolean", "description": "Start it and return a job id at once"},
+                "interactive": {"type": "boolean", "description": "Run it in a real terminal, for a program that asks questions or draws a screen; returns a terminal id for the pty tool"},
+                "wake_on_exit": {"type": "boolean", "description": "With interactive: do not watch it; a message with its last screen and log reaches you when it ends"},
                 "description": {"type": "string", "description": "A few words on what this command does"}
             },
             "required": ["command"]
@@ -348,6 +365,12 @@ impl Tool for ShellTool {
             return ToolOutput::error(format!("{} is not a directory", cwd.display()));
         }
         let env = self.env.vars();
+        if input.interactive {
+            return self.interactive(&input, &cwd, &env, ctx).await;
+        }
+        if input.wake_on_exit {
+            return ToolOutput::error("`wake_on_exit` goes with `interactive: true`");
+        }
         if input.background {
             return match self.jobs.start(&self.shell, &input.command, &cwd, &env) {
                 Ok(id) => ToolOutput::text(format!(
@@ -408,6 +431,47 @@ impl Tool for ShellTool {
             details: None,
         }
         .with_details(json!({"exit_code": result.code, "timed_out": result.timed_out}))
+    }
+}
+
+impl ShellTool {
+    /// Starts the command in a terminal and returns its first screen.
+    async fn interactive(
+        &self,
+        input: &ShellInput,
+        cwd: &Path,
+        env: &[(String, String)],
+        ctx: &ToolCtx,
+    ) -> ToolOutput {
+        if input.background {
+            return ToolOutput::error(
+                "`interactive` and `background` do not go together: a program in a terminal goes on \
+                 after the call returns anyway",
+            );
+        }
+        // Only the lead can be given a message between its turns.
+        let wake = ctx.services.get::<Wake>().filter(|_| ctx.agent.parent.is_none());
+        if input.wake_on_exit && wake.is_none() {
+            return ToolOutput::error(
+                "nothing can wake you here; start it without `wake_on_exit` and wait for it with the \
+                 pty tool (`read` with `wait: \"exit\"`)",
+            );
+        }
+        let terminal = match self
+            .terminals
+            .start(&self.shell, &input.command, cwd, env, &ctx.agent.id)
+        {
+            Ok(terminal) => terminal,
+            Err(why) => return ToolOutput::error(why),
+        };
+        let output = pty::started(&terminal, &ctx.cancel).await;
+        if let Some(wake) = wake.filter(|_| input.wake_on_exit) {
+            tokio::spawn(async move {
+                terminal.wait_exit().await;
+                (wake.0)(pty::exit_notice(&terminal));
+            });
+        }
+        output
     }
 }
 
@@ -535,7 +599,7 @@ mod tests {
         }
     }
 
-    fn tools(timeout: Duration) -> (ShellTool, JobTool, Arc<AgentEnv>) {
+    fn tools(timeout: Duration, logs: &Path) -> (ShellTool, JobTool, Arc<AgentEnv>) {
         let jobs = Arc::new(Jobs::new());
         let env = Arc::new(AgentEnv::default());
         (
@@ -545,6 +609,7 @@ mod tests {
                 jobs.clone(),
                 env.clone(),
                 Arc::new(Foreground::new()),
+                Arc::new(Terminals::new(logs.to_path_buf())),
             ),
             JobTool::new(jobs),
             env,
@@ -562,7 +627,7 @@ mod tests {
     #[tokio::test]
     async fn runs_in_cwd_with_agent_env_streams_updates_and_reports_exit_code() {
         let dir = tempfile::tempdir().unwrap();
-        let (shell, _, env) = tools(Duration::from_secs(60));
+        let (shell, _, env) = tools(Duration::from_secs(60), dir.path());
         env.set(vec![("AZ_GUARD".into(), "on".into())]);
         let seen = Arc::new(Mutex::new(Vec::new()));
         let sink = seen.clone();
@@ -584,7 +649,7 @@ mod tests {
     #[tokio::test]
     async fn timeout_is_an_error_result_that_says_so() {
         let dir = tempfile::tempdir().unwrap();
-        let (shell, _, _) = tools(Duration::from_secs(60));
+        let (shell, _, _) = tools(Duration::from_secs(60), dir.path());
         let command = if shell.shell.is_posix() {
             "sleep 60"
         } else {
@@ -606,7 +671,7 @@ mod tests {
     #[tokio::test]
     async fn a_running_command_moves_to_the_background_without_restarting() {
         let dir = tempfile::tempdir().unwrap();
-        let (shell, job, _) = tools(Duration::from_secs(120));
+        let (shell, job, _) = tools(Duration::from_secs(120), dir.path());
         let shell = Arc::new(shell);
         let command = if shell.shell.is_posix() {
             "echo started; sleep 30; echo finished"
@@ -661,9 +726,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_interactive_command_runs_in_a_terminal_and_wakes_the_lead_when_it_ends() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _, env) = tools(Duration::from_secs(60), dir.path());
+        env.set(vec![("AZ_GUARD".into(), "on".into())]);
+        let context = ctx(dir.path(), CancellationToken::new(), UpdateSink::default());
+        let woken = Arc::new(Mutex::new(Vec::new()));
+        let sink = woken.clone();
+        context.services.insert(Arc::new(Wake(Arc::new(move |text| {
+            sink.lock().unwrap().push(text)
+        }))));
+        let command = if shell.shell.is_posix() {
+            "printf 'name? '; read answer; echo \"got $answer $AZ_GUARD\""
+        } else {
+            "$answer = Read-Host 'name?'; Write-Output \"got $answer $env:AZ_GUARD\""
+        };
+
+        // The call returns with the program's first screen while the program waits for input.
+        let out = shell
+            .call(
+                json!({"command": command, "interactive": true, "wake_on_exit": true}),
+                &context,
+            )
+            .await;
+        let text = out.text_content();
+        assert!(!out.is_error, "{text}");
+        assert!(text.starts_with("started pty-1 in a terminal"), "{text}");
+        assert!(text.contains("name?"), "{text}");
+        assert!(text.contains("[pty-1: running for "), "{text}");
+        let details = out.details.unwrap();
+        assert_eq!(details["pty_id"], "pty-1");
+        assert_eq!(details["state"], "running");
+        assert!(woken.lock().unwrap().is_empty());
+
+        // Once it ends, the lead gets its last screen and where the log is.
+        let terminal = shell.terminals.get("pty-1").unwrap();
+        assert_eq!(terminal.agent, "lead");
+        assert!(terminal.type_text("Ada\n"));
+        for _ in 0..300 {
+            if !woken.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let woken = woken.lock().unwrap();
+        assert_eq!(woken.len(), 1);
+        assert!(
+            woken[0].starts_with("<terminal-exit id=\"pty-1\">"),
+            "{}",
+            woken[0]
+        );
+        assert!(woken[0].contains("got Ada on"), "{}", woken[0]);
+        assert!(
+            woken[0].contains(&format!(
+                "[pty-1: exited with code 0; full log: {}]",
+                terminal.log_address()
+            )),
+            "{}",
+            woken[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn only_the_lead_is_woken_and_a_terminal_is_neither_a_job_nor_without_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let (shell, _, _) = tools(Duration::from_secs(60), dir.path());
+        let mut context = ctx(dir.path(), CancellationToken::new(), UpdateSink::default());
+        context
+            .services
+            .insert(Arc::new(Wake(Arc::new(|_| panic!("nothing ran")))));
+        let refused = |out: ToolOutput| {
+            assert!(out.is_error);
+            out.text_content()
+        };
+        let both = json!({"command": "echo x", "interactive": true, "background": true});
+        assert!(refused(shell.call(both, &context).await).starts_with("`interactive` and `background`"));
+        let alone = json!({"command": "echo x", "wake_on_exit": true});
+        assert_eq!(
+            refused(shell.call(alone, &context).await),
+            "`wake_on_exit` goes with `interactive: true`"
+        );
+        // A sub-agent has no turns to be woken between.
+        context.agent.parent = Some("lead".into());
+        let woken = json!({"command": "echo x", "interactive": true, "wake_on_exit": true});
+        assert!(refused(shell.call(woken, &context).await).starts_with("nothing can wake you here"));
+        assert!(shell.terminals.entries().is_empty(), "nothing was started");
+    }
+
+    #[tokio::test]
     async fn background_job_can_be_read_listed_and_killed() {
         let dir = tempfile::tempdir().unwrap();
-        let (shell, job, _) = tools(Duration::from_secs(60));
+        let (shell, job, _) = tools(Duration::from_secs(60), dir.path());
         let command = if shell.shell.is_posix() {
             "echo ready; sleep 60"
         } else {

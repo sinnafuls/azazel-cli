@@ -415,6 +415,9 @@ impl Tui {
         if let Some(overlay) = &mut self.overlay {
             return overlay.on_paste(pasted);
         }
+        if self.term_paste(pasted) {
+            return;
+        }
         if let Some(panel) = &mut self.btw {
             return panel.on_paste(pasted);
         }
