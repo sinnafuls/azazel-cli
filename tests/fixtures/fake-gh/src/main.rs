@@ -6,7 +6,9 @@
 //! - `fake-gh api [--hostname <host>] [-H <header>]… <path>` prints the file the path names
 //!   under `gh-data/api`: the path with everything but letters, digits, `.` and `-` turned into
 //!   `_`, then `.json`, `.raw` or `.diff` for what the `Accept` header asks for. When there is
-//!   no such file it fails the way `gh` does for an address GitHub does not know;
+//!   no such file it fails the way `gh` does for an address GitHub does not know, and when the
+//!   file holds an escape character it is refused, as `gh` refuses it, unless
+//!   `--allow-escape-sequences` is among the arguments;
 //! - `fake-gh repo clone <owner>/<name> <directory> [-- <git options>…]` copies
 //!   `gh-data/clone/<owner>-<name>` to the directory, and fails when there is no such directory;
 //! - `fake-gh gist create [--desc <text>] <file>…` copies the files to `gh-data/gist`, writes the
@@ -65,12 +67,14 @@ fn main() -> ExitCode {
         ["api", rest @ ..] => {
             let mut kind = "json";
             let mut path = None;
+            let mut escapes = false;
             let mut rest = rest.iter();
             while let Some(word) = rest.next() {
                 match *word {
                     "--hostname" => {
                         rest.next();
                     }
+                    "--allow-escape-sequences" => escapes = true,
                     "-H" => {
                         let header = rest.next().copied().unwrap_or_default().to_ascii_lowercase();
                         if let Some(accept) = header.strip_prefix("accept:") {
@@ -95,6 +99,10 @@ fn main() -> ExitCode {
                 })
                 .collect();
             match std::fs::read(data.join("api").join(format!("{name}.{kind}"))) {
+                Ok(body) if body.contains(&0x1b) && !escapes => fail(
+                    "the response contains terminal escape sequences; pass --allow-escape-sequences to output it \
+                     anyway",
+                ),
                 Ok(body) => {
                     let _ = std::io::stdout().write_all(&body);
                     ExitCode::SUCCESS

@@ -108,6 +108,16 @@ GitHub are its section here.
 - `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
   file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
   the project and of `~/.azazel` that hold no credentials can be included.
+- GitHub addresses in `web_fetch`, `web_grep` and `read`: a repository is cloned one commit deep under the
+  artifacts directory and comes back as its file tree, its README and the path of the clone; a directory, a
+  file (with `#L10-L20`, those lines), a pull request (`/files` or `.diff` for the changes), an issue and an
+  Actions run (its jobs and the logs of the failed steps) come from GitHub's API. Everything goes through `gh`
+  when it is signed in, so private repositories work; otherwise GitHub is asked without a login.
+- YouTube videos in `web_fetch` and `read`: the captions as a transcript with the time of each part.
+- `read` converts Word, PowerPoint, Excel and mail files (`.docx`, `.pptx`, `.xlsx`, `.msg`, `.eml`) to
+  Markdown in a directory under the artifacts directory and returns an outline by line; pictures, every sheet
+  as CSV and attachments are files beside it. `offset` and `limit` then read lines of the Markdown. New cargo
+  feature `office`, part of the default build.
 
 ### Changed
 

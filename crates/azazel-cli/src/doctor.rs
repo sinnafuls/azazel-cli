@@ -283,11 +283,14 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     match azazel_tools::schemes::gh_program() {
         Some(gh) => report.ok(format!(
-            "gh: {}; `read` takes pr:// and issue:// addresses, /share and /bug upload through it",
+            "gh: {}; `read` takes pr:// and issue:// addresses, GitHub URLs are read with its login when it is \
+             signed in, and /share and /bug upload through it",
             gh.display()
         )),
-        None => report
-            .ok("gh: not found on PATH; pr:// and issue:// addresses, /share and the issue of /bug are off"),
+        None => report.ok(
+            "gh: not found on PATH; pr:// and issue:// addresses, /share and the issue of /bug are off, and \
+             GitHub URLs are read without a login",
+        ),
     }
 
     let store = Packages::new(paths);
