@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-13
+
 ### Added
 
 - New configuration tables: `[session]`, `[limits]`, `[notify]`, `[editor]`, `[voice]`, `[advisor]`,
@@ -40,7 +42,8 @@ GitHub are its section here.
 - `/consult [question]` asks a saved session a question without resuming it.
 - Prompt history is kept per project across sessions: Up/Down and `Ctrl+R` reach earlier sessions' prompts.
 - `azazel stats`: sessions, prompts, tokens and cost per day, model, project and tool.
-- `azazel changelog` and `/changelog`; the first start after an update says how many changes it brought.
+- `azazel changelog` and `/changelog` (in the viewer); the first start after an update says how many changes
+  it brought.
 - Several accounts per provider: `azazel login <provider> --as <label>`, `azazel logout <provider> --account
   <label>`, and `[providers.<id>] account` to choose the default one.
 - `/account` lists a provider's accounts with their usage windows and lets you use one for the session, make it
@@ -169,7 +172,6 @@ GitHub are its section here.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
 - `/cost` also lists what side questions, commit drafts and the advisor cost.
 - `/tools` marks tools withheld in coordinator mode.
-- `/changelog` opens in the viewer.
 - A refusal for "extra usage" names the full window and when it resets.
 - RPC `get_state` also reports `name` and `tier`; RPC `set_model` is recorded in the session; RPC errors for a
   wrong member name its kind, for example "`chain` must be a list".
@@ -191,6 +193,8 @@ GitHub are its section here.
 
 - On Windows, a multi-line paste no longer sends the prompt at its first line break.
 - `/retry` no longer sends an image that an `@mention` attached twice.
+- In coordinator mode, a side question, hand-off or advisor review is sent with the tools the lead is offered,
+  so it reuses the cached prompt.
 - An MCP server that fails the moment it is started (a missing program) is reported as failed instead of
   staying `connecting`.
 - The approval prompt for a destructive command starts on "Deny", so a stray Enter cannot approve it.
@@ -221,6 +225,7 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sinnafuls/azazel-cli/releases/tag/v0.1.0
