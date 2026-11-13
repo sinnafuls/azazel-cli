@@ -11,7 +11,7 @@ use azazel_core::EntryKind;
 use azazel_tui::components::markdown::Fenced;
 use azazel_tui::components::pager::fenced_blocks;
 use azazel_tui::term::{Caps, Images};
-use azazel_tui::{HistoryItem, Role, text};
+use azazel_tui::{HistoryItem, text};
 
 use super::Tui;
 use super::overlay::Action;
@@ -103,13 +103,11 @@ impl Tui {
 
     /// The session's name, else the folder it works in: what the title shows.
     fn title_label(&self) -> String {
-        self.active.session.name().unwrap_or_else(|| {
-            self.app
-                .paths
-                .cwd
-                .file_name()
+        self.session.name().unwrap_or_else(|| {
+            let cwd = self.backend.cwd();
+            cwd.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_else(|| self.app.paths.cwd.display().to_string())
+                .unwrap_or_else(|| cwd.display().to_string())
         })
     }
 
@@ -208,8 +206,7 @@ impl Tui {
 
     /// The replies of the agent on the current branch, newest first.
     fn reply_texts(&self) -> Vec<String> {
-        self.active
-            .session
+        self.session
             .branch(None)
             .into_iter()
             .rev()
@@ -249,7 +246,11 @@ impl Tui {
                 },
                 Err(_) if other.contains("://") => other.to_string(),
                 Err(_) => {
-                    let file = azazel_core::paths::canonical(&self.app.paths.cwd.join(other));
+                    let Some(cwd) = self.local_cwd() else {
+                        self.here_only("opening a file of the session");
+                        return;
+                    };
+                    let file = azazel_core::paths::canonical(&cwd.join(other));
                     if !file.exists() {
                         return self.fail(&format!("{} does not exist", file.display()));
                     }
@@ -277,7 +278,7 @@ impl Tui {
         {
             let svg = crate::diagram::svg(&source)
                 .map_err(|why| format!("the diagram could not be drawn: {why}"))?;
-            let dir = self.app.paths.artifacts_dir();
+            let dir = self.env.paths.artifacts_dir();
             std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
             let stamp = jiff::Timestamp::now().as_millisecond();
             let file = dir.join(format!("diagram-{stamp}.svg"));
@@ -289,16 +290,6 @@ impl Tui {
             let _ = source;
             Err("this build of azazel draws no diagrams: install it with `--features diagrams`".to_string())
         }
-    }
-
-    /// The fullest usage window of the account `model` (the one answering the lead) runs on,
-    /// once it is nearly full, for the status line.
-    pub(super) fn usage_segment(&self, model: Option<&azazel_ai::ModelRef>) -> Option<String> {
-        let provider = &model?.provider;
-        let account = self.app.credentials.selected(provider)?;
-        let windows = self.app.router.limits().windows(provider, &account);
-        let nearly = crate::usage::nearly_full(&windows)?;
-        Some(self.theme.paint(Role::Warning, &format!("◔ {nearly}")))
     }
 }
 

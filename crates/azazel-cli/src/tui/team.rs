@@ -30,12 +30,11 @@ pub(super) async fn next_event(events: &mut Option<broadcast::Receiver<TeamEvent
 impl Tui {
     /// How many sub-agents are queued, working or waiting for an approval.
     pub(super) fn active_agents(&self) -> usize {
-        self.team.as_ref().map_or(0, |team| {
-            team.list()
-                .iter()
-                .filter(|member| member.id != LEAD && member.state.is_active())
-                .count()
-        })
+        self.backend
+            .roster()
+            .iter()
+            .filter(|member| member.id != LEAD && member.state.is_active())
+            .count()
     }
 
     /// Whether a sub-agent is at work, so that the roster's clocks need redrawing.
@@ -45,11 +44,9 @@ impl Tui {
 
     /// One line per sub-agent that is queued, working or waiting for an approval.
     pub(super) fn roster_lines(&self, width: usize) -> Vec<Line> {
-        let Some(team) = &self.team else {
-            return Vec::new();
-        };
-        let rows: Vec<RosterRow> = team
-            .list()
+        let rows: Vec<RosterRow> = self
+            .backend
+            .roster()
             .into_iter()
             .filter(|member| member.id != LEAD && member.state.is_active())
             .map(|member| {
@@ -144,10 +141,10 @@ impl Tui {
 
     /// Every agent of the session; choosing one shows its work in the transcript from then on.
     pub(super) fn open_agent_hub(&mut self) {
-        let Some(team) = &self.team else {
+        let members = self.backend.roster();
+        if members.is_empty() {
             return self.info("this session has no team");
-        };
-        let members = team.list();
+        }
         let items = members
             .iter()
             .map(|member| {
@@ -173,10 +170,7 @@ impl Tui {
     }
 
     /// Acts on one of the agent hub's own keys. `id` is the agent the selection is on.
-    pub(super) fn hub_key(&mut self, key: char, id: &str) {
-        let Some(team) = self.team.clone() else {
-            return;
-        };
+    pub(super) async fn hub_key(&mut self, key: char, id: &str) {
         match key {
             'm' => {
                 let body = vec![format!("To {id}. It sees the message before its next step.")];
@@ -188,18 +182,17 @@ impl Tui {
             }
             's' => {
                 self.overlay = None;
-                match team.stop(id) {
+                match self.backend.stop_agent(id).await {
                     Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
                     Err(why) => self.fail(&why),
                 }
             }
             'S' => {
                 self.overlay = None;
-                let stopped = team.stop_all();
-                if stopped.is_empty() {
-                    self.info("no agent is running");
-                } else {
-                    self.info(&format!("stopped: {}", stopped.join(", ")));
+                match self.backend.stop_agent("all").await {
+                    Ok(stopped) if stopped.is_empty() => self.info("no agent is running"),
+                    Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
+                    Err(why) => self.fail(&why),
                 }
             }
             _ => {}
@@ -221,15 +214,11 @@ impl Tui {
         }
     }
 
-    pub(super) fn message_agent(&mut self, id: &str, message: &str) {
+    pub(super) async fn message_agent(&mut self, id: &str, message: &str) {
         if message.trim().is_empty() {
             return;
         }
-        let sent = match &self.team {
-            Some(team) => team.send_from_user(id, message.trim()),
-            None => Err("this session has no team".to_string()),
-        };
-        match sent {
+        match self.backend.message_agent(id, message.trim()).await {
             Ok(reached) => self.info(&format!("sent to: {}", reached.join(", "))),
             Err(why) => self.fail(&why),
         }

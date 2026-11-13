@@ -171,6 +171,18 @@ impl UiBridge for RpcBridge {
     async fn input(&self, prompt: &str) -> Result<String, UiError> {
         let request = UiRequest::Input {
             prompt: prompt.to_string(),
+            secret: false,
+        };
+        match self.request(request).await {
+            Some(Value::String(text)) => Ok(text),
+            _ => Err(UiError::Cancelled),
+        }
+    }
+
+    async fn secret(&self, prompt: &str) -> Result<String, UiError> {
+        let request = UiRequest::Input {
+            prompt: prompt.to_string(),
+            secret: true,
         };
         match self.request(request).await {
             Some(Value::String(text)) => Ok(text),
@@ -205,6 +217,7 @@ impl UiBridge for RpcBridge {
             input: request.input,
             rule: request.rule,
             note: request.note,
+            destructive: request.destructive,
         });
         answer.await.ok()
     }
@@ -348,8 +361,13 @@ impl Session {
                 self.submit(text, images).await?;
                 done(Value::Null)
             }
-            Command::Steer { text } => {
-                self.active.lead.send(AgentCmd::Steer(UserInput::text(text)));
+            Command::Steer { text, images } => {
+                let mut content = vec![Block::text(text)];
+                content.extend(images.into_iter().map(|image| Block::Image {
+                    mime: image.mime,
+                    data: image.data,
+                }));
+                self.active.lead.send(AgentCmd::Steer(UserInput { content }));
                 done(Value::Null)
             }
             Command::FollowUp { text } => {
@@ -430,7 +448,18 @@ impl Session {
             Command::ListSessions { query } => self.list_sessions(query.as_deref()).map(Some),
             Command::GetMessages { leaf } => self.messages(leaf.as_deref()).map(Some),
             Command::GetTree => data(self.tree()).map(Some),
-            Command::SetLeaf { entry_id } => self.set_leaf(&entry_id).await.map(Some),
+            Command::SetLeaf { entry_id, before } => self.set_leaf(&entry_id, before).await.map(Some),
+            Command::SetLabel { entry_id, label } => {
+                if self.active.session.entry(&entry_id).is_none() {
+                    return Err(format!("no entry `{entry_id}` in this session"));
+                }
+                self.active.session.append(EntryKind::Label {
+                    target_id: entry_id,
+                    label: label.trim().to_string(),
+                });
+                done(Value::Null)
+            }
+            Command::GetSession => self.session_copy().map(Some),
             Command::SetName { name } => {
                 let name = name.trim();
                 if name.is_empty() {
@@ -470,6 +499,14 @@ impl Session {
                 Ok(None)
             }
             Command::ListModels => self.models().map(Some),
+            Command::ListCommands => data(self.commands()).map(Some),
+            Command::ListFiles => {
+                let root = self.app.paths.cwd.clone();
+                let files = tokio::task::spawn_blocking(move || crate::tui::project_files(&root))
+                    .await
+                    .map_err(|e| e.to_string())?;
+                data(files).map(Some)
+            }
             Command::GetUsage => data(self.app.router.limits().snapshot()).map(Some),
             Command::RunCommand { name, args } => self.command(id, &name, args).await,
             // A background session answers these itself, before its lines get here.
@@ -556,6 +593,10 @@ impl Session {
     /// commands run beside the loop: some ask the user, and the answer arrives as a command.
     async fn command(&mut self, id: &Value, name: &str, args: String) -> Result<Option<Value>, String> {
         let name = name.trim_start_matches('/');
+        // What the session says about itself is text, whoever asks.
+        if let Some(report) = crate::reports::run(&self.app, &self.active, name, &args).await {
+            return data(CommandResult::Show { text: report? }).map(Some);
+        }
         if let Some(skill_name) = name.strip_prefix("skill:") {
             let skills = self.app.registry.skills.clone();
             let skill = skills

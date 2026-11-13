@@ -249,7 +249,7 @@ impl<W: Write> Printer<W> {
                 self.line(&numbered(options));
                 "/answer <number>"
             }
-            UiRequest::Input { prompt } => {
+            UiRequest::Input { prompt, .. } => {
                 self.line(&format!("? {prompt}"));
                 "/answer <text>"
             }

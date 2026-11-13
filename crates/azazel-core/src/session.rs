@@ -192,7 +192,8 @@ struct Indexed {
 
 struct Inner {
     path: PathBuf,
-    file: File,
+    /// `None` for a copy of a session that another process holds: it is only read.
+    file: Option<File>,
     header: Header,
     entries: Vec<Entry>,
     index: HashMap<String, usize>,
@@ -233,7 +234,7 @@ impl SessionStore {
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
-                file,
+                file: Some(file),
                 header,
                 entries: Vec::new(),
                 index: HashMap::new(),
@@ -256,13 +257,34 @@ impl SessionStore {
         Ok(SessionStore {
             inner: Mutex::new(Inner {
                 path: path.to_path_buf(),
-                file,
+                file: Some(file),
                 header,
                 entries,
                 index,
                 leaf,
             }),
         })
+    }
+
+    /// A copy, in memory, of a session that lives in another process: what it holds can be
+    /// read as from any other store. Nothing is written to `path`; what is appended stays in
+    /// the copy.
+    pub fn mirror(header: Header, entries: Vec<Entry>, leaf: Option<String>, path: PathBuf) -> Self {
+        let index = entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| (e.id.clone(), i))
+            .collect();
+        SessionStore {
+            inner: Mutex::new(Inner {
+                path,
+                file: None,
+                header,
+                entries,
+                index,
+                leaf,
+            }),
+        }
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
@@ -325,7 +347,10 @@ impl SessionStore {
         };
         let written = serde_json::to_string(&entry)
             .map_err(io::Error::from)
-            .and_then(|line| writeln!(inner.file, "{line}"));
+            .and_then(|line| match &mut inner.file {
+                Some(file) => writeln!(file, "{line}"),
+                None => Ok(()),
+            });
         if let Err(e) = written {
             tracing::error!("could not write to {}: {e}", inner.path.display());
         }
@@ -413,7 +438,9 @@ impl SessionStore {
         {
             let mut inner = fork.lock();
             for entry in branch {
-                writeln!(inner.file, "{}", serde_json::to_string(&entry)?)?;
+                if let Some(file) = &mut inner.file {
+                    writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+                }
                 let position = inner.entries.len();
                 inner.index.insert(entry.id.clone(), position);
                 inner.leaf = Some(entry.id.clone());

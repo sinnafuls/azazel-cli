@@ -88,8 +88,7 @@ impl Tui {
 
     /// The agent's replies on the current branch, newest first, as Markdown.
     fn replies(&self) -> Vec<String> {
-        self.active
-            .session
+        self.session
             .branch(None)
             .into_iter()
             .rev()

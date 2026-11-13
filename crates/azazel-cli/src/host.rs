@@ -324,7 +324,7 @@ impl Host {
                             Ok(UiRequest::Ask { question, .. }) => question,
                             Ok(UiRequest::Confirm { prompt })
                             | Ok(UiRequest::Select { prompt, .. })
-                            | Ok(UiRequest::Input { prompt }) => prompt,
+                            | Ok(UiRequest::Input { prompt, .. }) => prompt,
                             _ => "a plan is ready for review".to_string(),
                         };
                         self.asked(request_id, line.clone(), &text);
@@ -514,7 +514,7 @@ impl Host {
             command => {
                 match &command {
                     Ok(Command::Prompt { text, .. }) => self.user_input("prompt", text),
-                    Ok(Command::Steer { text }) => self.user_input("steer", text),
+                    Ok(Command::Steer { text, .. }) => self.user_input("steer", text),
                     Ok(Command::FollowUp { text }) => self.user_input("follow_up", text),
                     // An answered request no longer waits.
                     Ok(Command::ApprovalResponse { .. } | Command::UiResponse { .. }) => self.stale = true,

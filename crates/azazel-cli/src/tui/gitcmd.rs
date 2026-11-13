@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use azazel_agent::{AgentCmd, UserInput};
 use azazel_ai::{ModelSpec, Role as MessageRole};
 use azazel_core::EntryKind;
 use azazel_core::side::{Side, SideQuestion};
@@ -12,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::overlay::{Action, Kind, Overlay};
 use super::pager::{self, Source, Start};
-use super::{Internal, Tui};
+use super::{Internal, SHELL_NOTE, Tui};
 use crate::git::{self, Changes, FileDiff};
 
 /// The role that drafts commit messages.
@@ -67,7 +68,11 @@ impl Tui {
     }
 
     async fn working_tree_diff(&mut self) {
-        let Some(top) = git::toplevel(&self.app.paths.cwd).await else {
+        let Some(cwd) = self.local_cwd() else {
+            self.here_only("/diff");
+            return;
+        };
+        let Some(top) = git::toplevel(&cwd).await else {
             return self.fail(
                 "this directory is not in a git repository; /diff turn and /diff session show what \
                  changed since a checkpoint",
@@ -89,7 +94,7 @@ impl Tui {
     fn checkpoint(&self, first: bool) -> Option<String> {
         let mut newest = None;
         let mut before_prompt = None;
-        for entry in self.active.session.branch(None) {
+        for entry in self.session.branch(None) {
             match entry.kind {
                 EntryKind::Checkpoint { commit, .. } => newest = Some(commit),
                 EntryKind::Message { message }
@@ -109,7 +114,11 @@ impl Tui {
     }
 
     async fn checkpoint_diff(&mut self, whole_session: bool) {
-        let checkpoints = self.active.checkpoints.clone();
+        let Some(local) = self.backend.local() else {
+            self.here_only("/diff");
+            return;
+        };
+        let checkpoints = local.active.checkpoints.clone();
         let Some(from) = self.checkpoint(whole_session) else {
             return self.info(&match checkpoints.disabled().await {
                 Some(reason) => format!("no checkpoint to compare with: {reason}"),
@@ -141,7 +150,11 @@ impl Tui {
     /// `/commit [hint]`: drafts a message for what is staged (or, after asking, for everything),
     /// lets the user edit it and commits. Never amends, never pushes.
     pub(super) async fn commit_command(&mut self, hint: &str) {
-        let Some(top) = git::toplevel(&self.app.paths.cwd).await else {
+        let Some(cwd) = self.local_cwd() else {
+            self.here_only("/commit");
+            return;
+        };
+        let Some(top) = git::toplevel(&cwd).await else {
             return self.fail("this directory is not in a git repository");
         };
         let changes = match git::changes(&top).await {
@@ -176,7 +189,10 @@ impl Tui {
     fn draft_commit(&mut self, pending: Pending, stage_all: bool) {
         let Pending { top, changes, hint } = pending;
         let done = self.internal_tx.clone();
-        let Some(side) = self.app.registry.services.get::<Side>() else {
+        let local = self.backend.local();
+        let side = local.and_then(|local| local.app.registry.services.get::<Side>());
+        let lead = local.map(|local| local.active.lead.clone());
+        let (Some(side), Some(lead)) = (side, lead) else {
             let message = Err("no model is available in this session".to_string());
             let _ = done.send(Internal::CommitDraft(Draft {
                 top,
@@ -188,8 +204,8 @@ impl Tui {
         self.info("drafting a commit message…");
         // The small model first, then whatever the lead runs on.
         let mut chain = vec![ModelSpec::Role(DRAFT_ROLE.to_string())];
-        chain.extend(self.active.lead.status().chain);
-        let agent = self.active.lead.info().clone();
+        chain.extend(lead.status().chain);
+        let agent = lead.info().clone();
         tokio::spawn(async move {
             let mut ignore = |_: &str| {};
             let asked = side.ask(
@@ -264,16 +280,22 @@ impl Tui {
                 if message.is_empty() {
                     return self.info("nothing was committed: the message is empty");
                 }
+                let Some(lead) = self.backend.local().map(|local| local.active.lead.clone()) else {
+                    return;
+                };
                 self.notice = Some("committing…".to_string());
                 let done = self.internal_tx.clone();
                 tokio::spawn(async move {
                     let made = git::commit(&top, &message, stage_all).await;
                     // Shown, and told to the agent, like a command the user ran with `!`.
+                    let note = format!(
+                        "{SHELL_NOTE}{}` myself:\n{}\n{}",
+                        made.command, made.output, made.status
+                    );
+                    lead.send(AgentCmd::Append(UserInput::text(note)));
                     let _ = done.send(Internal::Shell {
-                        command: made.command,
                         output: made.output,
                         status: made.status,
-                        share: true,
                     });
                 });
             }

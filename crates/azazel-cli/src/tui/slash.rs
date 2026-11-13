@@ -1,20 +1,17 @@
 //! Slash commands and the pickers that go with them.
 
 use std::io::Write;
-use std::sync::Arc;
 
-use azazel_agent::{AgentCmd, ToolSource, UserInput};
-use azazel_ai::providers::presets;
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
-use azazel_core::skills::invocation_text;
-use azazel_core::{EntryKind, PermissionMode, StartSource};
+use azazel_core::{EntryKind, PermissionMode, SessionStore};
 use azazel_tui::SelectItem;
-use azazel_tui::components::format_tokens;
 
+use super::backend::Go;
 use super::overlay::{Action, Overlay, RewindPoint};
-use super::{Internal, SHELL_NOTE, Tui, first_line, view};
-use crate::app::Open;
-use crate::doctor;
+use super::{SHELL_NOTE, Tui, first_line, view};
+
+/// Matching lines listed per session by `/search`.
+pub(super) const SEARCH_LINES: usize = 3;
 
 const BUILTIN: &[(&str, &str)] = &[
     ("help", "List commands"),
@@ -169,19 +166,9 @@ impl Tui {
             .iter()
             .map(|(n, d)| (n.to_string(), d.to_string()))
             .collect();
-        for command in self.app.registry.commands() {
-            if out.iter().any(|(name, _)| *name == command.name) {
-                continue;
-            }
-            let about = match &command.argument_hint {
-                Some(hint) => format!("{} {hint}", command.description),
-                None => command.description,
-            };
-            out.push((command.name, about));
-        }
-        for skill in self.app.registry.skills.list() {
-            if skill.user_invocable {
-                out.push((format!("skill:{}", skill.name), skill.description));
+        for (name, about) in self.backend.commands() {
+            if !out.iter().any(|(known, _)| *known == name) {
+                out.push((name, about));
             }
         }
         out
@@ -194,26 +181,25 @@ impl Tui {
         };
         let echo = view::user_prompt(&format!("/{line}"), self.width(), &self.theme);
         self.say(echo);
+        // What the commands read of the session is as the session is now.
+        self.sync().await;
         match name {
             "help" => self.help(),
-            "model" if args.is_empty() => self.open_model_picker(),
+            "model" if args.is_empty() => self.open_model_picker().await,
             "model" => {
                 let specs: Vec<&str> = args.split_whitespace().collect();
-                self.set_model(&specs);
+                self.set_model(&specs).await;
             }
             "thinking" if args.is_empty() => {
                 let items = ThinkingLevel::ALL
                     .iter()
                     .map(|level| SelectItem::new(level.to_string(), ""))
                     .collect();
-                let body = vec![format!("current: {}", self.active.lead.status().thinking)];
+                let body = vec![format!("current: {}", self.backend.status().thinking)];
                 self.overlay = Some(Overlay::select("Thinking", body, items, false, Action::Thinking));
             }
             "thinking" => match args.parse::<ThinkingLevel>() {
-                Ok(level) => {
-                    self.set_thinking(level);
-                    self.info(&format!("thinking: {level}"));
-                }
+                Ok(level) => self.set_thinking(level).await,
                 Err(e) => self.fail(&e.to_string()),
             },
             "mode" if args.is_empty() => {
@@ -221,7 +207,7 @@ impl Tui {
                     .iter()
                     .map(|mode| SelectItem::new(mode.to_string(), ""))
                     .collect();
-                let body = vec![format!("current: {}", self.app.permissions.mode())];
+                let body = vec![format!("current: {}", self.backend.mode())];
                 self.overlay = Some(Overlay::select(
                     "Permission mode",
                     body,
@@ -231,32 +217,32 @@ impl Tui {
                 ));
             }
             "mode" => match args.parse::<PermissionMode>() {
-                Ok(mode) => self.app.permissions.set_mode(mode),
+                Ok(mode) => self.set_mode(mode).await,
                 Err(e) => self.fail(&e),
             },
             "new" => {
                 if self.idle_to("start a new session") {
-                    self.swap_session(Open::New, StartSource::Clear).await;
+                    self.go(Go::New).await;
                 }
             }
-            "resume" => self.open_resume(),
-            "name" => self.name_command(args),
-            "session" => self.show_session().await,
-            "search" => self.search_command(args),
+            "resume" => self.open_resume().await,
+            "name" => self.name_command(args).await,
+            "search" => self.search_command(args).await,
             "tree" => self.open_tree(),
             "fork" => self.fork().await,
             "retry" => self.retry().await,
             "handoff" => self.handoff(args),
-            "consult" => self.open_consult(args),
+            "consult" => self.open_consult(args).await,
             "compact" => {
                 let instructions = (!args.is_empty()).then(|| args.to_string());
-                self.active.lead.send(AgentCmd::Compact { instructions });
+                self.backend.compact(instructions);
                 self.notice = Some("compacting…".to_string());
             }
             "clear" => self.clear_screen(),
-            "cost" => self.show_cost(),
-            "context" => self.show_context(),
-            "export" => self.export(args),
+            "export" => match self.backend.export(args).await {
+                Ok(file) => self.info(&format!("exported to {file}")),
+                Err(why) => self.fail(&why),
+            },
             "theme" if args.is_empty() => self.open_theme_picker(),
             "theme" => self.set_theme(args),
             "keys" => self.show_keys(),
@@ -265,25 +251,11 @@ impl Tui {
                 Some(rule) if !rule.trim().is_empty() => self.add_rule(rule),
                 _ => self.open_permissions(),
             },
-            "forget-approvals" => self.forget_approvals(),
-            "trust" => self.trust_command(args),
             "transcript" => self.open_transcript().await,
             "copy" => self.copy_command(args),
             "vim" => self.toggle_vim(),
-            "tools" => self.show_tools(),
             "jobs" => self.open_jobs(),
-            "todo" => self.todo_command(args),
             "reload" => self.reload().await,
-            "dirs" => {
-                let roots: Vec<String> = self
-                    .app
-                    .permissions
-                    .roots()
-                    .iter()
-                    .map(|root| root.display().to_string())
-                    .collect();
-                self.info(&format!("agents may work in:\n{}", roots.join("\n")));
-            }
             "changelog" => match crate::changelog::text((!args.is_empty()).then_some(args)) {
                 Ok(text) => {
                     let sources = vec![super::pager::Source::Markdown(text)];
@@ -292,70 +264,29 @@ impl Tui {
                 Err(e) => self.fail(&e),
             },
             "open" => self.open_command(args),
-            "add-dir" if args.is_empty() => self.fail("usage: /add-dir <path>"),
-            "add-dir" => {
-                let dir = azazel_core::paths::canonical(&self.app.paths.cwd.join(args.trim()));
-                if !dir.is_dir() {
-                    self.fail(&format!("{} is not a directory", dir.display()));
-                } else if self.app.permissions.add_root(&dir) {
-                    self.info(&format!(
-                        "agents may now work in {} too, until azazel exits",
-                        dir.display()
-                    ));
-                } else {
-                    self.info(&format!(
-                        "{} is already a directory agents work in",
-                        dir.display()
-                    ));
-                }
-            }
-            "rules" => {
-                let report = crate::rules::session_report(&self.app, &self.active.session.id());
-                self.info(&report);
-            }
-            "hooks" => self.info(&crate::hooks::report(&self.app)),
             "btw" => self.btw_command(args),
             "diff" => self.diff_command(args).await,
             "commit" => self.commit_command(args).await,
             "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
-            "doctor" => {
-                let report = doctor::examine(&self.app.paths, self.app.trusted).await;
-                self.info(&report.render());
-            }
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
             "quit" | "exit" => self.quit = true,
             #[cfg(feature = "mcp")]
-            "mcp" if args.is_empty() => self.open_mcp(),
-            _ => self.other_command(name, args).await,
+            "mcp" if args.is_empty() && self.backend.local().is_some() => self.open_mcp(),
+            // What the session says about itself, then what extensions added.
+            _ => match self.backend.report(name, args).await {
+                Some(Ok(report)) => self.info(&report),
+                Some(Err(why)) => self.fail(&why),
+                None => self.other_command(name, args),
+            },
         }
     }
 
-    /// A skill (`/skill:<name>`) or a command registered by an extension. Registered commands run
-    /// in the background (some wait on the network or on the user elsewhere); their outcome comes
-    /// back through the UI loop.
-    pub(super) async fn other_command(&mut self, name: &str, args: &str) {
-        if let Some(skill_name) = name.strip_prefix("skill:") {
-            let skills = self.app.registry.skills.clone();
-            match skills.get(skill_name).filter(|skill| skill.user_invocable) {
-                Some(skill) => {
-                    skills.mark_used(&skill);
-                    azazel_core::skills::allow_for_prompt(&self.app.registry.services, &skill);
-                    self.prompt_on(invocation_text(&skill, args), skill.model.clone())
-                        .await;
-                }
-                None => self.fail(&format!("no skill named `{skill_name}`; /skills lists them")),
-            }
-            return;
-        }
-        let Some(command) = self.app.registry.command(name) else {
-            return self.fail(&format!("unknown command /{name}; /help lists commands"));
-        };
-        let context = self.app.registry.bus.ctx();
-        let (args, done) = (args.to_string(), self.internal_tx.clone());
-        tokio::spawn(async move {
-            let _ = done.send(Internal::Command(command.handler.run(&args, &context).await));
-        });
+    /// A skill (`/skill:<name>`) or a command registered by an extension. They run beside the
+    /// UI loop (some wait on the network or on the user elsewhere); their outcome comes back
+    /// through it.
+    pub(super) fn other_command(&mut self, name: &str, args: &str) {
+        self.backend.command(name, args, self.internal_tx.clone());
     }
 
     /// Sends a prompt, on `model` for this one prompt when it is given.
@@ -364,11 +295,12 @@ impl Tui {
             if self.busy {
                 return self.fail("this command runs on its own model; wait until the agent is idle");
             }
-            if self.app.router.resolve(&chain).is_empty() {
-                self.warn("the command's model resolves to nothing; using the current one");
+            let usable = chain.iter().any(|spec| self.backend.resolves(&spec.to_string()));
+            if usable {
+                self.restore_chain = Some(self.backend.status().chain);
+                self.backend.set_chain(chain);
             } else {
-                self.restore_chain = Some(self.active.lead.status().chain);
-                self.active.lead.send(AgentCmd::SetModel(chain));
+                self.warn("the command's model resolves to nothing; using the current one");
             }
         }
         self.send_prompt(prompt).await;
@@ -395,32 +327,14 @@ impl Tui {
 
     // ------------------------------------------------------------ pickers
 
-    pub(super) fn open_model_picker(&mut self) {
-        let router = self.app.router.clone();
-        let mut specs: Vec<String> = Vec::new();
-        let mut items: Vec<SelectItem> = Vec::new();
-        for role in router.roles().keys() {
-            let resolved = router.resolve(&[ModelSpec::Role(role.clone())]);
-            let Some(first) = resolved.first() else { continue };
-            items.push(SelectItem::new(format!("@{role}"), first.to_string()));
-            specs.push(format!("@{role}"));
-        }
-        // Providers that can be reached: a credential is present, or none is needed.
-        let configured = presets::resolve(&self.app.config.providers).unwrap_or_default();
-        for provider in router.provider_ids() {
-            let usable = match configured.iter().find(|p| p.id == provider) {
-                Some(config) => !config.requires_key || self.app.credentials.source(config).is_some(),
-                None => true,
-            };
-            if !usable {
-                continue;
-            }
-            for model in router.catalog().for_provider(provider) {
-                let detail = format!("{} context", format_tokens(model.context_window));
-                items.push(SelectItem::new(model.key(), detail));
-                specs.push(model.key());
-            }
-        }
+    pub(super) async fn open_model_picker(&mut self) {
+        let (specs, mut items): (Vec<String>, Vec<SelectItem>) = self
+            .backend
+            .models()
+            .await
+            .into_iter()
+            .map(|(spec, detail)| (spec.clone(), SelectItem::new(spec, detail)))
+            .unzip();
         // Favourites are marked; ctrl+f on a row adds it to them or takes it out.
         for (item, spec) in items.iter_mut().zip(&specs) {
             if self.favourites.contains(spec) {
@@ -437,7 +351,11 @@ impl Tui {
     /// Servers to pick from; choosing one offers what can be done with it.
     #[cfg(feature = "mcp")]
     fn open_mcp(&mut self) {
-        let Some(manager) = self.app.registry.services.get::<azazel_mcp::McpManager>() else {
+        let manager = self
+            .backend
+            .local()
+            .and_then(|local| local.app.registry.services.get::<azazel_mcp::McpManager>());
+        let Some(manager) = manager else {
             return self.info("MCP is not available in this session");
         };
         let servers = manager.status();
@@ -474,7 +392,7 @@ impl Tui {
 
     fn open_theme_picker(&mut self) {
         let mut names = vec!["dark".to_string(), "light".to_string()];
-        let mut custom: Vec<String> = std::fs::read_dir(self.app.paths.home.join("themes"))
+        let mut custom: Vec<String> = std::fs::read_dir(self.env.paths.home.join("themes"))
             .into_iter()
             .flatten()
             .flatten()
@@ -497,94 +415,40 @@ impl Tui {
         ));
     }
 
-    /// Moves the session to an entry chosen in the tree and restarts the lead from there.
+    /// Moves the session to an entry chosen in the tree and restarts the lead from there. One
+    /// of your prompts is gone back to before, and put in the editor.
     pub(super) async fn jump_to(&mut self, id: &str, is_user: bool, prompt: &str) {
-        let session = self.active.session.clone();
-        let target = if is_user {
-            session.entry(id).and_then(|entry| entry.parent_id)
-        } else {
-            Some(id.to_string())
+        let to = Go::Leaf {
+            entry: id.to_string(),
+            before: is_user,
         };
-        if !session.set_leaf(target.as_deref()) {
-            return self.fail("that entry is no longer part of the session");
-        }
-        self.swap_session(Open::Store(session), StartSource::Resume).await;
-        if is_user {
+        if self.go(to).await && is_user {
             self.editor.set_text(prompt);
         }
     }
 
     async fn fork(&mut self) {
-        if !self.idle_to("fork the session") {
-            return;
-        }
-        match self.active.session.fork(&self.app.paths.sessions_dir(), None) {
-            Ok(fork) => {
-                self.swap_session(Open::Store(Arc::new(fork)), StartSource::Resume)
-                    .await
-            }
-            Err(e) => self.fail(&format!("could not fork the session: {e}")),
+        if self.idle_to("fork the session") {
+            self.go(Go::Fork).await;
         }
     }
 
     // ------------------------------------------------------------ rewind
 
-    /// The checkpoints on the current branch, newest first, each with the prompt it preceded.
-    fn rewind_points(&self) -> Vec<RewindPoint> {
-        let branch = self.active.session.branch(None);
-        let mut points = Vec::new();
-        for (at, entry) in branch.iter().enumerate() {
-            let EntryKind::Checkpoint { commit, .. } = &entry.kind else {
-                continue;
-            };
-            // A checkpoint taken by a rewind is not followed by a prompt of its own.
-            let mut prompt = String::new();
-            for later in &branch[at + 1..] {
-                match &later.kind {
-                    EntryKind::Checkpoint { .. } => break,
-                    EntryKind::Message { message }
-                        if message.role == MessageRole::User && !is_note(&message.text()) =>
-                    {
-                        prompt = message.text();
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            points.push(RewindPoint {
-                entry_id: entry.id.clone(),
-                commit: commit.clone(),
-                prompt,
-            });
-        }
-        points.reverse();
-        points
-    }
-
     pub(super) async fn open_rewind(&mut self) {
         if !self.idle_to("rewind") {
             return;
         }
-        let points = self.rewind_points();
-        if points.is_empty() {
-            let reason = self.active.checkpoints.disabled().await;
-            return self.info(&match reason {
-                Some(reason) => format!("nothing to rewind to: {reason}"),
-                None => "nothing to rewind to: no prompt has been sent in this session".to_string(),
-            });
-        }
-        let checkpoints = self.active.checkpoints.clone();
-        let now = checkpoints.snapshot("rewind list").await.ok().flatten();
+        let points = match self.backend.rewind_points().await {
+            Ok(points) => points,
+            Err(why) => return self.info(&why),
+        };
         let mut items = Vec::new();
-        for point in &points {
-            let changed = match &now {
-                Some(now) => checkpoints.shortstat(&point.commit, now).await,
-                None => String::new(),
-            };
-            let detail = if changed.trim().is_empty() {
+        for (point, changed) in &points {
+            let detail = if changed.is_empty() {
                 "no file changes since".to_string()
             } else {
-                changed.trim().to_string()
+                changed.clone()
             };
             let label = if point.prompt.is_empty() {
                 "(files as they were before a rewind)".to_string()
@@ -594,6 +458,7 @@ impl Tui {
             items.push(SelectItem::new(label, detail));
         }
         let body = vec!["Go back to before:".to_string()];
+        let points = points.into_iter().map(|(point, _)| point).collect();
         self.overlay = Some(Overlay::select(
             "Rewind",
             body,
@@ -604,41 +469,16 @@ impl Tui {
     }
 
     pub(super) async fn rewind(&mut self, point: RewindPoint, code: bool, conversation: bool) {
-        let session = self.active.session.clone();
-        let undo = if code {
-            match self.active.checkpoints.restore(&point.commit).await {
-                Ok(before) => Some(before),
-                Err(e) => return self.fail(&format!("could not restore the files: {e}")),
+        match self.backend.rewind(&point, code, conversation).await {
+            Ok(Some(moved)) => {
+                self.moved(moved, false).await;
+                self.editor.set_text(&point.prompt);
             }
-        } else {
-            None
-        };
-        if conversation {
-            let resume_at = session.entry(&point.entry_id).and_then(|entry| entry.parent_id);
-            session.set_leaf(resume_at.as_deref());
-        }
-        // The files as they were just now stay reachable, so the rewind can itself be rewound.
-        if let Some(commit) = undo {
-            let turn_entry_id = session.leaf().unwrap_or_default();
-            session.append(EntryKind::Checkpoint {
-                turn_entry_id,
-                commit,
-            });
-        }
-        if conversation {
-            self.swap_session(Open::Store(session), StartSource::Resume).await;
-            self.editor.set_text(&point.prompt);
-        } else {
-            let target = if point.prompt.is_empty() {
-                "before my previous rewind".to_string()
-            } else {
-                format!("before this prompt: {}", first_line(&point.prompt))
-            };
-            let note = format!(
-                "{REWIND_NOTE} to how they were {target}\nFiles you read or changed since then may differ \
-                 now; read them again before editing."
-            );
-            self.active.lead.send(AgentCmd::Append(UserInput::text(note)));
+            Ok(None) => self.sync().await,
+            Err(why) => {
+                self.sync().await;
+                return self.fail(&why);
+            }
         }
         self.info(match (code, conversation) {
             (true, true) => "files and conversation rewound; /rewind can bring the files back",
@@ -662,69 +502,6 @@ impl Tui {
         self.floor.reset(rows);
     }
 
-    fn show_cost(&mut self) {
-        let status = self.active.lead.status();
-        let usage = status.usage;
-        let cost = match usage.cost_usd {
-            Some(cost) => format!("${cost:.4}"),
-            None => "unknown (no price is known for this model)".to_string(),
-        };
-        let cost = match self.app.router.tier() {
-            Some(tier) => format!("{cost}\n{}", crate::routing::tier_cost_note(tier)),
-            None => cost,
-        };
-        let cost = match crate::side::cost_report(&self.app.registry.services) {
-            Some(side) => format!("{cost}\n{side}"),
-            None => cost,
-        };
-        self.info(&format!(
-            "requests: {}\ninput: {} · output: {} · cache read: {} · cache write: {} · reasoning: {}\ncost: {cost}",
-            status.requests,
-            format_tokens(usage.input),
-            format_tokens(usage.output),
-            format_tokens(usage.cache_read),
-            format_tokens(usage.cache_write),
-            format_tokens(usage.reasoning),
-        ));
-    }
-
-    fn show_context(&mut self) {
-        let status = self.active.lead.status();
-        let messages = self.active.session.build_context(None).len();
-        let tools = self.app.registry.tools.tools(self.active.lead.info()).len();
-        let window = if status.context_window == 0 {
-            "unknown until the first reply".to_string()
-        } else {
-            format!(
-                "{} of {} tokens ({}%)",
-                format_tokens(status.context_tokens),
-                format_tokens(status.context_window),
-                status.context_tokens * 100 / status.context_window
-            )
-        };
-        self.info(&format!(
-            "context: {window}\nmessages: {messages}\ntools offered: {tools}"
-        ));
-    }
-
-    fn export(&mut self, args: &str) {
-        use crate::export::{Format, default_file_name, render};
-        let session = &self.active.session;
-        let path = if args.is_empty() {
-            self.app
-                .paths
-                .cwd
-                .join(default_file_name(session, Format::Markdown))
-        } else {
-            self.app.paths.cwd.join(args)
-        };
-        let format = Format::from_path(&path).unwrap_or(Format::Markdown);
-        match std::fs::write(&path, render(session, format)) {
-            Ok(()) => self.info(&format!("exported to {}", path.display())),
-            Err(e) => self.fail(&format!("could not write {}: {e}", path.display())),
-        }
-    }
-
     fn show_keys(&mut self) {
         let mut out = String::new();
         for action in self.keymap.actions() {
@@ -743,10 +520,42 @@ impl Tui {
         }
         out.push_str(&format!(
             "\nchange them in {}",
-            self.app.paths.keybindings_file().display()
+            self.env.paths.keybindings_file().display()
         ));
         self.info(&out);
     }
+}
+
+/// The checkpoints on the current branch, newest first, each with the prompt it preceded.
+pub(super) fn rewind_points(session: &SessionStore) -> Vec<RewindPoint> {
+    let branch = session.branch(None);
+    let mut points = Vec::new();
+    for (at, entry) in branch.iter().enumerate() {
+        let EntryKind::Checkpoint { commit, .. } = &entry.kind else {
+            continue;
+        };
+        // A checkpoint taken by a rewind is not followed by a prompt of its own.
+        let mut prompt = String::new();
+        for later in &branch[at + 1..] {
+            match &later.kind {
+                EntryKind::Checkpoint { .. } => break,
+                EntryKind::Message { message }
+                    if message.role == MessageRole::User && !is_note(&message.text()) =>
+                {
+                    prompt = message.text();
+                    break;
+                }
+                _ => {}
+            }
+        }
+        points.push(RewindPoint {
+            entry_id: entry.id.clone(),
+            commit: commit.clone(),
+            prompt,
+        });
+    }
+    points.reverse();
+    points
 }
 
 /// Whether a user message in the transcript was written by the UI rather than typed as a prompt.
