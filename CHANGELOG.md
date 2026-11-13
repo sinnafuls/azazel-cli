@@ -77,9 +77,30 @@ GitHub are its section here.
 - `includeTools` and `excludeTools` in an MCP server's entry choose which of its tools agents get.
 - Checkpoints: a fork continues the history of its parent, the shadow repository is packed at the end of a
   session, and `checkpoints.exclude` is applied.
+- The read guard knows lines. `edit` must be of lines the agent has read: a `read` with `offset` and `limit`
+  counts for the lines it returned, several reads add up, and an edit elsewhere is refused with
+  `edit targets lines 40-52 of src/a.rs, which you have not read; read them first`. What an agent read stays
+  read through its own edits and, line by line, through changes made by others.
+  `tools.read_guard = "file"` brings the old rule back and `"off"` removes the guard.
+- `/allow-edit <path>` lets the next edit of one file through, whatever the agent has read of it.
+- `lsp` has three new actions. `outline` lists every symbol of a file with its kind, lines and declaration;
+  `read_symbol` returns the source of one symbol (`Type.method`, or `occurrence` among several of a name),
+  which then counts as read, so an agent can edit a function of a large file without reading the file;
+  `rename_file` moves a file and has the language server update the files that refer to it.
+- `warm_files` of a language server are opened as soon as it starts, and `lsp.write_severity = "warning"`
+  adds the server's warnings to what follows a write.
+- `ast_grep`, when [ast-grep](https://ast-grep.github.io) is installed (`ast-grep` or `sg`): search code by
+  its syntax tree with `$NAME` and `$$$NAME` metavariables, or rewrite what matches. A replacement is
+  previewed as a diff and written with `apply: true` to the files named; each file is written like an edit
+  (read guard, format, checks, language server), and all of them or none. `azazel doctor` says whether it is on.
 
 ### Changed
 
+- `write` over an existing file takes having read all of it; a read of a part is no longer enough
+  (`you have read only part of src/a.rs; read the rest before overwriting it, or change it with edit`). Notes
+  and logs (`.md`, `.txt`, `.log`) still need only a read of any part.
+- Language servers stop after `lsp.idle_secs` (240) without a touched file and start again on the next touch;
+  `/lsp` shows `stopped, idle`.
 - `web_fetch` no longer returns a page of any size in one piece: more than `limit` characters come in parts.
 - Every symbol outside tool cards (the prompt, rules, spinner, status line, todo list, roster, queued
   messages, Markdown bullets, quotes and tables, the transcript viewer, side questions, pickers and popups)

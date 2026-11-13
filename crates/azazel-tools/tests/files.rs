@@ -6,11 +6,12 @@ use std::time::Duration;
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
 use azazel_ai::{Block, Message, Role};
+use azazel_core::config::ReadGuard;
 use azazel_core::process::Shell;
 use azazel_core::session::{Entry, EntryKind};
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, ArtifactStore, AskKind, ExtCtx, Question, Registry, Ui, UiBridge,
-    UiError,
+    ApprovalDecision, ApprovalRequest, ArtifactStore, AskKind, CommandOutcome, ExtCtx, Question, Registry,
+    Ui, UiBridge, UiError,
 };
 use azazel_tools::CoreToolsExt;
 use base64::Engine;
@@ -23,6 +24,11 @@ struct Bench {
 }
 
 fn bench() -> Bench {
+    bench_with(ReadGuard::default())
+}
+
+/// A project whose `write` and `edit` ask for what `read_guard` says must have been read.
+fn bench_with(read_guard: ReadGuard) -> Bench {
     let dir = tempfile::tempdir().unwrap();
     let services = Arc::new(Services::new());
     let registry = Registry::new(ExtCtx {
@@ -35,6 +41,7 @@ fn bench() -> Bench {
             shell: Shell::resolve(""),
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: dir.path().join(".artifacts"),
+            read_guard,
         })
         .unwrap();
     Bench { dir, registry }
@@ -78,6 +85,25 @@ impl Bench {
     async fn call(&self, tool: &str, input: Value) -> ToolOutput {
         self.call_as("lead", tool, input).await
     }
+
+    /// The text of an edit of `path` that replaces `old` with `new`.
+    async fn edit(&self, path: &str, old: &str, new: &str) -> String {
+        let edits = json!({"path": path, "edits": [{"old": old, "new": new}]});
+        self.call("edit", edits).await.text_content()
+    }
+
+    /// A file of `count` lines, `line 1` to `line <count>`.
+    fn numbered(&self, name: &str, count: usize) -> String {
+        let text: String = (1..=count).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(self.path(name), &text).unwrap();
+        text
+    }
+
+    /// What `/allow-edit <args>` answers.
+    async fn allow_edit(&self, args: &str) -> CommandOutcome {
+        let command = self.registry.command("allow-edit").unwrap();
+        command.handler.run(args, &self.registry.bus.ctx()).await
+    }
 }
 
 #[tokio::test]
@@ -89,6 +115,12 @@ async fn the_extension_registers_the_core_tool_set() {
         .tools(&bench.ctx("lead").agent)
         .iter()
         .map(|t| t.name().to_string())
+        .collect();
+    // `ast_grep` is there as well on a machine that has ast-grep.
+    let names: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|name| *name != "ast_grep")
         .collect();
     assert_eq!(
         names,
@@ -214,6 +246,220 @@ async fn edit_needs_a_fresh_read_and_writes_nothing_when_an_edit_fails() {
         )
         .await;
     assert_eq!(same.text_content(), "the edits leave the file unchanged");
+}
+
+#[tokio::test]
+async fn an_edit_must_be_of_lines_that_were_read() {
+    let bench = bench();
+    bench.numbered("code.rs", 60);
+    let page = bench
+        .call("read", json!({"path": "code.rs", "offset": 10, "limit": 11}))
+        .await;
+    assert!(
+        page.text_content()
+            .ends_with("[lines 10-20 of 60; continue with offset=21]")
+    );
+
+    assert_eq!(
+        bench
+            .edit("code.rs", "line 40\nline 41\nline 42\n", "forty\n")
+            .await,
+        "edit targets lines 40-42 of code.rs, which you have not read; read them first"
+    );
+    // Only the part that was not read is asked for, and every edit of the call is looked at.
+    let edits = json!({"path": "code.rs", "edits": [
+        {"old": "line 19\nline 20\nline 21\nline 22", "new": "x"},
+        {"old": "line 15", "new": "fifteen"},
+        {"old": "line 5\n", "new": ""}
+    ]});
+    assert_eq!(
+        bench.call("edit", edits).await.text_content(),
+        "edit targets lines 5 and 21-22 of code.rs, which you have not read; read them first"
+    );
+    assert_eq!(
+        std::fs::read_to_string(bench.path("code.rs"))
+            .unwrap()
+            .lines()
+            .count(),
+        60,
+        "a refused edit writes nothing"
+    );
+
+    // Inside what was read the edit goes through, and what it wrote needs no reading.
+    assert_eq!(
+        bench.edit("code.rs", "line 12\n", "twelve\nand a half\n").await,
+        "edited code.rs (1 replacement)"
+    );
+    assert_eq!(
+        bench.edit("code.rs", "and a half", "12.5").await,
+        "edited code.rs (1 replacement)"
+    );
+    // Line 20 is now line 21 and still read; line 21, now 22, still is not.
+    assert_eq!(
+        bench.edit("code.rs", "line 20", "twenty").await,
+        "edited code.rs (1 replacement)"
+    );
+    assert_eq!(
+        bench.edit("code.rs", "line 21", "twenty-one").await,
+        "edit targets line 22 of code.rs, which you have not read; read it first"
+    );
+
+    // Reading the lines is what it takes; two reads add up.
+    bench
+        .call("read", json!({"path": "code.rs", "offset": 41, "limit": 3}))
+        .await;
+    assert_eq!(
+        bench
+            .edit("code.rs", "line 40\nline 41\nline 42\n", "forty\n")
+            .await,
+        "edited code.rs (1 replacement)"
+    );
+    // What another agent read is not what this one read.
+    let other = bench
+        .call_as(
+            "coder-1",
+            "edit",
+            json!({"path": "code.rs", "edits": [{"old": "line 1\n", "new": ""}]}),
+        )
+        .await;
+    assert_eq!(other.text_content(), "read the file before overwriting it");
+}
+
+#[tokio::test]
+async fn replacing_a_file_takes_having_read_all_of_it() {
+    let bench = bench();
+    bench.numbered("code.rs", 30);
+    bench.call("read", json!({"path": "code.rs", "limit": 10})).await;
+    let partly = bench
+        .call("write", json!({"path": "code.rs", "content": "all new\n"}))
+        .await;
+    assert_eq!(
+        partly.text_content(),
+        "you have read only part of code.rs; read the rest before overwriting it, or change it with edit"
+    );
+    bench.call("read", json!({"path": "code.rs", "offset": 11})).await;
+    let whole = bench
+        .call("write", json!({"path": "code.rs", "content": "all new\n"}))
+        .await;
+    assert_eq!(whole.text_content(), "replaced code.rs (8 bytes)");
+
+    // Notes and logs are not code: a read of any part of one is enough for either tool.
+    for name in ["notes.md", "todo.TXT", "run.log"] {
+        bench.numbered(name, 30);
+        bench.call("read", json!({"path": name, "limit": 5})).await;
+        assert_eq!(
+            bench.edit(name, "line 25", "twenty-five").await,
+            format!("edited {name} (1 replacement)")
+        );
+        let replaced = bench.call("write", json!({"path": name, "content": "x"})).await;
+        assert_eq!(replaced.text_content(), format!("replaced {name} (1 bytes)"));
+    }
+    // Unread, they are as closed as any file.
+    bench.numbered("other.md", 3);
+    assert_eq!(
+        bench.edit("other.md", "line 2", "two").await,
+        "read the file before overwriting it"
+    );
+}
+
+#[tokio::test]
+async fn the_guard_can_ask_for_any_read_or_for_none() {
+    let any = bench_with(ReadGuard::File);
+    any.numbered("code.rs", 30);
+    assert_eq!(
+        any.edit("code.rs", "line 25", "x").await,
+        "read the file before overwriting it"
+    );
+    any.call("read", json!({"path": "code.rs", "limit": 5})).await;
+    assert_eq!(
+        any.edit("code.rs", "line 25", "x").await,
+        "edited code.rs (1 replacement)"
+    );
+    let replaced = any
+        .call("write", json!({"path": "code.rs", "content": "x"}))
+        .await;
+    assert_eq!(replaced.text_content(), "replaced code.rs (1 bytes)");
+    // A change made elsewhere still has to be read.
+    std::fs::write(any.path("code.rs"), "changed elsewhere\n").unwrap();
+    assert_eq!(
+        any.edit("code.rs", "changed", "x").await,
+        "file changed since you last read it; read it again"
+    );
+
+    let none = bench_with(ReadGuard::Off);
+    none.numbered("code.rs", 30);
+    assert_eq!(
+        none.edit("code.rs", "line 25", "x").await,
+        "edited code.rs (1 replacement)"
+    );
+    std::fs::write(none.path("code.rs"), "changed elsewhere\n").unwrap();
+    let replaced = none
+        .call("write", json!({"path": "code.rs", "content": "x"}))
+        .await;
+    assert_eq!(replaced.text_content(), "replaced code.rs (1 bytes)");
+}
+
+#[tokio::test]
+async fn allow_edit_lets_one_edit_through() {
+    let bench = bench();
+    bench.numbered("code.rs", 30);
+    assert_eq!(
+        bench.allow_edit("").await,
+        CommandOutcome::Error("usage: /allow-edit <path>".to_string())
+    );
+    assert!(matches!(
+        bench.allow_edit("missing.rs").await,
+        CommandOutcome::Error(_)
+    ));
+    assert_eq!(
+        bench.allow_edit(" code.rs ").await,
+        CommandOutcome::Show(
+            "the next edit of code.rs is allowed whatever the agent has read of it".to_string()
+        )
+    );
+
+    // An edit that fails for another reason does not use the allowance up.
+    assert_eq!(
+        bench.edit("code.rs", "no such text", "x").await,
+        "old text not found (edit #1)"
+    );
+    assert_eq!(
+        bench.edit("code.rs", "line 25", "twenty-five").await,
+        "edited code.rs (1 replacement)"
+    );
+    // One edit was allowed. The next is of a line the agent wrote, the one after is not.
+    assert_eq!(
+        bench.edit("code.rs", "twenty-five", "25").await,
+        "edited code.rs (1 replacement)"
+    );
+    assert_eq!(
+        bench.edit("code.rs", "line 3\n", "three\n").await,
+        "edit targets line 3 of code.rs, which you have not read; read it first"
+    );
+
+    // It covers a file that changed since it was read, and a whole replacement.
+    bench.call("read", json!({"path": "code.rs", "limit": 5})).await;
+    std::fs::write(bench.path("code.rs"), "changed elsewhere\n").unwrap();
+    bench.allow_edit("code.rs").await;
+    let replaced = bench
+        .call("write", json!({"path": "code.rs", "content": "x"}))
+        .await;
+    assert_eq!(replaced.text_content(), "replaced code.rs (1 bytes)");
+    // An edit that needed no allowance leaves it for the one that does.
+    bench.numbered("other.rs", 30);
+    bench.allow_edit("other.rs").await;
+    assert_eq!(
+        bench.edit("code.rs", "x", "y").await,
+        "edited code.rs (1 replacement)"
+    );
+    assert_eq!(
+        bench.edit("other.rs", "line 9", "nine").await,
+        "edited other.rs (1 replacement)"
+    );
+    assert_eq!(
+        bench.edit("other.rs", "line 8", "eight").await,
+        "edit targets line 8 of other.rs, which you have not read; read it first"
+    );
 }
 
 #[tokio::test]

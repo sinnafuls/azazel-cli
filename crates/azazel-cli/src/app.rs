@@ -394,11 +394,14 @@ impl App {
             shell: shell.clone(),
             shell_timeout: Duration::from_secs(config.tools.shell_timeout_secs),
             artifacts_dir: paths.artifacts_dir(),
+            read_guard: config.tools.read_guard,
         })?;
         #[cfg(feature = "lsp")]
         registry.load(&azazel_tools::lsp::LspExt {
             root: paths.project_root.clone(),
             servers: config.lsp.servers.clone(),
+            idle: Duration::from_secs(config.lsp.idle_secs),
+            write_severity: config.lsp.write_severity,
         })?;
         registry.load(&azazel_tools::web::WebExt {
             search: config.web.search.clone(),

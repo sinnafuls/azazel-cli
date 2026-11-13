@@ -96,7 +96,7 @@ impl Tool for ReadTool {
          as `<line number><tab><text>`, up to 2000 lines per call; use `offset` (1-based line) and `limit` \
          to page through longer files. A PDF comes back as its text, 20 pages per call; `pages` picks \
          them. A notebook (`.ipynb`) comes back cell by cell with its outputs; `offset` and `limit` \
-         count cells. Read a file before editing it."
+         count cells. Read the lines of a file before editing them."
     }
 
     fn schema(&self) -> Value {
@@ -195,7 +195,6 @@ impl Tool for ReadTool {
                 bytes.len()
             ));
         }
-        self.tracker.record(&ctx.agent_id, &path, &bytes);
         #[cfg(feature = "lsp")]
         if let Some(servers) = ctx.services.get::<crate::lsp::LspManager>() {
             servers.touch(&path);
@@ -206,31 +205,49 @@ impl Tool for ReadTool {
         if is_notebook
             && let Some(shown) = crate::notebook::render(&bytes, input.offset, input.limit, MAX_BYTES)
         {
+            // Cells are not lines: any read of a notebook is a read of all of it.
+            self.tracker.record(&ctx.agent_id, &path, &bytes);
             return match shown {
                 Ok(shown) => notebook_output(shown).await,
                 Err(error) => ToolOutput::error(error),
             };
         }
         let text = String::from_utf8_lossy(&bytes);
-        render_text(
+        let (output, shown) = render_text(
             text.strip_prefix('\u{feff}').unwrap_or(&text),
             input.offset,
             input.limit,
-        )
+        );
+        // What the agent has now seen of the file: the lines that came back, which an edit of
+        // other lines does not count as having read.
+        let line = |number: usize| u32::try_from(number).unwrap_or(u32::MAX);
+        match shown {
+            Some((first, last)) => {
+                self.tracker
+                    .record_lines(&ctx.agent_id, &path, &bytes, line(first), line(last));
+            }
+            None if !output.is_error => self.tracker.record(&ctx.agent_id, &path, &bytes),
+            None => {}
+        }
+        output
     }
 }
 
-fn render_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolOutput {
+/// `text` as numbered lines, and the first and last line that are in it (`None` when none is).
+fn render_text(
+    text: &str,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> (ToolOutput, Option<(usize, usize)>) {
     if text.is_empty() {
-        return ToolOutput::text("(empty file)");
+        return (ToolOutput::text("(empty file)"), None);
     }
     let lines: Vec<&str> = text.strip_suffix('\n').unwrap_or(text).split('\n').collect();
     let total = lines.len();
     let first = offset.unwrap_or(1).max(1);
     if first > total {
-        return ToolOutput::error(format!(
-            "offset {first} is past the end of the file ({total} lines)"
-        ));
+        let past = format!("offset {first} is past the end of the file ({total} lines)");
+        return (ToolOutput::error(past), None);
     }
     let limit = limit.unwrap_or(DEFAULT_LIMIT).max(1);
     let mut out = String::new();
@@ -256,7 +273,7 @@ fn render_text(text: &str, offset: Option<usize>, limit: Option<usize>) -> ToolO
     } else {
         out.pop();
     }
-    ToolOutput::text(out)
+    (ToolOutput::text(out), Some((first, last)))
 }
 
 fn list_dir(path: &Path) -> ToolOutput {
@@ -308,35 +325,45 @@ mod tests {
 
     #[test]
     fn whole_small_file_has_line_numbers_and_no_footer() {
-        let out = render_text("alpha\r\nbeta\n", None, None);
+        let (out, shown) = render_text("alpha\r\nbeta\n", None, None);
         assert_eq!(text(&out), "1\talpha\n2\tbeta");
-        assert_eq!(text(&render_text("", None, None)), "(empty file)");
+        assert_eq!(shown, Some((1, 2)));
+        let (empty, shown) = render_text("", None, None);
+        assert_eq!((text(&empty).as_str(), shown), ("(empty file)", None));
     }
 
     #[test]
     fn paging_reports_range_and_next_offset() {
         let body: String = (1..=10).map(|i| format!("l{i}\n")).collect();
-        let out = render_text(&body, Some(4), Some(3));
+        let (out, shown) = render_text(&body, Some(4), Some(3));
         assert_eq!(
             text(&out),
             "4\tl4\n5\tl5\n6\tl6\n[lines 4-6 of 10; continue with offset=7]"
         );
-        let tail = render_text(&body, Some(9), None);
+        assert_eq!(shown, Some((4, 6)));
+        let (tail, shown) = render_text(&body, Some(9), None);
         assert_eq!(text(&tail), "9\tl9\n10\tl10\n[lines 9-10 of 10]");
-        let past = render_text(&body, Some(11), None);
+        assert_eq!(shown, Some((9, 10)));
+        let (past, shown) = render_text(&body, Some(11), None);
         assert!(past.is_error && text(&past).contains("past the end of the file (10 lines)"));
+        assert_eq!(shown, None);
     }
 
     #[test]
     fn long_lines_and_large_files_are_bounded() {
         let long = "x".repeat(MAX_LINE_CHARS + 50);
-        let out = text(&render_text(&long, None, None));
+        let out = text(&render_text(&long, None, None).0);
         assert!(out.ends_with("… [line truncated]"));
         assert_eq!(out.chars().filter(|c| *c == 'x').count(), MAX_LINE_CHARS);
 
         let body: String = (0..2000).map(|_| format!("{}\n", "y".repeat(1000))).collect();
-        let out = text(&render_text(&body, None, None));
+        let (out, shown) = render_text(&body, None, None);
+        let out = text(&out);
         assert!(out.len() <= MAX_BYTES + 200, "{}", out.len());
         assert!(out.contains("of 2000; continue with offset="));
+        // What was cut off was not shown, so it is not among the lines read.
+        let (first, last) = shown.unwrap();
+        assert_eq!(first, 1);
+        assert!(out.contains(&format!("[lines 1-{last} of 2000")) && last < 2000);
     }
 }

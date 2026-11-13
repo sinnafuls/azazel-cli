@@ -498,6 +498,7 @@ Skills, extensions and services:
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |
 | `/lsp` | Language servers and their state; see [LSP](lsp.md) |
+| `/allow-edit <path>` | Let the next edit of one file through, whatever the agent has read of it; see [the read guard](tools.md#the-read-guard) |
 | `/voice` | Start recording, or stop and put the transcript in the input; see [voice](voice.md) |
 | `/speak on\|off\|stop` | Read replies aloud, stop doing so, or stop the one being read |
 

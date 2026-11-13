@@ -15,6 +15,8 @@ pub(crate) struct Spec {
     pub extensions: Vec<String>,
     /// A default rather than a configured server: used only when its command is installed.
     pub builtin: bool,
+    /// Files opened as soon as the server starts, relative to the project root.
+    pub warm_files: Vec<String>,
 }
 
 impl Spec {
@@ -93,6 +95,7 @@ pub(crate) fn specs(configured: &BTreeMap<String, LspServerConfig>) -> Vec<Spec>
                 .map(|extension| extension.trim().trim_start_matches('.').to_lowercase())
                 .collect(),
             builtin: false,
+            warm_files: server.warm_files.clone(),
         })
         .collect();
     for builtin in &BUILTINS {
@@ -112,6 +115,7 @@ pub(crate) fn specs(configured: &BTreeMap<String, LspServerConfig>) -> Vec<Spec>
                 args: builtin.args.iter().map(|arg| arg.to_string()).collect(),
                 extensions,
                 builtin: true,
+                warm_files: Vec::new(),
             });
         }
     }

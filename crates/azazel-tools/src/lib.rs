@@ -1,6 +1,7 @@
 //! Built-in tools: file access, search, shell, jobs, todos, user questions, web, LSP and skills,
 //! and the addresses `read` resolves for sessions, jobs and GitHub.
 
+pub mod ast_grep;
 pub mod check;
 pub mod format;
 #[cfg(feature = "lsp")]
@@ -22,24 +23,53 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use async_trait::async_trait;
+use azazel_core::config::ReadGuard;
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::{
-    ArtifactScheme, ArtifactStore, EventKind, ExtError, Extension, FileTracker, Registrar, Schemes,
+    ArtifactScheme, ArtifactStore, Command, CommandHandler, CommandOutcome, EventKind, ExtCtx, ExtError,
+    Extension, FileTracker, Registrar, Schemes,
 };
 
+pub use ast_grep::AstGrepTool;
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
 pub use read::ReadTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
 pub use write::{EditTool, WriteTool};
 
-/// Registers the core tools, the `artifact://`, `session://` and `job://` schemes (and `pr://` and
-/// `issue://` when the `gh` program is installed), and the services they share:
-/// [`FileTracker`], [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
+/// Registers the core tools (and `ast_grep` when the ast-grep program is installed), the
+/// `artifact://`, `session://` and `job://` schemes (and `pr://` and `issue://` when the `gh`
+/// program is installed), `/allow-edit`, and the services they share: [`FileTracker`],
+/// [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
 pub struct CoreToolsExt {
     pub shell: Shell,
     pub shell_timeout: Duration,
     pub artifacts_dir: PathBuf,
+    /// `tools.read_guard`: what an agent must have read of a file before it changes it.
+    pub read_guard: ReadGuard,
+}
+
+/// `/allow-edit <path>`: lets the next edit of one file through the read guard.
+struct AllowEdit(Arc<FileTracker>);
+
+#[async_trait]
+impl CommandHandler for AllowEdit {
+    async fn run(&self, args: &str, ctx: &ExtCtx) -> CommandOutcome {
+        let name = args.trim();
+        if name.is_empty() {
+            return CommandOutcome::Error("usage: /allow-edit <path>".to_string());
+        }
+        let path = util::resolve_path(&ctx.cwd, name);
+        if !path.is_file() {
+            return CommandOutcome::Error(format!("{}: no such file", path.display()));
+        }
+        self.0.allow_once(&path);
+        CommandOutcome::Show(format!(
+            "the next edit of {} is allowed whatever the agent has read of it",
+            util::display_path(&ctx.cwd, &path)
+        ))
+    }
 }
 
 impl Extension for CoreToolsExt {
@@ -72,9 +102,16 @@ impl Extension for CoreToolsExt {
             r.scheme(Arc::new(schemes::GhScheme::issues(gh)));
         }
 
+        r.command(Command {
+            name: "allow-edit".to_string(),
+            description: "Let the next edit of a file through, whatever the agent has read of it".to_string(),
+            argument_hint: Some("<path>".to_string()),
+            handler: Arc::new(AllowEdit(tracker.clone())),
+        });
+
         r.tool(Arc::new(ReadTool::new(tracker.clone(), schemes)));
-        r.tool(Arc::new(WriteTool::new(tracker.clone())));
-        r.tool(Arc::new(EditTool::new(tracker)));
+        r.tool(Arc::new(WriteTool::new(tracker.clone(), self.read_guard)));
+        r.tool(Arc::new(EditTool::new(tracker.clone(), self.read_guard)));
         r.tool(Arc::new(GlobTool));
         r.tool(Arc::new(GrepTool));
         r.tool(Arc::new(ShellTool::new(
@@ -88,6 +125,9 @@ impl Extension for CoreToolsExt {
         r.tool(Arc::new(TodoTool::new(todos)));
         r.on(EventKind::Context, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));
+        if let Some(program) = ast_grep::program() {
+            r.tool(Arc::new(AstGrepTool::new(program, tracker, self.read_guard)));
+        }
         Ok(())
     }
 }

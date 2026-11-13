@@ -36,6 +36,7 @@ fn bench() -> Bench {
             shell: Shell::resolve(""),
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: dir.path().join(".artifacts"),
+            read_guard: Default::default(),
         })
         .unwrap();
     Bench { dir, registry }

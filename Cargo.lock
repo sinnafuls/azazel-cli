@@ -2569,6 +2569,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fake-sg"
+version = "0.3.0"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "fake-ssh"
 version = "0.3.0"
 
