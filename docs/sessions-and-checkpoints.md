@@ -183,6 +183,7 @@ passes 6,000.
 | `azazel sessions prune [--older-than 30d] [--all-projects] [--dry-run]` | Deletes unpinned sessions not used for that long (`h`, `d` or `w`) |
 | `azazel sessions export [PATH\|ID] [--format F] [-o FILE]` | Same as `azazel export` |
 | `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project. `/stats [days]` shows the same in the UI |
+| `azazel context [PATH\|ID] [--json]` | What the last request of a session was made of: tokens per category (each part of the system prompt, tool schemas, messages, tool results, images). The latest session of this project by default; see [the context inspector](tui.md#the-context-inspector) |
 | `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output |
 
 Export formats:
@@ -204,6 +205,14 @@ kept.
 A Markdown export holds your prompts, the assistant's text and one line per tool call; tool output and thinking are
 left out. Compacted history appears under the heading `Earlier (summarised)` in Markdown and HTML.
 
+## What the last request was made of
+
+Each time the lead sends a request, the session's own folder (`<sessions>/<session id>/`, beside its
+sub-agents' transcripts) gets a `context.json`: the request's tokens by category, written again when the provider
+has counted the request. `/context` and `azazel context` read it; see
+[the context inspector](tui.md#the-context-inspector). It holds numbers only, never the text of the request, and
+is deleted with the session.
+
 ## Compaction
 
 Long sessions outgrow the model's context window. Azazel keeps an estimate of the context size and reduces it in
@@ -211,15 +220,29 @@ two steps. Both are recorded as new entries; the original messages stay in the s
 
 1. **Eliding old tool results.** When the estimate passes `micro_threshold` of the window, the body of every tool
    result older than the newest `keep_tool_results` becomes
-   `[result elided: <n> bytes; re-run the tool if needed]`.
+   `[result elided: <n> bytes; session_recall expand=<entry id>]`.
 2. **Summarising.** When the estimate comes within `reserve_tokens` of the window, everything except roughly the
    last `keep_recent_tokens` is replaced by a summary with the headings Goal, Constraints, Progress, Decisions,
    Files read, Files modified and Next steps. The cut never separates a tool call from its result, and an earlier
    summary is merged into the new one. The summary is written by the `smol` role, or by the agent's own model
    when that role resolves to nothing.
 
-The UI reports `context compacted: <before> → <after> tokens`; `/context` shows how full the window is. If a
-provider rejects a request as too large, azazel summarises and retries once.
+Neither step loses anything: the agent reads the originals back with
+[`session_recall`](tools.md#recalling-the-conversation). An elision note names the entry that holds the result.
+The summariser sees every message labelled with its entry id and puts the id after a fact whose detail it leaves
+out (`src/parser.rs was read [1a2b3c4d]`), and the summary ends with a note naming the newest entry it covers:
+
+```text
+[The messages summarised above are kept in the session, up to entry 5e6f7a8b. session_recall finds them by
+`query` and returns them in full by `range` or `expand`; an id in square brackets above is the entry that
+holds the detail.]
+```
+
+An agent that is not offered `session_recall` (a sub-agent whose definition leaves it out) gets the older note
+instead, `[result elided: <n> bytes; re-run the tool if needed]`, and a summary without ids.
+
+The UI reports `context compacted: <before> → <after> tokens`; `/context` shows what the context is made of. If
+a provider rejects a request as too large, azazel summarises and retries once.
 
 ```toml
 [compaction]

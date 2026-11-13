@@ -310,7 +310,14 @@ fn sessions_can_be_skipped_named_reopened_by_path_and_forked() {
         &["-p", "hi", "--session-dir", elsewhere.to_str().unwrap()],
     );
     assert!(moved.status.success(), "{}", stderr(&moved));
-    assert_eq!(std::fs::read_dir(&elsewhere).unwrap().count(), 1);
+    // One session file; its folder beside it holds what its last request was made of.
+    let kept: Vec<PathBuf> = std::fs::read_dir(&elsewhere)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    let files: Vec<&PathBuf> = kept.iter().filter(|path| path.is_file()).collect();
+    assert_eq!(files.len(), 1, "{kept:?}");
+    assert_eq!(files[0].extension().unwrap(), "jsonl");
     assert_eq!(sandbox.session_files().len(), 2);
 }
 

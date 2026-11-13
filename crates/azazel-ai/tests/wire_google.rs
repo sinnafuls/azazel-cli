@@ -506,14 +506,17 @@ fn system_parts_go_to_system_instruction_and_empty_ones_are_dropped() {
     req.system = vec![
         SystemPart {
             text: "You are helpful.".into(),
+            name: String::new(),
             cache_boundary: false,
         },
         SystemPart {
             text: String::new(),
+            name: String::new(),
             cache_boundary: false,
         },
         SystemPart {
             text: "Environment: test".into(),
+            name: String::new(),
             cache_boundary: true,
         },
     ];

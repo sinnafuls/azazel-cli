@@ -37,15 +37,22 @@ pub struct ContextEntry {
     pub summary: bool,
 }
 
-const IMAGE_TOKENS: u64 = 1500;
+pub(crate) const IMAGE_TOKENS: u64 = 1500;
 const ELIDED_PREFIX: &str = "[result elided: ";
 const SUMMARY_PREFIX: &str = "Summary of the conversation so far:\n\n";
+/// How the note under a summary starts that says where the summarised messages can be read again.
+const RECALL_NOTE_PREFIX: &str = "\n\n[The messages summarised above are kept in the session";
+
+/// The tool that reads back what was taken out of the context. An agent that is offered a tool
+/// of this name is told, where a result is elided or history is summarised, which entries of the
+/// session hold the original.
+pub const RECALL_TOOL: &str = "session_recall";
 
 pub fn estimate_text(text: &str) -> u64 {
     (text.len() as u64).div_ceil(4)
 }
 
-fn estimate_block(block: &Block) -> u64 {
+pub(crate) fn estimate_block(block: &Block) -> u64 {
     match block {
         Block::Text { text } | Block::Thinking { text, .. } => estimate_text(text),
         Block::Image { .. } => IMAGE_TOKENS,
@@ -62,8 +69,13 @@ pub fn estimate_message(message: &Message) -> u64 {
     message.content.iter().map(estimate_block).sum()
 }
 
-pub fn elided_text(bytes: usize) -> String {
-    format!("{ELIDED_PREFIX}{bytes} bytes; re-run the tool if needed]")
+/// What stands in for a tool result of `bytes` bytes. `recall` is the entry that holds the
+/// original, named when the agent can read it back.
+pub fn elided_text(bytes: usize, recall: Option<&str>) -> String {
+    match recall {
+        Some(id) => format!("{ELIDED_PREFIX}{bytes} bytes; {RECALL_TOOL} expand={id}]"),
+        None => format!("{ELIDED_PREFIX}{bytes} bytes; re-run the tool if needed]"),
+    }
 }
 
 fn result_bytes(content: &[Block]) -> usize {
@@ -108,10 +120,12 @@ pub fn micro_targets(entries: &[ContextEntry], keep: usize) -> Vec<usize> {
     targets
 }
 
-/// Replaces the body of every tool result in `message` with the elision note. Returns the note,
-/// or `None` when there was nothing left to elide.
-pub fn elide(message: &mut Message) -> Option<String> {
-    let bytes: usize = message
+/// Replaces the body of every tool result in `entry` with the elision note, which names the
+/// entry when `recall` says the agent can read it back. Returns the note, or `None` when there
+/// was nothing left to elide.
+pub fn elide(entry: &mut ContextEntry, recall: bool) -> Option<String> {
+    let bytes: usize = entry
+        .message
         .content
         .iter()
         .map(|b| match b {
@@ -122,8 +136,8 @@ pub fn elide(message: &mut Message) -> Option<String> {
     if bytes == 0 {
         return None;
     }
-    let note = elided_text(bytes);
-    apply_context_edit(message, &note);
+    let note = elided_text(bytes, recall.then_some(entry.id.as_str()));
+    apply_context_edit(&mut entry.message, &note);
     Some(note)
 }
 
@@ -177,13 +191,29 @@ pub fn summary_message(summary: &str) -> Message {
     Message::user(format!("{SUMMARY_PREFIX}{summary}"))
 }
 
-/// The summary text of a summary entry.
+/// The summary text of a summary entry, without the note about reading the originals again.
 pub fn summary_text(message: &Message) -> String {
     let text = message.text();
-    text.strip_prefix(SUMMARY_PREFIX)
-        .map(str::to_string)
-        .unwrap_or(text)
+    let text = text.strip_prefix(SUMMARY_PREFIX).unwrap_or(&text);
+    let end = text.rfind(RECALL_NOTE_PREFIX).unwrap_or(text.len());
+    text[..end].to_string()
 }
+
+/// What a summary ends with when the agent can read the summarised messages again: `last` is
+/// the newest entry the summary covers.
+pub fn recall_note(last: &str) -> String {
+    format!(
+        "{RECALL_NOTE_PREFIX}, up to entry {last}. {RECALL_TOOL} finds them by `query` and returns \
+         them in full by `range` or `expand`; an id in square brackets above is the entry that \
+         holds the detail.]"
+    )
+}
+
+/// Added to [`SUMMARY_SYSTEM`] when the span is rendered with entry ids.
+pub const SUMMARY_IDS: &str = "\n\nEvery message of the conversation is labelled with its entry id in square \
+brackets. Where the summary leaves out detail that may be needed again (what a file contained, a long output, \
+the exact text of an error), put the id of the entry that holds it after the fact, like `[1a2b3c4d]`. Copy ids \
+exactly and never invent one.";
 
 pub const SUMMARY_SYSTEM: &str = "You are summarising a coding-agent conversation so the work can continue \
 in a fresh context window. Reply with the summary only, using exactly these headings in this order:\n\
@@ -205,6 +235,16 @@ fn clip(text: &str, max_chars: usize) -> String {
 /// Plain-text rendering of `entries` for the summariser, at most `max_chars` long. When it would
 /// be longer the oldest part is dropped, since the newest history matters most.
 pub fn render_span(entries: &[ContextEntry], max_chars: usize) -> String {
+    render(entries, max_chars, false)
+}
+
+/// [`render_span`] with every message labelled with its entry id, so a summary can say where a
+/// detail it leaves out is kept.
+pub fn render_span_ids(entries: &[ContextEntry], max_chars: usize) -> String {
+    render(entries, max_chars, true)
+}
+
+fn render(entries: &[ContextEntry], max_chars: usize, ids: bool) -> String {
     let mut out = String::new();
     for entry in entries {
         let speaker = match entry.message.role {
@@ -212,12 +252,17 @@ pub fn render_span(entries: &[ContextEntry], max_chars: usize) -> String {
             Role::Assistant => "Assistant",
             Role::Tool => "Tool",
         };
+        let id = if ids {
+            format!(" [{}]", entry.id)
+        } else {
+            String::new()
+        };
         for block in &entry.message.content {
             match block {
-                Block::Text { text } => out.push_str(&format!("{speaker}: {text}\n\n")),
-                Block::Image { .. } => out.push_str(&format!("{speaker}: [image]\n\n")),
+                Block::Text { text } => out.push_str(&format!("{speaker}{id}: {text}\n\n")),
+                Block::Image { .. } => out.push_str(&format!("{speaker}{id}: [image]\n\n")),
                 Block::ToolCall { name, input, .. } => out.push_str(&format!(
-                    "Assistant called {name}: {}\n\n",
+                    "Assistant called {name}{id}: {}\n\n",
                     clip(&input.to_string(), MAX_CALL_CHARS)
                 )),
                 Block::ToolResult {
@@ -232,7 +277,7 @@ pub fn render_span(entries: &[ContextEntry], max_chars: usize) -> String {
                         }
                     }
                     let label = if *is_error { "Tool error" } else { "Tool result" };
-                    out.push_str(&format!("{label}: {}\n\n", clip(&text, MAX_RESULT_CHARS)));
+                    out.push_str(&format!("{label}{id}: {}\n\n", clip(&text, MAX_RESULT_CHARS)));
                 }
                 Block::Thinking { .. } | Block::Opaque { .. } => {}
             }
@@ -322,23 +367,50 @@ mod tests {
         let mut entries = transcript(5, 400);
         // Tool entries sit at indices 2, 4, 6, 8, 10; keeping 2 spares 8 and 10.
         assert_eq!(micro_targets(&entries, 2), vec![2, 4, 6]);
-        let note = elide(&mut entries[2].message).unwrap();
+        let note = elide(&mut entries[2], false).unwrap();
         assert_eq!(note, "[result elided: 400 bytes; re-run the tool if needed]");
         assert_eq!(micro_targets(&entries, 2), vec![4, 6]);
-        assert_eq!(elide(&mut entries[2].message), None);
+        assert_eq!(elide(&mut entries[2], false), None);
         assert!(micro_targets(&entries, 5).is_empty());
     }
 
     #[test]
-    fn elide_keeps_call_ids_and_error_flags() {
-        let mut message = Message::tool(vec![
-            Block::tool_result("c1", "aaaa", false),
-            Block::tool_result("c2", "bbbbbb", true),
-        ]);
-        let note = elide(&mut message).unwrap();
-        assert_eq!(note, elided_text(10));
+    fn an_elided_result_names_its_entry_when_it_can_be_read_back() {
+        let mut entries = transcript(2, 400);
+        let note = elide(&mut entries[2], true).unwrap();
+        assert_eq!(note, "[result elided: 400 bytes; session_recall expand=e2]");
         assert_eq!(
-            message.content,
+            entries[2].message.content,
+            vec![Block::tool_result("c0", note, false)]
+        );
+        // Either form of the note marks the result as elided already.
+        assert_eq!(elide(&mut entries[2], true), None);
+        assert_eq!(micro_targets(&entries, 0), vec![4]);
+    }
+
+    #[test]
+    fn the_recall_note_of_a_summary_is_not_part_of_its_text() {
+        let stored = format!("## Goal\nship it{}", recall_note("e41"));
+        assert!(stored.contains("up to entry e41"));
+        assert!(stored.contains("session_recall"));
+        let message = summary_message(&stored);
+        assert_eq!(summary_text(&message), "## Goal\nship it");
+        assert_eq!(summary_text(&summary_message("no note")), "no note");
+    }
+
+    #[test]
+    fn elide_keeps_call_ids_and_error_flags() {
+        let mut entry = entry(
+            0,
+            Message::tool(vec![
+                Block::tool_result("c1", "aaaa", false),
+                Block::tool_result("c2", "bbbbbb", true),
+            ]),
+        );
+        let note = elide(&mut entry, false).unwrap();
+        assert_eq!(note, elided_text(10, None));
+        assert_eq!(
+            entry.message.content,
             vec![
                 Block::tool_result("c1", note.clone(), false),
                 Block::tool_result("c2", note, true)
@@ -401,5 +473,11 @@ mod tests {
         assert!(tail.starts_with("[earlier history omitted]"));
         assert!(tail.ends_with("[3000 more bytes]\n\n"));
         assert!(!tail.contains("fix the bug"));
+
+        let labelled = render_span_ids(&entries, 1_000_000);
+        assert!(labelled.starts_with(
+            "User [e0]: fix the bug\n\nAssistant [e1]: looking\n\nAssistant called read [e1]: {}\n\n\
+             Tool error [e2]: yyy"
+        ));
     }
 }

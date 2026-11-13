@@ -251,6 +251,7 @@ mod tests {
         Request {
             system: vec![SystemPart {
                 text: "be brief".into(),
+                name: String::new(),
                 cache_boundary: false,
             }],
             messages: vec![Message::user("hi")],

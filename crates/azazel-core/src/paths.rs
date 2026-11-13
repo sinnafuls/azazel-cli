@@ -2,6 +2,9 @@
 
 use std::path::{Path, PathBuf};
 
+/// The folder, inside a session's own folder, that holds the transcripts of its sub-agents.
+pub(crate) const AGENT_TRANSCRIPTS: &str = "agents";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Paths {
     /// `~/.azazel`, or `AZAZEL_HOME`.
@@ -97,7 +100,7 @@ impl Paths {
     }
     /// Transcripts of the sub-agents of one session.
     pub fn agent_transcripts_dir(&self, session_id: &str) -> PathBuf {
-        self.sessions_dir().join(session_id).join("agents")
+        self.sessions_dir().join(session_id).join(AGENT_TRANSCRIPTS)
     }
     pub fn artifacts_dir(&self) -> PathBuf {
         self.project_data.join("artifacts")

@@ -433,7 +433,7 @@ Session and display:
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
 | `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
-| `/context` | How full the context window is, message count, tools offered |
+| `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
 | `/keys` | List key bindings |
@@ -510,6 +510,72 @@ completion as well. `/memory` is absent when memory is disabled in the configura
 keeps it as its newest buffer and passes it on to the terminal's clipboard. Over SSH, or when the system
 clipboard fails, it asks the terminal to copy instead (OSC 52, passed through tmux when azazel runs inside it);
 the terminal must allow programs to set the clipboard.
+
+## The context inspector
+
+`/context` takes the lead's last request apart. The request is the one that was sent, kept as it was built:
+nothing is rendered again to count it.
+
+```text
+╭─ Context ──────────────────────────────────────────────────────────────────╮
+│ request 12 of lead · anthropic/claude-opus-5-5                             │
+│ 84.2k of 200.0k tokens (42%), as the provider counted them; each category  │
+│ is its estimate scaled to that                                             │
+│                                                                            │
+│ ▌ system prompt: identity     112   0%  ━───────────────────  1 part       │
+│   AGENTS and context files   3.1k   4%  ━───────────────────  1 part       │
+│   skill index                1.4k   2%  ━───────────────────  1 part       │
+│   memory                      620   1%  ━───────────────────  1 part       │
+│   tool schemas               9.8k  12%  ━━──────────────────  27 tools     │
+│   tool schemas: MCP github  14.6k  17%  ━━━─────────────────  31 tools     │
+│   user messages              1.2k   1%  ━───────────────────  6 blocks     │
+│   assistant messages         4.9k   6%  ━───────────────────  18 blocks    │
+│   tool calls                 2.3k   3%  ━───────────────────  22 calls     │
+│   tool results              43.1k  51%  ━━━━━━━━━━──────────  22 results   │
+│   images                     3.0k   4%  ━───────────────────  2 images     │
+╰─ ↑↓ move · enter read · esc cancel ────────────────────────────────────────╯
+```
+
+| Category | Holds |
+|---|---|
+| `system prompt: <name>` | One part of the system prompt under the name it is built with: `identity`, `rules`, `team`, `environment`, `mode`, `mcp`, `coordinator`, or a part an extension added. `system prompt: other` is text without a name, added by a hook |
+| `AGENTS and context files` | `AGENTS.md` and the other context files |
+| `rules on request` | The list of rule files the agent may read |
+| `skill index` | The names and descriptions of the skills |
+| `memory` | What was recalled into the prompt |
+| `tool schemas` | The name, description and input schema of every built-in tool; `tool schemas: MCP <server>` is the same for one MCP server |
+| `user messages`, `assistant messages`, `thinking`, `tool calls` | The conversation as it is sent, by what each block is |
+| `tool results` | The text of tool results, elided ones as their notes |
+| `images` | Every image, in a prompt or in a tool result, at the flat 1500 tokens compaction counts for one |
+
+Each bar is the category's share of the request; a category that holds anything shows at least one cell. A
+narrow box drops the counts, then the bars. `enter` opens the category's exact text in the full-screen viewer:
+a part of the system prompt word for word, each tool with its schema, each message under the number it has in
+the request. `q` returns to the box.
+
+The numbers are estimates made with the counter compaction uses (a quarter of the bytes of text). Once the
+provider has answered, the total is the input tokens it counted, cached ones included, and every category is
+scaled by the same factor so that they add up to it. Until then, and for a provider that counts nothing, the
+line above the list says the numbers are estimated.
+
+In a session that was just reopened and has sent nothing yet, `/context` shows the numbers of its last request
+from the session's `context.json`; the text of a category is there once a request has been sent. While the agent
+works, a box that is open describes the request it was opened on; `enter` after the agent has sent another
+opens the box on that one.
+
+`azazel context [PATH|ID] [--json]` prints the same numbers for a saved session, the latest of this project by
+default. `--json` is one object:
+
+```json
+{"session": "0198…", "agent": "lead", "request": 12, "model": "anthropic/claude-opus-5-5",
+ "window": 200000, "estimate": 79310, "reported": 84200, "tokens": 84200,
+ "categories": [{"kind": "system", "name": "identity", "label": "system prompt: identity",
+                 "items": 1, "estimate": 105, "tokens": 112}]}
+```
+
+`kind` is `system`, `tools`, `messages`, `tool_results` or `images`; `estimate` is the counter's number and
+`tokens` the scaled one. Over [RPC](rpc.md), `run_command` with the name `context` returns the text table,
+with `args: "json"` this object, and with `args: "text <request> <category index>"` the text of one category.
 
 ## Side questions
 

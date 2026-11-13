@@ -1978,6 +1978,7 @@ impl Tui {
                 self.finish_commit(action, choice, typed)
             }
             action @ (Action::CopyCode(_)
+            | Action::Context(_)
             | Action::Jobs(_)
             | Action::JobChoice(_)
             | Action::Permissions(_)

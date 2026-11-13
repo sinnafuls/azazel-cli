@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use azazel_ai::{Message, Request};
 
 use crate::event::AgentInfo;
+use crate::inspect::ContextReport;
 
 /// Called by the agent loop at fixed points. The application's event bus implements this.
 #[async_trait]
@@ -68,6 +69,11 @@ pub trait TranscriptSink: Send + Sync {
     /// Records that everything before entry `first_kept` is replaced by `summary`; returns the id
     /// of the compaction entry.
     fn compaction(&self, summary: &str, first_kept: &str, tokens_before: u64) -> String;
+
+    /// Called with what the lead's newest request is made of: when it is sent, and again when
+    /// the provider has counted its tokens. A sink that keeps it lets the request be inspected
+    /// from outside the process.
+    fn request(&self, _report: &ContextReport) {}
 }
 
 /// Keeps nothing; hands out sequential ids. For agents whose transcript is not persisted.

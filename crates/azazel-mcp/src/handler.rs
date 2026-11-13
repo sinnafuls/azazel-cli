@@ -64,6 +64,7 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         .iter()
         .map(|text| SystemPart {
             text: text.clone(),
+            name: String::new(),
             cache_boundary: false,
         })
         .collect();
