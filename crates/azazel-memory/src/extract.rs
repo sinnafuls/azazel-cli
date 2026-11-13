@@ -150,6 +150,7 @@ pub(crate) async fn extract(
     let request = Request {
         system: vec![SystemPart {
             text: INSTRUCTIONS.to_string(),
+            name: String::new(),
             cache_boundary: false,
         }],
         messages: vec![Message::user(prompt)],

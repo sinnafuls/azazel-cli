@@ -7,6 +7,7 @@ pub mod app;
 mod attention;
 pub mod changelog;
 pub mod cli;
+pub mod context;
 #[cfg(feature = "detach")]
 pub mod detach;
 #[cfg(feature = "diagrams")]
@@ -289,6 +290,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Sessions { action }) => return sessions::run(action, &paths),
         Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),
         Some(Sub::Stats { days, json }) => return stats::run(&paths, *days, *json),
+        Some(Sub::Context { session, json }) => return context::run(&paths, session.as_deref(), *json),
         Some(Sub::Export {
             session,
             format,

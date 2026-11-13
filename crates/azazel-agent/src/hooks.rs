@@ -7,6 +7,7 @@ use azazel_ai::{Message, Request};
 use serde_json::Value;
 
 use crate::event::AgentInfo;
+use crate::inspect::ContextReport;
 
 /// Called by the agent loop at fixed points. The application's event bus implements this.
 #[async_trait]
@@ -86,6 +87,11 @@ pub trait TranscriptSink: Send + Sync {
     /// Records how the run `run_id` ended: a stop reason, or `failed`. A run without this
     /// record was cut short by the end of the process.
     fn run_ended(&self, _run_id: &str, _stop: &str) {}
+
+    /// Called with what the lead's newest request is made of: when it is sent, and again when
+    /// the provider has counted its tokens. A sink that keeps it lets the request be inspected
+    /// from outside the process.
+    fn request(&self, _report: &ContextReport) {}
 }
 
 /// Keeps nothing; hands out sequential ids. For agents whose transcript is not persisted.

@@ -1228,6 +1228,7 @@ impl Inner {
                     "You decide whether an event in a coding session may proceed. Follow the user's \
                      instruction, judge the event that comes after it, and reply with {VERDICT_FORMAT}."
                 ),
+                name: String::new(),
                 cache_boundary: false,
             }],
             messages: vec![Message::user(format!("{prompt}\n\nEvent:\n{}", job.payload))],

@@ -139,6 +139,8 @@ pub enum Action {
     PermissionAdd,
     /// Where a new rule goes: this session, or saved for the project.
     PermissionScope(Rule, RuleKind),
+    /// `/context`: the request whose categories the rows are; choosing one reads its text.
+    Context(Box<azazel_agent::ContextReport>),
     /// `/commit` with nothing staged: stage everything, or cancel.
     CommitStage(Box<super::gitcmd::Pending>),
     /// The commit message being edited, for the repository at `top`.
@@ -216,6 +218,8 @@ pub struct Overlay {
     /// filterable list should use chords. A key with no word stays out of the hint line: an
     /// overlay with more keys than the line holds names them in its body.
     pub keys: Vec<(KeyCombo, &'static str)>,
+    /// What the hint line says `enter` does in a list.
+    enter: &'static str,
 }
 
 pub enum Outcome {
@@ -290,7 +294,14 @@ impl Overlay {
             kind,
             action,
             keys: Vec::new(),
+            enter: "pick",
         }
+    }
+
+    /// Names what `enter` does in the list, where that is not picking a row.
+    pub fn with_enter(mut self, word: &'static str) -> Self {
+        self.enter = word;
+        self
     }
 
     /// The question before bypass mode: what it lifts, with "No" as the row a stray Enter
@@ -483,7 +494,7 @@ impl Overlay {
                 }
                 let arrows = format!("{}{}", theme.glyph(Glyph::MoreUp), theme.glyph(Glyph::MoreDown));
                 hints.push(Hint::new(arrows, "move"));
-                hints.push(Hint::new("enter", "pick"));
+                hints.push(Hint::new("enter", self.enter));
             }
             Kind::Input { secret, .. } => {
                 if *secret {

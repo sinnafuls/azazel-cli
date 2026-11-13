@@ -125,7 +125,16 @@ async fn the_extension_registers_the_core_tool_set() {
     assert_eq!(
         names,
         [
-            "read", "write", "edit", "glob", "grep", "shell", "job", "todo", "ask_user"
+            "read",
+            "write",
+            "edit",
+            "glob",
+            "grep",
+            "shell",
+            "job",
+            "todo",
+            "ask_user",
+            "session_recall"
         ]
     );
 }

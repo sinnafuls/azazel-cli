@@ -21,6 +21,7 @@ use crate::compaction::{self, CompactionSettings, ContextEntry};
 use crate::event::{AgentCmd, AgentEvent, AgentId, AgentInfo, Resume, UserInput};
 use crate::gate::{Gate, GateDecision};
 use crate::hooks::{AgentHooks, TranscriptSink};
+use crate::inspect::RequestRecord;
 use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, tool_spec};
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
@@ -155,6 +156,7 @@ pub struct AgentHandle {
     commands: mpsc::UnboundedSender<AgentCmd>,
     hub: Arc<EventHub>,
     status: Arc<Mutex<AgentStatus>>,
+    last_request: Arc<Mutex<Option<Arc<RequestRecord>>>>,
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
@@ -193,6 +195,11 @@ impl AgentHandle {
         locked(&self.status).clone()
     }
 
+    /// The request the agent sent last, exactly as it was sent; `None` before its first.
+    pub fn last_request(&self) -> Option<Arc<RequestRecord>> {
+        locked(&self.last_request).clone()
+    }
+
     /// Asks the agent to stop and waits for its task to end.
     pub async fn shutdown(&self) {
         self.send(AgentCmd::Shutdown);
@@ -215,6 +222,7 @@ impl Agent {
             ..AgentStatus::default()
         }));
         let info = config.info.clone();
+        let last_request = Arc::new(Mutex::new(None));
         let actor = Actor {
             inbox: Inbox {
                 rx,
@@ -244,6 +252,8 @@ impl Agent {
                 anchor: None,
                 hub: hub.clone(),
                 status: status.clone(),
+                requests: 0,
+                last_request: last_request.clone(),
             },
         };
         let task = tokio::spawn(actor.run());
@@ -253,6 +263,7 @@ impl Agent {
             commands,
             hub,
             status,
+            last_request,
             task: Arc::new(Mutex::new(Some(task))),
         }
     }
@@ -339,6 +350,9 @@ struct Core {
     anchor: Option<(usize, u64)>,
     hub: Arc<EventHub>,
     status: Arc<Mutex<AgentStatus>>,
+    /// Requests of its own the agent has built.
+    requests: u32,
+    last_request: Arc<Mutex<Option<Arc<RequestRecord>>>>,
 }
 
 struct Actor {
@@ -523,6 +537,8 @@ impl Actor {
                 .inbox
                 .drive(self.core.build_request(thinking, !final_report))
                 .await;
+            let request = Arc::new(request);
+            self.core.record_request(&request);
 
             let watched = rule_stops < MAX_RULE_STOPS;
             let message = match self.stream_message(&chain, &request, cancel, watched).await {
@@ -791,6 +807,40 @@ impl Core {
         if tokens > 0 {
             self.anchor = Some((self.entries.len() + 1, tokens));
         }
+        // The request this answers now has a model and, when the provider counts, a size.
+        let answered = locked(&self.last_request).as_ref().map(|sent| {
+            let input = meta.usage.input + meta.usage.cache_read + meta.usage.cache_write;
+            Arc::new(RequestRecord {
+                model: Some(format!("{}/{}", meta.provider, meta.model)),
+                reported: (input > 0).then_some(input),
+                ..RequestRecord::clone(sent)
+            })
+        });
+        if let Some(record) = answered {
+            self.keep_request(record);
+        }
+    }
+
+    /// Keeps `request` as the one sent last, so it can be taken apart without building it again.
+    fn record_request(&mut self, request: &Arc<Request>) {
+        self.requests += 1;
+        let record = Arc::new(RequestRecord {
+            agent: self.info.id.clone(),
+            seq: self.requests,
+            request: request.clone(),
+            window: locked(&self.status).context_window,
+            model: None,
+            reported: None,
+        });
+        self.keep_request(record);
+    }
+
+    fn keep_request(&self, record: Arc<RequestRecord>) {
+        // Only the lead's is written down: it is the one a session is asked about afterwards.
+        if self.info.depth == 0 {
+            self.sink.request(&record.report());
+        }
+        *locked(&self.last_request) = Some(record);
     }
 
     fn add_usage(&self, usage: &Usage) {
@@ -864,8 +914,9 @@ impl Core {
         }
         if estimate as f64 > self.compaction.micro_threshold * window as f64 {
             let mut changed = false;
+            let recall = self.recall_offered();
             for i in compaction::micro_targets(&self.entries, self.compaction.keep_tool_results) {
-                if let Some(note) = compaction::elide(&mut self.entries[i].message) {
+                if let Some(note) = compaction::elide(&mut self.entries[i], recall) {
                     self.sink.context_edit(&self.entries[i].id, &note);
                     changed = true;
                 }
@@ -879,6 +930,14 @@ impl Core {
             self.compact(chain, cancel, false, false, None).await?;
         }
         Ok(())
+    }
+
+    /// Whether the agent is offered the tool that reads back what was taken out of its context.
+    fn recall_offered(&self) -> bool {
+        self.tools
+            .tools(&self.info)
+            .iter()
+            .any(|tool| tool.name() == compaction::RECALL_TOOL)
     }
 
     /// Replaces the older part of the context with a summary. `Ok(false)` when there was nothing
@@ -926,16 +985,26 @@ impl Core {
                 "<previous-summary>\n{previous}\n</previous-summary>\n\n"
             ));
         }
-        prompt.push_str(&format!(
-            "<conversation>\n{}</conversation>",
+        // With the recall tool the summary can say which entry holds a detail it leaves out.
+        let recall = self.recall_offered();
+        let last_summarised = span.last().map(|entry| entry.id.clone());
+        let rendered = if recall {
+            compaction::render_span_ids(span, max_chars)
+        } else {
             compaction::render_span(span, max_chars)
-        ));
+        };
+        prompt.push_str(&format!("<conversation>\n{rendered}</conversation>"));
         if let Some(instructions) = instructions.filter(|i| !i.trim().is_empty()) {
             prompt.push_str(&format!("\n\nAdditional instructions: {instructions}"));
         }
         let request = Request {
             system: vec![SystemPart {
-                text: compaction::SUMMARY_SYSTEM.to_string(),
+                text: if recall {
+                    format!("{}{}", compaction::SUMMARY_SYSTEM, compaction::SUMMARY_IDS)
+                } else {
+                    compaction::SUMMARY_SYSTEM.to_string()
+                },
+                name: String::new(),
                 cache_boundary: false,
             }],
             messages: vec![Message::user(prompt)],
@@ -957,11 +1026,14 @@ impl Core {
         if let Some(meta) = &reply.meta {
             self.add_usage(&meta.usage);
         }
-        let summary = reply.text();
+        let mut summary = reply.text();
         if summary.trim().is_empty() {
             return Err(AiError::InvalidRequest(
                 "the summariser returned no text".to_string(),
             ));
+        }
+        if let Some(last) = last_summarised.filter(|_| recall) {
+            summary = format!("{}{}", summary.trim_end(), compaction::recall_note(&last));
         }
 
         let id = self

@@ -8,7 +8,6 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use azazel_agent::ToolSource;
 use azazel_ai::Usage;
 use azazel_core::SessionStore;
 use azazel_core::session::SessionFacts;
@@ -23,7 +22,10 @@ use crate::sessions::local_time;
 /// The reports by name, each with what `/help` says about it.
 pub const REPORTS: &[(&str, &str)] = &[
     ("cost", "Tokens and money spent in this session"),
-    ("context", "How full the context window is"),
+    (
+        "context",
+        "What the last request was made of: tokens by category, and the text of each",
+    ),
     (
         "session",
         "What this session is: file, messages, tokens, cost, agents",
@@ -66,7 +68,7 @@ pub async fn run(app: &App, active: &Active, name: &str, args: &str) -> Option<R
     let args = args.trim();
     Some(match name {
         "cost" => Ok(cost(app, active)),
-        "context" => Ok(context(app, active)),
+        "context" => crate::context::report(app, active, args),
         "session" => Ok(session(app, active).await),
         "tools" => Ok(tools(app, active)),
         "todo" => todo(app, active, args),
@@ -120,23 +122,6 @@ fn cost(app: &App, active: &Active) -> String {
         format_tokens(usage.cache_write),
         format_tokens(usage.reasoning),
     )
-}
-
-fn context(app: &App, active: &Active) -> String {
-    let status = active.lead.status();
-    let messages = active.session.build_context(None).len();
-    let tools = app.registry.tools.tools(active.lead.info()).len();
-    let window = if status.context_window == 0 {
-        "unknown until the first reply".to_string()
-    } else {
-        format!(
-            "{} of {} tokens ({}%)",
-            format_tokens(status.context_tokens),
-            format_tokens(status.context_window),
-            status.context_tokens * 100 / status.context_window
-        )
-    };
-    format!("context: {window}\nmessages: {messages}\ntools offered: {tools}")
 }
 
 fn usage_text(usage: &Usage) -> String {
