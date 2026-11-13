@@ -34,7 +34,7 @@ pub struct PromptRequest {
     pub prompt: String,
     /// The directory to work in; the server's own when left out.
     pub cwd: Option<String>,
-    /// The permission mode: `plan`, `ask`, `accept-edits` or `auto`.
+    /// The permission mode: `plan`, `manual`, `accept-edits` or `auto`.
     pub mode: Option<String>,
     pub model: Option<String>,
     /// A session to continue, by id.
@@ -138,7 +138,7 @@ fn prompt_schema() -> Value {
             },
             "mode": {
                 "type": "string",
-                "enum": ["plan", "ask", "accept-edits", "auto"],
+                "enum": ["plan", "manual", "accept-edits", "auto"],
                 "description": "The permission mode; the configured one when left out"
             },
             "model": {

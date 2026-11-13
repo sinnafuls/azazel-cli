@@ -212,7 +212,7 @@ impl Tui {
             "mode" if args.is_empty() => {
                 let items = PermissionMode::ALL
                     .iter()
-                    .map(|mode| SelectItem::new(mode.to_string(), ""))
+                    .map(|mode| SelectItem::new(mode.to_string(), mode.summary()))
                     .collect();
                 let body = vec![format!("current: {}", self.backend.mode())];
                 self.overlay = Some(Overlay::select(

@@ -10,7 +10,7 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 - At most `team.max_parallel` sub-agents run at once; the rest are `queued`.
 - States: `queued`, `running`, `waiting for approval`, `done`, `failed`, `stopped`.
 - Transcripts are kept beside the session: `~/.azazel/projects/<slug>/sessions/<session id>/agents/<agent id>.jsonl`.
-- Sub-agents follow the session's [permission mode](permissions.md). Their approval prompts appear in the same place as the lead's, titled with the agent id.
+- Sub-agents follow the session's [permission mode](permissions.md), also as it changes: switch the mode and an agent in the middle of its work is judged by the new one from its next tool call. Their approval prompts appear in the same place as the lead's, titled with the agent id.
 - Two agents may work in the same tree. `write` and `edit` refuse a file the agent has not read since it last changed, and an agent whose file was changed by another is told `<path> was modified by <agent id>; read it again before editing` before its next step.
 
 ## Built-in agents
@@ -66,7 +66,7 @@ already been applied. Report the files you created and the commands you ran.
 | `disallowed-tools` | Tool names removed from the set | none |
 | `model` | A spec or a list of specs (fallback chain) | `@default` |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `off` |
-| `mode` | `inherit` or `plan` (read-only whatever the session mode is) | `inherit` |
+| `mode` | `inherit` or `plan` (read-only whatever the session mode is). A definition can only narrow the session's mode, never widen it | `inherit` |
 | `max-turns` | Model requests per prompt before the agent is told to give its final report | no limit |
 | `skills` | [Skills](skills-and-commands.md) whose text is appended to the system prompt | none |
 | `spawns` | Definitions this agent may itself start | none |

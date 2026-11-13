@@ -12,20 +12,39 @@ use toml::{Table, Value};
 
 use crate::paths::Paths;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// How much the gate asks before a tool call runs. One mode governs the whole session: the
+/// lead, every sub-agent and what runs in the background.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum PermissionMode {
+    /// Reads and plans; changes nothing.
     Plan,
+    /// Every change and every command is approved by the user.
     #[default]
-    Ask,
+    Manual,
+    /// File edits inside the project run; commands are approved.
     AcceptEdits,
+    /// Nothing is approved, and every safety guard stays: deny rules, protected paths, secret
+    /// files, destructive commands, the push guard.
     Auto,
+    /// Nothing is approved and no guard applies but the user's deny rules and the push guard.
+    Bypass,
 }
 
 impl PermissionMode {
-    pub const ALL: [PermissionMode; 4] = [
+    pub const ALL: [PermissionMode; 5] = [
         PermissionMode::Plan,
-        PermissionMode::Ask,
+        PermissionMode::Manual,
+        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
+        PermissionMode::Bypass,
+    ];
+
+    /// The modes a key press steps through. `bypass` is not among them: it is entered by name,
+    /// and confirmed.
+    pub const CYCLE: [PermissionMode; 4] = [
+        PermissionMode::Plan,
+        PermissionMode::Manual,
         PermissionMode::AcceptEdits,
         PermissionMode::Auto,
     ];
@@ -33,10 +52,28 @@ impl PermissionMode {
     pub fn as_str(self) -> &'static str {
         match self {
             PermissionMode::Plan => "plan",
-            PermissionMode::Ask => "ask",
+            PermissionMode::Manual => "manual",
             PermissionMode::AcceptEdits => "accept-edits",
             PermissionMode::Auto => "auto",
+            PermissionMode::Bypass => "bypass",
         }
+    }
+
+    /// What the mode does, in a few words, for a list of modes.
+    pub fn summary(self) -> &'static str {
+        match self {
+            PermissionMode::Plan => "reads and plans; changes nothing",
+            PermissionMode::Manual => "asks before it changes files or runs commands",
+            PermissionMode::AcceptEdits => "edits files without asking; asks before it runs commands",
+            PermissionMode::Auto => "works without asking; the safety guards stay",
+            PermissionMode::Bypass => "asks nothing and lifts the guards; deny rules and the push guard stay",
+        }
+    }
+
+    /// The mode after this one in [`PermissionMode::CYCLE`]; from `bypass`, the first.
+    pub fn next(self) -> PermissionMode {
+        let at = Self::CYCLE.iter().position(|mode| *mode == self);
+        at.map_or(Self::CYCLE[0], |at| Self::CYCLE[(at + 1) % Self::CYCLE.len()])
     }
 }
 
@@ -50,10 +87,20 @@ impl FromStr for PermissionMode {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s == "ask" {
+            return Err("the mode `ask` is now called `manual`".to_string());
+        }
         PermissionMode::ALL
             .into_iter()
             .find(|m| m.as_str() == s)
-            .ok_or_else(|| format!("unknown mode `{s}`: expected plan, ask, accept-edits or auto"))
+            .ok_or_else(|| format!("unknown mode `{s}`: expected plan, manual, accept-edits, auto or bypass"))
+    }
+}
+
+impl<'de> Deserialize<'de> for PermissionMode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        text.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -149,7 +196,7 @@ config_table!(RetryConfig {
     max_stalls: u32 = 3,
 });
 config_table!(PermissionsConfig {
-    mode: PermissionMode = PermissionMode::Ask,
+    mode: PermissionMode = PermissionMode::Manual,
     allow: Vec<String> = Vec::new(),
     ask: Vec<String> = Vec::new(),
     deny: Vec<String> = Vec::new(),
@@ -944,6 +991,7 @@ fn concatenates(path: &[String]) -> bool {
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
+/// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
 const TRUST_GATED: [(&str, Option<&str>); 18] = [
     ("hooks", None),
     ("providers", None),
@@ -977,7 +1025,7 @@ pub fn gated_settings(table: &Table) -> Vec<String> {
         Value::Boolean(on) => *on,
         _ => true,
     };
-    TRUST_GATED
+    let mut gated: Vec<String> = TRUST_GATED
         .iter()
         .filter(|(name, key)| {
             let value = match key {
@@ -990,7 +1038,13 @@ pub fn gated_settings(table: &Table) -> Vec<String> {
             Some(key) => format!("{name}.{key}"),
             None => name.to_string(),
         })
-        .collect()
+        .collect();
+    // A mode is the project's to choose, except the one that lifts every guard.
+    let mode = table.get("permissions").and_then(|inner| inner.get("mode"));
+    if mode.and_then(Value::as_str) == Some(PermissionMode::Bypass.as_str()) {
+        gated.push("permissions.mode".to_string());
+    }
+    gated
 }
 
 /// Removes what an untrusted project may not set and notes each removal.
@@ -1103,7 +1157,7 @@ mod tests {
         assert_eq!(loaded.config, Config::default());
         assert!(loaded.layers.is_empty());
         assert!(!loaded.config.roles.contains_key("default"));
-        assert_eq!(loaded.config.permissions.mode, PermissionMode::Ask);
+        assert_eq!(loaded.config.permissions.mode, PermissionMode::Manual);
         assert_eq!(loaded.config.compaction.reserve_tokens, 16_384);
     }
 
@@ -1328,6 +1382,78 @@ mod tests {
         let c = Config::load(&f.paths, &trusted()).unwrap().config;
         assert_eq!(c.permissions.allow, ["read", "shell"]);
         assert!(c.providers.contains_key("evil") && c.hooks.contains_key("session_start"));
+    }
+
+    #[test]
+    fn a_project_may_choose_any_mode_but_bypass_before_it_is_trusted() {
+        let f = fixture("", "[permissions]\nmode = \"bypass\"\n", "");
+        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
+        assert_eq!(loaded.config.permissions.mode, PermissionMode::Manual);
+        assert_eq!(loaded.ignored.len(), 1);
+        assert!(
+            loaded.ignored[0].ends_with(": permissions.mode"),
+            "{:?}",
+            loaded.ignored
+        );
+        let loaded = Config::load(&f.paths, &trusted()).unwrap();
+        assert_eq!(loaded.config.permissions.mode, PermissionMode::Bypass);
+
+        // Any other mode narrows or is asked about, so it needs no trust.
+        let f = fixture("", "[permissions]\nmode = \"auto\"\n", "");
+        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
+        assert_eq!(loaded.config.permissions.mode, PermissionMode::Auto);
+        assert!(loaded.ignored.is_empty());
+
+        // The user's own file and environment are theirs to set.
+        let f = fixture("[permissions]\nmode = \"bypass\"\n", "", "");
+        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
+        assert_eq!(loaded.config.permissions.mode, PermissionMode::Bypass);
+    }
+
+    #[test]
+    fn the_old_name_of_manual_mode_is_refused_with_the_new_one() {
+        let f = fixture("[permissions]\nmode = \"ask\"\n", "", "");
+        let error = Config::load(&f.paths, &LoadOptions::default())
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("config.toml") && error.contains("`manual`"),
+            "{error}"
+        );
+        let f = fixture("", "", "");
+        let options = LoadOptions {
+            env: vec![("AZAZEL_PERMISSIONS__MODE".into(), "ask".into())],
+            ..LoadOptions::default()
+        };
+        let error = Config::load(&f.paths, &options).unwrap_err().to_string();
+        assert!(
+            error.contains("AZAZEL_PERMISSIONS__MODE") && error.contains("`manual`"),
+            "{error}"
+        );
+        assert!("ask".parse::<PermissionMode>().unwrap_err().contains("`manual`"));
+
+        // Every mode reads back as it is written; the cycle leaves bypass out.
+        for mode in PermissionMode::ALL {
+            assert_eq!(mode.to_string().parse::<PermissionMode>(), Ok(mode));
+            let table: Table = toml::from_str(&format!("[permissions]\nmode = \"{mode}\"")).unwrap();
+            assert_eq!(finish(table).unwrap().permissions.mode, mode);
+        }
+        let mut seen = vec![PermissionMode::Plan];
+        while seen.len() < 6 {
+            seen.push(seen[seen.len() - 1].next());
+        }
+        assert_eq!(
+            seen,
+            [
+                PermissionMode::Plan,
+                PermissionMode::Manual,
+                PermissionMode::AcceptEdits,
+                PermissionMode::Auto,
+                PermissionMode::Plan,
+                PermissionMode::Manual
+            ]
+        );
+        assert_eq!(PermissionMode::Bypass.next(), PermissionMode::Plan);
     }
 
     #[test]

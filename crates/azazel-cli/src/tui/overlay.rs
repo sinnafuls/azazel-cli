@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 use azazel_core::permissions::{Rule, RuleKind, SourcedRule};
 use azazel_core::session::SessionSummary;
-use azazel_core::{ApprovalDecision, PlanDecision, UiError};
+use azazel_core::{ApprovalDecision, PermissionMode, PlanDecision, UiError};
 use azazel_tui::components::markdown;
 use azazel_tui::components::overlay::Frame;
 use azazel_tui::{
@@ -76,6 +76,8 @@ pub enum Action {
     Model(Vec<String>),
     Thinking,
     Mode,
+    /// Whether to enter bypass mode: the second row says yes.
+    Bypass,
     Theme(Vec<String>),
     /// `/glyphs`: the symbol set of each row; `None` is `auto`.
     Glyphs(Vec<Option<GlyphLevel>>),
@@ -300,6 +302,25 @@ impl Overlay {
     pub fn with_enter(mut self, word: &'static str) -> Self {
         self.enter = word;
         self
+    }
+
+    /// The question before bypass mode: what it lifts, with "No" as the row a stray Enter
+    /// picks. The second row answers yes.
+    pub fn bypass_warning(current: PermissionMode) -> Self {
+        let body = vec![
+            "Every tool call of the lead, of every sub-agent and of what runs in the background runs \
+             without asking."
+                .to_string(),
+            "Protected paths, secret files, destructive commands and `ask` rules are no longer asked \
+             about."
+                .to_string(),
+            "Only your deny rules and the push guard still apply.".to_string(),
+        ];
+        let items = vec![
+            SelectItem::new(format!("No, stay in {current}"), ""),
+            SelectItem::new("Yes, bypass permissions", "until you change the mode"),
+        ];
+        Overlay::select("Enter bypass mode?", body, items, false, Action::Bypass).destructive(true)
     }
 
     /// Gives the overlay keys of its own; see [`Overlay::keys`].
@@ -658,10 +679,20 @@ pub fn option_item(option: &str) -> SelectItem {
 }
 
 /// The rows of a permission prompt and what each answers. Allowing for the session or for good
-/// needs a rule that covers the call, and is never offered for a command that destroys work.
-pub fn approval_rows(rule: Option<&str>, destructive: bool) -> (Vec<SelectItem>, Vec<ApprovalRow>) {
+/// needs a rule that covers the call, and is never offered for a command that destroys work. A
+/// secret file can be allowed for the session, never for good.
+pub fn approval_rows(
+    rule: Option<&str>,
+    destructive: bool,
+    secret: bool,
+) -> (Vec<SelectItem>, Vec<ApprovalRow>) {
     let mut rows = vec![(ApprovalRow::Once, SelectItem::new("Allow once", ""))];
-    if let Some(rule) = rule.filter(|_| !destructive) {
+    if secret && !destructive {
+        rows.push((
+            ApprovalRow::Session,
+            SelectItem::new("Allow this session", "this file, until azazel exits"),
+        ));
+    } else if let Some(rule) = rule.filter(|_| !destructive) {
         rows.push((
             ApprovalRow::Session,
             SelectItem::new("Allow this session", "until azazel exits; nothing is saved"),
@@ -730,6 +761,31 @@ mod tests {
         secret.on_paste("sk-1");
         assert!(matches!(secret.on_key(&shift_enter), Outcome::Pending));
         assert!(matches!(secret.on_key(&key(KeyCode::Enter)), Outcome::Text(text) if text == "sk-1"));
+    }
+
+    #[test]
+    fn the_bypass_question_starts_on_no_and_says_what_is_lifted() {
+        let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        let mut overlay = Overlay::bypass_warning(PermissionMode::AcceptEdits);
+        let (lines, _) = overlay.render(100, 20, &theme);
+        let shown: Vec<String> = lines.iter().map(|line| text::strip_ansi(line)).collect();
+        let shown = shown.join("\n");
+        for part in [
+            "Enter bypass mode?",
+            "Protected paths, secret files, destructive commands and `ask` rules",
+            "Only your deny rules and the push guard still apply.",
+            "No, stay in accept-edits",
+            "Yes, bypass permissions",
+        ] {
+            assert!(shown.contains(part), "{part} in\n{shown}");
+        }
+        // A stray Enter keeps the mode; yes is one row down; Esc is no.
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(0)));
+        let mut overlay = Overlay::bypass_warning(PermissionMode::Manual);
+        overlay.on_key(&key(KeyCode::Down));
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(1)));
+        let mut overlay = Overlay::bypass_warning(PermissionMode::Manual);
+        assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Cancelled));
     }
 
     #[test]
@@ -1243,12 +1299,13 @@ mod tests {
 
     #[test]
     fn an_approval_offers_what_can_hold_for_its_call() {
-        let labels = |rule: Option<&str>, destructive: bool| {
-            let (items, rows) = approval_rows(rule, destructive);
+        let offered = |rule: Option<&str>, destructive: bool, secret: bool| {
+            let (items, rows) = approval_rows(rule, destructive, secret);
             assert_eq!(items.len(), rows.len());
             let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
             (labels, rows)
         };
+        let labels = |rule: Option<&str>, destructive: bool| offered(rule, destructive, false);
         // A rule that covers the call can be given for the session or for good.
         let (shown, rows) = labels(Some("shell(cargo test:*)"), false);
         assert_eq!(
@@ -1277,6 +1334,17 @@ mod tests {
         assert_eq!(labels(None, false).1, once);
         assert_eq!(labels(Some("shell(git reset:*)"), true).1, once);
         assert_eq!(labels(None, true).0, ["Allow once", "Deny", "Deny and say why"]);
+        // A secret file can be allowed for the session, with or without a rule, never for
+        // good; a command that also destroys work only once.
+        let session = [
+            ApprovalRow::Once,
+            ApprovalRow::Session,
+            ApprovalRow::Deny,
+            ApprovalRow::DenyWhy,
+        ];
+        assert_eq!(offered(None, false, true).1, session);
+        assert_eq!(offered(Some("read(.env)"), false, true).1, session);
+        assert_eq!(offered(None, true, true).1, once);
     }
 
     #[test]

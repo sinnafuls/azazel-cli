@@ -817,6 +817,13 @@ fn draw(call: &Call<'_>, show: Show<'_>, inner: usize, compact: bool, theme: &Th
         body.push(theme.paint(Role::Muted, &more));
     }
 
+    // Secrets taken out of the result before the agent saw it (`tools.redact_output`).
+    match details.and_then(|d| d.get("redacted")).and_then(Value::as_u64) {
+        None | Some(0) => {}
+        Some(1) => facts.push("1 secret redacted".to_string()),
+        Some(secrets) => facts.push(format!("{secrets} secrets redacted")),
+    }
+
     // How long it took and how it ended come before what the body adds.
     let mut ended: Vec<String> = call.elapsed.map(format_duration).into_iter().collect();
     if details.and_then(|d| d.get("timed_out")).and_then(Value::as_bool) == Some(true) {

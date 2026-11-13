@@ -265,6 +265,19 @@ async fn a_permission_is_asked_of_the_client_that_can_ask_and_refused_otherwise(
     let service = sandbox.serve(&write_script(), None).await;
     call(&service, "azazel_prompt", json!({ "prompt": "make a file" })).await;
     assert!(!sandbox.project().join("made.txt").exists());
+    // A client cannot lift the guards for itself: bypass is for whoever starts the server.
+    let refused = call(
+        &service,
+        "azazel_prompt",
+        json!({ "prompt": "make a file", "mode": "bypass" }),
+    )
+    .await;
+    assert_eq!(refused.is_error, Some(true));
+    assert!(
+        texts(&refused)[0].contains("bypass mode is not available to an MCP client"),
+        "{refused:?}"
+    );
+    assert!(!sandbox.project().join("made.txt").exists());
     let allowed = call(
         &service,
         "azazel_prompt",
