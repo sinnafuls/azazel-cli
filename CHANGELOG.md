@@ -38,19 +38,31 @@ GitHub are its section here.
 - `/settings`, Appearance: theme (a list of the built-in themes and the files in `~/.azazel/themes`), symbols,
   working indicator, session colour, tool call style, hiding secrets and popups. All of them change the running
   UI at once.
+- Menus, pickers, questions, approvals, plan reviews and every step of `/settings` open as a box in the middle
+  of the window over the dimmed transcript, which is back exactly as it was when the box closes
+  (`tui.popups = false`, or a window under 44x12, keeps them in place of the input).
+- `/glyphs` picks the symbol set from a list in which every row is drawn in its own symbols, and saves it.
+- `Ctrl+O` in a box whose text does not fit (a long plan, a long command) opens all of it full screen.
 
 ### Changed
 
 - `web_fetch` no longer returns a page of any size in one piece: more than `limit` characters come in parts.
-- Every symbol outside tool cards and pickers (the prompt, rules, spinner, status line, todo list, roster,
-  queued messages, Markdown bullets, quotes and tables, the transcript viewer, side questions) follows
-  `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
+- Every symbol outside tool cards (the prompt, rules, spinner, status line, todo list, roster, queued
+  messages, Markdown bullets, quotes and tables, the transcript viewer, side questions, pickers and popups)
+  follows `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
 - The status line shows the cost only when the lead answers with an API key. On a subscription you signed in
   to, it shows the fullest usage window instead (`◔ 61% 5h`), from the first response on rather than only once
   the window is nearly full.
 - A status line that does not fit drops whole segments from the end of its left side (goal, agents, cost,
   speed, context, directory, branch) before it shortens the model. A long working directory keeps its end.
 - `accept-edits` is marked `⏵` in the status line; `⏵⏵` is `auto` alone.
+- Every list has a bar beside the selected row, details in a column of their own, a scrollbar when it is longer
+  than its box and, where it filters as you type, a count of the rows that match.
+- A plan under review is shown in the review box, and a note on an approval stands out in the warning colour;
+  an approval for a call that would destroy work has a warning-coloured frame.
+- The model pickers show each model's context window and price (`ctx 200k · $3/$15`), or `subscription` for a
+  provider used through a login; the theme picker shows each theme's colours; `/settings` rows show their
+  current value in a column of its own.
 
 ### Fixed
 

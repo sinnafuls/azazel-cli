@@ -131,6 +131,10 @@ glyphs! {
     /// Before the count of running agents.
     Agents => "\u{f0c0}", "⇶", "";
     Goal => "\u{f024}", "⚑", "goal:";
+    /// Before the label of an entry of the session tree.
+    Label => "\u{f02b}", "⚑", "#";
+    /// Marks a favourite model.
+    Favourite => "\u{f005}", "★", "*";
     Branch => "\u{e0a0}", "⑂", "git:";
     Folder => "\u{f115}", "", "";
     File => "\u{f15b}", "", "";
