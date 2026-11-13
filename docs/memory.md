@@ -32,7 +32,7 @@ Memories never hold secrets by design: the tool description and the extraction p
 
 The `read` tool also takes memory addresses: `memory://` lists every memory, `memory://<id>` shows one, and `memory://search/<query>` returns the 20 best matches.
 
-`memory_search` and `semantic_search` are read-only. `memory_save` and `memory_forget` count as writes, so in `ask` and `accept-edits` mode they prompt unless you add the allow rules `memory_save` and `memory_forget` (see [permissions](permissions.md)).
+`memory_search` and `semantic_search` are read-only. `memory_save` and `memory_forget` count as writes, so in `manual` and `accept-edits` mode they prompt unless you add the allow rules `memory_save` and `memory_forget` (see [permissions](permissions.md)).
 
 ## Recall
 

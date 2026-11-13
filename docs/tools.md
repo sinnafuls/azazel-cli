@@ -181,6 +181,8 @@ The secret itself is never read from the scan's output, shown or sent to a model
 
 Both honour `.gitignore` and other ignore files, include hidden files and skip `.git`. In `glob`, `*.rs` matches at any depth, `src/*.rs` only directly in `src`, and `src/**/*.rs` anywhere below it. `grep` modes are `content` (default, `path:line:text`), `files` (paths only) and `count` (`path:N`); `limit` defaults to 200 results, `context` adds lines around each match, `multiline` lets a pattern span lines. Binary files are skipped and matching lines are clipped at 500 characters.
 
+A `grep` over a directory passes [secret files](permissions.md#secret-files) by (`.env`, private keys and the like) and ends with `[1 secret file was not searched; name it as `path` to search it]`. Naming the file as `path` asks you, as reading it does; a file you allowed for the session is searched like any other, and so is every file in `bypass` mode.
+
 ### `ast_grep`
 
 `ast_grep` runs the external [ast-grep](https://ast-grep.github.io) program, found on `PATH` as `ast-grep` or `sg`. Azazel does not install it. Without it the tool does not exist and `azazel doctor` says `ast_grep: off, ast-grep is not installed`. (On Linux `sg` is usually another program, which runs a command under a group; it is used only when it answers `--version` as ast-grep does.)
@@ -414,7 +416,7 @@ The agent reads the rest with `read artifact://<call id>`. The same directory ho
 | `pr://<n>`, `issue://<n>` | One pull request or issue with its comments |
 | `pr://<n>/diff` | A pull request's diff |
 
-`pr://` and `issue://` run the [`gh`](https://cli.github.com) program in the agent's working directory, with the account `gh` is signed in to, and exist only when `gh` is on `PATH` (`azazel doctor` says whether it is). They count as network access to `github.com`: in `ask` mode you are asked, and the rule `web_fetch(domain:github.com)` allows them.
+`pr://` and `issue://` run the [`gh`](https://cli.github.com) program in the agent's working directory, with the account `gh` is signed in to, and exist only when `gh` is on `PATH` (`azazel doctor` says whether it is). They count as network access to `github.com`: in `manual` mode you are asked, and the rule `web_fetch(domain:github.com)` allows them.
 
 A scheme says what reading one of its addresses touches. Addresses that stay on this machine are plain reads. Extensions can add more schemes; see [extensions](extensions.md).
 
@@ -430,6 +432,7 @@ format_on_write = false               # run the file's formatter after write and
 check_on_write = true                 # run the file's checker after write and edit
 check_report = "delta"                # what the lead is told when it stops: delta, all or off
 read_guard = "range"                  # what must have been read before an edit: range, file or off
+redact_output = false                 # take secrets out of tool results before the model gets them
 
 [tools.format]                        # file extension to formatter command
 rs = "rustfmt --edition 2024"

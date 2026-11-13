@@ -91,7 +91,7 @@ The `read` tool accepts `http://` and `https://` paths and returns the page as M
 
 ### Permissions
 
-These tools have network access, which is not granted by `ask` or `accept-edits` mode on its own, so they prompt unless a rule allows them. The subject of a fetch is `domain:<host>`; a rule for a domain also covers its subdomains. Reading a URL with `read` and searching one with `web_grep` are governed by the `web_fetch` rules, so a host you allow for `web_fetch` needs no second rule; `tools.disabled` is the way to switch `web_grep` off.
+These tools have network access, which is not granted by `manual` or `accept-edits` mode on its own, so they prompt unless a rule allows them. The subject of a fetch is `domain:<host>`; a rule for a domain also covers its subdomains. Reading a URL with `read` and searching one with `web_grep` are governed by the `web_fetch` rules, so a host you allow for `web_fetch` needs no second rule; `tools.disabled` is the way to switch `web_grep` off.
 
 ```toml
 [permissions]
@@ -195,7 +195,7 @@ The page is looked at every `poll_ms` milliseconds (default 100, at least 10), a
 
 ### Permissions
 
-`browser` counts as execution: it prompts in `ask` and `accept-edits` mode and runs freely in `auto`. The subject is `domain:<host>` for `open` and `navigate`, and the action name for everything else.
+`browser` counts as execution: it prompts in `manual` and `accept-edits` mode and runs freely in `auto`. The subject is `domain:<host>` for `open` and `navigate`, and the action name for everything else.
 
 ```toml
 [permissions]
