@@ -52,6 +52,6 @@ pub use toolcall::ToolCaller;
 pub use tracker::{FileTracker, Freshness};
 pub use trust::TrustStore;
 pub use ui::{
-    ApprovalDecision, ApprovalRequest, Headless, PlanDecision, ShortcutHandler, Ui, UiBridge, UiError,
-    UiExtras,
+    ApprovalDecision, ApprovalRequest, AskKind, Headless, PlanDecision, Question, ShortcutHandler, Ui,
+    UiBridge, UiError, UiExtras,
 };

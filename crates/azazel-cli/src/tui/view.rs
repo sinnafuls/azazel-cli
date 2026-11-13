@@ -155,6 +155,13 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
             field("action").unwrap_or_default(),
             field("id").unwrap_or_default()
         )),
+        "ask_user" => field("question").map(|question| {
+            match input.get("options").and_then(Value::as_array).map(Vec::len) {
+                Some(1) => format!("{question} (1 option)"),
+                Some(count) if count > 0 => format!("{question} ({count} options)"),
+                _ => question,
+            }
+        }),
         "todo" => input
             .get("items")
             .and_then(Value::as_array)

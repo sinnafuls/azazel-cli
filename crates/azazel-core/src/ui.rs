@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::ext::Level;
@@ -38,6 +38,9 @@ pub struct ApprovalRequest {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApprovalDecision {
     AllowOnce,
+    /// Allow, and allow what `ApprovalRequest::rule` covers until the session ends. Nothing is
+    /// written to a file.
+    AllowSession,
     /// Allow and remember `ApprovalRequest::rule`.
     Always,
     Deny {
@@ -53,11 +56,54 @@ pub enum PlanDecision {
     Revise(String),
 }
 
+/// How a [`Question`] is answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AskKind {
+    /// One of the options.
+    Select,
+    /// Any number of the options.
+    Multiselect,
+    /// A typed answer.
+    Text,
+    /// Yes or no.
+    Confirm,
+}
+
+/// A question an agent puts to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Question {
+    pub text: String,
+    /// What the user needs to know to answer, shown above the question.
+    pub context: Option<String>,
+    pub kind: AskKind,
+    /// The choices of a `Select` or `Multiselect`; empty for the other kinds.
+    pub options: Vec<String>,
+    /// A `Select` whose user may type an answer instead of choosing one.
+    pub allow_freeform: bool,
+}
+
+impl Question {
+    /// The row a `Select` with `allow_freeform` offers after its options.
+    pub const OTHER: &str = "Other…";
+
+    pub fn text(text: impl Into<String>) -> Self {
+        Question {
+            text: text.into(),
+            context: None,
+            kind: AskKind::Text,
+            options: Vec::new(),
+            allow_freeform: false,
+        }
+    }
+}
+
 #[async_trait]
 pub trait UiBridge: Send + Sync {
-    /// A question from an agent. With `options`, returns the chosen ones (one unless `multi`);
-    /// without, returns one free-text answer.
-    async fn ask(&self, question: &str, options: &[String], multi: bool) -> Result<Vec<String>, UiError>;
+    /// A question from an agent. The answer of a `Select` is the chosen option, or what the user
+    /// typed when the question allows that; of a `Multiselect`, the chosen options; of a `Text`,
+    /// what was typed; of a `Confirm`, `yes` or `no`.
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError>;
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError>;
 
@@ -91,7 +137,7 @@ pub struct Headless;
 
 #[async_trait]
 impl UiBridge for Headless {
-    async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
         Err(UiError::NoUser)
     }
 

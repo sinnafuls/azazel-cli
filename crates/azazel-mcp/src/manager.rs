@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_ai::{Block, Credentials};
-use azazel_core::{Level, TrustStore, Ui};
+use azazel_core::{AskKind, Level, Question, TrustStore, Ui};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CancelledNotificationParam, ClientRequest,
     GetPromptRequestParams, JsonObject, ProgressToken, Prompt, ReadResourceRequestParams, ServerResult,
@@ -666,9 +666,16 @@ impl McpManager {
             .iter()
             .map(|server| format!("{}: {}", server.name, server.target))
             .collect();
-        let question = "This project defines MCP servers that are new or have changed. Each one is a program \
-                        or an address the project chose. Which may start?";
-        let Ok(chosen) = ui.0.ask(question, &options, true).await else {
+        let question = Question {
+            text: "This project defines MCP servers that are new or have changed. Each one is a program \
+                   or an address the project chose. Which may start?"
+                .to_string(),
+            context: None,
+            kind: AskKind::Multiselect,
+            options: options.clone(),
+            allow_freeform: false,
+        };
+        let Ok(chosen) = ui.0.ask(&question).await else {
             return;
         };
         let decisions: Vec<(String, bool)> = waiting

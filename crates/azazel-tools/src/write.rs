@@ -15,6 +15,23 @@ use crate::util::{display_path, parse_input, resolve_path, unified_diff, write_a
 pub const NEVER_READ: &str = "read the file before overwriting it";
 pub const CHANGED: &str = "file changed since you last read it; read it again";
 
+/// Names Windows keeps for devices. A file with one of them as its stem (`aux.c`, `NUL`) cannot
+/// be opened there, so none is written anywhere: a project made on Linux is cloned on Windows.
+const RESERVED_STEMS: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// The refusal for a path whose file name is a device name up to its first dot.
+fn reserved_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    RESERVED_STEMS
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        .then(|| format!("`{name}` is a reserved Windows device name; pick another file name"))
+}
+
 /// Above this size no diff is attached to the result.
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
 
@@ -156,6 +173,9 @@ impl Tool for WriteTool {
             Err(error) => return error,
         };
         let path = resolve_path(&ctx.cwd, &input.path);
+        if let Some(refusal) = reserved_name(&path) {
+            return ToolOutput::error(refusal);
+        }
         let guard = self.tracker.lock(&path).await;
         if path.is_dir() {
             return ToolOutput::error(format!("{} is a directory", path.display()));

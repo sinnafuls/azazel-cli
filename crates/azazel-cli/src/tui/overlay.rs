@@ -21,13 +21,26 @@ pub struct RewindPoint {
     pub prompt: String,
 }
 
+/// What a row of a permission prompt answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalRow {
+    Once,
+    Session,
+    Always,
+    Deny,
+    DenyWhy,
+}
+
 /// What happens with an overlay's result.
 pub enum Action {
     Ask {
         reply: Reply<Result<Vec<String>, UiError>>,
+        /// The answer each row stands for.
         options: Vec<String>,
         multi: bool,
         picked: Vec<bool>,
+        /// The question, when a row after the options lets the user type an answer instead.
+        other: Option<String>,
     },
     AskFree {
         reply: Reply<Result<Vec<String>, UiError>>,
@@ -43,7 +56,8 @@ pub enum Action {
     },
     Approval {
         reply: Reply<Option<ApprovalDecision>>,
-        has_rule: bool,
+        /// What each row answers, in the order shown.
+        rows: Vec<ApprovalRow>,
     },
     DenyFeedback {
         reply: Reply<Option<ApprovalDecision>>,
@@ -442,6 +456,26 @@ impl Overlay {
         lines.push(composer::rule(width, Some(&hint), None, Role::Border, theme));
         (lines, cursor)
     }
+}
+
+/// The rows of a permission prompt and what each answers. Allowing for the session or for good
+/// needs a rule that covers the call, and is never offered for a command that destroys work.
+pub fn approval_rows(rule: Option<&str>, destructive: bool) -> (Vec<SelectItem>, Vec<ApprovalRow>) {
+    let mut rows = vec![(ApprovalRow::Once, SelectItem::new("Allow once", ""))];
+    if let Some(rule) = rule.filter(|_| !destructive) {
+        rows.push((
+            ApprovalRow::Session,
+            SelectItem::new("Allow this session", "until azazel exits; nothing is saved"),
+        ));
+        rows.push((
+            ApprovalRow::Always,
+            SelectItem::new(format!("Always allow {rule}"), "saved for this project"),
+        ));
+    }
+    rows.push((ApprovalRow::Deny, SelectItem::new("Deny", "")));
+    rows.push((ApprovalRow::DenyWhy, SelectItem::new("Deny and say why", "")));
+    let (answers, items) = rows.into_iter().unzip();
+    (items, answers)
 }
 
 /// The rows of an agent's question: the options, and for a multi-choice one their check boxes

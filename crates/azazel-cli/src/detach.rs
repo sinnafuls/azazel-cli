@@ -17,7 +17,7 @@ use azazel_core::{
     Command as SlashCommand, CommandHandler, CommandOutcome, ExtCtx, ExtError, Extension, Paths,
     PermissionState, Registrar, SessionStore,
 };
-use azazel_protocol::{Attached, Command, Decision, Frame, Replay, UiRequest};
+use azazel_protocol::{AskKind, Attached, Command, Decision, Frame, Replay, UiRequest};
 use azazel_team::Team;
 use azazel_tui::components::format_elapsed;
 use serde_json::{Value, json};
@@ -501,26 +501,50 @@ fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
     let no = ["no", "n", "false"];
     let lower = text.to_ascii_lowercase();
     match request {
-        UiRequest::Ask { options, .. } if options.is_empty() => Ok(json!(text)),
-        UiRequest::Ask { options, multi, .. } => {
+        UiRequest::Ask {
+            expects,
+            options,
+            multi,
+            ..
+        } if AskKind::of(*expects, options, *multi) == AskKind::Text => Ok(json!(text)),
+        UiRequest::Ask {
+            expects: Some(AskKind::Confirm),
+            ..
+        }
+        | UiRequest::Confirm { .. } => {
+            if yes.contains(&lower.as_str()) {
+                Ok(json!(true))
+            } else if no.contains(&lower.as_str()) {
+                Ok(json!(false))
+            } else {
+                Err("answer yes or no".to_string())
+            }
+        }
+        UiRequest::Ask {
+            options,
+            multi,
+            allow_freeform,
+            ..
+        } => {
             let words: Vec<&str> = if *multi {
                 text.split(',').collect()
             } else {
                 vec![text]
             };
-            words
+            let chosen = words
                 .into_iter()
                 .map(|word| {
                     option_index(options, word)
                         .map(|index| json!(options[index]))
                         .ok_or_else(|| format!("`{}` is not one of the options", word.trim()))
                 })
-                .collect::<Result<Vec<Value>, String>>()
-                .map(Value::Array)
+                .collect::<Result<Vec<Value>, String>>();
+            match chosen {
+                // What is none of the options is the answer itself where one may be typed.
+                Err(_) if *allow_freeform => Ok(json!([text])),
+                chosen => chosen.map(Value::Array),
+            }
         }
-        UiRequest::Confirm { .. } if yes.contains(&lower.as_str()) => Ok(json!(true)),
-        UiRequest::Confirm { .. } if no.contains(&lower.as_str()) => Ok(json!(false)),
-        UiRequest::Confirm { .. } => Err("answer yes or no".to_string()),
         UiRequest::Select { options, .. } => option_index(options, text)
             .map(|index| json!(index))
             .ok_or_else(|| format!("`{text}` is not one of the options")),
@@ -531,8 +555,8 @@ fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
     }
 }
 
-const ATTACH_HELP: &str = "text is sent to the session as a message; /approve, /always and /deny [note] answer \
-                           a permission request; /answer <text> answers a question; /abort stops the current \
+const ATTACH_HELP: &str = "text is sent to the session as a message; /approve, /session, /always and /deny \
+                           [note] answer a permission request; /answer <text> answers a question; /abort stops the current \
                            work; /detach leaves the session running; /kill ends it";
 
 /// What one typed line asks for.
@@ -569,6 +593,7 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
     };
     match name {
         "approve" => approval(Decision::Allow, None),
+        "session" => approval(Decision::Session, None),
         "always" => approval(Decision::Always, None),
         "deny" => approval(
             Decision::Deny,
@@ -896,8 +921,11 @@ mod tests {
                 "r2".into(),
                 UiRequest::Ask {
                     question: "Which?".into(),
+                    context: None,
+                    expects: Some(AskKind::Select),
                     options: vec!["red".into(), "blue".into()],
                     multi: false,
+                    allow_freeform: false,
                 },
             ),
         ]);
@@ -948,12 +976,30 @@ mod tests {
         assert_eq!(answer(&select, "blue"), Ok(json!(1)));
         assert_eq!(answer(&select, "1"), Ok(json!(0)));
         assert!(answer(&select, "3").is_err());
-        let many = UiRequest::Ask {
+        let ask = |expects: AskKind, allow_freeform: bool| UiRequest::Ask {
             question: "?".into(),
-            options,
-            multi: true,
+            context: None,
+            expects: Some(expects),
+            options: match expects {
+                AskKind::Select | AskKind::Multiselect => options.clone(),
+                AskKind::Text | AskKind::Confirm => Vec::new(),
+            },
+            multi: expects == AskKind::Multiselect,
+            allow_freeform,
         };
-        assert_eq!(answer(&many, "2, red"), Ok(json!(["blue", "red"])));
+        assert_eq!(
+            answer(&ask(AskKind::Multiselect, false), "2, red"),
+            Ok(json!(["blue", "red"]))
+        );
+        assert_eq!(answer(&ask(AskKind::Select, false), "1"), Ok(json!(["red"])));
+        assert!(answer(&ask(AskKind::Select, false), "green").is_err());
+        // Where an answer may be typed, what is no option is the answer.
+        assert_eq!(answer(&ask(AskKind::Select, true), "green"), Ok(json!(["green"])));
+        assert_eq!(answer(&ask(AskKind::Select, true), "blue"), Ok(json!(["blue"])));
+        assert_eq!(answer(&ask(AskKind::Text, false), "1"), Ok(json!("1")));
+        assert_eq!(answer(&ask(AskKind::Confirm, false), "y"), Ok(json!(true)));
+        assert_eq!(answer(&ask(AskKind::Confirm, false), "No"), Ok(json!(false)));
+        assert!(answer(&ask(AskKind::Confirm, false), "perhaps").is_err());
         let confirm = UiRequest::Confirm { prompt: "?".into() };
         assert_eq!(answer(&confirm, "Y"), Ok(json!(true)));
         assert_eq!(answer(&confirm, "no"), Ok(json!(false)));
