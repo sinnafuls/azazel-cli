@@ -619,9 +619,9 @@ mod tests {
         assert_eq!(
             plain(&select.render(30, 3, &theme)),
             [
-                "> [x] a rather long item n...=",
-                "  [x] a rather long item n...-",
-                "  [x] a rather long item n...-",
+                "> [x] a rather long item n...#",
+                "  [x] a rather long item n...|",
+                "  [x] a rather long item n...|",
             ]
         );
     }
@@ -697,14 +697,14 @@ mod tests {
         }
         assert_eq!(
             plain(&select.render(12, 4, &theme)),
-            ["▌ item-0   ━", "  item-1   ━", "  item-2   ─", "  item-3   ─"]
+            ["▌ item-0   ┃", "  item-1   ┃", "  item-2   │", "  item-3   │"]
         );
         for _ in 0..7 {
             select.move_down();
         }
         assert_eq!(
             plain(&select.render(12, 4, &theme)),
-            ["  item-4   ─", "  item-5   ─", "  item-6   ━", "▌ item-7   ━"]
+            ["  item-4   │", "  item-5   │", "  item-6   ┃", "▌ item-7   ┃"]
         );
         // The list fits: no bar, and rows are not padded.
         assert_eq!(plain(&select.render(12, 8, &theme))[1], "  item-1");

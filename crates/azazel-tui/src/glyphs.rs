@@ -158,6 +158,10 @@ glyphs! {
     TreeLast => "└─", "└─", "`-";
     TreeLine => "│", "│", "|";
     ProgressFull => "━", "━", "=";
+    /// The track of a vertical scrollbar.
+    ScrollTrack => "│", "│", "|";
+    /// The thumb of a vertical scrollbar.
+    ScrollThumb => "┃", "┃", "#";
     ProgressEmpty => "─", "─", "-";
     /// The half-filled cell at the head of a progress bar.
     ProgressHead => "╸", "╸", ">";

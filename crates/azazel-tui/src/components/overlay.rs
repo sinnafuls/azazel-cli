@@ -56,12 +56,12 @@ impl Scroll {
         (0..self.visible)
             .map(|row| {
                 if row >= first && row < first + length {
-                    format!("{}{}", theme.fg(Role::Accent), theme.glyph(Glyph::ProgressFull))
+                    format!("{}{}", theme.fg(Role::Accent), theme.glyph(Glyph::ScrollThumb))
                 } else {
                     format!(
                         "{}{}",
                         theme.fg(Role::BorderMuted),
-                        theme.glyph(Glyph::ProgressEmpty)
+                        theme.glyph(Glyph::ScrollTrack)
                     )
                 }
             })
@@ -383,8 +383,8 @@ mod tests {
             lines,
             [
                 "+- A long title that... +",
-                "| a row that is much...=|",
-                "| b                    -|",
+                "| a row that is much...#|",
+                "| b                    ||",
                 "+- ^v move | esc cancel +",
             ]
         );
@@ -412,10 +412,10 @@ mod tests {
                 "╭──────────╮",
                 "│ about    │",
                 "│          │",
-                "│ one     ─│",
-                "│ two     ─│",
-                "│ three   ━│",
-                "│ four    ━│",
+                "│ one     ││",
+                "│ two     ││",
+                "│ three   ┃│",
+                "│ four    ┃│",
                 "╰──────────╯",
             ]
         );
