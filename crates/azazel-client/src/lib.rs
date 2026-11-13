@@ -29,6 +29,7 @@ use serde_json::Value;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot};
+use tokio::task::JoinHandle;
 
 /// Frames kept for the first subscriber while nobody listens.
 const BACKLOG: usize = 10_000;
@@ -121,6 +122,16 @@ struct Shared {
     closed: AtomicBool,
 }
 
+impl Shared {
+    /// Tells whoever waits for an answer or a frame that none will come. The flag goes up
+    /// first, so a command sent from now on does not wait for an answer.
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        locked(&self.pending).clear();
+        locked(&self.hub).subscribers.clear();
+    }
+}
+
 /// The frames azazel writes, other than the responses to this client's commands.
 pub struct Frames(mpsc::UnboundedReceiver<Frame>);
 
@@ -148,12 +159,13 @@ pub struct Run {
     pub stop: String,
 }
 
-type Writer = Box<dyn AsyncWrite + Send + Unpin>;
-
 /// A connection to one `azazel rpc` session.
 pub struct Client {
     shared: Arc<Shared>,
-    writer: tokio::sync::Mutex<Option<Writer>>,
+    /// Lines on their way to azazel. A task writes them, so a command is written whole even
+    /// when the caller stops waiting for it half-way.
+    lines: Mutex<Option<mpsc::UnboundedSender<String>>>,
+    writing: Mutex<Option<JoinHandle<()>>>,
     next_id: AtomicU64,
     version: String,
     child: Mutex<Option<Child>>,
@@ -198,7 +210,7 @@ impl Client {
     /// socket, a pipe, an SSH channel). The first frame must be its `hello`.
     pub async fn connect(
         reader: impl AsyncBufRead + Send + Unpin + 'static,
-        writer: impl AsyncWrite + Send + Unpin + 'static,
+        mut writer: impl AsyncWrite + Send + Unpin + 'static,
     ) -> Result<Client, Error> {
         let mut lines = reader.lines();
         let first = lines.next_line().await?.ok_or(Error::Closed)?;
@@ -240,15 +252,24 @@ impl Client {
                     Err(_) => {}
                 }
             }
-            // Whoever waits for an answer or a frame learns that none will come. The flag goes
-            // up first, so a command sent from now on does not wait for an answer.
-            reading.closed.store(true, Ordering::SeqCst);
-            locked(&reading.pending).clear();
-            locked(&reading.hub).subscribers.clear();
+            reading.close();
+        });
+        let (lines, mut queued) = mpsc::unbounded_channel::<String>();
+        let written = shared.clone();
+        let writing = tokio::spawn(async move {
+            while let Some(line) = queued.recv().await {
+                if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err() {
+                    // What cannot be sent will not be answered.
+                    written.close();
+                    return;
+                }
+            }
+            let _ = writer.shutdown().await;
         });
         Ok(Client {
             shared,
-            writer: tokio::sync::Mutex::new(Some(Box::new(writer))),
+            lines: Mutex::new(Some(lines)),
+            writing: Mutex::new(Some(writing)),
             next_id: AtomicU64::new(1),
             version,
             child: Mutex::new(None),
@@ -276,19 +297,12 @@ impl Client {
         };
         let mut line = serde_json::to_string(&request).map_err(|e| Error::Protocol(e.to_string()))?;
         line.push('\n');
-        let written = {
-            let mut writer = self.writer.lock().await;
-            match writer.as_mut() {
-                Some(writer) => match writer.write_all(line.as_bytes()).await {
-                    Ok(()) => writer.flush().await.map_err(Error::Io),
-                    Err(e) => Err(Error::Io(e)),
-                },
-                None => Err(Error::Closed),
-            }
-        };
-        if let Err(e) = written {
+        let queued = locked(&self.lines)
+            .as_ref()
+            .is_some_and(|lines| lines.send(line).is_ok());
+        if !queued {
             locked(&self.shared.pending).remove(&id);
-            return Err(e);
+            return Err(Error::Closed);
         }
         let response = response.await.map_err(|_| Error::Closed)?;
         response.into_result().map_err(Error::Rejected)
@@ -354,8 +368,11 @@ impl Client {
     /// Ends the session: closes the connection and, for a child process, waits for it to exit.
     /// Returns the child's exit code.
     pub async fn shutdown(self) -> Result<Option<i32>, Error> {
-        if let Some(mut writer) = self.writer.lock().await.take() {
-            let _ = writer.shutdown().await;
+        // Closing the queue lets the writer send what is still in it, then close the connection.
+        drop(locked(&self.lines).take());
+        let writing = locked(&self.writing).take();
+        if let Some(writing) = writing {
+            let _ = writing.await;
         }
         let child = locked(&self.child).take();
         match child {
