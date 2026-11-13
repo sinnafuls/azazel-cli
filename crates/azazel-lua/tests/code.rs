@@ -469,7 +469,13 @@ fn home_script(bench: &Bench, name: &str, source: &str) {
 
 fn load_scripts(bench: &Bench) {
     let credentials = Arc::new(Credentials::new(bench.paths.auth_file()));
-    let ext = LuaExt::new(bench.paths.clone(), false, credentials, Vec::new(), Vec::new());
+    let ext = LuaExt::new(
+        bench.paths.clone(),
+        false,
+        credentials,
+        Vec::new(),
+        azazel_lua::Scripts::default(),
+    );
     bench.registry.load(&ext).unwrap();
 }
 

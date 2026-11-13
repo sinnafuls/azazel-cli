@@ -169,6 +169,24 @@ GitHub are its section here.
 - `browser` action `handoff`: the browser is shown in a window on the same profile with the same tabs, you
   are asked to finish there (`reason`) and press Enter, and the agent carries on with the page as you left
   it. For logins you type yourself, second factors and CAPTCHAs.
+- Resources for one run: `-e/--extension <path>` loads a Luau script, or a directory laid out like a package
+  (skills, agent definitions, commands, scripts, MCP servers) with its code enabled; `--skill <path>` adds a
+  skill or a directory of skills; `--mcp-config <file>` adds the servers of an `mcp.json`; `--theme <name|file>`
+  sets the theme. Nothing is installed or remembered. They are trusted like your own files, win over what is
+  found elsewhere under the same name, and still load with the `--no-*` switches and `--bare`.
+- `--provider <id>` takes a run's models from one provider: names given to `--model` and `/model` are looked
+  up among its models, the picker lists only them, and without `--model` the lead keeps the models of its
+  chain that are that provider's.
+- `azazel pkg add npm:<name>[@<version or tag>]` installs a package from the npm registry without npm or Node:
+  the tarball is checked against the SHA-512 the registry lists and unpacked like a clone; no install script
+  runs and no dependency is fetched. `azazel pkg update` moves it to what `latest` or its tag names now.
+  `NPM_CONFIG_REGISTRY` names another registry.
+- Extensions can replace and wrap tools. Luau: `azazel.tool{ ..., replaces = true }` puts a tool in the place
+  of the built-in (or MCP, or other extension's) tool of that name, and `azazel.wrap(name, { before, after })`
+  runs functions around every call of a tool: `before` may change the arguments, refuse the call or answer
+  it, `after` may change the result. Rust: `Registrar::replace_tool`, `replace_tool_source`, `wrap_tool` and
+  the `ToolWrap` trait. A disabled script replaces and wraps nothing. `/tools` and `azazel doctor` say which
+  tools are replaced or wrapped, and by which script.
 
 ### Changed
 

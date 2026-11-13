@@ -68,14 +68,26 @@ pub fn virtual_names(router: &Router) -> Vec<String> {
         .collect()
 }
 
-/// `Err` when `chain` names a virtual model no loaded extension defines.
-pub fn check_virtual(chain: &[ModelSpec], router: &Router) -> Result<(), String> {
+/// `Err` when `chain` names a virtual model no loaded extension defines, or names one while
+/// `--provider only` keeps the run to one provider: a virtual model picks among the models of
+/// every provider.
+pub fn check_virtual(chain: &[ModelSpec], router: &Router, only: Option<&str>) -> Result<(), String> {
     let defined = router.virtual_models();
     for spec in chain {
-        if let ModelSpec::Model(model) = spec
-            && azazel_ai::is_virtual(model)
-            && !defined.contains(&model.model)
-        {
+        let ModelSpec::Model(model) = spec else {
+            continue;
+        };
+        if !azazel_ai::is_virtual(model) {
+            continue;
+        }
+        if let Some(only) = only {
+            return Err(format!(
+                "--model {}: a virtual model picks among every provider's models and cannot be used with \
+                 --provider {only}",
+                model.key()
+            ));
+        }
+        if !defined.contains(&model.model) {
             let known = match defined.is_empty() {
                 true => "no extension defines a virtual model".to_string(),
                 false => format!("the virtual models are {}", virtual_names(router).join(", ")),

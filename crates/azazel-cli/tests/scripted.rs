@@ -276,6 +276,18 @@ fn a_virtual_model_routes_each_request_and_a_session_comes_back_on_it() {
         stderr(&unknown)
     );
 
+    // A virtual model picks among every provider's models: not with `--provider`.
+    let limited = sandbox.print(&script, &["--provider", "mock", "--model", "virtual/auto", "x"]);
+    assert_eq!(limited.status.code(), Some(2), "{}", stderr(&limited));
+    assert!(
+        stderr(&limited).contains(
+            "--model virtual/auto: a virtual model picks among every provider's models and cannot be used \
+             with --provider mock"
+        ),
+        "{}",
+        stderr(&limited)
+    );
+
     let output = sandbox.print(&script, &["--model", "virtual/auto", "a hard one"]);
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(stdout(&output).trim(), "Solved the hard one.");

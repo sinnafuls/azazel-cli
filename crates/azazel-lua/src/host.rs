@@ -14,10 +14,10 @@ use azazel_core::{
     RegistryHandle, UiExtras,
 };
 
-use crate::LuaExt;
-use crate::bridge::{LuaCommand, LuaHandler, LuaPrompt, LuaRouter, LuaShortcut, LuaTool};
+use crate::bridge::{LuaCommand, LuaHandler, LuaPrompt, LuaRouter, LuaShortcut, LuaTool, LuaWrap};
 use crate::confine::Roots;
 use crate::script::{OWNER, Script, Shared, locked};
+use crate::{LuaExt, Scripts};
 
 /// What the scripts of the latest load contribute.
 #[derive(Default)]
@@ -33,8 +33,8 @@ pub(crate) struct Host {
     trusted: bool,
     credentials: Arc<Credentials>,
     additional_dirs: Vec<PathBuf>,
-    /// `(id, script file)` of the scripts of installed packages.
-    packaged: Vec<(String, PathBuf)>,
+    /// The scripts that are not found in the extension directories.
+    given: Scripts,
     loaded: Mutex<Loaded>,
     /// Ids of the providers scripts have registered. A provider stays registered across reloads.
     providers: Mutex<Vec<String>>,
@@ -46,14 +46,14 @@ impl Host {
         trusted: bool,
         credentials: Arc<Credentials>,
         additional_dirs: Vec<PathBuf>,
-        packaged: Vec<(String, PathBuf)>,
+        given: Scripts,
     ) -> Host {
         Host {
             paths,
             trusted,
             credentials,
             additional_dirs: additional_dirs.into_iter().map(|dir| canonical(&dir)).collect(),
-            packaged,
+            given,
             loaded: Mutex::default(),
             providers: Mutex::default(),
         }
@@ -65,19 +65,24 @@ impl Host {
     }
 
     /// `(id, script file)` of every script, in load order: packages, then the user's own, then the
-    /// project's. A script found later replaces an earlier one with the same id.
+    /// project's, then those named for this run. A script found later replaces an earlier one with
+    /// the same id.
     fn discover(&self) -> Vec<(String, PathBuf)> {
-        let mut dirs = vec![self.home_dir()];
-        if self.trusted {
-            dirs.push(self.paths.project_dir().join("extensions"));
+        let mut dirs = Vec::new();
+        let mut found: Vec<(String, PathBuf)> = Vec::new();
+        if !self.given.only_run {
+            dirs.push(self.home_dir());
+            if self.trusted {
+                dirs.push(self.paths.project_dir().join("extensions"));
+            }
+            found.extend(
+                self.given
+                    .packaged
+                    .iter()
+                    .filter(|(_, script)| script.is_file())
+                    .cloned(),
+            );
         }
-
-        let mut found: Vec<(String, PathBuf)> = self
-            .packaged
-            .iter()
-            .filter(|(_, script)| script.is_file())
-            .cloned()
-            .collect();
         for dir in dirs {
             let Ok(entries) = std::fs::read_dir(&dir) else {
                 continue;
@@ -103,6 +108,10 @@ impl Host {
                     None => found.push((id, script)),
                 }
             }
+        }
+        for (id, script) in &self.given.run {
+            found.retain(|(known, _)| known != id);
+            found.push((id.clone(), script.clone()));
         }
         found
     }
@@ -139,11 +148,29 @@ impl Host {
                 }
             };
             let pending = std::mem::take(&mut *shared.pending());
+            // Listings name the script, not the host all scripts are loaded by.
+            let label = format!("{OWNER}:{}", shared.id);
+            let mut replacing = Vec::new();
             for def in pending.tools {
-                loaded.tools.push(Arc::new(LuaTool {
+                let tool = Arc::new(LuaTool {
                     script: script.clone(),
                     def,
-                }));
+                });
+                match tool.def.replaces {
+                    true => replacing.push(tool),
+                    false => loaded.tools.push(tool),
+                }
+            }
+            if !replacing.is_empty() {
+                r.replace_tool_source(&label, Arc::new(Replacing(replacing)));
+            }
+            for def in pending.wraps {
+                let tool = def.tool.clone();
+                let wrap = LuaWrap {
+                    script: script.clone(),
+                    def,
+                };
+                r.wrap_tool_as(&label, &tool, Arc::new(wrap));
             }
             for (event, kind, function) in pending.handlers {
                 r.on(
@@ -259,6 +286,19 @@ impl ToolSource for ScriptTools {
         let loaded = locked(&self.0.loaded);
         loaded
             .tools
+            .iter()
+            .filter(|tool| tool.script.shared.error().is_none())
+            .map(|tool| tool.clone() as Arc<dyn Tool>)
+            .collect()
+    }
+}
+
+/// The tools one script registered in place of others. A disabled script replaces nothing.
+struct Replacing(Vec<Arc<LuaTool>>);
+
+impl ToolSource for Replacing {
+    fn tools(&self, _: &AgentInfo) -> Vec<Arc<dyn Tool>> {
+        self.0
             .iter()
             .filter(|tool| tool.script.shared.error().is_none())
             .map(|tool| tool.clone() as Arc<dyn Tool>)

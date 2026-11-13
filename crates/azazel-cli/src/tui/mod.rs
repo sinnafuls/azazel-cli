@@ -368,14 +368,18 @@ fn load_theme(env: &Env) -> (Theme, Option<String>) {
     (theme.with_depth(depth).with_glyphs(glyphs), problem)
 }
 
-/// A built-in theme (`dark`, `light`, `catppuccin-mocha`, ...) or `~/.azazel/themes/<name>.toml`.
-/// Falls back to `dark` with a message.
-fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
+/// A built-in theme (`dark`, `light`, `catppuccin-mocha`, ...), `~/.azazel/themes/<name>.toml`,
+/// or the theme file whose full path `name` is (`--theme <file>`). Falls back to `dark` with a
+/// message.
+pub(crate) fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
     match Theme::builtin(name) {
         Some(theme) => (theme, None),
         None => {
             let other = name;
-            let file = paths.home.join("themes").join(format!("{other}.toml"));
+            let file = match std::path::Path::new(other).is_absolute() {
+                true => std::path::PathBuf::from(other),
+                false => paths.home.join("themes").join(format!("{other}.toml")),
+            };
             match std::fs::read_to_string(&file) {
                 Ok(source) => match Theme::from_toml(&source) {
                     Ok(theme) => (theme, None),
@@ -411,7 +415,7 @@ pub(crate) async fn run_remote(remote: Remote, env: Env, first_prompt: Option<St
 pub(crate) fn env_here(cli: &crate::cli::Cli, paths: Paths) -> anyhow::Result<Env> {
     let options = azazel_core::LoadOptions {
         trusted: false,
-        overrides: crate::app::config_overrides(cli)?,
+        overrides: crate::app::config_overrides(cli, &paths)?,
         env: std::env::vars().collect(),
     };
     let config = azazel_core::Config::load(&paths, &options)?.config;

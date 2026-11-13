@@ -47,7 +47,16 @@ pub(crate) struct ToolDef {
     pub description: String,
     pub schema: Value,
     pub access: Access,
+    /// The tool takes the place of whatever else has its name.
+    pub replaces: bool,
     pub execute: Function,
+}
+
+/// What `azazel.wrap` was given: functions to run around the calls of one tool.
+pub(crate) struct WrapDef {
+    pub tool: String,
+    pub before: Option<Function>,
+    pub after: Option<Function>,
 }
 
 pub(crate) struct CommandDef {
@@ -61,6 +70,7 @@ pub(crate) struct CommandDef {
 #[derive(Default)]
 pub(crate) struct Pending {
     pub tools: Vec<ToolDef>,
+    pub wraps: Vec<WrapDef>,
     /// `(event name, kind, handler)`.
     pub handlers: Vec<(&'static str, EventKind, Function)>,
     pub commands: Vec<CommandDef>,

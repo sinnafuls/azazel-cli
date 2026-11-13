@@ -22,7 +22,7 @@ use mlua::{FromLua, Function, Lua, LuaString, Table};
 use serde_json::{Value, json};
 
 use crate::convert::{EVENTS, from_lua, to_lua, tool_input};
-use crate::script::{CommandDef, Shared, ToolDef, describe};
+use crate::script::{CommandDef, Shared, ToolDef, WrapDef, describe};
 
 /// Seconds `azazel.exec` waits for a program unless told otherwise.
 const EXEC_TIMEOUT: f64 = 60.0;
@@ -129,19 +129,23 @@ const BUILT_IN_PARTS: [&str; 10] = [
     "plan",
 ];
 
-/// `tool`, `on`, `command`, `prompt`, `shortcut`, `provider`, `router` and `mcp`.
+/// Whether `name` can be the name of a tool.
+fn tool_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// `tool`, `wrap`, `on`, `command`, `prompt`, `shortcut`, `provider`, `router` and `mcp`.
 fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<()> {
     let script = shared.clone();
     let tool = lua.create_function(move |lua, spec: Table| {
         const NAME: &str = "azazel.tool";
         script.registering(NAME)?;
         let name: String = required(&spec, NAME, "name")?;
-        let valid = !name.is_empty()
-            && name.len() <= 64
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
-        if !valid {
+        if !tool_name(&name) {
             return Err(runtime(format!(
                 "{NAME}: `{name}` is not a tool name; use up to 64 letters, digits, `_` and `-`"
             )));
@@ -165,17 +169,38 @@ fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<
                 )));
             }
         };
+        let replaces = optional::<bool>(&spec, NAME, "replaces")?.unwrap_or(false);
         let execute: Function = required(&spec, NAME, "execute")?;
         script.pending().tools.push(ToolDef {
             name,
             description,
             schema,
             access,
+            replaces,
             execute,
         });
         Ok(())
     })?;
     azazel.set("tool", tool)?;
+
+    let script = shared.clone();
+    let wrap = lua.create_function(move |_, (tool, hooks): (String, Table)| {
+        const NAME: &str = "azazel.wrap";
+        script.registering(NAME)?;
+        if !tool_name(&tool) {
+            return Err(runtime(format!("{NAME}: `{tool}` is not a tool name")));
+        }
+        let before: Option<Function> = optional(&hooks, NAME, "before")?;
+        let after: Option<Function> = optional(&hooks, NAME, "after")?;
+        if before.is_none() && after.is_none() {
+            return Err(runtime(format!(
+                "{NAME}: give `before`, `after` or both, each a function"
+            )));
+        }
+        script.pending().wraps.push(WrapDef { tool, before, after });
+        Ok(())
+    })?;
+    azazel.set("wrap", wrap)?;
 
     let script = shared.clone();
     let on = lua.create_function(move |_, (event, handler): (String, Function)| {

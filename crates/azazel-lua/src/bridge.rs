@@ -10,14 +10,14 @@ use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput};
 use azazel_ai::{Block, Route, RouteRequest, VirtualModel};
 use azazel_core::{
     CommandHandler, CommandOutcome, Event, EventHandler, ExtCtx, Level, Outcome, ShortcutHandler,
-    SystemPartProvider, Ui,
+    SystemPartProvider, ToolWrap, Ui,
 };
 use mlua::Function;
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 
-use crate::convert::{agent_of, apply, event_table, to_lua};
+use crate::convert::{agent_of, apply, event_table, to_lua, tool_input};
 use crate::models::{route_table, routed};
-use crate::script::{BUDGET, Run, Script, ToolDef, describe};
+use crate::script::{BUDGET, Run, Script, ToolDef, WrapDef, describe};
 
 /// How long a cancelled tool call gets to wind down what it is waiting for.
 const CANCEL_GRACE: Duration = Duration::from_secs(1);
@@ -117,6 +117,153 @@ impl Tool for LuaTool {
         match returned {
             Ok(returned) => self.output(returned),
             Err(e) => ToolOutput::error(describe(&e)),
+        }
+    }
+}
+
+/// Functions registered with `azazel.wrap`, run around the calls of one tool. The first error
+/// disables their script, after which the tool runs as if it were not wrapped.
+pub(crate) struct LuaWrap {
+    pub script: Arc<Script>,
+    pub def: WrapDef,
+}
+
+impl LuaWrap {
+    /// Runs `before(input, ctx)` and applies what it returned: `{ input }` replaces the input,
+    /// `{ block = true, reason }` refuses the call, `{ content, is_error }` answers it.
+    async fn enter(
+        &self,
+        function: &Function,
+        input: &mut Value,
+        ctx: &ToolCtx,
+    ) -> mlua::Result<Option<ToolOutput>> {
+        let lua = self.script.lua();
+        let context = self.script.ctx(&ctx.cwd, &ctx.session_id, Some(&ctx.agent))?;
+        let returned: mlua::Value = self
+            .script
+            .call(
+                function,
+                (to_lua(lua, input)?, context),
+                Some(BUDGET),
+                Some(ctx.cancel.clone()),
+            )
+            .await?;
+        let returned = match returned {
+            mlua::Value::Nil => return Ok(None),
+            mlua::Value::Table(returned) => returned,
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "`before` returned a {}; it returns nil or a table",
+                    other.type_name()
+                )));
+            }
+        };
+        if returned.get::<Option<bool>>("block")? == Some(true) {
+            let reason = returned.get::<Option<String>>("reason")?.unwrap_or_else(|| {
+                format!(
+                    "`{}` was blocked by the extension `{}`",
+                    self.def.tool, self.script.shared.id
+                )
+            });
+            return Ok(Some(ToolOutput::error(reason)));
+        }
+        if let Some(content) = returned.get::<Option<String>>("content")? {
+            return Ok(Some(ToolOutput {
+                content: vec![Block::text(content)],
+                is_error: returned.get::<Option<bool>>("is_error")?.unwrap_or(false),
+                details: None,
+            }));
+        }
+        let replacement: mlua::Value = returned.get("input")?;
+        if !replacement.is_nil() {
+            *input = tool_input(lua, replacement)?;
+        }
+        Ok(None)
+    }
+
+    /// Runs `after(result, input, ctx)` and applies what it returned: a string is the new
+    /// content, a table changes `content` and `is_error`.
+    async fn leave(
+        &self,
+        function: &Function,
+        input: &Value,
+        output: &mut ToolOutput,
+        ctx: &ToolCtx,
+    ) -> mlua::Result<()> {
+        let lua = self.script.lua();
+        let context = self.script.ctx(&ctx.cwd, &ctx.session_id, Some(&ctx.agent))?;
+        let result = json!({ "content": output.text_content(), "is_error": output.is_error });
+        let returned: mlua::Value = self
+            .script
+            .call(
+                function,
+                (to_lua(lua, &result)?, to_lua(lua, input)?, context),
+                Some(BUDGET),
+                Some(ctx.cancel.clone()),
+            )
+            .await?;
+        match returned {
+            mlua::Value::Nil => {}
+            mlua::Value::String(content) => output.content = vec![Block::text(content.to_string_lossy())],
+            mlua::Value::Table(returned) => {
+                if let Some(content) = returned.get::<Option<String>>("content")? {
+                    output.content = vec![Block::text(content)];
+                }
+                if let Some(is_error) = returned.get::<Option<bool>>("is_error")? {
+                    output.is_error = is_error;
+                }
+            }
+            other => {
+                return Err(mlua::Error::runtime(format!(
+                    "`after` returned a {}; it returns nil, a string or a table",
+                    other.type_name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    fn failed(&self, which: &str, error: &mlua::Error) {
+        self.script.shared.disable(format!(
+            "its `{which}` around `{}` failed: {}",
+            self.def.tool,
+            describe(error)
+        ));
+    }
+}
+
+#[async_trait]
+impl ToolWrap for LuaWrap {
+    async fn before(&self, input: &mut Value, ctx: &ToolCtx) -> Result<(), ToolOutput> {
+        let Some(function) = &self.def.before else {
+            return Ok(());
+        };
+        if self.script.shared.error().is_some() {
+            return Ok(());
+        }
+        match self.enter(function, input, ctx).await {
+            Ok(None) => Ok(()),
+            Ok(Some(answer)) => Err(answer),
+            // The user stopped the call: the tool sees the same token and ends at once.
+            Err(_) if ctx.cancel.is_cancelled() => Ok(()),
+            Err(e) => {
+                self.failed("before", &e);
+                Ok(())
+            }
+        }
+    }
+
+    async fn after(&self, input: &Value, output: &mut ToolOutput, ctx: &ToolCtx) {
+        let Some(function) = &self.def.after else {
+            return;
+        };
+        if self.script.shared.error().is_some() {
+            return;
+        }
+        if let Err(e) = self.leave(function, input, output, ctx).await
+            && !ctx.cancel.is_cancelled()
+        {
+            self.failed("after", &e);
         }
     }
 }

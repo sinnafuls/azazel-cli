@@ -1,6 +1,6 @@
 # Packages
 
-A package is a directory, usually a git repository, that bundles things Azazel can load: skills, agent definitions, slash commands, Luau extensions and MCP servers. `azazel pkg` installs packages from git, from a local directory or by a short registry name, and `azazel skills` is a shortcut for the common case of a package of skills. Packages are per user: they live under `~/.azazel` and apply to every project.
+A package is a directory, usually a git repository, that bundles things Azazel can load: skills, agent definitions, slash commands, Luau extensions and MCP servers. `azazel pkg` installs packages from git, from the npm registry, from a local directory or by a short registry name, and `azazel skills` is a shortcut for the common case of a package of skills. Packages are per user: they live under `~/.azazel` and apply to every project. To use a directory for one run without installing it, pass it as [`--extension`](configuration.md#resources-for-one-run).
 
 ## Commands
 
@@ -8,6 +8,8 @@ A package is a directory, usually a git repository, that bundles things Azazel c
 azazel pkg add github:acme/agent-pack          # a GitHub repository
 azazel pkg add github:acme/agent-pack@v2       # a branch or tag
 azazel pkg add https://example.com/team/pack.git --name team
+azazel pkg add npm:@acme/review-kit            # the newest version on npm
+azazel pkg add npm:@acme/review-kit@2.1.0      # one version, or a tag such as @beta
 azazel pkg add ./my-pack                       # a local directory, used in place
 azazel pkg add taste                           # a registry name
 azazel pkg list
@@ -19,9 +21,9 @@ azazel pkg remove team
 | Command | Does |
 |---|---|
 | `azazel pkg add <source> [--name <name>]` | Installs a package and prints what it contains |
-| `azazel pkg list` | Name, source, commit (or `local`), whether code is enabled, install time. With nothing installed it prints the registry names |
-| `azazel pkg update [name]` | Fetches the newest commit of the branch or tag the package was installed from; all packages when no name is given |
-| `azazel pkg remove <name>` | Forgets the package and deletes its clone |
+| `azazel pkg list` | Name, source, commit or npm version (or `local`), whether code is enabled, install time. With nothing installed it prints the registry names |
+| `azazel pkg update [name]` | Fetches the newest commit of the branch or tag the package was installed from, or the npm version its tag names now; all packages when no name is given |
+| `azazel pkg remove <name>` | Forgets the package and deletes its files |
 
 Changes take effect in the next session. `azazel doctor` lists installed packages.
 
@@ -32,6 +34,7 @@ A source is tried as the first of these that fits:
 | Form | Meaning |
 |---|---|
 | `github:<owner>/<repo>[@ref]` | `https://github.com/<owner>/<repo>`, optionally at a branch or tag |
+| `npm:<name>[@<version or tag>]` | A package of the npm registry, `@scope/name` included; see [npm packages](#npm-packages) |
 | A git URL (contains `://` or starts with `git@`) | Cloned as given |
 | A registry name | The address from the built-in registry, below |
 | A directory, relative to the current directory | Used where it is: never copied, and never deleted by `remove` |
@@ -40,7 +43,21 @@ Git sources are cloned with `git clone --depth 1` (plus `--branch <ref>`) into `
 
 The package name defaults to the last part of the address (without `.git`, lower-cased, with anything but letters, digits, `-`, `_` and `.` turned into `-`). Use `--name` to choose another; two packages cannot share a name.
 
-When a cloned repository has no `LICENSE`, `LICENCE` or `COPYING` file at its root, the install prints `note: <source> has no licence file; installed for your local use only`.
+When a cloned repository or an npm package has no `LICENSE`, `LICENCE` or `COPYING` file at its root, the install prints `note: <source> has no licence file; installed for your local use only`.
+
+### npm packages
+
+`npm:<name>` installs the files of a package published on npm. Neither `npm` nor Node is needed, and nothing of the package runs.
+
+1. The registry is asked what the name offers. Without a version the tag `latest` is taken; `@1.2.3` is that exact version and `@beta` the version that tag points at. Version ranges (`^1.2`) are not understood; the error lists the package's tags.
+2. The tarball of that version is downloaded (at most 64 MB) and its SHA-512 is compared with the `integrity` the registry lists for the version. A tarball that differs, or a version the registry lists no SHA-512 for, is not installed.
+3. The files are unpacked into `~/.azazel/packages/<name>` without the `package/` directory npm wraps them in, so the package looks like a clone of its repository and is [read the same way](#what-a-package-contains). Only plain files are written: links are skipped, and an archive with a path that leaves the package is refused whole.
+
+Install scripts are not run and dependencies are not fetched: a package is skills, definitions, commands, Luau scripts and MCP configuration, not a Node program. The package name defaults to the last part of the npm name (`@acme/review-kit` is `review-kit`).
+
+`azazel pkg update` asks the registry again: a package installed without a version or by a tag moves to what `latest` or the tag names now, replacing its files; one installed by an exact version stays where it is.
+
+The registry is `https://registry.npmjs.org`, or the one `NPM_CONFIG_REGISTRY` (the variable npm itself reads) names. It must answer without credentials.
 
 ## What a package contains
 
@@ -111,7 +128,7 @@ Package content sits above the built-ins and below your own files:
 | Luau scripts | packages (id `<package>-<file name>`), `~/.azazel/extensions`, the project's |
 | MCP servers | packages, `~/.azazel/mcp.json`, the project's files |
 
-A later entry with the same name replaces an earlier one.
+A later entry with the same name replaces an earlier one. What the command line names for one run (`--extension`, `--skill`, `--mcp-config`) comes after all of these.
 
 ## The registry
 
@@ -168,6 +185,14 @@ code_enabled = false
 model_invocable = []
 
 [[package]]
+name = "review-kit"
+source = "npm:@acme/review-kit"
+ref = "beta"
+version = "2.2.0-beta.1"
+installed_at = "2026-11-11T09:30:30Z"
+code_enabled = true
+
+[[package]]
 name = "my-pack"
 source = "/home/me/src/my-pack"
 installed_at = "2026-11-11T09:31:00Z"
@@ -178,9 +203,10 @@ local = true
 | Key | Meaning |
 |---|---|
 | `name` | The package name |
-| `source` | The git URL, or the directory of a local package |
-| `ref` | The branch or tag given with `@ref`, if any |
+| `source` | The git URL, the directory of a local package, or `npm:<name>` |
+| `ref` | The branch or tag given with `@ref`, or the npm version or tag, if any |
 | `commit` | The commit installed (git packages) |
+| `version` | The version installed (npm packages) |
 | `installed_at` | UTC time of the install |
 | `code_enabled` | Whether its extensions, MCP servers and skill hooks load |
 | `model_invocable` | See above |

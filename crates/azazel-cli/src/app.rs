@@ -18,7 +18,7 @@ use azazel_ai::{
 use azazel_core::agents;
 use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
-use azazel_core::commands::{CustomCommandsExt, command_roots, expand_mentions};
+use azazel_core::commands::{CustomCommandsExt, expand_mentions};
 use azazel_core::config::set_override;
 use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
@@ -45,6 +45,7 @@ use azazel_team::{
 use azazel_tools::CoreToolsExt;
 
 use crate::cli::{Cli, Discovery};
+use crate::resources::RunResources;
 use crate::running::{self, Lock};
 use crate::telemetry::{Telemetry, Watch};
 
@@ -68,6 +69,10 @@ pub struct App {
     pub thinking: ThinkingLevel,
     /// How the configuration was loaded, for reading it again (`/reload`).
     pub load_options: LoadOptions,
+    /// What the command line added for this run (`--extension`, `--skill`, `--mcp-config`).
+    pub run: RunResources,
+    /// The only provider model names resolve to in this run (`--provider`).
+    pub provider: Option<String>,
     /// Hooks are off for this run (`--no-hooks`, `AZAZEL_HOOKS_DISABLED`).
     pub hooks_disabled: bool,
     /// Whether the lead only plans and delegates (`/coordinator`).
@@ -128,10 +133,34 @@ impl std::fmt::Display for UsageError {
 
 impl std::error::Error for UsageError {}
 
-pub(crate) fn config_overrides(cli: &Cli) -> Result<toml::Table> {
+/// What `--theme` names, as `tui.theme` takes it: the name of a built-in theme or of one in
+/// `~/.azazel/themes`, or the full path of a theme file.
+fn theme_flag(value: &str, paths: &Paths) -> Result<String, UsageError> {
+    let file = paths.cwd.join(value);
+    let name = match azazel_tui::Theme::builtin(value) {
+        None if file.is_file() => azazel_core::paths::canonical(&file).display().to_string(),
+        _ => value.to_string(),
+    };
+    match crate::tui::named_theme(paths, &name).1 {
+        Some(problem) => Err(UsageError(format!("--theme: {problem}"))),
+        None => Ok(name),
+    }
+}
+
+pub(crate) fn config_overrides(cli: &Cli, paths: &Paths) -> Result<toml::Table> {
     let mut overrides = toml::Table::new();
     for assignment in &cli.set {
         set_override(&mut overrides, assignment).map_err(|e| UsageError(format!("--set {e}")))?;
+    }
+    if let Some(theme) = &cli.theme {
+        let theme = toml::Value::String(theme_flag(theme, paths)?);
+        let tui = overrides
+            .entry("tui")
+            .or_insert_with(|| toml::Value::Table(toml::Table::new()));
+        match tui.as_table_mut() {
+            Some(tui) => tui.insert("theme".to_string(), theme),
+            None => return Err(UsageError("--set tui: `tui` is a table".to_string()).into()),
+        };
     }
     let mut assign = |text: String| set_override(&mut overrides, &text).map_err(|e| anyhow!(e));
     if let Some(mode) = &cli.mode {
@@ -173,6 +202,26 @@ pub fn known_and_usable(
         .cloned()
         .collect();
     (provider_ids, usable)
+}
+
+/// The provider lists of [`known_and_usable`] cut down to `only` (`--provider`), when it is given.
+fn only_provider(
+    (mut known, mut usable): (Vec<String>, Vec<String>),
+    only: Option<&str>,
+) -> (Vec<String>, Vec<String>) {
+    if let Some(only) = only {
+        known.retain(|id| id == only);
+        usable.retain(|id| id == only);
+    }
+    (known, usable)
+}
+
+/// Why a model name did not resolve, with the reminder that `--provider` narrowed the search.
+fn provider_note(why: String, only: Option<&str>) -> String {
+    match only {
+        Some(only) => format!("{why} (--provider {only} leaves only that provider's models)"),
+        None => why,
+    }
 }
 
 /// `--tools`, `--no-tools` and `--disallowed-tools` on top of `[tools] disabled`. A plain name
@@ -303,21 +352,26 @@ mod mock_tools {
     }
 }
 
-/// The MCP servers configured for this run: those of installed packages, then the user's.
-/// Project files count only for a trusted project.
+/// The `mcp.json` files read in the usual places: those of installed packages, then the user's,
+/// then, for a trusted project, the project's.
+#[cfg(feature = "mcp")]
+pub fn mcp_files(paths: &Paths, trusted: bool, package_files: &[PathBuf]) -> Vec<PathBuf> {
+    let mut files = package_files.to_vec();
+    files.extend(azazel_mcp::config::config_files(paths, trusted));
+    files
+}
+
+/// The MCP servers `files` define; a later file wins where two define a server of one name.
 #[cfg(feature = "mcp")]
 pub fn mcp_manager(
     paths: &Paths,
-    trusted: bool,
     config: &Config,
     services: Arc<Services>,
     credentials: Arc<Credentials>,
-    package_files: &[PathBuf],
+    files: &[PathBuf],
     approve_all: bool,
 ) -> azazel_mcp::McpManager {
-    let mut files = package_files.to_vec();
-    files.extend(azazel_mcp::config::config_files(paths, trusted));
-    let mut loaded = azazel_mcp::config::load(&files, &paths.project_root, &|name| std::env::var(name).ok());
+    let mut loaded = azazel_mcp::config::load(files, &paths.project_root, &|name| std::env::var(name).ok());
     // Each server the project defines waits for the user's word; `--trust` gives it for this run.
     let trust = azazel_core::TrustStore::new(paths.trust_file());
     azazel_mcp::config::apply_approvals(&mut loaded, paths, &trust, approve_all);
@@ -390,9 +444,10 @@ impl App {
     ) -> Result<App> {
         let options = LoadOptions {
             trusted,
-            overrides: config_overrides(cli)?,
+            overrides: config_overrides(cli, &paths)?,
             env: std::env::vars().collect(),
         };
+        let run = RunResources::from_cli(cli, &paths.cwd).map_err(UsageError)?;
         let mut loaded = Config::load(&paths, &options)?;
         // Directories from the command line add to those of the configuration.
         loaded
@@ -545,21 +600,27 @@ impl App {
                 include_depth: config.context.include_depth,
             })?;
         }
-        if !cli.skips(Discovery::Skills) {
+        // What the command line names loads whatever was switched off.
+        let mut skill_roots = match cli.skips(Discovery::Skills) {
+            true => Vec::new(),
+            false => standard_roots(&paths, compat, &packages),
+        };
+        skill_roots.extend(run.skill_roots.iter().cloned());
+        if !cli.skips(Discovery::Skills) || !skill_roots.is_empty() {
             registry.load(&SkillsExt {
-                roots: standard_roots(&paths, compat, &packages),
+                roots: skill_roots,
                 trusted,
             })?;
         }
         registry.load(&CustomCommandsExt {
-            roots: command_roots(&paths, compat, &packages),
+            roots: run.command_roots(&paths, compat, &packages),
             shell: shell.clone(),
             cwd: paths.cwd.clone(),
             trusted,
         })?;
         let mut agent_defs = agents::discover(
             azazel_team::BUILTIN_AGENTS,
-            &agents::def_roots(&paths, compat, &packages),
+            &run.def_roots(&paths, compat, &packages),
         );
         agent_defs.apply_overrides(&config.agents);
         let agent_defs = Arc::new(agent_defs);
@@ -641,22 +702,26 @@ impl App {
             registry.load(&memory)?;
         }
         #[cfg(feature = "mcp")]
-        if !cli.skips(Discovery::Mcp) {
+        if !cli.skips(Discovery::Mcp) || !run.mcp_files.is_empty() {
+            let mut files = match cli.skips(Discovery::Mcp) {
+                true => Vec::new(),
+                false => mcp_files(&paths, trusted, &packages.mcp_files),
+            };
+            files.extend(run.mcp_files.iter().cloned());
             registry.load(&azazel_mcp::McpExt {
                 manager: mcp_manager(
                     &paths,
-                    trusted,
                     &config,
                     services.clone(),
                     credentials.clone(),
-                    &packages.mcp_files,
+                    &files,
                     cli.trust,
                 ),
             })?;
         }
         // After MCP so scripts can add servers, and before the router so they can add providers.
         #[cfg(feature = "lua")]
-        if !cli.skips(Discovery::Extensions) {
+        if !cli.skips(Discovery::Extensions) || !run.scripts.is_empty() {
             registry.load(&azazel_lua::LuaExt::new(
                 paths.clone(),
                 trusted,
@@ -667,7 +732,11 @@ impl App {
                     .iter()
                     .map(|dir| paths.project_root.join(dir))
                     .collect(),
-                packages.scripts.clone(),
+                azazel_lua::Scripts {
+                    packaged: packages.scripts.clone(),
+                    run: run.scripts.clone(),
+                    only_run: cli.skips(Discovery::Extensions),
+                },
             ))?;
         }
         // A tool like any other, so it is there with `--no-extensions` too.
@@ -770,6 +839,17 @@ impl App {
         providers.extend(registry.providers());
         providers.extend(mock_provider(&mut config)?);
         let provider_ids: Vec<String> = providers.iter().map(|p| p.id().to_string()).collect();
+        if let Some(only) = &cli.provider
+            && !provider_ids.contains(only)
+        {
+            let mut known = provider_ids.clone();
+            known.sort();
+            return Err(UsageError(format!(
+                "--provider: there is no provider `{only}`; the providers are: {}",
+                known.join(", ")
+            ))
+            .into());
+        }
         let policy = RetryPolicy {
             max_attempts: config.retry.max_attempts.max(1),
             cooldown: Duration::from_secs(config.retry.cooldown_secs),
@@ -784,20 +864,46 @@ impl App {
         router.set_tier(tier);
         // Models named on the command line are this run's `default` role, so that the roles
         // built on it (`smol`, `verify`, ...) and the agents using them have a model too.
-        let chain = if cli.model.is_empty() {
-            vec![ModelSpec::Role("lead".to_string())]
-        } else {
-            let (known, usable) =
-                known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
-            let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
-                .and_then(|chain| crate::models::check_virtual(&chain, &router).map(|()| chain))
-                .map_err(UsageError)?;
-            if chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
-                config.roles.insert("default".to_string(), chain.clone());
-                router.set_role("default", chain.clone());
+        let lead_role = vec![ModelSpec::Role("lead".to_string())];
+        let chain = match (&cli.provider, cli.model.is_empty()) {
+            (None, true) => lead_role,
+            // The lead's configured models, without those of other providers.
+            (Some(only), true) => {
+                let configured = router.resolve(&lead_role);
+                let chain: Vec<ModelSpec> = configured
+                    .iter()
+                    .filter(|model| model.provider == *only)
+                    .cloned()
+                    .map(ModelSpec::Model)
+                    .collect();
+                if chain.is_empty() {
+                    let models: Vec<String> = configured.iter().map(ToString::to_string).collect();
+                    return Err(UsageError(match models.as_slice() {
+                        [] => format!("--provider {only}: no model is configured; name one with --model"),
+                        models => format!(
+                            "--provider {only}: none of the configured models ({}) is that provider's; name one \
+                             with --model",
+                            models.join(", ")
+                        ),
+                    })
+                    .into());
+                }
+                chain
             }
-            chain
+            (only, false) => {
+                let lists = known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
+                let (known, usable) = only_provider(lists, only.as_deref());
+                let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
+                    .map_err(|why| UsageError(provider_note(why, only.as_deref())))?;
+                crate::models::check_virtual(&chain, &router, only.as_deref()).map_err(UsageError)?;
+                chain
+            }
         };
+        let chosen = !cli.model.is_empty() || cli.provider.is_some();
+        if chosen && chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
+            config.roles.insert("default".to_string(), chain.clone());
+            router.set_role("default", chain.clone());
+        }
         if let (Some(key), Some(ModelSpec::Model(model))) = (&cli.api_key, chain.first()) {
             credentials.set_flag_key(&model.provider, key.clone());
         }
@@ -908,13 +1014,15 @@ impl App {
             chain,
             thinking,
             load_options: options,
+            run,
+            provider: cli.provider.clone(),
             hooks_disabled,
             coordinator,
             report,
             lead_tools,
             coordinator_forced: AtomicBool::new(cli.coordinator),
             ephemeral: cli.no_session,
-            model_flag: !cli.model.is_empty(),
+            model_flag: chosen,
             thinking_flag: cli.thinking.is_some(),
             current,
             background: cli.background(),
@@ -947,7 +1055,7 @@ impl App {
     /// the way `--model` resolves them.
     pub fn model_specs(&self, texts: &[String]) -> Result<Vec<ModelSpec>, String> {
         let endpoints = presets::resolve(&self.config.providers)?;
-        let (known, usable) = known_and_usable(
+        let lists = known_and_usable(
             self.router
                 .provider_ids()
                 .into_iter()
@@ -957,8 +1065,10 @@ impl App {
             &self.credentials,
             false,
         );
-        let chain = crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)?;
-        crate::models::check_virtual(&chain, &self.router)?;
+        let (known, usable) = only_provider(lists, self.provider.as_deref());
+        let chain = crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)
+            .map_err(|why| provider_note(why, self.provider.as_deref()))?;
+        crate::models::check_virtual(&chain, &self.router, self.provider.as_deref())?;
         Ok(chain)
     }
 
@@ -982,6 +1092,15 @@ impl App {
         }
     }
 
+    /// The virtual models that can be chosen in this run, as `virtual/<name>`: those extensions
+    /// define, and none while `--provider` keeps the run to one provider's models.
+    pub fn virtual_models(&self) -> Vec<String> {
+        match self.provider {
+            Some(_) => Vec::new(),
+            None => crate::models::virtual_names(&self.router),
+        }
+    }
+
     /// Whether `chain` names a model this process can use: a configured one whose provider needs
     /// no key or has a credential (the cloud and script providers find their own), or a virtual
     /// model an extension that is loaded defines.
@@ -989,10 +1108,10 @@ impl App {
         let Ok(endpoints) = presets::resolve(&self.config.providers) else {
             return false;
         };
-        let defined = self.router.virtual_models();
+        let defined = self.virtual_models();
         self.router.resolve(chain).iter().any(|model| {
             if azazel_ai::is_virtual(model) {
-                return defined.contains(&model.model);
+                return defined.contains(&model.key());
             }
             match endpoints.iter().find(|p| p.id == model.provider) {
                 Some(p) => !p.requires_key || self.credentials.source(p).is_some(),

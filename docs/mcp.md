@@ -14,6 +14,7 @@ Servers are read from these files, later ones winning when two define the same n
 | 2 | `~/.azazel/mcp.json` | always |
 | 3 | `<project>/.mcp.json` | when the project is trusted; each server also needs [your approval](#approving-a-projects-servers) |
 | 4 | `<project>/.azazel/mcp.json` | when the project is trusted; each server also needs your approval |
+| 5 | each file given as `--mcp-config <FILE>` | for that run; with `--no-mcp` these are the only servers. See [resources for one run](configuration.md#resources-for-one-run) |
 
 An entry in a later file replaces the whole entry of the same name. Each file holds an `mcpServers` object:
 

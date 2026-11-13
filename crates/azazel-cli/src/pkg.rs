@@ -13,6 +13,12 @@ use crate::print::{EXIT_FAILED, EXIT_OK};
 /// Skill names shown after an install before the rest is counted.
 const MAX_NAMED_SKILLS: usize = 12;
 
+/// A commit shortened the way git shows one; a version as it is.
+fn short(revision: &str) -> &str {
+    let commit = revision.len() == 40 && revision.bytes().all(|b| b.is_ascii_hexdigit());
+    if commit { &revision[..7] } else { revision }
+}
+
 /// Says what in the package runs code and asks whether to let it.
 fn ask_to_enable_code(found: &Contributions) -> bool {
     let mut kinds = Vec::new();
@@ -38,8 +44,8 @@ fn ask_to_enable_code(found: &Contributions) -> bool {
 fn installed_text(added: &Added) -> String {
     let package = &added.package;
     let mut out = format!("installed {} from {}", package.name, package.source);
-    if let Some(commit) = &package.commit {
-        out.push_str(&format!(" ({})", &commit[..commit.len().min(7)]));
+    if let Some(revision) = package.commit.as_ref().or(package.version.as_ref()) {
+        out.push_str(&format!(" ({})", short(revision)));
     }
     let found = &added.contributions;
     let skills = found.skill_names();
@@ -97,10 +103,13 @@ fn list(store: &Packages) -> Result<String, String> {
     }
     let mut out = String::new();
     for package in all {
-        let version = match (&package.commit, package.local) {
-            (Some(commit), _) => commit[..commit.len().min(7)].to_string(),
-            (None, true) => "local".to_string(),
-            (None, false) => "unknown commit".to_string(),
+        let version = match (
+            package.commit.as_ref().or(package.version.as_ref()),
+            package.local,
+        ) {
+            (Some(revision), _) => short(revision),
+            (None, true) => "local",
+            (None, false) => "unknown commit",
         };
         let code = if package.code_enabled {
             ", code enabled"
@@ -120,18 +129,15 @@ fn update(store: &Packages, name: Option<&str>) -> Result<String, String> {
     if done.is_empty() {
         return Ok("no packages are installed".to_string());
     }
-    let short = |commit: &Option<String>| {
-        commit
-            .as_deref()
-            .map_or("?", |c| &c[..c.len().min(7)])
-            .to_string()
-    };
+    fn shown(revision: &Option<String>) -> &str {
+        revision.as_deref().map_or("?", short)
+    }
     let lines: Vec<String> = done
         .iter()
         .map(|updated| match (&updated.before, &updated.after) {
             (None, None) => format!("{}: a local directory, used as it is", updated.name),
-            (before, after) if before == after => format!("{}: up to date ({})", updated.name, short(after)),
-            (before, after) => format!("{}: {} -> {}", updated.name, short(before), short(after)),
+            (before, after) if before == after => format!("{}: up to date ({})", updated.name, shown(after)),
+            (before, after) => format!("{}: {} -> {}", updated.name, shown(before), shown(after)),
         })
         .collect();
     Ok(lines.join("\n"))

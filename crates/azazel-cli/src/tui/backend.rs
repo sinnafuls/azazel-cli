@@ -584,7 +584,7 @@ impl Backend for Local {
                 rows.push((format!("@{role}"), first.to_string()));
             }
         }
-        for name in crate::models::virtual_names(router) {
+        for name in self.app.virtual_models() {
             rows.push((name, crate::models::VIRTUAL_DETAIL.to_string()));
         }
         // Providers that can be reached: a credential is present, or none is needed.
@@ -594,7 +594,8 @@ impl Backend for Local {
                 Some(config) => !config.requires_key || self.app.credentials.source(config).is_some(),
                 None => true,
             };
-            if !usable {
+            // `--provider` leaves one provider to choose from.
+            if !usable || self.app.provider.as_deref().is_some_and(|only| only != provider) {
                 continue;
             }
             // A provider used through a subscription login is not paid for by the token.

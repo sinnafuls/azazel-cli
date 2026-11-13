@@ -15,8 +15,9 @@ Luau scripting is part of the default build (cargo feature `lua`).
 | Scripts listed by an installed [package](packages.md) | when the package's code is enabled; the id is `<package>-<file name>` |
 | `~/.azazel/extensions/<id>.luau` or `~/.azazel/extensions/<id>/init.luau` | always |
 | `<project>/.azazel/extensions/<id>.luau` or `.../<id>/init.luau` | only when the project is trusted |
+| `-e <file.luau>` or `-e <directory>` on the command line | for that run, trusted or not; see [resources for one run](configuration.md#resources-for-one-run) |
 
-They load in that order, and a later script replaces an earlier one with the same id. Names starting with `.` are skipped.
+They load in that order, and a later script replaces an earlier one with the same id. Names starting with `.` are skipped. With `--no-extensions` only the scripts named with `-e` load.
 
 | Command | Does |
 |---|---|
@@ -27,7 +28,7 @@ They load in that order, and a later script replaces an earlier one with the sam
 ### How a script runs
 
 - Each script has its own sandboxed Luau VM. It has no file, process or network access except through the global table `azazel`, which is read-only.
-- The top level runs once when the script loads. **Registering** functions (`tool`, `on`, `command`, `shortcut`, `provider`, `mcp`) work only then. Functions that **wait** (`exec`, `http`, `fs.*`, `agent.spawn`, `memory.*`, `ctx.ui.*`) work only afterwards, inside a tool, handler, command or shortcut.
+- The top level runs once when the script loads. **Registering** functions (`tool`, `wrap`, `on`, `command`, `prompt`, `shortcut`, `provider`, `mcp`) work only then. Functions that **wait** (`exec`, `http`, `fs.*`, `agent.spawn`, `memory.*`, `ctx.ui.*`) work only afterwards, inside a tool, handler, command or shortcut.
 - One piece of a script's code runs at a time.
 - The load, each event handler, each command and each shortcut get 5 seconds of the script's own running time; time spent waiting in an `azazel` function does not count. Tools have no time limit; they are cancelled when the tool call is aborted.
 - A script that fails to load, or whose handler raises an error or overruns, is **disabled**: its tools, commands, status segments and widgets go away, you are told once, and the session continues. An error raised inside a tool is returned to the model as an error result and does not disable the script.
@@ -86,7 +87,8 @@ Registering (load only):
 
 | Function | Contract |
 |---|---|
-| `azazel.tool{ name, description, parameters?, access?, execute }` | `name`: up to 64 letters, digits, `_`, `-`. `parameters`: a JSON Schema object as a table; omitted means no arguments. `access`: `"read"`, `"write"`, `"exec"` (default) or `"net"`; it decides when you are asked (see [permissions](permissions.md)). `execute(args, ctx)` returns a string or `{ content = string, is_error = boolean }` |
+| `azazel.tool{ name, description, parameters?, access?, replaces?, execute }` | `name`: up to 64 letters, digits, `_`, `-`. `parameters`: a JSON Schema object as a table; omitted means no arguments. `access`: `"read"`, `"write"`, `"exec"` (default) or `"net"`; it decides when you are asked (see [permissions](permissions.md)). `execute(args, ctx)` returns a string or `{ content = string, is_error = boolean }`. `replaces = true` puts the tool in the place of the one that has its name; see [replacing and wrapping tools](#replacing-and-wrapping-tools) |
+| `azazel.wrap(name, { before?, after? })` | Runs `before(input, ctx)` and `after(result, input, ctx)` around every call of the tool `name`; see [replacing and wrapping tools](#replacing-and-wrapping-tools) |
 | `azazel.on(event, handler)` | `handler(ev, ctx)` returns `nil`, `{ block = true, reason = string }`, or a table of replacement fields. Events are listed below |
 | `azazel.command{ name, description?, argument_hint?, run }` | Adds `/name`. `run(args, ctx)` gets the text after the command; a returned string is shown to you |
 | `azazel.prompt(name, render)` | Adds a part to the system prompt of every agent. `render(ctx)` runs each time a prompt is put together (the lead's when a session opens, a sub-agent's when it starts) and returns the part's text, or `nil` to leave it out; `ctx.agent_id` says whose prompt it is. The part comes after the project's context files. It is part of what the provider caches, so text that changes from request to request (a clock, a counter) makes every request pay for the whole conversation again; `/cost` names the part when that happens. `name` is one word of your own; the names of the built-in parts (`identity`, `rules`, `team`, `skills`, `environment`, `context_files`, `memory`, `mode`, `now`, `plan`) are refused. A part that raises an error disables its script |
@@ -141,6 +143,61 @@ The second argument of every tool, handler and command (the only argument of a s
 | `ctx.ui.input(prompt)` | Returns the text typed. The first line of `prompt` is the title of the box, as for `select` |
 
 The `ctx.ui` functions error with `no interactive user` in headless runs.
+
+### Replacing and wrapping tools
+
+A tool whose name is taken is normally not offered: the first tool registered under a name wins, and the built-in tools register first. Two things change that.
+
+**`replaces = true`** in `azazel.tool` puts your tool in the place of whatever has the name: a built-in tool, an MCP server's, another extension's. The model sees your description and parameters, and permission rules see your `access`.
+
+```lua
+-- Read files from a build cache instead of the working tree.
+azazel.tool({
+    name = "read",
+    description = "Read a file of the project.",
+    access = "read",
+    replaces = true,
+    parameters = { type = "object", properties = { path = { type = "string" } }, required = { "path" } },
+    execute = function(args, ctx)
+        local out = azazel.exec("cachectl", { "cat", args.path })
+        return { content = out.stdout, is_error = out.code ~= 0 }
+    end,
+})
+```
+
+- When several scripts replace one tool, the script loaded last wins (`-e` scripts load last).
+- A replacement is the whole tool: what the built-in did besides returning text (the read tracking that `edit` relies on, checks on write, the tool's card in the UI) is yours to do or to leave out. To keep the tool and change what goes in or comes out, wrap it instead.
+- A disabled script replaces nothing: the tool it stood in for is back.
+
+**`azazel.wrap(name, { before, after })`** leaves the tool as it is and runs your functions around every call of it, whoever provides the tool and whoever calls it (an agent, `run_code`, another script).
+
+| Function | Gets | Returning |
+|---|---|---|
+| `before(input, ctx)` | The arguments, after the call was permitted | `nil`: go on. `{ input = {...} }`: the tool runs with these arguments. `{ block = true, reason = string }`: the call fails with the reason. `{ content = string, is_error? }`: the call is answered with this. In the last two cases the tool does not run |
+| `after(result, input, ctx)` | `result = { content, is_error }` and the arguments the tool ran with | `nil`: unchanged. A string: the new content. `{ content?, is_error? }`: those fields change |
+
+```lua
+-- Never run a command that touches a release branch, and mark the output of failed commands.
+azazel.wrap("shell", {
+    before = function(input, ctx)
+        if string.find(input.command, "release/", 1, true) then
+            return { block = true, reason = "commands on release branches are run by hand" }
+        end
+    end,
+    after = function(result, input, ctx)
+        if result.is_error then
+            return "[failed in " .. ctx.cwd .. "]\n" .. result.content
+        end
+    end,
+})
+```
+
+- Several wraps of one tool nest in the order they were registered: the first one's `before` runs first and its `after` last. A `before` that answers the call keeps the tool and the wraps inside it from running.
+- The permission check happens before `before`, on the arguments the model gave. Arguments you put in their place are not checked again.
+- Each function gets 5 seconds of the script's own running time. One that raises an error or overruns disables the script, and the tool goes on unwrapped.
+- Compared with the `tool_call` and `tool_result` events: those see every tool and run before the permission check; a wrap belongs to one tool and sits directly around its code.
+
+`/tools` marks a tool that was replaced (`the script vault replaces the core tool`) or is wrapped (`wrapped by the script audit`), and `azazel doctor` lists both.
 
 ### Events
 
@@ -236,8 +293,11 @@ Everything an extension contributes goes through the `Registrar` passed to `regi
 
 | Method | Adds |
 |---|---|
-| `tool(Arc<dyn Tool>)` | A tool. The first tool registered under a name wins, so a built-in tool cannot be replaced |
+| `tool(Arc<dyn Tool>)` | A tool. The first tool registered under a name wins, so this does not replace a built-in tool |
 | `tool_source(Arc<dyn ToolSource>)` | Tools that come and go; asked before every request |
+| `replace_tool(Arc<dyn Tool>)` | A tool in the place of whatever has its name: a built-in tool, another extension's, an earlier replacement. The replacement registered last wins |
+| `replace_tool_source(label, Arc<dyn ToolSource>)` | Replacements that come and go; `/tools` names `label` as the one who replaced them |
+| `wrap_tool(name, Arc<dyn ToolWrap>)` | Code around every call of the tool `name`, whichever implementation is in use. Wraps nest in registration order, the first outermost. `wrap_tool_as(label, name, wrap)` gives the name `/tools` shows |
 | `command(Command)` | A slash command: `name`, `description`, `argument_hint`, `handler` |
 | `command_source(Arc<dyn CommandSource>)` | Commands that come and go |
 | `on(EventKind, Arc<dyn EventHandler>)` | An event handler |
@@ -254,6 +314,7 @@ The traits involved:
 |---|---|---|
 | `Extension` | `azazel-core` | `id()`, `register(&mut Registrar)` |
 | `Tool` | `azazel-agent` | `name`, `description`, `schema` (JSON Schema), `access(input)` (`Read`, `Write`, `Exec`, `Net`), `subjects(input)` (what permission rules match), `call(input, &ToolCtx) -> ToolOutput`; optional `concurrency_safe` and `approval_note` |
+| `ToolWrap` | `azazel-core` | Both optional: `before(&mut input, &ToolCtx) -> Result<(), ToolOutput>` runs after the call was permitted, may rewrite the input, and answers the call itself with `Err`; `after(&input, &mut output, &ToolCtx)` may change the result |
 | `EventHandler` | `azazel-core` | `handle(&mut Event, &ExtCtx) -> Outcome` |
 | `CommandHandler` | `azazel-core` | `run(args, &ExtCtx) -> CommandOutcome` (`Done`, `Show(text)`, `Prompt { text, model }`, `Error(text)`) |
 | `Scheme` | `azazel-core` | `scheme()`, `read(rest, &ToolCtx)`; optional `access(rest) -> (Access, Option<String>)`, what reading the address touches and the subject permission rules match (default: a plain read of the address) |

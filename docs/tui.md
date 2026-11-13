@@ -552,7 +552,7 @@ Models, permissions and setup:
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
-| `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked |
+| `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked, and who [replaced or wraps](extensions.md#replacing-and-wrapping-tools) a tool |
 | `/jobs` | Background jobs; choose one to read its output or stop it |
 | `/terminals` | Programs agents run in [terminals](#terminals); choose one to watch it, type into it or stop it |
 | `/todo [add <text> \| done <n> \| clear]` | Show the agent's task list, or change it |
@@ -891,7 +891,9 @@ theme = "light"
 ```
 
 `/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
-`/theme <name>` switches for the running session.
+`/theme <name>` switches for the running session. `--theme <name>` on the command line sets the theme of one
+run, and `--theme <file>` takes a theme file from anywhere; a name or file that cannot be used ends the run
+with status 2.
 
 A custom theme is a file `~/.azazel/themes/<name>.toml` that maps roles to colours. Every role is optional: a role
 left out keeps the colour of `dark`, or of `light` when the file sets a light `code_bg`.
