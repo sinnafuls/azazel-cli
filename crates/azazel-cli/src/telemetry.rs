@@ -155,7 +155,8 @@ async fn next_of_team(events: &mut Option<broadcast::Receiver<TeamEvent>>) -> (S
             Ok(TeamEvent::Agent { id, event }) => return (id, *event),
             // Events that were dropped because this side fell behind leave spans that end when
             // their prompt does.
-            Ok(TeamEvent::Roster) | Err(broadcast::error::RecvError::Lagged(_)) => {}
+            Ok(TeamEvent::Roster | TeamEvent::Input { .. }) | Err(broadcast::error::RecvError::Lagged(_)) => {
+            }
             Err(broadcast::error::RecvError::Closed) => *events = None,
         }
     }
@@ -181,7 +182,8 @@ impl Follower {
         while let Some(receiver) = &mut self.team_events {
             match receiver.try_recv() {
                 Ok(TeamEvent::Agent { id, event }) => self.on_member(&id, *event),
-                Ok(TeamEvent::Roster) | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
+                Ok(TeamEvent::Roster | TeamEvent::Input { .. })
+                | Err(broadcast::error::TryRecvError::Lagged(_)) => {}
                 Err(_) => break,
             }
         }
