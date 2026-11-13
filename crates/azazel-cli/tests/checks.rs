@@ -94,6 +94,8 @@ impl Sandbox {
             .args(["--set", "memory.auto_extract=false"])
             .args(["--set", "memory.auto_index=false"])
             .args(["--set", "session.auto_name=false"])
+            // These runs end where the report of the checks ends them.
+            .args(["--set", "guards.done_check=false"])
             .args(["--mode", "auto"])
             .args(args)
             .args(["-p", "go"])

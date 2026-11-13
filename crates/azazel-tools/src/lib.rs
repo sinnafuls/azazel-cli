@@ -4,6 +4,7 @@
 pub mod ast_grep;
 pub mod check;
 pub mod format;
+pub mod guards;
 #[cfg(feature = "lsp")]
 pub mod lsp;
 pub mod misc;

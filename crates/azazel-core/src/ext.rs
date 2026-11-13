@@ -654,6 +654,7 @@ impl Registry {
             bus: self.bus.clone(),
             prompt: self.prompt.clone(),
             rules: self.services.get::<crate::rules::Rules>(),
+            runaway: self.services.get::<crate::runaway::Runaway>(),
         })
     }
 }
@@ -729,6 +730,8 @@ struct BusHooks {
     prompt: Arc<PromptBuilder>,
     /// The stream rules, when the rules extension was loaded before these hooks were made.
     rules: Option<Arc<crate::rules::Rules>>,
+    /// The runaway guard, when it was registered before these hooks were made.
+    runaway: Option<Arc<crate::runaway::Runaway>>,
 }
 
 #[async_trait]
@@ -809,11 +812,19 @@ impl AgentHooks for BusHooks {
     }
 
     fn stream_text(&self, agent: &AgentInfo, so_far: &str) -> Option<String> {
-        self.rules.as_ref()?.stream_text(agent, so_far)
+        let rule = self
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.stream_text(agent, so_far));
+        rule.or_else(|| self.runaway.as_ref()?.note(so_far, false))
     }
 
     fn stream_thinking(&self, agent: &AgentInfo, so_far: &str) -> Option<String> {
-        self.rules.as_ref()?.stream_thinking(agent, so_far)
+        let rule = self
+            .rules
+            .as_ref()
+            .and_then(|rules| rules.stream_thinking(agent, so_far));
+        rule.or_else(|| self.runaway.as_ref()?.note(so_far, true))
     }
 }
 
@@ -999,5 +1010,25 @@ mod tests {
         assert_eq!(names(&registry), ["shared"]);
         assert_eq!(registry.tools.all_names(&agent()), ["beta", "shared"]);
         assert!(registry.tools.select(Some(&["[".into()]), &[]).is_err());
+    }
+
+    #[test]
+    fn the_agent_hooks_watch_a_reply_for_loops_only_when_the_guard_is_registered() {
+        let registry = Registry::new(ctx());
+        let looped = "The same sentence about the same thing, said again and again without end. ".repeat(12);
+        let unwatched = registry.agent_hooks();
+        assert_eq!(unwatched.stream_text(&agent(), &looped), None);
+
+        registry.services.insert(Arc::new(crate::runaway::Runaway));
+        let watched = registry.agent_hooks();
+        let note = watched.stream_text(&agent(), &looped).unwrap();
+        // Named like a rule, so the stop is reported as one.
+        assert!(
+            note.starts_with("<rule name=\"runaway\" reason=\"repetition\">"),
+            "{note}"
+        );
+        let thought = watched.stream_thinking(&agent(), &looped).unwrap();
+        assert!(thought.contains("Your thinking repeated"), "{thought}");
+        assert_eq!(watched.stream_text(&agent(), "A short and ordinary reply."), None);
     }
 }

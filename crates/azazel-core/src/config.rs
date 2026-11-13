@@ -232,11 +232,12 @@ config_table!(WebConfig {
     provider_search: bool = true,
 });
 config_table!(GuardsConfig {
-    /// Send back a "done" that changed code but ran no build or test since.
+    /// Send the lead back once when it stops on changed code and ran no build or test since.
     done_check: bool = true,
-    /// Stop an agent that runs the same failing call this many times in a row; 0 is off.
+    /// Note on the result of a `shell` command that failed this many times in a row in a turn;
+    /// 0 is off.
     stuck_after: u32 = 3,
-    /// Stop a turn that repeats one output or one call without end.
+    /// Stop a reply that repeats one block of text three times in a row, and ask again.
     runaway: bool = true,
 });
 config_table!(CacheConfig {

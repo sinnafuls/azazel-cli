@@ -5,6 +5,26 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Stall watchdog: a provider that sends nothing for `retry.first_event_secs` (20) after a request, or for
+  `retry.stall_secs` (120) in the middle of a reply, is given up and the same model asked again after a
+  pause. The half of a reply that had arrived is dropped and never reaches the model. A model that stalls
+  `retry.max_stalls` (3) times within a request is left for the next one in the chain. The transcript and
+  print mode say `no answer from <model> for 20 s; retrying`; the RPC `retry` event carries `stalled_secs`.
+- Done-check (`guards.done_check`): when the lead stops after `write` or `edit` changed code and no build,
+  test, linter, `[verify]` command or clean check on write ran since, it is told once per prompt to prove the
+  change or say plainly that it is unverified.
+- Stuck guard (`guards.stuck_after`): the result of a `shell` command that has failed three times in a row in
+  a turn tells the agent to form a new hypothesis before trying it again.
+- Runaway guard (`guards.runaway`): a reply that repeats a block of 200 characters or more three times in a
+  row is stopped as it is written and asked for again, like a reply that matched a stream rule.
+
+### Changed
+
+- A provider's model list that does not answer no longer holds the first request up for minutes: it is given
+  up after `retry.first_event_secs`.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

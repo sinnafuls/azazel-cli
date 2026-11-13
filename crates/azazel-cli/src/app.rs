@@ -515,6 +515,15 @@ impl App {
             )
             .ok(),
         })?;
+        // Behind the report of the checks, which comes first. With `verify.on_stop` the
+        // project's checks run at every stop anyway, and there is nothing to send back for.
+        let verified_on_stop = config.verify.on_stop && !config.verify.commands.is_empty();
+        registry.load(&azazel_tools::guards::GuardsExt {
+            done_check: config.guards.done_check && !verified_on_stop,
+            stuck_after: config.guards.stuck_after,
+            runaway: config.guards.runaway,
+            verify: config.verify.commands.clone(),
+        })?;
         registry.load(&GoalExt {
             goals: Arc::new(Goals::new(checker, goal_settings)),
         })?;
