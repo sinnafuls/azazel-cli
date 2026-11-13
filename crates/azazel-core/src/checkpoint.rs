@@ -365,12 +365,17 @@ impl Checkpoints {
         })
     }
 
+    /// Whether git would pack the repository: it judges the number of loose objects by one of
+    /// their 256 folders, and so does this, without starting it.
+    fn worth_packing(&self) -> bool {
+        std::fs::read_dir(self.shadow.join("objects").join("17")).is_ok_and(|folder| folder.count() > 1)
+    }
+
     /// Packs the shadow repository when it has gathered enough loose objects. For the end of a
-    /// session that took snapshots; it costs one short git run otherwise, and a failure is
-    /// nobody's problem.
+    /// session that took snapshots; a failure is nobody's problem.
     pub async fn tidy(&self) {
         let state = self.state.lock().await;
-        if !state.ready || state.disabled.is_some() {
+        if !state.ready || state.disabled.is_some() || !self.worth_packing() {
             return;
         }
         let packed = self
