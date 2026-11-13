@@ -3,6 +3,8 @@
 use std::fmt::Write as _;
 use std::str::FromStr;
 
+use crate::glyphs::{Glyph, GlyphLevel, Glyphs};
+
 /// Resets every SGR attribute.
 pub const RESET: &str = "\x1b[0m";
 
@@ -43,9 +45,13 @@ pub enum Role {
     ModeEdits,
     /// Input rules in permission mode `auto`.
     ModeAuto,
+    /// Background inside a popup box.
+    Surface,
+    /// Text of the screen behind a popup, dimmed so the box stands out.
+    Backdrop,
 }
 
-const ROLE_COUNT: usize = 21;
+const ROLE_COUNT: usize = 23;
 
 impl Role {
     pub const ALL: [Role; ROLE_COUNT] = [
@@ -70,6 +76,8 @@ impl Role {
         Role::ModePlan,
         Role::ModeEdits,
         Role::ModeAuto,
+        Role::Surface,
+        Role::Backdrop,
     ];
 
     /// The key naming this role in a theme file.
@@ -96,6 +104,8 @@ impl Role {
             Role::ModePlan => "mode_plan",
             Role::ModeEdits => "mode_edits",
             Role::ModeAuto => "mode_auto",
+            Role::Surface => "surface",
+            Role::Backdrop => "backdrop",
         }
     }
 
@@ -107,7 +117,12 @@ impl Role {
     pub fn is_background(self) -> bool {
         matches!(
             self,
-            Role::CodeBg | Role::UserBg | Role::SelectedBg | Role::DiffAddBg | Role::DiffDelBg
+            Role::CodeBg
+                | Role::UserBg
+                | Role::SelectedBg
+                | Role::DiffAddBg
+                | Role::DiffDelBg
+                | Role::Surface
         )
     }
 
@@ -283,6 +298,7 @@ pub struct Theme {
     depth: ColorDepth,
     /// The terminal follows OSC 8 hyperlinks.
     links: bool,
+    glyphs: Glyphs,
 }
 
 impl Theme {
@@ -311,9 +327,12 @@ impl Theme {
                 Color::Rgb(97, 175, 239),  // mode_plan
                 Color::Rgb(126, 198, 153), // mode_edits
                 Color::Rgb(240, 160, 80),  // mode_auto
+                Color::Rgb(27, 30, 40),    // surface
+                Color::Rgb(78, 82, 100),   // backdrop
             ],
             depth: ColorDepth::TrueColor,
             links: false,
+            glyphs: Glyphs::new(GlyphLevel::Unicode),
         }
     }
 
@@ -341,10 +360,128 @@ impl Theme {
                 Color::Rgb(9, 105, 218),   // mode_plan
                 Color::Rgb(26, 127, 55),   // mode_edits
                 Color::Rgb(188, 76, 0),    // mode_auto
+                Color::Rgb(250, 250, 253), // surface
+                Color::Rgb(180, 186, 198), // backdrop
             ],
             depth: ColorDepth::TrueColor,
             links: false,
+            glyphs: Glyphs::new(GlyphLevel::Unicode),
         }
+    }
+
+    /// The names of the themes built into azazel, for pickers and error messages.
+    pub const BUILTINS: [&'static str; 6] = [
+        "dark",
+        "light",
+        "catppuccin-mocha",
+        "tokyo-night",
+        "gruvbox-dark",
+        "dark-daltonized",
+    ];
+
+    /// A theme built into azazel, by name.
+    pub fn builtin(name: &str) -> Option<Theme> {
+        let theme = match name {
+            "dark" => Theme::dark(),
+            "light" => Theme::light(),
+            "catppuccin-mocha" => Theme::dark().with_colors(&[
+                (Role::Text, 0xcdd6f4),
+                (Role::Muted, 0xa6adc8),
+                (Role::Accent, 0xcba6f7),
+                (Role::Success, 0xa6e3a1),
+                (Role::Warning, 0xf9e2af),
+                (Role::Error, 0xf38ba8),
+                (Role::Border, 0x7f849c),
+                (Role::CodeBg, 0x181825),
+                (Role::DiffAdd, 0xa6e3a1),
+                (Role::DiffDel, 0xf38ba8),
+                (Role::UserBg, 0x313244),
+                (Role::UserText, 0xcdd6f4),
+                (Role::SelectedBg, 0x45475a),
+                (Role::BorderMuted, 0x585b70),
+                (Role::DiffAddBg, 0x2c4433),
+                (Role::DiffDelBg, 0x4d2a35),
+                (Role::Thinking, 0xb4befe),
+                (Role::Bash, 0xf5c2e7),
+                (Role::ModePlan, 0x89dceb),
+                (Role::ModeEdits, 0xa6e3a1),
+                (Role::ModeAuto, 0xfab387),
+                (Role::Surface, 0x1e1e2e),
+                (Role::Backdrop, 0x585b70),
+            ]),
+            "tokyo-night" => Theme::dark().with_colors(&[
+                (Role::Text, 0xc0caf5),
+                (Role::Muted, 0xa9b1d6),
+                (Role::Accent, 0xbb9af7),
+                (Role::Success, 0x9ece6a),
+                (Role::Warning, 0xe0af68),
+                (Role::Error, 0xf7768e),
+                (Role::Border, 0x565f89),
+                (Role::CodeBg, 0x16161e),
+                (Role::DiffAdd, 0x9ece6a),
+                (Role::DiffDel, 0xf7768e),
+                (Role::UserBg, 0x292e42),
+                (Role::UserText, 0xc0caf5),
+                (Role::SelectedBg, 0x283457),
+                (Role::BorderMuted, 0x3b4261),
+                (Role::DiffAddBg, 0x243e33),
+                (Role::DiffDelBg, 0x4b2a37),
+                (Role::Thinking, 0x7aa2f7),
+                (Role::Bash, 0x7dcfff),
+                (Role::ModePlan, 0x7dcfff),
+                (Role::ModeEdits, 0x9ece6a),
+                (Role::ModeAuto, 0xff9e64),
+                (Role::Surface, 0x1a1b26),
+                (Role::Backdrop, 0x545c7e),
+            ]),
+            "gruvbox-dark" => Theme::dark().with_colors(&[
+                (Role::Text, 0xebdbb2),
+                (Role::Muted, 0xa89984),
+                (Role::Accent, 0xfabd2f),
+                (Role::Success, 0xb8bb26),
+                (Role::Warning, 0xfe8019),
+                (Role::Error, 0xfb4934),
+                (Role::Border, 0x7c6f64),
+                (Role::CodeBg, 0x1d2021),
+                (Role::DiffAdd, 0xb8bb26),
+                (Role::DiffDel, 0xfb4934),
+                (Role::UserBg, 0x3c3836),
+                (Role::UserText, 0xebdbb2),
+                (Role::SelectedBg, 0x504945),
+                (Role::BorderMuted, 0x504945),
+                (Role::DiffAddBg, 0x32361a),
+                (Role::DiffDelBg, 0x4a2020),
+                (Role::Thinking, 0xd3869b),
+                (Role::Bash, 0x8ec07c),
+                (Role::ModePlan, 0x83a598),
+                (Role::ModeEdits, 0xb8bb26),
+                (Role::ModeAuto, 0xfe8019),
+                (Role::Surface, 0x282828),
+                (Role::Backdrop, 0x665c54),
+            ]),
+            // Red and green carry no meaning a colour-blind reader could miss: success and
+            // additions are blue, failures and removals orange.
+            "dark-daltonized" => Theme::dark().with_colors(&[
+                (Role::Success, 0x6cb6ff),
+                (Role::Error, 0xf0a050),
+                (Role::DiffAdd, 0x6cb6ff),
+                (Role::DiffDel, 0xf0a050),
+                (Role::DiffAddBg, 0x1f3a5c),
+                (Role::DiffDelBg, 0x5c3a12),
+                (Role::ModeEdits, 0x6cb6ff),
+            ]),
+            _ => return None,
+        };
+        Some(theme)
+    }
+
+    /// The theme with each listed role set to a `0xrrggbb` colour.
+    fn with_colors(mut self, colors: &[(Role, u32)]) -> Theme {
+        for &(role, rgb) in colors {
+            let [_, r, g, b] = rgb.to_be_bytes();
+            self.colors[role.index()] = Color::Rgb(r, g, b);
+        }
+        self
     }
 
     /// Parses a theme file: a flat table of role name to colour (`"#rrggbb"`, an integer 0-255
@@ -403,6 +540,21 @@ impl Theme {
 
     pub fn links(&self) -> bool {
         self.links
+    }
+
+    /// Returns the theme drawing with the symbols of `level`.
+    pub fn with_glyphs(mut self, level: GlyphLevel) -> Theme {
+        self.glyphs = Glyphs::new(level);
+        self
+    }
+
+    pub fn glyphs(&self) -> Glyphs {
+        self.glyphs
+    }
+
+    /// One symbol at this theme's glyph level.
+    pub fn glyph(&self, glyph: Glyph) -> &'static str {
+        self.glyphs.get(glyph)
     }
 
     /// `text` as a hyperlink to `url` when the terminal follows them, else `text` alone.
@@ -693,6 +845,32 @@ mod tests {
             Err(ThemeError::InvalidColor { .. })
         ));
         assert!(matches!(Theme::from_toml("accent = "), Err(ThemeError::Parse(_))));
+    }
+
+    #[test]
+    fn every_builtin_loads_and_sets_every_role() {
+        for name in Theme::BUILTINS {
+            let theme = Theme::builtin(name).unwrap_or_else(|| panic!("{name}"));
+            assert_eq!(theme.is_light(), name == "light", "{name}");
+            // A file listing every role of a built-in reproduces it exactly.
+            let file: String = Role::ALL
+                .iter()
+                .map(|role| match theme.color(*role) {
+                    Color::Rgb(r, g, b) => format!("{} = \"#{r:02x}{g:02x}{b:02x}\"\n", role.name()),
+                    Color::Indexed(n) => format!("{} = {n}\n", role.name()),
+                    Color::Default => format!("{} = \"default\"\n", role.name()),
+                })
+                .collect();
+            assert_eq!(Theme::from_toml(&file).unwrap(), theme, "{name}");
+        }
+        assert!(Theme::builtin("nope").is_none());
+    }
+
+    #[test]
+    fn glyphs_follow_the_level() {
+        let theme = Theme::dark();
+        assert_eq!(theme.glyph(Glyph::Success), "✔");
+        assert_eq!(theme.with_glyphs(GlyphLevel::Ascii).glyph(Glyph::Success), "[+]");
     }
 
     #[test]

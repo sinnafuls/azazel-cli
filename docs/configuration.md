@@ -46,7 +46,8 @@ AZAZEL_MEDIA__MODELS__IMAGE="<backend>:<model-id>" azazel
 ```
 
 Other `AZAZEL_` variables are not config overrides: `AZAZEL_HOME` (home directory), `AZAZEL_BROWSER` (browser
-binary), `AZAZEL_HOOKS_DISABLED` (load no hooks), `AZAZEL_NO_UPDATE_CHECK` (skip the update check).
+binary), `AZAZEL_HOOKS_DISABLED` (load no hooks), `AZAZEL_NO_UPDATE_CHECK` (skip the update check),
+`AZAZEL_GLYPHS` (`nerd`, `unicode` or `ascii`, over `tui.glyphs`).
 
 ## Models
 
@@ -111,6 +112,8 @@ thinking = "low"
 | | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`) needs in every mode: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
 | | `max_files` | `100000` | Checkpoints turn off for projects with more files than this |
+| | `timeout_ms` | `10000` | Longest one snapshot may take (1000 to 300000); past it checkpoints turn off for the session |
+| | `exclude` | `[".azazel/worktrees/"]` | Patterns, as in `.gitignore`, that checkpoints leave out |
 | `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
@@ -136,6 +139,11 @@ thinking = "low"
 | | `shell` | `""` | Shell program; empty means auto-detect (`bash`, else `sh`; on Windows Git's bash, `pwsh`, `powershell`) |
 | | `format_on_write` | `false` | Run the file's formatter after `write` and `edit`; see [tools](tools.md#format-on-write) |
 | | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"` |
+| | `check_on_write` | `true` | Run the file's checkers (linters) after `write` and `edit`, when they are installed; see [tools](tools.md#checks-on-write) |
+| | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path |
+| | `check_report` | `"delta"` | What the agent is told about findings when it stops: `delta` (lines it changed), `all` or `off` |
+| | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off` |
+| `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
@@ -166,16 +174,27 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
 | | `defer_threshold` | `40` | Above this many MCP tools, they are found through `tool_search` instead |
+| | `idle_timeout_secs` | `600` | A server started on demand stops after this many seconds without a call |
 | `[media]` | `output_dir` | `"assets/generated"` | Where generated files go; see [media and sprites](media-and-sprites.md) |
 | `[media.models]` | `image`, `video`, `model3d`, `audio` | `""` | Model per kind, as `<backend>:<model id>` |
 | `[lsp.servers.<name>]` | `command`, `extensions` | required | Language server program and the file extensions it handles; see [LSP](lsp.md) |
 | | `args` | `[]` | Arguments |
+| | `warm_files` | `[]` | Files opened as soon as the server starts, relative to the project root |
+| `[lsp]` | `idle_secs` | `240` | Stop a server after this many seconds in which none of its files was touched; `0` keeps it running |
+| | `write_severity` | `"error"` | The lowest severity reported after a write: `error` or `warning` |
 | `[voice]` | `stt`, `tts` | `""` | Speech-to-text and text-to-speech model, as `<provider>/<model>`; see [voice](voice.md) |
 | | `voice`, `language` | `""` | Voice name for speech; language code of what is dictated |
 | | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
 | | `auto_send` | `false` | Send a transcript as a prompt at once |
 | | `max_secs` | `120` | Longest recording, in seconds |
-| `[tui]` | `theme` | `"dark"` | `dark`, `light` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
+| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
+| | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
+| | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
+| | `indicator` | `"shimmer"` | How the working indicator moves: `shimmer`, `kitt` or `static` |
+| | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing |
+| | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
+| | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row |
+| | `redact` | `true` | Hide what looks like a secret in tool output, the transcript viewer and exports; the model still sees it |
 | | `favourites` | `[]` | Models `Alt+M` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list |
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
@@ -205,7 +224,8 @@ back. A project needs a trust decision when it has any of:
 - a project skill with `hooks` in its frontmatter
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
-`tools.shell`, `browser.path`, `editor.command`, `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`.
+`tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
+`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it

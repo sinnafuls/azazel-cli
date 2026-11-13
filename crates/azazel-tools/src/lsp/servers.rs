@@ -178,6 +178,7 @@ mod tests {
             command: command.to_string(),
             args: Vec::new(),
             extensions: extensions.iter().map(|extension| extension.to_string()).collect(),
+            warm_files: Vec::new(),
         }
     }
 

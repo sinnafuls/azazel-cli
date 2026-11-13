@@ -42,8 +42,8 @@ use azazel_tui::components::{
 };
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
-    ColorDepth, Composer, Draft, Editor, Floor, Frame, HistoryItem, Keymap, Line, Renderer, Role, SelectItem,
-    SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys,
+    ColorDepth, Composer, Draft, Editor, Floor, Frame, GlyphLevel, HistoryItem, Keymap, Line, Renderer, Role,
+    SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys,
     enable_enhanced_keys, text,
 };
 use crossterm::event::{
@@ -283,15 +283,17 @@ fn load_theme(env: &Env) -> (Theme, Option<String>) {
         ColorDepth::detect(std::env::var("COLORTERM").ok().as_deref())
     };
     let (theme, problem) = named_theme(&env.paths, &env.config.tui.theme);
-    (theme.with_depth(depth), problem)
+    let glyphs = GlyphLevel::detect(env.config.tui.glyphs.as_str(), |name| std::env::var(name).ok());
+    (theme.with_depth(depth).with_glyphs(glyphs), problem)
 }
 
-/// `dark`, `light`, or `~/.azazel/themes/<name>.toml`. Falls back to `dark` with a message.
+/// A built-in theme (`dark`, `light`, `catppuccin-mocha`, ...) or `~/.azazel/themes/<name>.toml`.
+/// Falls back to `dark` with a message.
 fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
-    match name {
-        "dark" => (Theme::dark(), None),
-        "light" => (Theme::light(), None),
-        other => {
+    match Theme::builtin(name) {
+        Some(theme) => (theme, None),
+        None => {
+            let other = name;
             let file = paths.home.join("themes").join(format!("{other}.toml"));
             match std::fs::read_to_string(&file) {
                 Ok(source) => match Theme::from_toml(&source) {
@@ -1933,7 +1935,11 @@ impl Tui {
         match problem {
             Some(problem) => self.fail(&problem),
             None => {
-                self.theme = theme.with_depth(depth).with_links(self.caps.links);
+                let glyphs = self.theme.glyphs().level();
+                self.theme = theme
+                    .with_depth(depth)
+                    .with_links(self.caps.links)
+                    .with_glyphs(glyphs);
                 self.theme_name = name.to_string();
                 self.info(&format!("theme: {name}"));
             }

@@ -65,6 +65,7 @@ fn bench() -> Bench {
         command: command.to_string(),
         args: Vec::new(),
         extensions: vec![extension.to_string()],
+        warm_files: Vec::new(),
     };
     let servers = BTreeMap::from([
         ("fake".to_string(), server(&FIXTURE.to_string_lossy(), "fk")),

@@ -277,6 +277,7 @@ mod tests {
             &CheckpointsConfig {
                 enabled: true,
                 max_files,
+                ..CheckpointsConfig::default()
             },
         )
     }
@@ -371,6 +372,7 @@ mod tests {
             &CheckpointsConfig {
                 enabled: false,
                 max_files: 10,
+                ..CheckpointsConfig::default()
             },
         );
         assert_eq!(off.snapshot("p").await, Ok(None));

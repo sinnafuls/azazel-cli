@@ -4,7 +4,7 @@ use std::io::Write;
 
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::{EntryKind, PermissionMode, SessionStore};
-use azazel_tui::SelectItem;
+use azazel_tui::{SelectItem, Theme};
 
 use super::backend::Go;
 use super::overlay::{Action, Overlay, RewindPoint};
@@ -391,7 +391,7 @@ impl Tui {
     }
 
     fn open_theme_picker(&mut self) {
-        let mut names = vec!["dark".to_string(), "light".to_string()];
+        let mut names: Vec<String> = Theme::BUILTINS.iter().map(ToString::to_string).collect();
         let mut custom: Vec<String> = std::fs::read_dir(self.env.paths.home.join("themes"))
             .into_iter()
             .flatten()
@@ -399,6 +399,7 @@ impl Tui {
             .map(|entry| entry.path())
             .filter(|path| path.extension().is_some_and(|e| e == "toml"))
             .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+            .filter(|name| !Theme::BUILTINS.contains(&name.as_str()))
             .collect();
         custom.sort();
         names.extend(custom);

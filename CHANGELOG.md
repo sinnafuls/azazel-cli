@@ -5,6 +5,22 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Built-in themes `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark` and `dark-daltonized`, and two new theme
+  colours, `surface` and `backdrop`.
+- `tui.glyphs` (and `AZAZEL_GLYPHS`) chooses the symbols the UI draws with: `unicode` (default), `nerd` for
+  Nerd Font icons, or `ascii`.
+- New configuration keys: `tui.popups`, `tui.indicator`, `tui.indicator_text`, `tui.session_accent`,
+  `tui.tool_style`, `tui.redact`, `tools.check_on_write`, `[tools.check]`, `tools.check_report`,
+  `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
+  `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
+  `mcp.idle_timeout_secs`.
+
+### Changed
+
+### Fixed
+
 ## [0.3.0] - 2026-11-13
 
 ### Added

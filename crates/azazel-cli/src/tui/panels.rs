@@ -491,7 +491,11 @@ impl Tui {
         match problem {
             Some(problem) => problems.push(problem),
             None => {
-                self.theme = theme.with_depth(depth).with_links(self.caps.links);
+                let glyphs = self.theme.glyphs().level();
+                self.theme = theme
+                    .with_depth(depth)
+                    .with_links(self.caps.links)
+                    .with_glyphs(glyphs);
                 report.push(format!("theme: {}", self.theme_name));
             }
         }

