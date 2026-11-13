@@ -113,6 +113,18 @@ pub enum TeamEvent {
     Roster,
     /// Something a sub-agent did.
     Agent { id: String, event: Box<AgentEvent> },
+    /// What a sub-agent was handed to work on: the prompt it started with, or a message sent
+    /// to it since.
+    Input { id: String, text: String },
+}
+
+/// What came of `@name text` typed by the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mentioned {
+    /// The agent the text went to.
+    pub agent: String,
+    /// The agent was started for it, from the definition of that name.
+    pub started: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -619,6 +631,10 @@ impl Inner {
                 activity: "starting".to_string(),
             };
         });
+        let _ = self.events.send(TeamEvent::Input {
+            id: id.clone(),
+            text: prompt.clone(),
+        });
         handle.prompt(UserInput::text(prompt));
 
         let mut slot: Option<OwnedSemaphorePermit> = Some(slot);
@@ -711,7 +727,7 @@ impl Inner {
 
     /// Hands `text` to `target`: as a steer while it works, as a new prompt when it does not.
     fn deliver(&self, target: &str, text: String) -> Result<(), String> {
-        let input = UserInput::text(text);
+        let input = UserInput::text(text.clone());
         if target == LEAD {
             let (handle, _) = self.lead().ok_or("there is no lead to message")?;
             if handle.status().busy {
@@ -742,6 +758,10 @@ impl Inner {
         }
         member.mail = true;
         drop(members);
+        let _ = self.events.send(TeamEvent::Input {
+            id: target.to_string(),
+            text,
+        });
         self.announce();
         Ok(())
     }
@@ -1103,6 +1123,43 @@ impl Team {
     /// Sends a message typed by the user to `to` (an agent id or `all`).
     pub fn send_from_user(&self, to: &str, message: &str) -> Result<Vec<String>, String> {
         self.send_text("", to, message.to_string())
+    }
+
+    /// Hands `text` to agent `id` (the lead is `lead`) from outside its turn: a steer message
+    /// while it works, a new prompt when it does not. False when it cannot be reached.
+    pub fn post(&self, id: &str, text: String) -> bool {
+        self.inner.deliver(id, text).is_ok()
+    }
+
+    /// `@name text` typed by the user: `text` goes to the agent with the id `name`, or starts
+    /// an agent from the definition of that name, whose result reaches the lead as a message
+    /// when it is ready. `None` when `name` is neither.
+    pub async fn mention(&self, name: &str, text: &str) -> Option<Result<Mentioned, String>> {
+        let known = name != LEAD && self.inner.members().iter().any(|member| member.info.id == name);
+        if known {
+            return Some(self.send_from_user(name, text).map(|_| Mentioned {
+                agent: name.to_string(),
+                started: false,
+            }));
+        }
+        self.inner.deps.defs.get(name)?;
+        let Some((lead, _)) = self.inner.lead() else {
+            return Some(Err("no session is open".to_string()));
+        };
+        let request = SpawnRequest {
+            def: name.to_string(),
+            prompt: text.to_string(),
+            name: None,
+            model: None,
+            isolation: None,
+            tools: None,
+            schema: None,
+        };
+        Some(
+            self.spawn(lead.info(), request, true)
+                .await
+                .map(|agent| Mentioned { agent, started: true }),
+        )
     }
 
     fn send_text(&self, sender: &str, to: &str, text: String) -> Result<Vec<String>, String> {

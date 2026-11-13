@@ -209,6 +209,27 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "agent_mention"
+            },
+            "name": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name",
+            "text"
+          ],
+          "description": "`@name text` as the user types it at a prompt: sends `text` to the sub-agent with the id\n`name`, or starts an agent from the definition of that name with `text` as its task (its\nreport goes to the lead). Answers with [`Mentioned`], or `null` when `name` is neither."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "approval_response"
             },
             "request_id": {
@@ -1343,55 +1364,38 @@
           ],
           "oneOf": [
             {
+              "$ref": "#/$defs/Question",
               "type": "object",
               "properties": {
                 "kind": {
                   "type": "string",
                   "const": "ask"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "description": "A question from an agent. Expects what `expects` says: a list of the chosen options\n(`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With\n`allow_freeform`, a string that is none of the options is an answer the user typed."
+            },
+            {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "const": "form"
                 },
-                "question": {
-                  "type": "string"
-                },
-                "context": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "What the user needs to know to answer, to be shown with the question."
-                },
-                "expects": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/$defs/AskKind"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "description": "Always sent; a client reads a request without it with [`AskKind::of`]."
-                },
-                "options": {
+                "questions": {
                   "type": "array",
                   "items": {
-                    "type": "string"
-                  },
-                  "description": "The choices of a `select` or `multiselect`; empty otherwise."
-                },
-                "multi": {
-                  "type": "boolean",
-                  "description": "Whether `expects` is `multiselect`."
-                },
-                "allow_freeform": {
-                  "type": "boolean"
+                    "$ref": "#/$defs/Question"
+                  }
                 }
               },
               "required": [
                 "kind",
-                "question",
-                "options",
-                "multi"
+                "questions"
               ],
-              "description": "A question from an agent. Expects what `expects` says: a list of the chosen options\n(`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With\n`allow_freeform`, a string that is none of the options is an answer the user typed."
+              "description": "Several questions from an agent, to be answered together. Expects a list with one\nentry per question, in their order: what an `ask` of that question expects, or `null`\nfor a question the user left open."
             },
             {
               "type": "object",
@@ -1530,6 +1534,12 @@
             },
             "text": {
               "type": "string"
+            },
+            "agent": {
+              "type": [
+                "string",
+                "null"
+              ]
             }
           },
           "required": [
@@ -1537,7 +1547,7 @@
             "kind",
             "text"
           ],
-          "description": "Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or\n`follow_up`. It is in the log, in what a later client is replayed and in what the other\nclients read, never in what the sender itself reads."
+          "description": "What an agent was handed from outside its own work. Without `agent` (background\nsessions only) it is what a client sent the lead: `kind` is `prompt`, `steer` or\n`follow_up`; it is in the log, in what a later client is replayed and in what the other\nclients read, never in what the sender itself reads. With `agent` it is what a sub-agent\nwas given: `kind` is `prompt`, for the task it started with and for every message sent\nto it since."
         },
         {
           "type": "object",
@@ -1821,6 +1831,80 @@
         }
       ],
       "description": "How an `ask` request is answered."
+    },
+    "Question": {
+      "type": "object",
+      "properties": {
+        "question": {
+          "type": "string"
+        },
+        "header": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A word or two naming the question among the others of a form."
+        },
+        "context": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the user needs to know to answer, to be shown with the question."
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Code the question is about, to be shown with it as it is written."
+        },
+        "diff": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "A unified diff the question is about, to be shown with it."
+        },
+        "expects": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AskKind"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Always sent; a client reads a request without it with [`AskKind::of`]."
+        },
+        "options": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The choices of a `select` or `multiselect`; empty otherwise.",
+          "default": []
+        },
+        "multi": {
+          "type": "boolean",
+          "description": "Whether `expects` is `multiselect`.",
+          "default": false
+        },
+        "recommended": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The answer the agent would give: one of `options`, or `yes` or `no` for a `confirm`."
+        },
+        "allow_freeform": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "question"
+      ],
+      "description": "A question from an agent: an `ask` request, or one of the questions of a `form`."
     },
     "State": {
       "type": "object",
@@ -2640,6 +2724,24 @@
         "state"
       ],
       "description": "The data of a `prompt` that carries a `request_id`, and of `continue_run`: where a run\nstands."
+    },
+    "Mentioned": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string",
+          "description": "The agent the text went to."
+        },
+        "started": {
+          "type": "boolean",
+          "description": "Whether the agent was started for it."
+        }
+      },
+      "required": [
+        "agent",
+        "started"
+      ],
+      "description": "The data of `agent_mention`."
     },
     "SessionCopy": {
       "type": "object",

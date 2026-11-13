@@ -43,6 +43,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `set_mode` | `mode` | Changes the permission mode of the session, for the lead and every sub-agent, running ones included: `plan`, `manual`, `accept-edits`, `auto` or `bypass`. `ask`, the old name of `manual`, is an error that names `manual`. `bypass` lifts every guard but deny rules and the push guard: a client that offers it should have its user confirm first | `{"mode": "..."}` |
 | `agent_send` | `to`, `message` | Messages a sub-agent by id, or `all` | `{"agents": [...]}`: ids reached |
 | `agent_stop` | `agent` | Stops a sub-agent and the agents it started, or `all` | `{"agents": [...]}`: ids stopped |
+| `agent_mention` | `name`, `text` | `@name text` as the user types it at a prompt: sends `text` to the sub-agent with the id `name`, or starts an agent from the definition of that name with `text` as its task (its report goes to the lead) | `{"agent": "scout-1", "started": true}`, or `null` when `name` is neither an agent nor a definition |
 | `approval_response` | `request_id`, `decision`, `feedback?` | Answers an `approval_request` | `null` |
 | `ui_response` | `request_id`, `value` | Answers a `ui_request`; `null` dismisses it | `null` |
 | `set_name` | `name` | Names the session | `null` |
@@ -202,21 +203,39 @@ Sent when an agent or extension asks the user something. Answer with `ui_respons
 
 | `kind` | Members | Expected `value` |
 |---|---|---|
-| `ask` | `question`, `context?`, `expects`, `options`, `multi`, `allow_freeform?` | What `expects` names: a list of the chosen options for `select` and `multiselect`, a string for `text`, `true` or `false` for `confirm`. See below |
+| `ask` | `question`, `context?`, `code?`, `diff?`, `expects`, `options`, `multi`, `recommended?`, `allow_freeform?` | What `expects` names: a list of the chosen options for `select` and `multiselect`, a string for `text`, `true` or `false` for `confirm`. See below |
+| `form` | `questions`: a list of questions, each with the members of an `ask` and an optional `header` | A list with one entry per question, in their order: what an `ask` of that question expects, or `null` for a question the user left open |
 | `confirm` | `prompt` | `true` or `false` |
 | `select` | `prompt`, `options` | The index of the chosen option (the option's text is accepted too) |
 | `input` | `prompt`, `secret?` | A string. A `secret` one (a key, a password) should not be shown as it is typed |
 | `plan` | `path`, `plan` | `true` to approve the plan, or a string of feedback to revise it |
 | `notify` | `level` (`info`, `warn`, `error`), `text` | None; no answer is expected |
 
-An `ask` request is a question of the `ask_user` tool (or of an extension). `context`, when present, is what the user needs to know and belongs above the question. `options` is empty for `text` and `confirm`; `multi` is `true` exactly when `expects` is `multiselect`. With `allow_freeform` the user may type an answer instead of choosing: send it as a string, or as a list with that one string. A single chosen option may be sent as a string too, and `yes` and `no` are accepted for a `confirm`.
+An `ask` request is a question of the `ask_user` tool (or of an extension). `context`, when present, is what the user needs to know and belongs above the question. `options` is empty for `text` and `confirm`; `multi` is `true` exactly when `expects` is `multiselect`. With `allow_freeform` the user may type an answer instead of choosing: send it as a string, or as a list with that one string. A single chosen option may be sent as a string too, and `yes` and `no` are accepted for a `confirm`. `code` or `diff` (never both) is source text the question is about, to be shown with it: code as it is written, a unified diff as a diff. `recommended` is the answer the agent would give, one of the `options` or `yes` or `no`: mark it, and start the selection on it.
+
+A `form` request is an `ask_user` call with several `questions`, to be answered together:
+
+```json
+{"type": "ui_request", "request_id": "r4", "kind": "form", "questions": [
+  {"question": "Which store?", "header": "Store", "expects": "select", "options": ["sqlite", "postgres"], "multi": false, "recommended": "postgres"},
+  {"question": "Anything else?", "expects": "text", "options": [], "multi": false}
+]}
+{"id": 9, "type": "ui_response", "request_id": "r4", "value": [["postgres"], null]}
+```
+
+`header` is a short name for the question (a tab, a label). A list shorter than the questions leaves the rest open, and so does an entry that is no answer to its question; `null` in place of the list dismisses the whole form.
 
 ### `user_input`
 
-Written by a [background session](background-and-remote.md) only: what a client sent the lead,
-`{"type": "user_input", "kind": "prompt", "text": "..."}` with `kind` `prompt`, `steer` or `follow_up`. It is in
-the session's log, in what a client that attaches later is replayed, and in what the session's other clients
-read, so all of them show what was asked. The client that sent the input is not sent the frame.
+Without `agent` it is written by a [background session](background-and-remote.md) only: what a client sent the
+lead, `{"type": "user_input", "kind": "prompt", "text": "..."}` with `kind` `prompt`, `steer` or `follow_up`. It
+is in the session's log, in what a client that attaches later is replayed, and in what the session's other
+clients read, so all of them show what was asked. The client that sent the input is not sent the frame.
+
+With `agent` it is what a sub-agent was handed, in every session:
+`{"type": "user_input", "kind": "prompt", "text": "...", "agent": "scout-1"}` for the task the agent started
+with and for each message sent to it since (by the user, by `agent_send`, or by another agent, whose message
+is wrapped in `<agent-message from="...">`). A client that shows an agent's work shows it there.
 
 ### `request_closed`
 

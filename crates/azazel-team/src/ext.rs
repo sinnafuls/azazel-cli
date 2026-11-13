@@ -12,8 +12,8 @@ use azazel_core::subagent::UNAVAILABLE;
 use azazel_core::transcript::condensed;
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension,
-    FileTracker, Outcome, Registrar, Rule, Scheme, SessionStore, SkillRegistry, SubagentRunner, Subagents,
-    SystemPartProvider,
+    FileTracker, Outcome, Post, Registrar, Rule, Scheme, SessionStore, SkillRegistry, SubagentRunner,
+    Subagents, SystemPartProvider,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -650,6 +650,15 @@ impl Extension for TeamExt {
                 max_depth: self.max_depth,
             }),
         );
+        // What is sent to an agent from outside its turn (the answers to a question it asked
+        // without waiting) finds the agent through the team.
+        let agents = Arc::downgrade(&services);
+        r.service(Arc::new(Post(Arc::new(move |id: &str, text: String| {
+            agents
+                .upgrade()
+                .and_then(|services| services.get::<Team>())
+                .is_some_and(|team| team.post(id, text))
+        }))));
         r.service(Arc::new(Subagents(Arc::new(Runner(services)))));
         r.command(Command {
             name: "agents".to_string(),

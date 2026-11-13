@@ -930,9 +930,12 @@ impl McpManager {
             text: "This project defines MCP servers that are new or have changed. Each one is a program \
                    or an address the project chose. Which may start?"
                 .to_string(),
+            header: None,
             context: None,
+            excerpt: None,
             kind: AskKind::Multiselect,
             options: options.clone(),
+            recommended: None,
             allow_freeform: false,
         };
         let Ok(chosen) = ui.0.ask(&question).await else {

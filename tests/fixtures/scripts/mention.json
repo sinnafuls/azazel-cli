@@ -1,0 +1,7 @@
+{
+  "lead": [{ "reply": { "text": "Noted." } }, { "reply": { "text": "Noted again." } }],
+  "scout": [
+    { "delay_ms": 200, "reply": { "text": "The retry policy is in src/retry.rs." } },
+    { "reply": { "text": "It is also read in src/net.rs." } }
+  ]
+}

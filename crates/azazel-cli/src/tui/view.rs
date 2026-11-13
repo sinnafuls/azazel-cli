@@ -310,13 +310,27 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
             field("action").unwrap_or_default(),
             field("id").unwrap_or_default()
         )),
-        "ask_user" => field("question").map(|question| {
-            match input.get("options").and_then(Value::as_array).map(Vec::len) {
-                Some(1) => format!("{question} (1 option)"),
-                Some(count) if count > 0 => format!("{question} ({count} options)"),
-                _ => question,
+        "ask_user" => match input.get("questions").and_then(Value::as_array) {
+            // A form is known by its first question and how many follow.
+            Some(questions) if !questions.is_empty() => {
+                let first = questions[0]
+                    .get("question")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                Some(match questions.len() {
+                    1 => first.to_string(),
+                    2 => format!("{first} (and 1 more question)"),
+                    count => format!("{first} (and {} more questions)", count - 1),
+                })
             }
-        }),
+            _ => field("question").map(|question| {
+                match input.get("options").and_then(Value::as_array).map(Vec::len) {
+                    Some(1) => format!("{question} (1 option)"),
+                    Some(count) if count > 0 => format!("{question} ({count} options)"),
+                    _ => question,
+                }
+            }),
+        },
         "todo" => input
             .get("items")
             .and_then(Value::as_array)
@@ -1041,6 +1055,13 @@ mod tests {
         assert_eq!(
             tool_summary("ask_user", &json!({"question": "Paint it?", "type": "confirm"})),
             "Paint it?"
+        );
+        assert_eq!(
+            tool_summary(
+                "ask_user",
+                &json!({"questions": [{"question": "Which store?"}, {"question": "Why?"}, {"question": "When?"}]})
+            ),
+            "Which store? (and 2 more questions)"
         );
         let pty = |input: Value| tool_summary("pty", &input);
         assert_eq!(

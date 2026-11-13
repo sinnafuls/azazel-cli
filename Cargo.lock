@@ -996,9 +996,11 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
  "which",
  "winsafe",
  "wiremock",
+ "zip",
 ]
 
 [[package]]

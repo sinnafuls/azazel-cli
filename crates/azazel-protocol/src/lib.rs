@@ -135,6 +135,10 @@ pub enum Command {
     AgentSend { to: String, message: String },
     /// Stops a sub-agent and the agents it started, or `all`.
     AgentStop { agent: String },
+    /// `@name text` as the user types it at a prompt: sends `text` to the sub-agent with the id
+    /// `name`, or starts an agent from the definition of that name with `text` as its task (its
+    /// report goes to the lead). Answers with [`Mentioned`], or `null` when `name` is neither.
+    AgentMention { name: String, text: String },
     /// Answers an `approval_request`.
     ApprovalResponse {
         request_id: String,
@@ -427,6 +431,45 @@ impl AskKind {
     }
 }
 
+/// A question from an agent: an `ask` request, or one of the questions of a `form`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Question {
+    pub question: String,
+    /// A word or two naming the question among the others of a form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    /// What the user needs to know to answer, to be shown with the question.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    /// Code the question is about, to be shown with it as it is written.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+    /// A unified diff the question is about, to be shown with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// Always sent; a client reads a request without it with [`AskKind::of`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expects: Option<AskKind>,
+    /// The choices of a `select` or `multiselect`; empty otherwise.
+    #[serde(default)]
+    pub options: Vec<String>,
+    /// Whether `expects` is `multiselect`.
+    #[serde(default)]
+    pub multi: bool,
+    /// The answer the agent would give: one of `options`, or `yes` or `no` for a `confirm`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_freeform: bool,
+}
+
+impl Question {
+    /// How the question is answered; see [`AskKind::of`].
+    pub fn kind(&self) -> AskKind {
+        AskKind::of(self.expects, &self.options, self.multi)
+    }
+}
+
 /// A question to the user. Answer with `ui_response` and a `value` of the kind shown.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -434,21 +477,11 @@ pub enum UiRequest {
     /// A question from an agent. Expects what `expects` says: a list of the chosen options
     /// (`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With
     /// `allow_freeform`, a string that is none of the options is an answer the user typed.
-    Ask {
-        question: String,
-        /// What the user needs to know to answer, to be shown with the question.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<String>,
-        /// Always sent; a client reads a request without it with [`AskKind::of`].
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        expects: Option<AskKind>,
-        /// The choices of a `select` or `multiselect`; empty otherwise.
-        options: Vec<String>,
-        /// Whether `expects` is `multiselect`.
-        multi: bool,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        allow_freeform: bool,
-    },
+    Ask(Question),
+    /// Several questions from an agent, to be answered together. Expects a list with one
+    /// entry per question, in their order: what an `ask` of that question expects, or `null`
+    /// for a question the user left open.
+    Form { questions: Vec<Question> },
     /// Expects `true` or `false`.
     Confirm { prompt: String },
     /// Expects the index of the chosen option; the option's text is accepted too.
@@ -609,12 +642,17 @@ pub enum Frame {
         id: Value,
         delta: String,
     },
-    /// Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or
-    /// `follow_up`. It is in the log, in what a later client is replayed and in what the other
-    /// clients read, never in what the sender itself reads.
+    /// What an agent was handed from outside its own work. Without `agent` (background
+    /// sessions only) it is what a client sent the lead: `kind` is `prompt`, `steer` or
+    /// `follow_up`; it is in the log, in what a later client is replayed and in what the other
+    /// clients read, never in what the sender itself reads. With `agent` it is what a sub-agent
+    /// was given: `kind` is `prompt`, for the task it started with and for every message sent
+    /// to it since.
     UserInput {
         kind: String,
         text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        agent: Option<String>,
     },
     /// Background sessions only: the `approval_request` or `ui_request` with this id no longer
     /// waits. Another client answered it, or whoever asked gave up.
@@ -753,6 +791,15 @@ pub struct RunState {
     /// The last thing the lead said in the run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+/// The data of `agent_mention`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Mentioned {
+    /// The agent the text went to.
+    pub agent: String,
+    /// Whether the agent was started for it.
+    pub started: bool,
 }
 
 /// One item of the lead's task list.
@@ -1007,6 +1054,7 @@ pub fn schema() -> Value {
     generator.subschema_for::<CommandResult>();
     generator.subschema_for::<Attached>();
     generator.subschema_for::<RunState>();
+    generator.subschema_for::<Mentioned>();
     generator.subschema_for::<SessionCopy>();
     generator.subschema_for::<CommandRow>();
     let definitions = generator.take_definitions(true);

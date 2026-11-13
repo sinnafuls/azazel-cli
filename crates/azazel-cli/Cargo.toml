@@ -104,7 +104,9 @@ toml_edit.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+uuid.workspace = true
 which.workspace = true
+zip.workspace = true
 
 # Linux records and plays through external programs: linking its audio library would stop the
 # binary from starting on machines without it.

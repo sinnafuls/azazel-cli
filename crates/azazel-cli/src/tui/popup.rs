@@ -157,6 +157,7 @@ impl Tui {
         popup.catch_up(&self.transcript);
 
         let (width, height) = (usize::from(columns), usize::from(rows));
+        self.refresh_pane(super::overlay::inner_width(width));
         let (lines, cursor) = match &self.overlay {
             Some(overlay) => overlay.render(modal::box_width(width), modal::box_rows(height), &self.theme),
             None => self

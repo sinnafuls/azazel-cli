@@ -98,6 +98,7 @@ pub(super) fn hub_keys() -> Vec<(KeyCombo, &'static str)> {
         (plain('m'), "message"),
         (plain('s'), "stop"),
         (plain('S'), "stop all"),
+        (plain('o'), "open"),
     ]
 }
 
@@ -180,7 +181,7 @@ impl Tui {
         };
         match target {
             Some(Target::Agent(id)) => {
-                if let Some(key) = ['m', 's', 'S'].get(key) {
+                if let Some(key) = ['m', 's', 'S', 'o'].get(key) {
                     self.hub_key(*key, &id).await;
                 }
             }
@@ -669,7 +670,12 @@ impl Tui {
 
 /// Whether an overlay takes text (and so the external editor key).
 pub(super) fn is_text_input(overlay: &Overlay) -> bool {
-    matches!(overlay.kind, Kind::Input { secret: false, .. })
+    match &overlay.kind {
+        Kind::Input { secret, .. } => !secret,
+        Kind::Form(form) => form.is_typing(),
+        Kind::Pane(_) => true,
+        Kind::Select { .. } => false,
+    }
 }
 
 #[cfg(test)]

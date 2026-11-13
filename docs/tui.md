@@ -105,10 +105,18 @@ manual · ⑂ main · ~/src/app                        ⬢ claude-opus-5-5
   [permissions](permissions.md#the-approval-prompt). A note about the call (it may cost money, it deletes
   files) is in the warning colour, and a call that would destroy work has the whole box in that colour, starts
   on `Deny` and can only be allowed once.
-- A question from the agent (`ask_user`) shows what the agent says you need to know, then the question, then
-  the choices: a list to pick from, check boxes with a `Done` row where several may be chosen, `Yes` and `No`,
-  or a line to type on. A list that ends with `Other…` lets you type your own answer instead. `Esc` declines;
-  the agent is told and goes on without an answer.
+- A question from the agent (`ask_user`) shows what the agent says you need to know, the code or the diff it
+  is about (code numbered, a diff coloured), then the question, then the choices: a list to pick from, check
+  boxes with a `Done` row where several may be chosen (`Enter` or `Space` ticks), `Yes` and `No`, or a line to
+  type on. The option the agent would take is marked `recommended` and is where the selection starts. A list
+  that ends with `Other…` lets you type your own answer under it; `Esc` there returns to the options. `Esc`
+  declines; the agent is told and goes on without an answer.
+- Several questions asked together are one box, a **form**, with a row of tabs on top: one per question, by
+  number and name, and `Send`. `Tab` and `Shift+Tab` turn the tabs, and so do `Left` and `Right` where nothing
+  is being typed. Answering a question puts a tick on its tab and brings the next open one into view; when
+  none is open the `Send` tab shows every answer, and `Enter` there sends them. You can go to `Send` at any
+  time: questions left open are sent without an answer, and the tab says how many are. `Esc` declines the
+  whole form.
 - A plan review shows the plan in the box. Text that does not fit (a long plan, a long command) ends with
   `… N more lines`; `Ctrl+O` opens all of it in the [full-screen viewer](#transcript-viewer) and `q` returns to
   the box.
@@ -327,14 +335,16 @@ always stays. Only then is the model shortened, and after that left out.
 | `F3` | `terminal` | Show the newest [terminal](#terminals) of a program an agent runs |
 | `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |
 
-`Esc` interrupts the lead only; stop sub-agents from the agent hub or with `/stop`. In the agent hub, `Enter`
-follows the selected agent's work in the transcript, `m` messages it, `s` stops it and `S` stops all.
+`Esc` interrupts the lead only; stop sub-agents from the roster, the agent hub or with `/stop`. In the agent
+hub, `Enter` follows the selected agent's work in the transcript, `o` opens it in a popup, `m` messages it,
+`s` stops it and `S` stops all.
 
 Editing keys in the input: arrows, `Home`/`End`, `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+Left`/`Ctrl+Right` or
 `Alt+B`/`Alt+F` (word), `Ctrl+W` and `Ctrl+Backspace` (delete word back), `Alt+D` and `Ctrl+Delete` (delete word
 forward), `Ctrl+U` (delete to line start), `Ctrl+K` (delete to line end), `Ctrl+Z` (undo), `Ctrl+Shift+Z` (redo).
 `Up` on the first line and `Down` on the last walk through earlier prompts, those of earlier sessions of the
-project included; see [prompt history](sessions-and-checkpoints.md#prompt-history).
+project included; see [prompt history](sessions-and-checkpoints.md#prompt-history). `Down` in an empty input
+goes to the roster while sub-agents are at work; see [the fleet view](#the-fleet-view).
 
 What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
 one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
@@ -346,6 +356,47 @@ favourites the keys step through `@default`, `@smol` and `@slow`.
 
 `Ctrl+B` works while a `shell` command the agent started is running. The command goes on as a background job
 (it is not started again), the agent's call returns at once with the job's id, and `/jobs` lists it.
+
+### The fleet view
+
+While sub-agents are at work the roster above the input is a list you can move in. `Down` in an empty input
+puts the keyboard on its first row; a line under the rows names the keys:
+
+| Key | Effect |
+|---|---|
+| `Up`, `Down` | Move between the agents. `Up` from the first row returns to the input |
+| `Enter` | Opens the selected agent in a popup |
+| `x` | Stops the selected agent and the agents it started |
+| `Esc` | Returns to the input. Any other key does too, and is typed there |
+
+The popup shows the agent at work: the task it was given and every message sent to it since, what it says as
+it is written, its reasoning when thinking is shown, and its tool calls as the cards the transcript shows,
+running ones with their time and last output. The title says how the agent stands (`scout-1 · scout ·
+running: grep TODO · 42s · 3.4k tokens`). It follows the newest rows; `PgUp` and `PgDn` scroll, and with
+nothing typed so do `Up`, `Down`, `Home` and `End`. What the popup shows is kept from the moment the UI
+opened on the session, the newest 400 items per agent; the agent's transcript file has everything.
+
+The line at the bottom is for the agent: what you type and send with `Enter` reaches it as a steer message
+before its next request, or starts it again when it has finished (`Shift+Enter` adds a line, the
+`external_editor` key opens your editor). `Ctrl+X` stops the agent, `Esc` closes the popup; the agent goes on
+either way. `@scout-1` alone at the prompt, and `o` in the agent hub, open the same popup for any agent of
+the session, finished ones included.
+
+### Mentions
+
+A prompt that starts with `@` and the id of a sub-agent, or the name of an [agent definition](team.md), is
+for that agent and not for the lead:
+
+```text
+❯ @scout-1 also check the Windows path
+❯ @scout where is the retry policy configured?
+```
+
+The first sends the text to `scout-1` as `/msg scout-1 ...` does. The second starts a new `scout` with the
+text as its task, as `/task scout ...` does: it appears in the roster and its report goes to the lead when it
+is done. An id is looked for before a definition. Typing `@` at the start of a prompt offers the agents and
+the definitions before the files; a name that is neither is an ordinary [file mention](#input-prefixes)
+and the prompt goes to the lead.
 
 ### Queued messages and stashed drafts
 
@@ -457,6 +508,8 @@ Session and display:
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
 | `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
+| `/share` | Upload the conversation, secrets hidden, as a secret gist and print its link; asks first |
+| `/bug [what went wrong]` | Write a bug report to a zip and offer to open an issue |
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
@@ -476,7 +529,8 @@ Session and display:
 | `/quit`, `/exit` | Exit |
 
 `/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,
-`/rewind`, `/compact` and `/export` are covered in [sessions and checkpoints](sessions-and-checkpoints.md).
+`/rewind`, `/compact`, `/export`, `/share` and `/bug` are covered in
+[sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
 

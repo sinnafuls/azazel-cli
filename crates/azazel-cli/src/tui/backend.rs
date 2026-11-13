@@ -22,7 +22,7 @@ use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
 use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
-use azazel_team::{Goals, MemberInfo, Team, TeamEvent};
+use azazel_team::{Goals, MemberInfo, Mentioned, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
@@ -297,6 +297,16 @@ pub(crate) trait Backend: Send {
 
     /// Messages a sub-agent. Returns who was reached.
     async fn message_agent(&mut self, id: &str, message: &str) -> Result<Vec<String>, String>;
+
+    /// `@name text` typed at the prompt: `text` goes to the sub-agent with the id `name`, or
+    /// starts an agent from the definition of that name. `None` when `name` is neither.
+    async fn mention(&mut self, name: &str, text: &str) -> Option<Result<Mentioned, String>>;
+
+    /// The definitions an agent can be started from, as `(name, description)`, for completing
+    /// `@`. None for a session elsewhere, whose definitions are not this machine's.
+    fn agent_defs(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
 
     /// Leaves the session as the UI ends: a local one is closed, a remote one goes on or
     /// ends as its own process decides.
@@ -890,6 +900,21 @@ impl Backend for Local {
     async fn message_agent(&mut self, id: &str, message: &str) -> Result<Vec<String>, String> {
         let team = self.team.as_ref().ok_or("this session has no team")?;
         team.send_from_user(id, message)
+    }
+
+    async fn mention(&mut self, name: &str, text: &str) -> Option<Result<Mentioned, String>> {
+        self.team.as_ref()?.mention(name, text).await
+    }
+
+    fn agent_defs(&self) -> Vec<(String, String)> {
+        let Some(team) = &self.team else {
+            return Vec::new();
+        };
+        team.defs()
+            .list()
+            .iter()
+            .map(|def| (def.name.clone(), def.description.clone()))
+            .collect()
     }
 
     async fn finish(&mut self) {

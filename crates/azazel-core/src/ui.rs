@@ -74,15 +74,39 @@ pub enum AskKind {
     Confirm,
 }
 
+/// Source text a [`Question`] is about, shown between its context and the question itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Excerpt {
+    /// Code, or any text to be read as it is written.
+    Code(String),
+    /// A unified diff.
+    Diff(String),
+}
+
+impl Excerpt {
+    pub fn text(&self) -> &str {
+        match self {
+            Excerpt::Code(text) | Excerpt::Diff(text) => text,
+        }
+    }
+}
+
 /// A question an agent puts to the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Question {
     pub text: String,
+    /// A word or two naming the question where several are asked together.
+    pub header: Option<String>,
     /// What the user needs to know to answer, shown above the question.
     pub context: Option<String>,
+    /// The code or the diff the question is about.
+    pub excerpt: Option<Excerpt>,
     pub kind: AskKind,
     /// The choices of a `Select` or `Multiselect`; empty for the other kinds.
     pub options: Vec<String>,
+    /// The option the agent would take: one of `options`, or `yes` or `no` for a `Confirm`. An
+    /// interface marks it and starts on it.
+    pub recommended: Option<String>,
     /// A `Select` whose user may type an answer instead of choosing one.
     pub allow_freeform: bool,
 }
@@ -94,9 +118,12 @@ impl Question {
     pub fn text(text: impl Into<String>) -> Self {
         Question {
             text: text.into(),
+            header: None,
             context: None,
+            excerpt: None,
             kind: AskKind::Text,
             options: Vec::new(),
+            recommended: None,
             allow_freeform: false,
         }
     }
@@ -108,6 +135,18 @@ pub trait UiBridge: Send + Sync {
     /// typed when the question allows that; of a `Multiselect`, the chosen options; of a `Text`,
     /// what was typed; of a `Confirm`, `yes` or `no`.
     async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError>;
+
+    /// Several questions put to the user together. The answers come in the order of the
+    /// questions, each as [`UiBridge::ask`] gives it; a question the user left open has none.
+    /// An interface without a form asks them one after another, and a question dismissed there
+    /// dismisses them all.
+    async fn ask_form(&self, questions: &[Question]) -> Result<Vec<Vec<String>>, UiError> {
+        let mut answers = Vec::with_capacity(questions.len());
+        for question in questions {
+            answers.push(self.ask(question).await?);
+        }
+        Ok(answers)
+    }
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError>;
 
@@ -135,6 +174,14 @@ pub trait UiBridge: Send + Sync {
 
 /// The service under which the active bridge is registered.
 pub struct Ui(pub Arc<dyn UiBridge>);
+
+/// Hands text to an agent of the session from outside its turn, by the agent's id: a steer
+/// message while it works, a new prompt when it is idle. False when the agent is gone.
+/// Registered as a service by whoever runs the agents.
+pub struct Post(pub Arc<PostFn>);
+
+/// What [`Post`] calls: the agent's id and the text; false when the agent is gone.
+pub type PostFn = dyn Fn(&str, String) -> bool + Send + Sync;
 
 /// The bridge when no user is attached: questions fail, notifications go to the log.
 pub struct Headless;
