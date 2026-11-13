@@ -266,7 +266,9 @@ fn questions_say_what_they_expect_and_an_approval_can_hold_for_the_session() {
 
 #[test]
 fn several_questions_are_one_form_and_an_async_answer_arrives_as_a_message() {
-    let mut client = Client::start("forms.json");
+    // The session is not named: the name would be asked of the lead's model, whose last reply
+    // is for the run the answer starts.
+    let mut client = Client::start_with("forms.json", "[session]\nauto_name = false\n");
     let (_, accepted) = client.ask(1, json!({ "type": "prompt", "text": "set the store up" }));
     assert_eq!(accepted["success"], true);
 
@@ -356,8 +358,9 @@ fn several_questions_are_one_form_and_an_async_answer_arrives_as_a_message() {
 
 #[test]
 fn a_mention_starts_an_agent_or_messages_it_and_what_it_is_handed_is_told() {
-    // Scouts answer from a queue of their own.
-    let mut client = Client::start_with("mention.json", "[roles]\nsmol = [\"mock/scout\"]\n");
+    // Scouts answer from a queue of their own, which naming the session must not take from.
+    let config = "[roles]\nsmol = [\"mock/scout\"]\n\n[session]\nauto_name = false\n";
+    let mut client = Client::start_with("mention.json", config);
     let (_, neither) = client.ask(
         1,
         json!({ "type": "agent_mention", "name": "ghost", "text": "do it" }),

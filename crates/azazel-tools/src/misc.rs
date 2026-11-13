@@ -511,9 +511,18 @@ fn form_text(questions: &[Question], answers: &[Vec<String>]) -> String {
         .join("\n\n")
 }
 
-/// Puts `questions` to the user and says what came of it: the text for the agent, and the
-/// details for whoever shows the call.
-async fn put(ui: &dyn UiBridge, questions: &[Question]) -> (String, Value) {
+/// What came of putting questions to the user.
+struct Put {
+    /// What the agent reads.
+    text: String,
+    /// What whoever shows the call reads.
+    details: Value,
+    /// Whether the user answered, rather than dismissing the questions or not being there.
+    answered: bool,
+}
+
+/// Puts `questions` to the user and says what came of it.
+async fn put(ui: &dyn UiBridge, questions: &[Question]) -> Put {
     let reason = |error: UiError| match error {
         UiError::Cancelled => "the user dismissed the question".to_string(),
         other => other.to_string(),
@@ -525,32 +534,40 @@ async fn put(ui: &dyn UiBridge, questions: &[Question]) -> (String, Value) {
                     true => "(the user gave no answer)".to_string(),
                     false => answers.join("\n"),
                 };
-                (text, ask_details(question, Some(&answers), None))
+                Put {
+                    text,
+                    details: ask_details(question, Some(&answers), None),
+                    answered: true,
+                }
             }
-            Err(error) => (
-                DECLINED.to_string(),
-                ask_details(question, None, Some(&reason(error))),
-            ),
+            Err(error) => Put {
+                text: DECLINED.to_string(),
+                details: ask_details(question, None, Some(&reason(error))),
+                answered: false,
+            },
         };
     }
     match ui.ask_form(questions).await {
-        Ok(answers) => (
-            form_text(questions, &answers),
-            form_details(questions, Some(&answers), None),
-        ),
-        Err(error) => (
-            DECLINED.to_string(),
-            form_details(questions, None, Some(&reason(error))),
-        ),
+        Ok(answers) => Put {
+            text: form_text(questions, &answers),
+            details: form_details(questions, Some(&answers), None),
+            answered: true,
+        },
+        Err(error) => Put {
+            text: DECLINED.to_string(),
+            details: form_details(questions, None, Some(&reason(error))),
+            answered: false,
+        },
     }
 }
 
 /// The message in which the answers to an `async` call reach the agent that asked.
-fn answer_message(questions: &[Question], said: &str) -> String {
-    let body = match (questions, said == DECLINED) {
+fn answer_message(questions: &[Question], put: &Put) -> String {
+    let said = &put.text;
+    let body = match (questions, put.answered) {
         // A form names its questions itself.
-        (_, false) if questions.len() > 1 => said.to_string(),
-        ([question], false) => format!("{}\n{said}", question.text),
+        (_, true) if questions.len() > 1 => said.clone(),
+        ([question], true) => format!("{}\n{said}", question.text),
         _ => {
             let asked: Vec<&str> = questions.iter().map(|question| question.text.as_str()).collect();
             format!("{DECLINED}: {}", asked.join(" / "))
@@ -643,11 +660,11 @@ impl Tool for AskUserTool {
         if later {
             return ask_later(ui, questions, ctx);
         }
-        let (text, details) = tokio::select! {
+        let put = tokio::select! {
             _ = ctx.cancel.cancelled() => return ToolOutput::error("aborted by user"),
-            answered = put(ui.0.as_ref(), &questions) => answered,
+            put = put(ui.0.as_ref(), &questions) => put,
         };
-        ToolOutput::text(text).with_details(details)
+        ToolOutput::text(put.text).with_details(put.details)
     }
 }
 
@@ -665,8 +682,8 @@ fn ask_later(ui: Arc<Ui>, questions: Vec<Question>, ctx: &ToolCtx) -> ToolOutput
     };
     let count = questions.len();
     tokio::spawn(async move {
-        let (said, _) = put(ui.0.as_ref(), &questions).await;
-        let message = answer_message(&questions, &said);
+        let put = put(ui.0.as_ref(), &questions).await;
+        let message = answer_message(&questions, &put);
         // Whoever runs the agents knows how to reach each; the lead alone is reached as a
         // `wake` hook reaches it.
         let mut posted = services
@@ -680,11 +697,11 @@ fn ask_later(ui: Arc<Ui>, questions: Vec<Question>, ctx: &ToolCtx) -> ToolOutput
             posted = true;
         }
         // The call that asked ended long ago: this is where the user sees what came of it.
-        match (posted, said == DECLINED) {
-            (true, false) => {
+        match (posted, put.answered) {
+            (true, true) => {
                 ui.0.notify(Level::Info, &format!("your answer was sent to {agent}"))
             }
-            (true, true) => ui.0.notify(
+            (true, false) => ui.0.notify(
                 Level::Info,
                 &format!("{agent} was told that you declined to answer"),
             ),
