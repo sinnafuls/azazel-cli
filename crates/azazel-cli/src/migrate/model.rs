@@ -105,6 +105,23 @@ impl Kind {
         }
     }
 
+    /// So many things of the kind, in words: `1 skill`, `3 MCP servers`.
+    pub fn counted(self, count: usize) -> String {
+        let (one, many) = match self {
+            Kind::Models => ("model or role", "models and roles"),
+            Kind::Keys => ("key or sign-in", "keys and sign-ins"),
+            Kind::Skills => ("skill", "skills"),
+            Kind::Commands => ("command", "commands"),
+            Kind::Agents => ("agent", "agents"),
+            Kind::Mcp => ("MCP server", "MCP servers"),
+            Kind::Rules => ("rule file", "rule files"),
+            Kind::Settings => ("setting", "settings"),
+            Kind::Chats => ("chat", "chats"),
+            Kind::Memory => ("memory", "memories"),
+        };
+        format!("{count} {}", if count == 1 { one } else { many })
+    }
+
     /// What the kind covers, for a list of kinds to choose from.
     pub fn about(self) -> &'static str {
         match self {

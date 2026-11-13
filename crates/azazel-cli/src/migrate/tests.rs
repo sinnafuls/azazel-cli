@@ -38,10 +38,11 @@ impl Sandbox {
         let dir = tempfile::tempdir().unwrap();
         copy_dir(&fixture(source).join("home"), &dir.path().join("home"));
         let project = fixture(source).join("project");
-        match project.is_dir() {
-            true => copy_dir(&project, &dir.path().join("project")),
-            false => std::fs::create_dir_all(dir.path().join("project")).unwrap(),
+        if project.is_dir() {
+            copy_dir(&project, &dir.path().join("project"));
         }
+        // The project is its own root, whatever lies above the temporary directory.
+        std::fs::create_dir_all(dir.path().join("project/.git")).unwrap();
         Sandbox { dir }
     }
 
@@ -489,6 +490,12 @@ fn omp_roles_follow_models_that_moved_and_settings_take_azazels_names() {
     );
     assert_eq!(found.chats[0].title.as_deref(), Some("Fix the cart total"));
     assert_eq!(found.chats[0].cwd.as_deref(), Some(Path::new("/work/shop")));
+    // A file that does not begin as a session is no conversation, and is said.
+    assert_eq!(found.chats.len(), 1);
+    assert!(lossy(
+        &found,
+        "1 session files do not start with a session header"
+    ));
 }
 
 #[test]
@@ -527,9 +534,10 @@ fn an_omp_session_gets_its_images_back_and_its_sub_agents_along() {
         ["1 messages on branches that were left are not imported"]
     );
 
-    assert_eq!(chat.agents.len(), 1);
-    let (name, scout) = &chat.agents[0];
-    assert_eq!(name, "Scout");
+    // Its sub-agent, and the sub-agent that one started.
+    let names: Vec<&str> = chat.agents.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Scout", "Scout.Helper"]);
+    let (_, scout) = &chat.agents[0];
     assert_eq!(
         spoken(&scout.turns),
         [
@@ -554,7 +562,8 @@ fn omp_databases(agent: &Path, project: &Path) {
             ('lm-studio', 'api_key', '{\"key\":\"test-key-lmstudio\"}', NULL),
             ('zai', 'api_key', '{\"key\":\"test-key-removed\"}', 'deleted by user'),
             ('openai-codex', 'oauth', '{\"access\":\"a\",\"refresh\":\"r\",\"expires\":1,\"email\":\"old@example.com\"}', 'oauth refresh failed'),
-            ('openai-codex', 'oauth', '{\"access\":\"a\",\"refresh\":\"r\",\"expires\":1,\"email\":\"dev@example.com\"}', NULL);",
+            ('openai-codex', 'oauth', '{\"access\":\"a\",\"refresh\":\"r\",\"expires\":1,\"email\":\"dev@example.com\"}', NULL),
+            ('anthropic', 'oauth', '{\"access\":\"a\",\"refresh\":\"r\",\"expires\":1}', NULL);",
     )
     .unwrap();
     let bank = agent.join("memories/mnemopi/banks/shop-1abc");
@@ -600,7 +609,7 @@ async fn omp_keys_and_memories_come_out_of_its_databases() {
         .collect();
     // Credentials omp marked as removed are not among them.
     assert_eq!(from_database, ["openrouter", "openrouter", "lmstudio"]);
-    assert_eq!(found.logins.len(), 1);
+    assert_eq!(found.logins.len(), 2);
     assert_eq!(found.logins[0].who.as_deref(), Some("dev@example.com"));
     assert_eq!(found.memories.len(), 1);
     assert_eq!(found.memories[0].scope, Scope::Project(sandbox.project()));
@@ -617,7 +626,14 @@ async fn omp_keys_and_memories_come_out_of_its_databases() {
     assert_eq!(key("openrouter"), "test-key-openrouter-one");
     assert_eq!(key("openrouter#omp-2"), "test-key-openrouter-two");
     assert_eq!(key("lmstudio"), "test-key-lmstudio");
-    assert_eq!(key("anthropic"), "test-key-anthropic-env");
+    // omp signs in to Anthropic: the key it also has for it would change who is billed.
+    assert!(!keys.contains_key("anthropic"));
+    let skipped = report.of(Source::Omp, Kind::Keys, Status::Skipped).join("\n");
+    assert!(
+        skipped
+            .contains("anthropic: omp signs in to it, so its key from .env (ANTHROPIC_API_KEY) is left out"),
+        "{skipped}"
+    );
     // A key of a provider that only exists in omp's models.yml is not stored without it.
     assert!(!keys.contains_key("gate"));
     assert!(report.of(Source::Omp, Kind::Keys, Status::Lossy)[0].contains("azazel has no provider"));
@@ -625,7 +641,10 @@ async fn omp_keys_and_memories_come_out_of_its_databases() {
     let logins = report.of(Source::Omp, Kind::Keys, Status::Login);
     assert_eq!(
         logins,
-        ["openai-codex (d***@example.com): sign-ins are not copied; run `azazel login openai-codex`"]
+        [
+            "openai-codex (d***@example.com): sign-ins are not copied; run `azazel login openai-codex`",
+            "anthropic: sign-ins are not copied; run `azazel login anthropic`",
+        ]
     );
     assert!(!keys.contains_key("openai-codex"));
     // No key shows in the report.
@@ -804,8 +823,9 @@ fn claude_settings_become_rules_modes_and_keys_azazel_has() {
     );
     assert!(lossy(&found, "hooks: not converted"));
 
+    // An API key: the account beside it is the Console's that made the key, no subscription.
     assert_eq!(found.keys[0].provider, "anthropic");
-    assert_eq!(found.logins[0].who.as_deref(), Some("dev@example.com"));
+    assert!(found.logins.is_empty());
     let servers: Vec<(&str, &Scope)> = found
         .servers
         .iter()
@@ -863,6 +883,26 @@ fn claude_settings_become_rules_modes_and_keys_azazel_has() {
     let site = Scope::Project(project.to_path_buf());
     assert_eq!(memories, [("convention", &site), ("preference", &site)]);
     assert!(found.memories[0].text.starts_with("Run `npm run test:visual`"));
+}
+
+#[tokio::test]
+async fn a_claude_subscription_is_a_sign_in_to_repeat_and_keeps_a_stray_key_out() {
+    let sandbox = Sandbox::new("claude");
+    std::fs::write(
+        sandbox.path("home/.claude/.credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1,"subscriptionType":"max"}}"#,
+    )
+    .unwrap();
+    let report = sandbox
+        .migrate(Source::Claude, &Options::new(vec![Kind::Keys], false, false))
+        .await;
+    assert_eq!(
+        report.of(Source::Claude, Kind::Keys, Status::Login),
+        ["anthropic (d***@example.com): sign-ins are not copied; run `azazel login anthropic`"]
+    );
+    // Nothing is stored: not the sign-in, and not the key that would be billed in its place.
+    assert!(sandbox.keys().is_empty());
+    assert_eq!(report.count(Status::Imported), 0, "{}", report.render());
 }
 
 #[test]

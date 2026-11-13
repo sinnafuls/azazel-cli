@@ -110,12 +110,14 @@ pub async fn migrate(paths: &Paths, found: &[Found], options: &Options) -> Repor
         }
         None => paths.home.clone(),
     };
+    let mut planned = write::Planned::default();
     for found in found {
         report.sources.push((found.source, found.root.clone()));
         let mut run = write::Run {
             paths,
             options,
             report: &mut report,
+            planned: &mut planned,
             source: found.source,
             config_home: config_home.clone(),
         };
@@ -167,13 +169,13 @@ pub fn parse_kinds(names: &[String]) -> Result<Vec<Kind>, String> {
     })
 }
 
-/// What a source holds, in a line: `16 models, 3 keys, 240 chats`.
+/// What a source holds, in a line: `16 models and roles, 3 keys, 240 chats`.
 pub fn counts(found: &Found) -> String {
     let parts: Vec<String> = Kind::ALL
         .into_iter()
         .filter_map(|kind| match found.count(kind) {
             0 => None,
-            count => Some(format!("{count} {}", kind.name())),
+            count => Some(kind.counted(count)),
         })
         .collect();
     match parts.is_empty() {

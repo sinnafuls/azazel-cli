@@ -510,7 +510,7 @@ pub fn scan(env: &Env, project: &Path) -> Option<Found> {
     pi::mcp_servers(&mut found, &root.join("mcp.json"), &home, true);
     pi::mcp_servers(&mut found, &ours.join("mcp.json"), &here, true);
 
-    found.chats = pi::session_files(&root.join("sessions"));
+    pi::session_files(&mut found, &root.join("sessions"));
     memories(&mut found, &root.join("memories").join("mnemopi"));
     Some(found)
 }

@@ -132,6 +132,8 @@ Without a client name all five are read. In a terminal you are asked which serve
 
 `${env:NAME}` becomes `${NAME}`. Variables azazel does not fill in, such as `${workspaceFolder}` and `${input:...}`, are copied as written and named in the listing so you can edit the entry afterwards. A project's `.mcp.json` needs no import: azazel reads it where it is.
 
+The servers of pi, omp, jcode and Codex CLI, and Claude Code's together with everything else it holds, come over with [`azazel migrate --only mcp`](migrating.md#mcp-servers).
+
 ## Tools
 
 Each server tool becomes a tool named `mcp__<server>__<tool>`; characters outside `A-Z a-z 0-9 _ -` in either part become `_`. The server's input schema is passed through unchanged.

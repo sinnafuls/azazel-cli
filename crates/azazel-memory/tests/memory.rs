@@ -268,6 +268,42 @@ const DEPLOY: &str = "The deploy script lives in tools/release.sh";
 const MIGRATIONS: &str = "Database migrations run at startup";
 
 /// The vector the fake embeddings server gives a text: one axis per topic, not normalised.
+#[tokio::test]
+async fn memories_from_another_program_are_stored_once_in_the_scope_they_belong_to() {
+    let home = home();
+    let store = open(&home, &quiet()).store();
+    store
+        .save("Indent with tabs.", "convention", &[], Scope::Project, None)
+        .await
+        .unwrap();
+    let tags = vec!["imported".to_string(), "elsewhere".to_string()];
+    let rows = vec![
+        // The same but for case and spacing as one that is there.
+        ("indent   with TABS.".to_string(), "convention"),
+        ("The API listens on 8080.".to_string(), "fact"),
+        ("The API listens on 8080.".to_string(), "fact"),
+    ];
+    assert_eq!(store.import(&rows, &tags, Scope::Project).await.unwrap(), (1, 2));
+    let project = store.list(Scope::Project).await.unwrap();
+    assert_eq!(texts(&project), ["The API listens on 8080.", "Indent with tabs."]);
+    assert_eq!(project[0].tags, tags);
+    // The other scope knows none of them.
+    assert_eq!(
+        store.import(&rows[..2], &tags, Scope::Global).await.unwrap(),
+        (2, 0)
+    );
+    assert_eq!(store.list(Scope::Global).await.unwrap().len(), 2);
+    // A kind azazel does not have is refused before anything is stored.
+    let odd = vec![("x".to_string(), "rumour")];
+    assert!(
+        store
+            .import(&odd, &tags, Scope::Project)
+            .await
+            .unwrap_err()
+            .contains("unknown kind")
+    );
+}
+
 fn topic_vector(text: &str) -> Vec<f32> {
     let text = text.to_lowercase();
     let about = |words: &[&str]| words.iter().any(|word| text.contains(word));

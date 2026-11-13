@@ -110,7 +110,9 @@ fn a_dry_run_prints_the_plan_and_a_run_brings_it_over() {
     // What was found is said before anything is done.
     let stderr = text(&plan.stderr);
     assert!(
-        stderr.contains("pi: 3 models, 3 keys, 1 skills, 1 commands, 2 mcp, 1 rules"),
+        stderr.contains(
+            "pi: 3 models and roles, 3 keys and sign-ins, 1 skill, 1 command, 2 MCP servers, 1 rule file"
+        ),
         "{stderr}"
     );
 

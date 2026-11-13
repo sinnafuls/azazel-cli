@@ -105,6 +105,10 @@ azazel doctor    # report what was found: config files, credentials, roles, shel
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) or in `auth.json`, and local servers such as Ollama
 that answer. `azazel doctor` exits with code 1 when it finds an error.
 
+Coming from pi, omp, jcode, Claude Code or Codex CLI? `azazel migrate --dry-run` shows what `azazel migrate`
+would bring over: models and roles, API keys, skills, commands, MCP servers, settings, conversations and
+memory. See [migrating](migrating.md).
+
 To try a model without saving anything:
 
 ```sh

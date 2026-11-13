@@ -15,8 +15,9 @@ GitHub are its section here.
   the conversations of every project (as sessions named `imported from <source>: <title>`, with thinking,
   images, tool calls and results, the model of each reply, compactions and sub-agents' transcripts) and
   memories. The source is only read; nothing that is there is replaced without `--overwrite`; sign-ins are
-  never copied but listed with the `azazel login <provider>` to run; a second run skips what is already
-  there. A report lists everything imported, skipped and lost. `/migrate` shows the harnesses found with
+  never copied but listed with the `azazel login <provider>` to run, and a key of a provider the source
+  signs in to is left out, so that nothing is billed to a key by surprise; a second run skips what is
+  already there. A report lists everything imported, skipped and lost. `/migrate` shows the harnesses found with
   their counts, lets you untick sources and kinds, and shows the plan of a dry run before it writes. See
   `docs/migrating.md`.
 

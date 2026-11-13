@@ -341,10 +341,15 @@ impl Providers {
     /// A chain of selectors, without the ones azazel cannot use; those are noted on `found`
     /// under `what` (`role smol`).
     pub fn chain(&self, found: &mut Found, what: &str, selectors: &[String]) -> Vec<String> {
-        let mut chain = Vec::new();
+        let mut chain: Vec<String> = Vec::new();
+        // A model is in a chain once, whatever effort it is named with a second time.
+        let model = |spec: &str| match spec.parse::<ModelSpec>() {
+            Ok(ModelSpec::Model(model)) => model.key(),
+            _ => spec.to_string(),
+        };
         for selector in selectors {
             match self.spec(selector) {
-                Ok(spec) if chain.contains(&spec) => {}
+                Ok(spec) if chain.iter().any(|known| model(known) == model(&spec)) => {}
                 Ok(spec) => chain.push(spec),
                 Err(why) => found.lossy(Kind::Models, format!("{what}: `{selector}` is left out: {why}")),
             }

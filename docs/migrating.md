@@ -13,8 +13,10 @@ azazel migrate --from claude --project ~/code/site
 ```
 
 In the terminal UI, `/migrate` does the same in a popup: it lists the harnesses it found with what each
-holds, lets you untick sources and kinds, shows the plan of a dry run (`ctrl+o` reads all of it), and brings
-it over when you confirm. The report opens full screen when it is done.
+holds (`omp: 21 models and roles, 13 keys and sign-ins, 239 chats, ...`), lets you untick sources and kinds,
+shows the plan of a dry run (`ctrl+o` reads all of it), and brings it over when you confirm. The report opens
+full screen when it is done. `/migrate` never replaces what is there; for that, run `azazel migrate
+--overwrite`.
 
 | Flag | Meaning |
 |---|---|
@@ -84,6 +86,10 @@ of the same provider from the same source becomes an account beside it (`openrou
 [several accounts](models-and-logins.md#several-accounts)). A key that is already stored is skipped, and a
 key of a provider azazel does not have is left out.
 
+A key is also left out when the source signs in to the same provider: the source used the subscription, and
+a stored key would become the account azazel asks with and be billed for what the subscription covered. The
+report names the key and the command that stores it anyway (`azazel login <provider> --key`).
+
 **Sign-ins are never copied.** A copied refresh token ends the login of the program it was taken from the
 first time either side refreshes it. Every sign-in found (a Claude or ChatGPT subscription, Copilot, ...) is
 listed with the command to run, its e-mail address cut to its first letter:
@@ -93,7 +99,9 @@ sign in       anthropic (d***@example.com): sign-ins are not copied; run `azazel
 ```
 
 No key is ever printed, in the report or anywhere else. Credentials omp marked as removed or failed are not
-read. Claude Code keeps its subscription login in the system's keychain on macOS, where it is not looked for.
+read. Claude Code's subscription is recognised by its `.credentials.json`; on macOS it keeps that login in the
+system's keychain, where it is not looked for. An account named in `.claude.json` beside an API key is the
+Console account the key came from, not a sign-in.
 
 ### Skills, commands and agents
 
@@ -171,7 +179,7 @@ be followed are counted in the report. A project's `AGENTS.md`, and its `CLAUDE.
   `auto`, never `bypass`: `auto` still asks before a
   [destructive command](permissions.md#destructive-commands). The report says so, and how to lift that.
 - Every value is written through azazel's own configuration check: one azazel would refuse is reported as
-  failed and the file stays as it was.
+  failed and the file stays as it was. A value that is azazel's default anyway is not written.
 - Settings without an equivalent are named in the report: hooks (their commands read the other harness's
   tool names and inputs), key bindings, extensions, omp's disabled providers, Codex's profiles and sandbox
   details, and whatever else the source's file holds that azazel has no key for. A project's own

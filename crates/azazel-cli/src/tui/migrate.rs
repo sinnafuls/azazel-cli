@@ -48,7 +48,7 @@ impl Offer {
             .into_iter()
             .filter_map(|kind| {
                 let total: usize = found.iter().map(|found| found.count(kind)).sum();
-                (total > 0).then(|| (kind, format!("{} ({total}): {}", kind.name(), kind.about())))
+                (total > 0).then(|| (kind, format!("{}: {}", kind.counted(total), kind.about())))
             })
             .collect();
         Offer {
@@ -161,7 +161,9 @@ impl Tui {
                         .info("the harnesses found hold nothing azazel does not already read where it is");
                 }
                 let form = offer.form(&format!("Other{}", self.theme.glyph(Glyph::Ellipsis)));
-                self.overlay = Some(Overlay::form(form, Action::Migrate(Box::new(offer))));
+                let mut overlay = Overlay::form(form, Action::Migrate(Box::new(offer)));
+                overlay.title = "Migrate".to_string();
+                self.overlay = Some(overlay);
             }
             Step::Plan(pick, report) => {
                 self.notice = None;
@@ -234,7 +236,7 @@ mod tests {
         let offer = Offer::of(vec![omp, claude]);
         assert_eq!(
             offer.sources,
-            ["omp: 1 chats", "Claude Code: nothing to bring over"]
+            ["omp: 1 chat", "Claude Code: nothing to bring over"]
         );
         // Only what some source has is offered.
         let kinds: Vec<Kind> = offer.kinds.iter().map(|(kind, _)| *kind).collect();

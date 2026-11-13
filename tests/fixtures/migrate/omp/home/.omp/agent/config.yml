@@ -30,6 +30,7 @@ hideThinkingBlock: true
 retry:
   fallbackChains:
     advisor:
+      - openrouter/vendor/model-x:high
       - gate/small-chat:high
     gate/small-chat:
       - anthropic/claude-test-1

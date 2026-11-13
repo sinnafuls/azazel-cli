@@ -364,9 +364,10 @@ pub fn scan(env: &Env, project: &Path) -> Option<Found> {
         .get("oauthAccount")
         .and_then(|account| account.get("emailAddress"))
         .and_then(Value::as_str);
-    let signed_in = read_json(&mut found, &root.join(".credentials.json"))
+    let subscribed = read_json(&mut found, &root.join(".credentials.json"))
         .is_some_and(|credentials| credentials.get("claudeAiOauth").is_some());
-    if account.is_some() || signed_in {
+    // With an API key, the account is the Console's that made the key, not a subscription.
+    if subscribed || (account.is_some() && found.keys.is_empty()) {
         found.logins.push(Login {
             provider: "anthropic".to_string(),
             who: account.map(str::to_string),

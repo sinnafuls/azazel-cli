@@ -1,7 +1,7 @@
 //! Bringing what a source holds into azazel's own files. Nothing that is there is replaced
 //! unless the user asked for it; what was done, left out and lost is reported line by line.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -27,11 +27,23 @@ const ADDED_TO: [[&str; 2]; 4] = [
 const CONFIG: &str = "config.toml";
 const MODELS: &str = azazel_ai::models_file::FILE_NAME;
 
+/// What a dry run has said it would write so far: the next source finds it there, as it would
+/// in a real run.
+#[derive(Default)]
+pub struct Planned {
+    files: HashSet<PathBuf>,
+    /// `(file, name)` of MCP servers.
+    #[cfg(feature = "mcp")]
+    servers: HashSet<(PathBuf, String)>,
+    keys: BTreeMap<String, Credential>,
+}
+
 /// One source being brought over.
 pub struct Run<'a> {
     pub paths: &'a Paths,
     pub options: &'a Options,
     pub report: &'a mut Report,
+    pub planned: &'a mut Planned,
     pub source: Source,
     /// The directory whose `config.toml` and `models.yml` are edited: the home, or for a dry
     /// run a copy of the two, so that what would be written is checked the same way.
@@ -82,6 +94,16 @@ impl Run<'_> {
             }
         }
         outcome
+    }
+
+    /// The value `key` has when no file sets it.
+    fn default_of(&self, key: &[String]) -> Option<toml::Value> {
+        let defaults = toml::Value::try_from(Config::default()).ok()?;
+        let mut value = &defaults;
+        for part in key {
+            value = value.get(part)?;
+        }
+        Some(value.clone())
     }
 
     /// The value at `key` in the home's `config.toml`.
@@ -290,6 +312,10 @@ fn set(run: &mut Run<'_>, kind: Kind, setting: &Setting, what: &str) {
         (Some(same), wanted) if same == wanted => {
             return run.say(kind, Status::Skipped, format!("{what}: already so"));
         }
+        // What azazel does anyway needs no line in the file.
+        (None, wanted) if run.default_of(&setting.key).as_ref() == Some(wanted) => {
+            return run.say(kind, Status::Skipped, format!("{what}: azazel's default"));
+        }
         // A list every layer adds to takes what it does not have yet.
         (Some(toml::Value::Array(present)), toml::Value::Array(wanted)) if joins => {
             let mut all = present.clone();
@@ -342,6 +368,7 @@ fn settings(run: &mut Run<'_>, found: &Found) {
 fn keys(run: &mut Run<'_>, found: &Found) {
     let credentials = Credentials::new(run.paths.auth_file());
     let mut stored = credentials.load();
+    stored.extend(run.planned.keys.clone());
     let custom = run.config().map(|config| config.providers).unwrap_or_default();
     // How many keys of each provider this source has given so far: the first is the default
     // account, the others are accounts beside it.
@@ -354,6 +381,22 @@ fn keys(run: &mut Run<'_>, found: &Found) {
                 Status::Lossy,
                 format!(
                     "{provider}: its key ({}) is left out: azazel has no provider of that name",
+                    key.origin
+                ),
+            );
+            continue;
+        }
+        // A source that signs in to a provider and also holds a key for it uses the sign-in.
+        // Storing the key would make it the account azazel asks with, and bill what the
+        // subscription covered.
+        if found.logins.iter().any(|login| login.provider == provider) {
+            run.say(
+                Kind::Keys,
+                Status::Skipped,
+                format!(
+                    "{provider}: {} signs in to it, so its key from {} is left out; `azazel login {provider} --key` \
+                     stores it if you want requests billed to the key",
+                    run.source.label(),
                     key.origin
                 ),
             );
@@ -417,6 +460,9 @@ fn keys(run: &mut Run<'_>, found: &Found) {
         };
         match written {
             Ok(()) => {
+                if run.options.dry_run {
+                    run.planned.keys.insert(slot.clone(), credential.clone());
+                }
                 stored.insert(slot, credential);
                 run.say(
                     Kind::Keys,
@@ -483,10 +529,16 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn file(run: &mut Run<'_>, item: &FileItem) {
+fn file(run: &mut Run<'_>, item: &FileItem, root: &Path) {
     let to = base(run.paths, &item.scope).join(&item.to);
-    let what = format!("{} -> {}", item.from.display(), to.display());
-    if to.exists() && !run.options.overwrite {
+    // Where it comes from is said from the source's own directory, or from the project's.
+    let from = match (&item.scope, item.from.strip_prefix(root)) {
+        (_, Ok(below)) => below,
+        (Scope::Project(project), Err(_)) => item.from.strip_prefix(project).unwrap_or(&item.from),
+        (Scope::Home, Err(_)) => item.from.as_path(),
+    };
+    let what = format!("{} -> {}", from.display(), to.display());
+    if (to.exists() || run.planned.files.contains(&to)) && !run.options.overwrite {
         return run.say(
             item.kind,
             Status::Skipped,
@@ -503,6 +555,9 @@ fn file(run: &mut Run<'_>, item: &FileItem) {
     };
     match written {
         Ok(()) => {
+            if run.options.dry_run {
+                run.planned.files.insert(to);
+            }
             run.say(item.kind, Status::Imported, what);
             for note in &item.notes {
                 run.say(item.kind, Status::Lossy, format!("{}: {note}", item.to.display()));
@@ -546,7 +601,10 @@ fn servers(run: &mut Run<'_>, found: &Found) {
         entry.include_tools = names("includeTools");
         entry.exclude_tools = names("excludeTools");
         let what = format!("server {name} -> {}", target.display());
-        if defined(&target).contains(name) && !run.options.overwrite {
+        let planned = (target.clone(), name.clone());
+        if (defined(&target).contains(name) || run.planned.servers.contains(&planned))
+            && !run.options.overwrite
+        {
             run.say(
                 Kind::Mcp,
                 Status::Skipped,
@@ -560,6 +618,9 @@ fn servers(run: &mut Run<'_>, found: &Found) {
         };
         match written {
             Ok(()) => {
+                if run.options.dry_run {
+                    run.planned.servers.insert(planned);
+                }
                 run.say(Kind::Mcp, Status::Imported, what);
                 if let Some(note) = note {
                     run.say(Kind::Mcp, Status::Lossy, format!("server {name}: {note}"));
@@ -838,7 +899,7 @@ pub async fn apply(run: &mut Run<'_>, found: &Found) {
     for kind in [Kind::Skills, Kind::Commands, Kind::Agents, Kind::Rules] {
         if wanted(kind) {
             for item in found.files.iter().filter(|item| item.kind == kind) {
-                file(run, item);
+                file(run, item, &found.root);
             }
         }
     }

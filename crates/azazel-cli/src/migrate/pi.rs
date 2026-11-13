@@ -330,7 +330,7 @@ pub fn scan(env: &Env, project: &Path) -> Option<Found> {
     let sessions = env
         .var("PI_CODING_AGENT_SESSION_DIR")
         .map_or_else(|| root.join("sessions"), PathBuf::from);
-    found.chats = session_files(&sessions);
+    session_files(&mut found, &sessions);
     Some(found)
 }
 
@@ -360,10 +360,11 @@ fn head_of(file: &Path) -> Option<(Option<String>, Value)> {
 }
 
 /// The sessions below `dir`: one directory per project, the session files in it.
-pub fn session_files(dir: &Path) -> Vec<ChatRef> {
+pub fn session_files(found: &mut Found, dir: &Path) {
     let mut out = Vec::new();
+    let mut headless = 0usize;
     let Ok(projects) = std::fs::read_dir(dir) else {
-        return out;
+        return;
     };
     let mut files: Vec<PathBuf> = Vec::new();
     for project in projects.flatten().map(|entry| entry.path()) {
@@ -378,10 +379,14 @@ pub fn session_files(dir: &Path) -> Vec<ChatRef> {
     files.sort();
     for file in files {
         let Some((slot_title, header)) = head_of(&file) else {
+            headless += 1;
             continue;
         };
         let text = |key: &str| header.get(key).and_then(Value::as_str).filter(|s| !s.is_empty());
-        let Some(id) = text("id") else { continue };
+        let Some(id) = text("id") else {
+            headless += 1;
+            continue;
+        };
         out.push(ChatRef {
             id: id.to_string(),
             cwd: text("cwd").map(PathBuf::from),
@@ -389,7 +394,13 @@ pub fn session_files(dir: &Path) -> Vec<ChatRef> {
             file,
         });
     }
-    out
+    if headless > 0 {
+        found.lossy(
+            Kind::Chats,
+            format!("{headless} session files do not start with a session header and are left out"),
+        );
+    }
+    found.chats = out;
 }
 
 /// What of an entry says where it hangs in the tree; the rest of the line is not read.
@@ -689,20 +700,37 @@ pub fn read_session(file: &Path, blobs: Option<&Path>) -> Result<Chat, String> {
 pub fn read_chat(reference: &ChatRef, blobs: Option<&Path>) -> Result<Chat, String> {
     let mut chat = read_session(&reference.file, blobs)?;
     let folder = reference.file.with_extension("");
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| entry.path())
-        .filter(|path| path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl"))
-        .collect();
+    // A sub-agent's own sub-agents are in a folder named like its file: `Scout/Helper.jsonl`
+    // is the agent `Scout.Helper`.
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let mut pending = vec![(String::new(), folder, 0usize)];
+    while let Some((prefix, dir, depth)) = pending.pop() {
+        for path in std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+        {
+            let Some(stem) = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            let name = match prefix.is_empty() {
+                true => stem,
+                false => format!("{prefix}.{stem}"),
+            };
+            if path.is_dir() && depth < 4 {
+                pending.push((name, path, depth + 1));
+            } else if path.is_file() && path.extension().is_some_and(|ext| ext == "jsonl") {
+                files.push((name, path));
+            }
+        }
+    }
     files.sort();
-    for file in files {
-        let name = file.file_stem().map(|stem| stem.to_string_lossy().into_owned());
-        match (name, read_session(&file, blobs)) {
-            (Some(name), Ok(agent)) if !agent.turns.is_empty() => chat.agents.push((name, agent)),
-            (_, Ok(_)) => {}
-            (_, Err(why)) => chat.dropped.push(format!(
+    for (name, file) in files {
+        match read_session(&file, blobs) {
+            Ok(agent) if !agent.turns.is_empty() => chat.agents.push((name, agent)),
+            Ok(_) => {}
+            Err(why) => chat.dropped.push(format!(
                 "a sub-agent's transcript ({}) could not be read: {why}",
                 file.display()
             )),
