@@ -82,16 +82,17 @@ cd my-project
 azazel
 ```
 
-Azazel needs a model before it can answer. When none is usable, the UI opens `/settings` straight away:
+Azazel needs a model before it can answer. When none is usable, the UI opens `/settings` straight away, on
+its Accounts page:
 
-| Menu entry | What it does |
+| Row | What it does |
 |---|---|
-| Sign in with a subscription (Claude, ChatGPT) | Signs in with a Claude or ChatGPT account |
+| Sign in with a subscription | Signs in with a Claude or ChatGPT account, or another account a provider signs in with |
 | Add an API key | Stores a provider key in `~/.azazel/auth.json` |
-| Choose the default model | Lists a provider's models and saves your pick as `roles.default` in `~/.azazel/config.toml` |
 | Sign out or forget a key | Removes a stored login or key (shown once something is stored) |
 
-After the first sign-in or key, the menu goes straight on to choosing a default model. Come back any time with
+After the first sign-in or key, it goes straight on to choosing a default model, which is saved as
+`roles.default` in `~/.azazel/config.toml`; the Models page (`Tab`) changes it later. Come back any time with
 `/settings`. Providers, roles and fallback chains are described in [models and logins](models-and-logins.md).
 
 Two commands do the same from the shell:

@@ -245,6 +245,8 @@ enum Internal {
     Files(Vec<String>),
     /// A setting the settings menu saved that applies to the running UI at once.
     Setting { path: String, value: toml::Value },
+    /// Something a command of this process shows in a box of its own: the settings screen.
+    Request(UiRequest),
     #[cfg(feature = "voice")]
     Voice(voice::Done),
     /// Text of a side question's answer, or its end.
@@ -468,6 +470,16 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
                     });
                 },
             ))));
+        let screen_tx = internal_tx.clone();
+        local
+            .app
+            .registry
+            .services
+            .insert(Arc::new(crate::settings::SettingsHost(Arc::new(move |screen| {
+                let (reply, back) = tokio::sync::oneshot::channel();
+                let _ = screen_tx.send(Internal::Request(UiRequest::Settings { screen, reply }));
+                back
+            }))));
     }
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     // Asked before anything reads keys: the answers come in on the same channel.
@@ -1296,6 +1308,7 @@ impl Tui {
             Internal::Shell { output, status } => (output, status),
             Internal::Files(files) => return self.files = Some(files),
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
+            Internal::Request(request) => return self.waiting.push_back(request),
             Internal::Btw(update) => return self.on_btw(update),
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Side(event) => return self.on_side(event).await,
@@ -1381,6 +1394,8 @@ impl Tui {
                 request.agent.id, request.tool
             )),
             UiRequest::Plan { .. } => Some("a plan is ready for review".to_string()),
+            // Opened by the user a moment ago.
+            UiRequest::Settings { .. } => None,
         };
         if let Some(text) = needs_you {
             self.announce(Level::Info, text.clone());
@@ -1477,6 +1492,9 @@ impl Tui {
                     Overlay::select("Plan review", vec![plan], items, false, Action::Plan { reply })
                         .markdown(),
                 );
+            }
+            UiRequest::Settings { screen, reply } => {
+                self.overlay = Some(Overlay::settings(screen, Action::Settings { reply }));
             }
         }
     }
@@ -1915,7 +1933,7 @@ impl Tui {
     // ------------------------------------------------------------ overlays
 
     async fn finish_overlay(&mut self, overlay: Overlay, outcome: Outcome) {
-        let Overlay { action, .. } = overlay;
+        let Overlay { action, kind, .. } = overlay;
         let (choice, typed) = match outcome {
             Outcome::Pending => return,
             Outcome::Cancelled => return action.cancel(),
@@ -1938,6 +1956,12 @@ impl Tui {
             action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
             Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
             Action::AgentPane => {}
+            // The screen goes back to the command that showed it, which knows what it asked for.
+            Action::Settings { reply } => {
+                if let overlay::Kind::Settings(screen) = kind {
+                    let _ = reply.send(screen);
+                }
+            }
             Action::Confirm { reply } => drop(reply.send(Ok(choice == 0))),
             Action::UiSelect { reply } => drop(reply.send(Ok(choice))),
             Action::UiInput { reply } => drop(reply.send(Ok(typed))),
@@ -2173,20 +2197,28 @@ impl Tui {
     }
 
     fn set_theme(&mut self, name: &str) {
+        if self.apply_theme(name) {
+            self.info(&format!("theme: {name}"));
+        }
+    }
+
+    /// Draws with the theme `name` from now on, without a word about it: the settings screen
+    /// tries themes on while one is being chosen. False when there is no such theme, which is
+    /// said.
+    fn apply_theme(&mut self, name: &str) -> bool {
         let depth = self.theme.depth();
         let (theme, problem) = named_theme(&self.env.paths, name);
-        match problem {
-            Some(problem) => self.fail(&problem),
-            None => {
-                let glyphs = self.theme.glyphs().level();
-                self.theme = theme
-                    .with_depth(depth)
-                    .with_links(self.caps.links)
-                    .with_glyphs(glyphs);
-                self.theme_name = name.to_string();
-                self.info(&format!("theme: {name}"));
-            }
+        if let Some(problem) = problem {
+            self.fail(&problem);
+            return false;
         }
+        let glyphs = self.theme.glyphs().level();
+        self.theme = theme
+            .with_depth(depth)
+            .with_links(self.caps.links)
+            .with_glyphs(glyphs);
+        self.theme_name = name.to_string();
+        true
     }
 }
 

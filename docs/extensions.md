@@ -223,7 +223,7 @@ azazel.wrap("shell", {
 | `worktree_create`, `worktree_remove` | `agent_id`, `path` | | |
 | `setup` | `trigger`: `init` or `trust` | | |
 
-`notification` fires in the terminal UI when something wants your attention. `file_changed` fires after a `write` or `edit` succeeded, `config_change` after the settings menu or a reload changed the configuration, the worktree events when an isolated agent's worktree is made or removed, and `setup` the first time a project runs trusted (`azazel init` runs no scripts, so a script sees only `trust`). `azazel.on` also accepts `before_agent_start`, but the current version never emits that event.
+`notification` fires in the terminal UI when something wants your attention. `file_changed` fires after a `write` or `edit` succeeded, `config_change` after `/settings` or a reload changed the configuration, the worktree events when an isolated agent's worktree is made or removed, and `setup` the first time a project runs trusted (`azazel init` runs no scripts, so a script sees only `trust`). `azazel.on` also accepts `before_agent_start`, but the current version never emits that event.
 
 A `tool_call` handler cannot override deny rules, the git push guard or protected paths; they are checked before it runs and again on a rewritten input.
 

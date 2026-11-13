@@ -28,7 +28,7 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 | `artist` | `@artist` → `@default` | `generate_image`, `generate_video`, `generate_3d`, `generate_audio`, `sprite_sheet`, `read`, `write`, `shell` | 100 | Produces image, video, 3D and audio assets |
 | `playtester` | `@playtester` → `@vision` | `shell`, `job`, `screen`, `browser`, `read` | 80 | Runs and plays a build, reports defects with frames |
 
-Every built-in agent has a role of its own, named after it, which falls back to the general role shown after the arrow until you set it. The lead uses the role `lead`, which falls back to `default`. Give any of them a model in `/settings` → *Models for each role*, or in `config.toml`:
+Every built-in agent has a role of its own, named after it, which falls back to the general role shown after the arrow until you set it. The lead uses the role `lead`, which falls back to `default`. Give any of them a model in `/settings` → Models, or in `config.toml`:
 
 ```toml
 [roles]
