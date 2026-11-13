@@ -212,7 +212,21 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
         call("c7", "shell", json!({ "command": "git push origin main" })),
         text("done"),
     ] });
-    let bypass = sandbox.run(&script, &["-p", "look around", "--mode", "bypass", "--set", deny]);
+    // The write goes through here, and the lead is not sent back to prove it (the done-check).
+    let unproven = "guards.done_check=false";
+    let bypass = sandbox.run(
+        &script,
+        &[
+            "-p",
+            "look around",
+            "--mode",
+            "bypass",
+            "--set",
+            deny,
+            "--set",
+            unproven,
+        ],
+    );
     assert!(bypass.status.success(), "{}", stderr(&bypass));
     let results = sandbox.results();
     assert!(
