@@ -639,8 +639,14 @@ impl Overlay {
 
 /// What an approval shows above its choices: the command of a call that runs one, whole (its
 /// subjects name only the programs in it, and the box covers the card that shows the rest);
-/// else what the call touches; else its arguments.
-pub fn approval_body(subjects: &[String], input: &serde_json::Value) -> Vec<String> {
+/// else what the call touches; else its arguments. A `pty` call shows the program in the
+/// terminal, then what it would type into it.
+pub fn approval_body(tool: &str, subjects: &[String], input: &serde_json::Value) -> Vec<String> {
+    if tool == "pty" && !subjects.is_empty() {
+        let mut body = subjects.to_vec();
+        body.push(super::view::tool_summary(tool, input));
+        return body;
+    }
     if let Some(command) = input.get("command").and_then(serde_json::Value::as_str)
         && !command.trim().is_empty()
     {
@@ -1216,17 +1222,29 @@ mod tests {
         let subjects = vec!["cat".to_string()];
         let heredoc = serde_json::json!({"command": "cat <<'EOF' > notes.txt\nline\nEOF\n"});
         assert_eq!(
-            approval_body(&subjects, &heredoc),
+            approval_body("shell", &subjects, &heredoc),
             ["cat <<'EOF' > notes.txt\nline\nEOF"]
         );
         let write = serde_json::json!({"path": "src/a.rs", "content": "fn main() {}"});
-        assert_eq!(approval_body(&["src/a.rs".to_string()], &write), ["src/a.rs"]);
+        assert_eq!(
+            approval_body("write", &["src/a.rs".to_string()], &write),
+            ["src/a.rs"]
+        );
         // Nothing to name: the arguments as they are.
         let other = serde_json::json!({"query": "x"});
-        assert_eq!(approval_body(&[], &other), ["{", "  \"query\": \"x\"", "}"]);
         assert_eq!(
-            approval_body(&subjects, &serde_json::json!({"command": "  "})),
+            approval_body("memory_search", &[], &other),
+            ["{", "  \"query\": \"x\"", "}"]
+        );
+        assert_eq!(
+            approval_body("shell", &subjects, &serde_json::json!({"command": "  "})),
             ["cat"]
+        );
+        // Typing into a terminal: the program that runs there, then what would be typed.
+        let typed = serde_json::json!({"action": "send", "id": "pty-1", "text": "yes", "submit": true});
+        assert_eq!(
+            approval_body("pty", &["npm init".to_string()], &typed),
+            ["npm init", "type \"yes\" enter pty-1"]
         );
     }
 

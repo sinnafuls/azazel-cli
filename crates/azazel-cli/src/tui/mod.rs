@@ -1419,11 +1419,7 @@ impl Tui {
                 });
             }
             UiRequest::Approval { request, reply } => {
-                let mut body = overlay::approval_body(&request.subjects, &request.input);
-                if request.tool == "pty" {
-                    // The program in the terminal, then what would be typed into it.
-                    body.push(view::tool_summary("pty", &request.input));
-                }
+                let body = overlay::approval_body(&request.tool, &request.subjects, &request.input);
                 let (items, rows) =
                     approval_rows(request.rule.as_deref(), request.destructive, request.secret);
                 let title = format!("{} wants to use {}", request.agent.id, request.tool);
