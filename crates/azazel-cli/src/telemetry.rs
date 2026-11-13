@@ -2,8 +2,8 @@
 //! collector or to LangSmith.
 //!
 //! A session's agents are listened to beside the session ([`Telemetry::watch`]); what they emit
-//! becomes spans ([`record`]), which a task of their own sends in batches in the shape the
-//! backend takes ([`wire`]). Nothing here is waited for by an agent: a slow or absent backend
+//! becomes spans ([`record`]), one trace per prompt, which a task of their own sends in batches
+//! in the shape the backend takes ([`wire`]). Nothing here is waited for by an agent: a slow or absent backend
 //! costs a turn nothing. The one wait is at the end of the process, for the last batch, and it
 //! is short.
 
@@ -24,7 +24,7 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use record::{Recorder, SessionFacts, Span, Who};
+use record::{Recorder, Span, Who};
 pub use wire::Wire;
 
 /// Spans that wait this long are sent, however few they are.
@@ -88,21 +88,13 @@ impl Telemetry {
     pub fn watch(
         self: &Arc<Self>,
         session: &SessionStore,
-        resumed: bool,
         lead: AgentHandle,
         team: Option<Arc<Team>>,
     ) -> Watch {
-        let facts = SessionFacts {
-            id: session.id(),
-            name: session.name(),
-            resumed,
-        };
-        let (recorder, opened) = Recorder::new(facts, self.content, Timestamp::now());
-        self.send(vec![opened]);
         let stop = CancellationToken::new();
         let follower = Follower {
             telemetry: self.clone(),
-            recorder,
+            recorder: Recorder::new(session.id(), self.content),
             // Subscribed here, not in the task: nothing the lead does after this is missed.
             lead_events: lead.subscribe(),
             team_events: team.as_ref().map(|team| team.subscribe()),
@@ -125,8 +117,8 @@ pub struct Watch {
 }
 
 impl Watch {
-    /// The session closed: what its agents did until now is recorded and the session's span
-    /// ends. Call after the lead has shut down. Nothing here waits for the backend.
+    /// The session closed: what its agents did until now is recorded, and a prompt that is
+    /// still open ends. Call after the lead has shut down. Nothing here waits for the backend.
     pub async fn close(&self) {
         self.stop.cancel();
         let task = self.task.lock().unwrap_or_else(PoisonError::into_inner).take();
@@ -285,9 +277,6 @@ async fn post(client: &reqwest::Client, wire: &Wire, batch: &mut Vec<Span>, fail
     }
     let body = wire.body(batch);
     batch.clear();
-    let Some(body) = body else {
-        return;
-    };
     let mut request = client.post(wire.url()).json(&body);
     for (name, value) in wire.headers() {
         request = request.header(name, value);

@@ -1,11 +1,12 @@
 //! The spans of a session, made from what its agents say they do.
 //!
-//! One tree per time a session is open: the session, under it each prompt, under a prompt each
-//! request to a model, under a request the tool calls its reply asked for. A sub-agent's prompt
-//! hangs under the tool call that was running in its parent when it started.
+//! One tree, and one trace, per prompt: the prompt, under it each request to a model, under a
+//! request the tool calls its reply asked for. A sub-agent's prompt hangs under the tool call
+//! that was running in its parent when it started, in its parent's trace. The session is not a
+//! span: every span names it, and a backend groups the prompts of a session by that.
 //!
-//! A span is handed out when it ends. The session's own span is handed out twice: when it
-//! opens (no end yet), for backends that show a trace while it grows, and when it closes.
+//! A span is handed out when it ends, so a prompt is whole in the backend when it finishes,
+//! however long the session goes on.
 
 use std::collections::HashMap;
 
@@ -23,7 +24,6 @@ const MAX_ERROR: usize = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
-    Session,
     Prompt,
     Request,
     Tool,
@@ -57,7 +57,7 @@ pub enum Content {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
     pub id: Uuid,
-    /// The id of the tree's root.
+    /// The id of the tree's root: the prompt the user sent.
     pub trace: Uuid,
     pub parent: Option<Uuid>,
     /// The start and id of every span from the root down to this one, joined by dots: what
@@ -66,8 +66,7 @@ pub struct Span {
     pub kind: Kind,
     pub name: String,
     pub start: Timestamp,
-    /// `None` for a span that is still open.
-    pub end: Option<Timestamp>,
+    pub end: Timestamp,
     pub error: Option<String>,
     pub attrs: Map<String, Value>,
     pub content: Option<Content>,
@@ -86,6 +85,7 @@ pub struct Who<'a> {
 #[derive(Debug, Clone)]
 struct Open {
     id: Uuid,
+    trace: Uuid,
     parent: Option<Uuid>,
     order: String,
     start: Timestamp,
@@ -96,6 +96,7 @@ impl Open {
         let id = Uuid::now_v7();
         Open {
             id,
+            trace: id,
             parent: None,
             order: order_part(now, id),
             start: now,
@@ -106,6 +107,7 @@ impl Open {
         let id = Uuid::now_v7();
         Open {
             id,
+            trace: self.trace,
             parent: Some(self.id),
             order: format!("{}.{}", self.order, order_part(now, id)),
             start: now,
@@ -152,30 +154,12 @@ struct Prompt {
     calls: HashMap<String, Tool>,
 }
 
-#[derive(Default)]
-struct Totals {
-    prompts: u32,
-    requests: u32,
-    tools: u32,
-    usage: Usage,
-}
-
-/// What a session is known by.
-#[derive(Debug, Clone, Default)]
-pub struct SessionFacts {
-    pub id: String,
-    pub name: Option<String>,
-    /// It existed before it was opened this time.
-    pub resumed: bool,
-}
-
 pub struct Recorder {
     content: bool,
-    facts: SessionFacts,
-    session: Open,
+    /// The id of the session, which every span carries.
+    session: String,
     /// The prompt each agent is working on.
     prompts: HashMap<String, Prompt>,
-    totals: Totals,
 }
 
 /// `text` as it leaves the machine: without what looks like a secret, and not without end.
@@ -224,18 +208,13 @@ fn millis(from: Timestamp, to: Timestamp) -> i64 {
 }
 
 impl Recorder {
-    /// Starts the tree of a session that was opened at `now`. The span that comes back is the
-    /// session's, still open.
-    pub fn new(facts: SessionFacts, content: bool, now: Timestamp) -> (Recorder, Span) {
-        let recorder = Recorder {
+    /// Records the session with the id `session`; with `content`, what is said in it too.
+    pub fn new(session: String, content: bool) -> Recorder {
+        Recorder {
             content,
-            facts,
-            session: Open::root(now),
+            session,
             prompts: HashMap::new(),
-            totals: Totals::default(),
-        };
-        let opened = recorder.session_span(None);
-        (recorder, opened)
+        }
     }
 
     fn span(
@@ -243,13 +222,15 @@ impl Recorder {
         open: Open,
         kind: Kind,
         name: String,
-        end: Option<Timestamp>,
+        end: Timestamp,
         mut attrs: Map<String, Value>,
     ) -> Span {
-        attrs.insert("session.id".into(), json!(self.facts.id));
+        // The session a span belongs to, under both names backends know it by.
+        attrs.insert("session.id".into(), json!(self.session));
+        attrs.insert("gen_ai.conversation.id".into(), json!(self.session));
         Span {
             id: open.id,
-            trace: self.session.id,
+            trace: open.trace,
             parent: open.parent,
             order: open.order,
             kind,
@@ -260,27 +241,6 @@ impl Recorder {
             attrs,
             content: None,
         }
-    }
-
-    fn session_span(&self, end: Option<Timestamp>) -> Span {
-        let mut attrs = Map::new();
-        attrs.insert("azazel.session.resumed".into(), json!(self.facts.resumed));
-        if let Some(name) = &self.facts.name {
-            attrs.insert("azazel.session.name".into(), json!(name));
-        }
-        if end.is_some() {
-            attrs.insert("azazel.prompts".into(), json!(self.totals.prompts));
-            attrs.insert("azazel.requests".into(), json!(self.totals.requests));
-            attrs.insert("azazel.tool_calls".into(), json!(self.totals.tools));
-            usage_attrs(&mut attrs, &self.totals.usage);
-        }
-        self.span(
-            self.session.clone(),
-            Kind::Session,
-            "session".to_string(),
-            end,
-            attrs,
-        )
     }
 
     /// Whether the prompt `agent` works on is still without its text, and the text is wanted.
@@ -300,17 +260,16 @@ impl Recorder {
     }
 
     /// Where a prompt of `who` hangs: under the call that runs in its parent, else under the
-    /// parent's prompt, else under the session.
-    fn above(&self, who: &Who) -> &Open {
-        let Some(parent) = who.parent.and_then(|parent| self.prompts.get(parent)) else {
-            return &self.session;
-        };
-        parent
+    /// parent's prompt. `None` for a prompt that is a tree of its own: the lead's, or one whose
+    /// parent is at rest.
+    fn above(&self, who: &Who) -> Option<&Open> {
+        let parent = self.prompts.get(who.parent?)?;
+        let call = parent
             .calls
             .values()
             .map(|call| &call.span)
-            .max_by_key(|span| span.start)
-            .unwrap_or(&parent.span)
+            .max_by_key(|span| span.start);
+        Some(call.unwrap_or(&parent.span))
     }
 
     /// Takes in one event of `who` at `now`; returns the spans it ended.
@@ -319,9 +278,10 @@ impl Recorder {
         if matches!(event, AgentEvent::AgentStart) {
             // A prompt that never said how it ended.
             self.end_prompt(who.id, now, Some("closed"), None, &mut done);
-            self.totals.prompts += 1;
             let prompt = Prompt {
-                span: self.above(who).child(now),
+                span: self
+                    .above(who)
+                    .map_or_else(|| Open::root(now), |above| above.child(now)),
                 agent: who.id.to_string(),
                 def: who.def.to_string(),
                 text: None,
@@ -417,7 +377,6 @@ impl Recorder {
             } => {
                 if let Some(tool) = prompt.calls.remove(call_id) {
                     prompt.tools += 1;
-                    self.totals.tools += 1;
                     let text: String = output
                         .content
                         .iter()
@@ -435,7 +394,7 @@ impl Recorder {
                     attrs.insert("azazel.tool.output_chars".into(), json!(text.chars().count()));
                     attrs.insert("azazel.tool.is_error".into(), json!(output.is_error));
                     let name = format!("execute_tool {}", tool.name);
-                    let mut span = self.span(tool.span, Kind::Tool, name, Some(now), attrs);
+                    let mut span = self.span(tool.span, Kind::Tool, name, now, attrs);
                     if output.is_error {
                         span.error = Some(if self.content {
                             shown(text.lines().next().unwrap_or_default(), MAX_ERROR)
@@ -479,7 +438,6 @@ impl Recorder {
     ) -> Option<Span> {
         let request = prompt.request.take()?;
         prompt.requests += 1;
-        self.totals.requests += 1;
         let mut attrs = Map::new();
         attrs.insert("gen_ai.operation.name".into(), json!("chat"));
         attrs.insert("gen_ai.agent.id".into(), json!(prompt.agent));
@@ -516,7 +474,6 @@ impl Recorder {
             }
             usage_attrs(&mut attrs, &meta.usage);
             prompt.usage.add(&meta.usage);
-            self.totals.usage.add(&meta.usage);
         }
         if let Some(message) = reply {
             let calls: Vec<Call> = message
@@ -557,7 +514,7 @@ impl Recorder {
                 request.left.unwrap_or(now)
             }
         };
-        let mut span = self.span(request.span, Kind::Request, name, Some(end), attrs);
+        let mut span = self.span(request.span, Kind::Request, name, end, attrs);
         span.error = error.map(str::to_string);
         span.content = content;
         Some(span)
@@ -589,7 +546,7 @@ impl Recorder {
             attrs.insert("gen_ai.tool.call.id".into(), json!(call_id));
             attrs.insert("azazel.outcome".into(), json!("no result"));
             let name = format!("execute_tool {}", tool.name);
-            done.push(self.span(tool.span, Kind::Tool, name, Some(now), attrs));
+            done.push(self.span(tool.span, Kind::Tool, name, now, attrs));
         }
         let mut attrs = Map::new();
         attrs.insert("gen_ai.operation.name".into(), json!("invoke_agent"));
@@ -604,7 +561,7 @@ impl Recorder {
             attrs.insert("azazel.stop".into(), json!(stop));
         }
         usage_attrs(&mut attrs, &prompt.usage);
-        let mut span = self.span(prompt.span, Kind::Prompt, "prompt".to_string(), Some(now), attrs);
+        let mut span = self.span(prompt.span, Kind::Prompt, "prompt".to_string(), now, attrs);
         span.error = error;
         if self.content {
             span.content = Some(Content::Prompt {
@@ -615,7 +572,7 @@ impl Recorder {
         done.push(span);
     }
 
-    /// The session closes at `now`: what is still open ends, the session's span last.
+    /// The session closes at `now`: the prompts that are still open end.
     pub fn close(&mut self, now: Timestamp) -> Vec<Span> {
         let mut done = Vec::new();
         // A sub-agent's prompt before the prompt it hangs under.
@@ -628,7 +585,6 @@ impl Recorder {
         for (_, agent) in open.into_iter().rev() {
             self.end_prompt(&agent, now, Some("closed"), None, &mut done);
         }
-        done.push(self.session_span(Some(now)));
         done
     }
 }
@@ -676,12 +632,7 @@ mod tests {
     }
 
     fn recorder(content: bool) -> Recorder {
-        let facts = SessionFacts {
-            id: "s1".into(),
-            name: None,
-            resumed: false,
-        };
-        Recorder::new(facts, content, at(0)).0
+        Recorder::new("s1".into(), content)
     }
 
     /// Feeds `events` to `recorder`, each at its time, and collects what ended.
@@ -763,38 +714,28 @@ mod tests {
     #[test]
     fn a_prompt_is_a_tree_of_requests_and_the_calls_they_asked_for() {
         let mut recorder = recorder(false);
-        let mut spans = feed(&mut recorder, &LEAD, one_prompt());
-        spans.extend(recorder.close(at(400)));
+        let spans = feed(&mut recorder, &LEAD, one_prompt());
+        // The prompt is whole when it ends: nothing is left for the end of the session.
+        assert!(recorder.close(at(400)).is_empty());
         let kinds: Vec<Kind> = spans.iter().map(|span| span.kind).collect();
-        assert_eq!(
-            kinds,
-            [
-                Kind::Request,
-                Kind::Tool,
-                Kind::Request,
-                Kind::Prompt,
-                Kind::Session
-            ]
-        );
-        let [first, tool, second, prompt, session] = &spans[..] else {
+        assert_eq!(kinds, [Kind::Request, Kind::Tool, Kind::Request, Kind::Prompt]);
+        let [first, tool, second, prompt] = &spans[..] else {
             unreachable!()
         };
-        // session -> prompt -> request -> tool call
-        assert_eq!(session.parent, None);
-        assert_eq!(prompt.parent, Some(session.id));
+        // prompt -> request -> tool call, the prompt being the root of its trace.
+        assert_eq!(prompt.parent, None);
         assert_eq!(first.parent, Some(prompt.id));
         assert_eq!(second.parent, Some(prompt.id));
         assert_eq!(tool.parent, Some(first.id));
-        assert!(spans.iter().all(|span| span.trace == session.id));
+        assert!(spans.iter().all(|span| span.trace == prompt.id));
         assert!(tool.order.starts_with(&format!("{}.", first.order)));
         assert!(first.order.starts_with(&format!("{}.", prompt.order)));
-        assert_eq!(session.order, format!("20270115T080000000000Z{}", session.id));
+        assert_eq!(prompt.order, format!("20270115T080000010000Z{}", prompt.id));
 
         // Durations are those of the events.
-        assert_eq!((first.start, first.end), (at(20), Some(at(120))));
-        assert_eq!((tool.start, tool.end), (at(130), Some(at(180))));
-        assert_eq!((prompt.start, prompt.end), (at(10), Some(at(320))));
-        assert_eq!((session.start, session.end), (at(0), Some(at(400))));
+        assert_eq!((first.start, first.end), (at(20), at(120)));
+        assert_eq!((tool.start, tool.end), (at(130), at(180)));
+        assert_eq!((prompt.start, prompt.end), (at(10), at(320)));
 
         // Model, tokens and cost of a request; cached input counts as input.
         assert_eq!(first.name, "chat lead");
@@ -810,15 +751,26 @@ mod tests {
         assert_eq!(tool.name, "execute_tool read");
         assert_eq!(tool.attrs["azazel.tool.duration_ms"], 50);
 
-        // The prompt and the session add up what happened under them.
+        // The prompt adds up what happened under it.
         assert_eq!(prompt.attrs["azazel.requests"], 2);
         assert_eq!(prompt.attrs["azazel.tool_calls"], 1);
         assert_eq!(prompt.attrs["azazel.stop"], "stop");
+        assert_eq!(prompt.attrs["gen_ai.usage.input_tokens"], 2000);
         assert_eq!(prompt.attrs["gen_ai.usage.output_tokens"], 40);
         assert_eq!(prompt.attrs["azazel.cost_usd"], 0.02);
-        assert_eq!(session.attrs["azazel.prompts"], 1);
-        assert_eq!(session.attrs["gen_ai.usage.input_tokens"], 2000);
-        assert!(spans.iter().all(|span| span.attrs["session.id"] == "s1"));
+        // The session is what every span says it belongs to, not a span.
+        for span in &spans {
+            assert_eq!(span.attrs["session.id"], "s1");
+            assert_eq!(span.attrs["gen_ai.conversation.id"], "s1");
+        }
+
+        // The next prompt of the session is a trace of its own.
+        let next = feed(&mut recorder, &LEAD, one_prompt());
+        let again = next.last().unwrap();
+        assert_eq!((again.kind, again.parent), (Kind::Prompt, None));
+        assert_ne!(again.trace, prompt.trace);
+        assert!(next.iter().all(|span| span.trace == again.id));
+        assert_eq!(again.attrs["session.id"], "s1");
 
         // Nothing that was said is in a span.
         assert!(
@@ -953,7 +905,7 @@ mod tests {
         assert_eq!(failed.name, "chat");
         assert_eq!(failed.error.as_deref(), Some("mock/lead: 529 overloaded"));
         // It ended when the agent left it, not when the failure was announced.
-        assert_eq!(failed.end, Some(at(500)));
+        assert_eq!(failed.end, at(500));
         assert_eq!(failed.attrs["azazel.retries"], 1);
         assert_eq!(failed.attrs["azazel.stalls"], 1);
         let prompt = spans.last().unwrap();
@@ -1060,13 +1012,32 @@ mod tests {
         assert_eq!(sub.parent, Some(tool.id));
         assert_eq!(sub.attrs["gen_ai.agent.name"], "scout");
         assert!(sub.order.starts_with(&tool.order));
+        // It is part of the trace of the prompt that delegated.
+        assert_eq!(sub.trace, tool.trace);
 
-        // The session closes while the lead is at work: its prompt ends as closed.
+        // The session closes while the lead is at work: its prompt ends as closed, the root
+        // of the trace the sub-agent was in.
         let closing = recorder.close(at(100));
         let kinds: Vec<Kind> = closing.iter().map(|span| span.kind).collect();
-        assert_eq!(kinds, [Kind::Prompt, Kind::Session]);
+        assert_eq!(kinds, [Kind::Prompt]);
         assert_eq!(closing[0].attrs["azazel.stop"], "closed");
-        assert_eq!(closing[1].attrs["azazel.prompts"], 2);
+        assert_eq!((closing[0].id, closing[0].parent), (sub.trace, None));
+
+        // A sub-agent that is picked up again while its parent is at rest is a tree of its own.
+        let later = feed(
+            &mut recorder,
+            &scout,
+            vec![
+                (200, AgentEvent::AgentStart),
+                (
+                    210,
+                    AgentEvent::Idle {
+                        stop: StopReason::Stop,
+                    },
+                ),
+            ],
+        );
+        assert_eq!((later[0].parent, later[0].trace), (None, later[0].id));
     }
 
     #[test]

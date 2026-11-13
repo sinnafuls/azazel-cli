@@ -1,11 +1,12 @@
 #![allow(clippy::unwrap_used)]
 
-//! Trace export as a run of the binary does it: `[telemetry]` in the user's config sends the
-//! span tree of a prompt to a collector, what was said only when asked for, and a collector
-//! that fails or hangs costs the run nothing.
+//! Trace export as a run of the binary does it: `[telemetry]` in the user's config sends each
+//! prompt to a collector as a trace of its own that names its session, what was said only when
+//! asked for, and a collector that fails or hangs costs the run nothing.
 
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
-use std::process::Output;
+use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 use assert_cmd::Command;
@@ -82,6 +83,30 @@ impl Sandbox {
     fn log(&self) -> String {
         std::fs::read_to_string(self.path("home/logs/azazel.log")).unwrap_or_default()
     }
+
+    /// The id of the session the run left behind.
+    fn session_id(&self) -> String {
+        let paths =
+            azazel_core::Paths::discover(&self.path("project"), Some(&self.path("home").to_string_lossy()));
+        azazel_core::SessionStore::list(&paths.sessions_dir())
+            .remove(0)
+            .id
+    }
+}
+
+/// Every span the collector has been sent so far.
+async fn spans_of(server: &MockServer) -> Vec<Value> {
+    let mut spans = Vec::new();
+    for request in &server.received_requests().await.unwrap() {
+        let body: Value = serde_json::from_slice(&request.body).unwrap();
+        spans.extend(
+            body["resourceSpans"][0]["scopeSpans"][0]["spans"]
+                .as_array()
+                .unwrap()
+                .clone(),
+        );
+    }
+    spans
 }
 
 /// A collector that answers every post to `route` with `response`.
@@ -118,7 +143,7 @@ fn attribute<'a>(span: &'a Value, key: &str) -> &'a Value {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_prompt_reaches_an_otlp_collector_as_one_tree_without_what_was_said() {
+async fn a_prompt_reaches_an_otlp_collector_as_one_trace_without_what_was_said() {
     let server = collector("/v1/traces", ResponseTemplate::new(200).set_body_json(json!({}))).await;
     let sandbox = Sandbox::new(&format!(
         "exporter = \"otlp\"\nendpoint = \"{}\"\napi_key_env = \"TRACE_KEY\"",
@@ -148,16 +173,12 @@ async fn a_prompt_reaches_an_otlp_collector_as_one_tree_without_what_was_said() 
         }
     }
     let named = |name: &str| -> Vec<&Value> { spans.iter().filter(|span| span["name"] == name).collect() };
-    let (session, prompt) = (named("session"), named("prompt"));
+    let prompt = named("prompt");
     let (requests, tools) = (named("chat lead"), named("execute_tool read"));
-    assert_eq!(spans.len(), 5, "{spans:#?}");
-    assert_eq!(
-        (session.len(), prompt.len(), requests.len(), tools.len()),
-        (1, 1, 2, 1)
-    );
-    // session -> prompt -> model request -> tool call, in one trace.
-    assert!(session[0].get("parentSpanId").is_none());
-    assert_eq!(prompt[0]["parentSpanId"], session[0]["spanId"]);
+    assert_eq!(spans.len(), 4, "{spans:#?}");
+    assert_eq!((prompt.len(), requests.len(), tools.len()), (1, 2, 1));
+    // prompt -> model request -> tool call, the prompt being the root of the trace.
+    assert!(prompt[0].get("parentSpanId").is_none());
     for request in &requests {
         assert_eq!(request["parentSpanId"], prompt[0]["spanId"]);
     }
@@ -166,7 +187,16 @@ async fn a_prompt_reaches_an_otlp_collector_as_one_tree_without_what_was_said() 
         .find(|request| attribute(request, "azazel.tool_calls")["intValue"] == "1")
         .unwrap();
     assert_eq!(tools[0]["parentSpanId"], asked["spanId"]);
-    assert!(spans.iter().all(|span| span["traceId"] == session[0]["traceId"]));
+    // The session is no span: every span says which one it belongs to.
+    let session = sandbox.session_id();
+    for span in &spans {
+        assert_eq!(span["traceId"], prompt[0]["traceId"]);
+        assert_eq!(attribute(span, "session.id")["stringValue"], session.as_str());
+        assert_eq!(
+            attribute(span, "gen_ai.conversation.id")["stringValue"],
+            session.as_str()
+        );
+    }
 
     // Model, tokens and cost of each request; the prompt adds them up.
     assert_eq!(attribute(asked, "gen_ai.request.model")["stringValue"], "lead");
@@ -186,8 +216,8 @@ async fn a_prompt_reaches_an_otlp_collector_as_one_tree_without_what_was_said() 
     for span in &spans {
         assert!(time(span, "endTimeUnixNano") >= time(span, "startTimeUnixNano"));
     }
-    assert!(time(prompt[0], "startTimeUnixNano") >= time(session[0], "startTimeUnixNano"));
-    assert!(time(session[0], "endTimeUnixNano") >= time(prompt[0], "endTimeUnixNano"));
+    assert!(time(asked, "startTimeUnixNano") >= time(prompt[0], "startTimeUnixNano"));
+    assert!(time(prompt[0], "endTimeUnixNano") >= time(tools[0], "endTimeUnixNano"));
     assert!(!sandbox.log().contains("trace export"), "{}", sandbox.log());
 }
 
@@ -213,16 +243,7 @@ async fn a_sub_agent_is_a_tree_under_the_call_that_started_it() {
         .unwrap();
     assert!(output.status.success(), "{output:?}");
 
-    let mut spans = Vec::new();
-    for request in &server.received_requests().await.unwrap() {
-        let body: Value = serde_json::from_slice(&request.body).unwrap();
-        spans.extend(
-            body["resourceSpans"][0]["scopeSpans"][0]["spans"]
-                .as_array()
-                .unwrap()
-                .clone(),
-        );
-    }
+    let spans = spans_of(&server).await;
     let agent = |span: &Value| attribute(span, "gen_ai.agent.id")["stringValue"].clone();
     let one = |name: &str, of: &str| -> &Value {
         let found: Vec<&Value> = spans
@@ -238,11 +259,127 @@ async fn a_sub_agent_is_a_tree_under_the_call_that_started_it() {
     assert_eq!(delegated["parentSpanId"], call["spanId"]);
     assert_eq!(asked["parentSpanId"], delegated["spanId"]);
     assert_eq!(attribute(delegated, "gen_ai.agent.name")["stringValue"], "scout");
-    assert_eq!(delegated["traceId"], one("prompt", "lead")["traceId"]);
-    // The session counts the work of both agents.
-    let session = spans.iter().find(|span| span["name"] == "session").unwrap();
-    assert_eq!(attribute(session, "azazel.prompts")["intValue"], "2");
-    assert_eq!(attribute(session, "azazel.requests")["intValue"], "3");
+    // The whole delegation is one trace, with the lead's prompt as its root.
+    let root = one("prompt", "lead");
+    assert!(root.get("parentSpanId").is_none());
+    assert!(spans.iter().all(|span| span["traceId"] == root["traceId"]));
+    assert_eq!(spans.len(), 6, "{spans:#?}");
+}
+
+/// An `azazel rpc` process in a sandbox, answering from a script.
+struct Rpc {
+    child: std::process::Child,
+    stdin: Option<std::process::ChildStdin>,
+    lines: std::sync::mpsc::Receiver<String>,
+}
+
+impl Rpc {
+    fn start(sandbox: &Sandbox, script: &Value) -> Rpc {
+        std::fs::write(sandbox.path("script.json"), script.to_string()).unwrap();
+        let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("azazel"))
+            .env("AZAZEL_HOME", sandbox.path("home"))
+            .env("AZAZEL_MOCK_SCRIPT", sandbox.path("script.json"))
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+            .env_remove("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+            .env_remove("OTEL_EXPORTER_OTLP_HEADERS")
+            .args(["rpc", "--cwd"])
+            .arg(sandbox.path("project"))
+            .args(["--set", "memory.auto_extract=false"])
+            .args(["--set", "memory.auto_index=false"])
+            .args(["--set", "session.auto_name=false"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (sender, lines) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if sender.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Rpc {
+            stdin: child.stdin.take(),
+            child,
+            lines,
+        }
+    }
+
+    /// Sends a prompt and reads on until the lead is idle again.
+    fn prompt(&mut self, text: &str) {
+        let stdin = self.stdin.as_mut().unwrap();
+        writeln!(stdin, "{}", json!({ "id": 1, "type": "prompt", "text": text })).unwrap();
+        stdin.flush().unwrap();
+        loop {
+            let line = self
+                .lines
+                .recv_timeout(Duration::from_secs(60))
+                .expect("a protocol line within a minute");
+            let line: Value = serde_json::from_str(&line).unwrap();
+            assert_ne!(line["type"], "failed", "{line}");
+            if line["type"] == "idle" {
+                return;
+            }
+        }
+    }
+
+    /// Closes standard input and waits for the process to end.
+    fn finish(mut self) {
+        drop(self.stdin.take());
+        assert!(self.child.wait().unwrap().success());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn each_prompt_of_a_session_is_a_trace_that_arrives_when_it_ends() {
+    let server = collector("/v1/traces", ResponseTemplate::new(200).set_body_json(json!({}))).await;
+    let sandbox = Sandbox::new(&format!("exporter = \"otlp\"\nendpoint = \"{}\"", server.uri()));
+    let script = json!({ "lead": [{ "reply": { "text": "One." } }, { "reply": { "text": "Two." } }] });
+    let mut rpc = Rpc::start(&sandbox, &script);
+    tokio::task::block_in_place(|| rpc.prompt("first"));
+
+    // The session is still open, and its first prompt is already at the collector, whole.
+    let started = Instant::now();
+    let first = loop {
+        let spans = spans_of(&server).await;
+        if spans.iter().any(|span| span["name"] == "prompt") {
+            break spans;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(30),
+            "the prompt did not arrive while the session was open"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(rpc.child.try_wait().unwrap().is_none(), "the session ended");
+    let names: Vec<&str> = first.iter().map(|span| span["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["chat lead", "prompt"]);
+    assert!(first[1].get("parentSpanId").is_none());
+    assert_eq!(first[0]["parentSpanId"], first[1]["spanId"]);
+
+    tokio::task::block_in_place(|| rpc.prompt("second"));
+    tokio::task::block_in_place(|| rpc.finish());
+    let spans = spans_of(&server).await;
+    let prompts: Vec<&Value> = spans.iter().filter(|span| span["name"] == "prompt").collect();
+    assert_eq!((spans.len(), prompts.len()), (4, 2), "{spans:#?}");
+    // Two traces, each rooted at its prompt, both of the one session.
+    assert_ne!(prompts[0]["traceId"], prompts[1]["traceId"]);
+    assert!(prompts[1].get("parentSpanId").is_none());
+    let session = sandbox.session_id();
+    for span in &spans {
+        assert_eq!(attribute(span, "session.id")["stringValue"], session.as_str());
+    }
+    for prompt in &prompts {
+        let under = spans
+            .iter()
+            .filter(|span| span["parentSpanId"] == prompt["spanId"])
+            .count();
+        assert_eq!(under, 1);
+    }
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -252,7 +389,7 @@ async fn langsmith_gets_runs_with_what_was_said_when_content_is_on() {
         "exporter = \"langsmith\"\nendpoint = \"{}\"\napi_key_env = \"TRACE_KEY\"\nproject = \"ci\"\ncontent = true",
         server.uri()
     ));
-    let (_sandbox, output) = run(sandbox, 0).await;
+    let (sandbox, output) = run(sandbox, 0).await;
     assert!(output.status.success(), "{output:?}");
 
     let received = server.received_requests().await.unwrap();
@@ -260,33 +397,33 @@ async fn langsmith_gets_runs_with_what_was_said_when_content_is_on() {
     for request in &received {
         assert_eq!(request.headers["x-api-key"], "k-123");
         let body: Value = serde_json::from_slice(&request.body).unwrap();
+        // Runs are whole when they are sent: none is changed afterwards.
+        assert!(body.get("patch").is_none());
         runs.extend(body["post"].as_array().unwrap().clone());
-        // The end of a session that was posted in an earlier batch.
-        for patch in body["patch"].as_array().unwrap() {
-            let run = runs.iter_mut().find(|run| run["id"] == patch["id"]).unwrap();
-            *run = patch.clone();
-        }
     }
     let of_type = |kind: &str| -> Vec<&Value> { runs.iter().filter(|run| run["run_type"] == kind).collect() };
     let (chains, requests, tools) = (of_type("chain"), of_type("llm"), of_type("tool"));
     assert_eq!(
         (chains.len(), requests.len(), tools.len()),
-        (2, 2, 1),
+        (1, 2, 1),
         "{runs:#?}"
     );
-    let session = chains.iter().find(|run| run["name"] == "session").unwrap();
-    let prompt = chains.iter().find(|run| run["name"] == "prompt").unwrap();
-    assert!(session.get("parent_run_id").is_none());
-    assert!(session["end_time"].is_string());
-    assert_eq!(prompt["parent_run_id"], session["id"]);
+    // The prompt is the root run; the session is the thread LangSmith groups its trace under.
+    let prompt = chains[0];
+    assert_eq!(prompt["name"], "prompt");
+    assert!(prompt.get("parent_run_id").is_none());
+    let session = sandbox.session_id();
     for run in &runs {
-        assert_eq!(run["trace_id"], session["id"]);
+        assert_eq!(run["trace_id"], prompt["id"]);
         assert_eq!(run["session_name"], "ci");
+        assert!(run["end_time"].is_string());
+        assert_eq!(run["extra"]["metadata"]["session_id"], session.as_str());
+        assert_eq!(run["extra"]["metadata"]["thread_id"], session.as_str());
         assert!(
             run["dotted_order"]
                 .as_str()
                 .unwrap()
-                .starts_with(session["dotted_order"].as_str().unwrap())
+                .starts_with(prompt["dotted_order"].as_str().unwrap())
         );
     }
     assert_eq!(prompt["inputs"]["prompt"], PROMPT);

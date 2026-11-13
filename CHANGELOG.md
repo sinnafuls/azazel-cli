@@ -19,9 +19,10 @@ GitHub are its section here.
   box, `Ctrl+X` stops the program. `F3` (`terminal`) and `/terminals` bring a hidden terminal back.
 - Typing into a terminal is decided by the rules for `shell`: it is allowed where the program is, and the text
   is held to `deny` rules, the push guard and the destructive-command and secret-file checks like a command.
-- Trace export: `[telemetry] exporter = "otlp"` or `"langsmith"` sends each session as a span tree (session,
-  prompt, model request, tool call; a sub-agent under the call that started it) with models, tokens, cost,
-  errors and durations, to an OpenTelemetry collector over HTTP or to LangSmith's runs API. Off by default.
+- Trace export: `[telemetry] exporter = "otlp"` or `"langsmith"` sends each prompt as a trace of its own
+  (prompt, model request, tool call; a sub-agent under the call that started it) with models, tokens, cost,
+  errors and durations, to an OpenTelemetry collector over HTTP or to LangSmith's runs API. Every span names
+  its session (`session.id`; LangSmith threads), and a prompt arrives when it ends. Off by default.
   Prompt and reply text, tool input and output go only with `content = true`, secrets hidden. Spans are sent in
   batches beside the session: no turn waits for the backend, and its first failure is logged once.
 - `/share` uploads the conversation, secrets hidden, as a secret gist through `gh` and prints the link. It says

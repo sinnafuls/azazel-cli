@@ -1155,7 +1155,7 @@ impl App {
         let trace = self
             .telemetry
             .as_ref()
-            .map(|telemetry| telemetry.watch(&session, resumed, lead.clone(), services.get::<Team>()));
+            .map(|telemetry| telemetry.watch(&session, lead.clone(), services.get::<Team>()));
         Ok(Active {
             session,
             lead,

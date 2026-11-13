@@ -134,9 +134,8 @@ impl Wire {
         }
     }
 
-    /// The request body that carries `spans`; `None` when none of them is for this backend to
-    /// have yet.
-    pub fn body(&self, spans: &[Span]) -> Option<Value> {
+    /// The request body that carries `spans`.
+    pub fn body(&self, spans: &[Span]) -> Value {
         match self {
             Wire::Otlp { service, .. } => otlp(spans, service),
             Wire::Langsmith { project, .. } => langsmith(spans, project),
@@ -222,12 +221,10 @@ fn otlp_content(content: &Content, attributes: &mut Vec<Value>) {
     }
 }
 
-fn otlp(spans: &[Span], service: &str) -> Option<Value> {
+fn otlp(spans: &[Span], service: &str) -> Value {
     let spans: Vec<Value> = spans
         .iter()
-        .filter_map(|span| {
-            // A span has no place in OTLP before it has ended.
-            let end = span.end?;
+        .map(|span| {
             let mut attributes: Vec<Value> = span
                 .attrs
                 .iter()
@@ -243,7 +240,7 @@ fn otlp(spans: &[Span], service: &str) -> Option<Value> {
                 // A request leaves the process; everything else happens in it.
                 "kind": if span.kind == Kind::Request { 3 } else { 1 },
                 "startTimeUnixNano": nanos(span.start),
-                "endTimeUnixNano": nanos(end),
+                "endTimeUnixNano": nanos(span.end),
                 "attributes": attributes,
                 "status": match &span.error {
                     Some(error) => json!({ "code": 2, "message": error }),
@@ -253,13 +250,10 @@ fn otlp(spans: &[Span], service: &str) -> Option<Value> {
             if let Some(parent) = span.parent {
                 out["parentSpanId"] = json!(span_id(parent));
             }
-            Some(out)
+            out
         })
         .collect();
-    if spans.is_empty() {
-        return None;
-    }
-    Some(json!({
+    json!({
         "resourceSpans": [{
             "resource": { "attributes": [
                 key_value("service.name", &json!(service)),
@@ -271,7 +265,7 @@ fn otlp(spans: &[Span], service: &str) -> Option<Value> {
                 "spans": spans,
             }],
         }],
-    }))
+    })
 }
 
 // ------------------------------------------------------------ LangSmith
@@ -280,14 +274,15 @@ fn otlp(spans: &[Span], service: &str) -> Option<Value> {
 fn run(span: &Span, project: &str) -> Value {
     let attr = |key: &str| span.attrs.get(key);
     let mut metadata = span.attrs.clone();
-    // What LangSmith groups the runs of one conversation by.
+    // What LangSmith groups the traces of one conversation by, in its Threads view.
     if let Some(session) = attr("session.id") {
+        metadata.insert("session_id".into(), session.clone());
         metadata.insert("thread_id".into(), session.clone());
     }
     let mut inputs = Map::new();
     let mut outputs = Map::new();
     let (run_type, name) = match span.kind {
-        Kind::Session | Kind::Prompt => ("chain", span.name.clone()),
+        Kind::Prompt => ("chain", span.name.clone()),
         Kind::Request => {
             if let Some(model) = attr("gen_ai.request.model") {
                 metadata.insert("ls_model_name".into(), model.clone());
@@ -357,16 +352,14 @@ fn run(span: &Span, project: &str) -> Value {
         "name": name,
         "run_type": run_type,
         "start_time": span.start.to_string(),
+        "end_time": span.end.to_string(),
         "inputs": inputs,
+        "outputs": outputs,
         "session_name": project,
         "extra": { "metadata": metadata },
     });
     if let Some(parent) = span.parent {
         run["parent_run_id"] = json!(parent.to_string());
-    }
-    if let Some(end) = span.end {
-        run["end_time"] = json!(end.to_string());
-        run["outputs"] = Value::Object(outputs);
     }
     if let Some(error) = &span.error {
         run["error"] = json!(error);
@@ -374,23 +367,10 @@ fn run(span: &Span, project: &str) -> Value {
     run
 }
 
-fn langsmith(spans: &[Span], project: &str) -> Option<Value> {
-    let (mut post, mut patch) = (Vec::new(), Vec::new());
-    for span in spans {
-        let opened_here = |id: Uuid| spans.iter().any(|other| other.id == id && other.end.is_none());
-        let closed_here = |id: Uuid| spans.iter().any(|other| other.id == id && other.end.is_some());
-        match span.end {
-            // A run that opens and closes in one batch is sent once, whole.
-            None if closed_here(span.id) => {}
-            // It was posted when it opened: its end is a change to it.
-            Some(_) if span.kind == Kind::Session && !opened_here(span.id) => patch.push(run(span, project)),
-            _ => post.push(run(span, project)),
-        }
-    }
-    if post.is_empty() && patch.is_empty() {
-        return None;
-    }
-    Some(json!({ "post": post, "patch": patch }))
+/// Every run is whole when it is sent, so all of them are posted and none is patched.
+fn langsmith(spans: &[Span], project: &str) -> Value {
+    let post: Vec<Value> = spans.iter().map(|span| run(span, project)).collect();
+    json!({ "post": post })
 }
 
 #[cfg(test)]
@@ -398,22 +378,16 @@ mod tests {
     use azazel_agent::{AgentEvent, ToolOutput};
     use azazel_ai::{AssistantMeta, Block, Message, StopReason, Usage, WireApi};
 
-    use super::super::record::{Recorder, SessionFacts, Who};
+    use super::super::record::{Recorder, Who};
     use super::*;
 
     fn at(ms: i64) -> Timestamp {
         Timestamp::from_millisecond(1_800_000_000_000 + ms).unwrap()
     }
 
-    /// A session with one prompt: a reply that asks for `read`, the call, the closing.
-    /// The first span is the session as it opened.
+    /// One prompt of the session `s1`: a reply that asks for `read`, the call, the end.
     fn spans(content: bool) -> Vec<Span> {
-        let facts = SessionFacts {
-            id: "s1".into(),
-            name: None,
-            resumed: false,
-        };
-        let (mut recorder, opened) = Recorder::new(facts, content, at(0));
+        let mut recorder = Recorder::new("s1".into(), content);
         let lead = Who {
             id: "lead",
             def: "lead",
@@ -476,14 +450,13 @@ mod tests {
                 },
             ),
         ];
-        let mut out = vec![opened];
+        let mut out = Vec::new();
         for (ms, event) in events {
             if matches!(event, AgentEvent::MessageStart) && recorder.needs_prompt("lead") {
                 recorder.prompt_text("lead", "what is in a.rs?");
             }
             out.extend(recorder.event(&lead, &event, at(ms)));
         }
-        out.extend(recorder.close(at(40)));
         out
     }
 
@@ -571,10 +544,7 @@ mod tests {
     #[test]
     fn otlp_carries_the_tree_with_ids_times_and_typed_attributes() {
         let wire = Wire::from_config(&config("exporter = 'otlp'"), &no_env).unwrap();
-        let all = spans(false);
-        // The session as it opened is not for OTLP: alone it makes no request.
-        assert_eq!(wire.body(&all[..1]), None);
-        let body = wire.body(&all).unwrap();
+        let body = wire.body(&spans(false));
         let resource = &body["resourceSpans"][0];
         assert_eq!(
             resource["resource"]["attributes"][0],
@@ -582,20 +552,23 @@ mod tests {
         );
         let sent = resource["scopeSpans"][0]["spans"].as_array().unwrap();
         let names: Vec<&str> = sent.iter().map(|span| span["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            ["chat claude-opus", "execute_tool read", "prompt", "session"]
-        );
-        let [request, tool, prompt, session] = &sent[..] else {
+        assert_eq!(names, ["chat claude-opus", "execute_tool read", "prompt"]);
+        let [request, tool, prompt] = &sent[..] else {
             unreachable!()
         };
         for span in sent {
-            assert_eq!(span["traceId"], session["traceId"]);
+            assert_eq!(span["traceId"], prompt["traceId"]);
             assert_eq!(span["traceId"].as_str().unwrap().len(), 32);
             assert_eq!(span["spanId"].as_str().unwrap().len(), 16);
+            // The session is an attribute of every span.
+            assert_eq!(attribute(span, "session.id"), &json!({"stringValue": "s1"}));
+            assert_eq!(
+                attribute(span, "gen_ai.conversation.id"),
+                &json!({"stringValue": "s1"})
+            );
         }
-        assert!(session.get("parentSpanId").is_none());
-        assert_eq!(prompt["parentSpanId"], session["spanId"]);
+        // The prompt is the root of the trace.
+        assert!(prompt.get("parentSpanId").is_none());
         assert_eq!(request["parentSpanId"], prompt["spanId"]);
         assert_eq!(tool["parentSpanId"], request["spanId"]);
         assert_eq!(request["startTimeUnixNano"], "1800000000002000000");
@@ -633,7 +606,7 @@ mod tests {
     #[test]
     fn otlp_carries_what_was_said_when_content_is_on() {
         let wire = Wire::from_config(&config("exporter = 'otlp'"), &no_env).unwrap();
-        let body = wire.body(&spans(true)).unwrap();
+        let body = wire.body(&spans(true));
         let sent = body["resourceSpans"][0]["scopeSpans"][0]["spans"]
             .as_array()
             .unwrap();
@@ -662,23 +635,12 @@ mod tests {
     }
 
     #[test]
-    fn langsmith_posts_runs_and_patches_a_session_it_posted_earlier() {
+    fn langsmith_posts_whole_runs_that_name_their_thread() {
         let wire = Wire::from_config(&config("exporter = 'langsmith'\nproject = 'p'"), &no_env).unwrap();
-        let all = spans(true);
-        // The session opens: one run without an end.
-        let opening = wire.body(&all[..1]).unwrap();
-        assert_eq!(opening["patch"], json!([]));
-        let opened = &opening["post"][0];
-        assert_eq!(opened["run_type"], "chain");
-        assert_eq!(opened["session_name"], "p");
-        assert_eq!(opened["start_time"], "2027-01-15T08:00:00Z");
-        assert!(opened.get("end_time").is_none() && opened.get("outputs").is_none());
-        assert_eq!(opened["trace_id"], opened["id"]);
-        assert_eq!(opened["extra"]["metadata"]["thread_id"], "s1");
-
-        // The rest arrives later: runs are posted, the session's end is a patch.
-        let later = wire.body(&all[1..]).unwrap();
-        let posted = later["post"].as_array().unwrap();
+        let body = wire.body(&spans(true));
+        // Every run is whole: posted, never patched.
+        assert!(body.get("patch").is_none());
+        let posted = body["post"].as_array().unwrap();
         let types: Vec<&str> = posted
             .iter()
             .map(|run| run["run_type"].as_str().unwrap())
@@ -687,21 +649,30 @@ mod tests {
         let [request, tool, prompt] = &posted[..] else {
             unreachable!()
         };
-        assert_eq!(later["patch"].as_array().unwrap().len(), 1);
-        let closed = &later["patch"][0];
-        assert_eq!(closed["id"], opened["id"]);
-        assert_eq!(closed["end_time"], "2027-01-15T08:00:00.04Z");
-
-        assert_eq!(prompt["parent_run_id"], opened["id"]);
+        // The prompt is the root run; the session is the thread its trace belongs to.
+        assert!(prompt.get("parent_run_id").is_none());
+        assert_eq!(prompt["trace_id"], prompt["id"]);
+        assert_eq!(prompt["name"], "prompt");
+        assert_eq!(prompt["start_time"], "2027-01-15T08:00:00.001Z");
+        assert_eq!(prompt["end_time"], "2027-01-15T08:00:00.03Z");
+        for run in posted {
+            assert_eq!(run["trace_id"], prompt["id"]);
+            assert_eq!(run["session_name"], "p");
+            assert_eq!(run["extra"]["metadata"]["session_id"], "s1");
+            assert_eq!(run["extra"]["metadata"]["thread_id"], "s1");
+        }
         assert_eq!(request["parent_run_id"], prompt["id"]);
         assert_eq!(tool["parent_run_id"], request["id"]);
         let order = |run: &Value| run["dotted_order"].as_str().unwrap().to_string();
         assert_eq!(
+            order(prompt),
+            format!("20270115T080000001000Z{}", prompt["id"].as_str().unwrap())
+        );
+        assert_eq!(
             order(request),
             format!(
-                "{}.20270115T080000001000Z{}.20270115T080000002000Z{}",
-                order(opened),
-                prompt["id"].as_str().unwrap(),
+                "{}.20270115T080000002000Z{}",
+                order(prompt),
                 request["id"].as_str().unwrap()
             )
         );
@@ -727,20 +698,8 @@ mod tests {
         assert_eq!(tool["error"], "no such file");
         assert_eq!(prompt["inputs"], json!({"prompt": "what is in a.rs?"}));
 
-        // A session that opens and closes within one batch is one whole run, not two halves.
-        let whole = wire.body(&all).unwrap();
-        assert_eq!(whole["patch"], json!([]));
-        let sessions: Vec<&Value> = whole["post"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|run| run["name"] == "session")
-            .collect();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0]["end_time"], "2027-01-15T08:00:00.04Z");
-
         // Without content a run says what happened and nothing of what was said.
-        let quiet = wire.body(&spans(false)).unwrap().to_string();
+        let quiet = wire.body(&spans(false)).to_string();
         assert!(!quiet.contains("a.rs") && !quiet.contains("reading") && !quiet.contains("no such file"));
     }
 }
