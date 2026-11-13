@@ -15,9 +15,18 @@ pub const BROWSER_ENV: &str = "AZAZEL_BROWSER";
 /// fresh CI runner, a new profile) can take well over ten seconds.
 const STARTUP: Duration = Duration::from_secs(30);
 
+/// What the failure of [`launch`] says when the browser left at once, as it does while another
+/// browser holds the profile.
+pub const LEFT_AT_ONCE: &str = "before opening its debugging port";
+
 /// The file, in the profile directory, in which the browser writes its debugging port and the path
 /// of its WebSocket endpoint.
 const PORT_FILE: &str = "DevToolsActivePort";
+
+/// How long the port file is still waited for after the started process exits. On a new profile
+/// Edge sets the profile up, starts itself again and exits; the browser that answers is the
+/// second process, which writes the port file a moment later.
+const AFTER_EXIT: Duration = Duration::from_secs(3);
 
 /// Chrome, Chromium, Edge and Brave, in that order: install locations first, then names on `PATH`.
 fn candidates(env: &dyn Fn(&str) -> Option<String>) -> Vec<(Vec<PathBuf>, &'static [&'static str])> {
@@ -148,6 +157,7 @@ pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Lau
         .map_err(|e| format!("could not start {}: {e}", binary.display()))?;
 
     let started = Instant::now();
+    let mut exited: Option<(Instant, String)> = None;
     loop {
         if let Some(ws_url) = std::fs::read_to_string(&port_file)
             .ok()
@@ -156,11 +166,19 @@ pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Lau
         {
             return Ok(Launched { child, ws_url });
         }
-        // A browser already running on this profile takes over the new process, which then exits.
-        if let Ok(Some(status)) = child.try_wait() {
+        // A browser already running on this profile takes over the new process, which then
+        // exits; so does a browser that starts itself again (its new process is still in the
+        // job, and is stopped with it).
+        if exited.is_none()
+            && let Ok(Some(status)) = child.try_wait()
+        {
+            exited = Some((Instant::now(), status.to_string()));
+        }
+        if let Some((at, status)) = &exited
+            && at.elapsed() >= AFTER_EXIT
+        {
             return Err(format!(
-                "{} exited ({status}) before opening its debugging port; \
-                 another session may be using the profile {}",
+                "{} exited ({status}) {LEFT_AT_ONCE}; another session may be using the profile {}",
                 binary.display(),
                 profile.display()
             ));
