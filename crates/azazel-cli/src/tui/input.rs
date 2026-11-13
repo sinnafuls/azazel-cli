@@ -831,13 +831,15 @@ impl Tui {
 
     // ------------------------------------------------------------ settings that apply at once
 
-    /// Applies a setting the settings menu just saved to the running UI. The appearance
-    /// settings are kept in the UI's own copy of the configuration, where whatever draws reads
-    /// them.
+    /// Applies a setting the settings screen just saved, or is trying on, to the running UI.
+    /// The appearance settings are kept in the UI's own copy of the configuration, where
+    /// whatever draws reads them.
     pub(super) fn apply_setting(&mut self, path: &str, value: &toml::Value) {
         let tui = &mut self.env.config.tui;
         match (path, value) {
-            ("tui.theme", toml::Value::String(name)) => self.set_theme(name),
+            ("tui.theme", toml::Value::String(name)) => {
+                self.apply_theme(name);
+            }
             ("tui.glyphs", toml::Value::String(set)) => {
                 if let Ok(setting) = set.parse() {
                     tui.glyphs = setting;

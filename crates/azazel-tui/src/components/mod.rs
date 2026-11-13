@@ -13,6 +13,7 @@ pub mod select;
 pub mod shimmer;
 pub mod spinner;
 pub mod status;
+pub mod tabs;
 pub mod todo;
 pub mod tool_card;
 pub mod vim;

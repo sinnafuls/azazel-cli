@@ -7,6 +7,17 @@ GitHub are its section here.
 
 ### Added
 
+- `/settings` is one screen of ten pages behind a row of tabs (Accounts, Models, Appearance, Status line,
+  Input, Permissions, Tools, Sessions, Usage, Advanced) and reaches every configuration key. `Tab` and the
+  arrows change pages, `/` searches all of them, `r` puts a setting back on its default, and `p` saves to the
+  project's config instead of the home config in a trusted project.
+- Each settings row shows the value in effect, a mark when it is not the default, and the layer it comes from
+  (`home`, `project`, `local`, `env`, `flag`); the tabs count what is changed on each page, and the selected
+  setting is described under the list with its key and default.
+- Settings are edited in place: switches flip, choices open a list that shows each value in the running UI
+  while it is being chosen (theme, symbols, indicator, tool call style), numbers and texts are typed, and
+  lists and tables (favourite models, permission rules, formatters, checkers, language servers, account order,
+  agent overrides) have an editor that adds, changes, removes and reorders entries.
 - Images in the draft: `Ctrl+V` and `Alt+V` take what is on the clipboard. An image is attached and shows as
   a chip, `[Image #1]`, where the cursor was; copied files and text that is nothing but paths of image files
   attach those images (other files become `@path` mentions); other text is pasted. The chip is one character
@@ -27,6 +38,11 @@ GitHub are its section here.
 
 ### Changed
 
+- `/settings`: signing in, adding an API key and signing out are on the Accounts page, the default model and
+  the model of every role on the Models page. A value set back to its default is taken out of `config.toml`
+  instead of being written. Where there is no screen (a session in another process, RPC clients) the same pages
+  are a chain of menus.
+- Choosing a theme in `/settings` no longer writes a `theme:` line into the transcript for each theme tried.
 - `Ctrl+Enter` adds a line, like `Shift+Enter` and `Ctrl+J` (`newline`).
 - A change of the window's size (dragging, or zooming the font) is taken in once the size has been still for
   60 ms and drawn once. The live region grows with a taller window, so the input stays on the last rows; on
