@@ -62,9 +62,10 @@ viewer, `/copy`, the agent hub, the reports (`/cost`, `/context`, `/session`, `/
 extension added (`/settings`, `/usage`, `/mcp ...`, `/goal`, skills).
 
 What reads or changes files and state of the session's own process is not available while attached,
-and says so: `/diff`, `/commit`, `/consult`, `/handoff`, `/name` without a text, `/jobs`, `/reload`, the
-list of `/permissions`, the `/mcp` picker, `Ctrl+B`, `# notes` for the memory, and renaming, deleting,
-pinning and previewing other sessions in `/resume`. Your prompt history is this project's; prompts
+and says so: `/diff`, `/commit`, `/consult`, `/handoff`, `/name` without a text, `/jobs`, `/reload`,
+`/permissions`, `/open <path>`, the `/mcp` picker, `Ctrl+B`, `# notes` for the memory, and renaming,
+deleting, pinning and previewing other sessions in `/resume`. `/rewind` lists the checkpoints without
+what changed in the files since each. Your prompt history is this project's; prompts
 sent to a session elsewhere are not added to it. Themes, key bindings, the clipboard, the external
 editor and voice input are the UI's own and work as always.
 
