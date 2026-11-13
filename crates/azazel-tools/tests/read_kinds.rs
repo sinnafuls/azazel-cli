@@ -196,6 +196,7 @@ fn reply(text: &str, tool: Option<(&str, Value)>) -> EntryKind {
         stop: StopReason::Stop,
         response_id: None,
         duration_ms: 0,
+        sources: Vec::new(),
     };
     EntryKind::Message {
         message: Message::assistant(content, meta),

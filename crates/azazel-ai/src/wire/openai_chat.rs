@@ -35,6 +35,10 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     if openrouter && model.id.starts_with("anthropic/") {
         mark_cache_breakpoint(&mut messages);
     }
+    // After the mark: the cached prefix ends with the conversation, whatever the notes say.
+    if let Some(note) = req.tail_text() {
+        messages.push(json!({"role": "user", "content": note}));
+    }
     body.insert("messages".into(), Value::Array(messages));
     body.insert("stream".into(), json!(true));
     body.insert("stream_options".into(), json!({"include_usage": true}));
@@ -902,6 +906,7 @@ impl ChatDecoder {
             stop,
             response_id: self.response_id.clone(),
             duration_ms: 0,
+            sources: Vec::new(),
         }
     }
 

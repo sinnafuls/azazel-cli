@@ -462,7 +462,7 @@ Session and display:
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams) |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
-| `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost |
+| `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost; how much of the input was read from the [prompt cache](models-and-logins.md#prompt-cache), per model, and why a request missed it |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/bg <prompt>` | Run a prompt in the background, in a copy of this session; see [background sessions](background-and-remote.md) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
@@ -575,11 +575,12 @@ nothing is rendered again to count it.
 
 | Category | Holds |
 |---|---|
-| `system prompt: <name>` | One part of the system prompt under the name it is built with: `identity`, `rules`, `team`, `environment`, `mode`, `mcp`, `coordinator`, or a part an extension added. `system prompt: other` is text without a name, added by a hook |
+| `system prompt: <name>` | One part of the system prompt under the name it is built with: `identity`, `rules`, `team`, `environment`, `mcp`, `coordinator`, or a part an extension added. `system prompt: other` is text without a name, added by a hook |
+| `date and branch`, `mode and goal`, `task list reminder` | The notes sent after the conversation, which are true for one request only and stay out of the [prompt cache](models-and-logins.md#prompt-cache) |
 | `AGENTS and context files` | `AGENTS.md` and the other context files |
 | `rules on request` | The list of rule files the agent may read |
 | `skill index` | The names and descriptions of the skills |
-| `memory` | What was recalled into the prompt |
+| `memory` | What memory keeps in front of the agent; it is sent with the notes after the conversation |
 | `tool schemas` | The name, description and input schema of every built-in tool; `tool schemas: MCP <server>` is the same for one MCP server |
 | `user messages`, `assistant messages`, `thinking`, `tool calls` | The conversation as it is sent, by what each block is |
 | `tool results` | The text of tool results, elided ones as their notes |

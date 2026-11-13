@@ -66,6 +66,7 @@ fn assistant(content: Vec<Block>, model: &str) -> Message {
             stop: StopReason::ToolUse,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         },
     )
 }
@@ -497,6 +498,25 @@ fn tool_call_ids_are_unique_without_api_ids() {
 }
 
 // ---- build_body ----
+
+#[test]
+fn the_notes_of_a_request_follow_the_conversation_and_stay_out_of_the_system_instruction() {
+    let mut req = request(vec![Message::user("hi")]);
+    req.tail = vec![SystemPart {
+        text: "Date: today".into(),
+        name: "now".into(),
+        cache_boundary: false,
+    }];
+    let body = body(&model(), &req);
+    assert!(body.get("systemInstruction").is_none());
+    assert_eq!(
+        body["contents"],
+        json!([{"role": "user", "parts": [
+            {"text": "hi"},
+            {"text": "<system-note>\nDate: today\n</system-note>"},
+        ]}])
+    );
+}
 
 #[test]
 fn system_parts_go_to_system_instruction_and_empty_ones_are_dropped() {

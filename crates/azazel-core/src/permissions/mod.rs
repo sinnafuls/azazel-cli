@@ -117,6 +117,19 @@ fn normal(path: &Path) -> String {
 }
 
 /// Where relative paths and patterns are anchored.
+/// Whether `path` (absolute) is on the built-in list of files that hold credentials. For code
+/// that reads a file on its own account, such as an `@path` include, where no agent asked and
+/// no user can be asked.
+pub(crate) fn holds_credentials(path: &Path, azazel_home: &Path, project_root: &Path) -> bool {
+    let home = std::env::home_dir();
+    let ctx = MatchCtx {
+        project_root,
+        cwd: project_root,
+        home: home.as_deref(),
+    };
+    secrets::is_secret(path, &[], azazel_home, &ctx)
+}
+
 pub struct MatchCtx<'a> {
     pub project_root: &'a Path,
     /// The calling agent's working directory.
