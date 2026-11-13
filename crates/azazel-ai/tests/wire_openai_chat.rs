@@ -657,14 +657,17 @@ fn system_parts_become_one_leading_system_message() {
         system: vec![
             SystemPart {
                 text: "You are terse.".into(),
+                name: String::new(),
                 cache_boundary: false,
             },
             SystemPart {
                 text: "  ".into(),
+                name: String::new(),
                 cache_boundary: true,
             },
             SystemPart {
                 text: "Project: demo.".into(),
+                name: String::new(),
                 cache_boundary: false,
             },
         ],

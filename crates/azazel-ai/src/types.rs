@@ -416,6 +416,11 @@ pub struct Request {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemPart {
     pub text: String,
+    /// Which part of the prompt this is (`identity`, `skills`, `memory`, ...), for whoever
+    /// reports what a request is made of. Empty when the part was not built under a name. Never
+    /// sent to a provider.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
     /// Marks the end of the prefix that stays byte-stable across requests.
     #[serde(default, skip_serializing_if = "is_false")]
     pub cache_boundary: bool,

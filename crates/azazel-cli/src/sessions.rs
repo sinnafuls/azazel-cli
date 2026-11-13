@@ -265,17 +265,22 @@ fn redact_exports(paths: &Paths) -> bool {
     Config::load(paths, &options).map_or(true, |loaded| loaded.config.tui.redact)
 }
 
-/// `azazel export [ID] [--format] [-o FILE]`: the latest session of this project when no id is
-/// given; the format from `--format`, else the file's extension, else Markdown.
-pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, output: Option<&Path>) -> u8 {
-    let dirs = session_dirs(paths, true);
-    let summary = match session {
-        Some(wanted) => find(paths, &dirs, wanted),
+/// The session a command is about: the one given as a path to its file or as the start of its
+/// id, in any project; the latest session of this project when none is given.
+pub(crate) fn pick(paths: &Paths, session: Option<&str>) -> Result<SessionSummary, String> {
+    match session {
+        Some(wanted) => find(paths, &session_dirs(paths, true), wanted),
         None => SessionStore::list(&paths.sessions_dir())
             .into_iter()
             .next()
-            .ok_or_else(|| "this project has no session to export".to_string()),
-    };
+            .ok_or_else(|| "this project has no session yet".to_string()),
+    }
+}
+
+/// `azazel export [ID] [--format] [-o FILE]`: the latest session of this project when no id is
+/// given; the format from `--format`, else the file's extension, else Markdown.
+pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, output: Option<&Path>) -> u8 {
+    let summary = pick(paths, session);
     let store = match summary.and_then(|s| SessionStore::open(&s.path).map_err(|e| e.to_string())) {
         Ok(store) => store,
         Err(e) => {

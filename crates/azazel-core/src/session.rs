@@ -8,7 +8,7 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::UNIX_EPOCH;
 
 use azazel_agent::compaction::{apply_context_edit, summary_message};
-use azazel_agent::{ContextEntry, TranscriptSink};
+use azazel_agent::{ContextEntry, ContextReport, TranscriptSink};
 use azazel_ai::{Message, ModelSpec, Role, Usage};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -166,6 +166,10 @@ pub struct SessionFacts {
     pub compactions: usize,
     pub agents: Vec<AgentRun>,
 }
+
+/// File in a session's own folder (`<sessions>/<id>/`) that holds what the lead's newest request
+/// was made of.
+const CONTEXT_FILE: &str = "context.json";
 
 /// File in a sessions directory that caches each session's summary, so listing does not read
 /// every session file again.
@@ -595,6 +599,40 @@ impl SessionStore {
         shown
     }
 
+    /// The branch a transcript file ends on, read without opening the file for writing (a
+    /// sub-agent's own transcript, for example).
+    pub fn branch_of(path: &Path) -> io::Result<Vec<Entry>> {
+        read_branch(path)
+    }
+
+    /// The transcript of sub-agent `agent` of this session: where
+    /// [`crate::paths::Paths::agent_transcripts_dir`] puts it for a session kept in its sessions
+    /// directory.
+    pub fn agent_transcript(&self, agent: &str) -> PathBuf {
+        let inner = self.lock();
+        inner
+            .path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(&inner.header.id)
+            .join(crate::paths::AGENT_TRANSCRIPTS)
+            .join(format!("{agent}.jsonl"))
+    }
+
+    /// Where the breakdown of the newest request of session `id` is kept, for the session file
+    /// `file`: in the session's folder, which is deleted with it.
+    fn context_file(file: &Path, id: &str) -> PathBuf {
+        file.parent().unwrap_or(Path::new("")).join(id).join(CONTEXT_FILE)
+    }
+
+    /// What the lead's newest request in the session at `file` was made of; `None` when the
+    /// session has not sent one since this was first recorded.
+    pub fn last_request(file: &Path) -> Option<ContextReport> {
+        let (header, _) = read_file(file).ok()?;
+        let bytes = std::fs::read(Self::context_file(file, &header.id)).ok()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
     /// The tokens and cost recorded in a transcript file (a sub-agent's, for example).
     pub fn usage_of(path: &Path) -> Option<Usage> {
         summarise(path).map(|summary| summary.usage)
@@ -888,6 +926,32 @@ impl TranscriptSink for SessionStore {
             first_kept_entry_id: first_kept.to_string(),
             tokens_before,
         })
+    }
+
+    /// Replaces the session's `context.json` in one step. A copy of a session that lives in
+    /// another process writes nothing.
+    fn request(&self, report: &ContextReport) {
+        let path = {
+            let inner = self.lock();
+            if inner.file.is_none() {
+                return;
+            }
+            Self::context_file(&inner.path, &inner.header.id)
+        };
+        let temp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        let written = serde_json::to_vec(report)
+            .map_err(io::Error::other)
+            .and_then(|bytes| {
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir)?;
+                }
+                std::fs::write(&temp, bytes)
+            })
+            .and_then(|()| std::fs::rename(&temp, &path));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            tracing::debug!("could not write {}: {e}", path.display());
+        }
     }
 }
 

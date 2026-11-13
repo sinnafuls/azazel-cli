@@ -679,14 +679,17 @@ fn system_parts_become_instructions_and_the_cache_key_is_forwarded() {
         system: vec![
             SystemPart {
                 text: "You are terse.".into(),
+                name: String::new(),
                 cache_boundary: false,
             },
             SystemPart {
                 text: String::new(),
+                name: String::new(),
                 cache_boundary: true,
             },
             SystemPart {
                 text: "Project: demo.".into(),
+                name: String::new(),
                 cache_boundary: false,
             },
         ],

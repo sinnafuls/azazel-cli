@@ -9,13 +9,13 @@ use async_trait::async_trait;
 use azazel_agent::agent::{ABORTED_TEXT, TURN_LIMIT_TEXT};
 use azazel_agent::{
     Access, Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, AllowAll,
-    ArtifactSink, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks, Services, Tool,
-    ToolCtx, ToolOutput, TranscriptSink, UserInput,
+    ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks,
+    Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
     AiError, Block, Catalog, Message, ModelOverride, ModelSpec, Request, RetryPolicy, Role, Router,
-    StopReason, StreamEvent, ThinkingLevel,
+    StopReason, StreamEvent, ThinkingLevel, Usage,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
@@ -242,6 +242,7 @@ fn start(setup: Setup) -> Session {
         },
         system: vec![azazel_ai::SystemPart {
             text: "You are a test agent.".into(),
+            name: String::new(),
             cache_boundary: true,
         }],
         tools: Arc::new(setup.tools),
@@ -839,6 +840,154 @@ async fn full_compaction_summarises_the_old_span_and_keeps_the_recent_tail() {
         ]
     );
     assert_eq!(session.agent.status().requests, 6);
+}
+
+#[tokio::test]
+async fn with_the_recall_tool_elided_results_and_summaries_name_the_entries_that_hold_the_originals() {
+    // The same shape as the elision test, with a tool of the recall tool's name on offer.
+    let mut session = start(Setup {
+        tools: vec![
+            slow("dump", Access::Read, 0, 1600),
+            slow("session_recall", Access::Read, 0, 1),
+        ],
+        context_window: 2000,
+        compaction: CompactionSettings {
+            enabled: true,
+            reserve_tokens: 100,
+            keep_recent_tokens: 300,
+            keep_tool_results: 1,
+            micro_threshold: 0.5,
+        },
+        ..Setup::default()
+    });
+    big_rounds(&session, 3);
+    session.mock.push("a", MockStep::text("done"));
+    session.run("go").await;
+    let requests = session.mock.requests_for("a");
+    assert_eq!(
+        result_texts(&requests[3]),
+        [
+            "[result elided: 1600 bytes; session_recall expand=m3]".to_string(),
+            "[result elided: 1600 bytes; session_recall expand=m5]".to_string(),
+            "x".repeat(1600)
+        ]
+    );
+    assert_eq!(
+        *session.recorder.edits.lock().unwrap(),
+        [
+            (
+                "m3".to_string(),
+                "[result elided: 1600 bytes; session_recall expand=m3]".to_string()
+            ),
+            (
+                "m5".to_string(),
+                "[result elided: 1600 bytes; session_recall expand=m5]".to_string()
+            )
+        ]
+    );
+
+    // A full compaction: the span is labelled with entry ids for the summariser, and the stored
+    // summary ends by naming the newest entry it covers.
+    let mut session = start(Setup {
+        tools: vec![
+            slow("dump", Access::Read, 0, 1600),
+            slow("session_recall", Access::Read, 0, 1),
+        ],
+        context_window: 2000,
+        compaction: CompactionSettings {
+            enabled: true,
+            reserve_tokens: 500,
+            keep_recent_tokens: 500,
+            keep_tool_results: 100,
+            micro_threshold: 1.0,
+        },
+        ..Setup::default()
+    });
+    big_rounds(&session, 4);
+    session.mock.push("a", MockStep::text("## Goal\nship it [m3]\n"));
+    session.mock.push("a", MockStep::text("done"));
+    session.run("go").await;
+    let requests = session.mock.requests_for("a");
+    let summariser = &requests[4];
+    assert!(
+        summariser.messages[0].text().starts_with(
+            "<conversation>\nUser [m1]: go\n\nAssistant called dump [m2]: {}\n\nTool result [m3]: xxx"
+        ),
+        "{}",
+        summariser.messages[0].text()
+    );
+    let compactions = session.recorder.compactions.lock().unwrap().clone();
+    let (summary, first_kept, _) = &compactions[0];
+    assert_eq!(first_kept, "m6");
+    let (text, note) = summary.split_once("\n\n[").expect("a note after the summary");
+    assert_eq!(text, "## Goal\nship it [m3]");
+    // m5 is the last entry before the cut.
+    assert!(
+        note.contains("up to entry m5") && note.contains("session_recall"),
+        "{note}"
+    );
+    assert_eq!(
+        requests[5].messages[0].text(),
+        format!("Summary of the conversation so far:\n\n{summary}")
+    );
+}
+
+#[tokio::test]
+async fn the_last_request_is_kept_as_sent_and_sized_by_what_the_provider_counted() {
+    let mut session = start(Setup {
+        tools: vec![slow("dump", Access::Read, 0, 400)],
+        ..Setup::default()
+    });
+    assert!(session.agent.last_request().is_none());
+    session
+        .mock
+        .push("a", MockStep::tools("", &[("c1", "dump", json!({}))]));
+    session.mock.push(
+        "a",
+        MockStep::text("done").with_usage(Usage {
+            input: 300,
+            cache_read: 500,
+            cache_write: 200,
+            output: 40,
+            ..Usage::default()
+        }),
+    );
+    session.run("go").await;
+
+    let record = session.agent.last_request().expect("a request was sent");
+    let sent = session.mock.requests_for("a");
+    assert_eq!(record.seq, 2);
+    assert_eq!(*record.request, sent[1]);
+    assert_eq!(record.model.as_deref(), Some("mock/a"));
+    assert_eq!(record.window, 128_000);
+    // Cached input counts as input; output does not.
+    assert_eq!(record.reported, Some(1000));
+    let report = record.report();
+    assert_eq!(report.tokens, 1000);
+    assert_eq!(report.categories.iter().map(|c| c.tokens).sum::<u64>(), 1000);
+    let result = report
+        .categories
+        .iter()
+        .position(|c| c.kind == CategoryKind::ToolResults)
+        .expect("the tool result is counted");
+    assert_eq!(report.categories[result].estimate, 100);
+    assert_eq!(
+        record.text(result).as_deref(),
+        Some(format!("--- message 3: result of dump (c1) ---\n{}", "x".repeat(400)).as_str())
+    );
+
+    // The next request replaces it; until it is answered nothing is reported for it.
+    session
+        .mock
+        .push("a", MockStep::text("again").delayed(Duration::from_millis(300)));
+    assert!(session.agent.prompt(UserInput::text("more")));
+    session
+        .wait_for(|event| matches!(event, AgentEvent::MessageStart))
+        .await;
+    let pending = session.agent.last_request().unwrap();
+    assert_eq!((pending.seq, pending.reported), (3, None));
+    assert_eq!(pending.model, None);
+    session.until_terminal().await;
 }
 
 fn history() -> Vec<ContextEntry> {

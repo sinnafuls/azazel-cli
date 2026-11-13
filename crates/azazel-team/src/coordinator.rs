@@ -15,13 +15,15 @@ use crate::report::{REPORT_TOOL, ReportTool, Typed};
 use crate::team::ORCHESTRATION_TOOLS;
 
 /// What a coordinating lead keeps besides the team tools: reading and searching, its to-do list,
-/// questions to the user, skills, memory, and the tools that end a goal, a plan or a typed run.
-pub const COORDINATOR_TOOLS: [&str; 16] = [
+/// questions to the user, its own earlier conversation, skills, memory, and the tools that end a
+/// goal, a plan or a typed run.
+pub const COORDINATOR_TOOLS: [&str; 17] = [
     "read",
     "glob",
     "grep",
     "todo",
     "ask_user",
+    "session_recall",
     "skill",
     "memory_search",
     "memory_save",

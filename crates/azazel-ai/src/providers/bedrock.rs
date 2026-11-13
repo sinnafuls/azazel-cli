@@ -1052,14 +1052,17 @@ mod tests {
             system: vec![
                 SystemPart {
                     text: "You are careful.".into(),
+                    name: String::new(),
                     cache_boundary: true,
                 },
                 SystemPart {
                     text: String::new(),
+                    name: String::new(),
                     cache_boundary: false,
                 },
                 SystemPart {
                     text: "Today is Monday.".into(),
+                    name: String::new(),
                     cache_boundary: false,
                 },
             ],

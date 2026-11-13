@@ -351,6 +351,36 @@ A call that breaks one of these rules fails before you are asked anything, with 
 
 The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
 
+## Recalling the conversation
+
+| Tool | Input | Behaviour |
+|---|---|---|
+| `session_recall` | `query?`, `regex?`, `range?`, `expand?`, `touched?`, `limit?` | Reads the agent's own conversation from the session file, including what [compaction](sessions-and-checkpoints.md#compaction) summarised away and tool results that were elided |
+
+A long session keeps only a summary of its beginning and short notes in place of old tool results. The session
+file keeps everything, and `session_recall` reads it: the branch the conversation is on, from its first message
+to the newest. The lead reads the session; a sub-agent reads its own transcript. A call changes nothing, so it
+runs beside other read-only calls and may be repeated freely.
+
+| Input | Meaning |
+|---|---|
+| `query` | Words to look for, case-insensitive. Entries that hold more of the words come first, then those that hold the rarer words and hold them more often; ties go to the newest |
+| `regex` | A regular expression to look for instead; matches come in the order of the conversation |
+| `expand` | Entry ids to return in full |
+| `range` | `[from, to]`: every entry between two ids, in full. An empty id is the start or the end of the conversation |
+| `touched` | `true` lists the files `read`, `write` and `edit` touched. A file that was read comes with the entries that hold what was read; a file that was written, with the entries whose call changed it. Failed calls are left out |
+| `limit` | Most entries returned: 10 for a search (at most 50), 20 for a range (at most 100) |
+
+Several inputs may be given in one call; each answers in its own section. A search returns one line per entry,
+`<id>  <who or what>: <the first matching line>`, and says how many entries matched when there are more than
+`limit`. An entry in full starts with `── <id> · <who or what> · <time> ──`. A range that is cut ends with
+`[N more entries; continue with range=["<id>", "<id>"]]`. A search does not find the results of earlier
+`session_recall` calls, which would only echo it; `expand` still returns them.
+
+Entry ids are the ones the session file uses. An agent meets them in three places: an elided result
+(`[result elided: 8140 bytes; session_recall expand=1a2b3c4d]`), the note that ends a summary, and the ids in
+square brackets the summary puts after facts it shortened.
+
 ## Web
 
 | Tool | Input | Behaviour |

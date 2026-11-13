@@ -180,6 +180,14 @@ pub enum Sub {
         #[command(subcommand)]
         action: SessionsAction,
     },
+    /// What the last request of a session was made of: tokens by category
+    Context {
+        /// A path to its file, or its id; the latest session of this project when left out
+        session: Option<String>,
+        /// One JSON object
+        #[arg(long)]
+        json: bool,
+    },
     /// Write a session to a file: Markdown, HTML or JSON lines
     Export {
         /// A path to its file, or its id; the latest session of this project when left out

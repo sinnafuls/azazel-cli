@@ -221,6 +221,7 @@ pub(crate) fn apply(lua: &Lua, event: &mut Event, returned: &Table, script: &str
             if let Some(text) = returned.get::<Option<String>>("system_append")? {
                 system.push(SystemPart {
                     text,
+                    name: "script".to_string(),
                     cache_boundary: false,
                 });
             }

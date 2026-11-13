@@ -12,6 +12,7 @@ pub mod notebook;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod read;
+pub mod recall;
 pub mod scan;
 pub mod schemes;
 pub mod search;
@@ -35,11 +36,13 @@ use azazel_core::{
 pub use ast_grep::AstGrepTool;
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
 pub use read::ReadTool;
+pub use recall::SessionRecallTool;
 pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
 pub use write::{EditTool, WriteTool};
 
-/// Registers the core tools (and `ast_grep` when the ast-grep program is installed), the
+/// Registers the core tools (`session_recall` among them, and `ast_grep` when the ast-grep
+/// program is installed), the
 /// `artifact://`, `session://` and `job://` schemes (and `pr://` and `issue://` when the `gh`
 /// program is installed), `/allow-edit`, and the services they share: [`FileTracker`],
 /// [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
@@ -126,6 +129,7 @@ impl Extension for CoreToolsExt {
         r.tool(Arc::new(TodoTool::new(todos)));
         r.on(EventKind::Context, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));
+        r.tool(Arc::new(SessionRecallTool));
         if let Some(program) = ast_grep::program() {
             r.tool(Arc::new(AstGrepTool::new(program, tracker, self.read_guard)));
         }

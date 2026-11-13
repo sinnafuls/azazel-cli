@@ -49,10 +49,12 @@ fn a_conversation_becomes_the_native_message_shapes() {
         system: vec![
             SystemPart {
                 text: "You are terse.".into(),
+                name: String::new(),
                 cache_boundary: false,
             },
             SystemPart {
                 text: "Use tools.".into(),
+                name: String::new(),
                 cache_boundary: true,
             },
         ],

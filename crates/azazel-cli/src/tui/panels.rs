@@ -1,6 +1,8 @@
 //! Commands that look into the running session and change it: `/tools`, `/jobs`, `/todo`,
-//! `/permissions`, `/forget-approvals`, `/trust` and `/reload`, plus what the keys of overlays do.
+//! `/context`, `/permissions`, `/forget-approvals`, `/trust` and `/reload`, plus what the keys of
+//! overlays do.
 
+use azazel_agent::ContextReport;
 use azazel_core::agents;
 use azazel_core::commands::{CustomCommandsExt, command_roots};
 use azazel_core::hooks::HooksExt;
@@ -8,11 +10,86 @@ use azazel_core::packages::Packages;
 use azazel_core::permissions::{Rule, RuleKind, SESSION, SourcedRule};
 use azazel_core::{Config, Extension};
 use azazel_tools::Jobs;
-use azazel_tui::{KeyCombo, Keymap, SelectItem};
+use azazel_tui::components::format_tokens;
+use azazel_tui::components::overlay::Frame;
+use azazel_tui::{Glyph, KeyCombo, Keymap, Role, SelectItem, Theme, modal, text};
 use crossterm::event::{KeyCode, KeyModifiers};
 
 use super::overlay::{Action, Kind, Overlay};
+use super::pager::{self, Source, Start};
 use super::{Tui, first_line};
+use crate::context;
+
+/// The most cells a category's bar takes in the `/context` box, and the fewest worth drawing.
+const CONTEXT_BAR: usize = 20;
+const CONTEXT_BAR_MIN: usize = 6;
+/// Columns of a row's numbers: `  1.2k  31%`.
+const CONTEXT_NUMBERS: usize = 11;
+/// The widest the list makes its label column, and what a row takes besides label and detail.
+const CONTEXT_LABELS: usize = 32;
+const CONTEXT_ROW_CHROME: usize = 5;
+
+/// The rows of the `/context` box for a list `room` columns wide: each category with its
+/// tokens, its share, a bar of that share and what it counts. A narrow list drops the count,
+/// then the bar, so that the numbers stay.
+pub(super) fn context_items(report: &ContextReport, theme: &Theme, room: usize) -> Vec<SelectItem> {
+    let labels: Vec<String> = report.categories.iter().map(context::label).collect();
+    let counts: Vec<String> = report.categories.iter().map(context::counted).collect();
+    let column = labels
+        .iter()
+        .map(|label| text::width(label))
+        .max()
+        .unwrap_or(0)
+        .min(CONTEXT_LABELS);
+    let count_width = counts.iter().map(|count| text::width(count)).max().unwrap_or(0);
+    let avail = room.saturating_sub(column + CONTEXT_ROW_CHROME);
+    let with_bar = CONTEXT_NUMBERS + 2 + CONTEXT_BAR_MIN;
+    let (cells, with_count) = if avail >= with_bar + 2 + count_width {
+        ((avail - CONTEXT_NUMBERS - 4 - count_width).min(CONTEXT_BAR), true)
+    } else if avail >= with_bar {
+        ((avail - CONTEXT_NUMBERS - 2).min(CONTEXT_BAR), false)
+    } else {
+        (0, false)
+    };
+    report
+        .categories
+        .iter()
+        .zip(labels)
+        .zip(counts)
+        .map(|((category, label), count)| {
+            let numbers = format!(
+                "{:>6} {:>3}%",
+                format_tokens(category.tokens),
+                context::percent(category, report)
+            );
+            if avail < CONTEXT_NUMBERS {
+                // No room to line anything up: the numbers as short as they go, for the list to
+                // cut or leave out as it must.
+                let short = format!(
+                    "{} {}%",
+                    format_tokens(category.tokens),
+                    context::percent(category, report)
+                );
+                return SelectItem::new(label, short);
+            }
+            let mut detail = format!("{}{numbers}", theme.fg(Role::Text));
+            if cells > 0 {
+                let filled = context::bar_cells(category, report, cells);
+                detail.push_str(&format!(
+                    "  {}{}{}{}",
+                    theme.fg(Role::Accent),
+                    theme.glyph(Glyph::ProgressFull).repeat(filled),
+                    theme.fg(Role::BorderMuted),
+                    theme.glyph(Glyph::ProgressEmpty).repeat(cells - filled),
+                ));
+            }
+            if with_count {
+                detail.push_str(&format!("  {}{count}", theme.fg(Role::Muted)));
+            }
+            SelectItem::with_preview(label, detail)
+        })
+        .collect()
+}
 
 /// The keys of the agent hub, in the order [`Tui::overlay_hotkey`] reads them.
 pub(super) fn hub_keys() -> Vec<(KeyCombo, &'static str)> {
@@ -147,6 +224,7 @@ impl Tui {
                     self.copy_text(block, "the code block");
                 }
             }
+            Action::Context(report) => self.read_context(*report, choice).await,
             Action::Jobs(ids) => {
                 if let Some(id) = ids.get(choice) {
                     let items = ["Read its output", "Stop it"]
@@ -231,6 +309,80 @@ impl Tui {
                 self.open_permissions();
             }
             _ => {}
+        }
+    }
+
+    // ------------------------------------------------------------ /context
+
+    /// `/context`: what the lead's last request was made of, a row per category; choosing one
+    /// shows its exact text full screen. Before any request there is nothing to take apart, and
+    /// what is known is said instead.
+    pub(super) async fn open_context(&mut self) {
+        let report = match self.backend.report("context", "json").await {
+            Some(Ok(json)) => serde_json::from_str::<ContextReport>(&json).ok(),
+            _ => None,
+        };
+        match report {
+            Some(report) if !report.categories.is_empty() => self.show_context(report, 0, None),
+            _ => match self.backend.report("context", "").await {
+                Some(Ok(text)) => self.info(&text),
+                Some(Err(why)) => self.fail(&why),
+                None => {}
+            },
+        }
+    }
+
+    /// Opens the `/context` box on `report` with row `at` selected; `note` is said above it.
+    fn show_context(&mut self, report: ContextReport, at: usize, note: Option<String>) {
+        let room = Frame::inner_width(modal::box_width(self.width()));
+        let items = context_items(&report, &self.theme, room);
+        let mut body = context::headline(&report);
+        body.extend(note);
+        self.overlay = Some(
+            Overlay::select("Context", body, items, false, Action::Context(Box::new(report)))
+                .with_enter("read")
+                .starting_at(at),
+        );
+    }
+
+    /// Shows the text of category `index` of `report` full screen, then the box again. When the
+    /// agent has sent another request meanwhile, the box opens on that one instead.
+    async fn read_context(&mut self, report: ContextReport, index: usize) {
+        let Some(category) = report.categories.get(index) else {
+            return;
+        };
+        let asked = format!("text {} {index}", report.request);
+        match self.backend.report("context", &asked).await {
+            Some(Ok(text)) => {
+                let title = format!("Context: {}", context::label(category));
+                let about = format!(
+                    "{} tokens ({}% of request {}), {}",
+                    format_tokens(category.tokens),
+                    context::percent(category, &report),
+                    report.request,
+                    context::counted(category)
+                );
+                let sources = vec![Source::Note(about), Source::Text(text)];
+                pager::show(self, &title, sources, Start::Top).await;
+                self.show_context(report, index, None);
+            }
+            Some(Err(why)) => {
+                let newer = match self.backend.report("context", "json").await {
+                    Some(Ok(json)) => serde_json::from_str::<ContextReport>(&json).ok(),
+                    _ => None,
+                };
+                match newer.filter(|newer| newer.request != report.request) {
+                    Some(newer) => {
+                        let note = format!(
+                            "The agent has sent request {} since; this is what it is made of.",
+                            newer.request
+                        );
+                        self.show_context(newer, 0, Some(note));
+                    }
+                    None => self.fail(&why),
+                }
+            }
+            None => {}
         }
     }
 
@@ -522,7 +674,92 @@ pub(super) fn is_text_input(overlay: &Overlay) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use azazel_agent::{Category, CategoryKind};
+    use azazel_tui::{GlyphLevel, SelectList};
+
     use super::*;
+
+    fn context_report() -> ContextReport {
+        let category = |kind, name: &str, items, tokens| Category {
+            kind,
+            name: name.to_string(),
+            items,
+            estimate: tokens,
+            tokens,
+        };
+        ContextReport {
+            agent: "lead".into(),
+            request: 4,
+            model: Some("mock/lead".into()),
+            window: 200_000,
+            estimate: 40_000,
+            reported: Some(40_000),
+            tokens: 40_000,
+            categories: vec![
+                category(CategoryKind::System, "identity", 1, 500),
+                category(CategoryKind::System, "context_files", 1, 3_500),
+                category(CategoryKind::Tools, "", 24, 8_000),
+                category(CategoryKind::Tools, "github", 120, 16_000),
+                category(CategoryKind::Messages, "user", 2, 0),
+                category(CategoryKind::ToolResults, "", 9, 10_000),
+                category(CategoryKind::Images, "", 1, 2_000),
+            ],
+        }
+    }
+
+    #[test]
+    fn the_context_rows_fit_any_width_and_drop_the_count_then_the_bar_then_line_up_no_more() {
+        let report = context_report();
+        for level in [GlyphLevel::Unicode, GlyphLevel::Nerd, GlyphLevel::Ascii] {
+            let theme = Theme::dark().with_glyphs(level);
+            let full = theme.glyph(Glyph::ProgressFull);
+            for width in 20..=160 {
+                let items = context_items(&report, &theme, width);
+                assert_eq!(items.len(), report.categories.len());
+                let view = SelectList::new(items).view(width, 16, &theme);
+                let rows: Vec<String> = view.lines.iter().map(|line| text::strip_ansi(line)).collect();
+                assert_eq!(rows.len(), 7, "{level:?} at {width}");
+                for row in &rows {
+                    assert!(text::width(row) <= width, "{level:?} at {width}: {row:?}");
+                }
+                // The numbers are there as soon as a row can hold them beside its label.
+                if width >= 24 + CONTEXT_ROW_CHROME + CONTEXT_NUMBERS {
+                    assert!(
+                        rows[3].contains("16.0k  40%"),
+                        "{level:?} at {width}: {:?}",
+                        rows[3]
+                    );
+                    assert!(rows[4].contains("0   0%"), "{level:?} at {width}: {:?}", rows[4]);
+                }
+                let bars: Vec<usize> = rows.iter().map(|row| row.matches(full).count()).collect();
+                if width >= 24 + CONTEXT_ROW_CHROME + CONTEXT_NUMBERS + 2 + CONTEXT_BAR_MIN {
+                    // Something that holds tokens always shows at least one cell; nothing shows none.
+                    assert!(
+                        bars[0] >= 1 && bars[3] > bars[2] && bars[2] >= bars[1],
+                        "{bars:?} at {width}"
+                    );
+                    assert_eq!(bars[4], 0);
+                } else if level != GlyphLevel::Ascii {
+                    assert_eq!(bars, [0; 7], "{level:?} at {width}");
+                }
+                let counted = rows[3].contains("120 tools");
+                assert_eq!(
+                    counted,
+                    width >= 24 + CONTEXT_ROW_CHROME + CONTEXT_NUMBERS + 2 + CONTEXT_BAR_MIN + 2 + 9,
+                    "{level:?} at {width}: {:?}",
+                    rows[3]
+                );
+            }
+            // With room to spare the bar is twenty cells, shared out by tokens: 40 % is eight.
+            let items = context_items(&report, &theme, 120);
+            let wide = text::strip_ansi(&items[3].detail);
+            assert_eq!(wide.matches(full).count(), 8, "{wide}");
+            assert_eq!(
+                text::width(&wide),
+                CONTEXT_NUMBERS + 2 + CONTEXT_BAR + 2 + "120 tools".len()
+            );
+        }
+    }
 
     #[test]
     fn rules_are_typed_as_kind_and_rule() {
