@@ -11,6 +11,7 @@ pub mod provider;
 pub mod providers;
 pub mod router;
 pub mod sse;
+pub mod stall;
 pub mod stream;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
@@ -26,6 +27,7 @@ pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
 pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
 pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
+pub use stall::StallLimits;
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request, Role,

@@ -686,7 +686,19 @@ impl Core {
     fn forward_route_events(&self, events: &mut mpsc::UnboundedReceiver<RouteEvent>) {
         while let Ok(event) = events.try_recv() {
             self.emit(match event {
-                RouteEvent::Retry { attempt, model, .. } => AgentEvent::Retry { attempt, model },
+                RouteEvent::Retry {
+                    attempt,
+                    model,
+                    error,
+                    ..
+                } => AgentEvent::Retry {
+                    attempt,
+                    model,
+                    stalled_secs: match error {
+                        AiError::Stalled { secs } => Some(secs),
+                        _ => None,
+                    },
+                },
                 RouteEvent::Fallback { from, to, .. } => AgentEvent::Fallback { from, to },
                 RouteEvent::Account {
                     provider,

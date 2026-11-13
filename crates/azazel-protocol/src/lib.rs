@@ -510,6 +510,9 @@ pub enum Frame {
         agent: String,
         attempt: u32,
         model: String,
+        /// The model had sent nothing for this many seconds; absent after any other failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stalled_secs: Option<u64>,
     },
     /// The chain moved on to its next model.
     Fallback {

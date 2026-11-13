@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Tool, ToolSource};
-use azazel_ai::Credentials;
 use azazel_ai::providers::http::{HttpProvider, http_client};
+use azazel_ai::{Credentials, StallLimits};
 use azazel_core::paths::canonical;
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, CommandSource, ExtCtx, ExtError, Paths, Registrar, Registry,
@@ -187,15 +187,16 @@ impl Host {
                     extras.bind(OWNER, &key, Arc::new(handler));
                 }
             }
+            // The session's stall limits, when the application set any.
+            let stall = r.services().get::<StallLimits>().map(|limits| *limits);
             for config in pending.providers {
                 let mut registered = locked(&self.providers);
                 if !registered.contains(&config.id) {
                     registered.push(config.id.clone());
-                    r.provider(Arc::new(HttpProvider::new(
-                        config,
-                        http_client(),
-                        self.credentials.clone(),
-                    )));
+                    r.provider(Arc::new(
+                        HttpProvider::new(config, http_client(), self.credentials.clone())
+                            .with_stall(stall.unwrap_or_default()),
+                    ));
                 }
             }
         }

@@ -101,9 +101,9 @@ thinking = "low"
 | | `thinking` | definition | Thinking level replacing the definition's |
 | `[retry]` | `max_attempts` | `3` | Tries per model before moving down the chain |
 | | `cooldown_secs` | `300` | How long a failed model is skipped |
-| | `first_event_secs` | `20` | Longest wait for the first event of a response; `0` waits forever |
-| | `stall_secs` | `120` | Longest a started response may go without an event; `0` waits forever |
-| | `max_stalls` | `3` | Stalls of one model in a row before moving down the chain; `0` never moves |
+| | `first_event_secs` | `20` | Longest wait, in seconds, for the first sign of a response after the request is sent; `0` waits forever. See [stalls](models-and-logins.md#stalls) |
+| | `stall_secs` | `120` | Longest a response that has begun may send nothing; `0` waits forever |
+| | `max_stalls` | `3` | Stalls of one model within a request before moving down the chain; `0` asks the stalled model again for as long as it stalls |
 
 ## Behaviour
 

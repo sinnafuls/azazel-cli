@@ -29,6 +29,15 @@ pub fn parse_tier(text: &str) -> Result<Option<Tier>, String> {
     Ok(Some(tier).filter(|tier| *tier != Tier::Standard))
 }
 
+/// What the transcript says when a reply is given up and its model asked again: after a stall
+/// (`stalled_secs` of silence) or any other failure.
+pub fn retry_line(model: &str, attempt: u32, stalled_secs: Option<u64>) -> String {
+    match stalled_secs {
+        Some(secs) => format!("no answer from {model} for {secs} s; retrying (attempt {attempt})"),
+        None => format!("{model} did not answer; retrying (attempt {attempt})"),
+    }
+}
+
 /// What the transcript says, once, when a model refuses the tier.
 pub fn tier_dropped_line(model: &ModelRef, tier: Tier) -> String {
     format!(

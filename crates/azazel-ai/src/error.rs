@@ -33,6 +33,10 @@ pub enum AiError {
     Network(String),
     #[error("server error {status}: {body}")]
     Server { status: u16, body: String },
+    /// The provider sent nothing for `secs` seconds, before the reply began or in the middle of
+    /// it. The attempt was given up; what had arrived of the reply is not kept.
+    #[error("no answer for {secs} s")]
+    Stalled { secs: u64 },
     #[error("aborted")]
     Aborted,
 }
@@ -41,7 +45,10 @@ impl AiError {
     /// Whether the same model may succeed if the request is sent again.
     pub fn is_retryable(&self) -> bool {
         match self {
-            AiError::Network(_) | AiError::Overloaded | AiError::RateLimit { .. } => true,
+            AiError::Network(_)
+            | AiError::Overloaded
+            | AiError::RateLimit { .. }
+            | AiError::Stalled { .. } => true,
             AiError::Server { status, .. } => *status >= 500,
             AiError::Auth(_)
             | AiError::Quota { .. }
@@ -101,6 +108,10 @@ mod tests {
                 },
                 serde_json::json!({"kind": "quota", "detail": {"resets_at": 1_800_000_000u64, "message": "weekly limit"}}),
             ),
+            (
+                AiError::Stalled { secs: 20 },
+                serde_json::json!({"kind": "stalled", "detail": {"secs": 20}}),
+            ),
         ];
         for (error, json) in cases {
             assert_eq!(serde_json::to_value(&error).unwrap(), json);
@@ -111,6 +122,7 @@ mod tests {
     #[test]
     fn retryable_covers_transient_failures_only() {
         assert!(AiError::Network("reset".into()).is_retryable());
+        assert!(AiError::Stalled { secs: 20 }.is_retryable());
         assert!(
             AiError::Server {
                 status: 503,
