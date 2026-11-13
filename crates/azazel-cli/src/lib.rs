@@ -1,6 +1,8 @@
 //! The `azazel` command-line harness: argument parsing, run modes and the embedding [`Builder`].
 
 pub mod accounts;
+#[cfg(feature = "acp")]
+pub mod acp;
 pub mod app;
 pub mod changelog;
 pub mod cli;
@@ -261,6 +263,8 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             max_cost,
             max_minutes,
         }) => Some((objective.clone(), *max_iterations, *max_cost, *max_minutes)),
+        #[cfg(feature = "acp")]
+        Some(Sub::Acp) => return acp::run(extensions).await,
         Some(Sub::Rpc) | None => None,
     };
 

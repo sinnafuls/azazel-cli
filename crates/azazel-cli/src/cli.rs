@@ -234,6 +234,9 @@ pub enum Sub {
     },
     /// Serve one session to another program: JSON lines on standard input and output
     Rpc,
+    /// Serve editors that speak the Agent Client Protocol, on standard input and output
+    #[cfg(feature = "acp")]
+    Acp,
     /// Show, search and forget what is remembered about this project
     #[cfg(feature = "memory")]
     Memory {
