@@ -331,8 +331,7 @@ impl Tui {
         let local = app.paths.project_local_config().display().to_string();
         let label = format!("{} {}", kind_word(sourced.kind), sourced.rule);
         if sourced.source == SESSION {
-            app.permissions
-                .remove_session_rule(&sourced.rule, sourced.kind);
+            app.permissions.remove_session_rule(&sourced.rule, sourced.kind);
             self.info(&format!("removed {label}"));
         } else if sourced.source == local && sourced.kind == RuleKind::Allow {
             match app.permissions.forget_allow(&sourced.rule) {

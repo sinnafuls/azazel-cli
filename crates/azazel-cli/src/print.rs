@@ -28,7 +28,7 @@ pub fn event_json(agent: &str, event: &AgentEvent) -> Value {
 }
 
 /// The prompt with anything piped on stdin appended.
-fn with_piped_stdin(prompt: &str) -> String {
+pub(crate) fn with_piped_stdin(prompt: &str) -> String {
     let stdin = std::io::stdin();
     if stdin.is_terminal() {
         return prompt.to_string();

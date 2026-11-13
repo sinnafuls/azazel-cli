@@ -6,7 +6,7 @@ pub(crate) mod socket;
 
 use std::collections::VecDeque;
 use std::ffi::OsString;
-use std::io::{BufRead, Read, Seek, SeekFrom};
+use std::io::{BufRead, IsTerminal, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -22,6 +22,7 @@ use azazel_team::Team;
 use azazel_tui::components::format_elapsed;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
 use crate::cli::Cli;
@@ -599,20 +600,83 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
     }
 }
 
-/// `azazel attach <id>` as lines: what the session does is printed as it happens, and each
-/// line typed is a message or an answer for it.
-pub async fn attach_plain(paths: &Paths, wanted: &str) -> u8 {
-    let client = match running::find(&paths.home, wanted) {
-        Ok(entry) => connect(&entry).await,
-        Err(e) => Err(e),
+/// `azazel attach <id>`: the background session in the full UI, or with `--plain` (and where
+/// there is no terminal) as lines.
+pub async fn attach(cli: &Cli, paths: Paths, wanted: &str) -> u8 {
+    let entry = match running::find(&paths.home, wanted) {
+        Ok(entry) => entry,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            return EXIT_FAILED;
+        }
     };
-    let client = match client {
+    let client = match connect(&entry).await {
         Ok(client) => client,
         Err(e) => {
             eprintln!("azazel: {e}");
             return EXIT_FAILED;
         }
     };
+    let terminal = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if cli.plain || !terminal {
+        return line_client(client).await;
+    }
+    let opened = match crate::tui::env_here(cli, paths) {
+        Ok(env) => crate::tui::Remote::open(client, crate::tui::Place::Background { id: entry.id })
+            .await
+            .map(|remote| (remote, env)),
+        Err(e) => Err(format!("{e:#}")),
+    };
+    match opened {
+        Ok((remote, env)) => crate::tui::run_remote(remote, env, None).await,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            EXIT_FAILED
+        }
+    }
+}
+
+/// `azazel rpc --attach <id>`: standard input and output become the connection to a background
+/// session, for a program that speaks the protocol (and for azazel on another machine, over SSH).
+pub async fn bridge(paths: &Paths, wanted: &str) -> u8 {
+    let connected = match running::find(&paths.home, wanted) {
+        Ok(entry) => socket::connect(&entry.socket)
+            .await
+            .map_err(|e| format!("cannot reach the background session {}: {e}", entry.id)),
+        Err(e) => Err(e),
+    };
+    let (mut reader, mut writer) = match connected {
+        Ok(connected) => connected,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            return EXIT_FAILED;
+        }
+    };
+    let (mut input, mut output) = (tokio::io::stdin(), tokio::io::stdout());
+    // Whichever side ends first ends the bridge: the session went away, or the program did.
+    tokio::select! {
+        _ = tokio::io::copy(&mut input, &mut writer) => {}
+        _ = async {
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                match reader.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    // Written at once: a line that waits in a buffer is a frame that is late.
+                    Ok(read) => {
+                        if output.write_all(&buffer[..read]).await.is_err() || output.flush().await.is_err() {
+                            break;
+                        }
+                    }
+                }
+            }
+        } => {}
+    }
+    EXIT_OK
+}
+
+/// A background session as lines: what it does is printed as it happens, and each line typed
+/// is a message or an answer for it.
+pub async fn line_client(client: Client) -> u8 {
     let mut frames = client.frames();
     let attached = client
         .send(Command::Attach {

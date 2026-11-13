@@ -10,10 +10,10 @@ use std::path::PathBuf;
 
 use azazel_agent::ToolSource;
 use azazel_ai::Usage;
+use azazel_core::SessionStore;
 use azazel_core::session::SessionFacts;
 use azazel_core::side::Side;
 use azazel_core::trust::{TrustStore, needs_trust};
-use azazel_core::SessionStore;
 use azazel_tools::{TodoItem, TodoStatus, TodoStore};
 use azazel_tui::components::format_tokens;
 
@@ -461,10 +461,7 @@ fn add_dir(app: &App, args: &str) -> Result<String, String> {
             dir.display()
         ))
     } else {
-        Ok(format!(
-            "{} is already a directory agents work in",
-            dir.display()
-        ))
+        Ok(format!("{} is already a directory agents work in", dir.display()))
     }
 }
 

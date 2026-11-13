@@ -33,7 +33,9 @@ use std::time::{Duration, Instant};
 use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
-use azazel_core::{ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore};
+use azazel_core::{
+    ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
+};
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
@@ -54,14 +56,14 @@ use tokio::sync::mpsc;
 
 use crate::app::{Active, App};
 use crate::attention::{Attention, Kind};
-use backend::{Backend, Go, Incoming, Local, Moved};
 pub(crate) use backend::Env;
+use backend::{Backend, Go, Incoming, Local, Moved};
 use bridge::UiRequest;
 pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
 use overlay::{Action, Outcome, Overlay, ask_items};
-pub(crate) use remote::Remote;
+pub(crate) use remote::{Place, Remote};
 pub(crate) use slash::{REWIND_NOTE, is_note};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
@@ -268,6 +270,8 @@ pub struct Tui {
     #[cfg(feature = "voice")]
     voice: voice::Voice,
     quit: bool,
+    /// The session went away under the UI.
+    ended: bool,
 }
 
 fn load_theme(env: &Env) -> (Theme, Option<String>) {
@@ -315,6 +319,23 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
 /// `env` is this machine's, for the UI's own settings.
 pub(crate) async fn run_remote(remote: Remote, env: Env, first_prompt: Option<String>) -> u8 {
     run_on(Box::new(remote), env, first_prompt).await
+}
+
+/// This machine's settings for a UI whose session is elsewhere. The project here is not the
+/// session's, so nothing of it is trusted.
+pub(crate) fn env_here(cli: &crate::cli::Cli, paths: Paths) -> anyhow::Result<Env> {
+    let options = azazel_core::LoadOptions {
+        trusted: false,
+        overrides: crate::app::config_overrides(cli)?,
+        env: std::env::vars().collect(),
+    };
+    let config = azazel_core::Config::load(&paths, &options)?.config;
+    let credentials = crate::app::credentials(&paths, false).configured(&config.providers);
+    Ok(Env {
+        credentials: Arc::new(credentials),
+        paths,
+        config,
+    })
 }
 
 async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<String>) -> u8 {
@@ -412,6 +433,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         #[cfg(feature = "voice")]
         voice: voice::Voice::default(),
         quit: false,
+        ended: false,
     };
     let opening = tui.attention.open();
     tui.write_out(opening);
@@ -454,8 +476,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     tui.write_out(&closing);
     tui.guard.suspend();
     tui.backend.finish().await;
-    if let Some(place) = tui.backend.place() {
-        println!("left {place}");
+    if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended) {
+        println!("{farewell}");
     }
     // A release the background check downloaded takes the place of this binary now.
     if tui.env.config.update.auto
@@ -641,6 +663,7 @@ impl Tui {
             Incoming::Closed(why) => {
                 self.fail(&why);
                 let _ = self.draw();
+                self.ended = true;
                 self.quit = true;
             }
         }
@@ -1399,10 +1422,7 @@ impl Tui {
             Some("exit") if self.editor.is_empty() => self.quit = true,
             Some("cycle_mode") => {
                 let modes = PermissionMode::ALL;
-                let current = modes
-                    .iter()
-                    .position(|m| *m == self.backend.mode())
-                    .unwrap_or(0);
+                let current = modes.iter().position(|m| *m == self.backend.mode()).unwrap_or(0);
                 self.set_mode(modes[(current + 1) % modes.len()]).await;
             }
             Some("toggle_tool_output") => {

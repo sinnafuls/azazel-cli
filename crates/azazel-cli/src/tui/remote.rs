@@ -56,12 +56,54 @@ struct Shared {
     btw: Mutex<Option<(u64, mpsc::UnboundedSender<Internal>)>>,
 }
 
+/// Where a session that is not in this process runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Place {
+    /// A background session on this machine.
+    Background { id: String },
+    /// azazel on another machine, started for this connection.
+    Ssh { host: String },
+    /// A background session on another machine.
+    SshBackground { host: String, id: String },
+}
+
+impl Place {
+    fn name(&self) -> String {
+        match self {
+            Place::Background { id } => format!("background session {id}"),
+            Place::Ssh { host } => format!("on {host}"),
+            Place::SshBackground { host, id } => format!("background session {id} on {host}"),
+        }
+    }
+
+    /// The id of the background session, when it is one.
+    fn background(&self) -> Option<&str> {
+        match self {
+            Place::Background { id } | Place::SshBackground { id, .. } => Some(id),
+            Place::Ssh { .. } => None,
+        }
+    }
+
+    fn farewell(&self) -> String {
+        match self {
+            Place::Background { id } => {
+                format!("background session {id} goes on; `azazel attach {id}` returns to it")
+            }
+            Place::SshBackground { host, id } => format!(
+                "background session {id} goes on on {host}; `azazel --ssh {host} --attach {id}` returns to it"
+            ),
+            Place::Ssh { host } => {
+                format!("the session is saved on {host}; `azazel --ssh {host} -c` continues it")
+            }
+        }
+    }
+}
+
 pub(crate) struct Remote {
     client: Arc<Client>,
     incoming: mpsc::UnboundedReceiver<Incoming>,
     shared: Arc<Shared>,
-    /// Where the session runs, in words.
-    place: String,
+    place: Place,
     /// The copy of the session the UI reads.
     session: Arc<SessionStore>,
     commands: Vec<(String, String)>,
@@ -323,11 +365,16 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
         } => {
             let (reply, answer) = oneshot::channel();
             let free = options.is_empty();
-            answer_later(client, request_id, answer, move |chosen: Result<Vec<String>, UiError>| match chosen {
-                Ok(chosen) if free => json!(chosen.first().cloned().unwrap_or_default()),
-                Ok(chosen) => json!(chosen),
-                Err(_) => Value::Null,
-            });
+            answer_later(
+                client,
+                request_id,
+                answer,
+                move |chosen: Result<Vec<String>, UiError>| match chosen {
+                    Ok(chosen) if free => json!(chosen.first().cloned().unwrap_or_default()),
+                    Ok(chosen) => json!(chosen),
+                    Err(_) => Value::Null,
+                },
+            );
             UiRequest::Ask {
                 question,
                 options,
@@ -337,18 +384,28 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
         }
         protocol::UiRequest::Confirm { prompt } => {
             let (reply, answer) = oneshot::channel();
-            answer_later(client, request_id, answer, |confirmed: Result<bool, UiError>| match confirmed {
-                Ok(confirmed) => json!(confirmed),
-                Err(_) => Value::Null,
-            });
+            answer_later(
+                client,
+                request_id,
+                answer,
+                |confirmed: Result<bool, UiError>| match confirmed {
+                    Ok(confirmed) => json!(confirmed),
+                    Err(_) => Value::Null,
+                },
+            );
             UiRequest::Confirm { prompt, reply }
         }
         protocol::UiRequest::Select { prompt, options } => {
             let (reply, answer) = oneshot::channel();
-            answer_later(client, request_id, answer, |chosen: Result<usize, UiError>| match chosen {
-                Ok(index) => json!(index),
-                Err(_) => Value::Null,
-            });
+            answer_later(
+                client,
+                request_id,
+                answer,
+                |chosen: Result<usize, UiError>| match chosen {
+                    Ok(index) => json!(index),
+                    Err(_) => Value::Null,
+                },
+            );
             UiRequest::Select {
                 prompt,
                 options,
@@ -357,10 +414,15 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
         }
         protocol::UiRequest::Input { prompt, secret } => {
             let (reply, answer) = oneshot::channel();
-            answer_later(client, request_id, answer, |typed: Result<String, UiError>| match typed {
-                Ok(typed) => json!(typed),
-                Err(_) => Value::Null,
-            });
+            answer_later(
+                client,
+                request_id,
+                answer,
+                |typed: Result<String, UiError>| match typed {
+                    Ok(typed) => json!(typed),
+                    Err(_) => Value::Null,
+                },
+            );
             UiRequest::Input {
                 prompt,
                 secret,
@@ -369,11 +431,16 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
         }
         protocol::UiRequest::Plan { path, plan } => {
             let (reply, answer) = oneshot::channel();
-            answer_later(client, request_id, answer, |decision: Result<PlanDecision, UiError>| match decision {
-                Ok(PlanDecision::Approve) => json!(true),
-                Ok(PlanDecision::Revise(feedback)) => json!(feedback),
-                Err(_) => Value::Null,
-            });
+            answer_later(
+                client,
+                request_id,
+                answer,
+                |decision: Result<PlanDecision, UiError>| match decision {
+                    Ok(PlanDecision::Approve) => json!(true),
+                    Ok(PlanDecision::Revise(feedback)) => json!(feedback),
+                    Err(_) => Value::Null,
+                },
+            );
             UiRequest::Plan {
                 path: PathBuf::from(path),
                 plan,
@@ -504,9 +571,9 @@ async fn pump(
 impl Remote {
     /// Takes the session at the other end of `client` over for the UI. `place` says where it
     /// runs; a background session is attached to first.
-    pub(crate) async fn open(client: Client, place: String, background: bool) -> Result<Remote, String> {
+    pub(crate) async fn open(client: Client, place: Place) -> Result<Remote, String> {
         let client = Arc::new(client);
-        let ended = if background {
+        let ended = if place.background().is_some() {
             let attached: Attached = ask(
                 &client,
                 Command::Attach {
@@ -518,7 +585,7 @@ impl Remote {
             .await?;
             format!("the background session {} has ended", attached.host)
         } else {
-            format!("the connection to {place} has ended")
+            format!("the session {} has ended", place.name())
         };
         let state: State = ask(&client, Command::GetState).await?;
         let commands: Vec<CommandRow> = ask(&client, Command::ListCommands).await?;
@@ -572,13 +639,17 @@ impl Remote {
 #[async_trait]
 impl Backend for Remote {
     fn place(&self) -> Option<String> {
-        Some(self.place.clone())
+        Some(self.place.name())
+    }
+
+    fn farewell(&self) -> Option<String> {
+        Some(self.place.farewell())
     }
 
     async fn next(&mut self) -> Incoming {
         match self.incoming.recv().await {
             Some(incoming) => incoming,
-            None => Incoming::Closed(format!("the connection to {} has ended", self.place)),
+            None => Incoming::Closed(format!("the session {} has ended", self.place.name())),
         }
     }
 
@@ -1011,7 +1082,7 @@ impl Backend for Remote {
         // started for this connection.
         match self.client.close().await {
             Ok(_) | Err(Error::Closed) => {}
-            Err(e) => tracing::debug!("closing the connection to {}: {e}", self.place),
+            Err(e) => tracing::debug!("closing the connection to the session {}: {e}", self.place.name()),
         }
     }
 }
@@ -1050,6 +1121,9 @@ mod tests {
             ..member
         };
         let info = member_info(&done, Duration::from_secs(3));
-        assert_eq!((info.state, info.elapsed), (MemberState::Done, Duration::from_secs(2)));
+        assert_eq!(
+            (info.state, info.elapsed),
+            (MemberState::Done, Duration::from_secs(2))
+        );
     }
 }

@@ -6,6 +6,7 @@ members = [
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
     "tests/fixtures/fake-audio",
+    "tests/fixtures/fake-ssh",
     "examples/custom-distro",
     "examples/client-demo",
 ]

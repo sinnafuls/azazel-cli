@@ -239,7 +239,12 @@ pub enum Sub {
         action: RulesAction,
     },
     /// Serve one session to another program: JSON lines on standard input and output
-    Rpc,
+    Rpc {
+        /// Instead of a session of its own, connect standard input and output to this
+        /// background session
+        #[arg(long, value_name = "ID")]
+        attach: Option<String>,
+    },
     /// Run a prompt in a background session and print the session's id
     #[cfg(feature = "detach")]
     Bg {
@@ -266,7 +271,7 @@ pub enum Sub {
         #[arg(long)]
         json: bool,
     },
-    /// Connect to a background session: see what it does, answer it, send it messages
+    /// Open a background session in the UI; --plain shows it as lines instead
     #[cfg(feature = "detach")]
     Attach {
         /// Its id as `azazel ps` shows it (the start of it is enough), or its name
@@ -573,6 +578,36 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub trust: bool,
 
+    /// Work on another machine: azazel runs there, reached over SSH, and is shown here
+    #[arg(long, value_name = "HOST", global = true)]
+    pub ssh: Option<String>,
+
+    /// With --ssh: the directory to work in on the other machine
+    #[arg(long = "remote-dir", value_name = "DIR", requires = "ssh", global = true)]
+    pub remote_dir: Option<String>,
+
+    /// With --ssh: how azazel is started on the other machine
+    #[arg(
+        long = "remote-azazel",
+        value_name = "COMMAND",
+        requires = "ssh",
+        default_value = "azazel",
+        global = true
+    )]
+    pub remote_azazel: String,
+
+    /// With --ssh: run the prompt in a background session there, which outlives the connection
+    #[arg(long, requires = "ssh", conflicts_with = "attach")]
+    pub detach: bool,
+
+    /// With --ssh: open a background session of the other machine
+    #[arg(long, value_name = "ID", requires = "ssh")]
+    pub attach: Option<String>,
+
+    /// Show a background session as lines you answer, not in the full UI
+    #[arg(long, global = true)]
+    pub plain: bool,
+
     /// API key for the provider of the first --model, for this run only
     #[arg(long = "api-key", value_name = "KEY")]
     pub api_key: Option<String>,
@@ -588,9 +623,9 @@ impl Cli {
         self.prompt.join(" ")
     }
 
-    /// Whether this run opens the interactive UI.
+    /// Whether this run opens the interactive UI on a session of this process.
     pub fn interactive(&self) -> bool {
-        !self.print && self.command.is_none()
+        !self.print && self.command.is_none() && self.ssh.is_none()
     }
 
     /// Whether this process is a background session, which keeps its session to itself.

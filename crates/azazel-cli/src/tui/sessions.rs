@@ -16,9 +16,9 @@ use azazel_tui::{KeyCombo, SelectItem, text};
 use crossterm::event::{KeyCode, KeyModifiers};
 use tokio_util::sync::CancellationToken;
 
+use super::backend::Go;
 use super::overlay::{Action, Kind, Overlay};
 use super::pager::{self, Source, Start};
-use super::backend::Go;
 use super::{Internal, Tui, first_line, view};
 use crate::history;
 use crate::retry::{self, HANDOFF_NOTE};
@@ -567,8 +567,7 @@ impl Tui {
                     },
                     None => None,
                 };
-                self.open_sessions(purpose, named_only, Some(&row.id), note)
-                    .await;
+                self.open_sessions(purpose, named_only, Some(&row.id), note).await;
             }
             Action::SessionDelete(row, purpose, named_only) => {
                 let note = if choice != 0 {
@@ -579,8 +578,7 @@ impl Tui {
                         Err(e) => format!("Could not delete {}: {e}", row.path.display()),
                     })
                 };
-                self.open_sessions(purpose, named_only, Some(&row.id), note)
-                    .await;
+                self.open_sessions(purpose, named_only, Some(&row.id), note).await;
             }
             Action::TreeLabel { entry, filter } => {
                 if let Err(why) = self.backend.set_label(&entry, typed.trim()).await {
@@ -983,7 +981,11 @@ impl Tui {
     /// Adds what was just sent to the project's history file.
     pub(super) fn remember(&mut self, sent: &str) {
         // The history is this project's; a session elsewhere is not part of it.
-        if !self.backend.local().is_some_and(|local| local.app.keeps_sessions()) {
+        if !self
+            .backend
+            .local()
+            .is_some_and(|local| local.app.keeps_sessions())
+        {
             return;
         }
         let file = history::file(&self.env.paths);
@@ -1294,5 +1296,4 @@ mod tests {
         assert_eq!(narrow[2], "three");
         assert!(tail_rows("", 80, 5).is_empty());
     }
-
 }

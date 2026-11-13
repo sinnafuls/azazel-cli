@@ -20,9 +20,7 @@ use azazel_ai::{Block, Credentials, ModelSpec, ThinkingLevel, Tier};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
-use azazel_core::{
-    CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui,
-};
+use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
 use azazel_team::{Goals, MemberInfo, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
 use azazel_tui::components::format_tokens;
@@ -97,6 +95,11 @@ pub(crate) trait Backend: Send {
 
     /// Where the session runs, when that is not this process.
     fn place(&self) -> Option<String> {
+        None
+    }
+
+    /// What to say when the UI leaves a session that goes on without it.
+    fn farewell(&self) -> Option<String> {
         None
     }
 
@@ -512,9 +515,9 @@ impl Backend for Local {
         }
         self.active.lead.send(AgentCmd::SetModel(chain.clone()));
         // Recorded, so that a resumed session comes back on it.
-        self.active.session.append(EntryKind::ModelChange {
-            chain: chain.clone(),
-        });
+        self.active
+            .session
+            .append(EntryKind::ModelChange { chain: chain.clone() });
         Ok(chain)
     }
 

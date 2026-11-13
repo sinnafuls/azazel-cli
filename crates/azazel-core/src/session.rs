@@ -345,12 +345,13 @@ impl SessionStore {
             timestamp: now(),
             kind,
         };
-        let written = serde_json::to_string(&entry)
-            .map_err(io::Error::from)
-            .and_then(|line| match &mut inner.file {
-                Some(file) => writeln!(file, "{line}"),
-                None => Ok(()),
-            });
+        let written =
+            serde_json::to_string(&entry)
+                .map_err(io::Error::from)
+                .and_then(|line| match &mut inner.file {
+                    Some(file) => writeln!(file, "{line}"),
+                    None => Ok(()),
+                });
         if let Err(e) = written {
             tracing::error!("could not write to {}: {e}", inner.path.display());
         }

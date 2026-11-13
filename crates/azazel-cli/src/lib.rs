@@ -39,6 +39,7 @@ pub mod running;
 pub mod sessions;
 pub mod settings;
 pub mod side;
+pub mod ssh;
 pub mod stats;
 mod tui;
 pub mod update;
@@ -225,6 +226,10 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if cfg!(windows) {
         update::remove_retired();
     }
+    // The session is on another machine: nothing of this one's project is opened.
+    if let Some(host) = &cli.ssh {
+        return ssh::run(&cli, paths, host).await;
+    }
     let interactive = cli.interactive();
     if cli.print && cli.prompt.is_empty() && std::io::stdin().is_terminal() {
         eprintln!("azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input");
@@ -338,10 +343,17 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         #[cfg(feature = "detach")]
         Some(Sub::Kill { id }) => return detach::kill(&paths, id).await,
         #[cfg(feature = "detach")]
-        Some(Sub::Attach { id, .. }) => return detach::attach_plain(&paths, id).await,
+        Some(Sub::Attach { id, .. }) => return detach::attach(&cli, paths, id).await,
         #[cfg(feature = "detach")]
         Some(Sub::Host { .. }) => None,
-        Some(Sub::Rpc) | None => None,
+        #[cfg(feature = "detach")]
+        Some(Sub::Rpc { attach: Some(wanted) }) => return detach::bridge(&paths, wanted).await,
+        #[cfg(not(feature = "detach"))]
+        Some(Sub::Rpc { attach: Some(_) }) => {
+            eprintln!("azazel: this build has no background sessions");
+            return print::EXIT_FAILED;
+        }
+        Some(Sub::Rpc { attach: None }) | None => None,
     };
 
     // A background session that cannot start leaves the reason for `azazel bg` to print.
@@ -415,7 +427,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         )
         .await;
     }
-    if cli.command == Some(Sub::Rpc) {
+    if matches!(cli.command, Some(Sub::Rpc { .. })) {
         return rpc::run(Arc::new(app), active).await;
     }
     #[cfg(feature = "detach")]
