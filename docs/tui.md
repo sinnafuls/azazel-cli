@@ -90,7 +90,7 @@ removed lines are filled with a background colour.
 
 The file a `read`, `write` or `edit` card names is a link to that file in terminals that follow
 [links](#links), and a picture a tool returns is shown under its card where the terminal draws
-[images](#images-and-diagrams).
+[images](#images).
 
 ### Status line
 
@@ -260,7 +260,7 @@ Session and display:
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
-| `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last Mermaid diagram as an SVG file |
+| `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams) |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session |
 | `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
@@ -406,7 +406,7 @@ inside tmux older than 3.4.
 with the program your system uses for it. In the [viewer](#transcript-viewer), `o` opens the link on the cursor
 row. These work in every terminal.
 
-## Images and diagrams
+## Images
 
 Where the terminal draws images, a picture that a tool returns (an image file that was `read`, a screenshot, a
 generated image) is shown under the tool's card, at most 60 columns by 20 rows; larger pictures are scaled down.
@@ -427,18 +427,31 @@ Inside tmux images are off unless a protocol is forced.
 images = "auto"   # or off, kitty, iterm, sixel
 ```
 
-A fenced `mermaid` block in a reply is drawn as an image once the block is complete (flowcharts, sequence, class,
-state and ER diagrams, pie charts, Gantt charts, timelines, mind maps and git graphs). While the block is still
-arriving, and in terminals without images, its source is shown as code. A diagram that does not parse keeps its
-source, with one line saying why. `/open diagram` writes the last diagram of the conversation to the project's
-artifacts folder as SVG and opens it, which works in every terminal.
+Inline images are the cargo feature `images`, part of the default build.
 
-Diagram text is drawn with one font that ships with azazel (Liberation Sans), so a diagram looks the same on
-every machine; characters that font lacks (CJK, emoji) are left out. The first diagram of a run takes a moment
-longer: the layout measures its text once with a font of the system.
+### Mermaid diagrams
 
-Inline images are the cargo feature `images`, diagrams the feature `diagrams`; both are part of the default
-build.
+A build with the cargo feature `diagrams` draws a fenced `mermaid` block of a reply as an image, in place, once
+the block is complete and where the terminal draws images: flowcharts, sequence, class, state and ER diagrams,
+pie charts, Gantt charts, timelines, mind maps and git graphs.
+
+```sh
+cargo install --path crates/azazel-cli --features diagrams
+```
+
+The feature is not part of the default build: the diagram renderer and what draws its output add 5.8 MB to
+the binary. Without it a `mermaid` block is shown as its source, like any other code block.
+
+With the feature:
+
+- A block that is still arriving, and any block in a terminal without images, is shown as source.
+- A diagram that does not parse keeps its source, with one line saying why.
+- `/open diagram` writes the last diagram of the conversation to the project's artifacts folder as SVG and
+  opens it, which works in every terminal.
+- Diagram text is drawn with one font that ships with azazel (Liberation Sans), so a diagram looks the same on
+  every machine; characters that font lacks (CJK, emoji) are left out.
+- The first diagram of a run takes a moment longer than the next: the layout measures its text once with a
+  font of the system.
 
 ## Settings menu
 

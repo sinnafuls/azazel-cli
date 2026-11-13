@@ -287,10 +287,7 @@ impl Tui {
         #[cfg(not(feature = "diagrams"))]
         {
             let _ = source;
-            Err(
-                "this build of azazel draws no diagrams (it was built without the `diagrams` feature)"
-                    .to_string(),
-            )
+            Err("this build of azazel draws no diagrams: install it with `--features diagrams`".to_string())
         }
     }
 

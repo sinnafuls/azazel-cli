@@ -30,7 +30,6 @@ default = [
     "vertex",
     "notify",
     "images",
-    "diagrams",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -46,7 +45,9 @@ vertex = ["azazel-ai/vertex"]
 notify = ["dep:notify-rust", "dep:keepawake"]
 # Images shown inline in terminals that can draw them.
 images = ["azazel-tui/images"]
-# Mermaid diagrams drawn as inline images.
+# Mermaid diagrams: drawn as inline images, and written as SVG by `/open diagram`. Not in the
+# default build: the diagram renderer adds 3.1 MB to the binary, and drawing its SVG (with the
+# font that ships for it) another 2.7 MB.
 diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
 test-support = ["azazel-ai/test-support"]
 
@@ -98,8 +99,8 @@ crossterm_winapi.workspace = true
 [dev-dependencies]
 assert_cmd.workspace = true
 # The package depends on itself so that its tests, and the `azazel` binary they drive, are built
-# with the scripted mock provider.
-azazel-cli = { path = ".", features = ["test-support"] }
+# with the scripted mock provider, and so that the opt-in diagram drawing is tested and linted.
+azazel-cli = { path = ".", features = ["test-support", "diagrams"] }
 dunce.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true
