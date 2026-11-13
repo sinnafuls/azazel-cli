@@ -11,8 +11,8 @@ use async_trait::async_trait;
 use azazel_ai::catalog::Cost;
 use azazel_ai::{Credentials, ModelSpec, ProviderConfig, Router};
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, Registrar, Ui,
-    UiError,
+    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, PermissionMode,
+    Registrar, Ui, UiError,
 };
 use azazel_tui::Theme;
 
@@ -239,7 +239,7 @@ const SETTINGS: &[Setting] = &[
         "Permissions",
         "permissions.mode",
         "Mode a session starts in",
-        Kind::Choice(&["plan", "ask", "accept-edits", "auto"]),
+        Kind::Choice(&["plan", "manual", "accept-edits", "auto", "bypass"]),
         false,
     ),
     setting(
@@ -662,6 +662,15 @@ impl Settings {
                 }
             };
             let Some(typed) = typed else { continue };
+            // Bypass as the mode every session starts in is confirmed, with "No" first.
+            if setting.path == "permissions.mode" && typed == PermissionMode::Bypass.as_str() {
+                let question = "Start every session in bypass mode?\nNothing is asked about and no \
+                                safety guard applies: only your deny rules and the push guard are left.";
+                let answers = ["No".to_string(), "Yes, bypass permissions".to_string()];
+                if ui.0.select(question, &answers).await.ok() != Some(1) {
+                    continue;
+                }
+            }
             let saved = parse_value(setting.kind, &typed, current.as_ref())
                 .map_err(|why| format!("{}: {why}", setting.label))
                 .and_then(|value| self.save(setting, value, ctx));

@@ -79,7 +79,7 @@ Beside every file a sidecar `<file>.json` records how it was made:
 
 ### Permissions and cost
 
-The generation tools use the network, create project files and may cost money at the provider. They prompt in `ask` and `accept-edits` mode, with the note `this creates files in the project and may cost money at the media provider`, and run without asking in `auto`. To allow one permanently, add its name as a rule, for example `allow = ["generate_image"]`. See [permissions](permissions.md).
+The generation tools use the network, create project files and may cost money at the provider. They prompt in `manual` and `accept-edits` mode, with the note `this creates files in the project and may cost money at the media provider`, and run without asking in `auto`. To allow one permanently, add its name as a rule, for example `allow = ["generate_image"]`. See [permissions](permissions.md).
 
 A fal job is polled every 2 seconds and given up after 30 minutes. Aborting the agent cancels the wait.
 
@@ -134,7 +134,7 @@ This writes `assets/generated/sprites/hero/hero.png` and `hero.tres`.
 | `roblox` | `<name>.png`, `<name>.luau` | Sheet side limited to 1024. A ModuleScript returning `image`, `size`, `frames` (`offset` and `size` for `ImageRectOffset` and `ImageRectSize`) and `animations`. `image` is `rbxassetid://0` until you upload the sheet and fill in its asset id |
 | `unreal` | `<name>.png`, `<name>.paper2dsprites` | The JSON-hash document with a pivot per frame, for the Paper2D sprite-sheet importer |
 
-`sprite_sheet` writes files, so it prompts in `ask` and `accept-edits` mode unless the rule `sprite_sheet` allows it.
+`sprite_sheet` writes files, so it prompts in `manual` and `accept-edits` mode unless the rule `sprite_sheet` allows it.
 
 ## Related
 

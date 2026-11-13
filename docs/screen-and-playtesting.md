@@ -66,7 +66,7 @@ Use it for defects that only show in motion: animation glitches, flicker, physic
 
 ### Permissions
 
-`screen` counts as execution. It prompts in `ask` and `accept-edits` mode, runs without asking in `auto`, and is refused in `plan`. The subject of a call is its action name, so rules can allow all of it or parts:
+`screen` counts as execution. It prompts in `manual` and `accept-edits` mode, runs without asking in `auto`, and is refused in `plan`. The subject of a call is its action name, so rules can allow all of it or parts:
 
 ```toml
 [permissions]
@@ -74,7 +74,7 @@ allow = ["screen"]                                   # every action
 # allow = ["screen(windows)", "screen(capture)"]     # looking only; input still prompts
 ```
 
-Input goes to whatever is under the pointer or has the focus, so an agent with `screen` can operate any application on the desktop. Keep it on `ask` unless you are watching, and see [permissions](permissions.md).
+Input goes to whatever is under the pointer or has the focus, so an agent with `screen` can operate any application on the desktop. Keep the mode on `manual` unless you are watching, and see [permissions](permissions.md).
 
 ### Platform notes
 

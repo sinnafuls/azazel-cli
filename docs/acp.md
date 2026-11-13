@@ -59,7 +59,7 @@ The prompt's answer carries why the lead stopped: `end_turn`, `max_tokens`, `max
 
 ## Permissions and questions
 
-The permission modes are offered as the session's modes: `plan`, `ask`, `accept-edits` and `auto`. See [permissions](permissions.md).
+The permission modes are offered as the session's modes: `plan`, `manual`, `accept-edits` and `auto`. `bypass` is offered, and accepted by `session/set_mode`, only when azazel was started in it (`azazel --mode bypass acp`, or your own configuration): the protocol has no way to ask you for the confirmation that mode needs. A permission request about a secret file offers `Allow`, `Allow this file for this session` and `Reject`. See [permissions](permissions.md).
 
 When a call needs your word, azazel sends `session/request_permission` for it with these options:
 

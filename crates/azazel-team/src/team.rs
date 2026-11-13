@@ -14,8 +14,8 @@ use azazel_ai::{ModelSpec, Router, StopReason, ThinkingLevel};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
 use azazel_core::transcript::activity;
 use azazel_core::{
-    ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionMode,
-    PermissionState, PromptBuilder, Rule, SessionStore, ToolCaller, ToolRegistry,
+    ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionState,
+    PromptBuilder, Rule, SessionStore, ToolCaller, ToolRegistry,
 };
 use serde_json::Value;
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
@@ -409,7 +409,7 @@ impl Inner {
             None => deps.paths.cwd.clone(),
         };
         if def.plan_mode {
-            deps.permissions.pin_agent_mode(id, PermissionMode::Plan);
+            deps.permissions.keep_in_plan_mode(id);
         }
         if let Some(grants) = &def.tools {
             deps.permissions.restrict_agent(id, grants.clone());

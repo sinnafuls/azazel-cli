@@ -5,7 +5,7 @@
 ## Starting
 
 ```sh
-azazel rpc --cwd /path/to/project --mode ask
+azazel rpc --cwd /path/to/project --mode manual
 ```
 
 | Flag | Effect |
@@ -13,7 +13,7 @@ azazel rpc --cwd /path/to/project --mode ask
 | `--cwd <dir>` | The directory to work in |
 | `--model <spec>` | The lead's model; repeat to add fallbacks |
 | `--thinking <level>` | Thinking level |
-| `--mode <mode>` | Starting permission mode: `plan`, `ask`, `accept-edits`, `auto` |
+| `--mode <mode>` | Starting permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--trust` | Trust the project's configuration for this run |
 | `-c` / `-r <id>` | Continue the latest session or resume one by id; these go before the subcommand: `azazel -c rpc` |
 
@@ -37,7 +37,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `abort` | | Stops the lead's current work | `null` |
 | `get_state` | | Reports the session's state | See below |
 | `set_model` | `chain` | Changes the lead's model chain, e.g. `["provider/model", "@role"]` | `{"models": [...]}`: the usable models it resolves to |
-| `set_mode` | `mode` | Changes the permission mode | `{"mode": "..."}` |
+| `set_mode` | `mode` | Changes the permission mode of the session, for the lead and every sub-agent, running ones included: `plan`, `manual`, `accept-edits`, `auto` or `bypass`. `ask`, the old name of `manual`, is an error that names `manual`. `bypass` lifts every guard but deny rules and the push guard: a client that offers it should have its user confirm first | `{"mode": "..."}` |
 | `agent_send` | `to`, `message` | Messages a sub-agent by id, or `all` | `{"agents": [...]}`: ids reached |
 | `agent_stop` | `agent` | Stops a sub-agent and the agents it started, or `all` | `{"agents": [...]}`: ids stopped |
 | `approval_response` | `request_id`, `decision`, `feedback?` | Answers an `approval_request` | `null` |
@@ -162,6 +162,7 @@ Sent when a tool call needs the user's permission. The agent waits until the mat
 | `rule` | Optional: the allow rule that `session` and `always` would add. Without it both act as `allow` |
 | `note` | Optional: a remark to show, such as a cost warning |
 | `destructive` | Optional, `true` when the call would destroy work: approval should not be the answer a stray key gives |
+| `secret` | Optional, `true` when the call reads or writes a [secret file](permissions.md#secret-files): `session` allows that file until the session ends, and `always` saves nothing |
 
 `decision` in the response:
 

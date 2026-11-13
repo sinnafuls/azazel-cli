@@ -124,7 +124,7 @@ Type a request and press `Enter`:
 
 - `@path` attaches a file, `!command` runs a command in your own shell, `/` starts a slash command.
 - The reply streams in; finished output scrolls into your terminal's normal scrollback.
-- In the default `ask` mode, edits and shell commands need your approval. The prompt offers `Allow once`,
+- In the default `manual` mode, edits and shell commands need your approval. The prompt offers `Allow once`,
   `Allow this session`, `Always allow <rule>`, `Deny` and `Deny and say why`. `Shift+Tab` switches the mode; see
   [permissions](permissions.md).
 - `Enter` while the agent is working steers it; `Esc` interrupts it.
@@ -157,7 +157,7 @@ azazel -p "list the TODO comments" --output json
 |---|---|
 | `--output text` | Print the final assistant text (default) |
 | `--output json` | Print one JSON event per line, each tagged with the `agent` that emitted it |
-| `--mode <mode>` | Permission mode for the run: `plan`, `ask`, `accept-edits`, `auto` |
+| `--mode <mode>` | Permission mode for the run: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--trust` | Trust the project's configuration for this run |
 | `--max-cost <USD>` | Stop once the run has spent this much |
 | `--json-schema <FILE\|JSON>` | Print only JSON that matches this schema; exit 1 when the run produced none (see [typed results](team.md#typed-results)) |
