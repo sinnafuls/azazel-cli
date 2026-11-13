@@ -346,6 +346,7 @@ pub(crate) fn prepare(req: &Request, target: &Target<'_>) -> Request {
         temperature: req.temperature,
         cache_key: req.cache_key.clone(),
         tier: req.tier,
+        tail: req.tail.clone(),
     }
 }
 

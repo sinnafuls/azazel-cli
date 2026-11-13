@@ -151,7 +151,8 @@ pub fn parse_models(provider: &ProviderConfig, body: &Value) -> Vec<ModelInfo> {
 
 fn input_items(provider: &ProviderConfig, req: &Request) -> Vec<Value> {
     let mut items = Vec::new();
-    for message in &req.messages {
+    let tail = req.tail_message();
+    for message in req.messages.iter().chain(&tail) {
         match message.role {
             Role::User => push_user(&mut items, content_parts(&message.content)),
             Role::Assistant => push_assistant(&mut items, provider, &message.content),

@@ -589,6 +589,9 @@ impl Actor {
                 .map(|(id, name, input)| (id.to_string(), name.to_string(), input.clone()))
                 .collect();
             self.core.record_response(&message);
+            self.core
+                .hooks
+                .response(&self.core.info, &request, &chain, &message);
             self.core.push(message.clone());
             self.core.emit(AgentEvent::MessageEnd { message });
 
@@ -1094,6 +1097,7 @@ impl Core {
             // The tier is the session's, so every agent's own requests carry it; summaries and
             // other side requests stay at the provider's default.
             tier: self.router.tier(),
+            tail: Vec::new(),
         };
         self.hooks.before_request(&self.info, &mut request).await;
         // A hook may have withdrawn tools; only what was offered can be called.

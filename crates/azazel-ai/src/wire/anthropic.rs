@@ -102,6 +102,17 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     if fast_mode(model, req) {
         body.insert("speed".to_string(), json!("fast"));
     }
+    // After the cache marks, so that what is cached ends where the conversation does and the
+    // next request, whose notes may differ, still finds it.
+    if let Some(note) = req.tail_text().as_deref().and_then(text_block) {
+        match messages.last_mut() {
+            Some(last) if last.role == USER => last.content.push(note),
+            _ => messages.push(WireMessage {
+                role: USER,
+                content: vec![note],
+            }),
+        }
+    }
     let messages = messages
         .into_iter()
         .map(|m| json!({"role": m.role, "content": m.content}))

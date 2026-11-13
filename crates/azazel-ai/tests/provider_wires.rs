@@ -51,6 +51,17 @@ fn request() -> Request {
     }
 }
 
+/// A note for a request's tail, and what a provider is sent for `note("Date: today")`.
+fn note(text: &str) -> azazel_ai::SystemPart {
+    azazel_ai::SystemPart {
+        text: text.into(),
+        name: "now".into(),
+        cache_boundary: false,
+    }
+}
+
+const NOTE_SENT: &str = "<system-note>\nDate: today\n</system-note>";
+
 async fn finish(provider: &HttpProvider, model: &ModelInfo, req: &Request) -> Message {
     let stream = provider
         .stream(model, req, CancellationToken::new())
@@ -102,10 +113,16 @@ async fn ollama_chat_streams_json_lines_from_the_native_endpoint() {
     };
     let req = Request {
         thinking: ThinkingLevel::High,
+        tail: vec![note("Date: today")],
         ..request()
     };
 
     let message = finish(&provider, &model, &req).await;
+    // The request's notes follow the conversation as one more user message.
+    assert_eq!(
+        body_of(&server, "/api/chat").await["messages"],
+        json!([{"role": "user", "content": "hi"}, {"role": "user", "content": NOTE_SENT}])
+    );
     assert_eq!(message.text(), "Hello");
     assert!(matches!(&message.content[0], Block::Thinking { text, .. } if text == "Easy."));
     let meta = message.meta.as_ref().unwrap();
@@ -339,6 +356,7 @@ async fn openrouter_gets_its_reasoning_object_routing_and_reports_the_price_itse
     };
     let req = Request {
         thinking: ThinkingLevel::Xhigh,
+        tail: vec![note("Date: today")],
         ..request()
     };
 
@@ -355,10 +373,14 @@ async fn openrouter_gets_its_reasoning_object_routing_and_reports_the_price_itse
         body["provider"],
         json!({"order": ["anthropic"], "allow_fallbacks": false})
     );
-    // An Anthropic model caches the conversation up to a marked block.
+    // An Anthropic model caches the conversation up to a marked block. The request's notes come
+    // after the mark, so the next request, whose notes may differ, still reads what was cached.
     assert_eq!(
-        body["messages"][0]["content"],
-        json!([{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}])
+        body["messages"],
+        json!([
+            {"role": "user", "content": [{"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}]},
+            {"role": "user", "content": NOTE_SENT},
+        ])
     );
 }
 
@@ -620,6 +642,8 @@ async fn copilot_is_told_who_started_the_turn_and_whether_it_carries_an_image() 
             ]),
             Message::tool(vec![Block::tool_result("call_1", "done", false)]),
         ],
+        // The harness's notes are not the user speaking: the agent still started this turn.
+        tail: vec![note("Date: today")],
         ..Request::default()
     };
     let by_agent = headers_for(&after_tool);

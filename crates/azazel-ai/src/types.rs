@@ -411,7 +411,35 @@ pub struct Request {
     /// The service tier asked for; `None` leaves it to the provider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tier: Option<Tier>,
+    /// Notes that are true for this request only (the date, the mode, a reminder). They are sent
+    /// after the conversation and outside every cache mark, so a note that changes costs nothing
+    /// but its own tokens.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tail: Vec<SystemPart>,
 }
+
+impl Request {
+    /// The tail notes as the text a provider is sent, `None` when there are none.
+    pub fn tail_text(&self) -> Option<String> {
+        let notes: Vec<&str> = self
+            .tail
+            .iter()
+            .map(|note| note.text.trim())
+            .filter(|note| !note.is_empty())
+            .collect();
+        (!notes.is_empty()).then(|| format!("{TAIL_OPEN}\n{}\n{TAIL_CLOSE}", notes.join("\n\n")))
+    }
+
+    /// The tail as the user message that follows the conversation, for the APIs that take it as
+    /// one more message.
+    pub fn tail_message(&self) -> Option<Message> {
+        self.tail_text().map(Message::user)
+    }
+}
+
+/// What the tail notes of a request are wrapped in.
+pub const TAIL_OPEN: &str = "<system-note>";
+pub const TAIL_CLOSE: &str = "</system-note>";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SystemPart {

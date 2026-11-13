@@ -122,19 +122,22 @@ impl Side {
 
     async fn request(&self, question: &SideQuestion<'_>) -> Request {
         let mut messages = question.context.clone();
-        let (system, tools, text) = if question.framed {
+        let (prompt, tools, text) = if question.framed {
             let tools = self.tools.tools(question.agent);
             (
-                self.prompt.render(question.agent).await,
+                self.prompt.prompt(question.agent).await,
                 tools.iter().map(|tool| tool_spec(tool.as_ref())).collect(),
                 format!("{SIDE_NOTE}\n\n{}", question.question),
             )
         } else {
-            (Vec::new(), Vec::new(), question.question.clone())
+            (Default::default(), Vec::new(), question.question.clone())
         };
         messages.push(Message::user(text));
         Request {
-            system,
+            system: prompt.system,
+            // What the agent is told about the moment (mode, goal, what is remembered) holds for
+            // the question too.
+            tail: prompt.tail,
             messages,
             tools,
             thinking: ThinkingLevel::Off,

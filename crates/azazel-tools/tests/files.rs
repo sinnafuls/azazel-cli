@@ -628,13 +628,25 @@ async fn the_task_list_comes_back_from_the_transcript_and_is_put_before_the_agen
     let store = bench.registry.services.get::<azazel_tools::TodoStore>().unwrap();
     let hooks = bench.registry.agent_hooks();
     let lead = bench.ctx("lead").agent;
-    let sent = async |hooks: &Arc<dyn azazel_agent::AgentHooks>| {
-        let mut messages = vec![Message::user("go on")];
-        hooks.context(&lead, &mut messages).await;
-        messages
+    // The notes about the plan that a request of `agent` carries after the conversation.
+    let notes = async |hooks: &Arc<dyn azazel_agent::AgentHooks>, agent: &azazel_agent::AgentInfo| {
+        let mut request = azazel_ai::Request {
+            messages: vec![Message::user("go on")],
+            ..Default::default()
+        };
+        hooks.before_request(agent, &mut request).await;
+        // Never in the conversation, where it would be cached and kept.
+        assert_eq!(request.messages, [Message::user("go on")]);
+        request
+            .tail
+            .into_iter()
+            .filter(|note| note.name == "plan")
+            .map(|note| note.text)
+            .collect::<Vec<_>>()
     };
+    let sent = async |hooks: &Arc<dyn azazel_agent::AgentHooks>| notes(hooks, &lead).await;
     // Nothing to remind of: the request is what the transcript holds.
-    assert_eq!(sent(&hooks).await, [Message::user("go on")]);
+    assert!(sent(&hooks).await.is_empty());
 
     let first = json!([{"text": "find the bug", "status": "done"}, {"text": "fix it", "status": "pending"}]);
     let second =
@@ -665,16 +677,12 @@ async fn the_task_list_comes_back_from_the_transcript_and_is_put_before_the_agen
     );
 
     // The reminder is the last thing sent and is not part of what the agent keeps.
-    let with_plan = sent(&hooks).await;
-    assert_eq!(with_plan.len(), 2);
     assert_eq!(
-        with_plan[1].text(),
-        "[Plan] 1/2 done (your todo list; keep it current with `todo`)\n[x] find the bug\n[~] fix it"
+        sent(&hooks).await,
+        ["[Plan] 1/2 done (your todo list; keep it current with `todo`)\n[x] find the bug\n[~] fix it"]
     );
     // Another agent has no list and is told nothing.
-    let mut other = vec![Message::user("look")];
-    hooks.context(&bench.ctx("scout-2").agent, &mut other).await;
-    assert_eq!(other.len(), 1);
+    assert!(notes(&hooks, &bench.ctx("scout-2").agent).await.is_empty());
 
     // What the user changed with `/todo` after the agent's last call wins, and a finished list
     // needs no reminder.
@@ -694,7 +702,7 @@ async fn the_task_list_comes_back_from_the_transcript_and_is_put_before_the_agen
     });
     store.rehydrate("lead", &branch);
     assert_eq!(store.get("lead"), done);
-    assert_eq!(sent(&hooks).await.len(), 1);
+    assert!(sent(&hooks).await.is_empty());
 
     // A branch that never had a list clears the one of the session before.
     store.rehydrate("lead", &branch[..1]);

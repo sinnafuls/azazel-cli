@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_ai::{Block, Message, Role};
+use azazel_ai::{Block, Message, Role, SystemPart};
 use azazel_core::session::{Entry, EntryKind};
 use azazel_core::{AskKind, Event, EventHandler, ExtCtx, Outcome, Question, Ui, UiError};
 use serde::{Deserialize, Serialize};
@@ -144,19 +144,24 @@ fn record_message<'a>(
 }
 
 /// Puts the plan in front of an agent with every request while it has work left on its list.
-/// The note is added to what is sent, after everything else, and is never part of the transcript.
+/// The note joins the request's tail: it is sent after everything else, outside what the
+/// provider caches, and is never part of the transcript.
 pub(crate) struct PlanReminder;
 
 #[async_trait]
 impl EventHandler for PlanReminder {
     async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
-        if let Event::Context { agent, messages } = event
+        if let Event::BeforeRequest { agent, request } = event
             && let Some(note) = ctx
                 .services
                 .get::<TodoStore>()
                 .and_then(|store| store.reminder(&agent.id))
         {
-            messages.push(Message::user(note));
+            request.tail.push(SystemPart {
+                text: note,
+                name: "plan".to_string(),
+                cache_boundary: false,
+            });
         }
         Outcome::Continue
     }
