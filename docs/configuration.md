@@ -2,7 +2,7 @@
 
 Azazel is configured with TOML files, environment variables and command-line flags. This page lists where the
 files live, how they are merged, every table and key with its default, which project settings are held back until
-you trust the project, and the command-line flags.
+you trust the project, the command-line flags and the subcommands.
 
 ## Files and load order
 
@@ -77,7 +77,12 @@ thinking = "low"
 | | `plan` | `["@slow"]` | Chain for planning |
 | | `memory` | `["@smol"]` | Chain for memory extraction |
 | | `judge` | `["@smol"]` | Chain for `classify` in scripts |
-| | `lead`, and one per built-in agent | see [roles](models-and-logins.md#roles) | The lead's chain and each agent's, so each can have its own model |
+| | `lead`, `coder`, `tester`, `researcher`, `designer`, `artist` | `["@default"]` | The lead's chain, and the chain of the built-in agent of that name, so each can have its own model; see [roles](models-and-logins.md#roles) |
+| | `scout` | `["@smol"]` | The `scout` agent's chain |
+| | `planner` | `["@plan"]` | The `planner` agent's chain |
+| | `reviewer` | `["@slow"]` | The `reviewer` agent's chain |
+| | `verifier` | `["@verify"]` | The `verifier` agent's chain |
+| | `playtester` | `["@vision"]` | The `playtester` agent's chain |
 | `[providers.<id>]` | `name` | preset, else the id | What the provider is called in menus |
 | | `api` | preset | A [wire API](models-and-logins.md#wire-apis): `anthropic-messages`, `openai-responses`, `openai-chat`, `openrouter`, `google-generative`, `google-gemini-cli`, `ollama-chat`, `azure-openai-responses`, `azure-openai-chat` |
 | | `base_url` | preset | Endpoint; may contain `${VAR}` and `${VAR:-default}`. A new provider id needs both `api` and `base_url` |
@@ -139,6 +144,9 @@ thinking = "low"
 | | `on_stop` | `false` | Also run the commands when an ordinary prompt changed something |
 | `[goal]` | `max_iterations` | `8` | Failed verifications after which a goal fails |
 | | `max_nudges` | `3` | Idle reminders before a goal is paused |
+| `[limits]` | `max_cost_usd` | `0` | Spend, in US dollars, at which every agent of the run stops making requests; `0` is no cap. `--max-cost` sets it for one run |
+| | `warn_cost_usd` | `0` | Spend at which a warning is shown once, and from which the cost in the [status line](tui.md#status-line) is in the warning colour; `0` is no warning |
+| | `max_turns` | `0` | Requests the lead may make per prompt; `0` is no limit. `--max-turns` sets it for one run |
 | `[tools]` | `disabled` | `[]` | Tool names withheld from every agent; see [tools](tools.md) |
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
@@ -344,6 +352,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
+| `--continue-run` | With `-c` or `--session`: go on with the run the session's last process did not finish, instead of sending a prompt; see [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
 | `-r`, `--session <PATH\|ID>` | Open a session by its file or its id (a unique prefix is enough); `--resume` is the old name |
 | `--fork <PATH\|ID>` | Continue in a copy of a session, leaving the original as it is |
 | `--name <NAME>` | Name the session |
@@ -411,8 +420,42 @@ Nothing is copied and nothing is remembered; the next run without the flag does 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
 unknown tier or preset) exits with status 2.
 
-Subcommands: `init`, `doctor`, `login`, `logout`, `update`, `completions` ([getting started](getting-started.md)),
-`changelog` ([getting started](getting-started.md)), `models`, `auth status` ([models and logins](models-and-logins.md)),
-`sessions`, `export`, `stats` ([sessions](sessions-and-checkpoints.md)), `goal`
-([goals](goals.md)), `mcp` ([MCP](mcp.md)), `pkg`, `skills` ([packages](packages.md)), `memory`, `index`, `rag`
-([memory](memory.md)), `ext types` ([extensions](extensions.md)) and `rpc` ([RPC mode](rpc.md)).
+## Subcommands
+
+`azazel <command>` does one thing and exits, or starts another way of running. Each has `--help`.
+
+| Command | Actions | Does |
+|---|---|---|
+| `azazel init` | | Choose the default model and create the project's config file; see [getting started](getting-started.md) |
+| `azazel doctor` | | Check the installation and the project's setup |
+| `azazel update` | | Install the newest release; see [updating](getting-started.md#updating) |
+| `azazel completions` | | Print a completion script for a shell |
+| `azazel changelog` | | What changed in each release |
+| `azazel bug` | | Write a bug report as a zip; see [bug reports](sessions-and-checkpoints.md#bug-reports) |
+| `azazel login` | | Sign in to a provider or store its API key; see [models and logins](models-and-logins.md) |
+| `azazel logout` | | Forget the stored key or login of a provider |
+| `azazel auth` | `status` | Where each provider's credential comes from |
+| `azazel models` | | List the models of the providers you have a credential for |
+| `azazel usage` | | What your subscriptions have left; see [usage](models-and-logins.md#usage) |
+| `azazel secrets` | `add`, `add-site`, `list`, `rm` | Credentials agents use without seeing them; see [stored credentials](web-and-browser.md#credentials-for-services) |
+| `azazel sessions` | `list`, `search`, `delete`, `prune`, `export` | Manage saved sessions; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
+| `azazel export` | | Write a session to a file |
+| `azazel context` | | What the last request of a session was made of |
+| `azazel stats` | | Sessions, prompts, tokens and cost per day, model, project and tool |
+| `azazel goal` | | Work on an objective until it is verified; see [goals](goals.md) |
+| `azazel bg` | | Run a prompt in a background session; see [background sessions](background-and-remote.md) |
+| `azazel ps` | | List the background sessions |
+| `azazel logs` | | Show what a background session has done |
+| `azazel attach` | | Open a background session in the UI |
+| `azazel kill` | | Stop a background session |
+| `azazel schedule` | `add`, `list`, `rm`, `run` | Run prompts at a time or when something happens; see [schedules](background-and-remote.md#schedules) |
+| `azazel mcp` | `list`, `add`, `remove`, `login`, `logout`, `approve`, `reject`, `serve`, `import` | Manage MCP servers, or serve azazel as one; see [MCP](mcp.md) |
+| `azazel pkg` | `add`, `list`, `update`, `remove` | Install and manage packages; see [packages](packages.md) |
+| `azazel skills` | `add`, `list`, `remove` | Install and list skills; see [packages](packages.md#azazel-skills) |
+| `azazel rules` | `list`, `test` | Show the rule files of the project and test one; see [rules](rules.md) |
+| `azazel memory` | `list`, `search`, `forget`, `export` | What is remembered about the project; see [memory](memory.md) |
+| `azazel index` | | Rebuild the index of the project's code |
+| `azazel rag` | `add`, `list`, `remove` | Collections of documents `semantic_search` can look through |
+| `azazel ext` | `types` | Write the type declarations of the Luau API; see [extensions](extensions.md) |
+| `azazel rpc` | | Serve one session to another program; see [RPC mode](rpc.md) |
+| `azazel acp` | | Serve editors that speak the Agent Client Protocol; see [ACP](acp.md) |
