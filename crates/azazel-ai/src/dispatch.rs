@@ -82,8 +82,13 @@ pub trait VirtualModel: Send + Sync {
 /// them, so that one registered while the process runs is routed through at once.
 #[derive(Default)]
 pub struct VirtualModels {
-    /// `name -> (owner, model)`.
-    models: RwLock<BTreeMap<String, (String, Arc<dyn VirtualModel>)>>,
+    models: RwLock<BTreeMap<String, Registered>>,
+}
+
+/// One registered virtual model and the extension it belongs to.
+struct Registered {
+    owner: String,
+    model: Arc<dyn VirtualModel>,
 }
 
 impl VirtualModels {
@@ -92,7 +97,13 @@ impl VirtualModels {
         self.models
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .insert(name.to_string(), (owner.to_string(), model));
+            .insert(
+                name.to_string(),
+                Registered {
+                    owner: owner.to_string(),
+                    model,
+                },
+            );
     }
 
     /// Removes everything `owner` registered.
@@ -100,7 +111,7 @@ impl VirtualModels {
         self.models
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|_, (registered_by, _)| registered_by != owner);
+            .retain(|_, registered| registered.owner != owner);
     }
 
     /// The registered names, sorted.
@@ -118,7 +129,7 @@ impl VirtualModels {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .get(name)
-            .map(|(_, model)| model.clone())
+            .map(|registered| registered.model.clone())
     }
 }
 

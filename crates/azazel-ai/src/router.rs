@@ -363,8 +363,8 @@ impl Router {
         if resolved.is_empty() {
             return Err(AiError::InvalidRequest("no model configured".to_string()));
         }
-        let (resolved, routes) = self.dispatch(resolved, req, state).await?;
         state.via = None;
+        let (resolved, routes) = self.dispatch(resolved, req, state).await?;
         if let Some(delay) = state.wait.take() {
             tokio::select! {
                 _ = cancel.cancelled() => return Err(AiError::Aborted),

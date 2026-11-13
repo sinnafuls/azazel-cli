@@ -144,7 +144,7 @@ Each server tool becomes a tool named `mcp__<server>__<tool>`; characters outsid
 
 ### Many tools: `tool_search`
 
-When the servers offer more tools than `defer_threshold` (default 40), counting those of servers that wait for their first call, MCP tools are no longer listed in every request. Agents get `tool_search { query, limit? }` instead: it ranks all MCP tools against the query (BM25 over names and descriptions), returns each hit with its description and input schema, and makes the hits callable from the agent's next step for the rest of the session.
+When the servers offer more tools than `defer_threshold` (default 40), counting those of servers that wait for their first call, MCP tools are no longer listed in every request. Agents get `tool_search { query, limit? }` instead: it ranks all MCP tools against the query (BM25 over names and descriptions), returns each hit with its description and input schema, and makes the hits callable from the agent's next step for the rest of the session. In a `run_code` script, `tools.search(query)` does the same search and the script can call what it found at once (see [code execution](tools.md#code-execution)).
 
 ## Resources and prompts
 
