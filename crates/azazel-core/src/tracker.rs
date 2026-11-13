@@ -230,18 +230,28 @@ fn line_hashes(content: &[u8]) -> Option<Box<[u64]>> {
     Some(hashes.into_boxed_slice())
 }
 
+/// What tells one content of a file from another.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Stamp {
+struct Print {
     len: u64,
     hash: blake3::Hash,
-    cover: Cover,
-    lines: Option<Box<[u64]>>,
 }
 
-impl Stamp {
-    fn is(&self, content: &[u8]) -> bool {
-        self.len == content.len() as u64 && self.hash == blake3::hash(content)
+impl Print {
+    fn of(content: &[u8]) -> Print {
+        Print {
+            len: content.len() as u64,
+            hash: blake3::hash(content),
+        }
     }
+}
+
+/// A content of a file as an agent knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Stamp {
+    print: Print,
+    cover: Cover,
+    lines: Option<Box<[u64]>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -274,20 +284,22 @@ impl FileTracker {
     }
 
     /// Stores what `agent` now knows of `path`: `content`, and the lines `cover` makes of what
-    /// the agent knew before (`None` when it knew nothing).
-    fn stamp(&self, agent: &str, path: PathBuf, content: &[u8], cover: impl FnOnce(Option<Stamp>) -> Cover) {
+    /// the agent knew before (`None` when it knew nothing), given the line hashes of `content`.
+    /// The content is hashed before the map is locked, so a large file holds nobody up.
+    fn stamp(
+        &self,
+        agent: &str,
+        path: PathBuf,
+        content: &[u8],
+        cover: impl FnOnce(Option<Stamp>, Option<&[u64]>) -> Cover,
+    ) {
         let key = (agent.to_string(), path);
+        let (print, lines, total) = (Print::of(content), line_hashes(content), line_count(content));
         let mut seen = locked(&self.seen);
         let before = seen.remove(&key);
-        let mut cover = cover(before);
-        cover.settle(line_count(content));
-        let stamp = Stamp {
-            len: content.len() as u64,
-            hash: blake3::hash(content),
-            cover,
-            lines: line_hashes(content),
-        };
-        seen.insert(key, stamp);
+        let mut cover = cover(before, lines.as_deref());
+        cover.settle(total);
+        seen.insert(key, Stamp { print, cover, lines });
     }
 
     /// Queues a note for every agent other than `agent` that has read `path`.
@@ -308,7 +320,7 @@ impl FileTracker {
     /// Remembers `content` as what `agent` knows of `path`, all of it seen. Call after reading
     /// the whole file.
     pub fn record(&self, agent: &str, path: &Path, content: &[u8]) {
-        self.stamp(agent, canonical(path), content, |_| Cover::All);
+        self.stamp(agent, canonical(path), content, |_, _| Cover::All);
     }
 
     /// Remembers `content` as what `agent` knows of `path`, of which it has now seen lines
@@ -320,15 +332,13 @@ impl FileTracker {
 
     /// Like [`FileTracker::record_lines`] for several runs of lines seen at once.
     pub fn record_ranges(&self, agent: &str, path: &Path, content: &[u8], ranges: &[LineRange]) {
-        self.stamp(agent, canonical(path), content, |before| {
+        let print = Print::of(content);
+        self.stamp(agent, canonical(path), content, |before, now| {
             let mut cover = match before {
-                Some(before) if before.is(content) => before.cover,
-                Some(before) => {
-                    let now = line_hashes(content);
-                    before
-                        .cover
-                        .carried(before.lines.as_deref(), now.as_deref(), Changed::Unseen)
-                }
+                Some(before) if before.print == print => before.cover,
+                Some(before) => before
+                    .cover
+                    .carried(before.lines.as_deref(), now, Changed::Unseen),
                 None => Cover::none(),
             };
             for range in ranges {
@@ -342,7 +352,7 @@ impl FileTracker {
     /// other agent that has read the file.
     pub fn record_write(&self, agent: &str, path: &Path, content: &[u8]) {
         let path = canonical(path);
-        self.stamp(agent, path.clone(), content, |_| Cover::All);
+        self.stamp(agent, path.clone(), content, |_, _| Cover::All);
         self.notify(agent, &path);
     }
 
@@ -352,9 +362,10 @@ impl FileTracker {
     /// every other agent that has read the file.
     pub fn record_edit(&self, agent: &str, path: &Path, old: &[u8], new: &[u8], splices: &[Splice]) {
         let path = canonical(path);
-        self.stamp(agent, path.clone(), new, |before| {
+        let was = Print::of(old);
+        self.stamp(agent, path.clone(), new, |before, _| {
             let mut cover = match before {
-                Some(before) if before.is(old) => before.cover,
+                Some(before) if before.print == was => before.cover,
                 _ => Cover::none(),
             };
             for splice in splices {
@@ -371,15 +382,10 @@ impl FileTracker {
     /// every other agent that has read the file.
     pub fn record_formatted(&self, agent: &str, path: &Path, content: &[u8]) {
         let path = canonical(path);
-        self.stamp(agent, path.clone(), content, |before| match before {
-            Some(before) => {
-                let now = line_hashes(content);
-                before.cover.carried(
-                    before.lines.as_deref(),
-                    now.as_deref(),
-                    Changed::SeenIfReplacedWere,
-                )
-            }
+        self.stamp(agent, path.clone(), content, |before, now| match before {
+            Some(before) => before
+                .cover
+                .carried(before.lines.as_deref(), now, Changed::SeenIfReplacedWere),
             None => Cover::none(),
         });
         self.notify(agent, &path);
@@ -388,19 +394,19 @@ impl FileTracker {
     /// Whether `agent` may overwrite `path` without reading it again.
     pub fn check(&self, agent: &str, path: &Path) -> Freshness {
         let path = canonical(path);
-        let Some((len, hash)) = locked(&self.seen)
+        let Some(print) = locked(&self.seen)
             .get(&(agent.to_string(), path.clone()))
-            .map(|stamp| (stamp.len, stamp.hash))
+            .map(|stamp| stamp.print.clone())
         else {
             return Freshness::NeverRead;
         };
         // Timestamps are too coarse to trust on some filesystems; the content decides.
         match std::fs::metadata(&path) {
-            Ok(meta) if meta.len() == len => {}
+            Ok(meta) if meta.len() == print.len => {}
             _ => return Freshness::Changed,
         }
         match std::fs::read(&path) {
-            Ok(bytes) if blake3::hash(&bytes) == hash => Freshness::Fresh,
+            Ok(bytes) if blake3::hash(&bytes) == print.hash => Freshness::Fresh,
             _ => Freshness::Changed,
         }
     }
