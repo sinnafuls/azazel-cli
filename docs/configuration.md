@@ -101,6 +101,9 @@ thinking = "low"
 | | `thinking` | definition | Thinking level replacing the definition's |
 | `[retry]` | `max_attempts` | `3` | Tries per model before moving down the chain |
 | | `cooldown_secs` | `300` | How long a failed model is skipped |
+| | `first_event_secs` | `20` | Longest wait for the first event of a response; `0` waits forever |
+| | `stall_secs` | `120` | Longest a started response may go without an event; `0` waits forever |
+| | `max_stalls` | `3` | Stalls of one model in a row before moving down the chain; `0` never moves |
 
 ## Behaviour
 
@@ -110,6 +113,7 @@ thinking = "low"
 | | `allow`, `ask`, `deny` | `[]` | Rules such as `"shell(cargo build:*)"` |
 | | `additional_dirs` | `[]` | Directories outside the project agents may work in (relative to the project root) |
 | | `destructive` | `"ask"` | What a command that destroys work (`git reset --hard`, `rm -r ~`) needs in every mode: `ask`, `allow` or `deny`; see [permissions](permissions.md#destructive-commands) |
+| | `secret_paths` | `[]` | Patterns, as in `.gitignore`, added to the built-in list of secret files |
 | `[checkpoints]` | `enabled` | `true` | Snapshot the project before each prompt; see [sessions and checkpoints](sessions-and-checkpoints.md) |
 | | `max_files` | `100000` | Checkpoints turn off for projects with more files than this |
 | | `timeout_ms` | `10000` | Longest one snapshot may take (1000 to 300000); past it checkpoints turn off for the session |
@@ -117,6 +121,7 @@ thinking = "low"
 | `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
+| | `resume_runs` | `true` | A run cut off by a crash or a closed terminal continues when its session is opened again |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |
@@ -143,12 +148,21 @@ thinking = "low"
 | | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
+| | `redact_output` | `false` | Replace secrets in tool output with `[redacted:<kind>]` before the model sees them |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
 | | `once` | `false` | Run at most one time per session |
 | | `wake` | `false` | With `async`: give the hook's output to the lead agent when it finishes |
+| `[guards]` | `done_check` | `true` | Send back a "done" that changed code but ran no build or test since |
+| | `stuck_after` | `3` | Stop an agent that repeats the same failing call this many times in a row; `0` is off |
+| | `runaway` | `true` | Stop a turn that repeats one output or one call without end |
+| `[cache]` | `warming` | `"off"` | `idle` keeps the provider's prompt cache warm between prompts; `off` does not |
+| | `warm_minutes` | `30` | How long after the last prompt the cache is kept warm |
+| | `report_misses` | `false` | Say when a request misses the cached prefix, and why |
+| `[context]` | `nested` | `true` | Read the `AGENTS.md` of every directory an agent works in, not only the project root's |
+| | `include_depth` | `4` | How deep `@path` includes inside context files are followed; `0` follows none |
 | `[rules]` | `compat` | `true` | Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline; see [rules](rules.md) |
 | `[[stream_rules]]` | `pattern` | required | Regular expression matched against a reply as it is written |
 | | `message` | required | What the agent is told when the pattern matches |
@@ -170,6 +184,12 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[embeddings]` | `provider`, `model` | absent | Embedding endpoint; both keys are required. Absent means word search only |
 | `[web]` | `search` | `"auto"` | `auto`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
 | | `searxng_url` | `""` | Address of a SearXNG instance |
+| | `provider_search` | `true` | Search through the lead model's provider when it offers a search tool |
+| `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith` |
+| | `endpoint` | `""` | Collector address; empty uses the exporter's default |
+| | `project` | `""` | Project name shown by the backend |
+| | `api_key_env` | `""` | Environment variable holding the backend's key |
+| | `content` | `false` | Send prompt and reply text, not only the shape of each step |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
@@ -228,7 +248,7 @@ back. A project needs a trust decision when it has any of:
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
-`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`.
+`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it

@@ -140,7 +140,13 @@ macro_rules! config_table {
 
 config_table!(RetryConfig {
     max_attempts: u32 = 3,
-    cooldown_secs: u64 = 300
+    cooldown_secs: u64 = 300,
+    /// Seconds to wait for the first event of a response; 0 waits forever.
+    first_event_secs: u64 = 20,
+    /// Seconds a started response may go without an event; 0 waits forever.
+    stall_secs: u64 = 120,
+    /// Stalls of one model in a row before the router moves down the chain; 0 never moves.
+    max_stalls: u32 = 3,
 });
 config_table!(PermissionsConfig {
     mode: PermissionMode = PermissionMode::Ask,
@@ -150,6 +156,8 @@ config_table!(PermissionsConfig {
     additional_dirs: Vec<PathBuf> = Vec::new(),
     /// What a command that destroys work (`git reset --hard`, `rm -r ~`) needs, in every mode.
     destructive: DestructivePolicy = DestructivePolicy::Ask,
+    /// Paths (gitignore-style globs) added to the built-in list of secret files.
+    secret_paths: Vec<String> = Vec::new(),
 });
 config_table!(CheckpointsConfig {
     enabled: bool = true,
@@ -204,6 +212,8 @@ config_table!(ToolsConfig {
     /// What reading a file must cover before it may be edited.
     read_guard: ReadGuard = ReadGuard::Range,
     scan: ScanConfig = ScanConfig::default(),
+    /// Replace secrets in tool output with `[redacted:<kind>]` before the model sees it.
+    redact_output: bool = false,
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.
@@ -216,7 +226,42 @@ config_table!(MemoryConfig {
 });
 config_table!(WebConfig {
     search: String = "auto".to_string(),
-    searxng_url: String = String::new()
+    searxng_url: String = String::new(),
+    /// Search through the model provider's own search tool when the lead's model has one.
+    provider_search: bool = true,
+});
+config_table!(GuardsConfig {
+    /// Send back a "done" that changed code but ran no build or test since.
+    done_check: bool = true,
+    /// Stop an agent that runs the same failing call this many times in a row; 0 is off.
+    stuck_after: u32 = 3,
+    /// Stop a turn that repeats one output or one call without end.
+    runaway: bool = true,
+});
+config_table!(CacheConfig {
+    /// Keep the prompt cache warm between prompts.
+    warming: CacheWarming = CacheWarming::Off,
+    /// How long after the last prompt the cache is kept warm.
+    warm_minutes: u32 = 30,
+    /// Tell the user when a request misses the cached prefix, and why.
+    report_misses: bool = false,
+});
+config_table!(ContextConfig {
+    /// Read the `AGENTS.md` of every directory an agent works in, not only the root one.
+    nested: bool = true,
+    /// How deep `@path` includes inside context files are followed; 0 follows none.
+    include_depth: u32 = 4,
+});
+config_table!(TelemetryConfig {
+    exporter: TelemetryExporter = TelemetryExporter::Off,
+    /// Collector address; empty uses the exporter's default.
+    endpoint: String = String::new(),
+    /// Project name shown by the backend.
+    project: String = String::new(),
+    /// Environment variable holding the backend's key.
+    api_key_env: String = String::new(),
+    /// Send prompt and reply text, not only the shape of each step.
+    content: bool = false,
 });
 config_table!(McpConfig {
     startup_wait_ms: u64 = 250,
@@ -281,6 +326,8 @@ config_table!(SessionConfig {
     retention_days: u32 = 0,
     /// A resumed session starts on the model and thinking level it last used.
     restore_model: bool = true,
+    /// A run cut off by a crash or a closed terminal continues when the session is opened again.
+    resume_runs: bool = true,
 });
 config_table!(LimitsConfig {
     /// Spend at which a run stops; 0 is no cap.
@@ -407,6 +454,8 @@ config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "i
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
+config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
+config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
 config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", Ascii = "ascii" } default Auto);
 config_enum!(Indicator { Shimmer = "shimmer", Kitt = "kitt", Static = "static" } default Shimmer);
 config_enum!(ToolStyle { Card = "card", Compact = "compact" } default Card);
@@ -496,6 +545,10 @@ pub struct Config {
     pub voice: VoiceConfig,
     pub advisor: AdvisorConfig,
     pub rules: RulesConfig,
+    pub guards: GuardsConfig,
+    pub cache: CacheConfig,
+    pub context: ContextConfig,
+    pub telemetry: TelemetryConfig,
     /// Saved sets of roles, by name.
     pub presets: BTreeMap<String, PresetConfig>,
     pub stream_rules: Vec<StreamRuleConfig>,
@@ -564,6 +617,10 @@ impl Default for Config {
             voice: VoiceConfig::default(),
             advisor: AdvisorConfig::default(),
             rules: RulesConfig::default(),
+            guards: GuardsConfig::default(),
+            cache: CacheConfig::default(),
+            context: ContextConfig::default(),
+            telemetry: TelemetryConfig::default(),
             presets: BTreeMap::new(),
             stream_rules: Vec::new(),
             hooks: BTreeMap::new(),
@@ -572,7 +629,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-const TABLES: [&str; 31] = [
+const TABLES: [&str; 35] = [
     "roles",
     "providers",
     "models",
@@ -604,6 +661,10 @@ const TABLES: [&str; 31] = [
     "advisor",
     "rules",
     "presets",
+    "guards",
+    "cache",
+    "context",
+    "telemetry",
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -883,7 +944,7 @@ fn concatenates(path: &[String]) -> bool {
 
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
-const TRUST_GATED: [(&str, Option<&str>); 17] = [
+const TRUST_GATED: [(&str, Option<&str>); 18] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -900,6 +961,8 @@ const TRUST_GATED: [(&str, Option<&str>); 17] = [
     ("tools", Some("check")),
     ("tools", Some("scan")),
     ("advisor", None),
+    // Sends the work to a server of the configuration's choosing.
+    ("telemetry", None),
     // `allow` would lift the question about commands that destroy work.
     ("permissions", Some("destructive")),
 ];
@@ -1217,6 +1280,9 @@ mod tests {
             [advisor]
             model = ["evil/model"]
             when = "stop"
+            [telemetry]
+            exporter = "otlp"
+            endpoint = "http://evil.example"
         "#;
         let f = fixture("[permissions]\nallow = [\"read\"]\n", project, "");
         let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
@@ -1244,6 +1310,7 @@ mod tests {
                 "tools.check",
                 "tools.scan",
                 "advisor",
+                "telemetry",
                 "permissions.destructive"
             ]
         );
@@ -1256,6 +1323,7 @@ mod tests {
         assert!(c.tools.shell.is_empty() && c.browser.path.is_empty());
         assert!(c.tools.check.is_empty() && c.tools.scan.secrets);
         assert_eq!(c.tools.check_report, CheckReport::All);
+        assert_eq!(c.telemetry, TelemetryConfig::default());
 
         let c = Config::load(&f.paths, &trusted()).unwrap().config;
         assert_eq!(c.permissions.allow, ["read", "shell"]);
@@ -1307,6 +1375,18 @@ mod tests {
             secrets = false
             [presets.cheap.roles]
             default = ["openai/mini"]
+            [retry]
+            stall_secs = 0
+            [guards]
+            stuck_after = 5
+            [cache]
+            warming = "idle"
+            [context]
+            include_depth = 1
+            [telemetry]
+            exporter = "otlp"
+            [web]
+            provider_search = false
             [[stream_rules]]
             pattern = "TODO"
             message = "finish the work"
@@ -1327,6 +1407,12 @@ mod tests {
         assert_eq!(c.tui.images, ImageMode::Sixel);
         assert!(c.team.coordinator);
         assert_eq!(c.permissions.destructive, DestructivePolicy::Deny);
+        assert_eq!((c.retry.stall_secs, c.retry.first_event_secs), (0, 20));
+        assert_eq!((c.guards.stuck_after, c.guards.done_check), (5, true));
+        assert_eq!(c.cache.warming, CacheWarming::Idle);
+        assert_eq!((c.context.include_depth, c.context.nested), (1, true));
+        assert_eq!(c.telemetry.exporter, TelemetryExporter::Otlp);
+        assert!(!c.web.provider_search && c.session.resume_runs);
         assert_eq!(c.tools.format["rs"], "rustfmt");
         assert_eq!(c.tools.check["py"], "ruff check {file}");
         assert_eq!(
