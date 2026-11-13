@@ -174,10 +174,11 @@ impl Session {
         let status = self.active.lead.status();
         State {
             session_id: self.active.session.id(),
+            session_file: self.active.session.path().display().to_string(),
             name: self.active.session.name(),
             cwd: self.app.paths.cwd.display().to_string(),
             mode: self.app.permissions.mode().to_string(),
-            busy: status.busy,
+            busy: self.busy(),
             turn: status.turn,
             model: status.model.map(|model| model.to_string()),
             chain: status.chain.iter().map(ToString::to_string).collect(),

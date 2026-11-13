@@ -572,6 +572,48 @@
             "name"
           ],
           "description": "Runs a slash command by name (without the slash). Answers with [`CommandResult`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "attach"
+            },
+            "pid": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            },
+            "replay": {
+              "$ref": "#/$defs/Replay",
+              "default": "missed"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Background sessions only, and the first command on a connection to one: takes the place\nof its one client. The frames `replay` asks for follow the response, then the requests\nthat still wait for an answer. `pid` is told to a client that is refused while this one\nis attached. Answers with [`Attached`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "stop"
+            },
+            "now": {
+              "type": "boolean",
+              "default": false
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Background sessions only, attached or not: ends the session once the lead has finished\nwhat it is doing; with `now` the lead is stopped first. The connection closes when the\nsession has ended."
         }
       ],
       "description": "One line from the client: a command and the id its response repeats."
@@ -643,6 +685,26 @@
         "jsonl"
       ],
       "description": "The file format of `export`."
+    },
+    "Replay": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "missed",
+          "description": "The frames written since the last client left; everything for the first client."
+        },
+        {
+          "type": "string",
+          "const": "all",
+          "description": "Every frame since the background session started."
+        },
+        {
+          "type": "string",
+          "const": "none",
+          "description": "Nothing but the requests that still wait for an answer."
+        }
+      ],
+      "description": "What a client that attaches to a background session is sent of what happened before."
     },
     "Frame": {
       "oneOf": [
@@ -1318,6 +1380,27 @@
             "delta"
           ],
           "description": "A piece of the answer to the `btw` command with this `id`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "user_input"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "text": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "kind",
+            "text"
+          ],
+          "description": "Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or\n`follow_up`. It is in the log and in what a later client is replayed, never in what the\nsender itself reads."
         }
       ],
       "description": "One line from azazel. `type` names the frame; frames of an agent carry its id as `agent`\n(`lead` for the main agent)."
@@ -1558,6 +1641,11 @@
       "properties": {
         "session_id": {
           "type": "string"
+        },
+        "session_file": {
+          "type": "string",
+          "description": "The session file.",
+          "default": ""
         },
         "name": {
           "type": [
@@ -2074,6 +2162,35 @@
         }
       ],
       "description": "The data of `run_command`."
+    },
+    "Attached": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string",
+          "description": "The id of the background session, as `azazel ps` lists it."
+        },
+        "pid": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The process that runs it."
+        },
+        "session_id": {
+          "type": "string"
+        },
+        "session_file": {
+          "type": "string",
+          "description": "The session file."
+        }
+      },
+      "required": [
+        "host",
+        "pid",
+        "session_id",
+        "session_file"
+      ],
+      "description": "The data of `attach`."
     }
   }
 }

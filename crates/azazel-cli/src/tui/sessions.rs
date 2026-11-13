@@ -158,13 +158,17 @@ fn session_label(session: &SessionSummary) -> String {
     )
 }
 
-fn session_item(session: &SessionSummary, open: bool) -> SelectItem {
+/// `background` is the id of the background session that has the session open, if one does.
+fn session_item(session: &SessionSummary, open: bool, background: Option<&str>) -> SelectItem {
     let mut detail = Vec::new();
     if session.pinned {
         detail.push("pinned".to_string());
     }
     if open {
         detail.push("open now".to_string());
+    }
+    if let Some(id) = background {
+        detail.push(format!("in the background: azazel attach {id}"));
     }
     detail.push(local_time(&session.updated));
     detail.push(format!("{} messages", session.messages));
@@ -497,9 +501,13 @@ impl Tui {
                 "this project has no other sessions"
             });
         }
+        let home = &self.app.paths.home;
         let items = rows
             .iter()
-            .map(|session| session_item(session, session.id == open))
+            .map(|session| {
+                let background = crate::running::host_of(home, &session.id);
+                session_item(session, session.id == open, background.as_deref())
+            })
             .collect();
         let mut body = vec![SESSION_KEYS.to_string()];
         if named_only {
@@ -1245,13 +1253,17 @@ mod tests {
             ["pinned", "newest", "oldest"]
         );
 
-        let item = session_item(&summary("pinned", Some("kept"), true, 9), true);
+        let item = session_item(&summary("pinned", Some("kept"), true, 9), true, None);
         assert_eq!(item.label, "kept");
         assert!(item.detail.starts_with("pinned · open now · "), "{}", item.detail);
         assert!(item.detail.ends_with("9 messages"), "{}", item.detail);
-        assert_eq!(
-            session_item(&summary("x", None, false, 1), false).label,
-            "prompt of x"
+        let item = session_item(&summary("x", None, false, 1), false, Some("ab12"));
+        assert_eq!(item.label, "prompt of x");
+        assert!(
+            item.detail
+                .starts_with("in the background: azazel attach ab12 · "),
+            "{}",
+            item.detail
         );
     }
 

@@ -32,6 +32,7 @@ default = [
     "voice",
     "notify",
     "images",
+    "detach",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -53,11 +54,14 @@ images = ["azazel-tui/images"]
 # default build: the diagram renderer adds 3.1 MB to the binary, and drawing its SVG (with the
 # font that ships for it) another 2.7 MB.
 diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
+# Background sessions (`azazel bg`, `ps`, `logs`, `attach`, `kill`) on local sockets.
+detach = ["dep:interprocess", "dep:process-wrap", "dep:winsafe"]
 test-support = ["azazel-ai/test-support"]
 
 [dependencies]
 azazel-ai.workspace = true
 azazel-agent.workspace = true
+azazel-client.workspace = true
 azazel-core.workspace = true
 azazel-protocol.workspace = true
 azazel-tools.workspace = true
@@ -79,6 +83,7 @@ crossterm.workspace = true
 futures.workspace = true
 ignore.workspace = true
 image.workspace = true
+interprocess = { workspace = true, optional = true }
 jiff.workspace = true
 keepawake = { workspace = true, optional = true }
 mermaid-rs-renderer = { workspace = true, optional = true }
@@ -106,6 +111,13 @@ cpal = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
 crossterm_winapi.workspace = true
+# Starts a background session without handing it this process's handles: a process started the
+# usual way inherits them, and whoever reads this process's output would wait for that one too.
+winsafe = { workspace = true, optional = true }
+
+# Starts a background session in a session of its own.
+[target.'cfg(unix)'.dependencies]
+process-wrap = { workspace = true, optional = true }
 
 [dev-dependencies]
 assert_cmd.workspace = true
@@ -113,7 +125,6 @@ assert_cmd.workspace = true
 # with the scripted mock provider, and so that the opt-in diagram drawing is tested and linted.
 azazel-cli = { path = ".", features = ["test-support", "diagrams"] }
 agent-client-protocol.workspace = true
-azazel-client.workspace = true
 dunce.workspace = true
 rmcp.workspace = true
 tempfile.workspace = true

@@ -72,6 +72,19 @@ pub enum ExportFormat {
     Jsonl,
 }
 
+/// What a client that attaches to a background session is sent of what happened before.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Replay {
+    /// The frames written since the last client left; everything for the first client.
+    #[default]
+    Missed,
+    /// Every frame since the background session started.
+    All,
+    /// Nothing but the requests that still wait for an answer.
+    None,
+}
+
 fn yes() -> bool {
     true
 }
@@ -201,6 +214,23 @@ pub enum Command {
         name: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         args: String,
+    },
+    /// Background sessions only, and the first command on a connection to one: takes the place
+    /// of its one client. The frames `replay` asks for follow the response, then the requests
+    /// that still wait for an answer. `pid` is told to a client that is refused while this one
+    /// is attached. Answers with [`Attached`].
+    Attach {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pid: Option<u32>,
+        #[serde(default)]
+        replay: Replay,
+    },
+    /// Background sessions only, attached or not: ends the session once the lead has finished
+    /// what it is doing; with `now` the lead is stopped first. The connection closes when the
+    /// session has ended.
+    Stop {
+        #[serde(default)]
+        now: bool,
     },
 }
 
@@ -489,6 +519,13 @@ pub enum Frame {
         id: Value,
         delta: String,
     },
+    /// Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or
+    /// `follow_up`. It is in the log and in what a later client is replayed, never in what the
+    /// sender itself reads.
+    UserInput {
+        kind: String,
+        text: String,
+    },
     /// A frame this version of the crate does not know.
     #[serde(other)]
     #[schemars(skip)]
@@ -542,6 +579,9 @@ pub struct Usage {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct State {
     pub session_id: String,
+    /// The session file.
+    #[serde(default)]
+    pub session_file: String,
     /// The session's name, once it has one.
     #[serde(default)]
     pub name: Option<String>,
@@ -695,6 +735,18 @@ pub struct BtwAnswer {
     pub dropped_tools: Vec<String>,
 }
 
+/// The data of `attach`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Attached {
+    /// The id of the background session, as `azazel ps` lists it.
+    pub host: String,
+    /// The process that runs it.
+    pub pid: u32,
+    pub session_id: String,
+    /// The session file.
+    pub session_file: String,
+}
+
 /// The data of `run_command`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "outcome", rename_all = "snake_case")]
@@ -725,6 +777,7 @@ pub fn schema() -> Value {
     generator.subschema_for::<Exported>();
     generator.subschema_for::<BtwAnswer>();
     generator.subschema_for::<CommandResult>();
+    generator.subschema_for::<Attached>();
     let definitions = generator.take_definitions(true);
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
