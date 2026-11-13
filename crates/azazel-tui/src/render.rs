@@ -17,10 +17,43 @@ use crate::text;
 /// width; the renderer cuts lines that are too wide rather than letting them wrap.
 pub type Line = String;
 
+/// One thing appended to the transcript above the live region.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HistoryItem {
+    /// One row of text.
+    Line(Line),
+    /// Something the terminal draws over several rows, such as an inline image. The renderer
+    /// makes `rows` empty rows, goes back to the first of them, writes `paint` and returns to
+    /// the row below the block, wherever `paint` left the cursor.
+    Block { rows: u16, paint: String },
+}
+
+impl HistoryItem {
+    /// Rows the item takes in the transcript.
+    pub fn rows(&self) -> usize {
+        match self {
+            HistoryItem::Line(_) => 1,
+            HistoryItem::Block { rows, .. } => usize::from(*rows),
+        }
+    }
+}
+
+impl From<String> for HistoryItem {
+    fn from(line: String) -> Self {
+        HistoryItem::Line(line)
+    }
+}
+
+impl From<&str> for HistoryItem {
+    fn from(line: &str) -> Self {
+        HistoryItem::Line(line.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Frame {
-    /// Lines to append to the transcript above the live region. Written exactly once.
-    pub history: Vec<Line>,
+    /// What to append to the transcript above the live region. Written exactly once.
+    pub history: Vec<HistoryItem>,
     /// The complete live region for this frame.
     pub viewport: Vec<Line>,
     /// Where to show the terminal cursor as `(row within viewport, column)`; `None` hides it.
@@ -33,7 +66,7 @@ pub struct Frame {
 /// The floor is the number of rows the region must occupy. It starts at the height of the screen,
 /// so the first frame fills the screen and whatever the terminal showed before scrolls away. A
 /// frame with fewer rows of its own is padded with blank rows (the caller decides where they go);
-/// each history line written above the region takes one row from the floor, so the transcript
+/// each history row written above the region takes one row from the floor, so the transcript
 /// grows into the padding while the rows at the bottom stay where they are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Floor {
@@ -63,7 +96,7 @@ impl Floor {
         self.rows = self.rows.min(usize::from(height.max(1)));
     }
 
-    /// Accounts for a frame that writes `history` lines above a region with `content` rows of
+    /// Accounts for a frame that writes `history` rows above a region with `content` rows of
     /// its own, and returns how many blank rows the region needs besides them.
     pub fn pad(&mut self, history: usize, content: usize, height: u16) -> usize {
         let height = usize::from(height.max(1));
@@ -79,6 +112,9 @@ const HIDE_CURSOR: &str = "\x1b[?25l";
 const ERASE_LINE: &str = "\x1b[2K";
 const ERASE_BELOW: &str = "\x1b[J";
 const SGR_RESET: &str = "\x1b[0m";
+/// DECSC and DECRC: the cursor position is kept by the terminal across a block's paint.
+const SAVE_CURSOR: &str = "\x1b7";
+const RESTORE_CURSOR: &str = "\x1b8";
 
 pub struct Renderer<W: io::Write> {
     out: W,
@@ -142,7 +178,7 @@ impl<W: io::Write> Renderer<W> {
         if history.is_empty() && !self.redraw {
             self.draw_changes(&mut buf, &rows);
         } else {
-            self.draw_all(&mut buf, history, &rows, width);
+            self.draw_all(&mut buf, history, &rows, width, height);
         }
         self.drawn = rows;
         self.redraw = false;
@@ -248,15 +284,41 @@ impl<W: io::Write> Renderer<W> {
     }
 
     /// Erases the region, appends history where it began and paints the region below it.
-    fn draw_all(&mut self, buf: &mut String, history: Vec<Line>, rows: &[Line], width: usize) {
+    fn draw_all(
+        &mut self,
+        buf: &mut String,
+        history: Vec<HistoryItem>,
+        rows: &[Line],
+        width: usize,
+        height: usize,
+    ) {
         if self.cursor_row > 0 {
             csi(buf, self.cursor_row, 'A');
         }
         buf.push('\r');
         buf.push_str(ERASE_BELOW);
-        for line in history {
-            push_line(buf, &fit(line, width));
-            buf.push_str("\r\n");
+        for item in history {
+            match item {
+                HistoryItem::Line(line) => {
+                    push_line(buf, &fit(line, width));
+                    buf.push_str("\r\n");
+                }
+                HistoryItem::Block { rows, paint } => {
+                    let rows = usize::from(rows);
+                    // The line feeds make the rows, scrolling the screen when they must; only
+                    // then is the first of them a place the cursor can go back to.
+                    for _ in 0..rows {
+                        buf.push_str("\r\n");
+                    }
+                    // A block as tall as the screen has lost its first row to the scrollback.
+                    if rows > 0 && rows < height {
+                        buf.push_str(SAVE_CURSOR);
+                        csi(buf, rows, 'A');
+                        buf.push_str(&paint);
+                        buf.push_str(RESTORE_CURSOR);
+                    }
+                }
+            }
         }
         for (i, line) in rows.iter().enumerate() {
             if i > 0 {

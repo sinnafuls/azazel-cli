@@ -121,6 +121,21 @@ GitHub are its section here.
   `examples/client-demo`, a Python example, and `docs/rpc.schema.json`.
 - Luau: `azazel.prompt(name, render)` adds a system prompt part; `azazel.session` reads and changes the open
   session.
+- The terminal bell and a desktop notification when an agent needs you or a long run ends or fails while the
+  terminal is not focused (`[notify]`).
+- The terminal title shows the session and its state; the tab shows progress in Windows Terminal, Ghostty,
+  WezTerm and iTerm2.
+- The machine is kept awake while agents work (`[notify] keep_awake`).
+- Clickable links in replies and on the file names of `read`, `write` and `edit` cards; `/open` opens the last
+  link of the last reply, a numbered link or a file.
+- Pictures returned by tools are shown inline in kitty, Ghostty, iTerm2, WezTerm and Sixel terminals
+  (`[tui] images`).
+- Mermaid diagrams drawn inline and `/open diagram`, in builds with the cargo feature `diagrams`.
+- `/usage` and `azazel usage [--json]`: what Claude and ChatGPT subscriptions have left; the status line shows
+  a window from 80 %.
+- `/stats [days]`.
+- `[update] auto = true` downloads a new release in the background and installs it when the UI exits.
+- Inside tmux, notifications and progress are passed through and `/copy` goes through `tmux load-buffer -w`.
 - `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
   `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
   configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
@@ -139,6 +154,8 @@ GitHub are its section here.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
 - `/cost` also lists what side questions, commit drafts and the advisor cost.
 - `/tools` marks tools withheld in coordinator mode.
+- `/changelog` opens in the viewer.
+- A refusal for "extra usage" names the full window and when it resets.
 - RPC `get_state` also reports `name` and `tier`; RPC `set_model` is recorded in the session; RPC errors for a
   wrong member name its kind, for example "`chain` must be a list".
 - A reopened session comes back on the model and thinking level it last used (`[session] restore_model`);

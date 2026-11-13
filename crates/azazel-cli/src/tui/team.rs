@@ -129,6 +129,7 @@ impl Tui {
                         &output,
                         Duration::from_millis(duration_ms),
                         self.expand_tools,
+                        None,
                         width,
                         &self.theme,
                     );

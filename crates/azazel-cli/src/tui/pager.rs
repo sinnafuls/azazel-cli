@@ -64,7 +64,9 @@ impl Source {
             },
             Source::Tool { name, input, output } => {
                 let mut lines = vec![String::new()];
-                lines.extend(view::tool_card(name, input, output, None, true, width, theme));
+                lines.extend(view::tool_card(
+                    name, input, output, None, true, None, width, theme,
+                ));
                 let said = output.text_content();
                 Item {
                     lines,
@@ -145,6 +147,8 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
                     _ => {}
                 },
                 Some(Ok(Event::Paste(pasted))) => view.paste(&pasted),
+                Some(Ok(Event::FocusGained)) => tui.attention.focus(true),
+                Some(Ok(Event::FocusLost)) => tui.attention.focus(false),
                 Some(Ok(Event::Resize(columns, rows))) => {
                     (width, height) = (columns, rows);
                     tui.renderer.resize(columns, rows);

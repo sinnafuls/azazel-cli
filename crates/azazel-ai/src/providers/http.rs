@@ -75,7 +75,10 @@ pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
             limits: wire::anthropic::limits,
             ..wire_table!(anthropic)
         },
-        WireApi::OpenAiResponses => wire_table!(openai_responses),
+        WireApi::OpenAiResponses => Wire {
+            limits: wire::openai_responses::limits,
+            ..wire_table!(openai_responses)
+        },
         // OpenRouter is the chat format with its own request members, chosen inside the module.
         WireApi::OpenAiChat | WireApi::OpenRouter => wire_table!(openai_chat),
         WireApi::GoogleGenerative => wire_table!(google),
@@ -152,6 +155,21 @@ pub(crate) fn blocked_until(error: &AiError) -> Option<u64> {
     }
 }
 
+/// A refusal for lack of allowance, with what is known about the account added to it: which
+/// window is full and when it resets. Anthropic's "out of extra usage" says neither.
+fn name_full_window(error: AiError, full: Option<Window>) -> AiError {
+    match (error, full) {
+        (AiError::Quota { resets_at, message }, Some(window)) if !message.contains(&window.label()) => {
+            let now = now_ms() / 1000;
+            AiError::Quota {
+                resets_at: resets_at.or(window.resets_at.filter(|at| *at > now)),
+                message: format!("{message}\n{}", window.full_line(now)),
+            }
+        }
+        (error, _) => error,
+    }
+}
+
 impl HttpProvider {
     pub fn new(config: ProviderConfig, client: reqwest::Client, credentials: Arc<Credentials>) -> Self {
         HttpProvider {
@@ -210,13 +228,15 @@ impl HttpProvider {
                 if failed.status == Some(401) {
                     self.credentials.invalidate(&self.config.id);
                 }
-                if let Some(account) = account {
-                    limits.record(&self.config.id, account, (wire.limits)(&failed.headers));
-                    if let Some(until) = blocked_until(&failed.error) {
-                        limits.block(&self.config.id, account, until);
-                    }
+                let Some(account) = account else {
+                    return Err(failed.error);
+                };
+                limits.record(&self.config.id, account, (wire.limits)(&failed.headers));
+                let error = name_full_window(failed.error, limits.full(&self.config.id, account));
+                if let Some(until) = blocked_until(&error) {
+                    limits.block(&self.config.id, account, until);
                 }
-                Err(failed.error)
+                Err(error)
             }
         }
     }
@@ -606,5 +626,51 @@ fn http_error(classify: Classify, status: u16, headers: &HeaderMap, body: &str) 
         503 | 529 => AiError::Overloaded,
         500.. => AiError::Server { status, body },
         _ => AiError::InvalidRequest(format!("HTTP {status}: {body}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_refusal_for_lack_of_allowance_names_the_full_window() {
+        let now = now_ms() / 1000;
+        let full = Window {
+            name: "5h".to_string(),
+            used: 1.0,
+            resets_at: Some(now + 2 * 3600 + 10 * 60 + 30),
+            status: "allowed".to_string(),
+        };
+        let refusal = || AiError::Quota {
+            resets_at: None,
+            message: "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."
+                .to_string(),
+        };
+        // What the provider said stays first; the window and its reset follow on a second line,
+        // and the reset becomes the time the account is left alone until.
+        let named = name_full_window(refusal(), Some(full.clone()));
+        assert_eq!(
+            named,
+            AiError::Quota {
+                resets_at: full.resets_at,
+                message: "You're out of extra usage. Add more at claude.ai/settings/usage and keep going.\n\
+                          the 5-hour limit of this account is full; it resets in 2 h 10 min"
+                    .to_string(),
+            }
+        );
+        assert_eq!(blocked_until(&named), full.resets_at);
+        // Nothing known about the account, or a message that names the window already: unchanged.
+        assert_eq!(name_full_window(refusal(), None), refusal());
+        let said = AiError::Quota {
+            resets_at: Some(now + 60),
+            message: "the 5-hour limit of this account is used up".to_string(),
+        };
+        assert_eq!(name_full_window(said.clone(), Some(full.clone())), said);
+        // Other errors are not about allowance.
+        assert_eq!(
+            name_full_window(AiError::Overloaded, Some(full)),
+            AiError::Overloaded
+        );
     }
 }

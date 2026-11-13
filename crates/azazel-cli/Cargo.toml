@@ -30,6 +30,8 @@ default = [
     "bedrock",
     "vertex",
     "voice",
+    "notify",
+    "images",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -43,6 +45,14 @@ pdf = ["azazel-tools/pdf"]
 bedrock = ["azazel-ai/bedrock"]
 vertex = ["azazel-ai/vertex"]
 voice = ["dep:cpal", "reqwest/multipart"]
+# Desktop notifications when the terminal has none of its own, and keeping the machine awake.
+notify = ["dep:notify-rust", "dep:keepawake"]
+# Images shown inline in terminals that can draw them.
+images = ["azazel-tui/images"]
+# Mermaid diagrams: drawn as inline images, and written as SVG by `/open diagram`. Not in the
+# default build: the diagram renderer adds 3.1 MB to the binary, and drawing its SVG (with the
+# font that ships for it) another 2.7 MB.
+diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
 test-support = ["azazel-ai/test-support"]
 
 [dependencies]
@@ -70,8 +80,12 @@ futures.workspace = true
 ignore.workspace = true
 image.workspace = true
 jiff.workspace = true
+keepawake = { workspace = true, optional = true }
+mermaid-rs-renderer = { workspace = true, optional = true }
 mimalloc.workspace = true
+notify-rust = { workspace = true, optional = true }
 reqwest.workspace = true
+resvg = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -90,11 +104,14 @@ which.workspace = true
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 cpal = { workspace = true, optional = true }
 
+[target.'cfg(windows)'.dependencies]
+crossterm_winapi.workspace = true
+
 [dev-dependencies]
 assert_cmd.workspace = true
 # The package depends on itself so that its tests, and the `azazel` binary they drive, are built
-# with the scripted mock provider.
-azazel-cli = { path = ".", features = ["test-support"] }
+# with the scripted mock provider, and so that the opt-in diagram drawing is tested and linted.
+azazel-cli = { path = ".", features = ["test-support", "diagrams"] }
 agent-client-protocol.workspace = true
 azazel-client.workspace = true
 dunce.workspace = true

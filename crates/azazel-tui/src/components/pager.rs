@@ -125,10 +125,27 @@ fn pieces(source: &str) -> Vec<Piece<'_>> {
 
 /// The fenced code blocks of a Markdown document, in order, without their fences.
 pub fn code_blocks(source: &str) -> Vec<String> {
+    fenced_blocks(source).into_iter().map(|(_, code)| code).collect()
+}
+
+/// The fenced code blocks of a Markdown document, in order, as `(language, code)`.
+pub fn fenced_blocks(source: &str) -> Vec<(String, String)> {
     pieces(source)
         .into_iter()
         .filter_map(|piece| match piece {
-            Piece::Code { code, .. } => Some(code.strip_suffix('\n').unwrap_or(code).to_string()),
+            Piece::Code { fenced, code } => {
+                let info = fenced
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .trim_start()
+                    .trim_start_matches(['`', '~']);
+                let language = info.split([' ', ',', '\t']).next().unwrap_or_default();
+                Some((
+                    language.to_string(),
+                    code.strip_suffix('\n').unwrap_or(code).to_string(),
+                ))
+            }
             Piece::Prose(_) => None,
         })
         .collect()
@@ -169,18 +186,7 @@ pub fn markdown_item(source: &str, width: usize, theme: &Theme) -> Item {
 /// closing bracket.
 pub fn link_in(line: &str) -> Option<String> {
     let plain = text::strip_ansi(line);
-    let start = ["https://", "http://", "file://"]
-        .iter()
-        .filter_map(|scheme| plain.find(scheme))
-        .min()?;
-    let rest = &plain[start..];
-    let end = rest
-        .find(|c: char| c.is_whitespace() || matches!(c, ')' | '>' | ']' | '"' | '\'' | '`' | '│'))
-        .unwrap_or(rest.len());
-    let link = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
-    link.split_once("://")
-        .is_some_and(|(_, rest)| !rest.is_empty())
-        .then(|| link.to_string())
+    text::find_link(&plain).map(|range| plain[range].to_string())
 }
 
 pub struct Pager {

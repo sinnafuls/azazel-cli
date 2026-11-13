@@ -57,6 +57,8 @@ pub struct Card<'a> {
     pub name: &'a str,
     /// What the call is about, on one line; shortened to fit the header.
     pub summary: &'a str,
+    /// Where the summary leads when it is clicked: the file a call read or changed.
+    pub link: Option<&'a str>,
     /// Rows for the inside of the card, already styled. Rows wider than [`inner_width`] are cut.
     pub body: &'a [Line],
     /// Facts about the call, set into the bottom border: `1.4s`, `exit 0`.
@@ -114,10 +116,11 @@ pub fn render(card: &Card, width: usize, theme: &Theme) -> Vec<Line> {
     let summary = if summary.is_empty() || room < 2 {
         String::new()
     } else {
-        format!(
-            " {}",
-            theme.paint(Role::Muted, &text::truncate(&summary, room - 1, "…"))
-        )
+        let shown = theme.paint(Role::Muted, &text::truncate(&summary, room - 1, "…"));
+        match card.link {
+            Some(url) => format!(" {}", theme.link(url, &shown)),
+            None => format!(" {shown}"),
+        }
     };
     let fill = room - text::width(&summary);
     lines.push(format!(
@@ -174,6 +177,7 @@ pub fn running(
             state: CardState::Running,
             name,
             summary,
+            link: None,
             body: &body,
             facts: &[format_elapsed(elapsed)],
         },
@@ -199,6 +203,7 @@ mod tests {
             state,
             name: "shell",
             summary: "cargo test",
+            link: None,
             body,
             facts,
         }
@@ -267,6 +272,7 @@ mod tests {
                 state: CardState::Error,
                 name: "shell",
                 summary,
+                link: None,
                 body: &body,
                 facts: &[],
             },
@@ -311,6 +317,32 @@ mod tests {
                     assert_eq!(text::width(line), width, "width {width}: {line:?}");
                 }
             }
+        }
+    }
+
+    #[test]
+    fn the_summary_is_a_link_when_the_terminal_follows_them() {
+        let card = Card {
+            state: CardState::Success,
+            name: "read",
+            summary: "src/a_rather_long_directory_name/main.rs",
+            link: Some("file:///work/src/main.rs"),
+            body: &[],
+            facts: &[],
+        };
+        let linked = Theme::dark().with_links(true);
+        for width in [20, 30, 80] {
+            let lines = render(&card, width, &linked);
+            assert!(
+                lines[0].contains("\x1b]8;;file:///work/src/main.rs\x1b\\"),
+                "{lines:?}"
+            );
+            assert_eq!(lines[0].matches(text::LINK_END).count(), 1);
+            assert_eq!(text::width(&lines[0]), width);
+            // The same card without links differs only by the two sequences.
+            let bare = render(&card, width, &Theme::dark());
+            assert_eq!(text::strip_ansi(&lines[0]), text::strip_ansi(&bare[0]));
+            assert!(!bare[0].contains("\x1b]8"));
         }
     }
 }

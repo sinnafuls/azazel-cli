@@ -90,6 +90,10 @@ A finished card shows 3 lines of output, or 16 lines of a diff; `… N more line
 rest. `Ctrl+O` expands tool calls that finish from then on. Diffs have a line-number gutter, and added and
 removed lines are filled with a background colour.
 
+The file a `read`, `write` or `edit` card names is a link to that file in terminals that follow
+[links](#links), and a picture a tool returns is shown under its card where the terminal draws
+[images](#images).
+
 ### Status line
 
 | Segment | Shown when | Content |
@@ -100,6 +104,7 @@ removed lines are filled with a background colour.
 | directory | always | The working directory, with `~` for your home directory |
 | `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 % |
 | `$cost` | the model's prices are known | Money spent in this session |
+| `◔ 5h 84%` | a usage window of the subscription in use is at least 80 % full | The fullest window and how full it is; `/usage` shows them all |
 | `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
 | `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
 | `⬢ model · level` | always, against the right edge | The model answering and the thinking level |
@@ -266,11 +271,14 @@ Session and display:
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
+| `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams) |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
+| `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
+| `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
 | `/context` | How full the context window is, message count, tools offered |
 | `/theme [name]` | Pick or set the colour theme |
 | `/keys` | List key bindings |
@@ -291,7 +299,7 @@ Models, permissions and setup:
 | `/trust [yes\|no]` | Whether this project is trusted and what that covers; `yes` or `no` records the decision, a restart applies it |
 | `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
 | `/dirs` | List the directories agents may work in |
-| `/changelog [version]` | What changed in each release, or only since `version` |
+| `/changelog [version]` | What changed in each release, or only since `version`, in the [viewer](#transcript-viewer) |
 | `/settings` | Sign in, add API keys, choose models and change settings; see [settings menu](#settings-menu) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
@@ -342,8 +350,10 @@ Skills, extensions and services:
 Custom commands from `commands/` directories and commands registered by extensions appear in `/help` and in
 completion as well. `/memory` is absent when memory is disabled in the configuration.
 
-`/copy` uses the system clipboard. Over SSH, or when that fails, it asks the terminal to copy instead (OSC 52,
-passed through tmux when azazel runs inside it); the terminal must allow programs to set the clipboard.
+`/copy` uses the system clipboard. Inside tmux it hands the text to tmux first (`tmux load-buffer -w`), which
+keeps it as its newest buffer and passes it on to the terminal's clipboard. Over SSH, or when the system
+clipboard fails, it asks the terminal to copy instead (OSC 52, passed through tmux when azazel runs inside it);
+the terminal must allow programs to set the clipboard.
 
 ## Side questions
 
@@ -419,6 +429,101 @@ mouse: the wheel scrolls here, and text selection with the mouse works everywher
 
 The agent keeps working while the viewer is open. If it needs you (an approval, a question), the last row says
 so and the request is shown when you return.
+
+## Attention, title and progress
+
+azazel tells the terminal what the session is doing, and calls for you when it needs you and you are looking
+elsewhere. Everything here is in the `[notify]` table of the [configuration](configuration.md) and in the
+Notifications section of the [settings menu](#settings-menu).
+
+| What | When | Setting |
+|---|---|---|
+| Bell | An approval, a question or a plan waits for you; a run finished or failed after at least `min_secs` seconds | `bell` |
+| Desktop notification | The same moments | `desktop` |
+| Window title | Always: `azazel · <session name or folder>`, with `* ` in front while agents work and `! ` while one waits for you | `title` |
+| Tab progress | Indeterminate while agents work, paused while one waits for you, error after a failed run until you type, cleared when idle | `progress` |
+| Keep awake | The machine is kept from sleeping while agents work and for 30 seconds after; the display may still turn off | `keep_awake` |
+
+The bell and the notification only come when the terminal window does not have the focus. The terminal reports
+that itself (focus reporting); one that never does counts as not focused, so there the bell rings every time.
+
+`desktop` chooses how the notification is sent:
+
+| Value | Path |
+|---|---|
+| `auto` (default) | The terminal's own notification where it has one (iTerm2 and WezTerm: OSC 9, kitty: OSC 99, Ghostty: OSC 777); otherwise the operating system's (a Windows toast, the macOS notification centre, the desktop's notification service on Linux) |
+| `terminal` | Always the terminal's; one that was not recognised is sent OSC 9 |
+| `system` | Always the operating system's |
+| `off` | None |
+
+Notification hooks ([hooks](hooks.md), event `notification`) run first, as before. The title that was there
+when azazel started is put back when it exits. Progress is shown by Windows Terminal, Ghostty, WezTerm and
+iTerm2 (OSC 9;4).
+
+Inside tmux, notifications and progress are wrapped so that tmux passes them to the terminal outside; that needs
+`set -g allow-passthrough on` in tmux. The bell is sent as it is, so tmux can flag the window.
+
+Operating-system notifications and keeping the machine awake are the cargo feature `notify`, part of the default
+build. A machine without a notification service (a server reached over SSH) shows none.
+
+## Links
+
+In terminals that follow hyperlinks (OSC 8), Markdown links and addresses written out in a reply are clickable,
+and so is the file name in the header of a `read`, `write` or `edit` card. A link keeps its address behind it in
+brackets, so it can still be read and copied where clicking is not possible. Links are on in kitty, Ghostty,
+WezTerm, iTerm2, Windows Terminal and VTE-based terminals (GNOME Terminal and others); they are off in Warp and
+inside tmux older than 3.4.
+
+`/open` opens the last link of the last reply in your browser, `/open <n>` its n-th link, `/open <path>` a file
+with the program your system uses for it. In the [viewer](#transcript-viewer), `o` opens the link on the cursor
+row. These work in every terminal.
+
+## Images
+
+Where the terminal draws images, a picture that a tool returns (an image file that was `read`, a screenshot, a
+generated image) is shown under the tool's card, at most 60 columns by 20 rows; larger pictures are scaled down.
+
+| Terminal | Protocol |
+|---|---|
+| kitty, Ghostty | kitty graphics |
+| iTerm2, WezTerm | iTerm2 inline images |
+| Windows Terminal 1.22 and later, and others that say so | Sixel |
+
+kitty, Ghostty, iTerm2 and WezTerm are recognised from their environment variables. Sixel is used only when the
+terminal lists it in its answer to a device query at start; azazel asks for the size of a cell in pixels at the
+same time, and assumes 10 by 20 when it is not told. A terminal that does not answer within 80 ms gets no Sixel.
+Inside tmux images are off unless a protocol is forced.
+
+```toml
+[tui]
+images = "auto"   # or off, kitty, iterm, sixel
+```
+
+Inline images are the cargo feature `images`, part of the default build.
+
+### Mermaid diagrams
+
+A build with the cargo feature `diagrams` draws a fenced `mermaid` block of a reply as an image, in place, once
+the block is complete and where the terminal draws images: flowcharts, sequence, class, state and ER diagrams,
+pie charts, Gantt charts, timelines, mind maps and git graphs.
+
+```sh
+cargo install --path crates/azazel-cli --features diagrams
+```
+
+The feature is not part of the default build: the diagram renderer and what draws its output add 5.8 MB to
+the binary. Without it a `mermaid` block is shown as its source, like any other code block.
+
+With the feature:
+
+- A block that is still arriving, and any block in a terminal without images, is shown as source.
+- A diagram that does not parse keeps its source, with one line saying why.
+- `/open diagram` writes the last diagram of the conversation to the project's artifacts folder as SVG and
+  opens it, which works in every terminal.
+- Diagram text is drawn with one font that ships with azazel (Liberation Sans), so a diagram looks the same on
+  every machine; characters that font lacks (CJK, emoji) are left out.
+- The first diagram of a run takes a moment longer than the next: the layout measures its text once with a
+  font of the system.
 
 ## Settings menu
 

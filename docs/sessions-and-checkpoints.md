@@ -178,7 +178,7 @@ passes 6,000.
 | `azazel sessions delete <PATH\|ID> [--yes]` | Deletes the session file and its sub-agents' transcripts. Asks first; without a terminal it needs `--yes` |
 | `azazel sessions prune [--older-than 30d] [--all-projects] [--dry-run]` | Deletes unpinned sessions not used for that long (`h`, `d` or `w`) |
 | `azazel sessions export [PATH\|ID] [--format F] [-o FILE]` | Same as `azazel export` |
-| `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project |
+| `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project. `/stats [days]` shows the same in the UI |
 | `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output |
 
 Export formats:

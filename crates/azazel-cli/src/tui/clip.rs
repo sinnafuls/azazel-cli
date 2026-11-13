@@ -1,5 +1,5 @@
-//! Copying to the clipboard: the system clipboard where there is one, the terminal's own
-//! (OSC 52) over SSH or when that fails. Also `/copy`.
+//! Copying to the clipboard: through tmux inside tmux, else the system clipboard where there is
+//! one, the terminal's own (OSC 52) over SSH or when that fails. Also `/copy`.
 
 use std::io::Write;
 
@@ -33,8 +33,33 @@ fn over_ssh() -> bool {
         .any(|name| std::env::var_os(name).is_some())
 }
 
-/// Puts `text` on the clipboard and says which one: the system's, or the terminal's.
+/// Hands `text` to tmux as its newest buffer; with `-w` tmux also passes it on to the clipboard
+/// of the terminal it runs in.
+fn tmux_load(text: &str) -> bool {
+    use std::process::{Command, Stdio};
+    let Ok(mut child) = Command::new("tmux")
+        .args(["load-buffer", "-w", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(text.as_bytes()).is_ok());
+    child.wait().is_ok_and(|status| status.success()) && written
+}
+
+/// Puts `text` on the clipboard and says which one: tmux's (which passes it on), the system's,
+/// or the terminal's.
 pub(super) fn copy(text: &str, out: &mut impl Write) -> &'static str {
+    let in_tmux = std::env::var_os("TMUX").is_some();
+    if in_tmux && tmux_load(text) {
+        return "the tmux buffer and the clipboard";
+    }
     let system = !over_ssh()
         && arboard::Clipboard::new()
             .and_then(|mut clipboard| clipboard.set_text(text))
@@ -42,7 +67,7 @@ pub(super) fn copy(text: &str, out: &mut impl Write) -> &'static str {
     if system {
         return "the clipboard";
     }
-    let _ = out.write_all(osc52(text, std::env::var_os("TMUX").is_some()).as_bytes());
+    let _ = out.write_all(osc52(text, in_tmux).as_bytes());
     let _ = out.flush();
     "the terminal's clipboard"
 }

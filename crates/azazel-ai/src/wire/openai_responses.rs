@@ -10,6 +10,7 @@ use serde_json::{Map, Value, json};
 use crate::catalog::ModelInfo;
 use crate::credentials::Auth;
 use crate::error::AiError;
+use crate::limits::Window;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, Usage, WireApi};
@@ -100,6 +101,36 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
 
 pub fn classify_error(status: u16, body: &str) -> Option<AiError> {
     openai_chat::classify_error(status, body)
+}
+
+/// The usage windows of a ChatGPT subscription, which its backend reports with every answer:
+/// `x-codex-primary-*` and `x-codex-secondary-*`, each with `used-percent`, `window-minutes`
+/// and `reset-at` (Unix seconds) or `reset-after-seconds`. Other endpoints of this API send
+/// none of them.
+pub fn limits(headers: &reqwest::header::HeaderMap) -> Vec<Window> {
+    let number = |name: &str| -> Option<f64> { headers.get(name)?.to_str().ok()?.trim().parse().ok() };
+    let mut windows = Vec::new();
+    for key in ["primary", "secondary"] {
+        let field = |name: &str| number(&format!("x-codex-{key}-{name}"));
+        let Some(percent) = field("used-percent") else {
+            continue;
+        };
+        let used = (percent / 100.0) as f32;
+        windows.push(Window {
+            name: crate::providers::usage::window_name(
+                field("window-minutes").map(|minutes| (minutes * 60.0) as u64),
+                key,
+            ),
+            used,
+            resets_at: field("reset-at").map(|at| at as u64).or_else(|| {
+                let wait = field("reset-after-seconds")? as u64;
+                Some(crate::credentials::now_ms() / 1000 + wait)
+            }),
+            // A refusal comes as an error of its own; the headers only count.
+            status: "allowed".to_string(),
+        });
+    }
+    windows
 }
 
 pub fn models_request(
@@ -742,5 +773,61 @@ impl Decoder for ResponsesDecoder {
         }
         self.fail(AiError::Network(STREAM_ENDED.to_string()), &mut out);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
+
+    use super::*;
+
+    fn headers(pairs: &[(&str, &str)]) -> HeaderMap {
+        pairs
+            .iter()
+            .map(|(name, value)| {
+                (
+                    HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    HeaderValue::from_str(value).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_chatgpt_answer_reports_its_windows_in_headers() {
+        let windows = limits(&headers(&[
+            ("x-codex-primary-used-percent", "81.5"),
+            ("x-codex-primary-window-minutes", "300"),
+            ("x-codex-primary-reset-at", "1794506400"),
+            ("x-codex-secondary-used-percent", "12"),
+            ("x-codex-secondary-window-minutes", "10080"),
+            ("x-codex-secondary-reset-after-seconds", "3600"),
+            ("x-codex-plan-type", "plus"),
+        ]));
+        assert_eq!(windows.len(), 2);
+        assert_eq!(
+            windows[0],
+            Window {
+                name: "5h".to_string(),
+                used: 0.815,
+                resets_at: Some(1_794_506_400),
+                status: "allowed".to_string(),
+            }
+        );
+        assert_eq!((windows[1].name.as_str(), windows[1].used), ("7d", 0.12));
+        let now = crate::credentials::now_ms() / 1000;
+        assert!(
+            windows[1]
+                .resets_at
+                .is_some_and(|at| (now + 3590..=now + 3610).contains(&at))
+        );
+        // The plain OpenAI API sends none of these.
+        assert!(limits(&headers(&[("x-ratelimit-remaining-requests", "99")])).is_empty());
+        // A window without its length is still told apart from the other.
+        let bare = limits(&headers(&[("x-codex-secondary-used-percent", "3")]));
+        assert_eq!(bare[0].name, "secondary");
     }
 }

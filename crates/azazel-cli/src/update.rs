@@ -1,5 +1,6 @@
 //! `azazel update`: replaces this binary with the newest GitHub release, and the once-a-day
-//! background check whose result the TUI shows when it opens.
+//! background check whose result the TUI shows when it opens. With `update.auto` the check also
+//! downloads the release into `cache/update/<version>/`, and the UI installs it as it exits.
 //!
 //! Releases carry one archive per platform, `azazel-<os>-<arch>.zip` (Windows) or `.tar.gz`,
 //! with a `<archive>.sha256` beside it. The archive holds a directory with the binary in it.
@@ -24,6 +25,8 @@ const CHECK_EVERY: Duration = Duration::from_secs(24 * 60 * 60);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 const CURRENT: &str = env!("CARGO_PKG_VERSION");
+/// The file that says a downloaded release is complete and verified.
+const READY: &str = "ready";
 
 #[derive(Debug, Deserialize)]
 struct Release {
@@ -251,8 +254,9 @@ fn replace(exe: &Path, new: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Downloads, verifies and installs `release` over the running binary.
-async fn install(client: &reqwest::Client, release: &Release) -> Result<(), String> {
+/// Downloads the archive of `release` for this platform, checks it against its published
+/// SHA-256 and unpacks it under `into`. Returns the binary inside.
+async fn fetch_binary(client: &reqwest::Client, release: &Release, into: &Path) -> Result<PathBuf, String> {
     let name = asset_name();
     let archive = release
         .assets
@@ -287,15 +291,86 @@ async fn install(client: &reqwest::Client, release: &Release) -> Result<(), Stri
         ));
     }
 
-    let work = tempfile::tempdir().map_err(|e| format!("cannot create a temporary directory: {e}"))?;
-    let saved = work.path().join(&name);
+    let saved = into.join(&name);
     std::fs::write(&saved, &bytes).map_err(|e| format!("cannot save the download: {e}"))?;
-    let unpacked = work.path().join("unpacked");
+    let unpacked = into.join("unpacked");
     std::fs::create_dir_all(&unpacked).map_err(|e| e.to_string())?;
     unpack(&saved, &unpacked)?;
-    let binary = find_binary(&unpacked).ok_or("the release archive holds no azazel binary")?;
+    // Only the unpacked binary is needed from here on.
+    let _ = std::fs::remove_file(&saved);
+    find_binary(&unpacked).ok_or_else(|| "the release archive holds no azazel binary".to_string())
+}
+
+/// Downloads, verifies and installs `release` over the running binary.
+async fn install(client: &reqwest::Client, release: &Release) -> Result<(), String> {
+    let work = tempfile::tempdir().map_err(|e| format!("cannot create a temporary directory: {e}"))?;
+    let binary = fetch_binary(client, release, work.path()).await?;
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate the running binary: {e}"))?;
     replace(&exe, &binary)
+}
+
+/// Where downloaded releases wait to be installed.
+fn staging_root(paths: &Paths) -> PathBuf {
+    paths.cache_dir().join("update")
+}
+
+/// Whether release `latest` is downloaded, verified and waiting to be installed.
+fn is_staged(paths: &Paths, latest: &str) -> bool {
+    version(latest).is_some() && staging_root(paths).join(latest).join(READY).is_file()
+}
+
+/// Downloads and verifies `release` into `cache/update/<version>/`, where [`apply_staged`]
+/// finds it. Whatever was there before (an older release, an interrupted download) is removed.
+async fn stage(client: &reqwest::Client, release: &Release, paths: &Paths) -> Result<(), String> {
+    let latest = release.tag_name.trim_start_matches('v');
+    // The version names a directory: only a plain one will do.
+    if version(latest).is_none() {
+        return Err(format!("`{latest}` is not a version"));
+    }
+    if is_staged(paths, latest) {
+        return Ok(());
+    }
+    let root = staging_root(paths);
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join(latest);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let staged = match fetch_binary(client, release, &dir).await {
+        Ok(_) => std::fs::write(dir.join(READY), latest).map_err(|e| e.to_string()),
+        Err(why) => Err(why),
+    };
+    if staged.is_err() {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+    staged
+}
+
+/// Installs the release a background check downloaded, when it is newer than the running
+/// binary, and returns the line to print. Called as the UI exits.
+pub fn apply_staged(paths: &Paths) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    apply_staged_to(paths, &exe)
+}
+
+fn apply_staged_to(paths: &Paths, exe: &Path) -> Option<String> {
+    let root = staging_root(paths);
+    let (latest, dir) = std::fs::read_dir(&root)
+        .ok()?
+        .flatten()
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (is_newer(&name) && entry.path().join(READY).is_file()).then(|| (name, entry.path()))
+        })
+        .max_by_key(|(name, _)| version(name))?;
+    let binary = find_binary(&dir.join("unpacked"))?;
+    let line = match replace(exe, &binary) {
+        Ok(()) => format!("azazel updated {CURRENT} -> {latest}; the next start runs it"),
+        Err(why) => {
+            format!("azazel {latest} is downloaded but was not installed ({why}); run `azazel update`")
+        }
+    };
+    // Installed or not, the download is not tried again from here: `azazel update` is.
+    let _ = std::fs::remove_dir_all(&root);
+    Some(line)
 }
 
 fn read_cache(paths: &Paths) -> Cached {
@@ -330,23 +405,34 @@ pub fn notice(paths: &Paths) -> Option<String> {
 }
 
 /// Asks GitHub for the newest release when the last check is more than a day old, without
-/// blocking; the answer is shown the next time the UI opens.
-pub fn check_in_background(paths: &Paths) {
+/// blocking; the answer is shown the next time the UI opens. With `auto` (`update.auto`) a newer
+/// release is also downloaded and verified, for [`apply_staged`] to install when the UI exits.
+pub fn check_in_background(paths: &Paths, auto: bool) {
     let cached = read_cache(paths);
-    if now_secs().saturating_sub(cached.checked_at) < CHECK_EVERY.as_secs() {
+    let due = now_secs().saturating_sub(cached.checked_at) >= CHECK_EVERY.as_secs();
+    // A newer release that is known but not here yet (the last download did not finish).
+    let missing = auto && is_newer(&cached.latest) && !is_staged(paths, &cached.latest);
+    if !due && !missing {
         return;
     }
     let paths = paths.clone();
     tokio::spawn(async move {
-        match latest_release(&client(CHECK_TIMEOUT)).await {
-            Ok(release) => write_cache(
-                &paths,
-                &Cached {
-                    checked_at: now_secs(),
-                    latest: release.tag_name.trim_start_matches('v').to_string(),
-                },
-            ),
-            Err(why) => tracing::debug!("update check failed: {why}"),
+        let release = match latest_release(&client(CHECK_TIMEOUT)).await {
+            Ok(release) => release,
+            Err(why) => return tracing::debug!("update check failed: {why}"),
+        };
+        write_cache(
+            &paths,
+            &Cached {
+                checked_at: now_secs(),
+                latest: release.tag_name.trim_start_matches('v').to_string(),
+            },
+        );
+        if auto
+            && is_newer(&release.tag_name)
+            && let Err(why) = stage(&client(DOWNLOAD_TIMEOUT), &release, &paths).await
+        {
+            tracing::debug!("could not download the update: {why}");
         }
     });
 }
@@ -441,5 +527,126 @@ mod tests {
         replace(&exe, &new).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
         assert!(!retired(&exe).exists());
+    }
+
+    /// A release archive for this platform holding a binary with `content`, made with the
+    /// system `tar` the way `cargo xtask dist` lays it out.
+    fn archive(dir: &Path, content: &[u8]) -> Vec<u8> {
+        let inner = dir.join("azazel-pack");
+        std::fs::create_dir_all(&inner).unwrap();
+        let name = if cfg!(windows) { "azazel.exe" } else { "azazel" };
+        std::fs::write(inner.join(name), content).unwrap();
+        let out = dir.join(asset_name());
+        let program = if cfg!(windows) {
+            PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+                .join("System32")
+                .join("tar.exe")
+        } else {
+            PathBuf::from("tar")
+        };
+        let flags = if cfg!(windows) { "-acf" } else { "-czf" };
+        let made = std::process::Command::new(program)
+            .arg(flags)
+            .arg(&out)
+            .arg("-C")
+            .arg(dir)
+            .arg("azazel-pack")
+            .status()
+            .unwrap();
+        assert!(made.success());
+        std::fs::read(out).unwrap()
+    }
+
+    async fn release_server(tag: &str, archive: Vec<u8>, digest: String) -> (wiremock::MockServer, Release) {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, ResponseTemplate};
+        let server = wiremock::MockServer::start().await;
+        let name = asset_name();
+        Mock::given(method("GET"))
+            .and(path(format!("/{name}")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(archive))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/{name}.sha256")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!("{digest}  {name}\n")))
+            .mount(&server)
+            .await;
+        let asset = |name: String| Asset {
+            browser_download_url: format!("{}/{name}", server.uri()),
+            name,
+            url: String::new(),
+        };
+        let release = Release {
+            tag_name: tag.to_string(),
+            assets: vec![asset(name.clone()), asset(format!("{name}.sha256"))],
+        };
+        (server, release)
+    }
+
+    #[tokio::test]
+    async fn a_download_with_a_wrong_checksum_is_not_staged_and_not_applied() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(home.path(), Some(&home.path().to_string_lossy()));
+        let exe = home.path().join("installed");
+        std::fs::write(&exe, b"old").unwrap();
+        let bytes = archive(home.path(), b"new");
+        let (_server, release) = release_server("v999.0.0", bytes, "0".repeat(64)).await;
+
+        let refused = stage(&client(CHECK_TIMEOUT), &release, &paths).await.unwrap_err();
+        assert!(refused.contains("does not match its checksum"), "{refused}");
+        assert!(!is_staged(&paths, "999.0.0"));
+        assert!(!staging_root(&paths).exists());
+        assert_eq!(apply_staged_to(&paths, &exe), None);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+    }
+
+    #[tokio::test]
+    async fn a_verified_download_waits_in_the_cache_and_is_installed_once() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(home.path(), Some(&home.path().to_string_lossy()));
+        let exe = home.path().join("installed");
+        std::fs::write(&exe, b"old").unwrap();
+        let bytes = archive(home.path(), b"new");
+        let digest = hex(&Sha256::digest(&bytes));
+        let (server, release) = release_server("v999.0.0", bytes, digest).await;
+
+        stage(&client(CHECK_TIMEOUT), &release, &paths).await.unwrap();
+        assert!(is_staged(&paths, "999.0.0"));
+        // Nothing is touched until the UI exits.
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
+        // Staging the same release again downloads nothing: the server could be gone.
+        drop(server);
+        stage(&client(CHECK_TIMEOUT), &release, &paths).await.unwrap();
+
+        let line = apply_staged_to(&paths, &exe).unwrap();
+        assert_eq!(
+            line,
+            format!("azazel updated {CURRENT} -> 999.0.0; the next start runs it")
+        );
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert!(!staging_root(&paths).exists());
+        assert_eq!(apply_staged_to(&paths, &exe), None);
+    }
+
+    #[test]
+    fn a_staged_release_that_is_not_newer_or_not_complete_is_left_alone() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(home.path(), Some(&home.path().to_string_lossy()));
+        let exe = home.path().join("installed");
+        std::fs::write(&exe, b"old").unwrap();
+        let name = if cfg!(windows) { "azazel.exe" } else { "azazel" };
+        // The running version, complete; and a newer one whose download never finished.
+        for (staged, ready) in [(CURRENT, true), ("999.0.0", false)] {
+            let dir = staging_root(&paths).join(staged);
+            std::fs::create_dir_all(dir.join("unpacked")).unwrap();
+            std::fs::write(dir.join("unpacked").join(name), b"new").unwrap();
+            if ready {
+                std::fs::write(dir.join(READY), staged).unwrap();
+            }
+        }
+        assert!(!is_staged(&paths, "999.0.0"));
+        assert_eq!(apply_staged_to(&paths, &exe), None);
+        assert_eq!(std::fs::read(&exe).unwrap(), b"old");
     }
 }

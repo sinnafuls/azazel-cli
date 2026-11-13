@@ -117,6 +117,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "changelog",
         "What changed in each release: /changelog [since version]",
     ),
+    (
+        "open",
+        "Open the last link of the last reply: /open, /open <n>, /open <path>, /open diagram",
+    ),
     ("dirs", "List the directories agents may work in"),
     (
         "rules",
@@ -281,9 +285,13 @@ impl Tui {
                 self.info(&format!("agents may work in:\n{}", roots.join("\n")));
             }
             "changelog" => match crate::changelog::text((!args.is_empty()).then_some(args)) {
-                Ok(text) => self.info(&text),
+                Ok(text) => {
+                    let sources = vec![super::pager::Source::Markdown(text)];
+                    super::pager::show(self, "Changelog", sources, super::pager::Start::Top).await;
+                }
                 Err(e) => self.fail(&e),
             },
+            "open" => self.open_command(args),
             "add-dir" if args.is_empty() => self.fail("usage: /add-dir <path>"),
             "add-dir" => {
                 let dir = azazel_core::paths::canonical(&self.app.paths.cwd.join(args.trim()));
