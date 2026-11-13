@@ -61,6 +61,16 @@ GitHub are its section here.
 - Named prompts: `request_id` on the RPC `prompt`, `azazel bg --request-id <id>` and `_meta.requestId` on an
   ACP `session/prompt`. A prompt sent again under the same name starts nothing and answers with the state of
   the run the first one started, for as long as the session exists.
+- GitHub addresses in `web_fetch`, `web_grep` and `read`: a repository is cloned one commit deep under the
+  artifacts directory and comes back as its file tree, its README and the path of the clone; a directory, a
+  file (with `#L10-L20`, those lines), a pull request (`/files` or `.diff` for the changes), an issue and an
+  Actions run (its jobs and the logs of the failed steps) come from GitHub's API. Everything goes through `gh`
+  when it is signed in, so private repositories work; otherwise GitHub is asked without a login.
+- YouTube videos in `web_fetch` and `read`: the captions as a transcript with the time of each part.
+- `read` converts Word, PowerPoint, Excel and mail files (`.docx`, `.pptx`, `.xlsx`, `.msg`, `.eml`) to
+  Markdown in a directory under the artifacts directory and returns an outline by line; pictures, every sheet
+  as CSV and attachments are files beside it. `offset` and `limit` then read lines of the Markdown. New cargo
+  feature `office`, part of the default build.
 
 ### Changed
 

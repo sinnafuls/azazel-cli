@@ -675,6 +675,16 @@ fn tail(lines: &[&str]) -> String {
     }
 }
 
+/// The directory a clone is made in before it is moved to its place. It is removed when the
+/// clone fails or the call is given up, so that half a clone is never left behind.
+struct Staging(PathBuf);
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 /// One read of a GitHub address.
 struct Call<'a> {
     github: &'a GitHub,
@@ -875,9 +885,9 @@ impl Call<'_> {
             .chars()
             .filter(char::is_ascii_alphanumeric)
             .collect();
-        let staging = home.join(format!(".{}-{}-{call}", repo.owner, repo.name));
+        let staging = Staging(home.join(format!(".{}-{}-{call}", repo.owner, repo.name)));
         std::fs::create_dir_all(&home).map_err(|e| format!("{}: {e}", home.display()))?;
-        let _ = std::fs::remove_dir_all(&staging);
+        let _ = std::fs::remove_dir_all(&staging.0);
         // One commit of one branch, with every file as it is in the repository.
         const SHALLOW: [&str; 6] = [
             "--quiet",
@@ -891,7 +901,7 @@ impl Call<'_> {
             Some(gh) if self.github.signed_in(self.ctx).await => {
                 let mut command = program(gh);
                 command.args(["repo", "clone"]).arg(repo.to_string());
-                command.arg(&staging).arg("--").args(SHALLOW);
+                command.arg(&staging.0).arg("--").args(SHALLOW);
                 command
             }
             _ => {
@@ -901,7 +911,7 @@ impl Call<'_> {
                 command.args(["-c", "credential.helper=", "-c", "core.longpaths=true", "clone"]);
                 command.args(SHALLOW);
                 command.arg(format!("{}/{repo}.git", self.github.remote));
-                command.arg(&staging);
+                command.arg(&staging.0);
                 command
             }
         };
@@ -911,18 +921,14 @@ impl Call<'_> {
             Err(why) => Some(why),
         };
         if let Some(why) = failed {
-            let _ = std::fs::remove_dir_all(&staging);
             return Err(format!("the clone failed: {why}"));
         }
-        match std::fs::rename(&staging, &dir) {
+        match std::fs::rename(&staging.0, &dir) {
             Ok(()) => Ok(dir),
-            Err(error) => {
-                let _ = std::fs::remove_dir_all(&staging);
-                Err(format!(
-                    "the clone could not be moved to {}: {error}",
-                    dir.display()
-                ))
-            }
+            Err(error) => Err(format!(
+                "the clone could not be moved to {}: {error}",
+                dir.display()
+            )),
         }
     }
 

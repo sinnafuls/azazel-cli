@@ -429,3 +429,322 @@ async fn a_failing_formatter_adds_a_note_and_never_fails_the_write() {
         .await;
     assert!(!edited.is_error, "{}", edited.text_content());
 }
+
+/// The directory under the artifacts directory a file named `name` was converted into.
+#[cfg(feature = "office")]
+fn converted(bench: &Bench, name: &str) -> PathBuf {
+    let prefix = format!("{name}-");
+    let mut found: Vec<PathBuf> = std::fs::read_dir(bench.path(".artifacts"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| path.file_name().unwrap().to_string_lossy().starts_with(&prefix))
+        .collect();
+    assert_eq!(found.len(), 1, "{found:?}");
+    found.remove(0)
+}
+
+#[cfg(feature = "office")]
+fn text_of(path: PathBuf) -> String {
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+#[cfg(feature = "office")]
+const REPORT: &str = "# Quarterly report\n\
+\n\
+Revenue grew by **12 %** over the *previous* quarter, see [the Q3 page](https://example.com/q3).\n\
+\n\
+## Revenue\n\
+\n\
+By region, in thousands:\n\
+\n\
+| Region | Q2 | Q3 |\n\
+| --- | --- | --- |\n\
+| North \\| East | 120 | 134 |\n\
+| South | 80 | 91 |\n\
+\n\
+## Risks\n\
+\n\
+- Supply of gears\n\
+- Exchange rates\n\
+\n\
+### Next steps\n\
+\n\
+1. Hire two engineers\n\
+2. Open the Lyon office\n\
+\n\
+![](images/image1.png)\n\
+\n\
+Tom & Jerry <approved> this — in “quotes”.\n";
+
+#[cfg(feature = "office")]
+#[tokio::test]
+async fn a_word_document_is_converted_once_and_read_by_its_outline() {
+    let bench = bench();
+    std::fs::copy(fixture("report.docx"), bench.path("report.docx")).unwrap();
+    let file = bench.path("report.docx").display().to_string();
+    let whole = bench.read("report.docx").await;
+    assert!(!whole.is_error, "{}", whole.text_content());
+    let dir = converted(&bench, "report.docx");
+    assert_eq!(
+        whole.text_content(),
+        format!(
+            "{file} is a Word document (36299 bytes). It was converted to Markdown in {}:\n\
+             report.md\t26 lines\n\
+             images/image1.png\t76 bytes\n\
+             \n\
+             Outline of report.md; `L` is the line, which `offset` takes when reading this file or report.md:\n\
+             L1\t# Quarterly report\n\
+             L5\t## Revenue\n\
+             L14\t## Risks\n\
+             L19\t### Next steps\n\
+             \n\
+             All of report.md:\n\
+             \n\
+             {}",
+            dir.display(),
+            REPORT.trim_end()
+        )
+    );
+    assert_eq!(text_of(dir.join("report.md")), REPORT);
+    let picture = std::fs::read(dir.join("images/image1.png")).unwrap();
+    assert!(picture.starts_with(b"\x89PNG\r\n"));
+
+    // A line of the outline is where `offset` starts, in the document as in its Markdown.
+    let risks = bench
+        .call("read", json!({"path": file, "offset": 14, "limit": 4}))
+        .await;
+    assert_eq!(
+        risks.text_content(),
+        "14\t## Risks\n15\t\n16\t- Supply of gears\n17\t- Exchange rates\n[lines 14-17 of 26; continue with offset=18]"
+    );
+    let markdown = dir.join("report.md");
+    let same = bench
+        .call("read", json!({"path": markdown, "offset": 14, "limit": 4}))
+        .await;
+    assert_eq!(same.text_content(), risks.text_content());
+
+    // The conversion is kept: what is there is what the next read returns.
+    std::fs::write(&markdown, "# Kept\n").unwrap();
+    let again = bench.read(&file).await.text_content();
+    assert!(
+        again.ends_with("L1\t# Kept\n\nAll of report.md:\n\n# Kept"),
+        "{again}"
+    );
+    assert_eq!(std::fs::read_dir(bench.path(".artifacts")).unwrap().count(), 1);
+
+    // A document is not something `edit` can change, so reading one is not having seen it.
+    std::fs::copy(&file, bench.path("copy.docx")).unwrap();
+    bench.read("copy.docx").await;
+    let overwrite = bench
+        .call("write", json!({"path": "copy.docx", "content": "x"}))
+        .await;
+    assert!(overwrite.is_error);
+}
+
+#[cfg(feature = "office")]
+#[tokio::test]
+async fn a_presentation_is_its_slides_in_order_with_tables_pictures_and_notes() {
+    let bench = bench();
+    let shown = bench.read(&fixture("deck.pptx")).await;
+    let shown = shown.text_content();
+    let dir = converted(&bench, "deck.pptx");
+    assert!(
+        shown.contains(
+            "deck.md\t19 lines\nimages/image1.png\t76 bytes\n\nOutline of deck.md; `L` is the line, which \
+             `offset` takes when reading this file or deck.md:\n\
+             L1\t# Slide 1: Gears for everyone\nL5\t# Slide 2: Where we are\nL13\t# Slide 3: Numbers\n"
+        ),
+        "{shown}"
+    );
+    assert_eq!(
+        text_of(dir.join("deck.md")),
+        "# Slide 1: Gears for everyone\n\
+         \n\
+         Acme Widgets, spring review\n\
+         \n\
+         # Slide 2: Where we are\n\
+         \n\
+         - Revenue is up\n  - North leads\n- Costs are flat\n\
+         \n\
+         Notes: Mention the Lyon office here.\n\
+         \n\
+         # Slide 3: Numbers\n\
+         \n\
+         | Region | Q3 |\n| --- | --- |\n| North | 134 |\n\
+         \n\
+         ![image.png](images/image1.png)\n"
+    );
+    assert!(
+        std::fs::read(dir.join("images/image1.png"))
+            .unwrap()
+            .starts_with(b"\x89PNG")
+    );
+}
+
+#[cfg(feature = "office")]
+#[tokio::test]
+async fn a_workbook_is_a_csv_file_per_sheet_and_a_preview_of_each() {
+    let bench = bench();
+    let shown = bench.read(&fixture("budget.xlsx")).await;
+    let shown = shown.text_content();
+    let dir = converted(&bench, "budget.xlsx");
+    assert!(
+        shown.contains(
+            "budget.md\t26 lines\n\
+             sheets/1-Budget_2026.csv\t152 bytes\n\
+             sheets/2-Notes.csv\t30 bytes\n\
+             sheets/3-Scratch.csv\t6 bytes\n\
+             \n\
+             Outline of budget.md; `L` is the line, which `offset` takes when reading this file or budget.md:\n\
+             L1\t# Sheet 1: Budget 2026\nL14\t# Sheet 2: Notes\nL21\t# Sheet 3: Scratch\n"
+        ),
+        "{shown}"
+    );
+    // Row 4 and row 6 are empty in the sheet, and so are lines 4 and 6: a line is a row. The
+    // total was never computed by Excel, so it is the formula.
+    assert_eq!(
+        text_of(dir.join("sheets/1-Budget_2026.csv")),
+        "Item,Cost,Due,Paid,Note\n\
+         \"Gears, small\",1200.5,2026-03-01,TRUE,\"said \"\"rush\"\"\"\n\
+         Oil,80,2026-03-15 14:30:00,FALSE\n\
+         \n\
+         Total,=SUM(B2:B3),,,0.3\n\
+         \n\
+         ,,,,,,far away\n"
+    );
+    assert_eq!(
+        text_of(dir.join("sheets/2-Notes.csv")),
+        "\"Line one\nline two\",ünïcode\n"
+    );
+    assert_eq!(text_of(dir.join("sheets/3-Scratch.csv")), "1,2,3\n");
+    assert_eq!(
+        text_of(dir.join("budget.md")),
+        "# Sheet 1: Budget 2026\n\
+         \n\
+         7 rows, 7 columns. All of it: sheets/1-Budget_2026.csv\n\
+         \n\
+         | Item | Cost | Due | Paid | Note |  |  |\n\
+         | --- | --- | --- | --- | --- | --- | --- |\n\
+         | Gears, small | 1200.5 | 2026-03-01 | TRUE | said \"rush\" |  |  |\n\
+         | Oil | 80 | 2026-03-15 14:30:00 | FALSE |  |  |  |\n\
+         |  |  |  |  |  |  |  |\n\
+         | Total | =SUM(B2:B3) |  |  | 0.3 |  |  |\n\
+         |  |  |  |  |  |  |  |\n\
+         |  |  |  |  |  |  | far away |\n\
+         \n\
+         # Sheet 2: Notes\n\
+         \n\
+         1 row, 2 columns. All of it: sheets/2-Notes.csv\n\
+         \n\
+         | Line one<br>line two | ünïcode |\n\
+         | --- | --- |\n\
+         \n\
+         # Sheet 3: Scratch\n\
+         \n\
+         1 row, 3 columns, hidden. All of it: sheets/3-Scratch.csv\n\
+         \n\
+         | 1 | 2 | 3 |\n\
+         | --- | --- | --- |\n"
+    );
+    // The CSV is a text file like any other.
+    let csv = bench
+        .call("read", json!({"path": dir.join("sheets/3-Scratch.csv")}))
+        .await;
+    assert_eq!(csv.text_content(), "1\t1,2,3");
+}
+
+#[cfg(feature = "office")]
+#[tokio::test]
+async fn mail_of_both_kinds_is_its_people_its_text_and_its_attachments_as_files() {
+    let bench = bench();
+    let shown = bench.read(&fixture("order.eml")).await;
+    assert!(!shown.is_error, "{}", shown.text_content());
+    let dir = converted(&bench, "order.eml");
+    // The subject and the sender are written in encoded words, the text in Latin-1 with
+    // escapes: all of it comes out as what it says. The plain text is the body; the HTML is
+    // the same again.
+    assert_eq!(
+        text_of(dir.join("order.md")),
+        "# Order 4711: gears – confirmed\n\
+         \n\
+         - From: Gräce Hopper <grace@example.com>\n\
+         - To: Ada Lovelace <ada@example.org>, linus@example.org\n\
+         - Cc: Office, Lyon <lyon@example.com>\n\
+         - Date: 2026-03-01T15:30:03+01:00\n\
+         \n\
+         ## Message\n\
+         \n\
+         Dear Ada,\n\
+         \n\
+         the order is confirmed: 12 gears at 4,50 £ each.\n\
+         They ship on Monday.\n\
+         \n\
+         Gräce\n\
+         \n\
+         ## Attachments\n\
+         \n\
+         - attachments/packing_list.csv (19 bytes)\n"
+    );
+    assert_eq!(
+        text_of(dir.join("attachments/packing_list.csv")),
+        "item,count\ngear,12\n"
+    );
+    assert!(
+        shown
+            .text_content()
+            .contains("L1\t# Order 4711: gears – confirmed\nL8\t## Message\nL17\t## Attachments\n"),
+        "{}",
+        shown.text_content()
+    );
+
+    let outlook = bench.read(&fixture("gears.msg")).await;
+    assert!(!outlook.is_error, "{}", outlook.text_content());
+    let dir = converted(&bench, "gears.msg");
+    assert_eq!(
+        text_of(dir.join("gears.md")),
+        "# Gears for Lyon\n\
+         \n\
+         - From: Grace Hopper <grace@example.com>\n\
+         - To: Ada Lovelace <ada@example.org>\n\
+         - Date: 2026-03-01 14:30:03 UTC\n\
+         \n\
+         ## Message\n\
+         \n\
+         Dear Ada,\n\
+         \n\
+         the gears ship on Monday.\n\
+         \n\
+         ## Attachments\n\
+         \n\
+         - attachments/packing_list.csv (19 bytes)\n"
+    );
+    assert_eq!(
+        text_of(dir.join("attachments/packing_list.csv")),
+        "item,count\ngear,12\n"
+    );
+}
+
+#[cfg(feature = "office")]
+#[tokio::test]
+async fn a_file_that_only_has_the_name_of_an_office_file_is_read_as_what_it_is() {
+    let bench = bench();
+    std::fs::write(bench.path("notes.docx"), "plain words\n").unwrap();
+    std::fs::write(bench.path("notes.eml"), "Dear all,\nno headers here.\n").unwrap();
+    assert_eq!(bench.read("notes.docx").await.text_content(), "1\tplain words");
+    assert_eq!(
+        bench.read("notes.eml").await.text_content(),
+        "1\tDear all,\n2\tno headers here."
+    );
+    // A workbook under the name of a document: an Office file, but not that one.
+    std::fs::copy(fixture("budget.xlsx"), bench.path("wrong.docx")).unwrap();
+    let wrong = bench.read("wrong.docx").await;
+    assert!(wrong.is_error);
+    assert!(
+        wrong
+            .text_content()
+            .ends_with("wrong.docx: it holds no document: it is not a Word file"),
+        "{}",
+        wrong.text_content()
+    );
+    assert!(!bench.path(".artifacts").exists());
+}

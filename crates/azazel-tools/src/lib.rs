@@ -9,6 +9,8 @@ pub mod guards;
 pub mod lsp;
 pub mod misc;
 pub mod notebook;
+#[cfg(feature = "office")]
+pub mod office;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod read;

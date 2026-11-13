@@ -718,7 +718,12 @@ impl Tool for WebFetchTool {
          last line names the lines shown and the `offset` (1-based line) to continue from; `web_grep` \
          finds the lines that matter without reading the page. Bodies over 5 MB are refused. Results \
          are cached for 15 minutes, so paging and `web_grep` fetch a page once. Pages that build their \
-         content with scripts come back empty: use `browser` for those."
+         content with scripts come back empty: use `browser` for those. A GitHub address is read for \
+         what it names: a repository is cloned one commit deep and comes back as its file tree, its \
+         README and the path of the clone; a file (with `#L10-L20`, those lines), a directory, a pull \
+         request (`/files` or `.diff` for the changes), an issue and an Actions run (with the logs of \
+         its failed steps) come from GitHub's API, with the login of `gh` when it is signed in. A \
+         YouTube video comes back as its captions with the time of each part."
     }
 
     fn schema(&self) -> Value {
