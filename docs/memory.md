@@ -38,8 +38,8 @@ The `read` tool also takes memory addresses: `memory://` lists every memory, `me
 
 Memories reach the model in two ways, without the model having to ask:
 
-- **System prompt.** Every `preference` and `convention` that is in force, newest first, is listed in a `# Memory` part of the system prompt, up to about 1200 tokens (4800 characters).
-- **Per prompt.** When you submit a prompt, the five best-matching memories from the project and global stores are appended to that message as a `<memory>` block. A memory is shown once per session, and ones already in the system prompt are skipped.
+- **Every request.** Every `preference` and `convention` that is in force, newest first, is listed under `# Memory` in the note that follows the conversation of every request, up to about 1200 tokens (4800 characters). It is not part of the system prompt, so saving or forgetting one leaves the [prompt cache](models-and-logins.md#prompt-cache) as it was.
+- **Per prompt.** When you submit a prompt, the five best-matching memories from the project and global stores are appended to that message as a `<memory>` block. A memory is shown once per session, and ones already in that list are skipped.
 
 Everything else is found on demand with `memory_search`.
 
@@ -110,7 +110,7 @@ In the interactive UI, a one-line input that starts with `# ` is remembered inst
 # always run clippy before committing
 ```
 
-The rest of the line is saved as a `preference` of this project, and its id is shown (`remembered as 0a1b2c3d4e5f: ...`). The agent is not sent anything, but as a preference the note is part of the system prompt from then on. A line with more text below it is an ordinary prompt, so a pasted Markdown document is not mistaken for a note. Remove a note with `/memory forget <id>`.
+The rest of the line is saved as a `preference` of this project, and its id is shown (`remembered as 0a1b2c3d4e5f: ...`). The agent is not sent anything, but as a preference the note is in front of the agent with every request from then on. A line with more text below it is an ordinary prompt, so a pasted Markdown document is not mistaken for a note. Remove a note with `/memory forget <id>`.
 
 ## `/memory`
 

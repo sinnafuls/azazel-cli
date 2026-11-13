@@ -30,11 +30,12 @@ use azazel_core::{
 use azazel_team::LEAD;
 use azazel_tools::{TodoStatus, TodoStore};
 use serde_json::Value;
+use tokio::sync::watch;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tokio_util::sync::CancellationToken;
 
 use crate::app::{Active, App};
-use crate::headless::{Ended, build_app, run_prompt};
+use crate::headless::{Ended, Work, build_app, run_work};
 use crate::print::{EXIT_FAILED, EXIT_OK};
 
 type Connection = ConnectionTo<Client>;
@@ -340,9 +341,76 @@ struct Session {
     title: Mutex<Option<String>>,
     /// Ids of the running calls that change the task list.
     todo_calls: Mutex<HashSet<String>>,
+    /// The prompts the client named (`_meta.requestId`) that this process ran or runs, each
+    /// with how it ended once it has.
+    named: Mutex<HashMap<String, watch::Receiver<Option<Stopped>>>>,
+}
+
+/// How a prompt ended: the reason it stopped, or why it failed.
+type Stopped = Result<acp::StopReason, String>;
+
+/// What the session knows of a prompt the client named.
+enum Seen {
+    /// It was never sent before.
+    New,
+    /// It runs, or ran, in this process.
+    Here(watch::Receiver<Option<Stopped>>),
+    /// It ran to its end in an earlier process.
+    Ended(Stopped),
+    /// The process that ran it ended first, and nothing was sent since.
+    Interrupted,
+}
+
+fn stop_reason(stop: StopReason) -> acp::StopReason {
+    match stop {
+        StopReason::Stop => acp::StopReason::EndTurn,
+        StopReason::Length => acp::StopReason::MaxTokens,
+        StopReason::ToolUse => acp::StopReason::MaxTurnRequests,
+        StopReason::Aborted => acp::StopReason::Cancelled,
+        StopReason::Error => acp::StopReason::Refusal,
+    }
+}
+
+fn answer(outcome: Stopped) -> Result<acp::PromptResponse, Error> {
+    outcome.map(acp::PromptResponse::new).map_err(internal)
 }
 
 impl Session {
+    /// What became of the prompt the client named `request_id`.
+    fn seen(&self, request_id: &str) -> Seen {
+        if let Some(ended) = locked(&self.named).get(request_id) {
+            return Seen::Here(ended.clone());
+        }
+        let Some(run) = self.active.session.request_run(request_id) else {
+            return Seen::New;
+        };
+        match run.stop.as_deref() {
+            Some("failed") => Seen::Ended(Err("the run this prompt started failed".to_string())),
+            Some(stop) => Seen::Ended(Ok(serde_json::from_value::<StopReason>(Value::String(
+                stop.to_string(),
+            ))
+            .map_or(acp::StopReason::EndTurn, stop_reason))),
+            None => {
+                let last = self.active.session.interrupted_run(None);
+                if last.is_some_and(|last| last.run_id == run.run_id) {
+                    Seen::Interrupted
+                } else {
+                    Seen::Ended(Err(
+                        "the run this prompt started was cut short, and the session has gone on since"
+                            .to_string(),
+                    ))
+                }
+            }
+        }
+    }
+
+    /// Notes a named prompt that is about to run; how it ends is sent through what is returned.
+    fn name(&self, request_id: String) -> watch::Sender<Option<Stopped>> {
+        let (ended, seen) = watch::channel(None);
+        locked(&self.named).insert(request_id, seen);
+        ended
+    }
+
     /// Cancels the prompt that runs and returns the token of the one that comes next.
     fn next_prompt(&self) -> CancellationToken {
         let mut cancel = locked(&self.cancel);
@@ -615,28 +683,22 @@ impl Server {
             turn: tokio::sync::Mutex::new(()),
             cancel: Mutex::default(),
             todo_calls: Mutex::default(),
+            named: Mutex::default(),
         });
         locked(&self.sessions).insert(session.shared.session_id.clone(), session.clone());
         Ok(session)
     }
 
     /// Runs one prompt of a session to its end.
-    async fn prompt(
-        &self,
-        session: Arc<Session>,
-        prompt: Vec<acp::ContentBlock>,
-        cancel: CancellationToken,
-    ) -> Result<acp::PromptResponse, Error> {
+    async fn prompt(&self, session: Arc<Session>, work: Work, cancel: CancellationToken) -> Stopped {
         let _turn = session.turn.lock().await;
         if cancel.is_cancelled() {
-            return Ok(acp::PromptResponse::new(acp::StopReason::Cancelled));
+            return Ok(acp::StopReason::Cancelled);
         }
-        let (text, images) = convert::user_input(prompt);
-        let ended = run_prompt(
+        let ended = run_work(
             &session.app,
             &session.active,
-            text,
-            images,
+            work,
             &cancel,
             &mut |agent, event| session.on_event(agent, event),
         )
@@ -654,15 +716,9 @@ impl Server {
             naming.announce_name();
         });
         match ended {
-            Ok(Ended::Idle { stop, .. }) => Ok(acp::PromptResponse::new(match stop {
-                StopReason::Stop => acp::StopReason::EndTurn,
-                StopReason::Length => acp::StopReason::MaxTokens,
-                StopReason::ToolUse => acp::StopReason::MaxTurnRequests,
-                StopReason::Aborted => acp::StopReason::Cancelled,
-                StopReason::Error => acp::StopReason::Refusal,
-            })),
-            Ok(Ended::Failed(error)) => Err(internal(error)),
-            Err(rejected) => Err(internal(format!("the prompt was rejected: {rejected}"))),
+            Ok(Ended::Idle { stop, .. }) => Ok(stop_reason(stop)),
+            Ok(Ended::Failed(error)) => Err(error),
+            Err(rejected) => Err(format!("the prompt was rejected: {rejected}")),
         }
     }
 
@@ -782,13 +838,51 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
                     Ok(session) => session,
                     Err(e) => return responder.respond_with_error(e),
                 };
+                // A prompt the client named (`_meta.requestId`) and sent before starts nothing:
+                // it is answered as the first one is, or was.
+                let request_id = request
+                    .meta
+                    .as_ref()
+                    .and_then(|meta| meta.get("requestId"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                let seen = request_id.as_deref().map_or(Seen::New, |id| session.seen(id));
+                let work = match seen {
+                    Seen::Here(mut ended) => {
+                        tokio::spawn(async move {
+                            let outcome = match ended.wait_for(Option::is_some).await {
+                                Ok(outcome) => outcome.clone(),
+                                Err(_) => None,
+                            };
+                            let outcome =
+                                outcome.unwrap_or_else(|| Err("the prompt ended without an answer".to_string()));
+                            let _ = responder.respond_with_result(answer(outcome));
+                        });
+                        return Ok(());
+                    }
+                    Seen::Ended(outcome) => return responder.respond_with_result(answer(outcome)),
+                    // The process that ran it ended in the middle: the run is gone on with.
+                    Seen::Interrupted => Work::ContinueRun,
+                    Seen::New => {
+                        let (text, images) = convert::user_input(request.prompt);
+                        Work::Prompt {
+                            text,
+                            images,
+                            request_id: request_id.clone(),
+                        }
+                    }
+                };
                 // Decided here, in the order the messages arrived: this prompt cancels the one
                 // before it, and a `session/cancel` that follows cancels this one.
                 let cancel = session.next_prompt();
+                let ended = request_id.map(|request_id| session.name(request_id));
                 let server = prompt.clone();
                 tokio::spawn(async move {
-                    let ended = server.prompt(session, request.prompt, cancel).await;
-                    let _ = responder.respond_with_result(ended);
+                    let outcome = server.prompt(session, work, cancel).await;
+                    if let Some(ended) = ended {
+                        let _ = ended.send(Some(outcome.clone()));
+                    }
+                    let _ = responder.respond_with_result(answer(outcome));
                 });
                 Ok(())
             },

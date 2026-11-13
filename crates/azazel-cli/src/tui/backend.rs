@@ -51,6 +51,12 @@ pub(crate) enum Incoming {
     Team(TeamEvent),
     /// An agent or a command asks the user something.
     Request(UiRequest),
+    /// Another client of the session sent the lead this. `kind` is `prompt`, `steer` or
+    /// `follow_up`.
+    UserInput {
+        kind: String,
+        text: String,
+    },
     /// The session is gone: the text says why.
     Closed(String),
 }
@@ -73,6 +79,13 @@ pub(crate) struct Moved {
     pub resumed: bool,
     /// Something about how it was opened that the user should be told.
     pub notice: Option<String>,
+    /// Where its last run stopped, when the end of a process cut it short.
+    pub interrupted: Option<String>,
+}
+
+/// What to say of a session whose last run was cut short `stopped` (where it stopped).
+pub(crate) fn interrupted_notice(stopped: &str) -> String {
+    format!("the last run of this session was interrupted ({stopped}); /continue goes on with it")
 }
 
 /// What the status line and the live region show beside the lead's own status.
@@ -199,6 +212,10 @@ pub(crate) trait Backend: Send {
 
     /// Starts work on a prompt. `Err` is why it was rejected.
     async fn prompt(&mut self, text: String, images: Vec<Block>) -> Result<(), String>;
+
+    /// Goes on with the run the end of a process cut short: tool calls without a result get
+    /// one and the request nobody answered is sent again. `Err` when no run was interrupted.
+    async fn continue_run(&mut self) -> Result<(), String>;
 
     /// Hands the working lead input before its next request.
     fn steer(&mut self, text: String, images: Vec<Block>);
@@ -363,6 +380,14 @@ impl Local {
         }
     }
 
+    /// Where the open session's last run stopped, when the end of a process cut it short.
+    fn interrupted(&self) -> Option<String> {
+        self.active
+            .session
+            .interrupted_run(None)
+            .map(|run| run.describe())
+    }
+
     /// The environment of a UI on a local session: the application's own.
     pub(crate) fn env(&self) -> Env {
         Env {
@@ -387,6 +412,7 @@ impl Local {
                 return Ok(Moved {
                     resumed: self.active.resumed,
                     notice: self.active.notice.take(),
+                    interrupted: self.interrupted(),
                 });
             }
             Err(e) => format!("could not open the session: {e:#}"),
@@ -427,6 +453,7 @@ impl Backend for Local {
         Moved {
             resumed: self.resumed,
             notice: self.active.notice.take(),
+            interrupted: self.interrupted(),
         }
     }
 
@@ -575,10 +602,14 @@ impl Backend for Local {
         self.app.submit(&self.active, text, images).await
     }
 
+    async fn continue_run(&mut self) -> Result<(), String> {
+        self.app.continue_run(&self.active).map(|_| ())
+    }
+
     fn steer(&mut self, text: String, mut images: Vec<Block>) {
         let mut content = vec![Block::text(text)];
         content.append(&mut images);
-        self.active.lead.steer(UserInput { content });
+        self.active.lead.steer(UserInput::blocks(content));
     }
 
     fn abort(&mut self) {

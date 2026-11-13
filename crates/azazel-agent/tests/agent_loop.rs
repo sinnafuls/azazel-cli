@@ -6,11 +6,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::agent::{ABORTED_TEXT, TURN_LIMIT_TEXT};
+use azazel_agent::agent::{ABORTED_TEXT, INTERRUPTED_TEXT, TURN_LIMIT_TEXT, UNFINISHED_TEXT};
 use azazel_agent::{
     Access, Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, AllowAll,
     ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks,
-    Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
+    Resume, Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
@@ -68,6 +68,9 @@ impl Tool for ReadFile {
     }
     fn subjects(&self, input: &Value) -> Vec<String> {
         vec![input["path"].as_str().unwrap_or_default().to_string()]
+    }
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
     }
     async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         match std::fs::read_to_string(self.0.join(input["path"].as_str().unwrap_or_default())) {
@@ -143,6 +146,8 @@ struct Recorder {
     edits: Mutex<Vec<(String, String)>>,
     compactions: Mutex<Vec<(String, String, u64)>>,
     spills: Mutex<Vec<(String, usize)>>,
+    /// What was recorded of the runs, in order.
+    journal: Mutex<Vec<String>>,
 }
 
 impl TranscriptSink for Recorder {
@@ -163,6 +168,27 @@ impl TranscriptSink for Recorder {
             .unwrap()
             .push((summary.to_string(), first_kept.to_string(), tokens_before));
         "compaction-1".to_string()
+    }
+    fn run_started(&self, request_id: Option<&str>) -> String {
+        let mut journal = self.journal.lock().unwrap();
+        let run = format!(
+            "run-{}",
+            journal.iter().filter(|line| line.starts_with("start")).count() + 1
+        );
+        journal.push(format!("start {run} {}", request_id.unwrap_or("-")));
+        run
+    }
+    fn request_started(&self, model: &str) {
+        self.journal.lock().unwrap().push(format!("request {model}"));
+    }
+    fn tool_started(&self, call_id: &str, name: &str, input: &Value) {
+        self.journal
+            .lock()
+            .unwrap()
+            .push(format!("tool {call_id} {name} {input}"));
+    }
+    fn run_ended(&self, run_id: &str, stop: &str) {
+        self.journal.lock().unwrap().push(format!("end {run_id} {stop}"));
     }
 }
 
@@ -1078,12 +1104,30 @@ async fn turn_limit_asks_for_a_final_report_without_tools() {
 #[derive(Default)]
 struct Hooks {
     stop_calls: Mutex<Vec<bool>>,
+    /// Per answered request: how many messages it carried, the chain it went to, the reply.
+    answered: Mutex<Vec<(usize, String, String)>>,
 }
 
 #[async_trait]
 impl AgentHooks for Hooks {
     async fn before_request(&self, _: &AgentInfo, request: &mut Request) {
         request.tools.retain(|t| t.name != "write");
+        request.tail.push(azazel_ai::SystemPart {
+            text: "NOTE".into(),
+            name: "note".into(),
+            cache_boundary: false,
+        });
+    }
+    fn response(&self, _: &AgentInfo, request: &Arc<Request>, chain: &[ModelSpec], message: &Message) {
+        let chain = chain
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        self.answered
+            .lock()
+            .unwrap()
+            .push((request.messages.len(), chain, message.text()));
     }
     async fn stop(&self, _: &AgentInfo, stop_hook_active: bool) -> Option<String> {
         self.stop_calls.lock().unwrap().push(stop_hook_active);
@@ -1127,6 +1171,21 @@ async fn stop_hook_keeps_the_agent_going_and_withdrawn_tools_cannot_be_called() 
     );
     assert_eq!(last_user_text(&requests[2]), "run the tests first");
     assert_eq!(*hooks.stop_calls.lock().unwrap(), [false, true]);
+    // A note a hook adds for one request is sent with it and never becomes part of the
+    // conversation; each answer is reported with the request it answers.
+    for request in &requests {
+        assert_eq!(request.tail.len(), 1);
+        assert!(request.messages.iter().all(|m| !m.text().contains("NOTE")));
+    }
+    let answered = |messages: usize, reply: &str| (messages, "mock/a".to_string(), reply.to_string());
+    assert_eq!(
+        *hooks.answered.lock().unwrap(),
+        [
+            answered(1, ""),
+            answered(3, "done"),
+            answered(5, "tests pass, really done")
+        ]
+    );
     assert_eq!(kinds(&events).iter().filter(|k| *k == "idle").count(), 1);
 }
 
@@ -1456,4 +1515,180 @@ async fn rules_withdraw_at_most_two_replies_per_prompt() {
     );
     assert_eq!(session.mock.requests_for("a").len(), 3);
     assert_eq!(hooks.stops.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+// ---------------------------------------------------------------- the journal of a run, and going on with one
+
+/// A reply that asks for these calls, as a session cut short in the middle of them holds it.
+fn asking(calls: &[(&str, &str, Value)]) -> Message {
+    Message {
+        role: Role::Assistant,
+        content: calls
+            .iter()
+            .map(|(id, name, input)| Block::ToolCall {
+                id: id.to_string(),
+                name: name.to_string(),
+                input: input.clone(),
+                signature: None,
+            })
+            .collect(),
+        meta: None,
+    }
+}
+
+fn entries(messages: Vec<Message>) -> Vec<ContextEntry> {
+    messages
+        .into_iter()
+        .enumerate()
+        .map(|(i, message)| ContextEntry {
+            id: format!("h{i}"),
+            message,
+            summary: false,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn a_run_is_recorded_from_its_start_to_its_end() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut session = start(Setup {
+        tools: vec![Arc::new(WriteFile(dir.path().to_path_buf()))],
+        ..Setup::default()
+    });
+    session.mock.push(
+        "a",
+        MockStep::tools("", &[("c1", "write", json!({"path": "a.txt", "content": "x"}))]),
+    );
+    session.mock.push("a", MockStep::text("done"));
+    session.mock.push("a", MockStep::text("once more"));
+    let named = UserInput {
+        request_id: Some("req-7".into()),
+        ..UserInput::text("go")
+    };
+    assert!(session.agent.prompt(named));
+    session.until_terminal().await;
+    session.run("and again").await;
+    assert_eq!(
+        *session.recorder.journal.lock().unwrap(),
+        [
+            "start run-1 req-7",
+            "request mock/a",
+            r#"tool c1 write {"path":"a.txt","content":"x"}"#,
+            "request mock/a",
+            "end run-1 stop",
+            "start run-2 -",
+            "request mock/a",
+            "end run-2 stop",
+        ]
+    );
+}
+
+#[tokio::test]
+async fn a_run_that_was_cut_short_goes_on_with_the_calls_that_had_no_result() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "alpha").unwrap();
+    let mut session = start(Setup {
+        tools: vec![
+            Arc::new(ReadFile(dir.path().to_path_buf())),
+            Arc::new(WriteFile(dir.path().to_path_buf())),
+        ],
+        initial: entries(vec![
+            Message::user("go"),
+            asking(&[
+                ("c1", "read", json!({"path": "a.txt"})),
+                ("c2", "write", json!({"path": "b.txt", "content": "beta"})),
+                ("c3", "write", json!({"path": "c.txt", "content": "gamma"})),
+            ]),
+        ]),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::text("all done"));
+    // The read and the first write had started when the process ended; the second had not.
+    assert!(session.agent.send(AgentCmd::Resume(Resume {
+        run_id: "run-9".into(),
+        started: vec!["c1".into(), "c2".into()],
+    })));
+    let events = session.until_terminal().await;
+    assert_eq!(
+        tool_outputs(&events),
+        [
+            // A call that only reads is run again.
+            ("c1".to_string(), false, "alpha".to_string()),
+            // One that may have changed something is not: the model is told to look.
+            ("c2".to_string(), true, INTERRUPTED_TEXT.to_string()),
+            // One that never started runs as it would have.
+            ("c3".to_string(), false, "written".to_string()),
+        ]
+    );
+    assert!(!dir.path().join("b.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("c.txt")).unwrap(),
+        "gamma"
+    );
+    let requests = session.mock.requests_for("a");
+    assert_eq!(result_texts(&requests[0]), ["alpha", INTERRUPTED_TEXT, "written"]);
+    assert!(matches!(
+        events.last(),
+        Some(AgentEvent::Idle {
+            stop: StopReason::Stop
+        })
+    ));
+    // It is the same run that ends: no new one was started.
+    let journal = session.recorder.journal.lock().unwrap().clone();
+    assert!(
+        !journal.iter().any(|line| line.starts_with("start")),
+        "{journal:?}"
+    );
+    assert_eq!(journal.last().map(String::as_str), Some("end run-9 stop"));
+}
+
+#[tokio::test]
+async fn a_run_cut_short_before_the_model_answered_sends_the_request_again() {
+    let mut session = start(Setup {
+        initial: entries(vec![Message::user("what is two and two?")]),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::text("four"));
+    assert!(session.agent.send(AgentCmd::Resume(Resume {
+        run_id: "run-3".into(),
+        started: Vec::new(),
+    })));
+    let events = session.until_terminal().await;
+    assert_eq!(
+        kinds(&events),
+        [
+            "agent_start",
+            "turn_start 1",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "idle"
+        ]
+    );
+    let requests = session.mock.requests_for("a");
+    assert_eq!(requests.len(), 1);
+    // Nothing was added: the request is the one that went unanswered.
+    assert_eq!(requests[0].messages.len(), 1);
+    assert_eq!(last_user_text(&requests[0]), "what is two and two?");
+    assert_eq!(
+        *session.recorder.journal.lock().unwrap(),
+        ["request mock/a", "end run-3 stop"]
+    );
+}
+
+#[tokio::test]
+async fn a_prompt_after_calls_without_a_result_answers_them_first() {
+    let mut session = start(Setup {
+        initial: entries(vec![
+            Message::user("go"),
+            asking(&[("c1", "write", json!({"path": "a.txt", "content": "x"}))]),
+        ]),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::text("ok"));
+    session.run("never mind, do this instead").await;
+    let requests = session.mock.requests_for("a");
+    // A provider refuses a call that has no result; the model is told it may not have run.
+    assert_eq!(result_texts(&requests[0]), [UNFINISHED_TEXT]);
+    assert_eq!(last_user_text(&requests[0]), "never mind, do this instead");
 }

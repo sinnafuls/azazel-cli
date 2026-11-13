@@ -23,18 +23,38 @@ pub struct AgentInfo {
 pub struct UserInput {
     /// `Text` and `Image` blocks.
     pub content: Vec<Block>,
+    /// The name whoever sent the input gave it; recorded with the run it starts.
+    pub request_id: Option<String>,
 }
 
 impl UserInput {
     pub fn text(text: impl Into<String>) -> Self {
         UserInput {
             content: vec![Block::text(text)],
+            request_id: None,
+        }
+    }
+
+    /// Text and images, with nothing else said about them.
+    pub fn blocks(content: Vec<Block>) -> Self {
+        UserInput {
+            content,
+            request_id: None,
         }
     }
 
     pub fn into_message(self) -> Message {
         Message::user_blocks(self.content)
     }
+}
+
+/// A run the end of the process cut short, to be gone on with.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Resume {
+    /// The run, as [`crate::TranscriptSink::run_started`] named it.
+    pub run_id: String,
+    /// The calls of the last reply that had started when the process ended.
+    pub started: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,6 +67,9 @@ pub enum AgentCmd {
     FollowUp(UserInput),
     /// Add to the context without asking for a reply (while busy it is delivered like `Steer`).
     Append(UserInput),
+    /// Go on with a run that was cut short: the calls of the last reply that have no result get
+    /// one, and a request that was never answered is sent again. Ignored while busy.
+    Resume(Resume),
     Abort,
     SetModel(Vec<ModelSpec>),
     SetThinking(ThinkingLevel),

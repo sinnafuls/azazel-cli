@@ -57,6 +57,7 @@ fn assistant(content: Vec<Block>) -> Message {
         stop: StopReason::ToolUse,
         response_id: None,
         duration_ms: 0,
+        sources: Vec::new(),
     };
     Message::assistant(content, meta)
 }
@@ -1440,4 +1441,111 @@ fn parse_models_reads_limits_and_capabilities_and_defaults_the_rest() {
 
     let error_body = json!({"type": "error", "error": {"type": "api_error", "message": "x"}});
     assert!(anthropic::parse_models(&provider(), &error_body).is_empty());
+}
+
+/// A request as the API caches it: every block in the order tools, system, messages, each with
+/// its cache mark taken off, and the positions of the blocks that carried a mark. A request reads
+/// what an earlier one cached exactly when it repeats that one's blocks up to a mark.
+fn cache_view(body: &Value) -> (Vec<String>, Vec<usize>) {
+    let mut blocks = Vec::new();
+    let mut marks = Vec::new();
+    let mut add = |scope: &str, block: &Value| {
+        let mut block = block.clone();
+        if block.as_object_mut().unwrap().remove("cache_control").is_some() {
+            marks.push(blocks.len());
+        }
+        blocks.push(format!("{scope}:{block}"));
+    };
+    for tool in body["tools"].as_array().into_iter().flatten() {
+        add("tool", tool);
+    }
+    for part in body["system"].as_array().into_iter().flatten() {
+        add("system", part);
+    }
+    for (n, message) in body["messages"].as_array().unwrap().iter().enumerate() {
+        for block in message["content"].as_array().unwrap() {
+            add(&format!("{n}:{}", message["role"]), block);
+        }
+    }
+    (blocks, marks)
+}
+
+#[test]
+fn the_tail_follows_the_cache_marks_so_a_changed_note_leaves_the_cached_prefix_alone() {
+    let note = |name: &str, text: &str| SystemPart {
+        text: text.to_string(),
+        name: name.to_string(),
+        cache_boundary: false,
+    };
+    let mut first = request(vec![
+        Message::user("fix the bug"),
+        assistant(vec![call("call_1", "read", json!({"path": "a.rs"}))]),
+        Message::tool(vec![Block::tool_result("call_1", "fn main() {}", false)]),
+    ]);
+    first.system = vec![
+        SystemPart {
+            text: "rules".to_string(),
+            name: "rules".to_string(),
+            cache_boundary: true,
+        },
+        note("environment", "OS: test"),
+    ];
+    first.tools = vec![ToolSpec {
+        name: "read".to_string(),
+        description: "Read a file".to_string(),
+        schema: json!({"type": "object"}),
+    }];
+    first.tail = vec![note("now", "Date: 2026-11-13"), note("plan", "[Plan] 0/1 done")];
+    let body = build(&first);
+
+    // The notes are one block after the last tool result, and the mark stays on the result.
+    let last = body["messages"][2]["content"].as_array().unwrap();
+    assert_eq!(last.len(), 2);
+    assert_eq!(last[0]["type"], "tool_result");
+    assert_eq!(last[0]["cache_control"], cache_marker());
+    assert_eq!(
+        last[1],
+        json!({
+            "type": "text",
+            "text": "<system-note>\nDate: 2026-11-13\n\n[Plan] 0/1 done\n</system-note>"
+        })
+    );
+    assert_eq!(count_cache_markers(&body), 4);
+
+    // The next request: the conversation went on, the mode changed and the plan moved.
+    let mut second = first.clone();
+    second.messages.push(assistant(vec![Block::text("Fixed.")]));
+    second.messages.push(Message::user("now plan the release"));
+    second.tail = vec![
+        note("now", "Date: 2026-11-14"),
+        note("mode", "# Plan mode\nYou are planning."),
+    ];
+    let (was, marked) = cache_view(&body);
+    let (is, _) = cache_view(&build(&second));
+    let cached = *marked.last().unwrap();
+    assert_eq!(was[cached], is[cached]);
+    assert_eq!(
+        was[..=cached],
+        is[..=cached],
+        "the second request repeats all the first one cached"
+    );
+    // What differs is what follows the cached part: the first request's notes.
+    assert_ne!(was[cached + 1], is[cached + 1]);
+
+    // A request without a user turn at its end gets the notes as a turn of their own.
+    let mut open = request(vec![Message::user("hi"), assistant(vec![Block::text("hello")])]);
+    open.tail = vec![note("now", "Date: 2026-11-13")];
+    let messages = build(&open)["messages"].clone();
+    assert_eq!(
+        messages[2],
+        json!({"role": "user", "content": [{"type": "text", "text": "<system-note>\nDate: 2026-11-13\n</system-note>"}]})
+    );
+    // Notes without text are not sent.
+    let mut empty = request(vec![Message::user("hi")]);
+    empty.tail = vec![note("mode", "  ")];
+    assert_eq!(build(&empty)["messages"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        build(&empty)["messages"][0]["content"].as_array().unwrap().len(),
+        1
+    );
 }

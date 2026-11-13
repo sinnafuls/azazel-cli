@@ -167,6 +167,10 @@ impl Tool for WebGrepTool {
         Access::Net
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         let url = input.get("url").and_then(Value::as_str);
         url.and_then(domain_subject).into_iter().collect()

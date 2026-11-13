@@ -44,6 +44,18 @@ pub enum Ended {
     Failed(String),
 }
 
+/// What a run for another program works on.
+pub enum Work {
+    /// A prompt; `request_id` is the name its sender gave it.
+    Prompt {
+        text: String,
+        images: Vec<Block>,
+        request_id: Option<String>,
+    },
+    /// The run the session's last process did not finish.
+    ContinueRun,
+}
+
 /// Sends a prompt to the lead and waits for the end of the work it starts. `on_event` sees
 /// every event of the lead and of the agents it starts, with the agent's id. Cancelling `cancel`
 /// aborts the work. `Err` is why an extension rejected the prompt.
@@ -55,10 +67,35 @@ pub async fn run_prompt(
     cancel: &CancellationToken,
     on_event: &mut (dyn FnMut(&str, &AgentEvent) + Send),
 ) -> Result<Ended, String> {
+    let work = Work::Prompt {
+        text,
+        images,
+        request_id: None,
+    };
+    run_work(app, active, work, cancel, on_event).await
+}
+
+/// [`run_prompt`] for any [`Work`]. `Err` is why the work could not start.
+pub async fn run_work(
+    app: &App,
+    active: &Active,
+    work: Work,
+    cancel: &CancellationToken,
+    on_event: &mut (dyn FnMut(&str, &AgentEvent) + Send),
+) -> Result<Ended, String> {
     let mut events = active.lead.subscribe();
     let team = app.registry.services.get::<Team>();
     let mut team_events = team.as_ref().map(|team| team.subscribe());
-    app.submit(active, text, images).await?;
+    match work {
+        Work::Prompt {
+            text,
+            images,
+            request_id,
+        } => app.submit_as(active, text, images, request_id).await?,
+        Work::ContinueRun => {
+            app.continue_run(active)?;
+        }
+    }
     let lead = active.lead.id.clone();
     let mut answer = String::new();
     let mut aborted = false;

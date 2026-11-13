@@ -482,3 +482,64 @@ async fn a_question_is_a_choice_and_the_task_list_is_the_plan() {
         .to_string();
     assert!(result.contains("red") && !result.contains("blue"), "{result}");
 }
+
+#[tokio::test]
+async fn a_named_prompt_sent_again_is_answered_as_the_first_and_starts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let cwd = project(dir.path());
+    let script = json!({
+        "lead": [
+            { "delay_ms": 1500, "reply": { "text": "Done once." } },
+            { "reply": { "text": "Another prompt." } }
+        ],
+        "smol": [{ "reply": { "text": "Once" } }]
+    });
+    with_agent(dir.path(), &script, Seen::default(), async move |agent| {
+        agent
+            .send_request(acp::InitializeRequest::new(ProtocolVersion::V1))
+            .block_task()
+            .await?;
+        let session = agent
+            .send_request(acp::NewSessionRequest::new(cwd))
+            .block_task()
+            .await?;
+        let named = |name: &str, prompt: &str| {
+            let mut meta = serde_json::Map::new();
+            meta.insert("requestId".to_string(), json!(name));
+            acp::PromptRequest::new(session.session_id.clone(), vec![text(prompt)]).meta(meta)
+        };
+        // The same prompt twice, the second while the first runs: an unnamed one would cancel
+        // the first. Both are answered when the one run ends.
+        let first = agent.send_request(named("edit-1", "do it"));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let second = agent.send_request(named("edit-1", "do it"));
+        assert_eq!(first.block_task().await?.stop_reason, acp::StopReason::EndTurn);
+        assert_eq!(second.block_task().await?.stop_reason, acp::StopReason::EndTurn);
+        // And once more after it has ended: answered at once, from what the session holds.
+        let third = agent.send_request(named("edit-1", "do it")).block_task().await?;
+        assert_eq!(third.stop_reason, acp::StopReason::EndTurn);
+        // Another name is another prompt.
+        let other = agent
+            .send_request(named("edit-2", "and this"))
+            .block_task()
+            .await?;
+        assert_eq!(other.stop_reason, acp::StopReason::EndTurn);
+        Ok(())
+    })
+    .await;
+
+    let requests = std::fs::read_to_string(dir.path().join("requests.jsonl")).unwrap();
+    let prompts: Vec<String> = requests
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|request| request["model"] == "lead")
+        .map(|request| {
+            let messages = request["request"]["messages"].as_array().unwrap();
+            messages.last().unwrap()["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect();
+    assert_eq!(prompts, ["do it", "and this"]);
+}

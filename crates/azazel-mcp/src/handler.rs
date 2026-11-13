@@ -77,6 +77,8 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         temperature: params.temperature,
         cache_key: None,
         tier: None,
+        hosted: Vec::new(),
+        tail: Vec::new(),
     }
 }
 

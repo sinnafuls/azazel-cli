@@ -45,9 +45,51 @@ GitHub are its section here.
   a turn tells the agent to form a new hypothesis before trying it again.
 - Runaway guard (`guards.runaway`): a reply that repeats a block of 200 characters or more three times in a
   row is stopped as it is written and asked for again, like a reply that matched a stream rule.
+- Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
+  `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose
+  process was killed in the middle of a run says so when it is opened again, and `/continue`,
+  `azazel -c --continue-run` and the RPC command `continue_run` go on with it: calls that only read are run
+  again, other calls that had started are reported to the model as interrupted, and a request that was never
+  answered is sent again.
+- `azazel ps` lists a background session whose process died in the middle of a run as `interrupted`, and
+  `azazel attach <id>` starts it again on the same session, with the options and mode it had, and goes on
+  (`[session] resume_runs = false` makes it wait for `/continue`). `azazel kill <id>` forgets it.
+- Several clients can be attached to one background session at once. Each is told where the session stands
+  when it attaches (`snapshot` in the `attach` response: the reply being written, running tools, queued input,
+  waiting requests) and then sent everything; any of them may prompt, steer or answer, what one types shows
+  on the others (`user_input`), and a request one answers closes on the others (`request_closed`).
+- Named prompts: `request_id` on the RPC `prompt`, `azazel bg --request-id <id>` and `_meta.requestId` on an
+  ACP `session/prompt`. A prompt sent again under the same name starts nothing and answers with the state of
+  the run the first one started, for as long as the session exists.
+- `web_search` asks the lead's own model provider to search when it has a search tool: Anthropic's
+  `web_search` server tool, the `web_search` tool of the Responses API (OpenAI, the ChatGPT login, xAI) and
+  Gemini's Google Search grounding. It needs no search key and works on a subscription login. Each query is
+  one request on the lead's model; the numbered results are read from the pages its answer cites. A search
+  that fails, or cites nothing, is answered by the configured backend instead. `[web] search = "provider"`
+  uses the provider alone, `provider_search = false` leaves it out, and `/cost` counts the requests under
+  `web_search`.
+
+- `/cost` reports the prompt cache: the share of the session's input that was read from it, the same per
+  model, and the last requests that missed it with the cause (the model, the tool list, a named part of the
+  system prompt, the thinking level, a rewritten message, or the five minutes a provider keeps an unused
+  cache). `cache.report_misses = true` also says so in the transcript when it happens.
+- `cache.warming = "idle"` keeps Anthropic's prompt cache alive while a session waits for you: shortly before
+  it would expire the lead's last request is sent again for one token, for up to `cache.warm_minutes` after the
+  lead's last request and only when at least 4096 tokens are cached. `/cost` shows the warming requests and
+  when the next one is due. Off by default.
+- The `AGENTS.md` (or `CLAUDE.md`) of a directory other than the one you started in reaches an agent with its
+  first tool call that names a path there, together with those of the directories above it, once per agent
+  and session and within the 64 KB of the context files (`context.nested`).
+- `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
+  file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
+  the project and of `~/.azazel` that hold no credentials can be included.
 
 ### Changed
 
+- `[web] search = "auto"` now tries the lead's provider first, then `brave`, `tavily`, `exa`, `searxng` and
+  `duckduckgo` as before. `azazel doctor` names who answers: `web search: provider (<model>), then <backend>`.
+- The details of a `web_search` result name the backend of each query, and `provider_error` when the
+  provider's search was passed over.
 - The permission mode `ask` is now called `manual`, everywhere a mode is named: `permissions.mode`, `--mode`,
   `/mode`, RPC `set_mode` and `get_state`, ACP session modes, the `permission_mode` of hooks, `ctx.mode` in
   Luau. The old name is refused with a message that names the new one. The `ask` list of rules is unchanged.
@@ -65,6 +107,16 @@ GitHub are its section here.
   still shows that.
 - A provider's model list that does not answer no longer holds the first request up for minutes: it is given
   up after `retry.first_event_secs`.
+- `azazel attach` no longer refuses a second client, and `attach --take` disconnects every client.
+- Responses of a background session go to the connection that sent the command, under the id that client
+  chose, so two clients need not agree on ids.
+- A prompt sent after a reply whose tool calls never got a result (a killed process, a conversation taken up
+  in the middle of a run) now answers those calls first, so the provider no longer rejects the request.
+- What changes while a session runs is no longer part of the system prompt: the date and git branch, plan
+  mode, the goal, the memories kept in the prompt and the task list reminder are sent after the conversation
+  as a `<system-note>`, outside what a provider caches. A mode switch, a new goal or a saved memory used to
+  make the next request pay for the whole conversation again; now the cached prefix is read as before.
+- The task list reminder is part of that note instead of a message of its own.
 
 ## [0.4.0] - 2026-11-13
 

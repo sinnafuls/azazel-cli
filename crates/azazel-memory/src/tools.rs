@@ -161,6 +161,10 @@ impl Tool for SearchTool {
         Access::Read
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, _: &Value) -> Vec<String> {
         Vec::new()
     }
@@ -265,6 +269,10 @@ impl Tool for SemanticSearchTool {
 
     fn access(&self, _: &Value) -> Access {
         Access::Read
+    }
+
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
     }
 
     fn subjects(&self, _: &Value) -> Vec<String> {

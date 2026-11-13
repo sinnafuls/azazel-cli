@@ -8,7 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use azazel_agent::tool::tool_spec;
 use azazel_agent::{AgentInfo, ToolSource};
 use azazel_ai::{
-    AiError, Block, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, ThinkingLevel, Usage,
+    AiError, Block, HostedTool, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, SystemPart,
+    ThinkingLevel, Usage, WebSource,
 };
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -72,6 +73,23 @@ pub struct SideAnswer {
     pub dropped_tools: Vec<String>,
 }
 
+/// The key web searches run by a provider are counted under in [`SideCosts`].
+pub const SEARCH_PURPOSE: &str = "web_search";
+
+/// What a provider's own web search found.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SearchAnswer {
+    /// The pages, the ones the answer cites first.
+    pub sources: Vec<WebSource>,
+    /// What the model wrote about them.
+    pub text: String,
+    pub model: ModelRef,
+}
+
+/// The models the session's lead is on now, first choice first. Registered as a service when a
+/// session opens, for requests that go to the lead's model from outside its conversation.
+pub struct LeadModel(pub Arc<dyn Fn() -> Vec<ModelSpec> + Send + Sync>);
+
 /// Everything a side request needs. Registered as a service by the application.
 pub struct Side {
     pub router: Arc<Router>,
@@ -92,9 +110,76 @@ impl Side {
         cancel: CancellationToken,
     ) -> Result<SideAnswer, String> {
         let request = self.request(&question).await;
+        let (model, message) = self
+            .send(&question.chain, &request, question.purpose, on_text, cancel)
+            .await?;
+        Ok(SideAnswer {
+            text: message.text(),
+            dropped_tools: message
+                .tool_calls()
+                .map(|(_, name, _)| name.to_string())
+                .collect(),
+            model,
+            usage: message.meta.map(|meta| meta.usage).unwrap_or_default(),
+        })
+    }
+
+    /// The model a web search through the lead's provider runs on: the first model of `lead`,
+    /// when its provider searches the web itself. Its thinking level is left off: a search is
+    /// a lookup.
+    pub fn search_model(&self, lead: &[ModelSpec]) -> Option<ModelRef> {
+        let model = self.router.resolve(lead).into_iter().next()?;
+        self.router.hosts_web_search(&model).then_some(ModelRef {
+            thinking: None,
+            ..model
+        })
+    }
+
+    /// Has the provider of `model` search the web with its own tool: one request, with the
+    /// model's credentials, whose only prompt is `instructions` and `question`. The answer
+    /// carries the pages the provider found. Counted as [`SEARCH_PURPOSE`].
+    pub async fn search(
+        &self,
+        model: &ModelRef,
+        instructions: &str,
+        question: String,
+        tool: HostedTool,
+        cancel: CancellationToken,
+    ) -> Result<SearchAnswer, String> {
+        let request = Request {
+            system: vec![SystemPart {
+                text: instructions.to_string(),
+                name: String::new(),
+                cache_boundary: false,
+            }],
+            messages: vec![Message::user(question)],
+            hosted: vec![tool],
+            ..Request::default()
+        };
+        let chain = [ModelSpec::Model(model.clone())];
+        let (model, message) = self
+            .send(&chain, &request, SEARCH_PURPOSE, &mut |_| {}, cancel)
+            .await?;
+        Ok(SearchAnswer {
+            text: message.text(),
+            sources: message.meta.map(|meta| meta.sources).unwrap_or_default(),
+            model,
+        })
+    }
+
+    /// Sends `request` down `chain` and returns the finished reply, its usage counted under
+    /// `purpose`.
+    async fn send(
+        &self,
+        chain: &[ModelSpec],
+        request: &Request,
+        purpose: &str,
+        on_text: &mut (dyn FnMut(&str) + Send),
+        cancel: CancellationToken,
+    ) -> Result<(ModelRef, Message), String> {
         let (model, mut events) = self
             .router
-            .stream(&question.chain, &request, cancel)
+            .stream(chain, request, cancel)
             .await
             .map_err(|e| e.to_string())?;
         while let Some(event) = events.next().await {
@@ -102,16 +187,8 @@ impl Side {
                 StreamEvent::TextDelta { delta, .. } => on_text(&delta),
                 StreamEvent::Done { message } => {
                     let usage = message.meta.as_ref().map(|meta| meta.usage).unwrap_or_default();
-                    self.costs.add(question.purpose, &usage);
-                    return Ok(SideAnswer {
-                        text: message.text(),
-                        dropped_tools: message
-                            .tool_calls()
-                            .map(|(_, name, _)| name.to_string())
-                            .collect(),
-                        model,
-                        usage,
-                    });
+                    self.costs.add(purpose, &usage);
+                    return Ok((model, message));
                 }
                 StreamEvent::Error { error, .. } => return Err(error.to_string()),
                 _ => {}
@@ -122,19 +199,22 @@ impl Side {
 
     async fn request(&self, question: &SideQuestion<'_>) -> Request {
         let mut messages = question.context.clone();
-        let (system, tools, text) = if question.framed {
+        let (prompt, tools, text) = if question.framed {
             let tools = self.tools.tools(question.agent);
             (
-                self.prompt.render(question.agent).await,
+                self.prompt.prompt(question.agent).await,
                 tools.iter().map(|tool| tool_spec(tool.as_ref())).collect(),
                 format!("{SIDE_NOTE}\n\n{}", question.question),
             )
         } else {
-            (Vec::new(), Vec::new(), question.question.clone())
+            (Default::default(), Vec::new(), question.question.clone())
         };
         messages.push(Message::user(text));
         Request {
-            system,
+            system: prompt.system,
+            // What the agent is told about the moment (mode, goal, what is remembered) holds for
+            // the question too.
+            tail: prompt.tail,
             messages,
             tools,
             thinking: ThinkingLevel::Off,
@@ -146,6 +226,7 @@ impl Side {
             cache_key: question
                 .framed
                 .then(|| format!("{}:{}", question.agent.session_id, question.agent.id)),
+            hosted: Vec::new(),
         }
     }
 }
@@ -291,6 +372,62 @@ mod tests {
             .ask(ask("again"), &mut |_| {}, CancellationToken::new())
             .await;
         assert!(failed.unwrap_err().contains("overloaded"));
+    }
+
+    #[tokio::test]
+    async fn a_search_is_one_request_to_the_model_with_the_providers_tool_and_returns_its_pages() {
+        let mock = Arc::new(MockProvider::new());
+        let side = side(mock.clone());
+        // A provider without a search tool has no model to search on.
+        assert_eq!(side.search_model(&chain()), None);
+
+        let found = WebSource {
+            url: "https://tokio.rs/blog".into(),
+            title: "Tokio blog".into(),
+            snippet: "Tokio 1.48 is out.".into(),
+        };
+        let usage = Usage {
+            output: 7,
+            ..Usage::default()
+        };
+        mock.push(
+            azazel_ai::testing::MOCK_SEARCH_QUEUE,
+            MockStep::search("Tokio 1.48 is out.", vec![found.clone()]).with_usage(usage),
+        );
+        // The lead's first model, without the thinking level it runs at.
+        let lead: Vec<ModelSpec> = vec!["mock/m:high".parse().unwrap(), "mock/other".parse().unwrap()];
+        let model = side.search_model(&lead).unwrap();
+        assert_eq!(model, ModelRef::new("mock", "m"));
+
+        let tool = HostedTool::WebSearch {
+            domains: vec!["tokio.rs".into()],
+            max_uses: Some(2),
+        };
+        let answer = side
+            .search(
+                &model,
+                "Search and cite.",
+                "Query: tokio".into(),
+                tool.clone(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(answer.sources, [found]);
+        assert_eq!(
+            (answer.text.as_str(), &answer.model),
+            ("Tokio 1.48 is out.", &model)
+        );
+        assert_eq!(side.costs.by_purpose()[SEARCH_PURPOSE].output, 7);
+
+        let (asked, request) = &mock.requests()[0];
+        assert_eq!(asked, "m");
+        assert_eq!(request.hosted, [tool]);
+        assert_eq!(request.system[0].text, "Search and cite.");
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].text(), "Query: tokio");
+        assert!(request.tools.is_empty() && request.cache_key.is_none());
+        assert_eq!(request.thinking, ThinkingLevel::Off);
     }
 
     #[test]

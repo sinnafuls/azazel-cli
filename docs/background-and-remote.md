@@ -5,7 +5,8 @@ that goes on after you close the terminal; you look in, answer it, or take it ov
 mechanism lets the UI on your machine show a session that runs on another machine over SSH.
 
 There is no daemon. Each background session is one process (`azazel host`, started for you) that ends
-when it is no longer needed.
+when it is no longer needed. When that process is killed in the middle of its work, the session is
+[started again where it stopped](#when-a-background-session-dies) the next time you attach.
 
 ## Background sessions
 
@@ -19,17 +20,23 @@ azazel kill 3fa9                                     # stop it
 
 | Command | What it does |
 |---|---|
-| `azazel [flags] bg <prompt>` | Starts a session in the background on the prompt and prints its id. The flags of an ordinary run apply: `--model`, `--mode`, `--name`, `-c`, `--session`, `--trust`, ... |
-| `azazel ps [--json]` | Lists the background sessions that are running: id, name, state (`working`, `waiting for you`, `idle`), time since the start, cost, directory |
+| `azazel [flags] bg [--request-id <id>] <prompt>` | Starts a session in the background on the prompt and prints its id. The flags of an ordinary run apply: `--model`, `--mode`, `--name`, `-c`, `--session`, `--trust`, ... |
+| `azazel ps [--json]` | Lists the background sessions: id, name, state (`working`, `waiting for you`, `idle`, or `interrupted` for one whose process died in the middle of a run), time since the start, cost, directory |
 | `azazel logs <id> [-f] [--json]` | Prints what the session has done so far, as text. `-f` keeps printing until the session ends. `--json` prints the frames as they were written, one JSON object per line |
-| `azazel attach <id>` | Opens the session in the full UI. `--plain` shows it as lines instead (see below) |
-| `azazel attach --take <id>` | Ends the background session once the lead has finished what it is doing, then opens its session in an ordinary UI in this terminal. `--now` stops the work instead of waiting for it |
-| `azazel kill <id>` | Stops the lead, ends the session cleanly, and the process exits |
+| `azazel attach <id>` | Opens the session in the full UI, beside whoever else is attached. `--plain` shows it as lines instead (see below). An `interrupted` session is started again first |
+| `azazel attach --take <id>` | Ends the background session once the lead has finished what it is doing, which disconnects every client, then opens its session in an ordinary UI in this terminal. `--now` stops the work instead of waiting for it |
+| `azazel kill <id>` | Stops the lead, ends the session cleanly, and the process exits. An `interrupted` session is taken off the list; its session file stays |
 
 An `<id>` may be the start of the id, the session's name, or the start of the session's own id.
 `azazel bg` answers as soon as the session has started; if it cannot start (no model, a session that is
 open elsewhere) it says why and exits with 1. The id is the only thing on standard output, so
 `id=$(azazel bg "...")` works in scripts.
+
+A script that cannot tell whether its `azazel bg` went through (a timeout, a retry) names the request:
+`azazel bg --request-id nightly-2026-11-13 "..."`. The same command sent again starts nothing and prints the id
+of the session the first one started, for as long as that session is listed or its log is kept. The name goes
+with the prompt into the session, where an RPC client can ask for the run by it (see
+[named prompts](rpc.md#named-prompts)).
 
 In the UI, `/bg <prompt>` does the same from the session you are in: it copies the session and runs the
 prompt in the copy, in the background. Your own session stays as it was, so two processes never write
@@ -49,10 +56,17 @@ Start with `--mode auto` (or with allow rules) when the work should not wait for
 ### Attaching
 
 `azazel attach <id>` opens the UI on the session: what it said before is summarised as when a session
-is resumed, a request that waits is shown, and what it does from then on appears as it happens.
+is resumed, the reply being written and the tools that run are shown as they stand, a request that
+waits is shown, and what it does from then on appears as it happens.
 Quitting the UI (`/quit`, `Ctrl+C` twice) leaves the session running; `azazel attach` returns to it.
 
-One client is attached at a time. A second one is refused and told the process id of the first.
+Several clients can be attached to one session at the same time: two terminals, a terminal and an
+editor plugin, you and a colleague over SSH. Each sees everything the session does. Any of them may
+send a prompt, steer, stop the work or answer a request; what one types appears on the others, and a
+permission request or question that one answers closes on the others. Nobody has to leave for somebody
+else to come in, so `attach --take` is no longer how a session changes hands: it is what it always
+was besides, the way to end the background session and continue its session in an ordinary UI (for
+`/diff`, `/commit` and the rest of what works only there). It disconnects every client.
 
 Most of the UI works the same on a background session: prompts, steering, queued messages, approvals
 and questions, `/model`, `/thinking`, `/mode`, `/new`, `/resume`, `/fork`, `/tree`, `/retry`,
@@ -80,17 +94,45 @@ does as lines and reads lines from you:
 | `/approve`, `/session`, `/always`, `/deny [what to do instead]` | Answers the oldest permission request: once, for the rest of the session, for good, or not at all |
 | `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. `/answer` alone dismisses it |
 | `/abort` | Stops the current work |
+| `/continue` | Goes on with a run that was interrupted (see [below](#when-a-background-session-dies)) |
 | `/detach` | Leaves; the session goes on (so does the end of the input, and `Ctrl+C`) |
 | `/kill` | Ends the session |
 
 It first prints what you missed: everything since the last client left, or since the start for the
-first one.
+first one. When somebody else is attached already, it prints the run in progress from the prompt that
+started it.
+
+### When a background session dies
+
+A background session that ends by itself, or is ended with `azazel kill`, leaves the list. One whose
+process is killed in the middle of a run (a crash, a reboot, a kill of the process) stays listed for seven
+days, as `interrupted`:
+
+```sh
+azazel ps
+# ID        NAME         STATE        ELAPSED  COST   DIRECTORY
+# 3fa9c2d1  night shift  interrupted  2h 10m   $0.42  /srv/app
+azazel attach 3fa9      # starts it again under the same id, on the same session, and goes on
+```
+
+`azazel attach <id>` (and `azazel rpc --attach <id>`) starts the process again with the options the first one
+was started with and in the permission mode it was last in; `--mode` and `--model` on the `attach` command
+line override them. It then goes on with the run: a tool call that only reads is run again, any other call
+that had started is reported to the model as interrupted, and a request the model never answered is sent
+again. What exactly happens is described under [interrupted runs](sessions-and-checkpoints.md#interrupted-runs).
+With `[session] resume_runs = false` the new process waits instead, and `/continue` in the UI goes on.
+
+`azazel kill <id>` forgets an interrupted session without starting it. Its session is an ordinary saved
+session either way: `azazel -c`, `azazel --session <id>` or `/resume` opens it in the foreground, where the
+UI offers `/continue` (and `azazel -c -p --continue-run` continues without a UI). Once the run has ended
+anywhere, the entry leaves the list.
 
 ### One writer per session
 
 A background session locks the session it has open. Opening that session anywhere else (`-c`,
 `--session`, `/resume`) fails with `this session is running in the background: azazel attach <id>`, and
-`/resume` marks such sessions in its list. `azazel attach --take` is how you get it back.
+`/resume` marks such sessions in its list. `azazel attach --take` is how you get it back. The clients
+attached to a background session are not writers: they all speak to the one process that is.
 
 ### Files
 
@@ -98,13 +140,16 @@ Everything is under `~/.azazel/run/`:
 
 | File | What it is |
 |---|---|
-| `<id>.json` | What `azazel ps` shows: process id, session, directory, state, cost, the socket |
+| `<id>.json` | What `azazel ps` shows: process id, session, directory, state, cost, the socket, and the mode and options it runs with, which is what starts it again |
 | `<id>.log` | Every event frame the session wrote, one JSON object per line. Kept for seven days after the session ends, so `azazel logs <id>` still works |
 | `<id>.sock` | The socket clients connect to (Unix; on Windows a named pipe `\\.\pipe\azazel-<id>`) |
 | `<id>.lock`, `session-<session id>.lock` | Held while the process lives |
+| `req-<hash>.req` | The id of the session a `bg --request-id` started |
 
 The directory is readable by you only. Entries of a process that died without cleaning up are removed
-the next time anything lists the sessions.
+the next time anything lists the sessions, unless it died in the middle of a run (see
+[above](#when-a-background-session-dies)). A key given with `--api-key` is never written to an entry; pass
+it again to the `attach` that restarts the session.
 
 ### For other programs
 
@@ -116,9 +161,11 @@ background session. The first command must be `attach`:
 {"id": 1, "type": "attach", "replay": "missed"}
 ```
 
-`replay` is `missed` (the default), `all` or `none`. The frames asked for follow the response, then
-the requests that still wait for an answer. `{"type": "stop", "now": true}` ends the session and may
-be sent on any connection, attached or not.
+`replay` is `missed` (the default), `all` or `none`. The response says where the session stands (its
+`snapshot`: the reply being written, the tools that run, what waits); the frames asked for follow it,
+then the requests that still wait for an answer, then everything the session does. Any number of
+programs may be attached at once, each answered on its own connection. `{"type": "stop", "now": true}`
+ends the session and may be sent on any connection, attached or not.
 
 ## Remote work over SSH
 

@@ -2,6 +2,11 @@
 //!
 //! The API has no block boundaries and no end-of-stream record: every SSE record is a
 //! `GenerateContentResponse` chunk, and completion is a `finishReason` followed by the stream closing.
+//!
+//! A hosted web search ([`HostedTool::WebSearch`]) is Google Search grounding, the `googleSearch`
+//! tool. The pages come back in the candidate's `groundingMetadata`: `groundingChunks` are the
+//! pages and `groundingSupports` tie segments of the answer to them. The page addresses are
+//! Google's redirect links, which lead to the page.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -15,9 +20,11 @@ use crate::credentials::Auth;
 use crate::error::AiError;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
-use crate::types::{AssistantMeta, Block, Message, Request, Role, StopReason, ThinkingLevel, Usage, WireApi};
+use crate::types::{
+    AssistantMeta, Block, HostedTool, Message, Request, Role, StopReason, ThinkingLevel, Usage, WireApi,
+};
 use crate::wire::thinking::{ThinkingParam, thinking_param};
-use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
+use crate::wire::{Decoder, KeyHeader, Sources, add_headers, apply_extra_body};
 
 /// Documented placeholder that makes the API skip signature validation for a function call it did
 /// not produce itself (history from another model).
@@ -47,6 +54,7 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
 
     body.insert("contents".into(), Value::Array(contents(provider, model, req)));
 
+    let mut tools = Vec::new();
     if !req.tools.is_empty() {
         let declarations: Vec<Value> = req
             .tools
@@ -59,8 +67,16 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
                 ])
             })
             .collect();
-        let tools = object([("functionDeclarations", Value::Array(declarations))]);
-        body.insert("tools".into(), Value::Array(vec![tools]));
+        tools.push(object([("functionDeclarations", Value::Array(declarations))]));
+    }
+    for hosted in &req.hosted {
+        match hosted {
+            // Grounding takes neither a domain filter nor a limit on searches.
+            HostedTool::WebSearch { .. } => tools.push(json!({ "googleSearch": {} })),
+        }
+    }
+    if !tools.is_empty() {
+        body.insert("tools".into(), Value::Array(tools));
     }
 
     let mut config = Map::new();
@@ -110,6 +126,8 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
         stop: None,
         usage: Usage::default(),
         response_id: None,
+        pages: Vec::new(),
+        supports: Vec::new(),
     })
 }
 
@@ -302,7 +320,8 @@ fn contents(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -> Vec<
     let mut names: HashMap<&str, &str> = HashMap::new();
     let mut turns: Vec<(&'static str, Vec<Value>)> = Vec::new();
 
-    for message in &req.messages {
+    let tail = req.tail_message();
+    for message in req.messages.iter().chain(&tail) {
         let role = match message.role {
             Role::Assistant => "model",
             Role::User | Role::Tool => "user",
@@ -548,9 +567,53 @@ struct GoogleDecoder {
     stop: Option<StopReason>,
     usage: Usage,
     response_id: Option<String>,
+    /// `groundingChunks` of every record so far: the pages a hosted search found. Each record
+    /// carries only the ones not sent before, and the supports count across all of them.
+    pages: Vec<Value>,
+    /// `groundingSupports` of every record so far: which pages back which part of the answer.
+    supports: Vec<Value>,
 }
 
 impl GoogleDecoder {
+    fn note_grounding(&mut self, metadata: &mut Value) {
+        for (name, kept) in [
+            ("groundingChunks", &mut self.pages),
+            ("groundingSupports", &mut self.supports),
+        ] {
+            if let Some(Value::Array(items)) = metadata.get_mut(name).map(Value::take) {
+                kept.extend(items);
+            }
+        }
+    }
+
+    /// The pages of a hosted search: the ones a segment of the answer rests on, each with those
+    /// segments, then the ones the search found and the answer did not use.
+    fn sources(&mut self) -> Vec<crate::types::WebSource> {
+        fn page(chunk: &Value) -> Option<(&str, &str)> {
+            let web = chunk.get("web")?;
+            Some((web.get("uri")?.as_str()?, str_field(web, "title")))
+        }
+        let mut sources = Sources::default();
+        for support in &self.supports {
+            let segment = support.pointer("/segment/text").and_then(Value::as_str);
+            let indices = support.get("groundingChunkIndices").and_then(Value::as_array);
+            for index in indices.into_iter().flatten().filter_map(Value::as_u64) {
+                let cited = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| self.pages.get(index));
+                if let Some((url, title)) = cited.and_then(page) {
+                    sources.cite(url, title, segment.unwrap_or_default());
+                }
+            }
+        }
+        for (url, title) in self.pages.iter().filter_map(page) {
+            sources.found(url, title);
+        }
+        self.pages.clear();
+        self.supports.clear();
+        sources.finish()
+    }
+
     fn start(&mut self, out: &mut Vec<StreamEvent>) {
         if !self.started {
             self.started = true;
@@ -673,6 +736,7 @@ impl GoogleDecoder {
 
     /// The final (or partial) message. Leaves the decoder empty, so call it once.
     fn message(&mut self, stop: StopReason) -> Message {
+        let sources = self.sources();
         Message::assistant(
             std::mem::take(&mut self.blocks),
             AssistantMeta {
@@ -683,6 +747,7 @@ impl GoogleDecoder {
                 stop,
                 response_id: self.response_id.take(),
                 duration_ms: 0,
+                sources,
             },
         )
     }
@@ -734,6 +799,9 @@ impl Decoder for GoogleDecoder {
         }
         if let Some(metadata) = chunk.get("usageMetadata") {
             self.usage = usage_from(metadata);
+        }
+        if let Some(metadata) = chunk.pointer_mut("/candidates/0/groundingMetadata") {
+            self.note_grounding(metadata);
         }
         let parts = chunk.pointer_mut("/candidates/0/content/parts").map(Value::take);
         if let Some(Value::Array(parts)) = parts {
