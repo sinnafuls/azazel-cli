@@ -864,6 +864,12 @@ mod tests {
             AgentEvent::Retry {
                 attempt: 2,
                 model: model.clone(),
+                stalled_secs: None,
+            },
+            AgentEvent::Retry {
+                attempt: 1,
+                model: model.clone(),
+                stalled_secs: Some(20),
             },
             AgentEvent::Fallback {
                 from: model.clone(),

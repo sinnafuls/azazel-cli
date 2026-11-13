@@ -17,6 +17,7 @@ use crate::error::AiError;
 use crate::provider::Provider;
 use crate::providers::http::{Classify, event_stream, prepare, send_request};
 use crate::providers::presets::{ProviderConfig, VERTEX};
+use crate::stall::{StallLimits, Watchdog};
 use crate::stream::EventStream;
 use crate::types::{Request, WireApi};
 use crate::wire;
@@ -47,6 +48,8 @@ pub struct VertexProvider {
     host: Option<String>,
     client: reqwest::Client,
     identity: Identity,
+    /// How long a response may stay silent.
+    stall: StallLimits,
 }
 
 fn credentials_error(why: impl std::fmt::Display) -> AiError {
@@ -72,7 +75,15 @@ impl VertexProvider {
             host: None,
             client,
             identity: Identity::Google(OnceCell::new()),
+            stall: StallLimits::default(),
         }
+    }
+
+    /// Gives up a response that stays silent for longer than `limits` allow, with
+    /// [`AiError::Stalled`].
+    pub fn with_stall(mut self, limits: StallLimits) -> Self {
+        self.stall = limits;
+        self
     }
 
     async fn google(
@@ -173,6 +184,7 @@ impl Provider for VertexProvider {
         };
         let prepared = prepare(req, &target);
         let started = Instant::now();
+        let watchdog = Watchdog::start(self.stall);
 
         let (request, decoder, classify): (_, _, Classify) = if claude {
             // The address names the model, so the body must not.
@@ -198,10 +210,14 @@ impl Provider for VertexProvider {
                 |status, _, body| wire::google::classify_error(status, body),
             )
         };
-        let response = send_request(request, classify, &cancel)
-            .await
-            .map_err(|failed| failed.error)?;
-        Ok(event_stream(response, decoder, cancel, started, model.cost))
+        let response = tokio::select! {
+            biased;
+            sent = send_request(request, classify, &cancel) => sent.map_err(|failed| failed.error)?,
+            stalled = watchdog.expired() => return Err(stalled),
+        };
+        Ok(event_stream(
+            response, decoder, cancel, started, model.cost, watchdog,
+        ))
     }
 
     /// The models come from the catalogue: the listing endpoint is not part of the stable API.
@@ -244,6 +260,7 @@ mod tests {
             host: Some(server.uri()),
             client: reqwest::Client::new(),
             identity: Identity::Fixed("gcp-token"),
+            stall: StallLimits::default(),
         }
     }
 
@@ -309,6 +326,34 @@ mod tests {
         assert_eq!(claude["messages"][0]["role"], "user");
         assert!(!requests[1].headers.contains_key("x-api-key"));
         assert!(!requests[1].headers.contains_key("anthropic-version"));
+    }
+
+    #[tokio::test]
+    async fn a_publisher_that_does_not_begin_its_answer_in_time_has_stalled() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(std::time::Duration::from_secs(60))
+                    .set_body_raw(GEMINI, "text/event-stream"),
+            )
+            .mount(&server)
+            .await;
+        let limits = StallLimits {
+            first_event: Some(std::time::Duration::from_millis(300)),
+            stall: None,
+        };
+        let provider = provider(&server, "europe-west1").with_stall(limits);
+        let model = ModelInfo::unknown(VERTEX, "gemini-pro");
+        let began = Instant::now();
+        let Err(error) = provider
+            .stream(&model, &request(), CancellationToken::new())
+            .await
+        else {
+            panic!("a response began");
+        };
+        assert_eq!(error, AiError::Stalled { secs: 1 });
+        assert!(began.elapsed() < std::time::Duration::from_secs(30));
     }
 
     #[tokio::test]

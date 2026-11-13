@@ -1051,10 +1051,18 @@ impl Tui {
                 self.say_items(rest);
                 self.stream = StreamView::default();
             }
-            AgentEvent::Retry { attempt, model } => {
+            AgentEvent::Retry {
+                attempt,
+                model,
+                stalled_secs,
+            } => {
                 self.stream = StreamView::default();
                 self.rate.abandon();
-                self.info(&format!("{model} did not answer; retrying (attempt {attempt})"));
+                self.info(&crate::routing::retry_line(
+                    &model.to_string(),
+                    attempt,
+                    stalled_secs,
+                ));
             }
             AgentEvent::Fallback { from, to } => {
                 self.info(&format!("{from} is unavailable; falling back to {to}"))

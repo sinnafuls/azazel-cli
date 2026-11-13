@@ -29,6 +29,7 @@ use crate::error::AiError;
 use crate::provider::Provider;
 use crate::providers::http::prepare;
 use crate::providers::presets::{BEDROCK, ProviderConfig};
+use crate::stall::{StallLimits, Watchdog};
 use crate::stream::{EventStream, StreamEvent};
 use crate::types::{
     AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Usage, WireApi,
@@ -602,6 +603,8 @@ pub struct BedrockProvider {
     profile: Option<String>,
     config: ProviderConfig,
     client: OnceCell<aws_sdk_bedrockruntime::Client>,
+    /// How long a response may stay silent.
+    stall: StallLimits,
 }
 
 impl BedrockProvider {
@@ -616,7 +619,15 @@ impl BedrockProvider {
                 ..ProviderConfig::new(BEDROCK, WireApi::BedrockConverse, String::new())
             },
             client: OnceCell::new(),
+            stall: StallLimits::default(),
         }
+    }
+
+    /// Gives up a response that stays silent for longer than `limits` allow, with
+    /// [`AiError::Stalled`].
+    pub fn with_stall(mut self, limits: StallLimits) -> Self {
+        self.stall = limits;
+        self
     }
 
     /// The client, made from the environment on first use: looking up credentials can take a
@@ -651,6 +662,7 @@ struct Live {
     cancel: CancellationToken,
     started: Instant,
     cost: Option<Cost>,
+    watchdog: Watchdog,
 }
 
 impl Live {
@@ -685,7 +697,10 @@ impl Live {
                     out
                 }
                 received = self.events.recv() => match received {
-                    Ok(Some(event)) => self.decoder.feed(event),
+                    Ok(Some(event)) => {
+                        self.watchdog.heard();
+                        self.decoder.feed(event)
+                    }
                     Ok(None) => self.decoder.finish(),
                     Err(error) => {
                         let mut out = Vec::new();
@@ -693,6 +708,12 @@ impl Live {
                         out
                     }
                 },
+                // After the events: what has arrived is read before the silence is judged.
+                stalled = self.watchdog.expired() => {
+                    let mut out = Vec::new();
+                    self.decoder.fail(stalled, &mut out);
+                    out
+                }
             };
             let ended = events.is_empty() && self.decoder.finished;
             self.accept(events);
@@ -731,9 +752,12 @@ impl Provider for BedrockProvider {
             .set_inference_config(Some(input.inference))
             .set_additional_model_request_fields(input.additional)
             .send();
+        let watchdog = Watchdog::start(self.stall);
         let output = tokio::select! {
+            biased;
             _ = cancel.cancelled() => return Err(AiError::Aborted),
             sent = call => sent.map_err(|error| sdk_error(&error))?,
+            stalled = watchdog.expired() => return Err(stalled),
         };
         let live = Live {
             events: output.stream,
@@ -743,6 +767,7 @@ impl Provider for BedrockProvider {
             cancel,
             started,
             cost: model.cost,
+            watchdog,
         };
         Ok(Box::pin(futures::stream::unfold(live, Live::next)))
     }

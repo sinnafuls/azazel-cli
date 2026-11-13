@@ -92,6 +92,10 @@ pub enum AgentEvent {
     Retry {
         attempt: u32,
         model: ModelRef,
+        /// The model had sent nothing for this many seconds: the attempt was given up as
+        /// stalled. Absent after any other failure.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stalled_secs: Option<u64>,
     },
     Fallback {
         from: ModelRef,

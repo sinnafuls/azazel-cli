@@ -85,7 +85,7 @@ Do not leave TODO or FIXME markers. Finish the work, or say plainly what is miss
 ```
 
 - Each stream rule fires once per agent per session.
-- At most two replies are withdrawn per prompt; after that the reply stands.
+- At most two replies are withdrawn per prompt; after that the reply stands. A reply the [runaway guard](tools.md#runaway) stops counts towards the two.
 - `scope: thinking` matches the model's thinking instead of its reply.
 - `scope: tool:<name>` does not watch the stream. It is checked against the arguments of each call to that tool, both as JSON and as the plain strings in them, and a match denies the call with the rule's text. It applies every time.
 

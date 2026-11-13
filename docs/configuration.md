@@ -101,9 +101,9 @@ thinking = "low"
 | | `thinking` | definition | Thinking level replacing the definition's |
 | `[retry]` | `max_attempts` | `3` | Tries per model before moving down the chain |
 | | `cooldown_secs` | `300` | How long a failed model is skipped |
-| | `first_event_secs` | `20` | Longest wait for the first event of a response; `0` waits forever |
-| | `stall_secs` | `120` | Longest a started response may go without an event; `0` waits forever |
-| | `max_stalls` | `3` | Stalls of one model in a row before moving down the chain; `0` never moves |
+| | `first_event_secs` | `20` | Longest wait, in seconds, for the first sign of a response after the request is sent; `0` waits forever. See [stalls](models-and-logins.md#stalls) |
+| | `stall_secs` | `120` | Longest a response that has begun may send nothing; `0` waits forever |
+| | `max_stalls` | `3` | Stalls of one model within a request before moving down the chain; `0` asks the stalled model again for as long as it stalls |
 
 ## Behaviour
 
@@ -155,9 +155,9 @@ thinking = "low"
 | | `async` | `false` | Do not wait for the hook |
 | | `once` | `false` | Run at most one time per session |
 | | `wake` | `false` | With `async`: give the hook's output to the lead agent when it finishes |
-| `[guards]` | `done_check` | `true` | Send back a "done" that changed code but ran no build or test since |
-| | `stuck_after` | `3` | Stop an agent that repeats the same failing call this many times in a row; `0` is off |
-| | `runaway` | `true` | Stop a turn that repeats one output or one call without end |
+| `[guards]` | `done_check` | `true` | Send the lead back once when it stops on changed code and has run no build, test or linter since. See [guards](tools.md#guards) |
+| | `stuck_after` | `3` | Add a note to the result of a `shell` command that has failed this many times in a row in a turn; `0` is off |
+| | `runaway` | `true` | Stop a reply that repeats a block of 200 characters or more three times in a row, and ask again |
 | `[cache]` | `warming` | `"off"` | `idle` keeps the provider's prompt cache warm between prompts; `off` does not |
 | | `warm_minutes` | `30` | How long after the last prompt the cache is kept warm |
 | | `report_misses` | `false` | Say when a request misses the cached prefix, and why |

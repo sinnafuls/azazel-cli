@@ -21,6 +21,7 @@ pub mod permissions;
 pub mod process;
 pub mod prompt;
 pub mod rules;
+pub mod runaway;
 pub mod scheme;
 pub mod session;
 pub mod side;

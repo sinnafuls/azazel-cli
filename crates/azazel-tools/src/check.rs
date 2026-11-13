@@ -1200,6 +1200,19 @@ impl Checks {
         }
     }
 
+    /// Whether the checker for `file` ran on it as this turn last wrote it and found no error.
+    /// False for a file nothing checks, and for one whose check failed or is still running.
+    pub fn ran_clean(&self, file: &Path) -> bool {
+        let turn = locked(&self.turn);
+        turn.files.get(&canonical(file)).is_some_and(|written| {
+            written.unchecked.is_none()
+                && written
+                    .findings
+                    .iter()
+                    .all(|finding| finding.severity != Severity::Error)
+        })
+    }
+
     /// Whether the lead's report has to wait for a check that is still running.
     pub fn waits(&self) -> bool {
         self.report != CheckReport::Off && !locked(&self.turn).reported && *self.busy.borrow() > 0

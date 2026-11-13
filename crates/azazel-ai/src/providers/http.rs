@@ -19,6 +19,7 @@ use crate::provider::Provider;
 use crate::providers::presets::{Discovery, ProviderConfig};
 use crate::providers::{cloud_code, discovery};
 use crate::sse::{JsonLines, SseParser, SseRecord};
+use crate::stall::{StallLimits, Watchdog};
 use crate::stream::{EventStream, StreamEvent};
 use crate::types::{Request, WireApi};
 use crate::wire::gemini_cli::PROJECT_FIELD;
@@ -111,7 +112,8 @@ pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
 }
 
 /// The HTTP client shared by all providers. No overall timeout: responses stream for minutes. A
-/// stalled connection is caught by the read timeout.
+/// response that goes silent is given up by the provider's stall watchdog ([`StallLimits`]); the
+/// read timeout is what is left when that is turned off.
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
@@ -129,6 +131,8 @@ pub struct HttpProvider {
     declared: Vec<ModelInfo>,
     /// The Cloud project of each Cloud Code Assist login, looked up once per account.
     projects: tokio::sync::Mutex<HashMap<String, String>>,
+    /// How long a response may stay silent.
+    stall: StallLimits,
 }
 
 /// A request to an account that answers 429 with a wait this long is out of allowance, not
@@ -178,7 +182,16 @@ impl HttpProvider {
             credentials,
             declared: Vec::new(),
             projects: tokio::sync::Mutex::default(),
+            stall: StallLimits::default(),
         }
+    }
+
+    /// Gives up a response that stays silent for longer than `limits` allow, with
+    /// [`AiError::Stalled`]. Without this a response is waited for as long as the connection
+    /// lives.
+    pub fn with_stall(mut self, limits: StallLimits) -> Self {
+        self.stall = limits;
+        self
     }
 
     /// Adds the models the configuration names for this provider to what it lists, for the ones
@@ -389,13 +402,15 @@ pub(crate) fn event_stream(
     cancel: CancellationToken,
     started: Instant,
     cost: Option<Cost>,
+    watchdog: Watchdog,
 ) -> EventStream {
-    framed_stream(response, Framing::Sse, decoder, cancel, started, cost)
+    framed_stream(response, Framing::Sse, decoder, cancel, started, cost, watchdog)
 }
 
 /// The events of a streaming response body, cut into records by `framing` and decoded by
 /// `decoder`. The final message gets the time since `started` and, when the provider did not
-/// price it itself and `cost` is known, its price.
+/// price it itself and `cost` is known, its price. `watchdog` was started when the request was
+/// sent: a body that stays silent for too long ends the stream with [`AiError::Stalled`].
 fn framed_stream(
     response: reqwest::Response,
     framing: Framing,
@@ -403,6 +418,7 @@ fn framed_stream(
     cancel: CancellationToken,
     started: Instant,
     cost: Option<Cost>,
+    watchdog: Watchdog,
 ) -> EventStream {
     let live = Live {
         body: Box::pin(response.bytes_stream()),
@@ -416,6 +432,7 @@ fn framed_stream(
         cancel,
         started,
         cost,
+        watchdog,
     };
     Box::pin(futures::stream::unfold(live, Live::next))
 }
@@ -442,8 +459,13 @@ impl Provider for HttpProvider {
         let prepared = prepare(req, &target);
 
         let started = Instant::now();
+        let watchdog = Watchdog::start(self.stall);
         let request = (wire.build_request)(&self.client, &self.config, model, &prepared, &auth);
-        let response = self.send_as(&wire, request, &cancel, account.as_deref()).await?;
+        let response = tokio::select! {
+            biased;
+            sent = self.send_as(&wire, request, &cancel, account.as_deref()) => sent?,
+            stalled = watchdog.expired() => return Err(stalled),
+        };
         let decoder = (wire.decoder)(&self.config, model);
         Ok(framed_stream(
             response,
@@ -452,18 +474,27 @@ impl Provider for HttpProvider {
             cancel,
             started,
             model.cost,
+            watchdog,
         ))
     }
 
     /// What the provider's discovery finds, then the models the configuration names that it did
-    /// not report.
+    /// not report. A provider that does not answer within the first-event limit has stalled.
     async fn list_models(&self) -> Result<Vec<ModelInfo>, AiError> {
         let mut models = match self.config.discovery {
             Discovery::Off => Vec::new(),
             kind => {
                 let wire = wire_for(self.config.api)?;
-                let (auth, _) = self.authorise().await?;
-                discovery::list(self, &wire, &auth, kind).await?
+                let watchdog = Watchdog::start(self.stall);
+                let listing = async {
+                    let (auth, _) = self.authorise().await?;
+                    discovery::list(self, &wire, &auth, kind).await
+                };
+                tokio::select! {
+                    biased;
+                    listed = listing => listed?,
+                    stalled = watchdog.expired() => return Err(stalled),
+                }
             }
         };
         for declared in &self.declared {
@@ -507,6 +538,7 @@ struct Live {
     cancel: CancellationToken,
     started: Instant,
     cost: Option<Cost>,
+    watchdog: Watchdog,
 }
 
 impl Live {
@@ -526,16 +558,20 @@ impl Live {
                 }
                 chunk = self.body.next() => match chunk {
                     Some(Ok(bytes)) => {
+                        // Anything the provider sends is a sign of life, a keep-alive too.
+                        self.watchdog.heard();
                         let records = self.framer.push(&bytes);
                         self.feed(records);
                     }
-                    Some(Err(e)) => self.end(Some(describe(&e))),
+                    Some(Err(e)) => self.end(Some(AiError::Network(describe(&e)))),
                     None => {
                         let last = self.framer.finish();
                         self.feed(last);
                         self.end(None);
                     }
                 },
+                // After the body: what has arrived is read before the silence is judged.
+                stalled = self.watchdog.expired() => self.end(Some(stalled)),
             }
         }
     }
@@ -550,16 +586,17 @@ impl Live {
         }
     }
 
-    /// The body ended, cleanly or with `transport_error`.
-    fn end(&mut self, transport_error: Option<String>) {
+    /// The body ended, cleanly or because of `failure`: the connection broke, or it went silent.
+    /// A reply the decoder already has in full stands either way.
+    fn end(&mut self, failure: Option<AiError>) {
         if self.finished {
             return;
         }
         let mut events = self.decoder.finish();
-        if let Some(message) = transport_error
+        if let Some(failure) = failure
             && let Some(StreamEvent::Error { error, .. }) = events.last_mut()
         {
-            *error = AiError::Network(message);
+            *error = failure;
         }
         self.accept(events);
         self.finished = true;

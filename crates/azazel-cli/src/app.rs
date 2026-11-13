@@ -10,7 +10,9 @@ use anyhow::{Context, Result, anyhow, bail};
 use azazel_agent::{Agent, AgentConfig, AgentHandle, AgentInfo, ArtifactSink, Limits, Services, UserInput};
 use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets;
-use azazel_ai::{Block, Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, ThinkingLevel};
+use azazel_ai::{
+    Block, Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, StallLimits, ThinkingLevel,
+};
 use azazel_core::agents;
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, command_roots, expand_mentions};
@@ -356,6 +358,9 @@ impl App {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
+        // How long a provider may stay silent; the providers extensions add read it from here.
+        let stall = StallLimits::from_secs(config.retry.first_event_secs, config.retry.stall_secs);
+        services.insert(Arc::new(stall));
         let registry = Arc::new(Registry::new(ExtCtx {
             services: services.clone(),
             cwd: paths.cwd.clone(),
@@ -510,6 +515,15 @@ impl App {
             )
             .ok(),
         })?;
+        // Behind the report of the checks, which comes first. With `verify.on_stop` the
+        // project's checks run at every stop anyway, and there is nothing to send back for.
+        let verified_on_stop = config.verify.on_stop && !config.verify.commands.is_empty();
+        registry.load(&azazel_tools::guards::GuardsExt {
+            done_check: config.guards.done_check && !verified_on_stop,
+            stuck_after: config.guards.stuck_after,
+            runaway: config.guards.runaway,
+            verify: config.verify.commands.clone(),
+        })?;
         registry.load(&GoalExt {
             goals: Arc::new(Goals::new(checker, goal_settings)),
         })?;
@@ -640,27 +654,34 @@ impl App {
             .into_iter()
             .map(|p| {
                 let declared = catalog.declared(&config.models, &p.id);
-                let provider =
-                    HttpProvider::new(p, client.clone(), credentials.clone()).with_declared(declared);
+                let provider = HttpProvider::new(p, client.clone(), credentials.clone())
+                    .with_declared(declared)
+                    .with_stall(stall);
                 Arc::new(provider) as Arc<dyn Provider>
             })
             .collect();
         #[cfg(feature = "bedrock")]
         {
             let settings = config.providers.get(presets::BEDROCK);
-            providers.push(Arc::new(azazel_ai::providers::bedrock::BedrockProvider::new(
-                settings.and_then(|s| s.region.clone()),
-                settings.and_then(|s| s.profile.clone()),
-            )));
+            providers.push(Arc::new(
+                azazel_ai::providers::bedrock::BedrockProvider::new(
+                    settings.and_then(|s| s.region.clone()),
+                    settings.and_then(|s| s.profile.clone()),
+                )
+                .with_stall(stall),
+            ));
         }
         #[cfg(feature = "vertex")]
         {
             let settings = config.providers.get(presets::VERTEX);
-            providers.push(Arc::new(azazel_ai::providers::vertex::VertexProvider::new(
-                settings.and_then(|s| s.project.clone()),
-                settings.and_then(|s| s.location.clone()),
-                client.clone(),
-            )));
+            providers.push(Arc::new(
+                azazel_ai::providers::vertex::VertexProvider::new(
+                    settings.and_then(|s| s.project.clone()),
+                    settings.and_then(|s| s.location.clone()),
+                    client.clone(),
+                )
+                .with_stall(stall),
+            ));
         }
         providers.extend(registry.providers());
         providers.extend(mock_provider(&mut config)?);
@@ -668,6 +689,7 @@ impl App {
         let policy = RetryPolicy {
             max_attempts: config.retry.max_attempts.max(1),
             cooldown: Duration::from_secs(config.retry.cooldown_secs),
+            max_stalls: config.retry.max_stalls,
             ..RetryPolicy::default()
         };
         let router = Arc::new(
