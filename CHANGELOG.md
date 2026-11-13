@@ -13,7 +13,7 @@ GitHub are its section here.
   tool reads the screen (`read`, which can wait for a change, for a text or for the end), types text and keys
   (`send` with `text`, `keys` such as `ctrl+c` or `down`, and `submit`), and ends the program (`stop`). With
   `wake_on_exit` the lead is told when the program ends, with its last screen and the saved log
-  (`artifact://pty-<n>.log`).
+  (an `artifact://` address).
 - The terminal of such a program opens as a popup and follows it live. `Enter` gives you the keyboard, after
   which every key goes to the program and the agent's input waits; `Ctrl+G` hands it back, `Esc` hides the
   box, `Ctrl+X` stops the program. `F3` (`terminal`) and `/terminals` bring a hidden terminal back.
