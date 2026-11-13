@@ -67,7 +67,7 @@ src/config.rs:42:17 error mismatched types [E0308] [clippy]
 … 2 more errors
 ```
 
-Warnings and notes are not in the result; they are kept for the report the lead gets when it stops (below). What a checker says about other files is dropped.
+Warnings and notes are not in the result; they are kept for the report the lead gets when it stops (below). What a checker says about other files is dropped. Each line ends with the checker's name, after the code the checker gave the finding when it has one.
 
 These checkers are built in. Each is used only when its program is on `PATH`:
 
@@ -122,7 +122,7 @@ The transcript shows one muted line, such as `checks: 1 error, 3 warnings in 2 f
 
 | Value | Listed |
 |---|---|
-| `"delta"` (default) | Findings on lines the turn changed. Lines are followed through later edits of the same file, and a new file is changed everywhere. The counts are of everything found in the written files |
+| `"delta"` (default) | Findings on lines the turn changed, and on the two lines that meet where it removed some. Lines are followed through later edits of the same file, and a new file is changed everywhere. The counts are of everything found in the written files |
 | `"all"` | Every finding in the written files |
 | `"off"` | No report; errors still join the result of each write |
 

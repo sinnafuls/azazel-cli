@@ -40,6 +40,10 @@ const MAX_REPORTED: usize = 30;
 const MAX_OUTPUT_BYTES: usize = 1024 * 1024;
 /// What is kept of one message.
 const MAX_MESSAGE_CHARS: usize = 300;
+/// How long a checker's output is read after the checker itself has exited.
+const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(300);
+/// How long a checker that was ended is waited for.
+const REAP: Duration = Duration::from_secs(1);
 /// How long comparing two versions of a file may take when working out the changed lines.
 const DIFF_TIMEOUT: Duration = Duration::from_millis(250);
 
@@ -157,20 +161,19 @@ fn location(text: &str) -> Option<(&str, u32, u32, &str)> {
             continue;
         }
         let after = &rest[digits..];
-        let (column, after) = match after.strip_prefix(':') {
+        // `closed`: a colon ended the location, so anything may follow it.
+        let (column, after, closed) = match after.strip_prefix(':') {
             Some(more) => {
                 let digits = more.bytes().take_while(u8::is_ascii_digit).count();
-                match more[..digits].parse::<u32>() {
-                    Ok(column) => (
-                        column,
-                        more[digits..].strip_prefix(':').unwrap_or(&more[digits..]),
-                    ),
-                    Err(_) => (0, more),
+                match (more[..digits].parse::<u32>(), more[digits..].strip_prefix(':')) {
+                    (Ok(column), Some(rest)) => (column, rest, true),
+                    (Ok(column), None) => (column, &more[digits..], false),
+                    (Err(_), _) => (0, more, true),
                 }
             }
-            None => (0, after),
+            None => (0, after, false),
         };
-        if after.is_empty() || after.starts_with(' ') {
+        if closed || after.is_empty() || after.starts_with(char::is_whitespace) {
             return Some((&text[..colon], line, column, after.trim_start()));
         }
     }
@@ -531,7 +534,8 @@ pub fn missing(configured: &BTreeMap<String, String>) -> Vec<(String, String)> {
 }
 
 /// The 1-based, inclusive line ranges of `new` that this turn changed: the lines that differ
-/// from `old`, and the lines of `before` (ranges in `old`) where they are now.
+/// from `old`, the lines on either side of a removal, and the lines of `before` (ranges in `old`)
+/// where they are now.
 fn touched_lines(old: &str, new: &str, before: &[(u32, u32)]) -> Vec<(u32, u32)> {
     let line = |index: usize| u32::try_from(index).unwrap_or(u32::MAX);
     let diff = TextDiff::configure().timeout(DIFF_TIMEOUT).diff_lines(old, new);
@@ -547,7 +551,7 @@ fn touched_lines(old: &str, new: &str, before: &[(u32, u32)]) -> Vec<(u32, u32)>
                 for &(start, end) in before {
                     let (start, end) = (start.max(first), end.min(last));
                     if start <= end {
-                        let moved = |at: u32| at - first + line(new_index + 1);
+                        let moved = |at: u32| (at - first).saturating_add(line(new_index + 1));
                         spans.push((moved(start), moved(end)));
                     }
                 }
@@ -558,7 +562,14 @@ fn touched_lines(old: &str, new: &str, before: &[(u32, u32)]) -> Vec<(u32, u32)>
             | DiffOp::Replace {
                 new_index, new_len, ..
             } => spans.push((line(new_index + 1), line(new_index + new_len))),
-            DiffOp::Delete { .. } => {}
+            // What a removed line breaks shows on the lines that now meet where it was.
+            DiffOp::Delete { new_index, .. } => {
+                let last = line(new.lines().count());
+                let (above, below) = (line(new_index).max(1), line(new_index + 1).min(last));
+                if above <= below {
+                    spans.push((above, below));
+                }
+            }
         }
     }
     spans.sort_unstable();
@@ -671,23 +682,46 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-/// Everything `pipe` writes, of which the first [`MAX_OUTPUT_BYTES`] are kept.
-async fn captured(pipe: Option<impl AsyncRead + Unpin>) -> String {
-    let Some(mut pipe) = pipe else {
-        return String::new();
-    };
-    let mut kept = Vec::new();
-    let mut chunk = [0u8; 8192];
-    loop {
-        match pipe.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(n) => {
-                let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
-                kept.extend_from_slice(&chunk[..n.min(room)]);
-            }
+/// What a checker writes to one of its output streams, read as it comes. The first
+/// [`MAX_OUTPUT_BYTES`] are kept.
+struct Capture {
+    kept: Arc<Mutex<Vec<u8>>>,
+    reader: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Capture {
+    fn of(pipe: Option<impl AsyncRead + Unpin + Send + 'static>) -> Capture {
+        let kept = Arc::new(Mutex::new(Vec::new()));
+        let reader = pipe.map(|mut pipe| {
+            let kept = kept.clone();
+            tokio::spawn(async move {
+                let mut chunk = [0u8; 8192];
+                while let Ok(n @ 1..) = pipe.read(&mut chunk).await {
+                    let mut kept = locked(&kept);
+                    let room = MAX_OUTPUT_BYTES.saturating_sub(kept.len());
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            })
+        });
+        Capture { kept, reader }
+    }
+
+    /// What was written, once the checker has exited. Something the checker started may still
+    /// hold the stream open; it is given [`DRAIN_AFTER_EXIT`] to finish and then left behind.
+    async fn text(mut self) -> String {
+        if let Some(reader) = &mut self.reader {
+            let _ = tokio::time::timeout(DRAIN_AFTER_EXIT, reader).await;
+        }
+        String::from_utf8_lossy(&locked(&self.kept)).into_owned()
+    }
+}
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        if let Some(reader) = &self.reader {
+            reader.abort();
         }
     }
-    String::from_utf8_lossy(&kept).into_owned()
 }
 
 impl Checks {
@@ -773,19 +807,20 @@ impl Checks {
             Ok(child) => child,
             Err(e) => return Ran::Failed(format!("{name} could not be started: {e}")),
         };
-        let (stdout, stderr) = (child.stdout().take(), child.stderr().take());
-        let finished = {
-            let output = async { tokio::join!(captured(stdout), captured(stderr), child.wait()) };
-            tokio::time::timeout(self.timeout, output).await
-        };
-        let Ok((stdout, stderr, status)) = finished else {
+        let (stdout, stderr) = (
+            Capture::of(child.stdout().take()),
+            Capture::of(child.stderr().take()),
+        );
+        let Ok(status) = tokio::time::timeout(self.timeout, child.wait()).await else {
             let _ = child.start_kill();
+            let _ = tokio::time::timeout(REAP, child.wait()).await;
             return Ran::TimedOut;
         };
         let status = match status {
             Ok(status) => status,
             Err(e) => return Ran::Failed(format!("{name} could not be waited for: {e}")),
         };
+        let (stdout, stderr) = tokio::join!(stdout.text(), stderr.text());
         let found = parse(runner.style, &stdout, &stderr);
         if found.is_empty() && !status.success() {
             let why = stderr
@@ -825,29 +860,31 @@ impl Checks {
         Ran::Found(findings)
     }
 
-    /// Records that `file` was written in this turn, and which of its lines the turn changed.
-    fn written(&self, key: &Path, file: &Path, checker: &str, old: Option<&str>, new: &str) {
+    /// Records that `file` was written in this turn, which of its lines the turn changed, and
+    /// what its checker found or why it was not checked.
+    fn record(
+        &self,
+        file: &Path,
+        checker: &str,
+        (old, new): (Option<&str>, &str),
+        outcome: Result<Vec<Finding>, String>,
+    ) {
         let mut turn = locked(&self.turn);
-        let written = turn.files.entry(key.to_path_buf()).or_default();
+        let written = turn.files.entry(canonical(file)).or_default();
         written.path = file.to_path_buf();
         written.checker = checker.to_string();
         written.touched = match old {
             Some(old) => touched_lines(old, new, &written.touched),
             None => vec![(1, u32::try_from(new.lines().count().max(1)).unwrap_or(u32::MAX))],
         };
-    }
-
-    fn settle(&self, key: &Path, outcome: Result<Vec<Finding>, String>) {
-        if let Some(written) = locked(&self.turn).files.get_mut(key) {
-            match outcome {
-                Ok(findings) => {
-                    written.findings = findings;
-                    written.unchecked = None;
-                }
-                Err(why) => {
-                    written.findings.clear();
-                    written.unchecked = Some(why);
-                }
+        match outcome {
+            Ok(findings) => {
+                written.findings = findings;
+                written.unchecked = None;
+            }
+            Err(why) => {
+                written.findings.clear();
+                written.unchecked = Some(why);
             }
         }
     }
@@ -860,10 +897,8 @@ impl Checks {
             return Checked::default();
         }
         let find = |name: &str| which::which(name).ok();
-        let key = canonical(file);
         let unchecked = |checker: &str, why: String, note: bool| {
-            self.written(&key, file, checker, old, new);
-            self.settle(&key, Err(why.clone()));
+            self.record(file, checker, (old, new), Err(why.clone()));
             Checked {
                 note: note.then_some(why),
                 block: None,
@@ -889,7 +924,6 @@ impl Checks {
         };
         match ran {
             Ran::Found(findings) => {
-                self.written(&key, file, name, old, new);
                 let shown = display_path(&ctx.cwd, file);
                 let errors: Vec<&Finding> = findings
                     .iter()
@@ -904,7 +938,7 @@ impl Checks {
                     lines.push(format!("… {} more errors", errors.len() - MAX_WRITE_ERRORS));
                 }
                 let block = (!lines.is_empty()).then(|| format!("checks:\n{}", lines.join("\n")));
-                self.settle(&key, Ok(findings));
+                self.record(file, name, (old, new), Ok(findings));
                 Checked { note: None, block }
             }
             Ran::TimedOut => {
@@ -956,6 +990,7 @@ impl Checks {
                     .iter()
                     .filter(|finding| {
                         !delta
+                            || finding.line == 0
                             || written
                                 .touched
                                 .iter()
@@ -1146,6 +1181,8 @@ mod tests {
             location("Dockerfile:3 DL3006 warning: tag it"),
             Some(("Dockerfile", 3, 0, "DL3006 warning: tag it"))
         );
+        assert_eq!(location("a.c:10:5:no space"), Some(("a.c", 10, 5, "no space")));
+        assert_eq!(location("a.c:10\ttabbed"), Some(("a.c", 10, 0, "tabbed")));
         for not_one in [
             "warning: `demo` (lib) generated 1 warning",
             "see http://localhost:8080/help",
@@ -1431,12 +1468,16 @@ mod tests {
         // Two lines added above it: the earlier change is now line 5, beside the new lines.
         let second = touched_lines("a\nb\nC\nd\ne\n", "x\ny\na\nb\nC\nd\ne\n", &first);
         assert_eq!(second, [(1, 2), (5, 5)]);
-        // The first line removed and a line appended: both spans move up, the new line is added
-        // and joins nothing.
+        // The first line removed and a line appended: both spans move up, and the new line is
+        // added.
         let third = touched_lines("x\ny\na\nb\nC\nd\ne\n", "y\na\nb\nC\nd\ne\nf\n", &second);
         assert_eq!(third, [(1, 1), (4, 4), (7, 7)]);
-        // A changed line that is deleted leaves nothing behind; neighbours merge.
-        assert_eq!(touched_lines("a\nb\nc\n", "a\nc\n", &[(2, 2)]), []);
+        // Where lines were removed, the lines that now meet count as changed.
+        assert_eq!(touched_lines("a\nb\nc\nd\ne\n", "a\nb\ne\n", &[]), [(2, 3)]);
+        assert_eq!(touched_lines("a\nb\n", "b\n", &[]), [(1, 1)]);
+        assert_eq!(touched_lines("a\nb\n", "a\n", &[(2, 2)]), [(1, 1)]);
+        assert_eq!(touched_lines("a\n", "", &[(1, 1)]), []);
+        // Neighbouring spans merge.
         assert_eq!(
             touched_lines("a\nb\nc\n", "a\nB\nc\n", &[(1, 1), (3, 3)]),
             [(1, 3)]

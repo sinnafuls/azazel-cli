@@ -330,19 +330,41 @@ async fn only_findings_on_changed_lines_are_listed_unless_all_are_asked_for() {
 }
 
 #[tokio::test]
-async fn findings_only_on_lines_the_turn_left_alone_are_not_reported() {
+async fn findings_on_lines_the_turn_left_alone_are_not_reported_but_those_beside_a_removal_are() {
     let bench = bench(Setup::default());
-    std::fs::write(bench.path("b.chk"), "a\nb\nc\n").unwrap();
+    std::fs::write(bench.path("b.chk"), "a\nb\nc\nd\ne\n").unwrap();
     bench.prompt().await;
     bench.ok("read", json!({ "path": "b.chk" })).await;
     bench.findings(&["b.chk:1:1: warning: a was always odd"]);
     bench
         .ok(
             "edit",
-            json!({ "path": "b.chk", "edits": [{ "old": "c", "new": "C" }] }),
+            json!({ "path": "b.chk", "edits": [{ "old": "e", "new": "E" }] }),
         )
         .await;
     assert_eq!(bench.lead_stops().await, None);
+
+    // A removed line changes nothing that is left, but what it breaks shows where it was.
+    bench.prompt().await;
+    bench.findings(&[
+        "b.chk:1:1: warning: a was always odd",
+        "b.chk:3:1: error: d has lost its c",
+    ]);
+    bench
+        .ok(
+            "edit",
+            json!({ "path": "b.chk", "edits": [{ "old": "b\nc\n", "new": "b\n" }] }),
+        )
+        .await;
+    let told = bench.lead_stops().await.unwrap();
+    assert!(
+        told.contains(
+            "On the lines changed in this turn:\n\
+             b.chk:3:1 error d has lost its c [fake-check]\n\
+             </checks>"
+        ),
+        "{told}"
+    );
 }
 
 #[tokio::test]
