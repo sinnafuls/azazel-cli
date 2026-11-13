@@ -795,14 +795,13 @@ pub fn command_body(body: &str, source: Source, notes: &mut Vec<String>) -> Stri
                 _ => {}
             }
         }
+        // Codex fills `$NAME` from `NAME=value` among the arguments.
         let name: String = after
             .chars()
             .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
             .collect();
-        let named = name.len() > 1
-            && name.starts_with(|c: char| c.is_ascii_uppercase())
-            && name != "ARGUMENTS"
-            && matches!(source, Source::Codex | Source::Claude);
+        let named =
+            name.len() > 1 && name.starts_with(|c: char| c.is_ascii_uppercase()) && name != "ARGUMENTS";
         if named && source == Source::Codex {
             note(format!("${name}"));
         }

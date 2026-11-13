@@ -421,10 +421,14 @@ impl SessionStore {
     }
 
     /// Starts `<dir>/<utc-timestamp>_<uuid>.jsonl` for a conversation that began at `created`
-    /// somewhere else: the file name and the header carry that time, so the session sorts where
-    /// it belongs among the others.
+    /// somewhere else: the file name, the header and the id carry that time, so the session
+    /// sorts where it belongs among the others and many brought in at once have ids that tell
+    /// them apart by their first digits.
     pub fn create_dated(dir: &Path, cwd: &Path, created: jiff::Timestamp) -> io::Result<Self> {
-        let id = uuid::Uuid::now_v7().to_string();
+        let seconds = u64::try_from(created.as_second()).unwrap_or(0);
+        let nanos = u32::try_from(created.subsec_nanosecond()).unwrap_or(0);
+        let time = uuid::Timestamp::from_unix(uuid::NoContext, seconds, nanos);
+        let id = uuid::Uuid::new_v7(time).to_string();
         let stamp = created.strftime("%Y%m%dT%H%M%SZ");
         let path = dir.join(format!("{stamp}_{id}.jsonl"));
         Self::start(&path, &id, cwd, None, created.to_string())

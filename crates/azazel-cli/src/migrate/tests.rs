@@ -1153,6 +1153,9 @@ async fn a_migration_brings_everything_over_once() {
         ["imported from pi: count to two", "imported from pi: Notes review"]
     );
     assert_eq!(sessions[1].messages, 6);
+    // Ids begin with the time of the conversation, not of the import: the short form that
+    // lists show and `--session` takes tells one from the other.
+    assert_ne!(sessions[0].id[..8], sessions[1].id[..8]);
     assert_eq!(sessions[1].timestamp, "2026-02-16T10:20:30Z");
     assert_eq!(sessions[1].models["team-gateway/big-model"].input, 360);
     let reopened = SessionStore::open(&sessions[0].path).unwrap();
@@ -1190,6 +1193,60 @@ async fn a_migration_brings_everything_over_once() {
     );
     assert_eq!(sandbox.sessions("/work/app").len(), 2);
     assert_eq!(sandbox.keys(), keys);
+}
+
+#[tokio::test]
+async fn every_source_ends_in_a_home_azazel_loads_with_its_conversations_as_sessions() {
+    for (source, name, cwd, session) in [
+        (Source::Pi, "pi", "/work/app", "imported from pi: count to two"),
+        (
+            Source::Omp,
+            "omp",
+            "/work/shop",
+            "imported from omp: Fix the cart total",
+        ),
+        (
+            Source::Jcode,
+            "jcode",
+            "/work/tool",
+            "imported from jcode: fix the parser",
+        ),
+        (
+            Source::Claude,
+            "claude",
+            "/work/site",
+            "imported from Claude Code: Navbar and footer",
+        ),
+        (
+            Source::Codex,
+            "codex",
+            "/work/api",
+            "imported from Codex CLI: Fix the parser",
+        ),
+    ] {
+        let sandbox = Sandbox::new(name);
+        let report = sandbox.migrate(source, &everything()).await;
+        assert_eq!(report.count(Status::Failed), 0, "{name}: {}", report.render());
+        // The configuration it wrote loads, with a default model that names a provider there is.
+        let config = sandbox.config();
+        let lead = config.roles["default"][0].to_string();
+        let provider = lead.split('/').next().unwrap().to_string();
+        assert!(
+            azazel_ai::providers::presets::is_builtin(&provider) || config.providers.contains_key(&provider),
+            "{name}: {lead}"
+        );
+        let sessions = sandbox.sessions(cwd);
+        assert_eq!(sessions[0].name.as_deref(), Some(session), "{name}");
+        assert!(sessions[0].messages >= 4, "{name}: {}", sessions[0].messages);
+        // What the model would be sent when the session is resumed is a conversation: it
+        // starts with the user (or the summary that stands for what came before).
+        let store = SessionStore::open(&sessions[0].path).unwrap();
+        let context = store.build_context(None);
+        assert_eq!(context[0].message.role, azazel_ai::Role::User, "{name}");
+        // And nothing of it is brought a second time.
+        let again = sandbox.migrate(source, &everything()).await;
+        assert_eq!(again.count(Status::Imported), 0, "{name}: {}", again.render());
+    }
 }
 
 #[tokio::test]

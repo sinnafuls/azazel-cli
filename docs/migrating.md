@@ -200,14 +200,20 @@ times of the original (it sorts by when it was last used there), and the origina
 - Tool calls keep the names and inputs the other harness gave them. A call without a recorded result gets
   one that says so; a result without a call is left out; both are counted in the report.
 - Sub-agents' conversations (omp's `<session>/<Agent>.jsonl`, Claude Code's `subagents/agent-*.jsonl`)
-  become the session's agent transcripts.
+  become the session's agent transcripts; a sub-agent's own sub-agent is named after both (`Scout.Helper`).
 - A command you ran with `!` in pi or omp becomes the note azazel writes for its own `!` commands. What a
   harness wrote into the conversation for itself (reminders, context it injected, the record of a slash
   command) is kept beside the conversation or left out, never shown as something you said.
 - Images omp moved out of its session files are read back from its blob store.
 - A session records where it came from. Running the migration again skips every conversation that is
   already there, so a later run brings only what is new.
-- A conversation whose directory the source does not record is left out and named.
+- A conversation whose directory the source does not record is left out and named, and so is a pi or omp
+  session file that does not begin with a session header.
+- Sessions keep the times of the conversations they were, so `session.retention_days` applies to them as
+  to any session: when it is set, the report says how many of the imported conversations are older than
+  that and would be deleted when azazel next starts.
+- The first listing of a project's sessions reads every one of them; the migration does that once at the
+  end, so `/resume` opens at once afterwards.
 
 ### Memory
 
