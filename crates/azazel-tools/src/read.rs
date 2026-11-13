@@ -1,5 +1,5 @@
-//! `read`: text files with line numbers, images, PDFs, notebooks, directory listings and
-//! registered URL schemes.
+//! `read`: text files with line numbers, images, PDFs, notebooks, Office and mail files,
+//! directory listings and registered URL schemes.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -96,7 +96,10 @@ impl Tool for ReadTool {
          as `<line number><tab><text>`, up to 2000 lines per call; use `offset` (1-based line) and `limit` \
          to page through longer files. A PDF comes back as its text, 20 pages per call; `pages` picks \
          them. A notebook (`.ipynb`) comes back cell by cell with its outputs; `offset` and `limit` \
-         count cells. Read the lines of a file before editing them."
+         count cells. A Word, PowerPoint or Excel file (`.docx`, `.pptx`, `.xlsx`) and a mail message \
+         (`.msg`, `.eml`) is converted to Markdown in a directory whose path comes back with an outline \
+         by line, beside its pictures, its sheets as CSV files or its attachments; `offset` and `limit` \
+         then return lines of that Markdown. Read the lines of a file before editing them."
     }
 
     fn schema(&self) -> Value {
@@ -188,6 +191,10 @@ impl Tool for ReadTool {
         if bytes.starts_with(b"%PDF-") {
             return read_pdf(&path, bytes, input.pages.as_deref()).await;
         }
+        #[cfg(feature = "office")]
+        if let Some(kind) = crate::office::kind(&path, &bytes) {
+            return crate::office::read(kind, &path, bytes, input.offset, input.limit, ctx).await;
+        }
         if bytes.iter().take(8192).any(|&b| b == 0) {
             let kind = path
                 .extension()
@@ -238,7 +245,7 @@ impl Tool for ReadTool {
 }
 
 /// `text` as numbered lines, and the first and last line that are in it (`None` when none is).
-fn render_text(
+pub(crate) fn render_text(
     text: &str,
     offset: Option<usize>,
     limit: Option<usize>,

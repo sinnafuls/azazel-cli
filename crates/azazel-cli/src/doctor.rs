@@ -283,10 +283,14 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     match azazel_tools::schemes::gh_program() {
         Some(gh) => report.ok(format!(
-            "gh: {}; `read` takes pr:// and issue:// addresses",
+            "gh: {}; `read` takes pr:// and issue:// addresses, and GitHub URLs are read with its login \
+             when it is signed in",
             gh.display()
         )),
-        None => report.ok("gh: not found on PATH; pr:// and issue:// addresses are off"),
+        None => report.ok(
+            "gh: not found on PATH; pr:// and issue:// addresses are off, and GitHub URLs are read without a \
+             login",
+        ),
     }
 
     let store = Packages::new(paths);
@@ -363,6 +367,24 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     match azazel_browser::find_binary(&config.browser.path, &|name| std::env::var(name).ok()) {
         Some(binary) => report.ok(format!("browser: {}", binary.display())),
         None => report.warn(format!("browser: {}", azazel_browser::NOT_FOUND)),
+    }
+    // What `azazel secrets` stored: named, never shown.
+    let stored = azazel_ai::ServiceStore::new(paths.secrets_file()).services();
+    if !stored.is_empty() {
+        let named = |sites: bool| -> Vec<&str> {
+            let of_kind = stored
+                .iter()
+                .filter(|(_, service)| matches!(service, azazel_ai::Service::Site { .. }) == sites);
+            of_kind.map(|(name, _)| name.as_str()).collect()
+        };
+        for (what, names) in [
+            ("request credentials", named(false)),
+            ("site logins", named(true)),
+        ] {
+            if !names.is_empty() {
+                report.ok(format!("{what} for agents: {}", names.join(", ")));
+            }
+        }
     }
     let backend = azazel_tools::web::active_backend(&config.web.search, &config.web.searxng_url, &|name| {
         std::env::var(name).ok()

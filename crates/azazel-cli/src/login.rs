@@ -244,7 +244,7 @@ pub fn forget_account(
 }
 
 /// Reads a line from the terminal without showing it; from a pipe, reads the line as it is.
-fn read_secret(prompt: &str) -> std::io::Result<String> {
+pub(crate) fn read_secret(prompt: &str) -> std::io::Result<String> {
     let mut out = std::io::stderr();
     write!(out, "{prompt}")?;
     out.flush()?;

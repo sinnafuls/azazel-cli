@@ -1,4 +1,5 @@
-//! Popups: an open overlay drawn as a centred box over the whole window.
+//! Popups: an open overlay, or the terminal of a program an agent runs, drawn as a centred box
+//! over the whole window.
 //!
 //! The transcript lives in the terminal's scrollback, where rows cannot be drawn over and
 //! brought back. So while an overlay is open the UI switches to the alternate screen and paints
@@ -119,16 +120,15 @@ impl Tui {
     pub(super) fn draw_popup(&mut self) -> io::Result<bool> {
         let (columns, rows) = self.renderer.size();
         // `tui.popups` off, or a window too small for one: the box stands in for the input.
-        let wanted =
-            self.env.config.tui.popups && !self.quit && self.overlay.is_some() && modal::fits(columns, rows);
+        let boxed = self.overlay.is_some() || self.term_open();
+        let wanted = self.env.config.tui.popups && !self.quit && boxed && modal::fits(columns, rows);
         if !wanted {
             let Some(popup) = &mut self.popup else {
                 return Ok(false);
             };
             // The box closed. The next one may be on its way: the screen stays as it is for a
             // moment. Not when something else has painted over it, or the window is too small.
-            let may_follow =
-                self.overlay.is_none() && !self.quit && self.guard.in_alt() && !popup.screen.is_stale();
+            let may_follow = !boxed && !self.quit && self.guard.in_alt() && !popup.screen.is_stale();
             if may_follow {
                 let now = Instant::now();
                 if now < *popup.closing.get_or_insert(now + LINGER) {
@@ -160,7 +160,9 @@ impl Tui {
         self.refresh_pane(super::overlay::inner_width(width));
         let (lines, cursor) = match &self.overlay {
             Some(overlay) => overlay.render(modal::box_width(width), modal::box_rows(height), &self.theme),
-            None => (Vec::new(), None),
+            None => self
+                .term_box(modal::box_width(width), modal::box_rows(height))
+                .unwrap_or_default(),
         };
         let live: Vec<String> = self
             .in_flight(width)

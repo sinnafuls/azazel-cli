@@ -639,7 +639,7 @@ fn subjects(tool: &str, input: &Value, posix: bool) -> Vec<String> {
             .map(|command| analyze(command, posix).subjects())
             .unwrap_or_default(),
         "read" | "write" | "edit" => field("path").map(str::to_string).into_iter().collect(),
-        "web_fetch" | "web_grep" => field("url")
+        "web_fetch" | "web_grep" | "http" => field("url")
             .and_then(|url| reqwest::Url::parse(url).ok())
             .and_then(|url| url.host_str().map(|host| format!("domain:{host}")))
             .into_iter()
