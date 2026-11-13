@@ -683,7 +683,7 @@ impl Tui {
         match problem {
             Some(problem) => problems.push(problem),
             None => {
-                self.theme = theme.with_depth(depth);
+                self.theme = theme.with_depth(depth).with_links(self.caps.links);
                 report.push(format!("theme: {}", self.theme_name));
             }
         }

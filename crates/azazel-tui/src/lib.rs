@@ -5,6 +5,8 @@
 //! that changed. Components never touch the terminal: they turn state into [`render::Line`]s.
 
 pub mod components;
+#[cfg(feature = "images")]
+pub mod image;
 pub mod keys;
 pub mod render;
 pub mod term;
@@ -22,5 +24,5 @@ pub use components::todo::TodoState;
 pub use components::tool_card::{Card, CardState};
 pub use components::vim::Vim;
 pub use keys::{KeyCombo, KeyError, Keymap, disable_enhanced_keys, enable_enhanced_keys};
-pub use render::{Floor, Frame, Line, Renderer};
+pub use render::{Floor, Frame, HistoryItem, Line, Renderer};
 pub use theme::{Color, ColorDepth, RESET, Role, Theme, ThemeError};

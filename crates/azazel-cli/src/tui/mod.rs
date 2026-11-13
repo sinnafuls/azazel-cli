@@ -8,9 +8,11 @@ mod input;
 mod overlay;
 mod pager;
 mod panels;
+mod probe;
 mod quick;
 mod slash;
 mod team;
+mod terminal;
 pub(crate) mod view;
 
 use std::collections::VecDeque;
@@ -30,9 +32,11 @@ use azazel_tools::{TodoStatus, TodoStore};
 use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, spinner, status, todo, tool_card,
 };
+use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
-    ColorDepth, Composer, Draft, Editor, Floor, Frame, Keymap, Line, Renderer, Role, SelectItem, SelectList,
-    Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys, enable_enhanced_keys, text,
+    ColorDepth, Composer, Draft, Editor, Floor, Frame, HistoryItem, Keymap, Line, Renderer, Role, SelectItem,
+    SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim, disable_enhanced_keys,
+    enable_enhanced_keys, text,
 };
 use crossterm::event::{
     DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
@@ -43,6 +47,7 @@ use serde_json::Value;
 use tokio::sync::{broadcast, mpsc};
 
 use crate::app::{Active, App, Open};
+use crate::attention::{Attention, Kind};
 use bridge::{TuiBridge, UiRequest};
 pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
@@ -78,7 +83,9 @@ impl TerminalGuard {
         let mut out = io::stdout();
         crossterm::execute!(out, EnableBracketedPaste)?;
         self.enhanced_keys = enable_enhanced_keys(&mut out).unwrap_or(false);
-        Ok(())
+        // The terminal says when its window gains and loses the focus.
+        out.write_all(FOCUS_ON.as_bytes())?;
+        out.flush()
     }
 
     /// Hands the terminal back as a shell would have it (cooked mode, no bracketed paste, no
@@ -88,6 +95,7 @@ impl TerminalGuard {
             return;
         }
         let mut out = io::stdout();
+        let _ = out.write_all(FOCUS_OFF.as_bytes());
         if std::mem::take(&mut self.enhanced_keys) {
             let _ = disable_enhanced_keys(&mut out);
         }
@@ -109,6 +117,14 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         self.suspend();
+    }
+}
+
+/// Resolves at `at`; never when there is nothing to wake for.
+async fn wake_at(at: Option<Instant>) {
+    match at {
+        Some(at) => tokio::time::sleep_until(at.into()).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -170,6 +186,12 @@ pub struct Tui {
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
     renderer: Renderer<io::Stdout>,
+    /// What the terminal can do: links, images, notifications, progress.
+    caps: Caps,
+    /// The bell, notifications, the title and the progress indicator.
+    attention: Attention,
+    /// The lead's last run failed and nothing has been typed since.
+    run_failed: bool,
     theme: Theme,
     /// The name the theme was loaded by, for reading it again.
     theme_name: String,
@@ -191,8 +213,8 @@ pub struct Tui {
     stashed: Vec<(Draft, Vec<Block>)>,
     /// Keeps the input and the status line on the last rows of the screen.
     floor: Floor,
-    /// Transcript lines waiting to be written above the live region.
-    transcript: Vec<Line>,
+    /// Transcript rows and blocks waiting to be written above the live region.
+    transcript: Vec<HistoryItem>,
     /// The last thing written to the transcript is a tool card, so the next card joins it
     /// without a blank row between them.
     after_card: bool,
@@ -285,7 +307,11 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
             },
         ))));
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
+    // Asked before anything reads keys: the answers come in on the same channel.
+    let (caps, images_problem) = terminal::capabilities(app.config.tui.images).await;
     let (theme, theme_problem) = load_theme(&app);
+    let theme = theme.with_links(caps.links);
+    let attention = Attention::new(caps.clone(), app.config.notify.clone());
     let mut keymap = Keymap::defaults();
     let mut key_problem = None;
     if let Ok(source) = std::fs::read_to_string(app.paths.keybindings_file())
@@ -310,6 +336,9 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         internal_tx,
         internal_rx,
         renderer: Renderer::new(io::stdout(), width, height),
+        caps,
+        attention,
+        run_failed: false,
         theme,
         theme_name: tui_config.theme.clone(),
         keymap,
@@ -347,8 +376,10 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         followed_tools: Vec::new(),
         quit: false,
     };
+    let opening = tui.attention.open();
+    tui.write_out(opening);
     tui.welcome(resumed);
-    for problem in [theme_problem, key_problem].into_iter().flatten() {
+    for problem in [theme_problem, key_problem, images_problem].into_iter().flatten() {
         tui.warn(&problem);
     }
     tui.app
@@ -365,7 +396,7 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
         if let Some(notice) = crate::update::notice(&tui.app.paths) {
             tui.info(&notice);
         }
-        crate::update::check_in_background(&tui.app.paths);
+        crate::update::check_in_background(&tui.app.paths, tui.app.config.update.auto);
     }
     if let Some(prompt) = first_prompt {
         // Sent as if typed: without a model it is kept in the editor while settings open.
@@ -382,8 +413,17 @@ pub async fn run(app: Arc<App>, active: Active, first_prompt: Option<String>) ->
     }
     tui.main_loop().await;
     let _ = tui.renderer.suspend();
+    let closing = tui.attention.close();
+    tui.write_out(&closing);
     tui.guard.suspend();
     tui.app.finish(&tui.active).await;
+    // A release the background check downloaded takes the place of this binary now.
+    if tui.app.config.update.auto
+        && crate::update::checks_enabled(tui.app.config.update.check)
+        && let Some(line) = crate::update::apply_staged(&tui.app.paths)
+    {
+        println!("{line}");
+    }
     0
 }
 
@@ -393,18 +433,15 @@ impl Tui {
     }
 
     fn say(&mut self, lines: Vec<Line>) {
-        if !lines.is_empty() {
-            self.after_card = false;
-            self.transcript.extend(lines);
-        }
+        self.say_items(lines.into_iter().map(HistoryItem::Line).collect());
     }
 
     /// Writes a tool card to the transcript: a blank row above, unless it follows another card.
     fn say_card(&mut self, lines: Vec<Line>) {
         if !self.after_card {
-            self.transcript.push(String::new());
+            self.transcript.push(String::new().into());
         }
-        self.transcript.extend(lines);
+        self.transcript.extend(lines.into_iter().map(HistoryItem::Line));
         self.after_card = true;
     }
 
@@ -539,6 +576,8 @@ impl Tui {
                 // Only the spinner and the clocks of working agents animate; nothing is drawn
                 // while everything is idle. An open overlay is checked for an asker that left.
                 _ = ticker.tick(), if self.busy || self.agents_active() || self.overlay.is_some() => {}
+                // Something to tell the terminal although nothing happens: see `tell_terminal`.
+                _ = wake_at(self.attention.next_wake()) => {}
             }
         }
     }
@@ -547,10 +586,12 @@ impl Tui {
     /// tall enough for the input to stay on the last rows of the screen; the transcript grows
     /// into them.
     fn draw(&mut self) -> io::Result<()> {
+        self.tell_terminal();
         let history = std::mem::take(&mut self.transcript);
         let (_, rows) = self.renderer.size();
         let (mut viewport, pinned, cursor) = self.viewport();
-        let filler = self.floor.pad(history.len(), viewport.len() + pinned.len(), rows);
+        let written = history.iter().map(HistoryItem::rows).sum();
+        let filler = self.floor.pad(written, viewport.len() + pinned.len(), rows);
         viewport.resize(viewport.len() + filler, String::new());
         let offset = viewport.len() as u16;
         viewport.extend(pinned);
@@ -591,6 +632,9 @@ impl Tui {
         }
         if let Some(cost) = status.usage.cost_usd {
             left.push(muted(&format!("${cost:.2}")));
+        }
+        if let Some(nearly_full) = self.usage_segment(status.model.as_ref()) {
+            left.push(nearly_full);
         }
         match self.active_agents() {
             0 => {}
@@ -782,14 +826,20 @@ impl Tui {
             AgentEvent::AgentStart => {
                 self.busy = true;
                 self.busy_since = Instant::now();
+                self.run_failed = false;
             }
             AgentEvent::MessageStart => self.stream = StreamView::default(),
             AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => {
                 self.open_reply();
                 self.stream.saw_text = true;
                 self.stream.markdown.push(&delta);
-                let finished = self.stream.markdown.take_finished(width, &self.theme);
-                self.say(finished);
+                let mut diagrams = terminal::draw_diagrams(&self.caps, self.diagram_room());
+                let finished = self
+                    .stream
+                    .markdown
+                    .take_finished(width, &self.theme, &mut diagrams);
+                drop(diagrams);
+                self.say_items(finished);
             }
             AgentEvent::Stream(StreamEvent::ThinkingDelta { delta, .. }) => {
                 self.stream.thinking.push_str(&delta)
@@ -809,8 +859,10 @@ impl Tui {
                     self.open_reply();
                     self.stream.markdown.push(&message.text());
                 }
-                let rest = self.stream.markdown.finish(width, &self.theme);
-                self.say(rest);
+                let mut diagrams = terminal::draw_diagrams(&self.caps, self.diagram_room());
+                let rest = self.stream.markdown.finish(width, &self.theme, &mut diagrams);
+                drop(diagrams);
+                self.say_items(rest);
                 self.stream = StreamView::default();
             }
             AgentEvent::Retry { attempt, model } => {
@@ -834,8 +886,10 @@ impl Tui {
             }
             AgentEvent::Rule { name } => {
                 // What already scrolled away stays on screen; the rest of the reply is dropped.
-                let rest = self.stream.markdown.finish(width, &self.theme);
-                self.say(rest);
+                let mut diagrams = terminal::draw_diagrams(&self.caps, self.diagram_room());
+                let rest = self.stream.markdown.finish(width, &self.theme, &mut diagrams);
+                drop(diagrams);
+                self.say_items(rest);
                 self.stream = StreamView::default();
                 self.info(&format!("rule {name} stopped the reply; retrying"));
             }
@@ -868,10 +922,12 @@ impl Tui {
                         &output,
                         Duration::from_millis(duration_ms),
                         self.expand_tools,
+                        Some(&self.app.paths.cwd),
                         width,
                         &self.theme,
                     );
                     self.say_card(lines);
+                    self.show_images(&output);
                 }
             }
             AgentEvent::Compaction {
@@ -883,9 +939,14 @@ impl Tui {
                 format_tokens(tokens_after)
             )),
             AgentEvent::Idle { stop } => {
+                let took = self.busy_since.elapsed();
                 self.end_of_run();
                 // An interrupted run keeps what is queued for the user to send or take back.
                 self.run_ended = stop != StopReason::Aborted;
+                // With a message queued the work goes on: nothing to call the user for yet.
+                if self.run_ended && self.queued.is_empty() {
+                    self.attend_end(None, took);
+                }
                 match stop {
                     StopReason::Aborted => self.info("interrupted"),
                     StopReason::Length => self.warn("the reply was cut off at the model's output limit"),
@@ -893,7 +954,10 @@ impl Tui {
                 }
             }
             AgentEvent::Failed { error } => {
+                let took = self.busy_since.elapsed();
                 self.end_of_run();
+                self.run_failed = true;
+                self.attend_end(Some(&error), took);
                 self.fail(&error);
             }
             AgentEvent::TurnStart { .. } | AgentEvent::TurnEnd | AgentEvent::Stream(_) => {}
@@ -975,17 +1039,29 @@ impl Tui {
 
     fn show_request(&mut self, request: UiRequest) {
         let pick = |labels: &[&str]| labels.iter().map(|l| SelectItem::new(*l, "")).collect::<Vec<_>>();
-        match &request {
-            UiRequest::Notify { level, text } => self.announce(*level, text.clone()),
-            UiRequest::Ask { question, .. } => self.announce(Level::Info, question.clone()),
+        // The notification hooks hear of it first; then, for what an agent waits on, the bell
+        // and a notification when the user is looking elsewhere.
+        let needs_you = match &request {
+            UiRequest::Notify { level, text } => {
+                self.announce(*level, text.clone());
+                None
+            }
+            UiRequest::Ask { question, .. } => Some(question.clone()),
             UiRequest::Confirm { prompt, .. }
             | UiRequest::Select { prompt, .. }
-            | UiRequest::Input { prompt, .. } => self.announce(Level::Info, prompt.clone()),
-            UiRequest::Approval { request, .. } => self.announce(
-                Level::Info,
-                format!("{} needs permission to use {}", request.agent.id, request.tool),
-            ),
-            UiRequest::Plan { .. } => self.announce(Level::Info, "a plan is ready for review".to_string()),
+            | UiRequest::Input { prompt, .. } => {
+                self.announce(Level::Info, prompt.clone());
+                None
+            }
+            UiRequest::Approval { request, .. } => Some(format!(
+                "{} needs permission to use {}",
+                request.agent.id, request.tool
+            )),
+            UiRequest::Plan { .. } => Some("a plan is ready for review".to_string()),
+        };
+        if let Some(text) = needs_you {
+            self.announce(Level::Info, text.clone());
+            self.attend(Kind::NeedsYou, &text, None);
         }
         match request {
             UiRequest::Notify { level, text } => match level {
@@ -1154,12 +1230,15 @@ impl Tui {
                 self.renderer.resize(width, height);
                 self.floor.resize(height);
             }
+            Event::FocusGained => self.attention.focus(true),
+            Event::FocusLost => self.attention.focus(false),
             _ => {}
         }
     }
 
     async fn on_key(&mut self, key: KeyEvent) {
         self.notice = None;
+        self.run_failed = false;
         if let Some(overlay) = &mut self.overlay {
             // Feedback for the agent can be written in the user's editor too.
             if panels::is_text_input(overlay) && self.keymap.action_for(&key) == Some("external_editor") {
@@ -1759,7 +1838,7 @@ impl Tui {
         match problem {
             Some(problem) => self.fail(&problem),
             None => {
-                self.theme = theme.with_depth(depth);
+                self.theme = theme.with_depth(depth).with_links(self.caps.links);
                 self.theme_name = name.to_string();
                 self.info(&format!("theme: {name}"));
             }

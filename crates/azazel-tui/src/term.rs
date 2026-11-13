@@ -51,6 +51,9 @@ pub struct Caps {
     pub focus: bool,
     /// OSC 9;4 progress.
     pub progress: bool,
+    /// The terminal drops a progress state it has not heard about for a while (Ghostty, after
+    /// fifteen seconds), so it has to be sent again while it lasts.
+    pub progress_expires: bool,
     pub notify: Notify,
     /// Pixel size of one cell, `(width, height)`.
     pub cell_px: (u16, u16),
@@ -91,10 +94,16 @@ impl Caps {
             tmux,
             // Images under tmux need a forced protocol (`tui.images`).
             images: if tmux { Images::None } else { images },
-            links: !warp && (kitty || iterm || wezterm || ghostty || windows_terminal || vte),
+            links: if tmux {
+                // tmux passes hyperlinks on from 3.4; inside tmux the version variable is its own.
+                program == "tmux" && tmux_has_links(&var("TERM_PROGRAM_VERSION").unwrap_or_default())
+            } else {
+                !warp && (kitty || iterm || wezterm || ghostty || windows_terminal || vte)
+            },
             clipboard_osc52: true,
             focus: true,
             progress: windows_terminal || ghostty || wezterm || program == "iTerm.app",
+            progress_expires: ghostty,
             notify,
             cell_px: (10, 20),
         }
@@ -149,7 +158,19 @@ impl Caps {
         if !self.links {
             return text.to_string();
         }
-        format!("\x1b]8;;{}\x1b\\{text}\x1b]8;;\x1b\\", clean(url))
+        hyperlink(url, text)
+    }
+
+    /// The capabilities after the terminal answered [`QUERIES`]: the size of a cell when it
+    /// said one, and Sixel when it listed it and nothing better was recognised.
+    pub fn with_replies(mut self, replies: &Replies) -> Caps {
+        if let Some(cell) = replies.cell_px {
+            self.cell_px = cell;
+        }
+        if self.images == Images::None && replies.sixel && !self.tmux {
+            self.images = Images::Sixel;
+        }
+        self
     }
 
     /// Copies `text` to the clipboard through OSC 52.
@@ -157,6 +178,82 @@ impl Caps {
         use base64::Engine as _;
         let data = base64::engine::general_purpose::STANDARD.encode(text);
         self.osc(&format!("52;c;{data}"))
+    }
+}
+
+/// `text` as an OSC 8 hyperlink to `url`. Not wrapped for tmux, which keeps track of links
+/// itself.
+pub fn hyperlink(url: &str, text: &str) -> String {
+    format!("{}{text}{}", link_start(url), crate::text::LINK_END)
+}
+
+/// The sequence that makes what follows a hyperlink to `url`, until [`crate::text::LINK_END`].
+pub fn link_start(url: &str) -> String {
+    format!("\x1b]8;;{}\x1b\\", clean(url))
+}
+
+/// Whether a tmux of this version (`3.4`, `3.5a`, `next-3.6`) passes hyperlinks on.
+fn tmux_has_links(version: &str) -> bool {
+    let mut numbers = version
+        .trim_start_matches(|c: char| !c.is_ascii_digit())
+        .split(|c: char| !c.is_ascii_digit())
+        .map(|part| part.parse::<u32>().unwrap_or(0));
+    let (major, minor) = (numbers.next().unwrap_or(0), numbers.next().unwrap_or(0));
+    (major, minor) >= (3, 4)
+}
+
+/// Asks the terminal for the size of a cell in pixels (`CSI 16 t`), then for its device
+/// attributes (`CSI c`). Nearly every terminal answers the second, so its reply also tells that
+/// no answer to the first is coming.
+pub const QUERIES: &str = "\x1b[16t\x1b[c";
+
+/// What a terminal answered to [`QUERIES`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Replies {
+    /// `(width, height)` of one cell in pixels.
+    pub cell_px: Option<(u16, u16)>,
+    /// The device attributes list Sixel graphics (attribute 4).
+    pub sixel: bool,
+    /// The device attributes arrived: nothing more is coming.
+    pub complete: bool,
+}
+
+impl Replies {
+    /// Reads the replies out of what the terminal sent; anything else in `input` is skipped.
+    pub fn parse(input: &[u8]) -> Replies {
+        let mut replies = Replies::default();
+        let mut rest = input;
+        while let Some(start) = rest.windows(2).position(|pair| pair == b"\x1b[") {
+            rest = &rest[start + 2..];
+            let Some(end) = rest.iter().position(|b| (0x40..=0x7e).contains(b)) else {
+                break;
+            };
+            let (body, terminator) = (&rest[..end], rest[end]);
+            rest = &rest[end + 1..];
+            let Ok(body) = std::str::from_utf8(body) else {
+                continue;
+            };
+            let numbers =
+                |text: &str| -> Vec<u16> { text.split(';').map(|part| part.parse().unwrap_or(0)).collect() };
+            match (terminator, body.strip_prefix('?')) {
+                // `CSI ? 62 ; 4 ; 6 c`: the first number is the device class, the rest features.
+                (b'c', Some(attributes)) => {
+                    replies.sixel = numbers(attributes).iter().skip(1).any(|n| *n == 4);
+                    replies.complete = true;
+                }
+                // `CSI 6 ; height ; width t`.
+                (b't', None) => {
+                    if let [6, height, width] = numbers(body)[..]
+                        && height > 0
+                        && width > 0
+                    {
+                        replies.cell_px = Some((width, height));
+                    }
+                }
+                _ => {}
+            }
+        }
+        replies
     }
 }
 
@@ -217,6 +314,20 @@ mod tests {
         assert_eq!(iterm_in_tmux.images, Images::None);
         let warp = Caps::detect(&env(&[("TERM_PROGRAM", "WarpTerminal")]));
         assert!(!warp.links);
+        // Inside tmux the program is tmux itself, and only a recent one passes links on.
+        let tmux = |version: &str| {
+            Caps::detect(&env(&[
+                ("TMUX", "/tmp/s,1,0"),
+                ("TERM_PROGRAM", "tmux"),
+                ("TERM_PROGRAM_VERSION", version),
+                ("KITTY_WINDOW_ID", "1"),
+            ]))
+        };
+        assert!(tmux("3.4").links && tmux("3.5a").links && tmux("next-3.6").links);
+        assert!(!tmux("3.3a").links && !tmux("").links);
+        assert!(!iterm_in_tmux.links);
+        assert!(Caps::detect(&env(&[("GHOSTTY_RESOURCES_DIR", "/x")])).progress_expires);
+        assert!(!wt.progress_expires);
         assert_eq!(Images::from_setting("sixel", Images::None), Ok(Images::Sixel));
         assert_eq!(Images::from_setting("off", Images::Kitty), Ok(Images::None));
         assert!(Images::from_setting("jpeg", Images::None).is_err());
@@ -246,5 +357,74 @@ mod tests {
         let none = Caps::detect(&env(&[]));
         assert_eq!(none.progress(Some(Progress::Waiting)), "");
         assert_eq!(none.link("https://x.y", "x"), "x");
+        assert_eq!(none.notification("a", "b"), "");
+
+        // Every progress state, bare and through tmux.
+        assert_eq!(plain.progress(Some(Progress::Waiting)), "\x1b]9;4;4;0\x1b\\");
+        assert_eq!(plain.progress(Some(Progress::Failed)), "\x1b]9;4;2;100\x1b\\");
+        assert_eq!(
+            tmux.progress(Some(Progress::Working)),
+            "\x1bPtmux;\x1b\x1b]9;4;3;0\x1b\x1b\\\x1b\\"
+        );
+        assert_eq!(
+            tmux.notification("azazel", "done"),
+            "\x1bPtmux;\x1b\x1b]9;azazel: done\x1b\x1b\\\x1b\\"
+        );
+        // The title is tmux's own to read, and the bell flags its window: neither is wrapped.
+        assert_eq!(tmux.title("* azazel · x"), "\x1b]0;* azazel · x\x07");
+        assert_eq!(
+            tmux.clipboard("hi"),
+            "\x1bPtmux;\x1b\x1b]52;c;aGk=\x1b\x1b\\\x1b\\"
+        );
+        let kitty = Caps::detect(&env(&[("KITTY_WINDOW_ID", "1")]));
+        assert_eq!(
+            kitty.notification("azazel", "needs you"),
+            "\x1b]99;i=azazel:d=0:p=title;azazel\x1b\\\x1b]99;i=azazel:d=1:p=body;needs you\x1b\\"
+        );
+        // A link's address cannot end the sequence early.
+        assert_eq!(
+            hyperlink("https://x.y/\x1b\\evil\x07", "t"),
+            "\x1b]8;;https://x.y/ \\evil \x1b\\t\x1b]8;;\x1b\\"
+        );
+        assert_eq!(
+            (BELL, PUSH_TITLE, POP_TITLE, FOCUS_ON, FOCUS_OFF),
+            ("\x07", "\x1b[22;0t", "\x1b[23;0t", "\x1b[?1004h", "\x1b[?1004l")
+        );
+        assert_eq!(QUERIES, "\x1b[16t\x1b[c");
+    }
+
+    #[test]
+    fn replies_give_the_cell_size_and_sixel_support() {
+        // Windows Terminal: cell size, then device attributes that list Sixel.
+        let both = Replies::parse(b"\x1b[6;20;9t\x1b[?61;4;6;7;14;21;22;23;24;28;32;42c");
+        assert_eq!(
+            both,
+            Replies {
+                cell_px: Some((9, 20)),
+                sixel: true,
+                complete: true
+            }
+        );
+        // A terminal that only answers the device attributes, without Sixel. The class number
+        // (here 64) is not a feature, and neither is a 4 inside another number.
+        let plain = Replies::parse(b"\x1b[?64;1;2;6;14;22c");
+        assert_eq!((plain.cell_px, plain.sixel, plain.complete), (None, false, true));
+        assert!(!Replies::parse(b"\x1b[?4;1;2c").sixel);
+        // Typed keys around the replies are skipped; half a reply is not one.
+        let noisy = Replies::parse(b"ab\x1b[6;18;8tq\x1b[?62;");
+        assert_eq!(
+            (noisy.cell_px, noisy.sixel, noisy.complete),
+            (Some((8, 18)), false, false)
+        );
+        assert_eq!(Replies::parse(b"\x1b[6;0;0t\x1b[4;600;800t").cell_px, None);
+        assert_eq!(Replies::parse(b""), Replies::default());
+
+        let wt = Caps::detect(&env(&[("WT_SESSION", "x")])).with_replies(&both);
+        assert_eq!((wt.images, wt.cell_px), (Images::Sixel, (9, 20)));
+        // What was recognised from the environment is not replaced, and tmux stays without.
+        let kitty = Caps::detect(&env(&[("KITTY_WINDOW_ID", "1")])).with_replies(&both);
+        assert_eq!(kitty.images, Images::Kitty);
+        let tmux = Caps::detect(&env(&[("WT_SESSION", "x"), ("TMUX", "1")])).with_replies(&both);
+        assert_eq!(tmux.images, Images::None);
     }
 }

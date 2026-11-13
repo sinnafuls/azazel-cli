@@ -7,7 +7,8 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 
-use crate::render::Line;
+use crate::render::{HistoryItem, Line};
+use crate::term;
 use crate::text;
 use crate::theme::{Color, RESET, Role, Theme};
 
@@ -22,16 +23,49 @@ const BULLETS: [&str; 3] = ["•", "◦", "▪"];
 /// Supports headings, paragraphs, emphasis, strong, strikethrough, inline code, fenced and
 /// indented code blocks (syntax-highlighted when the language is known), nested bullet, ordered
 /// and task lists, block quotes, tables, links (followed by their URL when it differs from the
-/// text) and horizontal rules. Incomplete input, such as an unterminated fence, renders as far as
-/// it goes.
+/// text) and horizontal rules. Links and bare addresses are clickable when the theme says the
+/// terminal follows hyperlinks. Incomplete input, such as an unterminated fence, renders as far
+/// as it goes.
 pub fn render(source: &str, width: usize, theme: &Theme) -> Vec<Line> {
+    write(source, width, theme, None)
+        .into_iter()
+        .filter_map(|item| match item {
+            HistoryItem::Line(line) => Some(line),
+            HistoryItem::Block { .. } => None,
+        })
+        .collect()
+}
+
+/// What a [`FenceHook`] makes of a fenced code block.
+pub enum Fenced {
+    /// Shown in place of the source: a diagram drawn as an image, for example.
+    Replace(Vec<HistoryItem>),
+    /// The source is shown as usual, with this line under it (why it could not be drawn).
+    Note(String),
+}
+
+/// Called with the language and the source of each finished fenced block that stands on its
+/// own (not inside a list or a quote). `None` leaves the block as it is.
+pub type FenceHook<'h> = dyn FnMut(&str, &str) -> Option<Fenced> + 'h;
+
+/// [`render`] for the transcript: `hook` may replace fenced blocks with something drawn.
+pub fn render_blocks(
+    source: &str,
+    width: usize,
+    theme: &Theme,
+    hook: &mut FenceHook<'_>,
+) -> Vec<HistoryItem> {
+    write(source, width, theme, Some(hook))
+}
+
+fn write(source: &str, width: usize, theme: &Theme, hook: Option<&mut FenceHook<'_>>) -> Vec<HistoryItem> {
     // Subscript is enabled only so that a single `~` stays literal: without it `~100 files, ~3
     // lines` would be read as strikethrough.
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
         | Options::ENABLE_TASKLISTS
         | Options::ENABLE_SUBSCRIPT;
-    let mut writer = Writer::new(width.max(1), theme);
+    let mut writer = Writer::new(width.max(1), theme, hook);
     for event in Parser::new_ext(source, options) {
         writer.event(event);
     }
@@ -58,10 +92,11 @@ struct Table {
     header_rows: usize,
 }
 
-struct Writer<'a> {
+struct Writer<'a, 'h> {
     theme: &'a Theme,
+    hook: Option<&'a mut FenceHook<'h>>,
     width: usize,
-    out: Vec<Line>,
+    out: Vec<HistoryItem>,
     containers: Vec<Container>,
     /// Styled text of the block being collected.
     inline: String,
@@ -76,10 +111,18 @@ struct Writer<'a> {
     table: Option<Table>,
 }
 
-impl<'a> Writer<'a> {
-    fn new(width: usize, theme: &'a Theme) -> Self {
+/// Whether an address is one a terminal may be asked to open.
+fn linkable(url: &str) -> bool {
+    ["https://", "http://", "mailto:", "file://"]
+        .iter()
+        .any(|scheme| url.starts_with(scheme))
+}
+
+impl<'a, 'h> Writer<'a, 'h> {
+    fn new(width: usize, theme: &'a Theme, hook: Option<&'a mut FenceHook<'h>>) -> Self {
         Writer {
             theme,
+            hook,
             width,
             out: Vec::new(),
             containers: Vec::new(),
@@ -157,12 +200,12 @@ impl<'a> Writer<'a> {
             Tag::Strikethrough => self.push_style(STRIKE.to_string()),
             Tag::Subscript => self.inline.push('~'),
             Tag::Link { dest_url, .. } => {
+                self.open_link(&dest_url);
                 self.push_style(UNDERLINE.to_string());
-                self.links.push((dest_url.to_string(), String::new()));
             }
             Tag::Image { dest_url, .. } => {
+                self.open_link(&dest_url);
                 self.inline.push_str("[image: ");
-                self.links.push((dest_url.to_string(), String::new()));
             }
             _ => {}
         }
@@ -235,10 +278,35 @@ impl<'a> Writer<'a> {
             return;
         }
         let clean = text::sanitize(raw);
-        if let Some((_, shown)) = self.links.last_mut() {
-            shown.push_str(&clean);
+        match self.links.last_mut() {
+            Some((_, shown)) => {
+                shown.push_str(&clean);
+                self.inline.push_str(&clean);
+            }
+            None => self.plain_text(&clean),
         }
-        self.inline.push_str(&clean);
+    }
+
+    /// Text outside any link: an address written out in it becomes a link of its own.
+    fn plain_text(&mut self, clean: &str) {
+        let mut rest = clean;
+        while self.theme.links()
+            && let Some(found) = text::find_link(rest)
+        {
+            self.inline.push_str(&rest[..found.start]);
+            let url = &rest[found.clone()];
+            self.inline.push_str(&self.theme.link(url, url));
+            rest = &rest[found.end..];
+        }
+        self.inline.push_str(rest);
+    }
+
+    /// Starts a link or an image: what follows is clickable when the terminal follows links.
+    fn open_link(&mut self, destination: &str) {
+        if self.theme.links() && linkable(destination) {
+            self.inline.push_str(&term::link_start(destination));
+        }
+        self.links.push((destination.to_string(), String::new()));
     }
 
     fn inline_code(&mut self, raw: &str) {
@@ -258,13 +326,15 @@ impl<'a> Writer<'a> {
         };
         let shown = shown.trim();
         let repeats = shown == destination || destination.strip_prefix("mailto:") == Some(shown);
-        if destination.is_empty() || repeats {
-            return;
+        if !destination.is_empty() && !repeats {
+            let url = format!(" ({})", text::sanitize(&destination).replace('\n', " "));
+            self.inline.push_str(RESET);
+            self.inline.push_str(&self.theme.paint(Role::Muted, &url));
+            self.restyle();
         }
-        let url = format!(" ({})", text::sanitize(&destination).replace('\n', " "));
-        self.inline.push_str(RESET);
-        self.inline.push_str(&self.theme.paint(Role::Muted, &url));
-        self.restyle();
+        if self.theme.links() && linkable(&destination) {
+            self.inline.push_str(text::LINK_END);
+        }
     }
 
     fn push_style(&mut self, code: String) {
@@ -316,7 +386,7 @@ impl<'a> Writer<'a> {
                 }
             }
         }
-        self.out.push(line.trim_end().to_string());
+        self.out.push(line.trim_end().to_string().into());
     }
 
     /// Wraps the collected inline text into the space left by the open containers.
@@ -364,7 +434,7 @@ impl<'a> Writer<'a> {
                     *used = true;
                 }
             }
-            self.out.push(content);
+            self.out.push(content.into());
             return;
         }
         let mut line = String::new();
@@ -386,7 +456,7 @@ impl<'a> Writer<'a> {
             }
         }
         line.push_str(&content);
-        self.out.push(line);
+        self.out.push(line.into());
     }
 
     fn next_marker(&mut self) -> String {
@@ -413,6 +483,26 @@ impl<'a> Writer<'a> {
     }
 
     fn code_block(&mut self, language: &str, source: &str) {
+        // Only a block that stands on its own can become something else: inside a list or a
+        // quote it keeps its place in the text.
+        let made = match &mut self.hook {
+            Some(hook) if self.containers.is_empty() => hook(language, source),
+            _ => None,
+        };
+        match made {
+            Some(Fenced::Replace(items)) => self.out.extend(items),
+            Some(Fenced::Note(note)) => {
+                self.code_lines(language, source);
+                let note = self.theme.paint(Role::Muted, &text::sanitize(&note));
+                for line in text::wrap(&note, self.avail()) {
+                    self.emit_line(line);
+                }
+            }
+            None => self.code_lines(language, source),
+        }
+    }
+
+    fn code_lines(&mut self, language: &str, source: &str) {
         let avail = self.avail();
         let source = text::sanitize(source);
         let source = source.strip_suffix('\n').unwrap_or(&source);
@@ -512,17 +602,16 @@ impl<'a> Writer<'a> {
         self.emit_line(rule("└", "┴", "┘"));
     }
 
-    fn finish(mut self) -> Vec<Line> {
+    fn finish(mut self) -> Vec<HistoryItem> {
         self.flush_inline();
         let width = self.width;
         self.out
             .into_iter()
-            .map(|line| {
-                if text::width(&line) > width {
-                    text::truncate(&line, width, "")
-                } else {
-                    line
+            .map(|item| match item {
+                HistoryItem::Line(line) if text::width(&line) > width => {
+                    HistoryItem::Line(text::truncate(&line, width, ""))
                 }
+                item => item,
             })
             .collect()
     }
@@ -658,15 +747,22 @@ impl StreamingMarkdown {
     ///
     /// Blocks are rendered on their own: a reference-style link whose definition arrives in a
     /// later block shows as written.
-    pub fn take_finished(&mut self, width: usize, theme: &Theme) -> Vec<Line> {
+    ///
+    /// `hook` may replace a finished fenced block with something drawn, as in [`render_blocks`].
+    pub fn take_finished(
+        &mut self,
+        width: usize,
+        theme: &Theme,
+        hook: &mut FenceHook<'_>,
+    ) -> Vec<HistoryItem> {
         let cut = finished_len(&self.pending);
         if cut == 0 {
             return Vec::new();
         }
         let finished: String = self.pending.drain(..cut).collect();
-        let lines = self.separated(render(&finished, width, theme));
-        self.emitted |= !lines.is_empty();
-        lines
+        let items = self.separated(render_blocks(&finished, width, theme, hook));
+        self.emitted |= !items.is_empty();
+        items
     }
 
     /// Renders the text that [`take_finished`](Self::take_finished) has not handed out yet.
@@ -674,19 +770,19 @@ impl StreamingMarkdown {
         self.separated(render(&self.pending, width, theme))
     }
 
-    /// Ends the message: returns the lines of everything left and resets for the next message.
-    pub fn finish(&mut self, width: usize, theme: &Theme) -> Vec<Line> {
+    /// Ends the message: returns everything left and resets for the next message.
+    pub fn finish(&mut self, width: usize, theme: &Theme, hook: &mut FenceHook<'_>) -> Vec<HistoryItem> {
         let rest = std::mem::take(&mut self.pending);
-        let lines = self.separated(render(&rest, width, theme));
+        let items = self.separated(render_blocks(&rest, width, theme, hook));
         self.emitted = false;
-        lines
+        items
     }
 
-    fn separated(&self, mut lines: Vec<Line>) -> Vec<Line> {
-        if self.emitted && !lines.is_empty() {
-            lines.insert(0, String::new());
+    fn separated<T: From<String>>(&self, mut rows: Vec<T>) -> Vec<T> {
+        if self.emitted && !rows.is_empty() {
+            rows.insert(0, String::new().into());
         }
-        lines
+        rows
     }
 }
 
@@ -783,6 +879,21 @@ mod tests {
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|l| text::strip_ansi(l)).collect()
+    }
+
+    fn no_hook(_: &str, _: &str) -> Option<Fenced> {
+        None
+    }
+
+    /// The rows of items that are all text.
+    fn lines(items: Vec<HistoryItem>) -> Vec<Line> {
+        items
+            .into_iter()
+            .map(|item| match item {
+                HistoryItem::Line(line) => line,
+                HistoryItem::Block { .. } => panic!("a block where only text was expected"),
+            })
+            .collect()
     }
 
     fn rendered(source: &str, width: usize) -> Vec<String> {
@@ -1041,30 +1152,36 @@ mod tests {
         let theme = Theme::dark();
         let mut stream = StreamingMarkdown::new();
         stream.push("Hello wor");
-        assert!(stream.take_finished(40, &theme).is_empty());
+        assert!(stream.take_finished(40, &theme, &mut no_hook).is_empty());
         assert_eq!(plain(&stream.tail(40, &theme)), ["Hello wor"]);
 
         stream.push("ld\n\n");
         assert!(
-            stream.take_finished(40, &theme).is_empty(),
+            stream.take_finished(40, &theme, &mut no_hook).is_empty(),
             "the next block has not begun"
         );
         stream.push("Next");
-        assert_eq!(plain(&stream.take_finished(40, &theme)), ["Hello world"]);
+        assert_eq!(
+            plain(&lines(stream.take_finished(40, &theme, &mut no_hook))),
+            ["Hello world"]
+        );
         assert!(
-            stream.take_finished(40, &theme).is_empty(),
+            stream.take_finished(40, &theme, &mut no_hook).is_empty(),
             "a block is handed out only once"
         );
         assert_eq!(plain(&stream.tail(40, &theme)), ["", "Next"]);
 
-        assert_eq!(plain(&stream.finish(40, &theme)), ["", "Next"]);
+        assert_eq!(
+            plain(&lines(stream.finish(40, &theme, &mut no_hook))),
+            ["", "Next"]
+        );
         assert!(stream.is_empty());
         assert!(stream.tail(40, &theme).is_empty());
-        assert!(stream.finish(40, &theme).is_empty());
+        assert!(stream.finish(40, &theme, &mut no_hook).is_empty());
 
         // The next message starts without a leading separator.
         stream.push("Fresh");
-        assert_eq!(plain(&stream.finish(40, &theme)), ["Fresh"]);
+        assert_eq!(plain(&lines(stream.finish(40, &theme, &mut no_hook))), ["Fresh"]);
     }
 
     #[test]
@@ -1073,19 +1190,19 @@ mod tests {
         let mut stream = StreamingMarkdown::new();
         stream.push("```\nfirst\n\nsecond\n");
         assert!(
-            stream.take_finished(40, &theme).is_empty(),
+            stream.take_finished(40, &theme, &mut no_hook).is_empty(),
             "a blank line inside a fence ends nothing"
         );
         stream.push("```\n\nafter");
         assert_eq!(
-            plain(&stream.take_finished(40, &theme)),
+            plain(&lines(stream.take_finished(40, &theme, &mut no_hook))),
             [" first  ", "        ", " second "]
         );
 
         let mut stream = StreamingMarkdown::new();
         stream.push("- item\n\n  continued\n\nnext");
         assert_eq!(
-            plain(&stream.take_finished(40, &theme)),
+            plain(&lines(stream.take_finished(40, &theme, &mut no_hook))),
             ["• item", "", "  continued"]
         );
         assert_eq!(plain(&stream.tail(40, &theme)), ["", "next"]);
@@ -1101,9 +1218,9 @@ mod tests {
             let chars: Vec<char> = DOCUMENT.chars().collect();
             for chunk in chars.chunks(chunk_size) {
                 stream.push(&chunk.iter().collect::<String>());
-                collected.extend(plain(&stream.take_finished(50, &theme)));
+                collected.extend(plain(&lines(stream.take_finished(50, &theme, &mut no_hook))));
             }
-            collected.extend(plain(&stream.finish(50, &theme)));
+            collected.extend(plain(&lines(stream.finish(50, &theme, &mut no_hook))));
             assert_eq!(collected, whole, "chunks of {chunk_size}");
             let first = collected
                 .iter()
@@ -1146,7 +1263,7 @@ mod tests {
         let mut stream = StreamingMarkdown::new();
         stream.push("1. one\n\n1. two\n\n1. three\n\ndone");
         assert_eq!(
-            plain(&stream.take_finished(40, &theme)),
+            plain(&lines(stream.take_finished(40, &theme, &mut no_hook))),
             ["1. one", "2. two", "3. three"]
         );
     }
@@ -1158,5 +1275,126 @@ mod tests {
         assert_eq!(fit_columns(&[30, 4, 4], 20), Some(vec![12, 4, 4]));
         assert_eq!(fit_columns(&[10, 10], 5), Some(vec![3, 2]));
         assert_eq!(fit_columns(&[5, 3], 1), None);
+    }
+
+    #[test]
+    fn links_are_clickable_when_the_terminal_follows_them() {
+        let theme = Theme::dark().with_links(true);
+        let open = |url: &str| format!("\x1b]8;;{url}\x1b\\");
+        let end = text::LINK_END;
+
+        let lines = render("See [the docs](https://example.com/docs) now.", 60, &theme);
+        assert_eq!(plain(&lines), ["See the docs (https://example.com/docs) now."]);
+        // The text and the address after it are one link.
+        assert!(
+            lines[0].contains(&format!("{}\x1b[4mthe docs", open("https://example.com/docs"))),
+            "{lines:?}"
+        );
+        assert_eq!(lines[0].matches(end).count(), 1);
+
+        // An address written out is a link to itself; the full stop after it is not part of it.
+        let lines = render(
+            "Read https://example.com/a. Then `https://not.linked`.",
+            80,
+            &theme,
+        );
+        assert!(
+            lines[0].contains(&format!(
+                "{}https://example.com/a{end}. Then",
+                open("https://example.com/a")
+            )),
+            "{lines:?}"
+        );
+        assert!(!lines[0].contains(&open("https://not.linked")));
+
+        // Wrapped over two rows, each row closes the link and the next opens it again.
+        let lines = render("[one two three four](https://example.com)", 9, &theme);
+        assert!(lines.len() > 1);
+        for line in &lines {
+            assert_eq!(line.matches("\x1b]8;;https").count(), 1, "{line:?}");
+            assert_eq!(line.matches(end).count(), 1, "{line:?}");
+            assert!(text::width(line) <= 9);
+        }
+
+        // Nothing but http, https, mailto and file is handed to the terminal.
+        let lines = render("[run](javascript:alert(1)) [mail](mailto:a@b.c)", 80, &theme);
+        assert!(!lines[0].contains("\x1b]8;;javascript"));
+        assert!(lines[0].contains(&open("mailto:a@b.c")));
+
+        // Without link support the output carries no OSC 8 at all.
+        let plain_theme = Theme::dark();
+        let lines = render(
+            "See [the docs](https://example.com/docs) at https://x.y",
+            80,
+            &plain_theme,
+        );
+        assert!(!lines[0].contains("\x1b]8"));
+    }
+
+    #[test]
+    fn a_hook_replaces_fenced_blocks_that_stand_on_their_own() {
+        let theme = Theme::dark();
+        let seen = std::cell::RefCell::new(Vec::new());
+        let mut hook = |language: &str, source: &str| {
+            seen.borrow_mut().push((language.to_string(), source.to_string()));
+            match language {
+                "mermaid" => Some(Fenced::Replace(vec![HistoryItem::Block {
+                    rows: 4,
+                    paint: "IMAGE".to_string(),
+                }])),
+                "broken" => Some(Fenced::Note("could not draw this: bad arrow".to_string())),
+                _ => None,
+            }
+        };
+        let source = "Before\n\n```mermaid\nflowchart LR\n  A-->B\n```\n\n```broken\nx\n```\n\n```rust\nlet a = 1;\n```\n\n- item\n  ```mermaid\n  nested\n  ```\n";
+        let items = render_blocks(source, 40, &theme, &mut hook);
+        let shown: Vec<String> = items
+            .iter()
+            .map(|item| match item {
+                HistoryItem::Line(line) => text::strip_ansi(line).trim_end().to_string(),
+                HistoryItem::Block { rows, paint } => format!("<{rows} rows: {paint}>"),
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                "Before",
+                "",
+                "<4 rows: IMAGE>",
+                "",
+                " x",
+                "could not draw this: bad arrow",
+                "",
+                " let a = 1;",
+                "",
+                "• item",
+                "",
+                "   nested",
+            ]
+        );
+        // The block inside the list was not offered to the hook.
+        let offered: Vec<String> = seen
+            .borrow()
+            .iter()
+            .map(|(language, _)| language.clone())
+            .collect();
+        assert_eq!(offered, ["mermaid", "broken", "rust"]);
+        assert_eq!(seen.borrow()[0].1, "flowchart LR\n  A-->B\n");
+        // The plain renderer never sees a block: the source stays.
+        assert!(
+            plain(&render(source, 40, &theme))
+                .iter()
+                .any(|line| line.trim() == "flowchart LR")
+        );
+
+        // While it streams the block is source; once finished it is handed to the hook.
+        let mut stream = StreamingMarkdown::new();
+        stream.push("```mermaid\nflowchart LR\n");
+        assert!(stream.take_finished(40, &theme, &mut hook).is_empty());
+        assert_eq!(plain(&stream.tail(40, &theme)), [" flowchart LR "]);
+        stream.push("```\n\nAfter");
+        let finished = stream.take_finished(40, &theme, &mut hook);
+        assert!(matches!(finished[..], [HistoryItem::Block { rows: 4, .. }]));
+        assert_eq!(plain(&lines(stream.finish(40, &theme, &mut hook))), ["", "After"]);
     }
 }

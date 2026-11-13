@@ -393,6 +393,11 @@ impl App {
             credentials: credentials.clone(),
             home_config: paths.home_config(),
         })?;
+        registry.load(&crate::usage::UsageExt {
+            providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
+            credentials: credentials.clone(),
+            paths: paths.clone(),
+        })?;
         registry.load(&crate::routing::RoutingExt {
             presets: config.presets.clone(),
             home_config: paths.home_config(),

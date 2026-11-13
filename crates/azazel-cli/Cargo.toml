@@ -28,6 +28,9 @@ default = [
     "pdf",
     "bedrock",
     "vertex",
+    "notify",
+    "images",
+    "diagrams",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -39,6 +42,12 @@ lsp = ["azazel-tools/lsp"]
 pdf = ["azazel-tools/pdf"]
 bedrock = ["azazel-ai/bedrock"]
 vertex = ["azazel-ai/vertex"]
+# Desktop notifications when the terminal has none of its own, and keeping the machine awake.
+notify = ["dep:notify-rust", "dep:keepawake"]
+# Images shown inline in terminals that can draw them.
+images = ["azazel-tui/images"]
+# Mermaid diagrams drawn as inline images.
+diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
 test-support = ["azazel-ai/test-support"]
 
 [dependencies]
@@ -64,8 +73,12 @@ futures.workspace = true
 ignore.workspace = true
 image.workspace = true
 jiff.workspace = true
+keepawake = { workspace = true, optional = true }
+mermaid-rs-renderer = { workspace = true, optional = true }
 mimalloc.workspace = true
+notify-rust = { workspace = true, optional = true }
 reqwest.workspace = true
+resvg = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
@@ -78,6 +91,9 @@ tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
 which.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+crossterm_winapi.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

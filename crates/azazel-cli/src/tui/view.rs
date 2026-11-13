@@ -1,5 +1,6 @@
 //! Turning session events into transcript lines.
 
+use std::path::Path;
 use std::time::Duration;
 
 use azazel_agent::ToolOutput;
@@ -216,26 +217,44 @@ fn without_exit_line(said: &str) -> &str {
 
 /// A finished tool call as a card: its diff or the start of its output inside, how long it took
 /// and how it ended in the bottom border.
+#[allow(clippy::too_many_arguments)]
 pub fn tool_done(
     name: &str,
     input: &Value,
     output: &ToolOutput,
     elapsed: Duration,
     expanded: bool,
+    cwd: Option<&Path>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line> {
-    tool_card(name, input, output, Some(elapsed), expanded, width, theme)
+    tool_card(name, input, output, Some(elapsed), expanded, cwd, width, theme)
+}
+
+/// The file a call read or changed, as an address to open, when `cwd` says where relative
+/// paths start.
+fn file_link(name: &str, input: &Value, cwd: Option<&Path>) -> Option<String> {
+    if !matches!(name, "read" | "write" | "edit") {
+        return None;
+    }
+    let path = input.get("path").and_then(Value::as_str)?;
+    // An address (`https://`, `agent://`) is not a file.
+    if path.contains("://") {
+        return None;
+    }
+    Some(super::terminal::file_url(&cwd?.join(path)))
 }
 
 /// The card of a tool call. `elapsed` is left out for a call read back from the session, which
-/// does not record how long it took.
+/// does not record how long it took. With `cwd`, the file a call names is a link to it.
+#[allow(clippy::too_many_arguments)]
 pub fn tool_card(
     name: &str,
     input: &Value,
     output: &ToolOutput,
     elapsed: Option<Duration>,
     expanded: bool,
+    cwd: Option<&Path>,
     width: usize,
     theme: &Theme,
 ) -> Vec<Line> {
@@ -303,6 +322,7 @@ pub fn tool_card(
             state,
             name,
             summary: &tool_summary(name, input),
+            link: file_link(name, input, cwd).as_deref(),
             body: &body,
             facts: &facts,
         },
@@ -401,6 +421,7 @@ mod tests {
             &long,
             Duration::from_millis(2040),
             false,
+            None,
             44,
             &theme,
         ));
@@ -415,7 +436,16 @@ mod tests {
         for row in &collapsed {
             assert_eq!(text::width(row), 44, "{row:?}");
         }
-        let expanded = tool_done("shell", &input, &long, Duration::from_secs(2), true, 44, &theme);
+        let expanded = tool_done(
+            "shell",
+            &input,
+            &long,
+            Duration::from_secs(2),
+            true,
+            None,
+            44,
+            &theme,
+        );
         assert_eq!(expanded.len(), 12);
 
         // The exit code is in the border, so the line of output that repeats it is left out.
@@ -426,6 +456,7 @@ mod tests {
             &ran,
             Duration::ZERO,
             false,
+            None,
             44,
             &theme,
         ));
@@ -439,6 +470,7 @@ mod tests {
             &failed,
             Duration::ZERO,
             false,
+            None,
             44,
             &theme,
         ));
@@ -454,6 +486,7 @@ mod tests {
             &aborted,
             Duration::ZERO,
             false,
+            None,
             44,
             &theme,
         ));
@@ -467,6 +500,7 @@ mod tests {
             &edited,
             Duration::ZERO,
             false,
+            None,
             44,
             &theme,
         ));

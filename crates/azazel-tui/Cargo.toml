@@ -6,9 +6,15 @@ rust-version.workspace = true
 publish.workspace = true
 license.workspace = true
 
+[features]
+# Inline images: kitty graphics, iTerm2 inline files and Sixel.
+images = ["dep:image", "dep:icy_sixel"]
+
 [dependencies]
 base64.workspace = true
 crossterm.workspace = true
+icy_sixel = { workspace = true, optional = true }
+image = { workspace = true, optional = true }
 nucleo-matcher.workspace = true
 pulldown-cmark.workspace = true
 similar.workspace = true

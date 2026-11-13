@@ -193,21 +193,32 @@ fn all_sessions(paths: &Paths) -> Vec<(String, SessionSummary)> {
     out
 }
 
+/// The first of the last `days` days, today included, and today.
+fn span(days: u32) -> (jiff::civil::Date, jiff::civil::Date) {
+    let today = jiff::Zoned::now().date();
+    let since = today
+        .checked_sub(jiff::Span::new().days(i64::from(days.max(1) - 1)))
+        .unwrap_or(today);
+    (since, today)
+}
+
+/// What `azazel stats` prints for the last `days` days; `/stats` shows the same.
+pub fn text(paths: &Paths, days: u32) -> String {
+    let (since, today) = span(days);
+    render(&collect(&all_sessions(paths), since), since, today)
+}
+
 /// `azazel stats [--days N] [--json]`.
 pub fn run(paths: &Paths, days: u32, as_json: bool) -> u8 {
     if days == 0 {
         eprintln!("azazel: --days must be at least 1");
         return EXIT_USAGE;
     }
-    let today = jiff::Zoned::now().date();
-    let since = today
-        .checked_sub(jiff::Span::new().days(i64::from(days - 1)))
-        .unwrap_or(today);
-    let stats = collect(&all_sessions(paths), since);
     if as_json {
-        println!("{}", json(&stats));
+        let (since, _) = span(days);
+        println!("{}", json(&collect(&all_sessions(paths), since)));
     } else {
-        print!("{}", render(&stats, since, today));
+        print!("{}", text(paths, days));
     }
     EXIT_OK
 }

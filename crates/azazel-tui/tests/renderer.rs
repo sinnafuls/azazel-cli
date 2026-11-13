@@ -4,7 +4,7 @@
 
 use std::num::NonZeroU16;
 
-use azazel_tui::render::{Floor, Frame, Renderer};
+use azazel_tui::render::{Floor, Frame, HistoryItem, Renderer};
 
 fn nz(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap()
@@ -14,9 +14,13 @@ fn lines(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_string()).collect()
 }
 
-fn frame(history: &[&str], viewport: &[&str]) -> Frame {
+fn history(items: &[&str]) -> Vec<HistoryItem> {
+    items.iter().map(|s| HistoryItem::from(*s)).collect()
+}
+
+fn frame(above: &[&str], viewport: &[&str]) -> Frame {
     Frame {
-        history: lines(history),
+        history: history(above),
         viewport: lines(viewport),
         cursor: None,
     }
@@ -95,9 +99,9 @@ fn history_sits_above_a_growing_viewport() {
 #[test]
 fn history_scrolls_into_native_scrollback_in_order() {
     let mut term = Harness::new(20, 5);
-    let history: Vec<String> = (1..=8).map(|i| format!("h{i}")).collect();
+    let above = (1..=8).map(|i| format!("h{i}").into()).collect();
     term.render(Frame {
-        history,
+        history: above,
         viewport: lines(&["v1", "v2"]),
         cursor: None,
     });
@@ -324,14 +328,25 @@ fn suspend_erases_the_viewport_and_the_next_frame_redraws_it() {
 
 /// Draws a frame the way an application with a bottom-anchored input does: blank rows between
 /// what follows the transcript (`top`) and what stays at the bottom (`bottom`).
-fn anchored(term: &mut Harness, floor: &mut Floor, history: &[&str], top: &[&str], bottom: &[&str]) {
+fn anchored(term: &mut Harness, floor: &mut Floor, above: &[&str], top: &[&str], bottom: &[&str]) {
+    anchored_items(term, floor, history(above), top, bottom);
+}
+
+fn anchored_items(
+    term: &mut Harness,
+    floor: &mut Floor,
+    above: Vec<HistoryItem>,
+    top: &[&str],
+    bottom: &[&str],
+) {
     let (_, height) = term.renderer.size();
-    let filler = floor.pad(history.len(), top.len() + bottom.len(), height);
+    let rows = above.iter().map(HistoryItem::rows).sum();
+    let filler = floor.pad(rows, top.len() + bottom.len(), height);
     let mut viewport = lines(top);
     viewport.resize(top.len() + filler, String::new());
     viewport.extend(lines(bottom));
     term.render(Frame {
-        history: lines(history),
+        history: above,
         viewport,
         cursor: None,
     });
@@ -444,4 +459,105 @@ fn into_inner_returns_everything_written() {
     let mut parser = vt100::Parser::new(nz(5), nz(20), 0);
     parser.process(&bytes);
     assert_eq!(parser.screen().contents().trim_end(), "h\nv");
+}
+
+#[test]
+fn a_block_takes_its_rows_between_two_lines() {
+    let mut term = Harness::new(20, 8);
+    // The paint writes on each of its rows and leaves the cursor at the end of the last one.
+    let block = HistoryItem::Block {
+        rows: 3,
+        paint: "AAA\x1b[1B\rBBB\x1b[1B\rCCC".to_string(),
+    };
+    term.render(Frame {
+        history: vec!["before".into(), block, "after".into()],
+        viewport: lines(&["v1", "v2"]),
+        cursor: Some((1, 2)),
+    });
+    assert_eq!(
+        term.used_rows(),
+        ["before", "AAA", "BBB", "CCC", "after", "v1", "v2"]
+    );
+    assert_eq!(term.parser.screen().cursor_position(), (6, 2));
+    // The renderer still knows where its rows are: a change lands on the right one.
+    term.render(frame(&[], &["v1", "changed"]));
+    assert_eq!(
+        term.used_rows(),
+        ["before", "AAA", "BBB", "CCC", "after", "v1", "changed"]
+    );
+}
+
+#[test]
+fn an_image_block_that_scrolls_the_screen_keeps_the_viewport_on_its_rows() {
+    let mut term = Harness::new(20, 10);
+    let mut floor = Floor::new(10);
+    anchored(&mut term, &mut floor, &["one", "two"], &[], &["input", "status"]);
+    assert_eq!(term.screen()[8..], ["input", "status"]);
+    // A kitty image (the terminal draws it without moving the cursor), marked on its first and
+    // last row so the test can see where it went.
+    let image = HistoryItem::Block {
+        rows: 6,
+        paint: "\x1b_Ga=T,f=100,q=2,C=1,r=6;AAAA\x1b\\top\x1b[5B\rbottom".to_string(),
+    };
+    anchored_items(
+        &mut term,
+        &mut floor,
+        vec!["card".into(), image, "text after".into()],
+        &[],
+        &["input", "status"],
+    );
+    // Ten rows of transcript and two of viewport on a ten-row screen: the first two rows of the
+    // transcript have scrolled away.
+    assert_eq!(
+        term.screen(),
+        [
+            "card",
+            "top",
+            "",
+            "",
+            "",
+            "",
+            "bottom",
+            "text after",
+            "input",
+            "status"
+        ]
+    );
+    anchored(
+        &mut term,
+        &mut floor,
+        &["later"],
+        &["streaming"],
+        &["input!", "status"],
+    );
+    assert_eq!(
+        term.screen(),
+        [
+            "",
+            "",
+            "",
+            "",
+            "bottom",
+            "text after",
+            "later",
+            "streaming",
+            "input!",
+            "status"
+        ]
+    );
+}
+
+#[test]
+fn a_block_taller_than_the_screen_is_left_blank() {
+    let mut term = Harness::new(20, 4);
+    let block = HistoryItem::Block {
+        rows: 4,
+        paint: "PAINT".to_string(),
+    };
+    term.render(Frame {
+        history: vec![block],
+        viewport: lines(&["v"]),
+        cursor: None,
+    });
+    assert_eq!(term.screen(), ["", "", "", "v"]);
 }

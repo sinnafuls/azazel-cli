@@ -160,6 +160,12 @@ pub enum Sub {
         #[arg(long, value_name = "VERSION")]
         since: Option<String>,
     },
+    /// What your Claude and ChatGPT subscriptions have left, and when each window resets
+    Usage {
+        /// One JSON array, an object per account
+        #[arg(long)]
+        json: bool,
+    },
     /// Sessions, prompts, tokens and cost per day, model, project and tool
     Stats {
         /// How many days back, today included

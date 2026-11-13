@@ -2,8 +2,11 @@
 
 pub mod accounts;
 pub mod app;
+mod attention;
 pub mod changelog;
 pub mod cli;
+#[cfg(feature = "diagrams")]
+mod diagram;
 pub mod doctor;
 pub mod export;
 pub mod hooks;
@@ -24,6 +27,7 @@ pub mod settings;
 pub mod stats;
 mod tui;
 pub mod update;
+pub mod usage;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
@@ -231,6 +235,12 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
                 return print::EXIT_FAILED;
             };
             return models::run_auth_status(&providers, &credentials, *json);
+        }
+        Some(Sub::Usage { json }) => {
+            let Some((_, providers, credentials)) = provider_setup(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            return usage::run(&providers, &credentials, &usage::cache_file(&paths), *json).await;
         }
         Some(Sub::Update { check }) => return update::run(&paths, *check).await,
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),

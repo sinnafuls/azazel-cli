@@ -1,15 +1,34 @@
 //! ANSI-aware text measurement, wrapping and truncation shared by every component.
 //!
 //! Strings handled here may contain escape sequences (SGR colour codes, OSC hyperlinks). They
-//! take no columns, are never split, and SGR state is tracked so that every produced line is
-//! self-contained: it re-opens the styles active at its start and resets them at its end.
+//! take no columns, are never split, and SGR state and the open hyperlink are tracked so that
+//! every produced line is self-contained: it re-opens the styles and the link active at its
+//! start, and resets the styles and closes the link at its end.
 
 use unicode_segmentation::{Graphemes, UnicodeSegmentation};
 use unicode_width::UnicodeWidthStr;
 
 const ESC: char = '\x1b';
 const SGR_RESET: &str = "\x1b[0m";
+/// How every OSC 8 hyperlink sequence starts; the parameters and the address follow.
+const LINK: &str = "\x1b]8;";
+/// OSC 8 with no address: the end of a hyperlink.
+pub const LINK_END: &str = "\x1b]8;;\x1b\\";
 const TAB_WIDTH: usize = 4;
+
+/// The address of an OSC 8 sequence: empty for the one that ends a link, `None` for any other
+/// sequence.
+fn link_target(seq: &str) -> Option<&str> {
+    let (_, target) = seq.strip_prefix(LINK)?.split_once(';')?;
+    Some(target.trim_end_matches(['\x07', '\\', ESC]))
+}
+
+/// Whether `line` ends inside a hyperlink.
+fn link_is_open(line: &str) -> bool {
+    line.rfind(LINK)
+        .and_then(|at| link_target(&line[at..at + escape_len(&line[at..])]))
+        .is_some_and(|target| !target.is_empty())
+}
 
 pub(crate) enum Segment<'a> {
     /// One complete escape sequence.
@@ -166,9 +185,11 @@ pub fn sanitize(s: &str) -> String {
     out
 }
 
-/// The SGR attributes active at a point in a string.
+/// The SGR attributes and the hyperlink active at a point in a string.
 #[derive(Clone, Default, PartialEq, Eq)]
 struct SgrState {
+    /// The sequence that opened the hyperlink the text is inside.
+    link: Option<String>,
     fg: Option<String>,
     bg: Option<String>,
     bold: bool,
@@ -181,6 +202,10 @@ struct SgrState {
 
 impl SgrState {
     fn apply(&mut self, seq: &str) {
+        if let Some(target) = link_target(seq) {
+            self.link = (!target.is_empty()).then(|| seq.to_string());
+            return;
+        }
         let Some(body) = seq.strip_prefix("\x1b[").and_then(|s| s.strip_suffix('m')) else {
             return;
         };
@@ -190,7 +215,12 @@ impl SgrState {
         let mut params = body.split(';');
         while let Some(p) = params.next() {
             match p {
-                "" | "0" => *self = Self::default(),
+                "" | "0" => {
+                    *self = SgrState {
+                        link: self.link.take(),
+                        ..Self::default()
+                    }
+                }
                 "1" => self.bold = true,
                 "2" => self.dim = true,
                 "3" => self.italic = true,
@@ -239,7 +269,8 @@ impl SgrState {
         }
     }
 
-    /// One SGR sequence that re-creates this state from the default, or nothing when default.
+    /// One SGR sequence that re-creates this state from the default, then the sequence that
+    /// opens the hyperlink again; nothing when default.
     fn prefix(&self) -> String {
         let mut params: Vec<&str> = Vec::new();
         for (on, code) in [
@@ -260,19 +291,48 @@ impl SgrState {
         if let Some(bg) = &self.bg {
             params.push(bg);
         }
-        if params.is_empty() {
+        let mut prefix = if params.is_empty() {
             String::new()
         } else {
             format!("\x1b[{}m", params.join(";"))
+        };
+        if let Some(link) = &self.link {
+            prefix.push_str(link);
         }
+        prefix
     }
 }
 
 fn close_line(mut line: String) -> String {
-    if line.contains(ESC) && !line.ends_with(SGR_RESET) {
+    if !line.contains(ESC) {
+        return line;
+    }
+    // A link left open would make everything after it on the screen part of it.
+    if link_is_open(&line) {
+        line.push_str(LINK_END);
+    }
+    if !line.ends_with(SGR_RESET) {
         line.push_str(SGR_RESET);
     }
     line
+}
+
+/// The first link in `plain` (text without escape sequences) as a byte range: `http://`,
+/// `https://` or `file://` up to the next space or closing bracket, without the punctuation a
+/// sentence puts after it.
+pub fn find_link(plain: &str) -> Option<std::ops::Range<usize>> {
+    let start = ["https://", "http://", "file://"]
+        .iter()
+        .filter_map(|scheme| plain.find(scheme))
+        .min()?;
+    let rest = &plain[start..];
+    let end = rest
+        .find(|c: char| c.is_whitespace() || matches!(c, ')' | '>' | ']' | '"' | '\'' | '`' | '│'))
+        .unwrap_or(rest.len());
+    let link = rest[..end].trim_end_matches(['.', ',', ';', ':', '!', '?']);
+    link.split_once("://")
+        .is_some_and(|(_, rest)| !rest.is_empty())
+        .then(|| start..start + link.len())
 }
 
 struct Wrapper {
@@ -634,6 +694,78 @@ mod tests {
         let cut = truncate("\x1b[31mhello world\x1b[0m", 5, "…");
         assert_eq!(cut, "\x1b[31mhell…\x1b[0m");
         assert_eq!(width(&cut), 5);
+    }
+
+    const OPEN: &str = "\x1b]8;;https://example.com/a\x1b\\";
+
+    #[test]
+    fn hyperlinks_take_no_columns_and_are_never_cut() {
+        let linked = format!("see {OPEN}the docs{LINK_END} now");
+        assert_eq!(width(&linked), 16);
+        assert_eq!(strip_ansi(&linked), "see the docs now");
+        // The BEL-terminated form and one with parameters are the same to measure.
+        assert_eq!(width("\x1b]8;id=1;https://x.y\x07link\x1b]8;;\x07"), 4);
+        for max in 0..=16 {
+            let cut = truncate(&linked, max, "");
+            assert_eq!(width(&cut), max);
+            // Whole sequences only: what is left of each is a complete opener or closer.
+            assert_eq!(cut.matches("\x1b]8;").count() % 2, 0, "{cut:?}");
+            assert!(!link_is_open(&cut), "{cut:?}");
+        }
+        assert_eq!(
+            truncate(&linked, 7, "…"),
+            format!("see {OPEN}th…{LINK_END}\x1b[0m")
+        );
+    }
+
+    #[test]
+    fn a_wrapped_hyperlink_is_closed_and_opened_again_on_each_line() {
+        let linked = format!("read {OPEN}the long link text{LINK_END} then stop");
+        let lines = wrap(&linked, 10);
+        assert_eq!(
+            lines.iter().map(|l| strip_ansi(l)).collect::<Vec<_>>(),
+            ["read the", "long link", "text then", "stop"]
+        );
+        assert_eq!(lines[0], format!("read {OPEN}the{LINK_END}\x1b[0m"));
+        assert_eq!(lines[1], format!("{OPEN}long link{LINK_END}\x1b[0m"));
+        assert_eq!(lines[2], format!("{OPEN}text{LINK_END} then\x1b[0m"));
+        assert_eq!(lines[3], "stop");
+        for line in &lines {
+            assert!(width(line) <= 10);
+        }
+
+        // Styles and the link survive together, and a reset inside the link does not end it.
+        let styled = format!("{OPEN}\x1b[4mone\x1b[0m two{LINK_END}");
+        let lines = wrap(&styled, 3);
+        assert_eq!(lines[0], format!("{OPEN}\x1b[4mone\x1b[0m{LINK_END}\x1b[0m"));
+        assert_eq!(lines[1], format!("{OPEN}two{LINK_END}\x1b[0m"));
+
+        let hard = wrap_hard(&format!("{OPEN}abcdef{LINK_END}"), 4);
+        assert_eq!(
+            hard,
+            [
+                format!("{OPEN}abcd{LINK_END}\x1b[0m"),
+                format!("{OPEN}ef{LINK_END}\x1b[0m")
+            ]
+        );
+    }
+
+    #[test]
+    fn links_are_found_up_to_spaces_and_closing_punctuation() {
+        fn found(text: &str) -> Option<&str> {
+            find_link(text).map(|range| &text[range])
+        }
+        assert_eq!(
+            found("see (https://a.example/x?y=1) now"),
+            Some("https://a.example/x?y=1")
+        );
+        assert_eq!(found("http://b.example, then"), Some("http://b.example"));
+        assert_eq!(
+            found("file:///tmp/a.txt and https://later.example"),
+            Some("file:///tmp/a.txt")
+        );
+        assert_eq!(found("nothing here"), None);
+        assert_eq!(found("https://"), None);
     }
 
     #[test]

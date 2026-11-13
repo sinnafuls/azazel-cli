@@ -281,6 +281,8 @@ pub enum ThemeError {
 pub struct Theme {
     colors: [Color; ROLE_COUNT],
     depth: ColorDepth,
+    /// The terminal follows OSC 8 hyperlinks.
+    links: bool,
 }
 
 impl Theme {
@@ -311,6 +313,7 @@ impl Theme {
                 Color::Rgb(240, 160, 80),  // mode_auto
             ],
             depth: ColorDepth::TrueColor,
+            links: false,
         }
     }
 
@@ -340,6 +343,7 @@ impl Theme {
                 Color::Rgb(188, 76, 0),    // mode_auto
             ],
             depth: ColorDepth::TrueColor,
+            links: false,
         }
     }
 
@@ -388,6 +392,26 @@ impl Theme {
 
     pub fn depth(&self) -> ColorDepth {
         self.depth
+    }
+
+    /// Returns the theme with hyperlinks on or off: whether [`Theme::link`] makes text
+    /// clickable.
+    pub fn with_links(mut self, links: bool) -> Theme {
+        self.links = links;
+        self
+    }
+
+    pub fn links(&self) -> bool {
+        self.links
+    }
+
+    /// `text` as a hyperlink to `url` when the terminal follows them, else `text` alone.
+    pub fn link(&self, url: &str, text: &str) -> String {
+        if self.links {
+            crate::term::hyperlink(url, text)
+        } else {
+            text.to_string()
+        }
     }
 
     pub fn color(&self, role: Role) -> Color {

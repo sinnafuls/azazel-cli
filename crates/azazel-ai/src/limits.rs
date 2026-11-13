@@ -42,6 +42,38 @@ impl Window {
     pub fn exhausted(&self) -> bool {
         self.status.starts_with(REJECTED)
     }
+
+    /// Whether nothing is left of the window: the provider refuses requests for it, or it is
+    /// used to the brim. Extra usage is not an allowance that fills.
+    pub fn full(&self) -> bool {
+        self.name != "overage" && (self.exhausted() || self.used >= 0.995)
+    }
+
+    /// `the 5-hour limit of this account is full; it resets in 2 h 10 min`.
+    pub fn full_line(&self, now: u64) -> String {
+        match self.resets_at.filter(|at| *at > now) {
+            Some(at) => format!(
+                "the {} of this account is full; it resets in {}",
+                self.label(),
+                time_left(at - now)
+            ),
+            None => format!("the {} of this account is full", self.label()),
+        }
+    }
+}
+
+/// A wait as a person says it: `under a minute`, `45 min`, `2 h 10 min`, `3 d 4 h`.
+pub fn time_left(seconds: u64) -> String {
+    let minutes = seconds / 60;
+    let (days, hours, minutes) = (minutes / 1440, minutes / 60 % 24, minutes % 60);
+    match (days, hours, minutes) {
+        (0, 0, 0) => "under a minute".to_string(),
+        (0, 0, m) => format!("{m} min"),
+        (0, h, 0) => format!("{h} h"),
+        (0, h, m) => format!("{h} h {m} min"),
+        (d, 0, _) => format!("{d} d"),
+        (d, h, _) => format!("{d} d {h} h"),
+    }
 }
 
 /// The limits of one account, as [`LimitStore::snapshot`] hands them out.
@@ -122,6 +154,16 @@ impl LimitStore {
         self.windows(provider, account)
             .into_iter()
             .find(Window::exhausted)
+    }
+
+    /// The window of the account that has nothing left, when one is known.
+    pub fn full(&self, provider: &str, account: &str) -> Option<Window> {
+        let windows = self.windows(provider, account);
+        windows
+            .iter()
+            .find(|window| window.full() && window.exhausted())
+            .or_else(|| windows.iter().find(|window| window.full()))
+            .cloned()
     }
 
     /// Marks the account as out of allowance until `until` (Unix seconds).
@@ -210,6 +252,43 @@ mod tests {
             all.iter().map(|a| a.account.as_str()).collect::<Vec<_>>(),
             ["default", "work"]
         );
+    }
+
+    #[test]
+    fn a_full_window_says_which_it_is_and_when_it_resets() {
+        assert_eq!(time_left(0), "under a minute");
+        assert_eq!(time_left(59), "under a minute");
+        assert_eq!(time_left(45 * 60), "45 min");
+        assert_eq!(time_left(2 * 3600), "2 h");
+        assert_eq!(time_left(2 * 3600 + 10 * 60 + 59), "2 h 10 min");
+        assert_eq!(time_left(3 * 86_400 + 4 * 3600 + 30 * 60), "3 d 4 h");
+        assert_eq!(time_left(7 * 86_400), "7 d");
+
+        let store = LimitStore::new();
+        assert_eq!(store.full("anthropic", "default"), None);
+        store.record(
+            "anthropic",
+            "default",
+            vec![
+                window("5h", 0.4, "allowed"),
+                window("7d", 0.999, "allowed"),
+                window("overage", 1.0, "rejected (out_of_credits)"),
+            ],
+        );
+        // Used to the brim counts; extra usage is not a window that fills.
+        let full = store.full("anthropic", "default").unwrap();
+        assert_eq!(full.name, "7d");
+        assert_eq!(
+            full.full_line(4_000_000_000 - 7_800),
+            "the 7-day limit of this account is full; it resets in 2 h 10 min"
+        );
+        assert_eq!(
+            full.full_line(4_000_000_001),
+            "the 7-day limit of this account is full"
+        );
+        // The window the provider refuses for comes before one that is merely full.
+        store.record("anthropic", "default", vec![window("5h", 1.0, REJECTED)]);
+        assert_eq!(store.full("anthropic", "default").unwrap().name, "5h");
     }
 
     #[test]

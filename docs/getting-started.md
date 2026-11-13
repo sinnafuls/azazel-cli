@@ -63,6 +63,13 @@ The interactive UI also checks GitHub in the background, at most once a day, and
 version exists. Turn that off with `[update] check = false` in [configuration](configuration.md) or with the
 environment variable `AZAZEL_NO_UPDATE_CHECK=1`.
 
+With `[update] auto = true` the background check also downloads a newer release, verifies it against its
+published SHA-256 and keeps it in `~/.azazel/cache/update/<version>/`. When you leave the UI, azazel installs it
+the way `azazel update` does and prints one line (`azazel updated 0.2.0 -> 0.3.0; the next start runs it`). A
+download that does not match its checksum is thrown away. Print mode, RPC mode and the subcommands never
+install anything on their own, and nothing is downloaded when the release cannot be reached (a private
+repository without a token).
+
 The first time the UI starts after an update it says so, with the number of changes. `azazel changelog` (or
 `/changelog`) shows what changed in each release; `--since 0.2.0` shows only what is newer.
 

@@ -166,13 +166,21 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `args` | `[]` | Arguments |
 | `[tui]` | `theme` | `"dark"` | `dark`, `light` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
 | | `favourites` | `[]` | Models `Alt+M` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list |
+| | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images and diagrams](tui.md#images-and-diagrams) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
 | `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
 | | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |
 | | `fold_paste_lines` | `10` | Pastes longer than this many lines fold into one token; `0` never folds |
 | `[compat]` | `claude` | `true` | Also read `CLAUDE.md` and `.claude/` skills, agents and commands |
+| `[notify]` | `bell` | `true` | Ring the terminal bell when an agent needs you or a long run ends, while the terminal is not focused; see [attention](tui.md#attention-title-and-progress) |
+| | `desktop` | `"auto"` | Desktop notification at the same moments: `auto`, `terminal`, `system` or `off` |
+| | `title` | `true` | Show the session and its state in the terminal's title |
+| | `progress` | `true` | Show working, waiting and failed in the terminal's tab (OSC 9;4) |
+| | `min_secs` | `20` | A finished or failed run notifies only when it took at least this many seconds |
+| | `keep_awake` | `true` | Keep the machine from sleeping while agents work |
 | `[update]` | `check` | `true` | Look for a newer release at most once a day |
+| | `auto` | `false` | Also download a newer release in the background and install it when the UI exits; see [updating](getting-started.md#updating) |
 
 ## Trust
 

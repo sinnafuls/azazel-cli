@@ -392,6 +392,40 @@ anthropic: account work reached its 5-hour limit (resets 14:05); now using perso
 
 Otherwise the chain falls back as for any other failure. An account is never switched for any other reason, and work stays on the account it moved to. Accounts apply to credentials in `auth.json` only: a key from the environment, a command or the configuration is used whatever is selected.
 
+### Usage
+
+`/usage` in the UI and `azazel usage [--json]` in the shell show what each signed-in subscription has left:
+
+```text
+anthropic · default (you@example.com)
+  5h         [████████░░░░░░░░░░░░]  42%  resets in 2 h 10 min
+  7d         [██░░░░░░░░░░░░░░░░░░]   9%  resets in 3 d 4 h
+  extra usage: off
+openai-codex · default (you@example.com) · plus plan
+  5h         [█░░░░░░░░░░░░░░░░░░░]   5%  resets in 4 h 31 min
+  7d         [███░░░░░░░░░░░░░░░░░]  14%  resets in 6 d 2 h
+```
+
+One block per stored login, labelled accounts included. The numbers come from the provider: Anthropic is asked
+at `/api/oauth/usage` for a Claude login, the ChatGPT backend at `/wham/usage` for a ChatGPT login. Neither
+address is documented by its vendor; they are what the vendors' own clients ask. An answer is kept for five
+minutes in `~/.azazel/cache/limits.json`, per provider and account, so looking again does not ask again. When a
+provider cannot be asked (no network, an expired login, a changed endpoint), the block shows what the headers of
+this session's responses said about the account instead, and why. Providers used with an API key have no usage
+windows to show.
+
+Between looks, the windows are kept up to date from response headers: Anthropic's unified rate-limit headers
+and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend. Once a window of the
+account in use is at least 80 % full, the status line shows the fullest one (`◔ 5h 84%`).
+
+A subscription whose window is full is refused by Anthropic with "You're out of extra usage", which names
+neither the window nor the wait. azazel adds what it knows as a second line:
+
+```text
+usage limit reached: You're out of extra usage. Add more at claude.ai/settings/usage and keep going.
+the 5-hour limit of this account is full; it resets in 2 h 10 min
+```
+
 ### Keys in `.env` files
 
 A `.env` file holds `NAME=value` lines; `export NAME=value`, quoted values and `#` comments are understood.
