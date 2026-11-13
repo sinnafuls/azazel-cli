@@ -2,13 +2,14 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
 use azazel_ai::Block;
-use azazel_core::{ArtifactStore, Scheme};
+use azazel_core::{ArtifactStore, Lines, Scheme};
 use dom_smoothie::{Article, Config, Readability, TextMode};
 use htmd::HtmlToMarkdown;
 use reqwest::Url;
@@ -27,6 +28,10 @@ pub const MAX_REDIRECTS: usize = 5;
 const CACHE_TTL: Duration = Duration::from_secs(15 * 60);
 /// The most result text the cache holds; the oldest entries make room for new ones.
 const CACHE_MAX_BYTES: usize = 32 * 1024 * 1024;
+/// Characters of a page one call returns when it names no `limit`.
+pub const DEFAULT_LIMIT: usize = 30_000;
+/// The most characters of a page one call can ask for.
+pub const MAX_LIMIT: usize = 200_000;
 
 /// The IPv6 address of the AWS instance metadata service.
 const AWS_METADATA_V6: Ipv6Addr = Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254);
@@ -114,6 +119,7 @@ fn media_type(content_type: &str) -> String {
 enum Kind {
     Html,
     Text,
+    Pdf,
     Binary,
 }
 
@@ -138,7 +144,11 @@ fn classify(media_type: Option<&str>, body: &[u8]) -> Kind {
         {
             Kind::Text
         }
+        Some("application/pdf") => Kind::Pdf,
+        // Many servers send a PDF as a download of no particular type.
+        Some(_) if body.starts_with(b"%PDF-") => Kind::Pdf,
         Some(_) => Kind::Binary,
+        None if body.starts_with(b"%PDF-") => Kind::Pdf,
         None => match std::str::from_utf8(body) {
             Ok(text) => {
                 let start: String = text.trim_start().chars().take(15).collect();
@@ -217,9 +227,112 @@ fn html_to_text(html: &str, url: &str) -> String {
     }
 }
 
+/// The lines of a page as `offset` and `web_grep` count them.
+pub(super) fn lines(text: &str) -> impl Iterator<Item = &str> {
+    text.strip_suffix('\n')
+        .unwrap_or(text)
+        .split('\n')
+        .map(|line| line.strip_suffix('\r').unwrap_or(line))
+}
+
+/// The part of a page one call returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Window {
+    /// The first line, 1-based.
+    pub offset: usize,
+    /// The most characters.
+    pub chars: usize,
+    /// The most lines.
+    pub lines: usize,
+}
+
+impl Window {
+    /// What `web_fetch` returns for its `offset` and `limit`.
+    fn of_fetch(offset: Option<usize>, limit: Option<usize>) -> Self {
+        Window {
+            offset: offset.unwrap_or(1).max(1),
+            chars: limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT),
+            lines: usize::MAX,
+        }
+    }
+
+    /// What `read` returns for its `offset` and `limit`, which counts lines.
+    fn of_read(lines: Lines) -> Self {
+        Window {
+            offset: lines.offset.unwrap_or(1).max(1),
+            chars: DEFAULT_LIMIT,
+            lines: lines.limit.unwrap_or(usize::MAX).max(1),
+        }
+    }
+}
+
+/// Whole lines of `text` from line `window.offset` on, as many as fit `window`, then a line that
+/// says which lines these are and how to go on. A page that fits is returned as it is. A single
+/// line longer than the window is cut, and the trailer says so.
+pub(super) fn window(text: &str, window: Window) -> Result<String, String> {
+    // No more bytes than the characters allowed: it fits without counting.
+    if window.offset == 1 && window.lines == usize::MAX && text.len() <= window.chars {
+        return Ok(text.to_string());
+    }
+    let total = lines(text).count();
+    let first = window.offset;
+    if first > total {
+        return Err(format!(
+            "offset {first} is past the end of the page ({total} lines)"
+        ));
+    }
+    let mut out = String::new();
+    let mut used = 0;
+    let mut last = first - 1;
+    // The length of a line that did not fit even alone.
+    let mut cut = None;
+    for (index, line) in lines(text).enumerate().skip(first - 1).take(window.lines) {
+        let length = line.chars().count();
+        let joint = usize::from(last >= first);
+        if used + joint + length > window.chars {
+            if last < first {
+                let end = line
+                    .char_indices()
+                    .nth(window.chars)
+                    .map_or(line.len(), |(at, _)| at);
+                out.push_str(&line[..end]);
+                cut = Some(length);
+                last = index + 1;
+            }
+            break;
+        }
+        if joint == 1 {
+            out.push('\n');
+        }
+        out.push_str(line);
+        used += joint + length;
+        last = index + 1;
+    }
+    if first == 1 && last == total && cut.is_none() {
+        return Ok(out);
+    }
+    out.push_str(&format!("\n[lines {first}-{last} of {total}"));
+    if let Some(length) = cut {
+        out.push_str(&format!(
+            "; line {last} is cut at {} of {length} characters",
+            window.chars
+        ));
+    }
+    if last < total {
+        out.push_str(&format!(
+            "; continue with offset={}, or web_grep to search the page",
+            last + 1
+        ));
+    } else if cut.is_some() {
+        out.push_str("; web_grep searches all of it");
+    }
+    out.push(']');
+    Ok(out)
+}
+
 struct Cached {
     at: Instant,
-    text: String,
+    text: Arc<str>,
 }
 
 /// Fetches URLs for `web_fetch` and the URL schemes, remembering results for fifteen minutes.
@@ -243,9 +356,9 @@ impl Fetcher {
         })
     }
 
-    /// The content at `url` in `format`: page text, or for content that is not text a note
-    /// naming the artifact file it was saved to.
-    pub async fn fetch(&self, url: &str, format: Format, ctx: &ToolCtx) -> Result<String, String> {
+    /// The content at `url` in `format`: the whole page text, or for content that is not text a
+    /// note naming the artifact file it was saved to.
+    pub async fn fetch(&self, url: &str, format: Format, ctx: &ToolCtx) -> Result<Arc<str>, String> {
         let mut url = Url::parse(url.trim()).map_err(|e| {
             format!(
                 "invalid URL {url:?}: {e}; give an absolute http or https URL such as \
@@ -257,15 +370,15 @@ impl Fetcher {
         if let Some(text) = self.cached(&key) {
             return Ok(text);
         }
-        let text = tokio::select! {
+        let text: Arc<str> = tokio::select! {
             _ = ctx.cancel.cancelled() => return Err("aborted by user".to_string()),
-            fetched = self.fetch_fresh(url, format, ctx) => fetched?,
+            fetched = self.fetch_fresh(url, format, ctx) => fetched?.into(),
         };
         self.remember(key, text.clone());
         Ok(text)
     }
 
-    fn cached(&self, key: &(String, Format)) -> Option<String> {
+    fn cached(&self, key: &(String, Format)) -> Option<Arc<str>> {
         let cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         cache
             .get(key)
@@ -273,7 +386,7 @@ impl Fetcher {
             .map(|entry| entry.text.clone())
     }
 
-    fn remember(&self, key: (String, Format), text: String) {
+    fn remember(&self, key: (String, Format), text: Arc<str>) {
         let mut cache = self.cache.lock().unwrap_or_else(PoisonError::into_inner);
         cache.retain(|_, entry| entry.at.elapsed() < CACHE_TTL);
         let mut held: usize = cache.values().map(|entry| entry.text.len()).sum();
@@ -336,9 +449,13 @@ impl Fetcher {
         }
 
         let text = match classify(media_type.as_deref(), &body) {
+            #[cfg(feature = "pdf")]
+            Kind::Pdf => return pdf_text(&url, body, ctx).await,
+            #[cfg(not(feature = "pdf"))]
+            Kind::Pdf => return save(&url, "a PDF, which this build of azazel cannot read", &body, ctx),
             Kind::Binary => {
                 let what = media_type.as_deref().unwrap_or("binary data");
-                return save(&url, what, &body, ctx);
+                return save(&url, &format!("{what}, not text"), &body, ctx);
             }
             Kind::Text => String::from_utf8_lossy(&body).into_owned(),
             Kind::Html => {
@@ -401,25 +518,61 @@ impl Fetcher {
     }
 }
 
-/// Saves a body that is not text as an artifact and says where it is.
-fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
+/// Saves a body as an artifact named after the last segment of `url`.
+fn save_artifact(url: &Url, body: &[u8], ctx: &ToolCtx) -> Result<PathBuf, String> {
     let store = ctx
         .services
         .get::<ArtifactStore>()
-        .ok_or_else(|| format!("{url} is {what}, not text, and there is no artifact store to save it to"))?;
+        .ok_or("there is no artifact store to save it to")?;
     let file = url
         .path_segments()
         .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty())
         .unwrap_or("download");
-    let path = store
+    store
         .save(&format!("{}-{file}", ctx.call_id), body)
-        .map_err(|e| format!("{url} is {what}, not text, and saving it failed: {e}"))?;
-    Ok(format!(
-        "{url} is {what} ({} bytes), not text. Saved to {}",
-        body.len(),
-        path.display()
-    ))
+        .map_err(|e| format!("saving it failed: {e}"))
+}
+
+/// Saves a body that cannot be returned as text and says where it is. `what` is what the body is
+/// in place of text, such as `image/png, not text`.
+fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
+    match save_artifact(url, body, ctx) {
+        Ok(path) => Ok(format!(
+            "{url} is {what} ({} bytes). Saved to {}",
+            body.len(),
+            path.display()
+        )),
+        Err(why) => Err(format!("{url} is {what}, and {why}")),
+    }
+}
+
+/// The text of a PDF, every page under a `--- page N ---` line, below a first line that names
+/// the artifact the file was saved to. A PDF without readable text is saved and reported like
+/// other content that is not text.
+#[cfg(feature = "pdf")]
+async fn pdf_text(url: &Url, body: Vec<u8>, ctx: &ToolCtx) -> Result<String, String> {
+    let size = body.len();
+    let saved = save_artifact(url, &body, ctx);
+    // Parsing a large PDF takes a while: off the async threads.
+    let read = tokio::task::spawn_blocking(move || crate::pdf::read_all(&body)).await;
+    let read = read.unwrap_or_else(|_| Err("the PDF could not be read".to_string()));
+    match (read, saved) {
+        (Ok(text), Ok(path)) => Ok(format!(
+            "{url} is a PDF ({size} bytes), saved to {}\n\n{text}",
+            path.display()
+        )),
+        (Ok(text), Err(why)) => Ok(format!(
+            "{url} is a PDF ({size} bytes); it was not saved: {why}\n\n{text}"
+        )),
+        (Err(unreadable), Ok(path)) => Ok(format!(
+            "{url} is a PDF ({size} bytes) without text to return: {unreadable}. Saved to {}",
+            path.display()
+        )),
+        (Err(unreadable), Err(why)) => Err(format!(
+            "{url} is a PDF without text to return: {unreadable}; {why}"
+        )),
+    }
 }
 
 /// What permission rules are matched against when `url` is fetched: `domain:<host>`. `None` when
@@ -447,6 +600,10 @@ struct FetchInput {
     url: String,
     #[serde(default)]
     format: Format,
+    #[serde(default)]
+    offset: Option<usize>,
+    #[serde(default)]
+    limit: Option<usize>,
 }
 
 #[async_trait]
@@ -458,9 +615,12 @@ impl Tool for WebFetchTool {
     fn description(&self) -> &str {
         "Fetch an http or https URL. `format` is `markdown` (default: the main content of an HTML page \
          as Markdown), `text` (the same as plain text) or `raw` (the body as sent). JSON and plain text \
-         are returned unchanged; anything else is saved to a file whose path is returned. Bodies over \
-         5 MB are refused. Results are cached for 15 minutes. Pages that build their content with \
-         scripts come back empty: use `browser` for those."
+         are returned unchanged, a PDF comes back as its text, and anything else is saved to a file \
+         whose path is returned. A long page comes in parts of `limit` characters (default 30000): the \
+         last line names the lines shown and the `offset` (1-based line) to continue from; `web_grep` \
+         finds the lines that matter without reading the page. Bodies over 5 MB are refused. Results \
+         are cached for 15 minutes, so paging and `web_grep` fetch a page once. Pages that build their \
+         content with scripts come back empty: use `browser` for those."
     }
 
     fn schema(&self) -> Value {
@@ -468,7 +628,14 @@ impl Tool for WebFetchTool {
             "type": "object",
             "properties": {
                 "url": {"type": "string"},
-                "format": {"type": "string", "enum": ["markdown", "text", "raw"]}
+                "format": {"type": "string", "enum": ["markdown", "text", "raw"]},
+                "offset": {"type": "integer", "minimum": 1, "description": "First line to return (1-based)"},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": MAX_LIMIT,
+                    "description": "Most characters to return (default 30000)"
+                }
             },
             "required": ["url"]
         })
@@ -492,14 +659,19 @@ impl Tool for WebFetchTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        match self.fetcher.fetch(&input.url, input.format, ctx).await {
+        let page = match self.fetcher.fetch(&input.url, input.format, ctx).await {
+            Ok(page) => page,
+            Err(error) => return ToolOutput::error(error),
+        };
+        match window(&page, Window::of_fetch(input.offset, input.limit)) {
             Ok(text) => ToolOutput::text(text),
             Err(error) => ToolOutput::error(error),
         }
     }
 }
 
-/// `http://…` and `https://…` for the `read` tool: the page as Markdown.
+/// `http://…` and `https://…` for the `read` tool: the page as Markdown, paged by `read`'s
+/// `offset` and `limit`.
 pub struct UrlScheme {
     scheme: &'static str,
     fetcher: Arc<Fetcher>,
@@ -528,9 +700,13 @@ impl Scheme for UrlScheme {
     }
 
     async fn read(&self, rest: &str, ctx: &ToolCtx) -> Result<Vec<Block>, String> {
+        self.read_lines(rest, Lines::default(), ctx).await
+    }
+
+    async fn read_lines(&self, rest: &str, lines: Lines, ctx: &ToolCtx) -> Result<Vec<Block>, String> {
         let url = format!("{}://{rest}", self.scheme);
-        let text = self.fetcher.fetch(&url, Format::Markdown, ctx).await?;
-        Ok(vec![Block::text(text)])
+        let page = self.fetcher.fetch(&url, Format::Markdown, ctx).await?;
+        Ok(vec![Block::text(window(&page, Window::of_read(lines))?)])
     }
 
     /// Reading a web address is a fetch of its host.
@@ -591,9 +767,121 @@ mod tests {
         ] {
             assert_eq!(classify(Some(text), b""), Kind::Text, "{text}");
         }
-        for binary in ["application/pdf", "image/png", "application/octet-stream"] {
+        for binary in ["image/png", "application/octet-stream"] {
             assert_eq!(classify(Some(binary), b"plain"), Kind::Binary, "{binary}");
         }
+        // A PDF is known by its type, or by its first bytes when the type says nothing useful.
+        assert_eq!(classify(Some("application/pdf"), b"plain"), Kind::Pdf);
+        assert_eq!(
+            classify(Some("application/octet-stream"), b"%PDF-1.7\n"),
+            Kind::Pdf
+        );
+        assert_eq!(classify(None, b"%PDF-1.4\n"), Kind::Pdf);
+    }
+
+    fn part(text: &str, offset: usize, chars: usize) -> Result<String, String> {
+        window(
+            text,
+            Window {
+                offset,
+                chars,
+                lines: usize::MAX,
+            },
+        )
+    }
+
+    #[test]
+    fn a_page_that_fits_is_returned_as_it_is() {
+        let page = "line one\r\n  line two\n";
+        assert_eq!(part(page, 1, page.len()).unwrap(), page);
+        assert_eq!(part(page, 1, DEFAULT_LIMIT).unwrap(), page);
+        // Characters are counted, not bytes: four two-byte letters fit a window of four.
+        assert_eq!(part("éé\néé", 1, 5).unwrap(), "éé\néé");
+    }
+
+    #[test]
+    fn a_long_page_comes_in_whole_lines_and_each_part_names_the_next() {
+        let page: String = (1..=10).map(|n| format!("l{n}\n")).collect();
+        assert_eq!(
+            part(&page, 1, 8).unwrap(),
+            "l1\nl2\nl3\n[lines 1-3 of 10; continue with offset=4, or web_grep to search the page]"
+        );
+        // Following the offsets walks the page once, in order, with nothing lost or repeated.
+        let mut seen = Vec::new();
+        let mut offset = 1;
+        loop {
+            let text = part(&page, offset, 8).unwrap();
+            let (body, trailer) = text.rsplit_once("\n[").unwrap();
+            seen.extend(body.lines().map(str::to_string));
+            match trailer.split_once("offset=") {
+                Some((_, rest)) => offset = rest.split(',').next().unwrap().parse().unwrap(),
+                None => {
+                    assert_eq!(trailer, "lines 10-10 of 10]");
+                    break;
+                }
+            }
+        }
+        let all: Vec<String> = (1..=10).map(|n| format!("l{n}")).collect();
+        assert_eq!(seen, all);
+
+        assert_eq!(
+            part(&page, 11, 8).unwrap_err(),
+            "offset 11 is past the end of the page (10 lines)"
+        );
+    }
+
+    #[test]
+    fn read_counts_its_limit_in_lines() {
+        let page: String = (1..=10).map(|n| format!("l{n}\n")).collect();
+        let lines = |offset, limit| window(&page, Window::of_read(Lines { offset, limit }));
+        assert_eq!(lines(None, None).unwrap(), page);
+        assert_eq!(
+            lines(Some(4), Some(2)).unwrap(),
+            "l4\nl5\n[lines 4-5 of 10; continue with offset=6, or web_grep to search the page]"
+        );
+        assert_eq!(lines(Some(9), None).unwrap(), "l9\nl10\n[lines 9-10 of 10]");
+        assert_eq!(lines(None, Some(10)).unwrap(), page.trim_end());
+    }
+
+    #[test]
+    fn a_line_longer_than_the_window_is_cut_and_the_trailer_says_so() {
+        let long = "é".repeat(50);
+        assert_eq!(
+            part(&long, 1, 20).unwrap(),
+            format!(
+                "{}\n[lines 1-1 of 1; line 1 is cut at 20 of 50 characters; web_grep searches all of it]",
+                "é".repeat(20)
+            )
+        );
+        let page = format!("short\n{long}\nend");
+        // The long line does not fit after `short`, so it starts the next part.
+        assert_eq!(
+            part(&page, 1, 20).unwrap(),
+            "short\n[lines 1-1 of 3; continue with offset=2, or web_grep to search the page]"
+        );
+        assert_eq!(
+            part(&page, 2, 20).unwrap(),
+            format!(
+                "{}\n[lines 2-2 of 3; line 2 is cut at 20 of 50 characters; continue with offset=3, \
+                 or web_grep to search the page]",
+                "é".repeat(20)
+            )
+        );
+    }
+
+    #[test]
+    fn web_fetch_limits_stay_within_their_bounds() {
+        assert_eq!(
+            Window::of_fetch(None, None),
+            Window {
+                offset: 1,
+                chars: DEFAULT_LIMIT,
+                lines: usize::MAX
+            }
+        );
+        assert_eq!(Window::of_fetch(Some(0), Some(0)).chars, 1);
+        assert_eq!(Window::of_fetch(Some(0), Some(0)).offset, 1);
+        assert_eq!(Window::of_fetch(Some(7), Some(usize::MAX)).chars, MAX_LIMIT);
         assert_eq!(classify(None, b"  <!DOCTYPE html><html></html>"), Kind::Html);
         assert_eq!(classify(None, b"just words"), Kind::Text);
         assert_eq!(classify(None, &[0xff, 0xfe, 0x00]), Kind::Binary);

@@ -8,8 +8,8 @@ use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolS
 use azazel_ai::Block;
 use azazel_core::{ArtifactStore, ExtCtx, Registry};
 use azazel_tools::web::{
-    Brave, DuckDuckGo, Exa, Fetcher, MAX_BODY_BYTES, SearchBackend, Searxng, Tavily, WebExt, WebFetchTool,
-    WebSearchTool, active_backend, backend_from_config,
+    Brave, DuckDuckGo, Exa, Fetcher, MAX_BODY_BYTES, SearchBackend, SearchHit, SearchQuery, Searxng, Tavily,
+    UrlScheme, WebExt, WebFetchTool, WebGrepTool, WebSearchTool, active_backend, backend_from_config,
 };
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -92,6 +92,39 @@ impl Bench {
 
 fn fetch_tool() -> WebFetchTool {
     WebFetchTool::new(Arc::new(Fetcher::new().unwrap()))
+}
+
+/// `web_fetch`, `web_grep` and `read` on one fetcher, as the extension registers them.
+struct Web {
+    fetch: WebFetchTool,
+    grep: WebGrepTool,
+    read: azazel_tools::ReadTool,
+}
+
+fn web() -> Web {
+    let fetcher = Arc::new(Fetcher::new().unwrap());
+    let schemes = Arc::new(azazel_core::Schemes::default());
+    schemes.add("web", Arc::new(UrlScheme::http(fetcher.clone())));
+    Web {
+        fetch: WebFetchTool::new(fetcher.clone()),
+        grep: WebGrepTool::new(fetcher),
+        read: azazel_tools::ReadTool::new(Arc::default(), schemes),
+    }
+}
+
+/// A plain-text page of 400 numbered lines, `line 1: …` to `line 400: …`; every 50th mentions a
+/// release.
+fn long_page() -> String {
+    (1..=400)
+        .map(|n| {
+            let note = if n % 50 == 0 {
+                format!("Release {} shipped", n / 50)
+            } else {
+                "nothing to report".to_string()
+            };
+            format!("line {n}: {note}\n")
+        })
+        .collect()
 }
 
 fn json_body(body: &str) -> ResponseTemplate {
@@ -638,6 +671,133 @@ async fn json_and_plain_text_pass_through_unchanged() {
 #[tokio::test]
 async fn other_content_is_saved_as_an_artifact_and_its_path_returned() {
     let server = MockServer::start().await;
+    let image: Vec<u8> = b"\x89PNG\r\n\x1a\n\xff\xfe\x00 not text".to_vec();
+    Mock::given(method("GET"))
+        .and(path("/files/chart.png"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(image.clone(), "image/png"))
+        .mount(&server)
+        .await;
+    let bench = bench();
+    let url = format!("{}/files/chart.png", server.uri());
+
+    let out = fetch_tool().call(json!({"url": url}), &bench.ctx()).await;
+    let text = ok(&out);
+    let saved = bench.artifacts();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(saved[0].to_string_lossy().ends_with("chart.png"), "{saved:?}");
+    assert_eq!(std::fs::read(&saved[0]).unwrap(), image);
+    assert_eq!(
+        text,
+        format!(
+            "{url} is image/png, not text ({} bytes). Saved to {}",
+            image.len(),
+            saved[0].display()
+        )
+    );
+}
+
+#[cfg(feature = "pdf")]
+#[tokio::test]
+async fn a_pdf_comes_back_as_its_text_under_a_line_naming_the_saved_file() {
+    let read = |name: &str| {
+        std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/read")
+                .join(name),
+        )
+        .unwrap()
+    };
+    let pdf = read("three-pages.pdf");
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/papers/three-pages.pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(pdf.clone(), "application/pdf"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // A download without a useful type is known by its first bytes.
+    Mock::given(method("GET"))
+        .and(path("/download"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(pdf.clone(), "application/octet-stream"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/scanned.pdf"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(read("scanned.pdf"), "application/pdf"))
+        .mount(&server)
+        .await;
+    let bench = bench();
+    let web = web();
+    let url = format!("{}/papers/three-pages.pdf", server.uri());
+
+    let text = ok(&web.fetch.call(json!({"url": url}), &bench.ctx()).await);
+    let saved = bench.artifacts();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(std::fs::read(&saved[0]).unwrap(), pdf);
+    assert_eq!(
+        text,
+        format!(
+            "{url} is a PDF ({} bytes), saved to {}\n\n\
+             --- page 1 ---\nAlpha one\n\n--- page 2 ---\nBeta two\n\n--- page 3 ---\nGamma three",
+            pdf.len(),
+            saved[0].display()
+        )
+    );
+
+    // The text pages and greps like any other page, without another request.
+    let part = ok(&web
+        .fetch
+        .call(json!({"url": url, "offset": 6, "limit": 23}), &bench.ctx())
+        .await);
+    assert_eq!(
+        part,
+        "--- page 2 ---\nBeta two\n[lines 6-7 of 10; continue with offset=8, or web_grep to search the page]"
+    );
+    let found = ok(&web
+        .grep
+        .call(
+            json!({"url": url, "pattern": "^gamma", "ignore_case": true}),
+            &bench.ctx(),
+        )
+        .await);
+    assert_eq!(found, "10: Gamma three");
+    let read = web
+        .read
+        .call(json!({"path": url, "offset": 9}), &bench.ctx())
+        .await;
+    assert_eq!(ok(&read), "--- page 3 ---\nGamma three\n[lines 9-10 of 10]");
+    assert_eq!(bench.artifacts().len(), 1);
+
+    let download = ok(&web
+        .fetch
+        .call(json!({"url": format!("{}/download", server.uri())}), &bench.ctx())
+        .await);
+    assert!(download.ends_with("--- page 3 ---\nGamma three"), "{download}");
+
+    // A PDF without a text layer is saved, and the result says why there is no text.
+    let scanned_url = format!("{}/scanned.pdf", server.uri());
+    let scanned = ok(&web.fetch.call(json!({"url": scanned_url}), &bench.ctx()).await);
+    let saved: Vec<PathBuf> = bench
+        .artifacts()
+        .into_iter()
+        .filter(|path| path.to_string_lossy().ends_with("scanned.pdf"))
+        .collect();
+    assert_eq!(saved.len(), 1);
+    assert!(
+        scanned.starts_with(&format!("{scanned_url} is a PDF (")),
+        "{scanned}"
+    );
+    assert!(scanned.contains("no extractable text"), "{scanned}");
+    assert!(
+        scanned.ends_with(&format!("Saved to {}", saved[0].display())),
+        "{scanned}"
+    );
+}
+
+#[cfg(not(feature = "pdf"))]
+#[tokio::test]
+async fn a_build_without_the_pdf_reader_saves_a_pdf_and_says_so() {
+    let server = MockServer::start().await;
     let pdf: Vec<u8> = b"%PDF-1.7\n\xff\xfe\x00 not text".to_vec();
     Mock::given(method("GET"))
         .and(path("/files/report.pdf"))
@@ -645,20 +805,424 @@ async fn other_content_is_saved_as_an_artifact_and_its_path_returned() {
         .mount(&server)
         .await;
     let bench = bench();
+    let url = format!("{}/files/report.pdf", server.uri());
 
-    let out = fetch_tool()
+    let text = ok(&fetch_tool().call(json!({"url": url}), &bench.ctx()).await);
+    let saved = bench.artifacts();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert_eq!(std::fs::read(&saved[0]).unwrap(), pdf);
+    assert_eq!(
+        text,
+        format!(
+            "{url} is a PDF, which this build of azazel cannot read ({} bytes). Saved to {}",
+            pdf.len(),
+            saved[0].display()
+        )
+    );
+}
+
+#[tokio::test]
+async fn a_long_page_is_paged_by_line_from_one_request() {
+    let server = MockServer::start().await;
+    let page = long_page();
+    Mock::given(method("GET"))
+        .and(path("/log.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(page.clone()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let bench = bench();
+    let web = web();
+    let url = format!("{}/log.txt", server.uri());
+    let fetch = |input: Value| {
+        let (web, ctx) = (&web, bench.ctx());
+        async move { web.fetch.call(input, &ctx).await }
+    };
+
+    // The default window is larger than this page; a smaller one ends on a whole line and names
+    // the next.
+    assert_eq!(ok(&fetch(json!({"url": url})).await), page);
+    let first = ok(&fetch(json!({"url": url, "limit": 100})).await);
+    assert_eq!(
+        first,
+        "line 1: nothing to report\nline 2: nothing to report\nline 3: nothing to report\n\
+         [lines 1-3 of 400; continue with offset=4, or web_grep to search the page]"
+    );
+
+    // Following each trailer reads the whole page in order.
+    let mut seen = String::new();
+    let mut offset = 1;
+    let mut calls = 0;
+    loop {
+        let part = ok(&fetch(json!({"url": url, "offset": offset, "limit": 2500})).await);
+        let (body, trailer) = part.rsplit_once("\n[").unwrap();
+        assert!(body.chars().count() <= 2500, "{}", body.len());
+        seen.push_str(body);
+        seen.push('\n');
+        calls += 1;
+        match trailer.split_once("continue with offset=") {
+            Some((_, rest)) => offset = rest.split(',').next().unwrap().parse().unwrap(),
+            None => {
+                assert!(trailer.ends_with("-400 of 400]"), "{trailer}");
+                break;
+            }
+        }
+    }
+    assert_eq!(seen, page);
+    assert!(calls > 3, "{calls}");
+
+    // `read` takes the same address; its `limit` counts lines.
+    let read = web
+        .read
+        .call(json!({"path": url, "offset": 199, "limit": 3}), &bench.ctx())
+        .await;
+    assert_eq!(
+        ok(&read),
+        "line 199: nothing to report\nline 200: Release 4 shipped\nline 201: nothing to report\n\
+         [lines 199-201 of 400; continue with offset=202, or web_grep to search the page]"
+    );
+    let tail = web
+        .read
+        .call(json!({"path": url, "offset": 400}), &bench.ctx())
+        .await;
+    assert_eq!(ok(&tail), "line 400: Release 8 shipped\n[lines 400-400 of 400]");
+
+    let past = fetch(json!({"url": url, "offset": 401})).await;
+    assert_eq!(
+        failed(&past),
+        "offset 401 is past the end of the page (400 lines)"
+    );
+    let past = web
+        .read
+        .call(json!({"path": url, "offset": 999}), &bench.ctx())
+        .await;
+    assert_eq!(
+        failed(&past),
+        "offset 999 is past the end of the page (400 lines)"
+    );
+}
+
+#[tokio::test]
+async fn web_grep_finds_lines_in_the_page_web_fetch_cached() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/log.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(long_page()))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let bench = bench();
+    let web = web();
+    let url = format!("{}/log.txt", server.uri());
+    let grep = |input: Value| {
+        let (web, ctx) = (&web, bench.ctx());
+        let mut input = input;
+        input["url"] = json!(url);
+        async move { web.grep.call(input, &ctx).await }
+    };
+    ok(&web
+        .fetch
+        .call(json!({"url": url, "limit": 100}), &bench.ctx())
+        .await);
+
+    // A regular expression, with the line numbers `web_fetch` takes as `offset`.
+    let releases = grep(json!({"pattern": r"Release [1-3] "})).await;
+    assert_eq!(
+        ok(&releases),
+        "50: line 50: Release 1 shipped\n100: line 100: Release 2 shipped\n150: line 150: Release 3 shipped"
+    );
+    assert_eq!(releases.details, Some(json!({"matches": 3, "lines": 400})));
+    let at_match = ok(&web
+        .fetch
+        .call(json!({"url": url, "offset": 100, "limit": 30}), &bench.ctx())
+        .await);
+    assert!(
+        at_match.starts_with("line 100: Release 2 shipped\n["),
+        "{at_match}"
+    );
+
+    // Context lines, with a separator between stretches that are apart.
+    let around = grep(json!({"pattern": "Release [12] ", "context": 1})).await;
+    assert_eq!(
+        ok(&around),
+        "49- line 49: nothing to report\n50: line 50: Release 1 shipped\n51- line 51: nothing to report\n\
+         --\n\
+         99- line 99: nothing to report\n100: line 100: Release 2 shipped\n101- line 101: nothing to report"
+    );
+    // More context than allowed is the most allowed: ten lines on each side.
+    let wide = ok(&grep(json!({"pattern": "Release 4", "context": 500})).await);
+    assert_eq!(wide.lines().count(), 21, "{wide}");
+    assert!(wide.starts_with("190- ") && wide.contains("\n200: "), "{wide}");
+
+    // Case and literal text.
+    assert_eq!(
+        ok(&grep(json!({"pattern": "release 8"})).await),
+        "no matches for \"release 8\" (400 lines scanned)"
+    );
+    assert_eq!(
+        ok(&grep(json!({"pattern": "release 8", "ignore_case": true})).await),
+        "400: line 400: Release 8 shipped"
+    );
+    // As a regular expression the dot is any character (lines 10 to 19); as text it is a dot.
+    let regex = ok(&grep(json!({"pattern": "line 1.: ", "limit": 100})).await);
+    assert_eq!(regex.lines().count(), 10, "{regex}");
+    assert_eq!(
+        ok(&grep(json!({"pattern": "line 1.: ", "literal": true})).await),
+        "no matches for \"line 1.: \" (400 lines scanned)"
+    );
+    assert_eq!(
+        ok(&grep(json!({"pattern": "(shipped", "literal": true})).await),
+        "no matches for \"(shipped\" (400 lines scanned)"
+    );
+
+    // The match limit: 25 unless named, and never more than 100.
+    let default = ok(&grep(json!({"pattern": "nothing"})).await);
+    assert_eq!(
+        default.lines().filter(|line| line.contains(": line ")).count(),
+        25
+    );
+    assert!(
+        default.ends_with(
+            "\n[stopped at 25 matches; the next is on line 26: narrow the pattern or raise limit (at most 100)]"
+        ),
+        "{default}"
+    );
+    let two = ok(&grep(json!({"pattern": "Release", "limit": 2})).await);
+    assert_eq!(
+        two,
+        "50: line 50: Release 1 shipped\n100: line 100: Release 2 shipped\n\
+         [stopped at 2 matches; the next is on line 150: narrow the pattern or raise limit (at most 100)]"
+    );
+    let most = ok(&grep(json!({"pattern": "nothing", "limit": 5000})).await);
+    assert!(
+        most.contains("[stopped at 100 matches; the next is on line 103:"),
+        "{most}"
+    );
+
+    // A pattern that is not a regular expression fails before anything is fetched.
+    let bad = WebGrepTool::new(Arc::new(Fetcher::new().unwrap()))
         .call(
-            json!({"url": format!("{}/files/report.pdf", server.uri())}),
+            json!({"url": "http://127.0.0.1:9/never", "pattern": "(shipped"}),
             &bench.ctx(),
         )
         .await;
+    let reason = failed(&bad);
+    assert!(reason.starts_with("invalid pattern \"(shipped\""), "{reason}");
+    assert!(
+        reason.ends_with("set literal=true to search for the text as written"),
+        "{reason}"
+    );
+    assert_eq!(failed(&grep(json!({"pattern": ""})).await), "pattern is empty");
+
+    // It is a fetch of the page's host.
+    let input = json!({"url": "https://Docs.RS/tokio", "pattern": "x"});
+    assert_eq!(web.grep.access(&input), Access::Net);
+    assert_eq!(web.grep.subjects(&input), ["domain:docs.rs"]);
+}
+
+#[tokio::test]
+async fn web_grep_searches_the_page_in_the_format_asked_for() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/blog/borrow-checker"))
+        .respond_with(html_body(ARTICLE))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let bench = bench();
+    let web = web();
+    let url = format!("{}/blog/borrow-checker", server.uri());
+
+    // The article as Markdown: the heading is a line of its own, and the page chrome is gone.
+    let heading = ok(&web
+        .grep
+        .call(
+            json!({"url": url, "pattern": "^#+ Moves and copies$"}),
+            &bench.ctx(),
+        )
+        .await);
+    let (number, line) = heading.split_once(": ").unwrap();
+    assert_eq!(line, "## Moves and copies");
+    let from_there = ok(&web
+        .fetch
+        .call(
+            json!({"url": url, "offset": number.parse::<usize>().unwrap(), "limit": 19}),
+            &bench.ctx(),
+        )
+        .await);
+    assert!(from_there.starts_with("## Moves and copies\n["), "{from_there}");
+    let chrome = json!({"url": url, "pattern": "TRACKING_SNIPPET_MARKER", "literal": true});
+    assert!(ok(&web.grep.call(chrome.clone(), &bench.ctx()).await).starts_with("no matches for"));
+
+    // The body as sent still has it.
+    let mut raw = chrome;
+    raw["format"] = json!("raw");
+    let in_raw = ok(&web.grep.call(raw, &bench.ctx()).await);
+    assert!(in_raw.contains("TRACKING_SNIPPET_MARKER"), "{in_raw}");
+}
+
+/// A backend that answers after a pause, fails for `broken`, and records how many searches ran
+/// at once.
+#[derive(Default, Clone)]
+struct SlowBackend {
+    running: Arc<std::sync::atomic::AtomicUsize>,
+    most: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl SearchBackend for SlowBackend {
+    fn name(&self) -> &'static str {
+        "slow"
+    }
+
+    fn base_url(&self) -> &str {
+        "https://search.invalid"
+    }
+
+    async fn search(&self, _: &reqwest::Client, query: &SearchQuery) -> Result<Vec<SearchHit>, String> {
+        use std::sync::atomic::Ordering;
+        let running = self.running.fetch_add(1, Ordering::SeqCst) + 1;
+        self.most.fetch_max(running, Ordering::SeqCst);
+        // The first query takes longest, so it finishes after the ones behind it.
+        let pause = if query.query == "first" { 150 } else { 40 };
+        tokio::time::sleep(Duration::from_millis(pause)).await;
+        self.running.fetch_sub(1, Ordering::SeqCst);
+        if query.query == "broken" {
+            return Err("slow search returned HTTP 500".to_string());
+        }
+        Ok((1..=query.limit + 3)
+            .map(|n| SearchHit {
+                title: format!("{} result {n}", query.query),
+                url: format!("https://example.org/{}/{n}", query.query),
+                snippet: String::new(),
+            })
+            .collect())
+    }
+}
+
+#[tokio::test]
+async fn several_queries_run_three_at_a_time_and_answer_in_the_order_asked() {
+    let backend = SlowBackend::default();
+    let bench = bench();
+
+    let out = bench
+        .search(
+            backend.clone(),
+            json!({"query": "first", "queries": ["second", "broken", "first", "fourth", "fifth"], "limit": 2}),
+        )
+        .await;
+    assert_eq!(
+        ok(&out),
+        "## first\n\
+         1. first result 1\n   https://example.org/first/1\n\n\
+         2. first result 2\n   https://example.org/first/2\n\n\
+         ## second\n\
+         1. second result 1\n   https://example.org/second/1\n\n\
+         2. second result 2\n   https://example.org/second/2\n\n\
+         ## broken\n\
+         slow search returned HTTP 500\n\n\
+         ## fourth\n\
+         1. fourth result 1\n   https://example.org/fourth/1\n\n\
+         2. fourth result 2\n   https://example.org/fourth/2\n\n\
+         ## fifth\n\
+         1. fifth result 1\n   https://example.org/fifth/1\n\n\
+         2. fifth result 2\n   https://example.org/fifth/2"
+    );
+    assert_eq!(backend.most.load(std::sync::atomic::Ordering::SeqCst), 3);
+    let details = out.details.unwrap();
+    assert_eq!(details["backend"], "slow");
+    let queries = details["queries"].as_array().unwrap();
+    assert_eq!(queries.len(), 5);
+    assert_eq!(queries[1]["query"], "second");
+    assert_eq!(queries[1]["results"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        queries[2],
+        json!({"query": "broken", "error": "slow search returned HTTP 500"})
+    );
+
+    // When every query fails the call has failed.
+    let none = bench
+        .search(backend.clone(), json!({"queries": ["broken", " broken "]}))
+        .await;
+    assert_eq!(failed(&none), "slow search returned HTTP 500");
+    let six = bench
+        .search(
+            backend.clone(),
+            json!({"queries": ["a", "b", "c", "d", "e", "f"]}),
+        )
+        .await;
+    assert_eq!(
+        failed(&six),
+        "6 queries in one call; at most 5 are searched at once"
+    );
+    assert_eq!(failed(&bench.search(backend, json!({})).await), "query is empty");
+}
+
+#[tokio::test]
+async fn one_backend_request_failing_leaves_the_other_queries_their_results() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/res/v1/web/search"))
+        .and(query_param("q", "tokio select macro"))
+        .respond_with(json_body(BRAVE))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/res/v1/web/search"))
+        .and(query_param("q", "rate limited"))
+        .respond_with(ResponseTemplate::new(429))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/res/v1/web/search"))
+        .and(query_param("q", "plain"))
+        .respond_with(json_body(r#"{"type": "search", "query": {"original": "plain"}}"#))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let bench = bench();
+
+    let out = bench
+        .search(
+            Brave::new(server.uri(), "brave-key"),
+            json!({"queries": ["tokio select macro", "rate limited", "plain"], "limit": 1}),
+        )
+        .await;
     let text = ok(&out);
-    let saved = bench.artifacts();
-    assert_eq!(saved.len(), 1, "{saved:?}");
-    assert!(saved[0].to_string_lossy().ends_with("report.pdf"), "{saved:?}");
-    assert_eq!(std::fs::read(&saved[0]).unwrap(), pdf);
-    assert!(text.contains("application/pdf"), "{text}");
-    assert!(text.contains(&saved[0].display().to_string()), "{text}");
+    let sections: Vec<&str> = text.split("\n\n## ").collect();
+    assert_eq!(sections.len(), 3, "{text}");
+    assert_eq!(
+        sections[0],
+        "## tokio select macro\n\
+         1. select in tokio - Rust\n   \
+         https://docs.rs/tokio/latest/tokio/macro.select.html\n   \
+         Waits on multiple concurrent branches, returning when the first branch completes, cancelling the \
+         remaining branches."
+    );
+    assert!(
+        sections[1].starts_with("rate limited\nbrave search failed with HTTP 429"),
+        "{text}"
+    );
+    assert_eq!(sections[2], "plain\nno results for \"plain\"");
+
+    // Every request failing is a failed call that still names each query.
+    let all = bench
+        .search(
+            Brave::new(format!("{}/nowhere", server.uri()), "k"),
+            json!({"queries": ["one", "two"]}),
+        )
+        .await;
+    let reason = failed(&all);
+    assert!(
+        reason.starts_with("## one\nbrave search failed with HTTP 404"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("\n\n## two\nbrave search failed with HTTP 404"),
+        "{reason}"
+    );
 }
 
 #[tokio::test]
@@ -677,10 +1241,23 @@ async fn a_body_at_the_limit_is_returned_and_one_byte_more_is_refused() {
     let bench = bench();
     let tool = fetch_tool();
 
+    // It is one line of 5 MB: the largest window shows its start and says how much there is.
     let exact = tool
-        .call(json!({"url": format!("{}/exact", server.uri())}), &bench.ctx())
+        .call(
+            json!({"url": format!("{}/exact", server.uri()), "limit": 10_000_000}),
+            &bench.ctx(),
+        )
         .await;
-    assert_eq!(ok(&exact).len(), MAX_BODY_BYTES);
+    let exact = ok(&exact);
+    let (shown, trailer) = exact.split_once('\n').unwrap();
+    assert_eq!(shown.len(), 200_000);
+    assert_eq!(
+        trailer,
+        format!(
+            "[lines 1-1 of 1; line 1 is cut at 200000 of {MAX_BODY_BYTES} characters; web_grep searches all \
+             of it]"
+        )
+    );
     let over = tool
         .call(json!({"url": format!("{}/over", server.uri())}), &bench.ctx())
         .await;
@@ -836,7 +1413,7 @@ async fn only_http_and_https_urls_are_fetched() {
 }
 
 #[tokio::test]
-async fn the_extension_registers_both_tools_and_url_schemes_that_read_as_markdown() {
+async fn the_extension_registers_its_tools_and_url_schemes_that_read_as_markdown() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/blog/borrow-checker"))
@@ -871,7 +1448,7 @@ async fn the_extension_registers_both_tools_and_url_schemes_that_read_as_markdow
         .iter()
         .map(|tool| tool.name().to_string())
         .collect();
-    assert_eq!(names, ["web_search", "web_fetch"]);
+    assert_eq!(names, ["web_search", "web_fetch", "web_grep"]);
     assert!(registry.schemes.get("https").is_some());
 
     // `read http://…` hands the scheme everything after `http://`.
@@ -894,6 +1471,16 @@ async fn the_extension_registers_both_tools_and_url_schemes_that_read_as_markdow
     let fetch = registry.tools.get(&ctx.agent, "web_fetch").unwrap();
     let again = fetch.call(json!({"url": format!("http://{rest}")}), &ctx).await;
     assert_eq!(&ok(&again), page);
+
+    // So does `web_grep`.
+    let grep = registry.tools.get(&ctx.agent, "web_grep").unwrap();
+    let found = grep
+        .call(
+            json!({"url": format!("http://{rest}"), "pattern": "^#+ Moves and copies$"}),
+            &ctx,
+        )
+        .await;
+    assert!(ok(&found).ends_with(": ## Moves and copies"), "{}", ok(&found));
 
     let search = registry.tools.get(&ctx.agent, "web_search").unwrap();
     let found = search.call(json!({"query": "wiremock"}), &ctx).await;

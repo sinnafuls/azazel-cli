@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
 use azazel_core::scheme::split_url;
-use azazel_core::{FileTracker, Schemes};
+use azazel_core::{FileTracker, Lines, Schemes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -131,8 +131,12 @@ impl Tool for ReadTool {
             Err(error) => return error,
         };
         if let Some((scheme, rest)) = split_url(input.path.trim()) {
+            let lines = Lines {
+                offset: input.offset,
+                limit: input.limit,
+            };
             return match self.schemes.get(scheme) {
-                Some(handler) => match handler.read(rest, ctx).await {
+                Some(handler) => match handler.read_lines(rest, lines, ctx).await {
                     Ok(content) => ToolOutput {
                         content,
                         is_error: false,
