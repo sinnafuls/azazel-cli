@@ -305,7 +305,36 @@ fn tool_group(name: &str, owner: &str) -> String {
         "core-tools" | "permissions" | "web" | "lsp" | "skills" => "core".to_string(),
         "team" | "goal" => "team".to_string(),
         "lua" => "scripts".to_string(),
+        script if script.starts_with("lua:") => "scripts".to_string(),
         other => other.to_string(),
+    }
+}
+
+/// Who replaced or wraps a tool, in words: a Luau script by its id, any other extension by its.
+pub(crate) fn overrider(label: &str) -> String {
+    match label.strip_prefix("lua:") {
+        Some(script) => format!("the script {script}"),
+        None => format!("the extension {label}"),
+    }
+}
+
+/// What `/tools` says after the name of a tool that stands in for another or is wrapped.
+fn override_note(tool: &azazel_core::ToolListing) -> String {
+    let mut notes = Vec::new();
+    if let Some(was) = &tool.replaces {
+        notes.push(format!(
+            "{} replaces the {} tool",
+            overrider(&tool.owner),
+            tool_group(&tool.name, was)
+        ));
+    }
+    if !tool.wrapped_by.is_empty() {
+        let by: Vec<String> = tool.wrapped_by.iter().map(|label| overrider(label)).collect();
+        notes.push(format!("wrapped by {}", by.join(", ")));
+    }
+    match notes.as_slice() {
+        [] => String::new(),
+        notes => format!(" ({})", notes.join("; ")),
     }
 }
 
@@ -394,7 +423,7 @@ fn tools(app: &App, active: &Active) -> String {
         groups
             .entry(tool_group(&tool.name, &tool.owner))
             .or_default()
-            .push(format!("{}{mark}", tool.name));
+            .push(format!("{}{mark}{}", tool.name, override_note(tool)));
     }
     for name in &deferred {
         if !listing.iter().any(|tool| tool.name == *name) {
@@ -574,6 +603,7 @@ mod tests {
             "MCP server github"
         );
         assert_eq!(tool_group("deploy", "lua"), "scripts");
+        assert_eq!(tool_group("read", "lua:vault"), "scripts");
         assert_eq!(tool_group("memory_search", "memory"), "memory");
     }
 

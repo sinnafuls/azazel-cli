@@ -10,8 +10,8 @@ use azazel_core::config::ReadGuard;
 use azazel_core::process::Shell;
 use azazel_core::session::{Entry, EntryKind};
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, ArtifactStore, AskKind, CommandOutcome, ExtCtx, Question, Registry,
-    Ui, UiBridge, UiError,
+    ApprovalDecision, ApprovalRequest, ArtifactStore, AskKind, CommandOutcome, Excerpt, ExtCtx, Post,
+    Question, Registry, Ui, UiBridge, UiError,
 };
 use azazel_tools::CoreToolsExt;
 use base64::Engine;
@@ -787,6 +787,44 @@ async fn ask_user_checks_the_question_before_anyone_is_asked() {
             json!({"question": "?", "allow_freeform": true}),
             "`allow_freeform` goes with `select` only, not `text`",
         ),
+        (
+            json!({"question": "?", "options": ["red", "blue"], "recommended": "green"}),
+            "`recommended` names `green`, which is not one of the options",
+        ),
+        (
+            json!({"question": "?", "recommended": "this one"}),
+            "a `text` question has no option to recommend",
+        ),
+        (
+            json!({"question": "?", "type": "confirm", "recommended": "maybe"}),
+            "`recommended` is `yes` or `no` for a `confirm` question, not `maybe`",
+        ),
+        (
+            json!({"question": "?", "code": "let a = 1;", "diff": "--- a\n+++ b\n"}),
+            "give `code` or `diff`, not both",
+        ),
+        (json!({}), "give `question`, or `questions` for several"),
+        (
+            json!({"async": true}),
+            "give `question`, or `questions` for several",
+        ),
+        (
+            json!({"question": "?", "questions": [{"question": "?"}]}),
+            "give `question` or `questions`, not both",
+        ),
+        (
+            json!({"questions": [{"question": "1"}, {"question": "2"}, {"question": "3"}, {"question": "4"},
+                {"question": "5"}, {"question": "6"}, {"question": "7"}]}),
+            "`questions` takes at most 6, not 7",
+        ),
+        (
+            json!({"questions": [{"question": "Which?", "options": ["a", "b"]}, {"question": " "}]}),
+            "question 2: `question` is empty",
+        ),
+        (
+            json!({"questions": [{"question": "Which?", "header": "a header that goes on and on"}]}),
+            "the `header` `a header that goes on and on` is longer than 24 characters",
+        ),
     ] {
         let refused = bench.call("ask_user", input.clone()).await;
         assert!(refused.is_error, "{input}");
@@ -896,6 +934,202 @@ async fn ask_user_passes_each_kind_of_question_on_and_a_user_who_declines_is_not
     );
     assert_eq!(asked[0].context.as_deref(), Some("Two paints are left."));
     assert_eq!(asked[3].text, "Paint it?");
+}
+
+#[tokio::test]
+async fn ask_user_puts_several_questions_together_and_numbers_the_answers() {
+    let bench = bench();
+    let ui = Arc::new(Scripted {
+        answers: std::sync::Mutex::new(vec![
+            Ok(vec!["postgres".into()]),
+            Ok(Vec::new()),
+            Ok(vec!["yes".into()]),
+            Err(UiError::Cancelled),
+        ]),
+        asked: std::sync::Mutex::default(),
+    });
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    let questions = json!([
+        {"question": "Which store?", "header": "Store", "options": ["sqlite", "postgres"],
+         "recommended": " Postgres", "code": "CREATE TABLE sessions (id INT);"},
+        {"question": "Anything else?"},
+        {"question": "Ship it?", "type": "confirm", "recommended": "yes",
+         "diff": "--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"},
+    ]);
+    let answered = bench.call("ask_user", json!({"questions": questions})).await;
+    assert!(!answered.is_error);
+    assert_eq!(
+        answered.text_content(),
+        "1. Which store?\npostgres\n\n2. Anything else?\n(no answer)\n\n3. Ship it?\nyes"
+    );
+    let details = answered.details.unwrap();
+    assert_eq!(details["cancelled"], false);
+    assert_eq!(details["questions"][0]["answers"], json!(["postgres"]));
+    assert_eq!(details["questions"][1]["answers"], json!([]));
+    {
+        let asked = ui.asked.lock().unwrap();
+        assert_eq!(asked.len(), 3);
+        assert_eq!(asked[0].header.as_deref(), Some("Store"));
+        // The recommended option is written as the option is.
+        assert_eq!(asked[0].recommended.as_deref(), Some("postgres"));
+        assert_eq!(
+            asked[0].excerpt,
+            Some(Excerpt::Code("CREATE TABLE sessions (id INT);".to_string()))
+        );
+        assert_eq!((asked[1].kind, &asked[1].excerpt), (AskKind::Text, &None));
+        assert_eq!(asked[2].recommended.as_deref(), Some("yes"));
+        assert!(matches!(&asked[2].excerpt, Some(Excerpt::Diff(diff)) if diff.contains("+new")));
+    }
+
+    // Dismissing one dismisses the form: not an error, and no answer is made up.
+    let dismissed = bench.call("ask_user", json!({"questions": questions})).await;
+    assert!(!dismissed.is_error);
+    assert_eq!(dismissed.text_content(), "the user declined to answer");
+    let details = dismissed.details.unwrap();
+    assert_eq!(
+        (&details["cancelled"], &details["questions"][0]["answers"]),
+        (&json!(true), &Value::Null)
+    );
+}
+
+/// Answers once it is told to, with what it was given.
+struct Held {
+    go: tokio::sync::Notify,
+    answer: Result<Vec<String>, UiError>,
+}
+
+#[async_trait::async_trait]
+impl UiBridge for Held {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
+        self.go.notified().await;
+        self.answer.clone()
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: azazel_core::Level, _: &str) {}
+    async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+        None
+    }
+}
+
+/// Waits until `posted` holds something, and returns it.
+async fn posted(posted: &std::sync::Mutex<Vec<(String, String)>>) -> Vec<(String, String)> {
+    for _ in 0..500 {
+        let seen = posted.lock().unwrap().clone();
+        if !seen.is_empty() {
+            return seen;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    panic!("nothing was posted");
+}
+
+#[tokio::test]
+async fn an_async_question_returns_at_once_and_its_answer_reaches_the_agent_that_asked() {
+    for (answer, message) in [
+        (
+            Ok(vec!["blue".to_string()]),
+            "<user-answer>\nWhich?\nblue\n</user-answer>",
+        ),
+        (
+            Err(UiError::Cancelled),
+            "<user-answer>\nthe user declined to answer: Which?\n</user-answer>",
+        ),
+    ] {
+        let bench = bench();
+        let ui = Arc::new(Held {
+            go: tokio::sync::Notify::new(),
+            answer,
+        });
+        bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+        let mail = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let inbox = mail.clone();
+        bench
+            .registry
+            .services
+            .insert(Arc::new(Post(Arc::new(move |agent: &str, text: String| {
+                inbox.lock().unwrap().push((agent.to_string(), text));
+                true
+            }))));
+
+        let asked = bench
+            .call_as(
+                "scout-1",
+                "ask_user",
+                json!({"question": "Which?", "options": ["red", "blue"], "async": true}),
+            )
+            .await;
+        assert!(!asked.is_error);
+        assert!(
+            asked.text_content().starts_with("The question is with the user."),
+            "{}",
+            asked.text_content()
+        );
+        assert_eq!(asked.details.unwrap()["async"], true);
+        assert!(mail.lock().unwrap().is_empty(), "nobody has answered yet");
+
+        ui.go.notify_one();
+        assert_eq!(
+            posted(&mail).await,
+            [("scout-1".to_string(), message.to_string())]
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_answers_of_an_async_form_reach_the_lead_the_way_a_wake_hook_does() {
+    let bench = bench();
+    let ui = Arc::new(Scripted {
+        answers: std::sync::Mutex::new(vec![Ok(vec!["red".into()]), Ok(vec!["no".into()])]),
+        asked: std::sync::Mutex::default(),
+    });
+    bench.registry.services.insert(Arc::new(Ui(ui)));
+    // Nobody runs a team here: the lead alone can be reached.
+    let mail = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let inbox = mail.clone();
+    bench
+        .registry
+        .services
+        .insert(Arc::new(azazel_core::hooks::Wake(Arc::new(
+            move |text: String| {
+                inbox.lock().unwrap().push(("lead".to_string(), text));
+            },
+        ))));
+    let questions = json!([
+        {"question": "Which?", "options": ["red", "blue"]},
+        {"question": "Paint it?", "type": "confirm"},
+    ]);
+    let asked = bench
+        .call("ask_user", json!({"questions": questions, "async": true}))
+        .await;
+    assert!(
+        asked
+            .text_content()
+            .starts_with("The 2 questions are with the user."),
+        "{}",
+        asked.text_content()
+    );
+    assert_eq!(
+        posted(&mail).await,
+        [(
+            "lead".to_string(),
+            "<user-answer>\n1. Which?\nred\n\n2. Paint it?\nno\n</user-answer>".to_string()
+        )]
+    );
+
+    // With nobody to ask, an async question is declined at once like any other.
+    let alone = self::bench();
+    let nobody = alone
+        .call("ask_user", json!({"question": "Which?", "async": true}))
+        .await;
+    assert_eq!(nobody.text_content(), "the user declined to answer");
 }
 
 #[tokio::test]

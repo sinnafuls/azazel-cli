@@ -36,6 +36,19 @@ GitHub are its section here.
   box, `Ctrl+X` stops the program. `F3` (`terminal`) and `/terminals` bring a hidden terminal back.
 - Typing into a terminal is decided by the rules for `shell`: it is allowed where the program is, and the text
   is held to `deny` rules, the push guard and the destructive-command and secret-file checks like a command.
+- Trace export: `[telemetry] exporter = "otlp"` or `"langsmith"` sends each prompt as a trace of its own
+  (prompt, model request, tool call; a sub-agent under the call that started it) with models, tokens, cost,
+  errors and durations, to an OpenTelemetry collector over HTTP or to LangSmith's runs API. Every span names
+  its session (`session.id`; LangSmith threads), and a prompt arrives when it ends. Off by default.
+  Prompt and reply text, tool input and output go only with `content = true`, secrets hidden. Spans are sent in
+  batches beside the session: no turn waits for the backend, and its first failure is logged once.
+- `/share` uploads the conversation, secrets hidden, as a secret gist through `gh` and prints the link. It says
+  what is uploaded and asks first.
+- `/bug [what went wrong]` and `azazel bug` write a bug report to a zip under `~/.azazel/reports/`: version,
+  system, `azazel doctor`, the settings in effect with secrets removed, the end of the log and, when asked for,
+  the conversation with secrets hidden. They offer to open an issue with the summary through `gh`; the zip stays
+  on the machine.
+- `azazel doctor` says where traces go and whether `gh` is there for `/share` and `/bug`.
 - Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
   It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
   with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
@@ -112,6 +125,21 @@ GitHub are its section here.
 - `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
   file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
   the project and of `~/.azazel` that hold no credentials can be included.
+- `ask_user` asks several things at once: `questions` (up to 6, each with a short `header`) are answered in
+  one form with a tab per question (`Tab`, `Shift+Tab`) and a `Send` tab that shows the answers first.
+  A question can carry the `code` or the `diff` it is about and name the option the agent would take
+  (`recommended`), which is marked and is where the selection starts.
+- `ask_user` with `async: true` returns at once; the answers reach the agent that asked as a message, a steer
+  while it works and a new prompt when it has stopped.
+- The fleet view: `Down` in an empty input puts the keyboard in the roster. `Enter` opens the selected
+  agent's work in a popup (its task, its replies as they are written, its tool cards), typing there steers
+  it, `Ctrl+X` stops it; `x` in the roster stops the selected agent. `o` in the agent hub opens the same
+  popup for any agent, finished ones included.
+- `@<agent id> text` at the prompt sends the text to that agent and `@<definition> text` starts an agent from
+  that definition; `@` at the start of a prompt completes both before the files.
+- RPC: the `form` request, `recommended`, `code` and `diff` on `ask`, the `agent_mention` command, and
+  `user_input` frames with `agent` for what a sub-agent is handed. `azazel attach --plain` answers a form
+  with `/answer a; b; c`.
 - GitHub addresses in `web_fetch`, `web_grep` and `read`: a repository is cloned one commit deep under the
   artifacts directory and comes back as its file tree, its README and the path of the clone; a directory, a
   file (with `#L10-L20`, those lines), a pull request (`/files` or `.diff` for the changes), an issue and an
@@ -140,6 +168,24 @@ GitHub are its section here.
 - `browser` action `handoff`: the browser is shown in a window on the same profile with the same tabs, you
   are asked to finish there (`reason`) and press Enter, and the agent carries on with the page as you left
   it. For logins you type yourself, second factors and CAPTCHAs.
+- Resources for one run: `-e/--extension <path>` loads a Luau script, or a directory laid out like a package
+  (skills, agent definitions, commands, scripts, MCP servers) with its code enabled; `--skill <path>` adds a
+  skill or a directory of skills; `--mcp-config <file>` adds the servers of an `mcp.json`; `--theme <name|file>`
+  sets the theme. Nothing is installed or remembered. They are trusted like your own files, win over what is
+  found elsewhere under the same name, and still load with the `--no-*` switches and `--bare`.
+- `--provider <id>` takes a run's models from one provider: names given to `--model` and `/model` are looked
+  up among its models, the picker lists only them, and without `--model` the lead keeps the models of its
+  chain that are that provider's.
+- `azazel pkg add npm:<name>[@<version or tag>]` installs a package from the npm registry without npm or Node:
+  the tarball is checked against the SHA-512 the registry lists and unpacked like a clone; no install script
+  runs and no dependency is fetched. `azazel pkg update` moves it to what `latest` or its tag names now.
+  `NPM_CONFIG_REGISTRY` names another registry.
+- Extensions can replace and wrap tools. Luau: `azazel.tool{ ..., replaces = true }` puts a tool in the place
+  of the built-in (or MCP, or other extension's) tool of that name, and `azazel.wrap(name, { before, after })`
+  runs functions around every call of a tool: `before` may change the arguments, refuse the call or answer
+  it, `after` may change the result. Rust: `Registrar::replace_tool`, `replace_tool_source`, `wrap_tool` and
+  the `ToolWrap` trait. A disabled script replaces and wraps nothing. `/tools` and `azazel doctor` say which
+  tools are replaced or wrapped, and by which script.
 
 ### Changed
 
@@ -174,6 +220,8 @@ GitHub are its section here.
   as a `<system-note>`, outside what a provider caches. A mode switch, a new goal or a saved memory used to
   make the next request pay for the whole conversation again; now the cached prefix is read as before.
 - The task list reminder is part of that note instead of a message of its own.
+- A select question that allows your own answer takes it in the same box, under the options, instead of in
+  a second one; `Esc` there returns to the options.
 
 ## [0.4.0] - 2026-11-13
 

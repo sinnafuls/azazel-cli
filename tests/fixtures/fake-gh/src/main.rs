@@ -10,7 +10,13 @@
 //!   file holds an escape character it is refused, as `gh` refuses it, unless
 //!   `--allow-escape-sequences` is among the arguments;
 //! - `fake-gh repo clone <owner>/<name> <directory> [-- <git options>…]` copies
-//!   `gh-data/clone/<owner>-<name>` to the directory, and fails when there is no such directory.
+//!   `gh-data/clone/<owner>-<name>` to the directory, and fails when there is no such directory;
+//! - `fake-gh gist create [--desc <text>] <file>…` copies the files to `gh-data/gist`, writes the
+//!   description to `gh-data/gist/.description` and prints the address of the new gist, after a
+//!   line of progress on standard error as `gh` prints one. Not signed in, it fails;
+//! - `fake-gh issue create --repo <owner>/<name> --title <text> --body-file <file>` writes the
+//!   title, an empty line and the body to `gh-data/issue.md` and prints the address of the new
+//!   issue in that repository. Not signed in, it fails.
 //!
 //! Every call adds a line to `gh-data/calls.log`: its arguments, with a tab between them.
 
@@ -118,6 +124,58 @@ fn main() -> ExitCode {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(&format!("failed to run git: {error}")),
             }
+        }
+        ["gist", "create", rest @ ..] => {
+            if !data.join("signed-in").exists() {
+                return fail("To get started with GitHub CLI, please run:  gh auth login");
+            }
+            let gist = data.join("gist");
+            if std::fs::create_dir_all(&gist).is_err() {
+                return fail("could not create the gist");
+            }
+            let mut rest = rest.iter();
+            while let Some(word) = rest.next() {
+                if *word == "--desc" {
+                    let description = rest.next().copied().unwrap_or_default();
+                    let _ = std::fs::write(gist.join(".description"), description);
+                } else {
+                    let file = Path::new(word);
+                    let copied = file.file_name().map(|name| std::fs::copy(file, gist.join(name)));
+                    if !matches!(copied, Some(Ok(_))) {
+                        return fail(&format!("failed to read file {word}"));
+                    }
+                }
+            }
+            eprintln!("- Creating gist...");
+            println!("https://gist.github.com/tester/0123456789abcdef0123456789abcdef");
+            ExitCode::SUCCESS
+        }
+        ["issue", "create", rest @ ..] => {
+            if !data.join("signed-in").exists() {
+                return fail("To get started with GitHub CLI, please run:  gh auth login");
+            }
+            let (mut repo, mut title, mut body) = ("", "", String::new());
+            let mut rest = rest.iter();
+            while let Some(word) = rest.next() {
+                let value = rest.next().copied().unwrap_or_default();
+                match *word {
+                    "--repo" => repo = value,
+                    "--title" => title = value,
+                    "--body-file" => match std::fs::read_to_string(value) {
+                        Ok(text) => body = text,
+                        Err(_) => return fail(&format!("open {value}: no such file")),
+                    },
+                    other => return fail(&format!("unknown flag: {other}")),
+                }
+            }
+            if repo.is_empty() || title.is_empty() {
+                return fail(
+                    "must provide `--title` and `--body` (or `--fill`) when not running interactively",
+                );
+            }
+            let _ = std::fs::write(data.join("issue.md"), format!("{title}\n\n{body}"));
+            println!("https://github.com/{repo}/issues/7");
+            ExitCode::SUCCESS
         }
         _ => fail(&format!("unknown command: {}", args.join(" "))),
     }

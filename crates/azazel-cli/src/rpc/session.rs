@@ -535,7 +535,7 @@ impl Session {
             &providers,
             &self.app.credentials,
             None,
-            None,
+            self.app.provider.as_deref(),
             false,
         );
         Ok(Value::Array(

@@ -118,6 +118,8 @@ dunce = "1"
 which = "8"
 bytes = "1"
 sha2 = "0.11"
+# Unpacks npm tarballs; the HTTP client already links it for compressed responses.
+flate2 = "1.1"
 rand = "0.10"
 
 # Processes and shell parsing
@@ -159,6 +161,7 @@ notify-rust = "4.19"
 keepawake = "0.6"
 pdf-extract = "0.12"
 # Office and mail files for `read`: OOXML is a zip of XML, an Outlook message a compound file.
+# A bug report is a zip too.
 zip = { version = "9.5", default-features = false, features = ["deflate-flate2"] }
 quick-xml = "0.41"
 cfb = "0.16"

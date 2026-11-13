@@ -166,6 +166,8 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/handoff [what matters]` | Has the current model write a brief of this session (goal, state, decisions, files touched, next steps, open questions), then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown |
 | `/consult [question]` | Pick a saved session and ask it a question. The answer comes from that session's conversation in a single request, shows in a panel (`Enter` on a row closes it, copies it or opens it full screen) and is stored in neither session |
 | `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |
+| `/share` | Uploads the conversation, secrets hidden, as a secret gist and prints its link. It asks first. See [sharing a session](#sharing-a-session) |
+| `/bug [what went wrong]` | Writes a bug report to a zip under `~/.azazel/reports/` and offers to open an issue. See [bug reports](#bug-reports) |
 | `/compact [what to keep]` | Summarises the conversation now; the optional text is passed to the summariser as extra instructions |
 
 `/tree` moves within the conversation only; files on disk are not changed. Use `/rewind` to move files as well.
@@ -224,6 +226,7 @@ passes 6,000.
 | `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project. `/stats [days]` shows the same in the UI |
 | `azazel context [PATH\|ID] [--json]` | What the last request of a session was made of: tokens per category (each part of the system prompt, tool schemas, messages, tool results, images). The latest session of this project by default; see [the context inspector](tui.md#the-context-inspector) |
 | `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output |
+| `azazel bug [what went wrong] [--transcript] [--session PATH\|ID] [--issue]` | Writes a [bug report](#bug-reports) to a zip under `~/.azazel/reports/` |
 
 Export formats:
 
@@ -243,6 +246,50 @@ kept.
 
 A Markdown export holds your prompts, the assistant's text and one line per tool call; tool output and thinking are
 left out. Compacted history appears under the heading `Earlier (summarised)` in Markdown and HTML.
+
+## Sharing a session
+
+`/share` uploads the current branch of the conversation to GitHub as a **secret gist** and prints its link. It
+goes through the GitHub program [`gh`](https://cli.github.com), which must be installed and signed in
+(`gh auth login`); the gist belongs to the account `gh` is signed in to.
+
+Before anything is sent, a box says what is: how many messages and how large, the two files, and that anyone who
+has the link can read them. `Share` uploads; `Cancel` or `Esc` sends nothing.
+
+| File | Holds |
+|---|---|
+| `azazel-session-<id>.md` | Your prompts, the replies and one line per tool call. GitHub shows it as the gist's page |
+| `azazel-session-<id>.view.html` | The HTML export: the same with tool output, diffs, thinking and images. Download it and open it in a browser |
+
+Both are written with secrets hidden, as an [export](#from-the-shell) with `tui.redact` on is, whatever
+`tui.redact` is set to. That hides what looks like a key, a token or a password. It does not hide file contents,
+paths or command output, so read the box before you say yes. A secret gist is not listed anywhere, but it is not
+private: `gh gist delete <link>` takes it down.
+
+## Bug reports
+
+`/bug [what went wrong]` and `azazel bug [what went wrong]` write one zip, `~/.azazel/reports/azazel-report-<time>.zip`,
+and say what is in it:
+
+| File | Holds |
+|---|---|
+| `report.md` | What you said went wrong, azazel's version, the operating system, the terminal, the default model, and what `azazel doctor` found wrong |
+| `doctor.txt` | What `azazel doctor` prints |
+| `config.toml` | The settings in effect, defaults included. Keys, tokens, passwords, headers and environment tables are replaced by `[removed]`; names of variables and of programs stay |
+| `log.txt` | The last 256 KB of `~/.azazel/logs/azazel.log`, secrets hidden |
+| `transcript.html` | Only when asked for: the HTML export of a session, secrets hidden |
+
+The zip stays on your machine. Nothing is uploaded unless you say so, and then only the summary:
+
+- In the UI, `/bug` asks whether to write the report with or without the open conversation. Once it is written,
+  and when `gh` is installed, it shows the text of an issue on `sinnafuls/azazel-cli` (`report.md` without its
+  title) and asks whether to open it; the first row is `No`.
+- `azazel bug` at a terminal asks the same two questions. Elsewhere it asks nothing: `--transcript` includes the
+  latest session of the project, `--session <PATH|ID>` another one, and `--issue` opens the issue. Without
+  `--issue` nothing leaves the machine.
+
+The issue is opened with `gh issue create`, as the account `gh` is signed in to, and its link is printed. The
+zip is never attached: add it to the issue yourself after reading it, if it is asked for.
 
 ## What the last request was made of
 

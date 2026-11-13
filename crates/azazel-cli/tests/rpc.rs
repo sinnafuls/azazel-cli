@@ -24,9 +24,16 @@ struct Client {
 
 impl Client {
     fn start(script: &str) -> Client {
+        Client::start_with(script, "")
+    }
+
+    /// Like [`Client::start`], with `config` as the user's settings.
+    fn start_with(script: &str, config: &str) -> Client {
         let dir = tempfile::tempdir().unwrap();
         let project = dir.path().join("project");
         std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        std::fs::write(dir.path().join("home/config.toml"), config).unwrap();
         let mut child = Command::new(assert_cmd::cargo::cargo_bin("azazel"))
             .env("AZAZEL_HOME", dir.path().join("home"))
             .env("AZAZEL_MOCK_SCRIPT", fixture(script))
@@ -254,6 +261,152 @@ fn questions_say_what_they_expect_and_an_approval_can_hold_for_the_session() {
         (&json!(false), &json!("the user declined to answer"))
     );
     assert_eq!(declined["details"]["cancelled"], true);
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn several_questions_are_one_form_and_an_async_answer_arrives_as_a_message() {
+    // The session is not named: the name would be asked of the lead's model, whose last reply
+    // is for the run the answer starts.
+    let mut client = Client::start_with("forms.json", "[session]\nauto_name = false\n");
+    let (_, accepted) = client.ask(1, json!({ "type": "prompt", "text": "set the store up" }));
+    assert_eq!(accepted["success"], true);
+
+    let (_, form) = client.until(|line| line["type"] == "ui_request");
+    assert_eq!(form["kind"], "form");
+    let questions = form["questions"].as_array().unwrap();
+    assert_eq!(
+        questions[0],
+        json!({ "question": "Which store should the service use?", "header": "Store",
+                "context": "The service keeps sessions between restarts.",
+                "code": "CREATE TABLE sessions (id TEXT PRIMARY KEY, data BLOB);",
+                "expects": "select", "options": ["sqlite", "postgres"], "multi": false,
+                "recommended": "postgres" })
+    );
+    assert_eq!(
+        questions[1],
+        json!({ "question": "Anything else I should know?", "header": "Notes", "expects": "text",
+                "options": [], "multi": false })
+    );
+    assert_eq!(
+        (
+            &questions[2]["expects"],
+            questions[2]["diff"]
+                .as_str()
+                .map(|diff| diff.contains("+    disk();"))
+        ),
+        (&json!("confirm"), Some(true))
+    );
+    // One answer per question; the second is left open.
+    client.ask(
+        2,
+        json!({ "type": "ui_response", "request_id": form["request_id"],
+                "value": [["postgres"], null, true] }),
+    );
+
+    // The async question returns at once: its call ends before anyone has answered.
+    let (before, later) = client.until(|line| line["type"] == "ui_request");
+    let result_of = |events: &[Value], call: &str| -> Value {
+        events
+            .iter()
+            .find(|line| line["type"] == "tool_end" && line["call_id"] == call)
+            .unwrap_or_else(|| panic!("no result of {call} in {events:?}"))["output"]
+            .clone()
+    };
+    assert_eq!(
+        result_of(&before, "c1")["content"][0]["text"],
+        "1. Which store should the service use?\npostgres\n\n2. Anything else I should know?\n(no \
+         answer)\n\n3. Apply this change?\nyes"
+    );
+    assert_eq!(
+        (&later["kind"], &later["expects"], &later["recommended"]),
+        (&json!("ask"), &json!("confirm"), &json!("yes"))
+    );
+    let (meanwhile, _) = client.until(|line| line["type"] == "idle");
+    let returned = result_of(&[before, meanwhile].concat(), "c2");
+    assert_eq!(returned["is_error"], false);
+    assert!(
+        returned["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("The question is with the user."),
+        "{returned}"
+    );
+    assert_eq!(returned["details"]["async"], true);
+
+    // Answered while the lead is idle: the answer starts it again, as a message.
+    client.ask(
+        3,
+        json!({ "type": "ui_response", "request_id": later["request_id"], "value": true }),
+    );
+    let (after, _) = client.until(|line| line["type"] == "idle");
+    assert!(kinds(&after).contains(&"agent_start"), "{after:?}");
+    let (_, messages) = client.ask(4, json!({ "type": "get_messages" }));
+    let said: Vec<&str> = messages["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|row| row["message"]["content"][0]["text"].as_str())
+        .collect();
+    assert!(
+        said.contains(&"<user-answer>\nShip it when the tests pass?\nyes\n</user-answer>"),
+        "{said:?}"
+    );
+    assert_eq!(said.last(), Some(&"Shipping."));
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn a_mention_starts_an_agent_or_messages_it_and_what_it_is_handed_is_told() {
+    // Scouts answer from a queue of their own, which naming the session must not take from.
+    let config = "[roles]\nsmol = [\"mock/scout\"]\n\n[session]\nauto_name = false\n";
+    let mut client = Client::start_with("mention.json", config);
+    let (_, neither) = client.ask(
+        1,
+        json!({ "type": "agent_mention", "name": "ghost", "text": "do it" }),
+    );
+    assert_eq!(
+        (&neither["success"], &neither["data"]),
+        (&json!(true), &Value::Null)
+    );
+
+    let (_, started) = client.ask(
+        2,
+        json!({ "type": "agent_mention", "name": "scout", "text": "where is the retry policy?" }),
+    );
+    assert_eq!(started["data"], json!({ "agent": "scout-1", "started": true }));
+    // Its report goes to the lead, which answers it.
+    let lead_idle = |line: &Value| line["type"] == "idle" && line["agent"] == "lead";
+    let (first, _) = client.until(lead_idle);
+    let handed = |lines: &[Value]| -> Vec<Value> {
+        lines
+            .iter()
+            .filter(|line| line["type"] == "user_input")
+            .cloned()
+            .collect()
+    };
+    assert_eq!(
+        handed(&first),
+        [
+            json!({ "type": "user_input", "kind": "prompt", "text": "where is the retry policy?",
+                 "agent": "scout-1" })
+        ]
+    );
+
+    // The id now names the agent: the text is a message to it.
+    let (_, sent) = client.ask(
+        3,
+        json!({ "type": "agent_mention", "name": "scout-1", "text": "anything else?" }),
+    );
+    assert_eq!(sent["data"], json!({ "agent": "scout-1", "started": false }));
+    let (second, _) = client.until(lead_idle);
+    assert_eq!(handed(&second)[0]["text"], "anything else?");
+    let said: Vec<&str> = second
+        .iter()
+        .filter(|line| line["type"] == "message_end" && line["agent"] == "scout-1")
+        .filter_map(|line| line["message"]["content"][0]["text"].as_str())
+        .collect();
+    assert_eq!(said, ["It is also read in src/net.rs."]);
     assert_eq!(client.finish(), Some(0));
 }
 

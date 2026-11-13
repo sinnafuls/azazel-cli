@@ -444,6 +444,7 @@ impl Host {
         let frame = Frame::UserInput {
             kind: kind.to_string(),
             text: text.to_string(),
+            agent: None,
         };
         if !self.live.busy {
             self.input_at.get_or_insert(self.log_len);
@@ -570,7 +571,12 @@ impl Host {
                     }
                     ("ui_request", Some(request_id)) if asks(&frame) => {
                         let text = match serde_json::from_value::<UiRequest>(frame.clone()) {
-                            Ok(UiRequest::Ask { question, .. }) => question,
+                            Ok(UiRequest::Ask(asked)) => asked.question,
+                            Ok(UiRequest::Form { questions }) => questions
+                                .into_iter()
+                                .map(|asked| asked.question)
+                                .collect::<Vec<_>>()
+                                .join(" / "),
                             Ok(UiRequest::Confirm { prompt })
                             | Ok(UiRequest::Select { prompt, .. })
                             | Ok(UiRequest::Input { prompt, .. }) => prompt,

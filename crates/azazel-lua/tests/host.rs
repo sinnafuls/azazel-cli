@@ -6,13 +6,13 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use azazel_agent::{
-    Agent, AgentConfig, AgentEvent, AgentInfo, AllowAll, CompactionSettings, Limits, NullSink, Services,
-    ToolSource, UserInput,
+    Access, Agent, AgentConfig, AgentEvent, AgentInfo, AllowAll, CompactionSettings, Limits, NullSink,
+    Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{Catalog, Credentials, Provider, RetryPolicy, Router, ThinkingLevel};
 use azazel_core::{CommandOutcome, Event, ExtCtx, Headless, Outcome, Paths, Registry, Ui, UiExtras};
-use azazel_lua::{LuaExt, type_declarations};
+use azazel_lua::{LuaExt, Scripts, type_declarations};
 use serde_json::{Value, json};
 
 const GUARD: &str = include_str!("../../../examples/extensions/guard.luau");
@@ -76,9 +76,42 @@ impl Bench {
     }
 
     fn load(&self, trusted: bool) {
+        self.load_with(trusted, Scripts::default());
+    }
+
+    /// Loads the scripts of the directories and `scripts`.
+    fn load_with(&self, trusted: bool, scripts: Scripts) {
         let credentials = Arc::new(Credentials::new(self.paths.auth_file()));
-        let ext = LuaExt::new(self.paths.clone(), trusted, credentials, Vec::new(), Vec::new());
+        let ext = LuaExt::new(self.paths.clone(), trusted, credentials, Vec::new(), scripts);
         self.registry.load(&ext).unwrap();
+    }
+
+    /// Calls the tool `name` as the lead and returns whether it failed and what it said.
+    async fn call(&self, name: &str, input: Value) -> (bool, String) {
+        let ctx = ToolCtx {
+            agent: lead(),
+            agent_id: "lead".into(),
+            session_id: "s1".into(),
+            call_id: "c1".into(),
+            cwd: self.paths.cwd.clone(),
+            cancel: tokio_util::sync::CancellationToken::new(),
+            update: UpdateSink::default(),
+            services: self.services.clone(),
+        };
+        let tool = self
+            .registry
+            .tools
+            .get(&lead(), name)
+            .unwrap_or_else(|| panic!("there is no tool {name}"));
+        let output = tool.call(input, &ctx).await;
+        (output.is_error, output.text_content())
+    }
+
+    /// Who provides the tool `name`, whom it replaced and who wraps it.
+    fn listed(&self, name: &str) -> (String, Option<String>, Vec<String>) {
+        let listing = self.registry.tools.listing(&lead());
+        let tool = listing.into_iter().find(|tool| tool.name == name).unwrap();
+        (tool.owner, tool.replaces, tool.wrapped_by)
     }
 
     async fn command(&self, name: &str, args: &str) -> CommandOutcome {
@@ -109,6 +142,31 @@ impl Bench {
     fn tool_names(&self) -> Vec<String> {
         let tools = self.registry.tools.tools(&lead());
         tools.iter().map(|tool| tool.name().to_string()).collect()
+    }
+}
+
+/// A tool of the harness itself: answers with its name and the arguments it was given.
+struct BuiltIn(&'static str);
+
+#[async_trait::async_trait]
+impl Tool for BuiltIn {
+    fn name(&self) -> &str {
+        self.0
+    }
+    fn description(&self) -> &str {
+        "built in"
+    }
+    fn schema(&self) -> Value {
+        json!({ "type": "object" })
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text(format!("{} {input}", self.0))
     }
 }
 
@@ -812,7 +870,7 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
          fs.write http json json.decode json.encode mcp memory memory.save memory.search notify on prompt \
          provider send session session.compact session.messages session.name session.set_model \
          session.set_name session.set_thinking shortcut state state.get state.set status tool tools \
-         tools.call widget"
+         tools.call widget wrap"
     );
     let declarations = type_declarations();
     assert!(declarations.contains("declare azazel: {"));
@@ -823,4 +881,221 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
             "`{name}` is missing from the type declarations"
         );
     }
+}
+
+#[tokio::test]
+async fn a_script_replaces_a_built_in_tool_only_when_it_says_so_and_while_it_works() {
+    let bench = Bench::new();
+    bench.registry.tools.add("core", Arc::new(BuiltIn("read")));
+    bench.registry.tools.add("core", Arc::new(BuiltIn("grep")));
+    // Same name, no `replaces`: the built-in tool stays.
+    bench.home_script(
+        "quiet.luau",
+        r#"azazel.tool({ name = "grep", description = "mine", execute = function() return "quiet" end })"#,
+    );
+    bench.home_script(
+        "vault.luau",
+        r#"
+        azazel.tool({
+            name = "read",
+            description = "Read a file from the vault.",
+            access = "read",
+            replaces = true,
+            parameters = { type = "object", properties = { path = { type = "string" } } },
+            execute = function(args)
+                if args.path == "boom" then
+                    error("the vault is closed")
+                end
+                return "vault:" .. args.path
+            end,
+        })
+        azazel.on("turn_start", function() error("broken handler") end)
+        "#,
+    );
+    bench.load(false);
+
+    assert_eq!(bench.tool_names(), ["read", "grep"]);
+    let (failed, text) = bench.call("grep", json!({})).await;
+    assert_eq!((failed, text.as_str()), (false, "grep {}"));
+    assert_eq!(bench.listed("grep"), ("core".to_string(), None, Vec::new()));
+
+    let read = bench.registry.tools.get(&lead(), "read").unwrap();
+    assert_eq!(read.description(), "Read a file from the vault.");
+    assert_eq!(
+        bench.call("read", json!({ "path": "a.txt" })).await,
+        (false, "vault:a.txt".to_string())
+    );
+    assert_eq!(
+        bench.listed("read"),
+        ("lua:vault".to_string(), Some("core".to_string()), Vec::new())
+    );
+    // An error in the tool is the tool's result, not a reason to give the name back.
+    let (failed, why) = bench.call("read", json!({ "path": "boom" })).await;
+    assert!(failed && why.contains("the vault is closed"), "{why}");
+    assert_eq!(bench.listed("read").0, "lua:vault");
+
+    // A disabled script replaces nothing: the built-in tool is back.
+    bench.emit(Event::TurnStart { agent: lead() }).await;
+    assert_eq!(
+        bench.call("read", json!({ "path": "a.txt" })).await,
+        (false, r#"read {"path":"a.txt"}"#.to_string())
+    );
+    assert_eq!(bench.listed("read"), ("core".to_string(), None, Vec::new()));
+
+    // Loaded again, it replaces again, once.
+    bench.shown("reload", "").await;
+    assert_eq!(bench.listed("read").0, "lua:vault");
+    assert_eq!(bench.tool_names(), ["read", "grep"]);
+}
+
+#[tokio::test]
+async fn a_wrap_runs_around_a_tool_and_can_change_refuse_or_answer_the_call() {
+    let bench = Bench::new();
+    bench.registry.tools.add("core", Arc::new(BuiltIn("shell")));
+    bench.home_script(
+        "audit.luau",
+        r#"
+        local seen = {}
+        azazel.wrap("shell", {
+            before = function(input, ctx)
+                table.insert(seen, ctx.agent_id .. ":" .. tostring(input.command))
+                if input.command == "rm" then
+                    return { block = true, reason = "rm is not run here" }
+                end
+                if input.command == "date" then
+                    return { content = "a fixed date" }
+                end
+                if input.command == "ls" then
+                    return { input = { command = "ls -la" } }
+                end
+                if input.command == "crash" then
+                    error("the audit log is full")
+                end
+            end,
+            after = function(result, input)
+                if input.command == "fail" then
+                    return { is_error = true }
+                end
+                if input.command == "ls -la" then
+                    return result.content .. " [" .. #seen .. " seen]"
+                end
+            end,
+        })
+        "#,
+    );
+    bench.load(false);
+    assert_eq!(
+        bench.listed("shell"),
+        ("core".to_string(), None, vec!["lua:audit".to_string()])
+    );
+
+    // Untouched when both functions return nothing.
+    assert_eq!(
+        bench.call("shell", json!({ "command": "pwd" })).await,
+        (false, r#"shell {"command":"pwd"}"#.to_string())
+    );
+    // The tool runs with the arguments `before` gave, and `after` sees those.
+    assert_eq!(
+        bench.call("shell", json!({ "command": "ls" })).await,
+        (false, r#"shell {"command":"ls -la"} [2 seen]"#.to_string())
+    );
+    assert_eq!(
+        bench.call("shell", json!({ "command": "rm" })).await,
+        (true, "rm is not run here".to_string())
+    );
+    assert_eq!(
+        bench.call("shell", json!({ "command": "date" })).await,
+        (false, "a fixed date".to_string())
+    );
+    assert_eq!(
+        bench.call("shell", json!({ "command": "fail" })).await,
+        (true, r#"shell {"command":"fail"}"#.to_string())
+    );
+
+    // A wrap that fails disables its script; the tool goes on without it.
+    assert_eq!(
+        bench.call("shell", json!({ "command": "crash" })).await,
+        (false, r#"shell {"command":"crash"}"#.to_string())
+    );
+    let listed = bench.shown("ext", "").await;
+    assert!(
+        listed.contains("its `before` around `shell` failed") && listed.contains("the audit log is full"),
+        "{listed}"
+    );
+    assert_eq!(
+        bench.call("shell", json!({ "command": "rm" })).await,
+        (false, r#"shell {"command":"rm"}"#.to_string())
+    );
+}
+
+#[tokio::test]
+async fn wrap_is_given_a_tool_name_and_at_least_one_function_while_the_script_loads() {
+    let bench = Bench::new();
+    bench.home_script("a.luau", r#"azazel.wrap("shell", {})"#);
+    bench.home_script(
+        "b.luau",
+        r#"azazel.wrap("not a name", { before = function() end })"#,
+    );
+    bench.home_script(
+        "c.luau",
+        r#"azazel.command({ name = "late", run = function()
+            azazel.wrap("shell", { before = function() end })
+        end })"#,
+    );
+    bench.load(false);
+    let listed = bench.shown("ext", "").await;
+    assert!(
+        listed.contains("azazel.wrap: give `before`, `after` or both"),
+        "{listed}"
+    );
+    assert!(listed.contains("`not a name` is not a tool name"), "{listed}");
+    match bench.command("late", "").await {
+        CommandOutcome::Error(why) => {
+            assert!(why.contains("can only be called while the script loads"), "{why}")
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn scripts_named_for_the_run_load_last_and_alone_when_discovery_is_off() {
+    let script =
+        |text: &str| format!(r#"azazel.command({{ name = "who", run = function() return "{text}" end }})"#);
+    let bench = Bench::new();
+    bench.home_script("who.luau", &script("home"));
+    bench.home_script(
+        "other.luau",
+        r#"azazel.command({ name = "other", run = function() return "other" end })"#,
+    );
+    let outside = bench.dir.path().join("elsewhere/who.luau");
+    write(&outside, &script("run"));
+    let run = vec![("who".to_string(), outside)];
+
+    // Beside the scripts of the directories, replacing the one with its id.
+    bench.load_with(
+        false,
+        Scripts {
+            run: run.clone(),
+            ..Scripts::default()
+        },
+    );
+    assert_eq!(bench.shown("who", "").await, "run");
+    assert_eq!(bench.shown("other", "").await, "other");
+    // A reload keeps it.
+    bench.shown("reload", "").await;
+    assert_eq!(bench.shown("who", "").await, "run");
+
+    // With discovery off, nothing but it.
+    let alone = Bench::new();
+    alone.home_script("other.luau", &script("home"));
+    alone.load_with(
+        false,
+        Scripts {
+            run,
+            only_run: true,
+            ..Scripts::default()
+        },
+    );
+    assert_eq!(alone.shown("who", "").await, "run");
+    assert!(alone.registry.command("other").is_none());
 }

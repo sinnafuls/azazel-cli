@@ -45,8 +45,31 @@ type ToolSpec = {
 	parameters: { [string]: any }?,
 	-- What the tool touches, which decides when the user is asked first. Default "exec".
 	access: Access?,
+	-- Take the place of the tool that has this name already: a built-in tool, an MCP server's or
+	-- another extension's. Without it a tool whose name is taken is not offered.
+	replaces: boolean?,
 	-- An error raised here becomes an error result the model sees.
 	execute: (args: { [string]: any }, ctx: Ctx) -> string | { content: string, is_error: boolean? },
+}
+
+type ToolResult = { content: string, is_error: boolean }
+
+type WrapSpec = {
+	-- Runs before the tool, once the call was permitted. Returning `{ input = ... }` gives the
+	-- tool other arguments, `{ block = true, reason = ... }` answers the call with an error, and
+	-- `{ content = ..., is_error = ... }` answers it with that result; in both cases the tool
+	-- does not run.
+	before: ((
+		input: { [string]: any },
+		ctx: Ctx
+	) -> (Block | { input: { [string]: any } } | { content: string, is_error: boolean? })?)?,
+	-- Runs after the tool with its result and the arguments it ran with. A returned string is
+	-- the new content; a table changes `content`, `is_error` or both.
+	after: ((
+		result: ToolResult,
+		input: { [string]: any },
+		ctx: Ctx
+	) -> (string | { content: string?, is_error: boolean? })?)?,
 }
 
 type CommandSpec = {
@@ -203,6 +226,9 @@ type McpSpec = {
 declare azazel: {
 	-- Load only. Adds a tool the agents can call.
 	tool: (spec: ToolSpec) -> (),
+	-- Load only. Runs `before` and `after` around every call of the tool `name`, whoever
+	-- provides the tool.
+	wrap: (name: string, spec: WrapSpec) -> (),
 	-- Load only. Runs `handler` whenever `event` happens.
 	on: On,
 	-- Load only. Adds the slash command `/<name>`.

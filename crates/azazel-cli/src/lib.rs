@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod acp;
 pub mod app;
 mod attention;
+pub mod bug;
 pub mod changelog;
 pub mod cli;
 pub mod context;
@@ -33,6 +34,7 @@ pub mod orchestration;
 pub mod pkg;
 pub mod print;
 pub mod reports;
+pub mod resources;
 pub mod retry;
 pub mod routing;
 pub mod rpc;
@@ -43,9 +45,11 @@ pub mod schedule;
 pub mod secrets;
 pub mod sessions;
 pub mod settings;
+pub mod share;
 pub mod side;
 pub mod ssh;
 pub mod stats;
+pub mod telemetry;
 mod tui;
 pub mod update;
 pub mod usage;
@@ -87,7 +91,7 @@ impl Builder {
         let extensions = self.extensions;
         // The run gets a thread of its own, with the stack a main thread has on Linux. The main
         // thread of a Windows process has one megabyte, which a debug build does not fit in:
-        // reading the arguments alone, with every subcommand there is, needs more.
+        // not the run, and not reading a command line with this many subcommands.
         let running = std::thread::Builder::new()
             .name("azazel".to_string())
             .stack_size(RUN_STACK)
@@ -286,6 +290,21 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
+        Some(Sub::Bug {
+            description,
+            transcript,
+            session,
+            issue,
+        }) => {
+            let description = description.join(" ");
+            let args = bug::Args {
+                description: &description,
+                transcript: *transcript,
+                session: session.as_deref(),
+                issue: *issue,
+            };
+            return bug::run(&paths, trusted, args).await;
+        }
         Some(Sub::Login { provider, key, label }) => {
             return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
         }
@@ -530,7 +549,7 @@ pub(crate) fn host_carried(cli: &Cli) -> Vec<String> {
 /// The configuration as this run has it, for commands that open no session. A configuration
 /// that cannot be read is complained about.
 fn load_config(cli: &Cli, paths: &Paths, trusted: bool) -> Option<Config> {
-    let loaded = app::config_overrides(cli).and_then(|overrides| {
+    let loaded = app::config_overrides(cli, paths).and_then(|overrides| {
         Config::load(
             paths,
             &LoadOptions {

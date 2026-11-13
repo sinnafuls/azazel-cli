@@ -188,11 +188,11 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[web]` | `search` | `"auto"` | `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
 | | `searxng_url` | `""` | Address of a SearXNG instance |
 | | `provider_search` | `true` | Under `search = "auto"`, search through the lead model's provider first when it has a search tool; see [the provider's own search](web-and-browser.md#the-providers-own-search) |
-| `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith` |
+| `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith`; see [trace export](#trace-export) |
 | | `endpoint` | `""` | Collector address; empty uses the exporter's default |
-| | `project` | `""` | Project name shown by the backend |
+| | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |
 | | `api_key_env` | `""` | Environment variable holding the backend's key |
-| | `content` | `false` | Send prompt and reply text, not only the shape of each step |
+| | `content` | `false` | Send prompt and reply text, tool input and tool output, not only the shape of each step |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
@@ -234,6 +234,52 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `keep_awake` | `true` | Keep the machine from sleeping while agents work |
 | `[update]` | `check` | `true` | Look for a newer release at most once a day |
 | | `auto` | `false` | Also download a newer release in the background and install it when the UI exits; see [updating](getting-started.md#updating) |
+
+## Trace export
+
+With `[telemetry] exporter` set, azazel sends what a session does to a tracing backend as spans. It is off by
+default, and a project's config can turn it on only once the project is [trusted](#trust).
+
+```toml
+[telemetry]
+exporter = "otlp"                      # or "langsmith"
+endpoint = "http://localhost:4318"     # the collector; /v1/traces is added
+api_key_env = "OTEL_KEY"               # sent as `Authorization: Bearer …`
+```
+
+Each prompt is one trace, with the prompt as its root:
+
+| Span | Name | Carries |
+|---|---|---|
+| Prompt | `prompt` | The agent (`gen_ai.agent.name`, `gen_ai.agent.id`), how it ended (`azazel.stop`), its requests, tool calls, tokens and cost; the error of a prompt that failed |
+| Model request | `chat <model>` | Provider and model, input, output, cached and reasoning tokens, cost (`azazel.cost_usd`), the stop reason, the time to the first token, retries, stalls and the model it fell back from; the error of a request that failed |
+| Tool call | `execute_tool <name>` | The tool, its call id, how long it ran, the size of its output and whether it reported an error |
+
+A tool call hangs under the request whose reply asked for it. A sub-agent's prompt hangs under the tool call that
+was running in its parent when it started, in the same trace, so a delegated task reads as one tree. A
+sub-agent that is picked up again while its parent is at rest starts a trace of its own.
+
+The session is not a span. Every span carries its id as `session.id` and `gen_ai.conversation.id`, and a
+backend groups the prompts of a session by that. A span is sent when it ends, so a prompt is whole in the
+backend as soon as it finishes, however long the session goes on. Attribute names follow the
+OpenTelemetry conventions for generative AI (`gen_ai.*`) where one exists. Requests outside a conversation
+(session names, summaries, `/btw`, the advisor) are not traced.
+
+**What was said is not sent** unless `content = true`: without it a span holds names, counts, sizes, durations
+and the errors of providers, and a failed tool call says only that it failed. With it, a prompt's span carries the
+prompt and the final reply, a request's span the reply and the tool calls it asked for, and a tool call's span its
+input and output. What looks like a secret is replaced by `[redacted:<kind>]` first, and a text longer than
+20,000 characters is cut. A sub-agent's prompt is the input of the tool call that started it.
+
+| Exporter | Where to | Key |
+|---|---|---|
+| `otlp` | OTLP over HTTP as JSON, posted to `<endpoint>/v1/traces`. Without `endpoint`: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`, else `http://localhost:4318` | The variable `api_key_env` names, as `Authorization: Bearer <key>` (a value with a space in it, such as `Basic …`, is sent as it is). `OTEL_EXPORTER_OTLP_HEADERS` (`name=value,…`) adds headers |
+| `langsmith` | The runs API, `<endpoint>/runs/batch`. Without `endpoint`: `LANGSMITH_ENDPOINT`, else `https://api.smith.langchain.com`. Runs go to the project `project`, else `LANGSMITH_PROJECT`, else `azazel`; the session id is each run's `session_id` and `thread_id` metadata, which the Threads view groups by | The variable `api_key_env` names, else `LANGSMITH_API_KEY`, as `x-api-key` |
+
+Spans are sent beside the session, in batches: every two seconds, or sooner when 64 wait. No turn waits for the
+backend. When azazel exits, it waits up to three seconds for the last batch and then leaves it. A batch the
+backend refuses is dropped; the first failure is written to `~/.azazel/logs/azazel.log` and later ones are not.
+`azazel doctor` says where traces go, whether text goes with them and whether the key is missing.
 
 ## Trust
 
@@ -299,7 +345,12 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--disallowed-tools <NAMES>` | Never offer these tools, on top of `[tools] disabled` |
 | `--system-prompt <TEXT\|@FILE>` | Replace the lead's built-in instructions (its identity and rules); sub-agents keep theirs |
 | `--append-system-prompt <TEXT\|@FILE>` | Add text to the lead's instructions, after the context files |
-| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md) |
+| `-e`, `--extension <PATH>` | Load a Luau script, or a directory laid out like a [package](packages.md), for this run; repeatable. See [resources for one run](#resources-for-one-run) |
+| `--skill <PATH>` | Add a skill (its directory or its `SKILL.md`) or a directory of skills for this run; repeatable |
+| `--mcp-config <FILE>` | Connect to the MCP servers of this `mcp.json` for this run; repeatable |
+| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, one from `~/.azazel/themes`, or a theme file |
+| `--provider <ID>` | Take this run's models from one provider only; see [choosing the model](models-and-logins.md#choosing-the-model) |
+| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md). What `--extension`, `--skill` and `--mcp-config` name still loads |
 | `--bare` | All six `--no-*` switches |
 | `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
@@ -318,8 +369,33 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--version`, `--help` | Print the version or the usage |
 
 `--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
-`--tier`, `--preset`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and `--plain`
-may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+`--tier`, `--preset`, `--theme`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and
+`--plain` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+
+### Resources for one run
+
+`--extension`, `--skill`, `--mcp-config` and `--theme` load something for one run without installing it: to
+try an extension while writing it, to give a CI job the one skill it needs, to see a theme before keeping it.
+Nothing is copied and nothing is remembered; the next run without the flag does not have it.
+
+| Flag | Takes | Loads |
+|---|---|---|
+| `-e`, `--extension` | A `.luau` file | That script. Its id is the file's name, or the directory's for `<name>/init.luau` |
+| | A directory | Everything a [package](packages.md#what-a-package-contains) in that directory would offer (skills, agent definitions, commands, Luau scripts, MCP servers) with its code enabled, plus an `init.luau` at its top |
+| `--skill` | A skill's directory, its `SKILL.md`, or a directory of skill directories | Those skills, shown as `command line` |
+| `--mcp-config` | A file with an `mcpServers` object, as [`mcp.json`](mcp.md#configuration-files) | Its servers |
+| `--theme` | A theme's name, or a [theme file](tui.md#themes) | The colours of the UI; the same as `--set tui.theme=<name>` for a name |
+
+- A path is relative to the working directory (`--cwd`). One that does not exist, or holds nothing of the
+  kind, ends the run with status 2 and the reason.
+- They are **your** word, so they are trusted like the files under `~/.azazel`: they load in a project that is
+  not trusted, a script may run commands, and the hooks of a skill count.
+- They come last, so they win: a skill, command, agent definition, script id or MCP server of the same name
+  found elsewhere is replaced for this run.
+- They load with the matching `--no-*` switch and with `--bare`, which then leave only them:
+  `azazel --bare -e ./audit.luau -p "..."` runs with that one script and nothing else that was discovered.
+- A background session started from the run (`/bg`) has them too. `--extension`, `--skill` and `--mcp-config`
+  name files of this machine and cannot be combined with `--ssh`.
 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
 unknown tier or preset) exits with status 2.

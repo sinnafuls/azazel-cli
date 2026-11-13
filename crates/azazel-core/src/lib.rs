@@ -39,7 +39,7 @@ pub use config::{Config, ConfigError, LoadOptions, LoadedConfig, PermissionMode}
 pub use ext::{
     Command, CommandHandler, CommandOutcome, CommandSource, Event, EventBus, EventHandler, EventKind, ExtCtx,
     ExtError, Extension, Level, McpRegistrar, McpServers, Outcome, Registrar, Registry, RegistryHandle,
-    StartSource, ToolRegistry,
+    StartSource, ToolListing, ToolRegistry, ToolWrap,
 };
 pub use memory::{Memory, MemoryApi, MemoryHit};
 pub use paths::Paths;
@@ -56,6 +56,6 @@ pub use toolcall::ToolCaller;
 pub use tracker::{FileTracker, Freshness};
 pub use trust::TrustStore;
 pub use ui::{
-    ApprovalDecision, ApprovalRequest, AskKind, Headless, PlanDecision, Question, ShortcutHandler, Ui,
-    UiBridge, UiError, UiExtras,
+    ApprovalDecision, ApprovalRequest, AskKind, Excerpt, Headless, PlanDecision, Post, Question,
+    ShortcutHandler, Ui, UiBridge, UiError, UiExtras,
 };

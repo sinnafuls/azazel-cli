@@ -46,6 +46,23 @@ fn numbered(options: &[String]) -> String {
 }
 
 impl<W: Write> Printer<W> {
+    /// One question of an agent: what it is about, the question after `mark`, its options.
+    fn question(&mut self, mark: &str, question: &azazel_protocol::Question) {
+        if let Some(context) = &question.context {
+            self.line(context);
+        }
+        if let Some(excerpt) = question.code.as_ref().or(question.diff.as_ref()) {
+            self.line(excerpt.trim_end());
+        }
+        self.line(&format!("{mark} {}", question.question));
+        if !question.options.is_empty() {
+            self.line(&numbered(&question.options));
+        }
+        if let Some(recommended) = &question.recommended {
+            self.line(&format!("  recommended: {recommended}"));
+        }
+    }
+
     pub(crate) fn new(out: W, interactive: bool) -> Self {
         Printer {
             out,
@@ -76,7 +93,9 @@ impl<W: Write> Printer<W> {
 
     pub(crate) fn frame(&mut self, frame: &Frame) {
         match frame {
-            Frame::UserInput { kind, text } => {
+            // What a sub-agent was handed is its own business here.
+            Frame::UserInput { agent: Some(_), .. } => {}
+            Frame::UserInput { kind, text, .. } => {
                 let how = match kind.as_str() {
                     "prompt" => "",
                     "steer" => "(steer) ",
@@ -226,28 +245,23 @@ impl<W: Write> Printer<W> {
                 };
                 return self.line(&text);
             }
-            UiRequest::Ask {
-                question,
-                context,
-                expects,
-                options,
-                multi,
-                allow_freeform,
-            } => {
-                if let Some(context) = context {
-                    self.line(context);
-                }
-                self.line(&format!("? {question}"));
-                if !options.is_empty() {
-                    self.line(&numbered(options));
-                }
-                match AskKind::of(*expects, options, *multi) {
+            UiRequest::Ask(question) => {
+                self.question("?", question);
+                match question.kind() {
                     AskKind::Text => "/answer <text>",
                     AskKind::Confirm => "/answer yes, or /answer no",
                     AskKind::Multiselect => "/answer <numbers, separated by commas>",
-                    AskKind::Select if *allow_freeform => "/answer <number>, or /answer <your own answer>",
+                    AskKind::Select if question.allow_freeform => {
+                        "/answer <number>, or /answer <your own answer>"
+                    }
                     AskKind::Select => "/answer <number>",
                 }
+            }
+            UiRequest::Form { questions } => {
+                for (at, question) in questions.iter().enumerate() {
+                    self.question(&format!("{}?", at + 1), question);
+                }
+                "/answer <one answer per question, separated by `;`>"
             }
             UiRequest::Confirm { prompt } => {
                 self.line(&format!("? {prompt}"));
@@ -354,6 +368,25 @@ mod tests {
             "? lead wants to use shell: cargo test\n  runs for a while\n\
              ? lead wants to use shell: git reset --hard\n\
              Two builds exist.\n? Which?\n  1. a\n  2. b\n? Why?\n? Sure?\nwarn: careful\n"
+        );
+    }
+
+    #[test]
+    fn a_form_prints_its_questions_numbered_and_what_a_subagent_is_handed_stays_out() {
+        let frames = [
+            json!({ "type": "user_input", "kind": "prompt", "text": "look at a.rs", "agent": "scout-1" }),
+            json!({ "type": "ui_request", "request_id": "r1", "kind": "form", "questions": [
+                { "question": "Which store?", "header": "Store", "context": "Sessions are kept.",
+                  "expects": "select", "options": ["sqlite", "postgres"], "multi": false,
+                  "recommended": "postgres" },
+                { "question": "Apply it?", "expects": "confirm", "options": [], "multi": false,
+                  "diff": "-old\n+new\n" },
+            ] }),
+        ];
+        assert_eq!(
+            printed(&frames, true),
+            "Sessions are kept.\n1? Which store?\n  1. sqlite\n  2. postgres\n  recommended: postgres\n\
+             -old\n+new\n2? Apply it?\n  /answer <one answer per question, separated by `;`>\n"
         );
     }
 }

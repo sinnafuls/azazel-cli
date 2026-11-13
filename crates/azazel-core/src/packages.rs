@@ -12,6 +12,8 @@ use std::process::{Command, Stdio};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub mod npm;
+
 use crate::frontmatter;
 use crate::paths::Paths;
 use crate::skills::{SkillRoot, SkillSource};
@@ -50,6 +52,11 @@ pub enum Source {
     },
     /// A directory used where it is; it is never copied or deleted.
     Local(PathBuf),
+    /// A package of the npm registry; `wanted` is a version or a tag, `latest` when `None`.
+    Npm {
+        name: String,
+        wanted: Option<String>,
+    },
 }
 
 /// A source as the user named it, worked out.
@@ -85,8 +92,8 @@ fn check_name(name: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Works out what `text` names: `github:<owner>/<repo>[@ref]`, a git URL, a registry name, or a
-/// directory (relative to `cwd`).
+/// Works out what `text` names: `github:<owner>/<repo>[@ref]`, `npm:<name>[@version]`, a git URL,
+/// a registry name, or a directory (relative to `cwd`).
 pub fn resolve(text: &str, cwd: &Path) -> Result<Resolved, String> {
     let text = text.trim();
     let last_segment = |address: &str| {
@@ -108,6 +115,14 @@ pub fn resolve(text: &str, cwd: &Path) -> Result<Resolved, String> {
                 reference,
             },
             name: last_segment(repo),
+            model_invocable: None,
+        });
+    }
+    if let Some(rest) = text.strip_prefix("npm:") {
+        let (name, wanted) = npm::parse(rest)?;
+        return Ok(Resolved {
+            name: last_segment(&name),
+            source: Source::Npm { name, wanted },
             model_invocable: None,
         });
     }
@@ -147,7 +162,7 @@ pub fn resolve(text: &str, cwd: &Path) -> Result<Resolved, String> {
     }
     let names: Vec<&str> = known.keys().map(String::as_str).collect();
     Err(format!(
-        "`{text}` is not a git URL, `github:<owner>/<repo>`, a directory or a registry name ({})",
+        "`{text}` is not a git URL, `github:<owner>/<repo>`, `npm:<name>`, a directory or a registry name ({})",
         names.join(", ")
     ))
 }
@@ -156,12 +171,16 @@ pub fn resolve(text: &str, cwd: &Path) -> Result<Resolved, String> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Installed {
     pub name: String,
-    /// The git URL it was cloned from, or the directory it lives in.
+    /// The git URL it was cloned from, the directory it lives in, or `npm:<name>`.
     pub source: String,
+    /// The git branch or tag, or the npm version or tag, it was asked for by.
     #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
     pub reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub commit: Option<String>,
+    /// The version of an npm package that is installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
     /// RFC 3339, UTC.
     pub installed_at: String,
     /// Whether its extensions, MCP servers and skill hooks load.
@@ -402,7 +421,8 @@ pub struct Loaded {
     pub problem: Option<String>,
 }
 
-/// One package brought up to date. A local package has no commits.
+/// One package brought up to date: the commit of a git package, or the version of an npm package,
+/// before and after. A local package has neither.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Updated {
     pub name: String,
@@ -457,6 +477,8 @@ fn has_licence(root: &Path) -> bool {
 pub struct Packages {
     file: PathBuf,
     dir: PathBuf,
+    /// The npm registry `npm:` packages come from.
+    npm_registry: String,
 }
 
 impl Packages {
@@ -464,6 +486,7 @@ impl Packages {
         Packages {
             file: paths.packages_file(),
             dir: paths.packages_dir(),
+            npm_registry: npm::registry(&|name| std::env::var(name).ok()),
         }
     }
 
@@ -530,10 +553,29 @@ impl Packages {
                 "a package named `{name}` is installed: remove it first, or install this one under another --name"
             ));
         }
+        let mut version = None;
         let (root, source, reference, commit, local) = match resolved.source {
             Source::Local(dir) => {
                 let source = dir.display().to_string();
                 (dir, source, None, None, true)
+            }
+            Source::Npm {
+                name: package,
+                wanted,
+            } => {
+                let root = self.dir.join(&name);
+                if root.exists() {
+                    return Err(format!(
+                        "{} is in the way; delete it and try again",
+                        root.display()
+                    ));
+                }
+                std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+                let release = npm::find(&self.npm_registry, &package, wanted.as_deref())
+                    .and_then(|release| npm::install(&release, &root).map(|()| release))
+                    .map_err(|why| format!("could not install {package} from npm: {why}"))?;
+                version = Some(release.version);
+                (root, format!("npm:{package}"), wanted, None, false)
             }
             Source::Git { url, reference } => {
                 let root = self.dir.join(&name);
@@ -565,6 +607,7 @@ impl Packages {
             source,
             reference,
             commit,
+            version,
             installed_at: jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ").to_string(),
             code_enabled: contributions.has_code() && enable_code(&contributions),
             model_invocable: resolved.model_invocable,
@@ -585,7 +628,7 @@ impl Packages {
     }
 
     /// Brings the clone of `name` (of every package when `None`) to the newest commit of what it
-    /// was installed from.
+    /// was installed from, and an npm package to the version its tag or version names now.
     pub fn update(&self, name: Option<&str>) -> Result<Vec<Updated>, String> {
         let mut all = match name {
             Some(name) => self.find(name)?.0,
@@ -605,8 +648,32 @@ impl Packages {
                 continue;
             }
             let root = self.dir.join(&package.name);
-            let wanted = package.reference.as_deref().unwrap_or("HEAD");
             let fail = |why: String| format!("could not update {}: {why}", package.name);
+            if let Some(npm_name) = package.source.strip_prefix("npm:") {
+                let release =
+                    npm::find(&self.npm_registry, npm_name, package.reference.as_deref()).map_err(fail)?;
+                if package.version.as_ref() != Some(&release.version) {
+                    // The new files are complete before the old ones go.
+                    let fresh = self.dir.join(format!(".{}.new", package.name));
+                    let _ = std::fs::remove_dir_all(&fresh);
+                    npm::install(&release, &fresh).map_err(fail)?;
+                    let swapped = match std::fs::remove_dir_all(&root) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                        _ => std::fs::rename(&fresh, &root),
+                    };
+                    if let Err(e) = swapped {
+                        let _ = std::fs::remove_dir_all(&fresh);
+                        return Err(fail(format!("{}: {e}", root.display())));
+                    }
+                }
+                done.push(Updated {
+                    name: package.name.clone(),
+                    before: package.version.replace(release.version.clone()),
+                    after: Some(release.version),
+                });
+                continue;
+            }
+            let wanted = package.reference.as_deref().unwrap_or("HEAD");
             git(
                 Some(&root),
                 &["fetch", "--quiet", "--depth", "1", "origin", wanted],
@@ -718,6 +785,7 @@ mod tests {
         Packages {
             file: home.join("packages.toml"),
             dir: home.join("packages"),
+            npm_registry: npm::DEFAULT_REGISTRY.to_string(),
         }
     }
 
@@ -873,6 +941,24 @@ mod tests {
         assert_eq!((taste.name.as_str(), &taste.model_invocable), ("taste", &None));
         assert_eq!(of("design-styles").unwrap().model_invocable, Some(Vec::new()));
 
+        let scoped = of("npm:@acme/review-kit@2.1.0").unwrap();
+        assert_eq!(
+            scoped.source,
+            Source::Npm {
+                name: "@acme/review-kit".into(),
+                wanted: Some("2.1.0".into())
+            }
+        );
+        assert_eq!(scoped.name, "review-kit");
+        assert_eq!(
+            of("npm:left-pad").unwrap().source,
+            Source::Npm {
+                name: "left-pad".into(),
+                wanted: None
+            }
+        );
+        assert!(of("npm:Not A Name").is_err());
+
         let local = of("My Pack").unwrap();
         assert_eq!(
             local.source,
@@ -984,6 +1070,153 @@ mod tests {
             "no package named `pack` is installed; there are: trusted"
         );
         assert!(store.update(Some("pack")).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_npm_package_is_downloaded_checked_unpacked_updated_and_removed() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let files = |version: &str| {
+            npm::testing::tarball(&[
+                (
+                    "azazel.toml",
+                    "skills = [\"skills\"]\nextensions = [\"ext/main.luau\"]\n",
+                ),
+                ("skills/review/SKILL.md", &SKILL.replace("NAME", "review")),
+                ("ext/main.luau", &format!("-- {version}")),
+                ("LICENSE", "MIT"),
+                ("package.json", "{}"),
+            ])
+        };
+        // What the registry says about the package: one version at first, a newer one later.
+        let describe = |version: &'static str| {
+            let url = format!("{}/tarballs/kit-{version}.tgz", server.uri());
+            npm::testing::packument("@acme/review-kit", version, &url, &files(version))
+        };
+        for version in ["1.0.0", "1.1.0"] {
+            Mock::given(method("GET"))
+                .and(path(format!("/tarballs/kit-{version}.tgz")))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(files(version)))
+                .mount(&server)
+                .await;
+        }
+        let first = Mock::given(method("GET"))
+            .and(path("/@acme%2Freview-kit"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(describe("1.0.0")))
+            .mount_as_scoped(&server)
+            .await;
+
+        let home = tempfile::tempdir().unwrap();
+        let store = Packages {
+            npm_registry: server.uri(),
+            ..store(home.path())
+        };
+        let resolved = resolve("npm:@acme/review-kit", home.path()).unwrap();
+        let added = store.add(resolved.clone(), None, &|_| true).unwrap();
+        assert_eq!(added.package.name, "review-kit");
+        assert_eq!(added.package.source, "npm:@acme/review-kit");
+        assert_eq!(added.package.version.as_deref(), Some("1.0.0"));
+        assert_eq!((&added.package.reference, &added.package.commit), (&None, &None));
+        assert!(added.package.code_enabled && !added.no_licence);
+        let root = home.path().join("packages/review-kit");
+        assert_eq!(store.root(&added.package), root);
+        // The files sit at the root of the package, not in the `package` directory of the tarball.
+        assert_eq!(
+            std::fs::read_to_string(root.join("ext/main.luau")).unwrap(),
+            "-- 1.0.0"
+        );
+
+        let loaded = store.load();
+        assert_eq!(names(&loaded), ["review"]);
+        assert_eq!(
+            loaded.scripts,
+            [("review-kit-main".to_string(), root.join("ext/main.luau"))]
+        );
+        let again = store.add(resolved, None, &|_| true).unwrap_err();
+        assert!(
+            again.contains("a package named `review-kit` is installed"),
+            "{again}"
+        );
+
+        // Nothing newer: nothing is downloaded again.
+        std::fs::write(root.join("mine.txt"), "kept").unwrap();
+        let same = store.update(Some("review-kit")).unwrap();
+        assert_eq!(
+            (same[0].before.as_deref(), same[0].after.as_deref()),
+            (Some("1.0.0"), Some("1.0.0"))
+        );
+        assert!(root.join("mine.txt").exists());
+
+        drop(first);
+        Mock::given(method("GET"))
+            .and(path("/@acme%2Freview-kit"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(describe("1.1.0")))
+            .mount(&server)
+            .await;
+        let newer = store.update(None).unwrap();
+        assert_eq!(
+            (newer[0].before.as_deref(), newer[0].after.as_deref()),
+            (Some("1.0.0"), Some("1.1.0"))
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("ext/main.luau")).unwrap(),
+            "-- 1.1.0"
+        );
+        // The old files are gone, not mixed with the new.
+        assert!(!root.join("mine.txt").exists());
+        assert_eq!(store.list().unwrap()[0].version.as_deref(), Some("1.1.0"));
+
+        store.remove("review-kit").unwrap();
+        assert!(!root.exists());
+        assert!(store.list().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_npm_package_that_cannot_be_checked_leaves_nothing_behind() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let described = npm::testing::tarball(&[("SKILL.md", "as published")]);
+        let url = format!("{}/kit.tgz", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/kit"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(npm::testing::packument("kit", "3.0.0", &url, &described)),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/kit.tgz"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(npm::testing::tarball(&[("SKILL.md", "swapped")])),
+            )
+            .mount(&server)
+            .await;
+
+        let home = tempfile::tempdir().unwrap();
+        let store = Packages {
+            npm_registry: server.uri(),
+            ..store(home.path())
+        };
+        let of = |text: &str| resolve(text, home.path()).unwrap();
+        let why = store.add(of("npm:kit"), None, &|_| true).unwrap_err();
+        assert!(
+            why.starts_with("could not install kit from npm:") && why.contains("SHA-512 differs"),
+            "{why}"
+        );
+        let why = store.add(of("npm:kit@9.9.9"), None, &|_| true).unwrap_err();
+        assert!(why.contains("kit has no version or tag `9.9.9`"), "{why}");
+        let why = store.add(of("npm:nothing-here"), None, &|_| true).unwrap_err();
+        assert!(
+            why.contains("the registry has no package named nothing-here"),
+            "{why}"
+        );
+        assert!(!home.path().join("packages/kit").exists());
+        assert!(store.list().unwrap().is_empty());
     }
 
     #[test]

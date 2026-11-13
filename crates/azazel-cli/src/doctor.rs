@@ -283,13 +283,13 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     match azazel_tools::schemes::gh_program() {
         Some(gh) => report.ok(format!(
-            "gh: {}; `read` takes pr:// and issue:// addresses, and GitHub URLs are read with its login \
-             when it is signed in",
+            "gh: {}; `read` takes pr:// and issue:// addresses, GitHub URLs are read with its login when it is \
+             signed in, and /share and /bug upload through it",
             gh.display()
         )),
         None => report.ok(
-            "gh: not found on PATH; pr:// and issue:// addresses are off, and GitHub URLs are read without a \
-             login",
+            "gh: not found on PATH; pr:// and issue:// addresses, /share and the issue of /bug are off, and \
+             GitHub URLs are read without a login",
         ),
     }
 
@@ -308,6 +308,10 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             report.ok(format!("packages: {}", names.join(", ")));
         }
         _ => {}
+    }
+    #[cfg(feature = "lua")]
+    for line in tool_overrides(paths, trusted, &config, &packages) {
+        report.ok(line);
     }
     let skills = discover(&standard_roots(paths, config.compat.claude, &packages));
     report.ok(format!("skills: {} found", skills.skills.len()));
@@ -510,6 +514,30 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
             ));
         }
     }
+    let variable = |name: &str| std::env::var(name).ok();
+    match crate::telemetry::Wire::from_config(&config.telemetry, &variable) {
+        None => report.ok("trace export: off"),
+        Some(wire) => {
+            report.ok(format!(
+                "trace export: {}, {} prompt and reply text",
+                wire.describe(),
+                if config.telemetry.content {
+                    "with"
+                } else {
+                    "without"
+                }
+            ));
+            let named = &config.telemetry.api_key_env;
+            let keyless = wire.headers().is_empty();
+            if !named.is_empty() && variable(named).is_none_or(|key| key.trim().is_empty()) {
+                report.warn(format!(
+                    "trace export: {named} (telemetry.api_key_env) is not set; spans go out without a key"
+                ));
+            } else if keyless && matches!(wire, crate::telemetry::Wire::Langsmith { .. }) {
+                report.warn("trace export: no LangSmith key; set LANGSMITH_API_KEY or telemetry.api_key_env");
+            }
+        }
+    }
     #[cfg(feature = "memory")]
     match &config.embeddings {
         _ if !config.memory.enabled => report.ok("memory: off"),
@@ -524,6 +552,70 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         .findings
         .extend(crate::voice::findings(&config, &credentials));
     report
+}
+
+/// The built-in tools the Luau scripts of this project and of the user replace or wrap, one line
+/// each. The scripts are loaded the way a session loads them, into a registry of their own.
+#[cfg(feature = "lua")]
+fn tool_overrides(
+    paths: &Paths,
+    trusted: bool,
+    config: &Config,
+    packages: &azazel_core::packages::Loaded,
+) -> Vec<String> {
+    use std::sync::Arc;
+
+    use azazel_agent::{AgentInfo, Services};
+    use azazel_core::{ExtCtx, Headless, McpRegistrar, McpServers, Registry, Ui};
+
+    /// Scripts may add MCP servers as they load; here nothing is started.
+    struct NoServers;
+    impl McpRegistrar for NoServers {
+        fn add_server(&self, _: &str, _: serde_json::Value) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let services = Arc::new(Services::new());
+    services.insert(Arc::new(Ui(Arc::new(Headless))));
+    services.insert(Arc::new(McpServers(Arc::new(NoServers))));
+    let registry = Registry::new(ExtCtx {
+        services,
+        cwd: paths.cwd.clone(),
+        session_id: String::new(),
+    });
+    let scripts = azazel_lua::LuaExt::new(
+        paths.clone(),
+        trusted,
+        Arc::new(crate::app::credentials(paths, trusted)),
+        config
+            .permissions
+            .additional_dirs
+            .iter()
+            .map(|dir| paths.project_root.join(dir))
+            .collect(),
+        azazel_lua::Scripts {
+            packaged: packages.scripts.clone(),
+            ..azazel_lua::Scripts::default()
+        },
+    );
+    if let Err(e) = registry.load(&scripts) {
+        return vec![format!("extensions: not loaded, {e}")];
+    }
+    let lead = AgentInfo {
+        id: "lead".into(),
+        def: "lead".into(),
+        parent: None,
+        depth: 0,
+        session_id: String::new(),
+    };
+    let who = crate::reports::overrider;
+    let replaced = registry.tools.replacements(&lead).into_iter();
+    let wrapped = registry.tools.wraps().into_iter();
+    replaced
+        .map(|(by, tool)| format!("tool `{tool}`: replaced by {}", who(&by)))
+        .chain(wrapped.map(|(by, tool)| format!("tool `{tool}`: wrapped by {}", who(&by))))
+        .collect()
 }
 
 /// Runs `azazel doctor`: prints the report; the exit code is 1 when a finding is an error.

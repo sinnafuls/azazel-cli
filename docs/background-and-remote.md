@@ -71,8 +71,9 @@ was besides, the way to end the background session and continue its session in a
 
 Most of the UI works the same on a background session: prompts, steering, queued messages, approvals
 and questions, `/model`, `/thinking`, `/mode`, `/new`, `/resume`, `/fork`, `/tree`, `/retry`,
-`/rewind`, `/compact`, `/name <text>`, `/export`, `/search`, `/btw`, `!commands`, the transcript
-viewer, `/copy`, the agent hub, the reports (`/cost`, `/context`, `/session`, `/tools`, `/todo`,
+`/rewind`, `/compact`, `/name <text>`, `/export`, `/share`, `/bug`, `/search`, `/btw`, `!commands`, the transcript
+viewer, `/copy`, the agent hub, the [fleet view](tui.md#the-fleet-view) and `@agent` mentions, the
+reports (`/cost`, `/context`, `/session`, `/tools`, `/todo`,
 `/dirs`, `/add-dir`, `/rules`, `/hooks`, `/doctor`, `/trust`, `/forget-approvals`) and every command an
 extension added (`/settings`, `/usage`, `/mcp ...`, `/goal`, skills).
 
@@ -80,7 +81,9 @@ What reads or changes files and state of the session's own process is not availa
 and says so: `/diff`, `/commit`, `/consult`, `/handoff`, `/name` without a text, `/jobs`, `/reload`,
 `/permissions`, `/open <path>`, the `/mcp` picker, `Ctrl+B`, `# notes` for the memory, and renaming,
 deleting, pinning and previewing other sessions in `/resume`. `/rewind` lists the checkpoints without
-what changed in the files since each. Your prompt history is this project's; prompts
+what changed in the files since each. The popup of an agent shows its work from the moment you
+attached, and `@` completes the session's agents but not its definitions (typing `@scout ...` starts
+one all the same). Your prompt history is this project's; prompts
 sent to a session elsewhere are not added to it. Themes, key bindings, the clipboard, the external
 editor and voice input are the UI's own and work as always.
 
@@ -93,7 +96,7 @@ does as lines and reads lines from you:
 |---|---|
 | any text | Sent to the session as a message |
 | `/approve`, `/session`, `/always`, `/deny [what to do instead]` | Answers the oldest permission request: once, for the rest of the session, for good, or not at all |
-| `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. `/answer` alone dismisses it |
+| `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. Several questions asked together are printed numbered and take one answer each, separated by `;` (`/answer 2; yes; ship it`); an empty one leaves its question open. `/answer` alone dismisses it |
 | `/abort` | Stops the current work |
 | `/continue` | Goes on with a run that was interrupted (see [below](#when-a-background-session-dies)) |
 | `/detach` | Leaves; the session goes on (so does the end of the input, and `Ctrl+C`) |

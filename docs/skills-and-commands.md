@@ -73,6 +73,9 @@ Roots are read in this order. A skill in a later root replaces one with the same
 | 4 | `~/.azazel/skills` | `home` |
 | 5 | `<project>/.claude/skills`, `<project>/.agents/skills` | `compat` |
 | 6 | `<project>/.azazel/skills` | `project` |
+| 7 | each path given as `--skill <PATH>`, and the skills of a directory given as `--extension` | `command line`, `package <directory>` |
+
+`--skill` takes one skill (its directory or its `SKILL.md`) or a directory of skills, for one run; with `--no-skills` these are the only skills. See [resources for one run](configuration.md#resources-for-one-run).
 
 Each skill is `<root>/<directory>/SKILL.md`. The `compat` roots are read only while `[compat] claude = true` (the default; see [configuration](configuration.md)). A project's skills load whether or not the project is trusted; only the hooks they carry need trust.
 

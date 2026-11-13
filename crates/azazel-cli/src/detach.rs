@@ -571,43 +571,26 @@ fn option_index(options: &[String], word: &str) -> Option<usize> {
     }
 }
 
-/// The `value` of the `ui_response` that `text` gives to `request`. `Err` says what to type.
-fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
-    let text = text.trim();
-    if text.is_empty() {
-        // Dismissed, as closing the question in the full UI would.
-        return Ok(Value::Null);
-    }
-    let yes = ["yes", "y", "true", "ok", "approve"];
-    let no = ["no", "n", "false"];
+const YES: [&str; 5] = ["yes", "y", "true", "ok", "approve"];
+const NO: [&str; 3] = ["no", "n", "false"];
+
+/// What `text` answers to one question of an agent. `Err` says what to type.
+fn answer_question(question: &azazel_protocol::Question, text: &str) -> Result<Value, String> {
     let lower = text.to_ascii_lowercase();
-    match request {
-        UiRequest::Ask {
-            expects,
-            options,
-            multi,
-            ..
-        } if AskKind::of(*expects, options, *multi) == AskKind::Text => Ok(json!(text)),
-        UiRequest::Ask {
-            expects: Some(AskKind::Confirm),
-            ..
-        }
-        | UiRequest::Confirm { .. } => {
-            if yes.contains(&lower.as_str()) {
+    match question.kind() {
+        AskKind::Text => Ok(json!(text)),
+        AskKind::Confirm => {
+            if YES.contains(&lower.as_str()) {
                 Ok(json!(true))
-            } else if no.contains(&lower.as_str()) {
+            } else if NO.contains(&lower.as_str()) {
                 Ok(json!(false))
             } else {
                 Err("answer yes or no".to_string())
             }
         }
-        UiRequest::Ask {
-            options,
-            multi,
-            allow_freeform,
-            ..
-        } => {
-            let words: Vec<&str> = if *multi {
+        AskKind::Select | AskKind::Multiselect => {
+            let options = &question.options;
+            let words: Vec<&str> = if question.multi {
                 text.split(',').collect()
             } else {
                 vec![text]
@@ -622,15 +605,57 @@ fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
                 .collect::<Result<Vec<Value>, String>>();
             match chosen {
                 // What is none of the options is the answer itself where one may be typed.
-                Err(_) if *allow_freeform => Ok(json!([text])),
+                Err(_) if question.allow_freeform => Ok(json!([text])),
                 chosen => chosen.map(Value::Array),
+            }
+        }
+    }
+}
+
+/// The `value` of the `ui_response` that `text` gives to `request`. `Err` says what to type.
+fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        // Dismissed, as closing the question in the full UI would.
+        return Ok(Value::Null);
+    }
+    let lower = text.to_ascii_lowercase();
+    match request {
+        UiRequest::Ask(question) => answer_question(question, text),
+        UiRequest::Form { questions } => {
+            // One answer per question, in their order; an empty one leaves its question open.
+            let parts: Vec<&str> = text.split(';').collect();
+            if parts.len() != questions.len() {
+                return Err(format!(
+                    "give {} answers, separated by `;` (an empty one leaves a question open)",
+                    questions.len()
+                ));
+            }
+            questions
+                .iter()
+                .zip(parts)
+                .enumerate()
+                .map(|(at, (question, part))| match part.trim() {
+                    "" => Ok(Value::Null),
+                    part => answer_question(question, part).map_err(|wrong| format!("{}: {wrong}", at + 1)),
+                })
+                .collect::<Result<Vec<Value>, String>>()
+                .map(Value::Array)
+        }
+        UiRequest::Confirm { .. } => {
+            if YES.contains(&lower.as_str()) {
+                Ok(json!(true))
+            } else if NO.contains(&lower.as_str()) {
+                Ok(json!(false))
+            } else {
+                Err("answer yes or no".to_string())
             }
         }
         UiRequest::Select { options, .. } => option_index(options, text)
             .map(|index| json!(index))
             .ok_or_else(|| format!("`{text}` is not one of the options")),
         UiRequest::Input { .. } => Ok(json!(text)),
-        UiRequest::Plan { .. } if yes.contains(&lower.as_str()) => Ok(json!(true)),
+        UiRequest::Plan { .. } if YES.contains(&lower.as_str()) => Ok(json!(true)),
         UiRequest::Plan { .. } => Ok(json!(text)),
         UiRequest::Notify { .. } => Ok(Value::Null),
     }
@@ -1007,14 +1032,12 @@ mod tests {
             Asked::Approval("r1".into()),
             Asked::Ui(
                 "r2".into(),
-                UiRequest::Ask {
+                UiRequest::Ask(azazel_protocol::Question {
                     question: "Which?".into(),
-                    context: None,
                     expects: Some(AskKind::Select),
                     options: vec!["red".into(), "blue".into()],
-                    multi: false,
-                    allow_freeform: false,
-                },
+                    ..Default::default()
+                }),
             ),
         ]);
         let sent = |typed: Typed| match typed {
@@ -1064,9 +1087,8 @@ mod tests {
         assert_eq!(answer(&select, "blue"), Ok(json!(1)));
         assert_eq!(answer(&select, "1"), Ok(json!(0)));
         assert!(answer(&select, "3").is_err());
-        let ask = |expects: AskKind, allow_freeform: bool| UiRequest::Ask {
+        let question = |expects: AskKind, allow_freeform: bool| azazel_protocol::Question {
             question: "?".into(),
-            context: None,
             expects: Some(expects),
             options: match expects {
                 AskKind::Select | AskKind::Multiselect => options.clone(),
@@ -1074,7 +1096,27 @@ mod tests {
             },
             multi: expects == AskKind::Multiselect,
             allow_freeform,
+            ..Default::default()
         };
+        let ask = |expects: AskKind, allow_freeform: bool| UiRequest::Ask(question(expects, allow_freeform));
+        // A form takes one answer per question, each as the question alone would take it.
+        let form = UiRequest::Form {
+            questions: vec![
+                question(AskKind::Select, false),
+                question(AskKind::Confirm, false),
+                question(AskKind::Text, false),
+            ],
+        };
+        assert_eq!(
+            answer(&form, "2; yes; because"),
+            Ok(json!([["blue"], true, "because"]))
+        );
+        assert_eq!(answer(&form, "red;;"), Ok(json!([["red"], null, null])));
+        assert_eq!(
+            answer(&form, "red; perhaps; x"),
+            Err("2: answer yes or no".to_string())
+        );
+        assert!(answer(&form, "red").is_err());
         assert_eq!(
             answer(&ask(AskKind::Multiselect, false), "2, red"),
             Ok(json!(["blue", "red"]))

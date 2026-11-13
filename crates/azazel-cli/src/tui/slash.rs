@@ -73,6 +73,14 @@ const BUILTIN: &[(&str, &str)] = &[
         "export",
         "Write the conversation to a file: /export [path.md|.html|.jsonl]",
     ),
+    (
+        "share",
+        "Upload the conversation, secrets hidden, as a secret gist and print its link (asks first)",
+    ),
+    (
+        "bug",
+        "Write a bug report to a zip and offer to open an issue: /bug [what went wrong]",
+    ),
     ("theme", "Pick the colour theme, or set it: /theme light"),
     (
         "glyphs",
@@ -264,6 +272,8 @@ impl Tui {
                 Ok(file) => self.info(&format!("exported to {file}")),
                 Err(why) => self.fail(&why),
             },
+            "share" => self.share_command(),
+            "bug" => self.bug_command(args),
             "theme" if args.is_empty() => self.open_theme_picker(),
             "theme" => self.set_theme(args),
             "glyphs" if args.is_empty() => self.open_glyph_picker(),
