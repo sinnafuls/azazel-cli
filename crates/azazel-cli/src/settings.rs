@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use crate::login::{forget_key, sign_in_from_ui, store_key};
 use async_trait::async_trait;
+use azazel_ai::catalog::Cost;
 use azazel_ai::{Credentials, ModelSpec, ProviderConfig, Router};
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, Registrar, Ui,
@@ -47,6 +48,31 @@ fn chain_label(chain: &[ModelSpec]) -> String {
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// What a model picker says beside a model: its context window and what a million tokens in
+/// and out cost, or `subscription` when the provider is used through a login.
+pub(crate) fn model_detail(context_window: u64, cost: Option<&Cost>, login: bool) -> String {
+    let window = match context_window {
+        n if n >= 1_000_000 && n % 100_000 == 0 => format!("{}M", trim_number(n as f64 / 1e6)),
+        n if n >= 1000 => format!("{}k", n / 1000),
+        n => n.to_string(),
+    };
+    match (login, cost) {
+        (true, _) => format!("ctx {window} · subscription"),
+        (false, Some(cost)) => format!(
+            "ctx {window} · ${}/${}",
+            trim_number(cost.input),
+            trim_number(cost.output)
+        ),
+        (false, None) => format!("ctx {window}"),
+    }
+}
+
+/// A number without the zeros a fixed precision would leave: `3`, `1.25`, `0.075`.
+fn trim_number(number: f64) -> String {
+    let fixed = format!("{number:.3}");
+    fixed.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 struct Settings {
@@ -149,7 +175,7 @@ const SETTINGS: &[Setting] = &[
     setting(
         "Appearance",
         "tui.tool_style",
-        "Tool calls (framed card or one row)",
+        "Tool calls (card or one row)",
         Kind::Choice(&["card", "compact"]),
         true,
     ),
@@ -588,18 +614,19 @@ impl Settings {
     async fn section(&self, name: &str, ui: &Arc<Ui>, ctx: &ExtCtx, done: &mut Vec<String>) {
         let rows: Vec<&Setting> = SETTINGS.iter().filter(|s| s.section == name).collect();
         loop {
+            // A tab sets the value apart from the label: the UI shows it in a column of its own.
             let mut labels: Vec<String> = rows
                 .iter()
                 .map(|setting| {
                     format!(
-                        "{}: {}",
+                        "{}\t{}",
                         setting.label,
                         shown(self.current(setting.path).as_ref())
                     )
                 })
                 .collect();
             labels.push("Back".to_string());
-            let heading = format!("{name} · saved in {}", self.home_config.display());
+            let heading = format!("{name}\nsaved in {}", self.home_config.display());
             let Ok(index) = ui.0.select(&heading, &labels).await else {
                 return;
             };
@@ -663,26 +690,27 @@ impl Settings {
             }
         };
         let default = self.default_model(router);
+        // The first line is the title of the menu; a tab sets a row's detail apart.
         let heading = format!(
-            "Settings · {accounts} · default model: {}",
+            "Settings\n{accounts} · default model: {}",
             default.as_deref().unwrap_or("none")
         );
         let mut items = vec![
             (
                 Item::Subscription,
-                "Sign in with a subscription (Claude, ChatGPT)".to_string(),
+                "Sign in with a subscription\tClaude, ChatGPT".to_string(),
             ),
             (Item::ApiKey, "Add an API key".to_string()),
             (
                 Item::DefaultModel,
                 format!(
-                    "Choose the default model (now: {})",
+                    "Choose the default model\tnow: {}",
                     default.as_deref().unwrap_or("none")
                 ),
             ),
             (
                 Item::Roles,
-                "Models for the lead and each agent (coder, scout, reviewer, ...)".to_string(),
+                "Models for each role\tlead, coder, scout, reviewer, ...".to_string(),
             ),
         ];
         items.extend(
@@ -703,8 +731,8 @@ impl Settings {
         let labels: Vec<String> = candidates
             .iter()
             .map(|p| match subscription_name(&p.id) {
-                Some(name) => format!("{name} ({})", p.id),
-                None => format!("{} ({})", p.name, p.id),
+                Some(name) => format!("{name}\t{}", p.id),
+                None => format!("{}\t{}", p.name, p.id),
             })
             .collect();
         let Ok(index) = ui.0.select("Sign in with which account?", &labels).await else {
@@ -727,7 +755,7 @@ impl Settings {
                     Some(source) => format!(" · has a key from {source}"),
                     None => String::new(),
                 };
-                format!("{} ({}){state}", p.id, p.api_key_env.join(" or "))
+                format!("{}\t{}{state}", p.id, p.api_key_env.join(" or "))
             })
             .collect();
         let Ok(index) = ui.0.select("Store an API key for which provider?", &labels).await else {
@@ -764,7 +792,7 @@ impl Settings {
                     .iter()
                     .map(|p| match p.requires_key {
                         true => p.id.clone(),
-                        false => format!("{} (local server)", p.id),
+                        false => format!("{}\tlocal server", p.id),
                     })
                     .collect();
                 let Ok(index) = ui.0.select("Models of which provider?", &labels).await else {
@@ -798,7 +826,30 @@ impl Settings {
         }
         ids.sort();
         ids.dedup();
-        let Ok(index) = ui.0.select(&format!("Model for {role} ({provider})"), &ids).await else {
+        // Beside each model: its context window and price, as far as the catalogue knows them.
+        let login = self
+            .providers
+            .iter()
+            .find(|p| p.id == provider)
+            .and_then(|config| self.credentials.source(config))
+            .is_some_and(|source| source.starts_with("auth.json (login"));
+        let catalog = router.catalog();
+        let labels: Vec<String> = ids
+            .iter()
+            .map(|id| match catalog.contains(&provider, id) {
+                true => {
+                    let info = catalog.get(&provider, id);
+                    let detail = model_detail(info.context_window, info.cost.as_ref(), login);
+                    format!("{id}\t{detail}")
+                }
+                false if login => format!("{id}\tsubscription"),
+                false => id.clone(),
+            })
+            .collect();
+        let Ok(index) =
+            ui.0.select(&format!("Model for {role} ({provider})"), &labels)
+                .await
+        else {
             return Ok(None);
         };
         let model = format!("{provider}/{}", ids[index]);
@@ -833,7 +884,7 @@ impl Settings {
                     Some(chain) => format!(" (via {})", chain_label(chain)),
                     None => String::new(),
                 };
-                format!("{role:<11} {model}{via} - {what}")
+                format!("{role}\t{model}{via} · {what}")
             })
             .collect();
         let Ok(index) = ui.0.select("Which role?", &labels).await else {
@@ -843,7 +894,7 @@ impl Settings {
         let fallback = Config::default().roles.get(role).cloned();
         let mut actions = vec!["Choose a model".to_string()];
         if let Some(chain) = &fallback {
-            actions.push(format!("Use the fallback ({})", chain_label(chain)));
+            actions.push(format!("Use the fallback\t{}", chain_label(chain)));
         }
         let Ok(action) = ui.0.select(&format!("Model for {role}"), &actions).await else {
             return Ok(None);
@@ -1008,6 +1059,37 @@ mod tests {
         assert!(keys.contains(&"anthropic") && keys.contains(&"openai"));
         assert!(!keys.contains(&"openai-codex"));
         assert!(!keys.contains(&"ollama"));
+    }
+
+    #[test]
+    fn a_model_row_shows_its_window_and_its_price_or_that_it_is_a_subscription() {
+        let cost = |input, output| Cost {
+            input,
+            output,
+            cache_read: 0.0,
+            cache_write: 0.0,
+        };
+        assert_eq!(
+            model_detail(200_000, Some(&cost(3.0, 15.0)), false),
+            "ctx 200k · $3/$15"
+        );
+        assert_eq!(
+            model_detail(1_000_000, Some(&cost(1.25, 10.0)), false),
+            "ctx 1M · $1.25/$10"
+        );
+        assert_eq!(
+            model_detail(1_048_576, Some(&cost(0.075, 0.3)), false),
+            "ctx 1048k · $0.075/$0.3"
+        );
+        assert_eq!(model_detail(128_000, None, false), "ctx 128k");
+        assert_eq!(model_detail(8192, None, false), "ctx 8k");
+        assert_eq!(model_detail(512, None, false), "ctx 512");
+        // A login is not paid for by the token, whatever the catalogue says the model costs.
+        assert_eq!(
+            model_detail(200_000, Some(&cost(15.0, 75.0)), true),
+            "ctx 200k · subscription"
+        );
+        assert_eq!(model_detail(2_500_000, None, true), "ctx 2.5M · subscription");
     }
 
     #[test]

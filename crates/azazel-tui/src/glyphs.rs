@@ -131,6 +131,10 @@ glyphs! {
     /// Before the count of running agents.
     Agents => "\u{f0c0}", "⇶", "";
     Goal => "\u{f024}", "⚑", "goal:";
+    /// Before the label of an entry of the session tree.
+    Label => "\u{f02b}", "⚑", "#";
+    /// Marks a favourite model.
+    Favourite => "\u{f005}", "★", "*";
     Branch => "\u{e0a0}", "⑂", "git:";
     Folder => "\u{f115}", "", "";
     File => "\u{f15b}", "", "";
@@ -154,6 +158,10 @@ glyphs! {
     TreeLast => "└─", "└─", "`-";
     TreeLine => "│", "│", "|";
     ProgressFull => "━", "━", "=";
+    /// The track of a vertical scrollbar.
+    ScrollTrack => "│", "│", "|";
+    /// The thumb of a vertical scrollbar.
+    ScrollThumb => "┃", "┃", "#";
     ProgressEmpty => "─", "─", "-";
     /// The half-filled cell at the head of a progress bar.
     ProgressHead => "╸", "╸", ">";
