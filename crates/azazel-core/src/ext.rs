@@ -405,12 +405,20 @@ impl Tool for Wrapped {
     }
 }
 
-/// Something registered for the tools, with the extension it is removed with and the name it is
-/// listed under (the extension's id unless the extension gave another).
-struct Entry<T> {
+/// Tools registered in place of others, with the extension they are removed with and the name
+/// listings give for it (the extension's id unless the extension gave another).
+struct Replacement {
     owner: String,
     label: String,
-    item: T,
+    source: Arc<dyn ToolSource>,
+}
+
+/// A wrap registered around the tool `tool`.
+struct Wrapping {
+    owner: String,
+    label: String,
+    tool: String,
+    wrap: Arc<dyn ToolWrap>,
 }
 
 /// Every tool available to agents: registered tools plus dynamic sources, minus disabled names.
@@ -420,8 +428,8 @@ struct Entry<T> {
 pub struct ToolRegistry {
     tools: RwLock<Vec<(String, Arc<dyn Tool>)>>,
     sources: RwLock<Vec<(String, Arc<dyn ToolSource>)>>,
-    replacements: RwLock<Vec<Entry<Arc<dyn ToolSource>>>>,
-    wraps: RwLock<Vec<Entry<(String, Arc<dyn ToolWrap>)>>>,
+    replacements: RwLock<Vec<Replacement>>,
+    wraps: RwLock<Vec<Wrapping>>,
     selection: RwLock<Selection>,
 }
 
@@ -494,10 +502,10 @@ impl ToolRegistry {
         self.replacements
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(Entry {
+            .push(Replacement {
                 owner: owner.to_string(),
                 label: label.to_string(),
-                item: source,
+                source,
             });
     }
 
@@ -506,10 +514,11 @@ impl ToolRegistry {
         self.wraps
             .write()
             .unwrap_or_else(PoisonError::into_inner)
-            .push(Entry {
+            .push(Wrapping {
                 owner: owner.to_string(),
                 label: label.to_string(),
-                item: (name.to_string(), wrap),
+                tool: name.to_string(),
+                wrap,
             });
     }
 
@@ -557,7 +566,7 @@ impl ToolRegistry {
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
             .rev()
-            .map(|entry| (entry.label.clone(), entry.item.clone()))
+            .map(|entry| (entry.label.clone(), entry.source.clone()))
             .collect();
         for (label, source) in replacements {
             for tool in source.tools(agent) {
@@ -607,7 +616,7 @@ impl ToolRegistry {
                     offered: selection.offers(name),
                     wrapped_by: wraps
                         .iter()
-                        .filter(|entry| entry.item.0 == name)
+                        .filter(|entry| entry.tool == name)
                         .map(|entry| entry.label.clone())
                         .collect(),
                     name: name.to_string(),
@@ -627,7 +636,7 @@ impl ToolRegistry {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|entry| (entry.label.clone(), entry.item.clone()))
+            .map(|entry| (entry.label.clone(), entry.source.clone()))
             .collect();
         let mut out = Vec::new();
         for (label, source) in sources {
@@ -644,7 +653,7 @@ impl ToolRegistry {
             .read()
             .unwrap_or_else(PoisonError::into_inner)
             .iter()
-            .map(|entry| (entry.label.clone(), entry.item.0.clone()))
+            .map(|entry| (entry.label.clone(), entry.tool.clone()))
             .collect()
     }
 
@@ -683,8 +692,8 @@ impl ToolSource for ToolRegistry {
             .map(|settled| {
                 let around: Vec<Arc<dyn ToolWrap>> = wraps
                     .iter()
-                    .filter(|entry| entry.item.0 == settled.tool.name())
-                    .map(|entry| entry.item.1.clone())
+                    .filter(|entry| entry.tool == settled.tool.name())
+                    .map(|entry| entry.wrap.clone())
                     .collect();
                 if around.is_empty() {
                     settled.tool
