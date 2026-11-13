@@ -2191,20 +2191,28 @@ impl Tui {
     }
 
     fn set_theme(&mut self, name: &str) {
+        if self.apply_theme(name) {
+            self.info(&format!("theme: {name}"));
+        }
+    }
+
+    /// Draws with the theme `name` from now on, without a word about it: the settings screen
+    /// tries themes on while one is being chosen. False when there is no such theme, which is
+    /// said.
+    fn apply_theme(&mut self, name: &str) -> bool {
         let depth = self.theme.depth();
         let (theme, problem) = named_theme(&self.env.paths, name);
-        match problem {
-            Some(problem) => self.fail(&problem),
-            None => {
-                let glyphs = self.theme.glyphs().level();
-                self.theme = theme
-                    .with_depth(depth)
-                    .with_links(self.caps.links)
-                    .with_glyphs(glyphs);
-                self.theme_name = name.to_string();
-                self.info(&format!("theme: {name}"));
-            }
+        if let Some(problem) = problem {
+            self.fail(&problem);
+            return false;
         }
+        let glyphs = self.theme.glyphs().level();
+        self.theme = theme
+            .with_depth(depth)
+            .with_links(self.caps.links)
+            .with_glyphs(glyphs);
+        self.theme_name = name.to_string();
+        true
     }
 }
 

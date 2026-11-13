@@ -598,7 +598,7 @@ impl Store {
             true => "",
             false => " (applies to the next session)",
         };
-        let line = format!("{} is back on {now}, {who}{when}", setting.path);
+        let line = format!("{} reset: {now}, {who}{when}", setting.path);
         self.note(line.clone());
         Ok(line)
     }
@@ -861,13 +861,13 @@ pub(crate) mod tests {
         let mut store = f.trusted();
         assert_eq!(
             store.reset(row("limits.max_turns")).unwrap(),
-            "limits.max_turns is back on 0, the default (applies to the next session)"
+            "limits.max_turns reset: 0, the default (applies to the next session)"
         );
         assert!(!f.home_text().contains("max_turns"));
         // Another layer still sets it: the line says who.
         assert_eq!(
             store.reset(row("tui.theme")).unwrap(),
-            "tui.theme is back on tokyo-night, set in the project config"
+            "tui.theme reset: tokyo-night, set in the project config"
         );
         assert!(!f.home_text().contains("theme"));
         // Nothing of the home config is left to reset.

@@ -55,6 +55,8 @@ enum Row {
         request: Request,
         label: &'static str,
         detail: &'static str,
+        /// One sentence about what it does.
+        about: &'static str,
     },
     /// A provider that has a credential, and where it comes from.
     Credential {
@@ -263,8 +265,11 @@ impl Screen {
         let Some(setting) = SETTINGS.iter().find(|setting| setting.path == path) else {
             return;
         };
-        self.search = None;
-        self.open_page(
+        // The row a search stands on is no row of the page it started from.
+        if self.search.take().is_none() {
+            self.cursors[self.page] = self.cursor;
+        }
+        self.show_page(
             Page::ALL
                 .iter()
                 .position(|page| *page == setting.page)
@@ -287,18 +292,23 @@ impl Screen {
             rows.push(Row::Action {
                 request: Request::Subscription,
                 label: "Sign in with a subscription",
-                detail: "Claude, ChatGPT and the other accounts a provider signs in with",
+                detail: "Claude, ChatGPT and other accounts",
+                about: "Sign in with the account of a provider that has one; what it allows is used \
+                        instead of paying by the token.",
             });
             rows.push(Row::Action {
                 request: Request::ApiKey,
                 label: "Add an API key",
                 detail: "stored in auth.json",
+                about: "Store the API key of a provider in auth.json; a key in the environment needs \
+                        no storing.",
             });
             if self.accounts.stored {
                 rows.push(Row::Action {
                     request: Request::SignOut,
                     label: "Sign out or forget a key",
-                    detail: "removes a login or a key from auth.json",
+                    detail: "removes it from auth.json",
+                    about: "Remove a stored login or key from auth.json.",
                 });
             }
             if !self.accounts.signed_in.is_empty() {
@@ -346,7 +356,9 @@ impl Screen {
                 setting.description,
                 self.store.shown(setting),
             ),
-            Row::Action { label, detail, .. } => format!("{} {label} {detail}", page.title()),
+            Row::Action {
+                label, detail, about, ..
+            } => format!("{} {label} {detail} {about}", page.title()),
             Row::Credential { provider, source } => format!("{} {provider} {source}", page.title()),
             Row::Fixed { path, why } => format!("{} {path} {why}", page.title()),
         }
@@ -398,10 +410,14 @@ impl Screen {
         self.cursor = after.or(before).unwrap_or(0);
     }
 
+    /// Leaves the page in view for another, which comes back on the row it was left on.
     fn open_page(&mut self, page: usize) {
-        if self.search.is_none() {
-            self.cursors[self.page] = self.cursor;
-        }
+        self.cursors[self.page] = self.cursor;
+        self.show_page(page);
+    }
+
+    /// Brings a page into view on the row it was left on.
+    fn show_page(&mut self, page: usize) {
         self.page = page % Page::ALL.len();
         self.rows = self.page_rows(self.page());
         self.cursor = self.cursors[self.page];
@@ -440,13 +456,7 @@ impl Screen {
             true => (self.cursor + distance).min(last),
             false => self.cursor.saturating_sub(distance),
         };
-        if forward {
-            // The last row of a page is never a heading; the one landed on may be.
-            let before = (0..=self.cursor)
-                .rev()
-                .find(|index| self.rows[*index].selectable());
-            self.cursor = before.unwrap_or(self.cursor);
-        }
+        // A heading is stepped over: the last row of a page is never one.
         self.settle();
     }
 
@@ -553,14 +563,11 @@ impl Screen {
             Some(Row::Setting(setting)) => Some(setting.path),
             _ => None,
         };
-        self.search = None;
         match found {
             Some(path) => self.go_to(path),
             None => {
-                self.rows = self.page_rows(self.page());
-                self.cursor = self.cursors[self.page];
-                self.scroll.set(0);
-                self.settle();
+                self.search = None;
+                self.show_page(self.page);
             }
         }
     }
@@ -1252,7 +1259,8 @@ impl Screen {
     /// One row of a list. The selected one is a band across the width with the rail before it.
     fn row_line(cells: &Cells, selected: bool, columns: &Columns, width: usize, theme: &Theme) -> Line {
         let ellipsis = theme.glyph(Glyph::Ellipsis);
-        let room = width.saturating_sub(RAIL);
+        // The last column stays empty: a scrollbar may stand right after it.
+        let room = width.saturating_sub(RAIL + 1);
         let label_width = columns.label.min(room);
         let marker_width = if columns.marker { 2 } else { 0 };
         let mut note_width = columns.note;
@@ -1559,7 +1567,7 @@ impl Screen {
         let (description, meta) = match (&self.edit, self.selected()) {
             (Some(edit), _) => self.about(edit.setting(), theme),
             (None, Some(Row::Setting(setting))) => self.about(setting, theme),
-            (None, Some(Row::Action { detail, .. })) => (detail.to_string(), String::new()),
+            (None, Some(Row::Action { about, .. })) => (about.to_string(), String::new()),
             (None, Some(Row::Credential { provider, source })) => {
                 (format!("{provider} is used with {source}."), String::new())
             }
@@ -1738,6 +1746,12 @@ mod tests {
         assert!(screen.selected().is_some_and(Row::selectable));
         press(&mut screen, KeyCode::PageUp);
         assert_eq!(selected_name(&screen), "tui.theme");
+        // Even where one row is in view, a page down gets past a heading.
+        screen.go_to("tui.expand_tools");
+        rows(&screen, 100, 1);
+        press(&mut screen, KeyCode::PageDown);
+        assert_eq!(selected_name(&screen), "notify.bell");
+        press(&mut screen, KeyCode::Home);
         // The headings are in the list.
         let shown = rows(&screen, 100, 30);
         assert!(shown.contains(&"Interface".to_string()), "{shown:#?}");
@@ -2066,6 +2080,10 @@ mod tests {
         let f = fixture("", "");
         let mut screen = screen(&f);
         press(&mut screen, KeyCode::Right);
+        for _ in 0..3 {
+            press(&mut screen, KeyCode::Down);
+        }
+        assert_eq!(selected_name(&screen), "roles.planner");
         press(&mut screen, KeyCode::Char('/'));
         type_text(&mut screen, "Secret");
         let shown = rows(&screen, 110, 40);
@@ -2109,6 +2127,16 @@ mod tests {
         press(&mut screen, KeyCode::Esc);
         assert!(screen.search.is_none());
         assert_eq!(screen.page(), Page::Permissions);
+        assert_eq!(selected_name(&screen), "permissions.secret_paths");
+        // The page the search started from is still on the row it was left on.
+        for _ in 0..4 {
+            press(&mut screen, KeyCode::Left);
+        }
+        assert_eq!(screen.page(), Page::Models);
+        assert_eq!(selected_name(&screen), "roles.planner");
+        for _ in 0..4 {
+            press(&mut screen, KeyCode::Right);
+        }
         assert_eq!(selected_name(&screen), "permissions.secret_paths");
 
         // Two words narrow it; a key matches too; nothing found leaves the page as it was.
@@ -2181,7 +2209,7 @@ mod tests {
             "{shown:#?}"
         );
         assert!(
-            shown.contains(&"tui.theme is back on light, set in the home config".to_string()),
+            shown.contains(&"tui.theme reset: light, set in the home config".to_string()),
             "{shown:#?}"
         );
         press(&mut screen, KeyCode::Char('r'));

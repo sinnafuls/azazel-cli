@@ -201,7 +201,7 @@ macro_rules! settings {
 use Kind::{Choice, List, Number, Role, Switch, Text, Theme};
 
 settings! {
-    Accounts / "Accounts" {
+    Accounts / "Rotation" {
         "accounts.order": Kind::Table, "Account order",
             "Per provider, the labels of its accounts in the order they are tried, such as anthropic = [\"work\", \"default\"].";
     }
