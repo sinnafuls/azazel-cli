@@ -6,7 +6,8 @@
 //!
 //! - `azazel --ssh host [prompt]` runs `azazel rpc` there and opens the UI on it; with `-p` the
 //!   prompt runs and its reply is printed;
-//! - `--detach` starts the prompt as a background session there, which outlives the connection;
+//! - `--detach` starts the prompt as a background session there, which outlives the connection,
+//!   and opens the UI on it (without a terminal it prints the session's id);
 //! - `--attach <id>` opens a background session of that machine (`azazel rpc --attach <id>`
 //!   there joins the connection to the session's socket);
 //! - `ps`, `logs` and `kill` run there and print here.
@@ -122,6 +123,25 @@ async fn pass_through(host: &str, command: &str) -> u8 {
             EXIT_FAILED
         }
     }
+}
+
+/// Starts a background session there and returns its id. What goes wrong is said, as the other
+/// azazel said it; `Err` is the exit code.
+async fn started(host: &str, command: &str) -> Result<String, u8> {
+    let output = ssh(host, command)
+        .stdin(Stdio::null())
+        .stderr(Stdio::inherit())
+        .output()
+        .await
+        .map_err(|e| {
+            eprintln!("azazel: cannot run ssh: {e}");
+            EXIT_FAILED
+        })?;
+    let id = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || id.is_empty() {
+        return Err(output.status.code().map_or(EXIT_FAILED, |code| code as u8));
+    }
+    Ok(id)
 }
 
 /// A connection to the other azazel, and what was written to standard error on the way.
@@ -263,18 +283,32 @@ pub async fn run(cli: &Cli, paths: Paths, host: &str) -> u8 {
         };
     }
     let prompt = cli.prompt_text();
-    if cli.detach {
+    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    // A background session there: started now, or one that is running.
+    let attach = if cli.detach {
         if prompt.trim().is_empty() {
             eprintln!("azazel: --detach needs a prompt to run in the background");
             return EXIT_USAGE;
         }
         let mut words = carried(cli);
-        words.extend(["bg".to_string(), "--".to_string(), prompt]);
-        return pass_through(host, &remote_command(cli, &words)).await;
-    }
-    let terminal = std::io::IsTerminal::is_terminal(&std::io::stdin())
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
-    let (words, place) = match &cli.attach {
+        words.extend(["bg".to_string(), "--".to_string(), prompt.clone()]);
+        let command = remote_command(cli, &words);
+        // Without a terminal, or for a script, its id is all there is to say.
+        if !terminal || cli.print || cli.plain {
+            return pass_through(host, &command).await;
+        }
+        match started(host, &command).await {
+            Ok(id) => {
+                println!("background session {id} on {host}");
+                Some(id)
+            }
+            Err(code) => return code,
+        }
+    } else {
+        cli.attach.clone()
+    };
+    let (words, place) = match &attach {
         Some(id) => (
             vec!["rpc".to_string(), "--attach".to_string(), id.clone()],
             Place::SshBackground {
@@ -293,7 +327,7 @@ pub async fn run(cli: &Cli, paths: Paths, host: &str) -> u8 {
             )
         }
     };
-    let lines = cli.attach.is_some() && (cli.plain || !terminal);
+    let lines = attach.is_some() && (cli.plain || !terminal);
     if !lines && !cli.print && !terminal {
         eprintln!("azazel: the interactive UI needs a terminal; pass -p \"prompt\" to run without one");
         return EXIT_USAGE;
@@ -329,7 +363,7 @@ pub async fn run(cli: &Cli, paths: Paths, host: &str) -> u8 {
     };
     match opened {
         Ok((remote, env)) => {
-            let first = (!prompt.trim().is_empty() && cli.attach.is_none()).then_some(prompt);
+            let first = (!prompt.trim().is_empty() && attach.is_none()).then_some(prompt);
             crate::tui::run_remote(remote, env, first).await
         }
         Err(e) => {

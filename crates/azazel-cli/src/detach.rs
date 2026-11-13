@@ -246,11 +246,7 @@ async fn start(home: &Path, args: Vec<OsString>, id: &str) -> Result<(), String>
 pub async fn bg(paths: &Paths) -> u8 {
     let id = new_id(&paths.home);
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
-    // On a thread of its own: describing the command line takes more stack than is left under
-    // the run on the main thread of a debug build.
-    let host_id = id.clone();
-    let args = tokio::task::spawn_blocking(move || host_args(&args, &host_id)).await;
-    let Ok(Some(args)) = args else {
+    let Some(args) = host_args(&args, &id) else {
         eprintln!("azazel: bg needs a prompt: azazel bg \"what to do\"");
         return EXIT_USAGE;
     };

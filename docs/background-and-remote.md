@@ -135,7 +135,7 @@ you start from is used.
 | `--ssh <host>` | The machine, named as you would for `ssh` (a host of your `~/.ssh/config`, `user@host`) |
 | `--remote-dir <dir>` | The directory to work in there; the login directory when left out |
 | `--remote-azazel <command>` | How azazel is started there, when it is not `azazel` on the path |
-| `--detach` | Run the prompt in a background session there and print its id; it survives the connection |
+| `--detach` | Run the prompt in a background session there, which survives the connection, and open the UI on it. Without a terminal, and with `-p` or `--plain`, only its id is printed |
 | `--attach <id>` | Open a background session of that machine; with `--plain`, as lines |
 | `-p` | Print the reply instead of opening the UI |
 
@@ -144,9 +144,9 @@ switches are passed on to the other azazel. `azazel --ssh <host> ps`, `logs <id>
 show and stop its background sessions.
 
 ```sh
-azazel --ssh build-box --detach "bisect the failing test"   # prints an id
+azazel --ssh build-box --detach "bisect the failing test"   # a background session there, in the UI here
 azazel --ssh build-box ps
-azazel --ssh build-box --attach 3fa9                        # the UI, on that session
+azazel --ssh build-box --attach 3fa9                        # back to it after the connection dropped
 ```
 
 A connection that drops ends the UI, not a background session: attach again and go on. A session

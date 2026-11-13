@@ -61,6 +61,9 @@ use clap::Parser;
 use crate::app::{App, discover_paths};
 use crate::cli::{Cli, Sub};
 
+/// The stack of the thread a run happens on.
+const RUN_STACK: usize = 8 * 1024 * 1024;
+
 /// Entry point for the `azazel` binary and for custom distributions that add their own extensions.
 #[derive(Default)]
 pub struct Builder {
@@ -77,17 +80,34 @@ impl Builder {
     /// Parses the process arguments and runs the selected mode to completion.
     pub fn run(self) -> ExitCode {
         let cli = Cli::parse();
-        let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
-            Ok(runtime) => runtime,
+        let extensions = self.extensions;
+        // The run gets a thread of its own, with the stack a main thread has on Linux. The main
+        // thread of a Windows process has one megabyte, which a debug build does not fit in.
+        let running = std::thread::Builder::new()
+            .name("azazel".to_string())
+            .stack_size(RUN_STACK)
+            .spawn(move || {
+                let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+                    Ok(runtime) => runtime,
+                    Err(e) => {
+                        eprintln!("azazel: cannot start the async runtime: {e}");
+                        return ExitCode::FAILURE;
+                    }
+                };
+                let code = runtime.block_on(run(cli, extensions));
+                // Background work (jobs being killed, log flushes) gets a moment, not forever.
+                runtime.shutdown_timeout(Duration::from_secs(2));
+                ExitCode::from(code)
+            });
+        match running.map(|run| run.join()) {
+            Ok(Ok(code)) => code,
+            // The run panicked; the panic has been reported.
+            Ok(Err(_)) => ExitCode::FAILURE,
             Err(e) => {
-                eprintln!("azazel: cannot start the async runtime: {e}");
-                return ExitCode::FAILURE;
+                eprintln!("azazel: cannot start: {e}");
+                ExitCode::FAILURE
             }
-        };
-        let code = runtime.block_on(run(cli, self.extensions));
-        // Background work (jobs being killed, log flushes) gets a moment, not forever.
-        runtime.shutdown_timeout(Duration::from_secs(2));
-        ExitCode::from(code)
+        }
     }
 }
 
