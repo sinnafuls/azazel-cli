@@ -396,11 +396,14 @@ fn match_row(row: &str) -> Option<(&str, u64, &str)> {
     None
 }
 
-/// A row of `grep` that belongs to `path`: a match (`path:N:text`) or a line of context
-/// (`path-N-text`).
-fn row_of<'a>(row: &'a str, path: &str) -> Option<code::Hit<'a>> {
+/// A row of `grep` that belongs to `path`: a match (`path:N:text`) or, when the search asked
+/// for `context`, a line of it (`path-N-text`).
+fn row_of<'a>(row: &'a str, path: &str, context: bool) -> Option<code::Hit<'a>> {
     let rest = row.strip_prefix(path)?;
-    let mark = rest.bytes().next().filter(|mark| matches!(mark, b':' | b'-'))?;
+    let mark = rest
+        .bytes()
+        .next()
+        .filter(|mark| *mark == b':' || (context && *mark == b'-'))?;
     let digits = rest[1..].bytes().take_while(u8::is_ascii_digit).count();
     if digits == 0 || rest.as_bytes().get(1 + digits) != Some(&mark) {
         return None;
@@ -416,8 +419,9 @@ fn row_of<'a>(row: &'a str, path: &str) -> Option<code::Hit<'a>> {
 /// How far ahead a line of context looks for the match that names its file.
 const CONTEXT_AHEAD: usize = 32;
 
-/// What `grep` returned as rows under the file each is from.
-fn grep_hits(said: &str) -> Vec<code::Hit<'_>> {
+/// What `grep` returned as rows under the file each is from. Lines of context are looked for
+/// only when the search asked for some: a file name may hold `-N-` too.
+fn grep_hits(said: &str, context: bool) -> Vec<code::Hit<'_>> {
     let rows: Vec<&str> = said.split('\n').collect();
     let mut hits = Vec::with_capacity(rows.len() + 8);
     let mut current: Option<&str> = None;
@@ -426,7 +430,7 @@ fn grep_hits(said: &str) -> Vec<code::Hit<'_>> {
             hits.push(code::Hit::Gap);
             continue;
         }
-        if let Some(hit) = current.and_then(|path| row_of(row, path)) {
+        if let Some(hit) = current.and_then(|path| row_of(row, path, context)) {
             hits.push(hit);
             continue;
         }
@@ -438,7 +442,7 @@ fn grep_hits(said: &str) -> Vec<code::Hit<'_>> {
                 .iter()
                 .take(CONTEXT_AHEAD)
                 .filter_map(|later| match_row(later))
-                .find_map(|(path, _, _)| Some((path, row_of(row, path)?))),
+                .find_map(|(path, _, _)| Some((path, row_of(row, path, context)?))),
         };
         match found {
             Some((path, hit)) => {
@@ -585,7 +589,10 @@ fn shaped_body(
         "grep" if said != "no matches" => match field("mode") {
             Some("files") => Some(files(&said.split('\n').collect::<Vec<_>>())),
             Some("count") => None,
-            _ => Some(hits(grep_hits(said), needle(false))),
+            _ => {
+                let context = call.input.get("context").and_then(Value::as_u64).unwrap_or(0) > 0;
+                Some(hits(grep_hits(said, context), needle(false)))
+            }
         },
         "web_grep" if !said.starts_with("no matches for ") => {
             Some(hits(web_grep_hits(said), needle(flag("literal"))))
@@ -1223,6 +1230,16 @@ mod tests {
             Some(("C:\\work\\a.rs", 12, "let x = y:3:z;"))
         );
         assert_eq!(match_row("no line number here: none"), None);
+        // Without context asked for, a file named like a line of context is a file.
+        assert_eq!(
+            body(
+                "grep",
+                json!({"pattern": "x"}),
+                "src/a:1:x\nsrc/a-2-b.rs:5:x",
+                OPEN
+            ),
+            ["src/a", "  1 │ x", "src/a-2-b.rs", "  5 │ x"]
+        );
         assert_eq!(literal_of("a\\.b\\(c"), "a.b(c");
         assert_eq!(literal_of("\\bword"), "\\bword");
     }
