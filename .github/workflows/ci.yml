@@ -14,7 +14,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     # A cold Windows build of the whole workspace and its tests takes most of an hour.
     timeout-minutes: 120
+    env:
+      # Debug info for every test binary of the workspace no longer fits on the Linux runner's
+      # disk; failures still name the test and the line.
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     steps:
+      # The Linux runner ships toolchains this build never uses; removing them frees about 20 GB.
+      - if: runner.os == 'Linux'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
