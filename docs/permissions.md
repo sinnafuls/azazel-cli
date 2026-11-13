@@ -79,6 +79,7 @@ A rule is `tool` or `tool(pattern)`. The tool part is a glob over tool names, so
 | `shell` | Ending in `:*`: a prefix, matching that command alone or followed by a space and anything. Otherwise a glob over the command. | `shell(git diff:*)`, `shell(npm run *)` |
 | `read`, `write`, `edit`, `glob`, `grep`, `lsp`, `ast_grep` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
 | `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL and `web_grep` are matched as `web_fetch`, and so is `read` of a `pr://` or `issue://` address (host `github.com`). For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
+| `http` | `domain:<host>` as for `web_fetch`, and `auth:<service>` (a glob over the name) when the request would carry a credential stored with `azazel secrets add`. An `allow` has to cover both subjects. | `http(domain:api.github.com)`, `http(auth:github)` |
 | Any other tool | A glob over the tool's subject, if it has one (for `screen`, the action name) | `screen`, `screen(capture)` |
 
 The `allow`, `ask` and `deny` arrays concatenate across config layers (home, project, `config.local.toml`, environment). A project's `permissions.allow` is ignored until the project is trusted, and so is `mode = "bypass"`; its `ask` and `deny` always apply. See [configuration](configuration.md).
@@ -147,7 +148,7 @@ Files that hold credentials are asked about before an agent reads or writes one,
 | Environment files | `.env` and `.env.*` anywhere, except `.env.example`, `.env.sample` and `.env.template` |
 | Keys | `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*` anywhere |
 | Under your home directory | `~/.ssh/**`, `~/.aws/**`, `~/.config/gcloud/**`, `~/.azure/**`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` |
-| azazel's own | `~/.azazel/auth.json` (wherever `AZAZEL_HOME` puts it) and `~/.azazel/.env` |
+| azazel's own | `~/.azazel/auth.json` and `~/.azazel/secrets.json` (wherever `AZAZEL_HOME` puts them) and `~/.azazel/.env` |
 | Yours | Every pattern in `permissions.secret_paths`, written like the path of a rule |
 
 ```toml

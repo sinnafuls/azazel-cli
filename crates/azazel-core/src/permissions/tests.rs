@@ -1337,6 +1337,8 @@ fn the_secret_files_are_the_built_in_list_and_what_the_config_adds() {
     f.state.set_mode(PermissionMode::Auto);
     let azazel_login = f.paths.home.join("auth.json");
     let azazel_login = azazel_login.to_string_lossy();
+    let agent_secrets = f.paths.secrets_file();
+    let agent_secrets = agent_secrets.to_string_lossy();
     for path in [
         ".env",
         "services/api/.env.production",
@@ -1356,8 +1358,10 @@ fn the_secret_files_are_the_built_in_list_and_what_the_config_adds() {
         "~/.pypirc",
         "~/.git-credentials",
         "~/.azazel/auth.json",
+        "~/.azazel/secrets.json",
         "~/.azazel/.env",
         &azazel_login,
+        &agent_secrets,
         // From the configuration.
         "config/prod.yaml",
         "vault/notes/db.txt",
@@ -1693,4 +1697,43 @@ async fn results_lose_their_secrets_before_the_agent_gets_them_when_that_is_on()
         "nothing to hide; already [redacted:password]"
     );
     assert_eq!(clean.details, None);
+}
+
+#[test]
+fn a_request_with_a_stored_credential_needs_its_host_and_the_credential_allowed() {
+    let f = fixture(
+        "[permissions]\nallow = [\"http(domain:api.acme.test)\", \"http(auth:acme)\"]\n\
+         deny = [\"http(auth:prod)\"]\n",
+    );
+    let decide = |subjects: &[&str]| {
+        let subjects: Vec<String> = subjects.iter().map(|s| s.to_string()).collect();
+        let (agent, call_subjects) = (agent(), subjects.as_slice());
+        let call = Call {
+            agent: &agent,
+            tool: "http",
+            access: Access::Net,
+            subjects: call_subjects,
+            shell: None,
+            command: None,
+        };
+        match f.state.precheck(&call) {
+            Err(reason) => Verdict::Deny(reason),
+            Ok(protected) => f.state.decide(&call, protected, false),
+        }
+    };
+    assert!(allowed(&decide(&["domain:api.acme.test"])));
+    assert!(allowed(&decide(&["domain:v2.api.acme.test", "auth:acme"])));
+    // Allowing the host does not allow every credential stored for it.
+    assert_eq!(
+        decide(&["domain:api.acme.test", "auth:other"]),
+        Verdict::Prompt { rule: None }
+    );
+    assert!(denied(&decide(&["domain:api.acme.test", "auth:prod"])));
+    // A request without a credential is offered a rule for its host.
+    assert_eq!(
+        decide(&["domain:other.test"]),
+        Verdict::Prompt {
+            rule: Some("http(domain:other.test)".to_string())
+        }
+    );
 }

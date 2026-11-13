@@ -10,6 +10,7 @@ pub mod oauth;
 pub mod provider;
 pub mod providers;
 pub mod router;
+pub mod services;
 pub mod sse;
 pub mod stall;
 pub mod stream;
@@ -27,6 +28,7 @@ pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
 pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
 pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
+pub use services::{Service, ServiceStore};
 pub use stall::StallLimits;
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
