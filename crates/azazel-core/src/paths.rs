@@ -44,6 +44,10 @@ impl Paths {
     pub fn auth_file(&self) -> PathBuf {
         self.home.join("auth.json")
     }
+    /// Where `azazel secrets` keeps the credentials agents use without seeing them.
+    pub fn secrets_file(&self) -> PathBuf {
+        self.home.join("secrets.json")
+    }
     pub fn home_mcp(&self) -> PathBuf {
         self.home.join("mcp.json")
     }

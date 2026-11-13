@@ -124,6 +124,40 @@ A window smaller than 44 columns by 12 rows has no room for a popup: there the s
 input until it is answered. `popups = false` under `[tui]` in [configuration](configuration.md) makes that the
 rule in every window.
 
+### Terminals
+
+When an agent starts a program in a terminal (`shell` with `interactive`; see
+[programs in a terminal](tools.md#programs-in-a-terminal)), its screen opens in a popup and follows the program
+live, colours included:
+
+```
+  ╭─ pty-1 · the agent is typing · npm init ─────────────────────────╮
+  │ This utility will walk you through creating a package.json file. │
+  │                                                                  │
+  │ package name: (demo)                                             │
+  │                                                                  │
+  ╰─ enter type into it · esc hide · ctrl+x stop it ─────────────────╯
+```
+
+- The box only shows the program at first: the agent drives it. `Enter` (or `Ctrl+G`) gives you the keyboard.
+  The border takes the accent colour, the title says `you are typing`, the cursor shows where the program has
+  it, and every key and paste goes to the program, `Esc` and `Ctrl+C` included. `Ctrl+G` hands the keyboard
+  back to the agent.
+- While you have the keyboard, what the agent wants to type waits. The agent is told that you typed with the
+  next screen it gets.
+- `Esc` puts the box away; the program goes on, and a row above the input says which program runs
+  (`pty-1 runs npm init · f3 shows it`). `F3` shows the newest terminal again, `/terminals` lists them all.
+  `Ctrl+X` stops the program.
+- The program is given a screen the size of the inside of the box, and a new size when the window changes.
+- When the program ends, the transcript says how (`pty-1 exited with code 0 · npm init`). A box you were only
+  watching closes with it. One you were typing into stays with its last screen until `Esc`.
+- An approval or a question from an agent opens over the terminal and gets the keys until it is answered.
+- The box follows the same rules as every popup: in a window too small for one, or with `popups = false`, it
+  takes the place of the input.
+
+Terminals show for a session that runs in this process. An interface attached to a session elsewhere does not
+show them.
+
 ### Working indicator
 
 A band of light passes over the words of the working indicator, so a glance tells a run that is alive from a
@@ -290,6 +324,7 @@ always stays. Only then is the model shortened, and after that left out.
 | `F2` | `transcript` | Open the [transcript viewer](#transcript-viewer) |
 | `F5` | `retry` | Same as `/retry` |
 | `Ctrl+B` | `background` | While a `shell` command of the agent runs: move it to the background |
+| `F3` | `terminal` | Show the newest [terminal](#terminals) of a program an agent runs |
 | `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |
 
 `Esc` interrupts the lead only; stop sub-agents from the agent hub or with `/stop`. In the agent hub, `Enter`
@@ -465,6 +500,7 @@ Models, permissions and setup:
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
 | `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked, and who [replaced or wraps](extensions.md#replacing-and-wrapping-tools) a tool |
 | `/jobs` | Background jobs; choose one to read its output or stop it |
+| `/terminals` | Programs agents run in [terminals](#terminals); choose one to watch it, type into it or stop it |
 | `/todo [add <text> \| done <n> \| clear]` | Show the agent's task list, or change it |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
 | `/doctor` | Check the installation and this project's setup |

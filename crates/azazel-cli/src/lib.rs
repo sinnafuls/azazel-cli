@@ -38,6 +38,7 @@ pub mod routing;
 pub mod rpc;
 pub mod rules;
 pub mod running;
+pub mod secrets;
 pub mod sessions;
 pub mod settings;
 pub mod side;
@@ -289,6 +290,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Logout { provider, account }) => {
             return login::logout(provider, account.as_deref(), &paths);
         }
+        Some(Sub::Secrets { action }) => return secrets::run(action, &paths),
         Some(Sub::Sessions { action }) => return sessions::run(action, &paths),
         Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),
         Some(Sub::Stats { days, json }) => return stats::run(&paths, *days, *json),

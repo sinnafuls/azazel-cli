@@ -110,6 +110,49 @@ pub enum AuthAction {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SecretsAction {
+    /// Store a credential that is added to the agents' requests to one host
+    Add {
+        /// A name for the service
+        name: String,
+        /// The host the requests go to: api.example.com, *.example.com or localhost:8080
+        #[arg(long)]
+        host: String,
+        /// A request header, as "Name: value"; - reads it from the terminal
+        #[arg(long, value_name = "HEADER", allow_hyphen_values = true)]
+        header: Option<String>,
+        /// A query parameter, as "name=value"; - reads it from the terminal
+        #[arg(long, value_name = "PARAMETER", allow_hyphen_values = true)]
+        query: Option<String>,
+        /// Basic authentication, as "user:password"; - reads it from the terminal
+        #[arg(long, value_name = "LOGIN", allow_hyphen_values = true)]
+        basic: Option<String>,
+    },
+    /// Store the login of a site, which the browser tool types into its sign-in page
+    AddSite {
+        /// The address of the sign-in page; * stands for any run of characters in its path
+        url_pattern: String,
+        #[arg(long)]
+        username: String,
+        /// Asked for at the terminal when left out
+        #[arg(long, allow_hyphen_values = true)]
+        password: Option<String>,
+        /// A name for the login; taken from the host of the page when left out
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// What is stored, without the secrets
+    List {
+        /// One JSON object per entry
+        #[arg(long)]
+        json: bool,
+    },
+    /// Forget a stored credential or login
+    #[command(alias = "remove")]
+    Rm { name: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum Sub {
     /// Choose the default model and create this project's config file
@@ -138,6 +181,11 @@ pub enum Sub {
     Auth {
         #[command(subcommand)]
         action: AuthAction,
+    },
+    /// Credentials the agents use without seeing them: API keys by host, logins by site
+    Secrets {
+        #[command(subcommand)]
+        action: SecretsAction,
     },
     /// List the models of the providers you have a credential for
     Models {

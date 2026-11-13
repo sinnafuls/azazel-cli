@@ -79,6 +79,7 @@ A rule is `tool` or `tool(pattern)`. The tool part is a glob over tool names, so
 | `shell` | Ending in `:*`: a prefix, matching that command alone or followed by a space and anything. Otherwise a glob over the command. | `shell(git diff:*)`, `shell(npm run *)` |
 | `read`, `write`, `edit`, `glob`, `grep`, `lsp`, `ast_grep` | Gitignore-style path. No `/`: matches at any depth in the project. With `/`: relative to the project root. Absolute and `~/` paths are allowed. Naming a directory covers everything below it. | `read(.env)`, `edit(src/**)`, `write(~/notes/**)` |
 | `web_fetch`, `browser` | `domain:<host>` matches the host and its subdomains. `read` of a URL and `web_grep` are matched as `web_fetch`, and so is `read` of a `pr://` or `issue://` address (host `github.com`). For `browser` actions other than `open` and `navigate`, the pattern is a glob over the action name. | `web_fetch(domain:github.com)`, `browser(snapshot)` |
+| `http` | `domain:<host>` as for `web_fetch`, and `auth:<service>` (a glob over the name) when the request would carry a credential stored with `azazel secrets add`. An `allow` has to cover both subjects. | `http(domain:api.github.com)`, `http(auth:github)` |
 | Any other tool | A glob over the tool's subject, if it has one (for `screen`, the action name) | `screen`, `screen(capture)` |
 
 The `allow`, `ask` and `deny` arrays concatenate across config layers (home, project, `config.local.toml`, environment). A project's `permissions.allow` is ignored until the project is trusted, and so is `mode = "bypass"`; its `ask` and `deny` always apply. See [configuration](configuration.md).
@@ -93,6 +94,19 @@ A `shell` command line is parsed and split into its simple commands: through pip
 So `shell(cargo test:*)` allows `cargo test -p core` but not `cargo test; rm -rf target`, and `deny = ["shell(rm:*)"]` catches `ls && sudo rm -rf x`.
 
 A command line that cannot be parsed, and any command when the resolved shell is PowerShell, is treated as one opaque string: deny rules and glob patterns still see it, but allow rules never auto-allow it.
+
+### Programs in a terminal
+
+A [program in a terminal](tools.md#programs-in-a-terminal) is started by a `shell` call (`interactive: true`), which is decided like every other `shell` call: the same rules, the same guards, the same prompt.
+
+The `pty` tool then types into the program and stops it. There are no rules for `pty` to write: those for `shell` decide.
+
+- `pty` `send` and `stop` are allowed where running the program is. They are matched against the command that runs in the terminal, as the `shell` call that started it was. With `allow = ["shell(npm init:*)"]` an agent starts `npm init` and answers its questions without a prompt; in `manual` mode without such a rule you are asked for each `send`, the prompt shows what would be typed, and `Allow this session` and `Always allow` add the rule for the program.
+- What is typed is held to the limits no mode lifts, as if it were a command of its own, because the program may be a shell: a `deny` rule for `shell` that matches the text refuses the call, the push guard refuses `git push`, a [destructive command](#destructive-commands) and a command that names a [secret file](#secret-files) are asked about in every mode but `bypass`, and `destructive = "deny"` refuses the first. Keys (`enter`, `ctrl+c`, arrows) are not text and are not checked.
+- `pty` `read` and `list` only look: they are reads.
+- Text you type into a terminal yourself is yours and is never checked.
+
+These checks read what the agent sends, not what the program does with it. Like the checks on `shell` they catch mistakes, and are no sandbox.
 
 ## How a call is decided
 
@@ -134,7 +148,7 @@ Files that hold credentials are asked about before an agent reads or writes one,
 | Environment files | `.env` and `.env.*` anywhere, except `.env.example`, `.env.sample` and `.env.template` |
 | Keys | `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*` anywhere |
 | Under your home directory | `~/.ssh/**`, `~/.aws/**`, `~/.config/gcloud/**`, `~/.azure/**`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` |
-| azazel's own | `~/.azazel/auth.json` (wherever `AZAZEL_HOME` puts it) and `~/.azazel/.env` |
+| azazel's own | `~/.azazel/auth.json` and `~/.azazel/secrets.json` (wherever `AZAZEL_HOME` puts them) and `~/.azazel/.env` |
 | Yours | Every pattern in `permissions.secret_paths`, written like the path of a rule |
 
 ```toml

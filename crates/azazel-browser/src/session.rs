@@ -1,14 +1,15 @@
 //! The browser of one session: started on first use, its tabs, and what each tool action does.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
-use azazel_ai::Block;
-use azazel_core::ArtifactStore;
+use azazel_ai::services::{self, Service};
+use azazel_ai::{Block, ServiceStore};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
+use azazel_core::{ArtifactStore, UiBridge, UiError};
 use base64::Engine;
 use process_wrap::tokio::ChildWrapper;
 use serde::Deserialize;
@@ -16,7 +17,7 @@ use serde_json::{Value, json};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
-use crate::launch::{NOT_FOUND, find_binary, launch};
+use crate::launch::{LEFT_AT_ONCE, NOT_FOUND, find_binary, launch};
 use crate::page::{self, Condition, Key};
 
 pub const NO_TAB: &str = "no tab is open; use the `open` action first";
@@ -37,6 +38,14 @@ const MAX_EVAL: usize = 16_000;
 const MAX_SHOT_HEIGHT: f64 = 16_000.0;
 /// The page property that tells the document a navigation left from the one it arrived at.
 const MARK: &str = "__azazelLeft";
+/// What a field of a sign-in form is: the type of an `<input>`, or nothing for anything else.
+const FIELD_KIND: &str = "function() { return this.tagName === 'INPUT' ? (this.type || 'text') : ''; }";
+/// The kinds of field a user name is typed into.
+const NAME_FIELDS: [&str; 6] = ["text", "email", "tel", "search", "url", "number"];
+/// How long the browser gets to save its profile and leave before it is started again.
+const LEAVE: Duration = Duration::from_secs(5);
+/// The longest pause before the browser is started once more on a profile still held.
+const RETRY_PAUSE: Duration = Duration::from_secs(4);
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -73,6 +82,9 @@ pub struct Input {
     pub filter: Option<String>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    pub ref_user: Option<String>,
+    pub ref_password: Option<String>,
+    pub reason: Option<String>,
 }
 
 struct Request {
@@ -206,6 +218,8 @@ struct Running {
     logs: Logs,
     named: u32,
     shots: u32,
+    /// Whether the browser runs without a window.
+    headless: bool,
 }
 
 /// `(target id, URL)` of the pages in a `Target.getTargets` reply.
@@ -227,10 +241,10 @@ fn web_page(url: &str) -> bool {
 }
 
 impl Running {
-    async fn start(settings: &Settings) -> Result<Running, String> {
+    async fn start(settings: &Settings, headless: bool) -> Result<Running, String> {
         let binary = find_binary(&settings.path, &|name| std::env::var(name).ok())
             .ok_or_else(|| NOT_FOUND.to_string())?;
-        let launched = launch(&binary, &settings.profile, settings.headless).await?;
+        let launched = launch(&binary, &settings.profile, headless).await?;
         let cdp = Arc::new(Cdp::connect(&launched.ws_url).await?);
         let logs = Logs::default();
         let (mut events, sink) = (cdp.subscribe(), logs.clone());
@@ -257,7 +271,174 @@ impl Running {
             logs,
             named: 0,
             shots: 0,
+            headless,
         })
+    }
+
+    /// A page to open a tab on: the blank one the browser started with, else a new one.
+    async fn new_target(&mut self) -> Result<String, String> {
+        if let Some(target) = self.spare.take() {
+            return Ok(target);
+        }
+        let created = self
+            .cdp
+            .call(None, "Target.createTarget", json!({ "url": "about:blank" }))
+            .await?;
+        Ok(text_of(&created, &["targetId"]).to_string())
+    }
+
+    /// The name and the address of every tab, for a browser that takes this one's place.
+    async fn pages(&self) -> Vec<(String, String)> {
+        let mut pages = Vec::new();
+        for tab in &self.tabs {
+            let address = self.evaluate(&tab.session, "location.href").await;
+            let address = address.ok().and_then(|value| value.as_str().map(str::to_string));
+            pages.push((
+                tab.name.clone(),
+                address.unwrap_or_else(|| "about:blank".to_string()),
+            ));
+        }
+        pages
+    }
+
+    /// Opens the tabs another browser had, under their names.
+    async fn reopen(&mut self, pages: Vec<(String, String)>, current: Option<String>) -> Result<(), String> {
+        for (name, address) in pages {
+            let target = self.new_target().await?;
+            let index = self.attach(&target, Some(name)).await?;
+            // A page that no longer loads is no reason to lose the others.
+            let _ = self
+                .go(
+                    &self.tabs[index].session,
+                    "Page.navigate",
+                    json!({ "url": address }),
+                )
+                .await;
+        }
+        self.current = current.filter(|name| self.tabs.iter().any(|tab| &tab.name == name));
+        Ok(())
+    }
+
+    /// Asks the browser to leave, so it saves its profile; the kill is for one that has not
+    /// left within `limit`. Returns the process, which may still be on its way out.
+    async fn close(mut self, limit: Duration) -> Box<dyn ChildWrapper> {
+        let close = self.cdp.call(None, "Browser.close", json!({}));
+        let _ = tokio::time::timeout(limit, close).await;
+        let _ = tokio::time::timeout(limit, self.child.wait()).await;
+        let _ = self.child.start_kill();
+        self.child
+    }
+
+    /// Calls `function` with the page's object `object` as `this` and returns its value.
+    async fn call_on(&self, session: &str, object: &str, function: &str) -> Result<Value, String> {
+        let mut reply = self
+            .call(
+                session,
+                "Runtime.callFunctionOn",
+                json!({ "objectId": object, "functionDeclaration": function, "returnByValue": true }),
+            )
+            .await?;
+        if let Some(details) = reply.get("exceptionDetails") {
+            return Err(text_of(details, &["exception", "description"]).to_string());
+        }
+        Ok(reply
+            .get_mut("result")
+            .and_then(|result| result.get_mut("value"))
+            .map(Value::take)
+            .unwrap_or(Value::Null))
+    }
+
+    /// Types the login stored for the page of the tab into the fields the call names, and
+    /// nothing when no login is stored for that page or a field is not what the call says it
+    /// is. Returns what to tell the agent, and the password typed.
+    async fn fill_login(
+        &mut self,
+        input: &Input,
+        stored: &BTreeMap<String, Service>,
+    ) -> Result<(String, String), String> {
+        let index = self.tab(input.tab.as_deref())?;
+        let session = self.tabs[index].session.clone();
+        if input.ref_user.is_none() && input.ref_password.is_none() {
+            return Err("`fill_login` needs `ref_user`, `ref_password` or both".to_string());
+        }
+        let address = self.evaluate(&session, "location.href").await?;
+        let address = address.as_str().unwrap_or_default();
+        let Some((
+            name,
+            Service::Site {
+                username, password, ..
+            },
+        )) = services::login_for(stored, address)
+        else {
+            let page = address.split(['?', '#']).next().unwrap_or_default();
+            return Err(format!(
+                "no login is stored for {page}; the user stores one with `azazel secrets add-site \
+                 <address of the sign-in page> --username <name>`"
+            ));
+        };
+        // Every field is looked at before anything is typed: a password never lands in a
+        // field that shows it.
+        let mut fields = Vec::new();
+        for (field, reference, text, secret) in [
+            ("ref_user", &input.ref_user, username, false),
+            ("ref_password", &input.ref_password, password, true),
+        ] {
+            let Some(reference) = reference else { continue };
+            let node = page::ref_number(reference)
+                .and_then(|number| self.tabs[index].refs.get(&number))
+                .ok_or_else(|| {
+                    format!("no element `{reference}` in the last snapshot of this tab; take a new snapshot")
+                })?;
+            let resolved = self
+                .call(&session, "DOM.resolveNode", json!({ "backendNodeId": node }))
+                .await?;
+            let object = text_of(&resolved, &["object", "objectId"]).to_string();
+            let kind = self.call_on(&session, &object, FIELD_KIND).await?;
+            let kind = kind.as_str().unwrap_or_default();
+            let fits = match secret {
+                true => kind == "password",
+                false => NAME_FIELDS.contains(&kind),
+            };
+            if !fits {
+                let wanted = if secret {
+                    "a password field"
+                } else {
+                    "a text field"
+                };
+                return Err(format!(
+                    "`{field}` ({reference}) is not {wanted}; nothing was typed"
+                ));
+            }
+            fields.push((field, object, text));
+        }
+        for (field, object, text) in &fields {
+            self.call_on(&session, object, "function() { this.focus(); this.select(); }")
+                .await?;
+            self.call(&session, "Input.insertText", json!({ "text": text }))
+                .await?;
+            let taken = self
+                .call_on(&session, object, "function() { return this.value.length; }")
+                .await?;
+            if taken.as_u64() != Some(text.encode_utf16().count() as u64) {
+                return Err(format!("the field of `{field}` did not take what was typed"));
+            }
+        }
+        if input.submit {
+            self.press(&session, &page::parse_keys("Enter")?, Duration::ZERO)
+                .await?;
+        }
+        let what = match (&input.ref_user, &input.ref_password) {
+            (Some(_), Some(_)) => "the user name and the password",
+            (Some(_), None) => "the user name",
+            _ => "the password",
+        };
+        Ok((
+            format!(
+                "typed {what} of the stored login `{name}`{}",
+                if input.submit { " and pressed Enter" } else { "" }
+            ),
+            password.clone(),
+        ))
     }
 
     async fn call(&self, session: &str, method: &str, params: Value) -> Result<Value, String> {
@@ -666,26 +847,30 @@ impl Running {
     }
 
     /// Drops tabs whose page is gone and adopts pages the browser opened by itself (pop-ups, links
-    /// opening a new tab), then lists them.
+    /// opening a new tab) or the user opened, then lists them.
     async fn list_tabs(&mut self) -> Result<String, String> {
         let reply = self.cdp.call(None, "Target.getTargets", json!({})).await?;
-        let live: Vec<(String, bool)> = page_targets(&reply)
+        // `(target, a page to work with, still blank)`
+        let live: Vec<(String, bool, bool)> = page_targets(&reply)
             .into_iter()
-            .map(|(id, url)| (id.to_string(), web_page(url)))
+            .map(|(id, url)| (id.to_string(), web_page(url), url == "about:blank"))
             .collect();
         self.tabs
-            .retain(|tab| live.iter().any(|(id, _)| id == &tab.target));
-        for (target, web) in &live {
+            .retain(|tab| live.iter().any(|(id, ..)| id == &tab.target));
+        for (target, web, blank) in &live {
             let known = self.tabs.iter().any(|tab| &tab.target == target);
-            if *web && !known && self.spare.as_ref() != Some(target) {
+            // The page the browser started with is kept for the first `open`, unless the user
+            // went somewhere with it.
+            let spare = self.spare.as_ref() == Some(target);
+            if *web && !known && !(spare && *blank) {
+                if spare {
+                    self.spare = None;
+                }
                 self.attach(target, None).await?;
             }
         }
-        if self
-            .current
-            .as_ref()
-            .is_some_and(|name| !self.tabs.iter().any(|tab| &tab.name == name))
-        {
+        let current = self.current.as_ref();
+        if !current.is_some_and(|name| self.tabs.iter().any(|tab| &tab.name == name)) {
             self.current = self.tabs.last().map(|tab| tab.name.clone());
         }
         let mut out = String::new();
@@ -726,16 +911,7 @@ impl Running {
                 let index = match existing {
                     Some(index) => index,
                     None => {
-                        let target = match self.spare.take() {
-                            Some(target) => target,
-                            None => {
-                                let created = self
-                                    .cdp
-                                    .call(None, "Target.createTarget", json!({ "url": "about:blank" }))
-                                    .await?;
-                                text_of(&created, &["targetId"]).to_string()
-                            }
-                        };
+                        let target = self.new_target().await?;
                         self.attach(&target, input.tab.clone()).await?
                     }
                 };
@@ -925,7 +1101,8 @@ impl Running {
                     }
                     other => Err(format!(
                         "unknown action `{other}`; actions: open, navigate, back, reload, snapshot, click, hover, type, \
-                         key, scroll, wait, eval, screenshot, resize, console, network, tabs, close"
+                         key, scroll, wait, eval, screenshot, resize, console, network, tabs, close, fill_login, \
+                         handoff"
                     )),
                 }
             }
@@ -937,6 +1114,10 @@ impl Running {
 pub struct BrowserSession {
     settings: Settings,
     state: tokio::sync::Mutex<Option<Running>>,
+    /// Where the logins of sites are stored, when the session has any.
+    logins: Option<Arc<ServiceStore>>,
+    /// The passwords typed into pages so far: no result shows them.
+    typed: Mutex<Vec<String>>,
 }
 
 impl BrowserSession {
@@ -944,11 +1125,24 @@ impl BrowserSession {
         BrowserSession {
             settings,
             state: tokio::sync::Mutex::new(None),
+            logins: None,
+            typed: Mutex::default(),
         }
+    }
+
+    /// Lets `fill_login` type the site logins kept in `stored`.
+    pub fn with_logins(mut self, stored: Arc<ServiceStore>) -> Self {
+        self.logins = Some(stored);
+        self
     }
 
     /// Carries out one action; actions run one at a time. `artifacts` is where screenshots go.
     pub async fn act(&self, input: Input, artifacts: Option<&ArtifactStore>) -> Result<Vec<Block>, String> {
+        let done = self.perform(input, artifacts).await;
+        self.without_passwords(done)
+    }
+
+    async fn perform(&self, input: Input, artifacts: Option<&ArtifactStore>) -> Result<Vec<Block>, String> {
         let mut state = self.state.lock().await;
         // The user closed the window, or the browser crashed: start over.
         if state.as_ref().is_some_and(|running| running.cdp.is_closed()) {
@@ -956,27 +1150,164 @@ impl BrowserSession {
         }
         if state.is_none() {
             match input.action.as_str() {
-                "open" => *state = Some(Running::start(&self.settings).await?),
+                "open" => *state = Some(Running::start(&self.settings, self.settings.headless).await?),
                 "tabs" => return Ok(vec![Block::text("no tabs are open\n")]),
                 _ => return Err(NO_TAB.to_string()),
             }
         }
-        match state.as_mut() {
-            Some(running) => running.act(&input, artifacts).await,
-            None => Err(NO_TAB.to_string()),
+        let Some(running) = state.as_mut() else {
+            return Err(NO_TAB.to_string());
+        };
+        if input.action == "fill_login" {
+            let stored = self
+                .logins
+                .as_ref()
+                .map(|logins| logins.services())
+                .unwrap_or_default();
+            let (said, password) = running.fill_login(&input, &stored).await?;
+            let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+            if !typed.contains(&password) {
+                typed.push(password);
+            }
+            return Ok(vec![Block::text(said)]);
         }
+        running.act(&input, artifacts).await
+    }
+
+    /// `done` without the passwords `fill_login` typed, whatever the page did with them.
+    fn without_passwords(&self, done: Result<Vec<Block>, String>) -> Result<Vec<Block>, String> {
+        let typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);
+        if typed.is_empty() {
+            return done;
+        }
+        match done {
+            Ok(mut blocks) => {
+                for block in &mut blocks {
+                    if let Block::Text { text } = block
+                        && let std::borrow::Cow::Owned(clean) = services::scrub(text, &typed)
+                    {
+                        *text = clean;
+                    }
+                }
+                Ok(blocks)
+            }
+            Err(why) => Err(services::scrub(&why, &typed).into_owned()),
+        }
+    }
+
+    /// Starts the browser on the profile another one has just left. The one that left can hold
+    /// the profile for a moment yet, and the new one then exits at once: it is started again
+    /// after a pause, a few times, each pause twice the last.
+    async fn start_again(&self, headless: bool) -> Result<Running, String> {
+        let mut pause = Duration::from_millis(250);
+        loop {
+            match Running::start(&self.settings, headless).await {
+                Err(why) if why.contains(LEFT_AT_ONCE) && pause <= RETRY_PAUSE => {
+                    tokio::time::sleep(pause).await;
+                    pause *= 2;
+                }
+                started => return started,
+            }
+        }
+    }
+
+    /// Hands the browser to the user: it is shown in a window, on the same profile and with the
+    /// same tabs, `ui` asks the user to do what `reason` says, and when the user answers the
+    /// agent gets the tabs and the page as they are then.
+    pub async fn handoff(&self, input: &Input, ui: &dyn UiBridge) -> Result<Vec<Block>, String> {
+        let done = self.hand_over(input, ui, false).await;
+        self.without_passwords(done)
+    }
+
+    /// [`BrowserSession::handoff`], with the browser started again `headless` or not: a test
+    /// has no screen to show a window on.
+    async fn hand_over(
+        &self,
+        input: &Input,
+        ui: &dyn UiBridge,
+        headless: bool,
+    ) -> Result<Vec<Block>, String> {
+        let reason = input
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .ok_or("`handoff` needs `reason`: what the user is asked to do in the browser")?;
+        let mut state = self.state.lock().await;
+        let running = match state.take().filter(|running| !running.cdp.is_closed()) {
+            Some(hidden) if hidden.headless => {
+                let (pages, current) = (hidden.pages().await, hidden.current.clone());
+                let mut left = hidden.close(LEAVE).await;
+                // The next browser needs the profile: the whole process tree has to be gone.
+                let _ = tokio::time::timeout(LEAVE, left.wait()).await;
+                drop(left);
+                let mut shown = self.start_again(headless).await?;
+                shown.reopen(pages, current).await?;
+                shown
+            }
+            Some(shown) => shown,
+            None => Running::start(&self.settings, headless).await?,
+        };
+        let running = state.insert(running);
+        if let Some(address) = &input.url {
+            let action = match (&input.tab, &running.current) {
+                (None, Some(_)) => "navigate",
+                _ => "open",
+            };
+            let go = Input {
+                action: action.to_string(),
+                url: Some(address.clone()),
+                tab: input.tab.clone(),
+                ..Input::default()
+            };
+            running.act(&go, None).await?;
+        }
+        if let Ok(index) = running.tab(input.tab.as_deref()) {
+            let _ = running
+                .call(&running.tabs[index].session, "Page.bringToFront", json!({}))
+                .await;
+        }
+
+        // A short first line: an interface with boxes makes it the title of the box.
+        let prompt = format!(
+            "Your turn in the browser\n{reason}\nFinish in the browser window, then press Enter here. What you \
+             type goes to the agent."
+        );
+        let note = match ui.input(&prompt).await {
+            Ok(note) => note,
+            Err(UiError::NoUser) => {
+                return Err("nobody is here to take over the browser".to_string());
+            }
+            Err(UiError::Cancelled) => {
+                return Err("the user declined to take over the browser".to_string());
+            }
+        };
+        let mut said = match note.trim() {
+            "" => "the user finished in the browser".to_string(),
+            note => format!("the user finished in the browser and says: {note}"),
+        };
+        if running.cdp.is_closed() {
+            *state = None;
+            return Ok(vec![Block::text(format!(
+                "{said}\nthe browser was closed; `open` starts it again"
+            ))]);
+        }
+        // The user may have opened, closed and moved between tabs.
+        said.push('\n');
+        said.push_str(&running.list_tabs().await?);
+        if let Ok(index) = running.tab(None) {
+            let line = running.page_line(&running.tabs[index].session).await;
+            let snapshot = running.snapshot(index).await?;
+            said.push_str(&format!("tab {} · {line}\n{snapshot}", running.tabs[index].name));
+        }
+        Ok(vec![Block::text(said)])
     }
 
     /// Closes the browser if it runs. The next action starts a new one.
     pub async fn shutdown(&self) {
-        let Some(mut running) = self.state.lock().await.take() else {
-            return;
-        };
-        // Asked nicely the browser saves its profile; the kill is for one that does not answer.
-        let close = running.cdp.call(None, "Browser.close", json!({}));
-        let _ = tokio::time::timeout(Duration::from_secs(2), close).await;
-        let _ = tokio::time::timeout(Duration::from_secs(2), running.child.wait()).await;
-        let _ = running.child.start_kill();
+        if let Some(running) = self.state.lock().await.take() {
+            running.close(Duration::from_secs(2)).await;
+        }
     }
 }
 
@@ -1087,6 +1418,192 @@ mod tests {
         let logs = logs.lock().unwrap();
         assert_eq!(logs["S"].console.len(), LOG_LINES);
         assert_eq!(logs["S"].console.front().map(String::as_str), Some("[log] 5"));
+    }
+
+    /// The user at the other end of a handoff: remembers what it was asked and answers `reply`.
+    struct User {
+        asked: Mutex<Vec<String>>,
+        reply: Result<String, UiError>,
+    }
+
+    #[async_trait::async_trait]
+    impl UiBridge for User {
+        async fn ask(&self, _: &azazel_core::Question) -> Result<Vec<String>, UiError> {
+            Err(UiError::NoUser)
+        }
+
+        async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+            Err(UiError::NoUser)
+        }
+
+        async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+            Err(UiError::NoUser)
+        }
+
+        async fn input(&self, prompt: &str) -> Result<String, UiError> {
+            self.asked.lock().unwrap().push(prompt.to_string());
+            self.reply.clone()
+        }
+
+        fn notify(&self, _: azazel_core::Level, _: &str) {}
+
+        async fn approval(&self, _: azazel_core::ApprovalRequest) -> Option<azazel_core::ApprovalDecision> {
+            None
+        }
+    }
+
+    /// Serves a small page for every request and returns the address.
+    async fn serve() -> String {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        const PAGE: &str = "<!doctype html><html><head><title>fixture</title></head>\
+            <body><h1>Account</h1></body></html>";
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut request = [0u8; 4096];
+                    let _ = stream.read(&mut request).await;
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PAGE}",
+                        PAGE.len()
+                    );
+                    let _ = stream.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn text(blocks: Vec<Block>) -> String {
+        match blocks.as_slice() {
+            [Block::Text { text }] => text.clone(),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_handoff_starts_the_browser_again_with_its_tabs_and_profile_and_returns_what_the_user_left() {
+        if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+            eprintln!("skipped: no Chromium-based browser on this machine");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let site = serve().await;
+        let session = BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: dir.path().join("profile"),
+        });
+        let browser = &session;
+        let act = |input: Input| async move { text(browser.act(input, None).await.unwrap()) };
+        let open = |path: &str, tab: &str| Input {
+            action: "open".into(),
+            url: Some(format!("{site}{path}")),
+            tab: Some(tab.into()),
+            ..Input::default()
+        };
+        let eval = |expression: &str, tab: &str| Input {
+            action: "eval".into(),
+            expression: Some(expression.into()),
+            tab: Some(tab.into()),
+            ..Input::default()
+        };
+        act(open("/first", "one")).await;
+        act(eval(
+            "document.cookie = 'seen=yes; max-age=3600'; window.before = 1",
+            "one",
+        ))
+        .await;
+        act(open("/second?page=2", "two")).await;
+
+        let handoff = |reason: Option<&str>| Input {
+            action: "handoff".into(),
+            reason: reason.map(str::to_string),
+            ..Input::default()
+        };
+        let user = User {
+            asked: Mutex::default(),
+            reply: Ok("  signed in as me ".into()),
+        };
+        let back = text(
+            session
+                .hand_over(&handoff(Some("Sign in to the fixture")), &user, true)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(
+            *user.asked.lock().unwrap(),
+            [
+                "Your turn in the browser\nSign in to the fixture\nFinish in the browser window, then press \
+              Enter here. What you type goes to the agent."
+            ]
+        );
+        // The agent gets the user's words, the tabs as they are now and the page of its tab.
+        let lines: Vec<&str> = back.lines().collect();
+        assert_eq!(
+            lines[..4],
+            [
+                "the user finished in the browser and says: signed in as me",
+                &format!("  one · fixture · {site}/first"),
+                &format!("* two · fixture · {site}/second?page=2"),
+                &format!("tab two · fixture · {site}/second?page=2"),
+            ],
+            "{back}"
+        );
+        assert!(back.contains("heading \"Account\""), "{back}");
+        // It is another browser on the same profile: the page was loaded again, the cookie kept.
+        assert_eq!(
+            act(eval("[typeof window.before, document.cookie]", "one")).await,
+            "[\n  \"undefined\",\n  \"seen=yes\"\n]"
+        );
+
+        // A user who declines leaves the browser as it is, and the agent knows.
+        let declining = User {
+            asked: Mutex::default(),
+            reply: Err(UiError::Cancelled),
+        };
+        assert_eq!(
+            session
+                .hand_over(&handoff(Some("Solve the CAPTCHA")), &declining, true)
+                .await
+                .unwrap_err(),
+            "the user declined to take over the browser"
+        );
+        assert!(
+            session
+                .hand_over(&handoff(None), &user, true)
+                .await
+                .unwrap_err()
+                .contains("needs `reason`")
+        );
+        assert_eq!(user.asked.lock().unwrap().len(), 1);
+        let tabs = act(Input {
+            action: "tabs".into(),
+            ..Input::default()
+        })
+        .await;
+        assert_eq!(tabs.lines().count(), 2, "{tabs}");
+        session.shutdown().await;
+
+        // A handoff can be the first thing a session does with the browser: `url` is where the
+        // user starts.
+        let fresh = BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: dir.path().join("other-profile"),
+        });
+        let start = Input {
+            url: Some(format!("{site}/start")),
+            ..handoff(Some("Accept the terms"))
+        };
+        let back = text(fresh.hand_over(&start, &user, true).await.unwrap());
+        assert_eq!(
+            back.lines().nth(1),
+            Some(format!("* tab-1 · fixture · {site}/start").as_str()),
+            "{back}"
+        );
+        fresh.shutdown().await;
     }
 
     #[tokio::test]

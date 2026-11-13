@@ -132,6 +132,7 @@ async fn the_extension_registers_the_core_tool_set() {
             "grep",
             "shell",
             "job",
+            "pty",
             "todo",
             "ask_user",
             "session_recall"

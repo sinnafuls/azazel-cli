@@ -18,6 +18,8 @@ use reqwest::header::{CONTENT_TYPE, LOCATION};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::github::{self, GitHub};
+use super::youtube::{self, YouTube};
 use super::{TIMEOUT, USER_AGENT, describe};
 use crate::util::parse_input;
 
@@ -64,7 +66,7 @@ fn is_blocked(ip: IpAddr) -> bool {
 }
 
 /// Refuses URLs that are not http or https and hosts written as a blocked address.
-fn check_target(url: &Url) -> Result<(), String> {
+pub(super) fn check_target(url: &Url) -> Result<(), String> {
     if !matches!(url.scheme(), "http" | "https") {
         return Err(format!(
             "only http and https URLs can be fetched; {url} is a {} URL",
@@ -83,7 +85,7 @@ fn check_target(url: &Url) -> Result<(), String> {
 
 /// Resolves names through the system resolver and fails when any address is blocked, so the
 /// address checked is the address connected to.
-struct GuardedResolver;
+pub(super) struct GuardedResolver;
 
 impl Resolve for GuardedResolver {
     fn resolve(&self, name: Name) -> Resolving {
@@ -106,7 +108,7 @@ impl Resolve for GuardedResolver {
 }
 
 /// The lower-cased media type of a `Content-Type` value, without parameters.
-fn media_type(content_type: &str) -> String {
+pub(super) fn media_type(content_type: &str) -> String {
     content_type
         .split(';')
         .next()
@@ -116,7 +118,7 @@ fn media_type(content_type: &str) -> String {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-enum Kind {
+pub(super) enum Kind {
     Html,
     Text,
     Pdf,
@@ -124,7 +126,7 @@ enum Kind {
 }
 
 /// What a body is, from its media type, or from its bytes when the server named none.
-fn classify(media_type: Option<&str>, body: &[u8]) -> Kind {
+pub(super) fn classify(media_type: Option<&str>, body: &[u8]) -> Kind {
     match media_type.filter(|m| !m.is_empty()) {
         Some("text/html" | "application/xhtml+xml") => Kind::Html,
         Some(m)
@@ -335,14 +337,27 @@ struct Cached {
     text: Arc<str>,
 }
 
+/// The sites whose addresses are read in their own way instead of as a page.
+#[derive(Default)]
+pub struct Sites {
+    pub github: GitHub,
+    pub youtube: YouTube,
+}
+
 /// Fetches URLs for `web_fetch` and the URL schemes, remembering results for fifteen minutes.
 pub struct Fetcher {
     client: reqwest::Client,
     cache: Mutex<HashMap<(String, Format), Cached>>,
+    sites: Sites,
 }
 
 impl Fetcher {
     pub fn new() -> Result<Self, String> {
+        Fetcher::with_sites(Sites::default())
+    }
+
+    /// A fetcher that reaches GitHub and YouTube where `sites` says they are.
+    pub fn with_sites(sites: Sites) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
             .user_agent(USER_AGENT)
@@ -353,6 +368,7 @@ impl Fetcher {
         Ok(Fetcher {
             client,
             cache: Mutex::default(),
+            sites,
         })
     }
 
@@ -365,14 +381,36 @@ impl Fetcher {
                  https://example.com/page"
             )
         })?;
-        url.set_fragment(None);
+        // The body as the server sent it is the page itself, whatever the site.
+        let site = match format {
+            Format::Raw => None,
+            Format::Markdown | Format::Text => Site::of(&url),
+        };
+        // The lines a GitHub file address names are part of what is asked for.
+        if !matches!(
+            site,
+            Some(Site::GitHub(github::Target::Blob { lines: Some(_), .. }))
+        ) {
+            url.set_fragment(None);
+        }
         let key = (url.to_string(), format);
         if let Some(text) = self.cached(&key) {
             return Ok(text);
         }
+        let fresh = async {
+            let read = match &site {
+                Some(Site::GitHub(target)) => self.sites.github.read(target, &url, self, ctx).await?,
+                Some(Site::YouTube(video)) => Some(self.sites.youtube.transcript(video, self).await?),
+                None => None,
+            };
+            match read {
+                Some(text) => Ok(text),
+                None => self.fetch_fresh(url.clone(), format, ctx).await,
+            }
+        };
         let text: Arc<str> = tokio::select! {
             _ = ctx.cancel.cancelled() => return Err("aborted by user".to_string()),
-            fetched = self.fetch_fresh(url, format, ctx) => fetched?.into(),
+            fetched = fresh => fetched?.into(),
         };
         self.remember(key, text.clone());
         Ok(text)
@@ -412,7 +450,7 @@ impl Fetcher {
     }
 
     async fn fetch_fresh(&self, url: Url, format: Format, ctx: &ToolCtx) -> Result<String, String> {
-        let (url, mut response) = self.follow(url).await?;
+        let (url, response) = self.get(url, &[]).await?;
         let status = response.status();
         if !status.is_success() {
             return Err(format!("{url} returned HTTP {status}"));
@@ -422,37 +460,10 @@ impl Fetcher {
             .get(CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(media_type);
-
-        let too_large = || {
-            format!(
-                "{url} is larger than the {} MB limit",
-                MAX_BODY_BYTES / (1024 * 1024)
-            )
-        };
-        if response
-            .content_length()
-            .is_some_and(|length| length > MAX_BODY_BYTES as u64)
-        {
-            return Err(too_large());
-        }
-        let mut body = Vec::new();
-        loop {
-            let chunk = response
-                .chunk()
-                .await
-                .map_err(|e| format!("reading {url} failed: {}", describe(e)))?;
-            let Some(chunk) = chunk else { break };
-            if body.len() + chunk.len() > MAX_BODY_BYTES {
-                return Err(too_large());
-            }
-            body.extend_from_slice(&chunk);
-        }
+        let body = body(response, &url, MAX_BODY_BYTES).await?;
 
         let text = match classify(media_type.as_deref(), &body) {
-            #[cfg(feature = "pdf")]
-            Kind::Pdf => return pdf_text(&url, body, ctx).await,
-            #[cfg(not(feature = "pdf"))]
-            Kind::Pdf => return save(&url, "a PDF, which this build of azazel cannot read", &body, ctx),
+            Kind::Pdf => return pdf(&url, body, ctx).await,
             Kind::Binary => {
                 let what = media_type.as_deref().unwrap_or("binary data");
                 return save(&url, &format!("{what}, not text"), &body, ctx);
@@ -481,15 +492,38 @@ impl Fetcher {
         Ok(text)
     }
 
-    /// Requests `url`, following up to [`MAX_REDIRECTS`] redirects, each checked like the first
-    /// URL. Returns the response with the URL it came from.
-    async fn follow(&self, mut url: Url) -> Result<(Url, reqwest::Response), String> {
+    /// Requests `url` with `headers`, following up to [`MAX_REDIRECTS`] redirects, each checked
+    /// like the first URL. Returns the response with the URL it came from.
+    pub(super) async fn get(
+        &self,
+        url: Url,
+        headers: &[(&str, &str)],
+    ) -> Result<(Url, reqwest::Response), String> {
+        self.request(url, headers, None).await
+    }
+
+    /// Sends `json` to `url` and returns the answer.
+    pub(super) async fn post(&self, url: Url, json: &Value) -> Result<(Url, reqwest::Response), String> {
+        self.request(url, &[], Some(json)).await
+    }
+
+    async fn request(
+        &self,
+        mut url: Url,
+        headers: &[(&str, &str)],
+        json: Option<&Value>,
+    ) -> Result<(Url, reqwest::Response), String> {
         let mut redirects = 0;
         loop {
             check_target(&url)?;
-            let response = self
-                .client
-                .get(url.clone())
+            let mut request = match json {
+                Some(json) => self.client.post(url.clone()).json(json),
+                None => self.client.get(url.clone()),
+            };
+            for (name, value) in headers {
+                request = request.header(*name, *value);
+            }
+            let response = request
                 .send()
                 .await
                 .map_err(|e| format!("could not fetch {url}: {}", describe(e)))?;
@@ -518,6 +552,70 @@ impl Fetcher {
     }
 }
 
+/// A site whose addresses are read in their own way.
+enum Site {
+    GitHub(github::Target),
+    YouTube(String),
+}
+
+impl Site {
+    fn of(url: &Url) -> Option<Site> {
+        github::parse(url)
+            .map(Site::GitHub)
+            .or_else(|| youtube::video(url).map(Site::YouTube))
+    }
+}
+
+/// The body of `response`, which came from `url`; a body of more than `limit` bytes is refused.
+pub(super) async fn body(
+    mut response: reqwest::Response,
+    url: &Url,
+    limit: usize,
+) -> Result<Vec<u8>, String> {
+    let too_large = || format!("{url} is larger than the {} MB limit", limit / (1024 * 1024));
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
+            .await
+            .map_err(|e| format!("reading {url} failed: {}", describe(e)))?;
+        let Some(chunk) = chunk else { break };
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// A file that came from `url` as text: its text, the text of a PDF, or for other content that
+/// is not text a note naming the artifact it was saved to.
+pub(super) async fn file_text(url: &Url, body: Vec<u8>, ctx: &ToolCtx) -> Result<String, String> {
+    if body.starts_with(b"%PDF-") {
+        return pdf(url, body, ctx).await;
+    }
+    match String::from_utf8(body) {
+        Ok(text) => Ok(text),
+        Err(binary) => save(url, "binary data, not text", binary.as_bytes(), ctx),
+    }
+}
+
+#[cfg(feature = "pdf")]
+async fn pdf(url: &Url, body: Vec<u8>, ctx: &ToolCtx) -> Result<String, String> {
+    pdf_text(url, body, ctx).await
+}
+
+#[cfg(not(feature = "pdf"))]
+async fn pdf(url: &Url, body: Vec<u8>, ctx: &ToolCtx) -> Result<String, String> {
+    save(url, "a PDF, which this build of azazel cannot read", &body, ctx)
+}
+
 /// Saves a body as an artifact named after the last segment of `url`.
 fn save_artifact(url: &Url, body: &[u8], ctx: &ToolCtx) -> Result<PathBuf, String> {
     let store = ctx
@@ -536,7 +634,7 @@ fn save_artifact(url: &Url, body: &[u8], ctx: &ToolCtx) -> Result<PathBuf, Strin
 
 /// Saves a body that cannot be returned as text and says where it is. `what` is what the body is
 /// in place of text, such as `image/png, not text`.
-fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
+pub(super) fn save(url: &Url, what: &str, body: &[u8], ctx: &ToolCtx) -> Result<String, String> {
     match save_artifact(url, body, ctx) {
         Ok(path) => Ok(format!(
             "{url} is {what} ({} bytes). Saved to {}",
@@ -620,7 +718,12 @@ impl Tool for WebFetchTool {
          last line names the lines shown and the `offset` (1-based line) to continue from; `web_grep` \
          finds the lines that matter without reading the page. Bodies over 5 MB are refused. Results \
          are cached for 15 minutes, so paging and `web_grep` fetch a page once. Pages that build their \
-         content with scripts come back empty: use `browser` for those."
+         content with scripts come back empty: use `browser` for those. A GitHub address is read for \
+         what it names: a repository is cloned one commit deep and comes back as its file tree, its \
+         README and the path of the clone; a file (with `#L10-L20`, those lines), a directory, a pull \
+         request (`/files` or `.diff` for the changes), an issue and an Actions run (with the logs of \
+         its failed steps) come from GitHub's API, with the login of `gh` when it is signed in. A \
+         YouTube video comes back as its captions with the time of each part."
     }
 
     fn schema(&self) -> Value {

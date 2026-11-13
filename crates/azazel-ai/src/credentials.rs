@@ -539,7 +539,8 @@ fn accounts_in(entries: &BTreeMap<String, Credential>, provider: &str) -> Vec<Ac
     default.into_iter().chain(labelled).collect()
 }
 
-fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
+/// The advisory lock of the credential file `auth_file` (`<name>.json.lock` beside it), taken.
+pub(crate) fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
     if let Some(dir) = auth_file.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -566,7 +567,7 @@ fn read_auth_file(path: &Path) -> BTreeMap<String, Credential> {
 }
 
 /// Temp file in the same directory, then rename; mode 0600 on Unix.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);

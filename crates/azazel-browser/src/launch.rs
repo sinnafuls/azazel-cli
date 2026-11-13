@@ -15,6 +15,10 @@ pub const BROWSER_ENV: &str = "AZAZEL_BROWSER";
 /// fresh CI runner, a new profile) can take well over ten seconds.
 const STARTUP: Duration = Duration::from_secs(30);
 
+/// What the failure of [`launch`] says when the browser left at once, as it does while another
+/// browser holds the profile.
+pub const LEFT_AT_ONCE: &str = "before opening its debugging port";
+
 /// The file, in the profile directory, in which the browser writes its debugging port and the path
 /// of its WebSocket endpoint.
 const PORT_FILE: &str = "DevToolsActivePort";
@@ -159,8 +163,7 @@ pub async fn launch(binary: &Path, profile: &Path, headless: bool) -> Result<Lau
         // A browser already running on this profile takes over the new process, which then exits.
         if let Ok(Some(status)) = child.try_wait() {
             return Err(format!(
-                "{} exited ({status}) before opening its debugging port; \
-                 another session may be using the profile {}",
+                "{} exited ({status}) {LEFT_AT_ONCE}; another session may be using the profile {}",
                 binary.display(),
                 profile.display()
             ));

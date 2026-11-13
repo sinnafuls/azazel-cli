@@ -1,4 +1,4 @@
-//! Built-in tools: file access, search, shell, jobs, todos, user questions, web, LSP and skills,
+//! Built-in tools: file access, search, shell, jobs, terminals, todos, user questions, web, LSP and skills,
 //! and the addresses `read` resolves for sessions, jobs and GitHub.
 
 pub mod ast_grep;
@@ -9,8 +9,11 @@ pub mod guards;
 pub mod lsp;
 pub mod misc;
 pub mod notebook;
+#[cfg(feature = "office")]
+pub mod office;
 #[cfg(feature = "pdf")]
 pub mod pdf;
+pub mod pty;
 pub mod read;
 pub mod recall;
 pub mod scan;
@@ -20,6 +23,7 @@ pub mod shell;
 pub mod util;
 pub mod web;
 pub mod write;
+mod xml;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -35,6 +39,7 @@ use azazel_core::{
 
 pub use ast_grep::AstGrepTool;
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
+pub use pty::{PtyTool, Terminal, TerminalEntry, TerminalState, Terminals};
 pub use read::ReadTool;
 pub use recall::SessionRecallTool;
 pub use search::{GlobTool, GrepTool};
@@ -45,7 +50,7 @@ pub use write::{EditTool, WriteTool};
 /// program is installed), the
 /// `artifact://`, `session://` and `job://` schemes (and `pr://` and `issue://` when the `gh`
 /// program is installed), `/allow-edit`, and the services they share: [`FileTracker`],
-/// [`ArtifactStore`], [`Jobs`], [`Foreground`], [`AgentEnv`] and [`TodoStore`].
+/// [`ArtifactStore`], [`Jobs`], [`Foreground`], [`Terminals`], [`AgentEnv`] and [`TodoStore`].
 pub struct CoreToolsExt {
     pub shell: Shell,
     pub shell_timeout: Duration,
@@ -92,7 +97,10 @@ impl Extension for CoreToolsExt {
         let env = Arc::new(AgentEnv::default());
         let todos = Arc::new(TodoStore::default());
         let foreground = Arc::new(Foreground::new());
+        // Logs of programs in terminals are saved where `artifact://` reads.
+        let terminals = Arc::new(Terminals::new(self.artifacts_dir.clone()));
         r.service(foreground.clone());
+        r.service(terminals.clone());
         r.service(tracker.clone());
         r.service(artifacts.clone());
         r.service(jobs.clone());
@@ -124,8 +132,10 @@ impl Extension for CoreToolsExt {
             jobs.clone(),
             env,
             foreground,
+            terminals.clone(),
         )));
         r.tool(Arc::new(JobTool::new(jobs)));
+        r.tool(Arc::new(PtyTool::new(terminals)));
         r.tool(Arc::new(TodoTool::new(todos)));
         r.on(EventKind::BeforeRequest, Arc::new(misc::PlanReminder));
         r.tool(Arc::new(AskUserTool));

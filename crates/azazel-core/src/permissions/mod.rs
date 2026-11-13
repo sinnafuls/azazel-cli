@@ -84,7 +84,7 @@ pub fn subject_kind(tool: &str) -> SubjectKind {
     match tool {
         "shell" => SubjectKind::Command,
         "read" | "write" | "edit" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
-        "web_fetch" | "web_grep" | "browser" => SubjectKind::Domain,
+        "web_fetch" | "web_grep" | "browser" | "http" => SubjectKind::Domain,
         _ => SubjectKind::Other,
     }
 }
@@ -752,6 +752,33 @@ impl PermissionState {
             && subject_kind(call.tool) == SubjectKind::Path
             && call.subjects.iter().any(|s| self.is_protected(&ctx.resolve(s)));
         Ok(protected)
+    }
+
+    /// The limits of [`PermissionState::precheck`] for text an agent types into a program in a
+    /// terminal, taken as a command line: deny rules, the push guard, and `destructive =
+    /// "deny"`. What the agent's definition grants was settled by the program it types into.
+    pub fn precheck_typed(&self, call: &Call<'_>) -> Result<(), String> {
+        let cwd = self.cwd_of(call.agent);
+        let ctx = self.ctx(&cwd);
+        if let Some(hit) = self.first_match(RuleKind::Deny, call, &ctx) {
+            return Err(format!(
+                "what you want to type is denied by rule `{}` ({})",
+                hit.rule, hit.source
+            ));
+        }
+        if let (Some(analysis), Some(command)) = (call.shell, call.command)
+            && shell::pushes(command, analysis)
+        {
+            return Err(shell::PUSH_DENIED.to_string());
+        }
+        if self.destructive == DestructivePolicy::Deny
+            && let Some(risk) = self.risk(call, &ctx)
+        {
+            return Err(format!(
+                "what you want to type {risk}; destructive commands are refused here (`[permissions] destructive = \"deny\"`)"
+            ));
+        }
+        Ok(())
     }
 
     /// What a shell call would destroy, whatever the policy is.
