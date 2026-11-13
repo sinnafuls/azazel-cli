@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_ai::Credentials;
+use azazel_ai::ServiceStore;
 use azazel_ai::services::{self, NO_SERVICE, REDACTED, Service};
 use azazel_core::{ArtifactStore, ExtError, Extension, Registrar};
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue, LOCATION, SET_COOKIE};
@@ -44,7 +44,7 @@ use `web_fetch`.";
 /// The `http` tool.
 pub struct HttpTool {
     client: reqwest::Client,
-    credentials: Arc<Credentials>,
+    stored: Arc<ServiceStore>,
     redact: Redact,
     description: String,
 }
@@ -108,7 +108,7 @@ fn without_cookie_value(cookie: &str) -> String {
 impl HttpTool {
     /// `redact` is applied, beside the removal of the credential itself, to what a request that
     /// carried a stored credential returns.
-    pub fn new(credentials: Arc<Credentials>, redact: Redact) -> Result<Self, String> {
+    pub fn new(stored: Arc<ServiceStore>, redact: Redact) -> Result<Self, String> {
         let client = reqwest::Client::builder()
             .timeout(TIMEOUT)
             .user_agent(USER_AGENT)
@@ -117,19 +117,19 @@ impl HttpTool {
             .build()
             .map_err(|e| format!("could not set up the HTTP client for http: {e}"))?;
         // The services the session starts with are named, so the agent knows what it can reach.
-        let stored: Vec<String> = credentials
+        let named: Vec<String> = stored
             .services()
             .iter()
             .filter(|(_, service)| !matches!(service, Service::Site { .. }))
             .map(|(name, service)| format!("{name} ({})", service.target()))
             .collect();
-        let description = match stored.as_slice() {
+        let description = match named.as_slice() {
             [] => DESCRIPTION.to_string(),
-            stored => format!("{DESCRIPTION}\nStored credentials: {}.", stored.join(", ")),
+            named => format!("{DESCRIPTION}\nStored credentials: {}.", named.join(", ")),
         };
         Ok(HttpTool {
             client,
-            credentials,
+            stored,
             redact,
             description,
         })
@@ -139,7 +139,7 @@ impl HttpTool {
     fn service_of(&self, input: &Value) -> Option<(String, String)> {
         let url = Url::parse(input.get("url")?.as_str()?.trim()).ok()?;
         let named = input.get("service").and_then(Value::as_str);
-        let services = self.credentials.services();
+        let services = self.stored.services();
         let (name, service) = services::pick(&services, &url, named).ok()??;
         Some((name.to_string(), service.target().to_string()))
     }
@@ -380,7 +380,7 @@ impl HttpTool {
             }
         };
         url.set_fragment(None);
-        let services = self.credentials.services();
+        let services = self.stored.services();
         let service = match services::pick(&services, &url, input.service.as_deref()) {
             Ok(service) => service,
             Err(why) => return ToolOutput::error(why),
@@ -506,7 +506,7 @@ impl Tool for HttpTool {
 /// Registers the `http` tool.
 pub struct HttpExt {
     /// Where the credentials for agents are stored.
-    pub credentials: Arc<Credentials>,
+    pub stored: Arc<ServiceStore>,
     /// What hides secrets in the result of a request that carried a stored credential.
     pub redact: Redact,
 }
@@ -517,7 +517,7 @@ impl Extension for HttpExt {
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
-        let tool = HttpTool::new(self.credentials.clone(), self.redact).map_err(ExtError)?;
+        let tool = HttpTool::new(self.stored.clone(), self.redact).map_err(ExtError)?;
         r.tool(Arc::new(tool));
         Ok(())
     }

@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_ai::services::REDACTED;
-use azazel_ai::{Credentials, Service};
+use azazel_ai::{Service, ServiceStore};
 use azazel_core::ArtifactStore;
 use azazel_tools::web::HttpTool;
 use serde_json::{Value, json};
@@ -25,7 +25,7 @@ fn hide_test_keys(text: &str) -> Cow<'_, str> {
 
 struct Bench {
     dir: tempfile::TempDir,
-    credentials: Arc<Credentials>,
+    stored: Arc<ServiceStore>,
     services: Arc<Services>,
 }
 
@@ -34,7 +34,7 @@ fn bench() -> Bench {
     let services = Arc::new(Services::new());
     services.insert(Arc::new(ArtifactStore::new(dir.path().join("artifacts"))));
     Bench {
-        credentials: Arc::new(Credentials::new(dir.path().join("auth.json"))),
+        stored: Arc::new(ServiceStore::new(dir.path().join("secrets.json"))),
         dir,
         services,
     }
@@ -62,7 +62,7 @@ impl Bench {
     }
 
     fn tool(&self) -> HttpTool {
-        HttpTool::new(self.credentials.clone(), hide_test_keys).unwrap()
+        HttpTool::new(self.stored.clone(), hide_test_keys).unwrap()
     }
 
     async fn call(&self, input: Value) -> ToolOutput {
@@ -110,7 +110,7 @@ async fn the_stored_header_is_sent_for_its_host_and_never_comes_back() {
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service(
             "acme",
             Service::header(&host(&server), &format!("Authorization: Bearer {TOKEN}")).unwrap(),
@@ -170,7 +170,7 @@ async fn a_request_to_a_host_without_a_service_carries_nothing_and_is_returned_a
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service(
             "elsewhere",
             Service::header(&host(&other), &format!("Authorization: Bearer {TOKEN}")).unwrap(),
@@ -223,7 +223,7 @@ async fn a_stored_query_parameter_replaces_the_agents_and_stays_out_of_the_addre
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service(
             "maps",
             Service::query(&host(&server), "key=k/secret 123").unwrap(),
@@ -270,7 +270,7 @@ async fn basic_authentication_and_a_json_body_are_sent_and_none_stops_the_creden
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service("shop", Service::basic(&host(&server), "me:hunter2-pass").unwrap())
         .unwrap();
 
@@ -337,7 +337,7 @@ async fn a_redirect_is_followed_on_the_host_only_and_only_for_a_read() {
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service(
             "acme",
             Service::header(&host(&server), &format!("Authorization: Bearer {TOKEN}")).unwrap(),
@@ -397,7 +397,7 @@ async fn a_long_body_is_cut_and_saved_whole_and_other_content_is_saved_to_a_file
         .await;
     let bench = bench();
     bench
-        .credentials
+        .stored
         .store_service(
             "acme",
             Service::header(&host(&server), &format!("X-Api-Key: {TOKEN}")).unwrap(),

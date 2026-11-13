@@ -365,7 +365,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         None => report.warn(format!("browser: {}", azazel_browser::NOT_FOUND)),
     }
     // What `azazel secrets` stored: named, never shown.
-    let stored = azazel_ai::Credentials::new(paths.auth_file()).services();
+    let stored = azazel_ai::ServiceStore::new(paths.secrets_file()).services();
     if !stored.is_empty() {
         let named = |sites: bool| -> Vec<&str> {
             let of_kind = stored

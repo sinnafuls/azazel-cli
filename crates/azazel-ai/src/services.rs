@@ -1,14 +1,18 @@
-//! Credentials for the services agents call and the sites they sign in to: kept in the
-//! `services` section of `auth.json`, added to a request or typed into a page for the agent,
-//! and never given to it.
+//! Credentials for the services agents call and the sites they sign in to: kept in
+//! `secrets.json`, a file of their own beside `auth.json`, added to a request or typed into a
+//! page for the agent, and never given to it.
 
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::io;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 
 use base64::Engine;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
+
+use crate::credentials::{open_lock, write_private};
 
 /// What stands in for a stored credential in text an agent gets to see.
 pub const REDACTED: &str = "[redacted:credential]";
@@ -20,7 +24,7 @@ pub const NO_SERVICE: &str = "none";
 /// mangle the text without hiding anything worth hiding.
 const MIN_SECRET: usize = 4;
 
-/// One entry of the `services` section of `auth.json`.
+/// One entry of `secrets.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Service {
@@ -364,6 +368,73 @@ impl Service {
     }
 }
 
+/// The file the credentials for agents are kept in: a JSON object of [`Service`] entries by
+/// name, written like `auth.json` (temp file and rename under a lock file, mode 0600 on Unix)
+/// so several processes can share it.
+pub struct ServiceStore {
+    file: PathBuf,
+}
+
+impl ServiceStore {
+    pub fn new(file: PathBuf) -> Self {
+        ServiceStore { file }
+    }
+
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    /// What the file holds; `Ok(None)` when there is no file.
+    fn read(&self) -> io::Result<Option<BTreeMap<String, Service>>> {
+        let text = match std::fs::read_to_string(&self.file) {
+            Ok(text) => text,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        serde_json::from_str(&text)
+            .map(Some)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))
+    }
+
+    /// The stored credentials by name; empty when there are none or the file cannot be read.
+    pub fn services(&self) -> BTreeMap<String, Service> {
+        match self.read() {
+            Ok(stored) => stored.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("ignoring {}: {e}", self.file.display());
+                BTreeMap::new()
+            }
+        }
+    }
+
+    /// Keeps `service` under `name`. Returns whether it took the place of another one.
+    pub fn store_service(&self, name: &str, service: Service) -> io::Result<bool> {
+        let mut replaced = false;
+        self.modify(|services| replaced = services.insert(name.to_string(), service).is_some())?;
+        Ok(replaced)
+    }
+
+    /// Forgets the service `name` and returns it when there was one.
+    pub fn remove_service(&self, name: &str) -> io::Result<Option<Service>> {
+        let mut removed = None;
+        self.modify(|services| removed = services.remove(name))?;
+        Ok(removed)
+    }
+
+    /// Read-modify-write under the advisory lock, so concurrent processes never lose an update.
+    /// A file that cannot be read is left as it is: it may be a newer version's.
+    fn modify(&self, f: impl FnOnce(&mut BTreeMap<String, Service>)) -> io::Result<()> {
+        let lock = open_lock(&self.file)?;
+        let result = self.read().and_then(|stored| {
+            let mut services = stored.unwrap_or_default();
+            f(&mut services);
+            write_private(&self.file, &serde_json::to_vec_pretty(&services)?)
+        });
+        lock.unlock()?;
+        result
+    }
+}
+
 /// `text` with every one of `secrets` replaced by [`REDACTED`]; the text itself when it holds
 /// none.
 pub fn scrub<'a>(text: &'a str, secrets: &[String]) -> Cow<'a, str> {
@@ -684,5 +755,66 @@ mod tests {
         }))
         .unwrap();
         assert!(site.signs_in(&url("https://example.com/login")));
+    }
+
+    #[test]
+    fn the_store_keeps_entries_by_name_in_a_file_of_its_own() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ServiceStore::new(dir.path().join("home").join("secrets.json"));
+        // No file yet: nothing is stored, and nothing is created by looking.
+        assert!(store.services().is_empty());
+        assert!(!store.file().exists());
+
+        let api = Service::header("api.acme.test", "Authorization: Bearer tok_12345").unwrap();
+        let login = Service::site("https://acme.test/login", "me", "hunter22").unwrap();
+        assert!(!store.store_service("acme-api", api.clone()).unwrap());
+        assert!(!store.store_service("acme.test", login.clone()).unwrap());
+        assert_eq!(
+            store.services(),
+            BTreeMap::from([
+                ("acme-api".to_string(), api),
+                ("acme.test".to_string(), login.clone())
+            ])
+        );
+
+        // A service under a name in use takes its place.
+        let rotated = Service::header("api.acme.test", "Authorization: Bearer tok_67890").unwrap();
+        assert!(store.store_service("acme-api", rotated.clone()).unwrap());
+        assert_eq!(store.remove_service("acme-api").unwrap(), Some(rotated));
+        assert_eq!(store.remove_service("acme-api").unwrap(), None);
+        let file: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(store.file()).unwrap()).unwrap();
+        assert_eq!(
+            file,
+            serde_json::json!({"acme.test": {
+                "type": "site", "url": "https://acme.test/login", "username": "me", "password": "hunter22"
+            }})
+        );
+        // Nothing but the file itself and its lock is left beside it.
+        let mut beside: Vec<String> = std::fs::read_dir(store.file().parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        beside.sort();
+        assert_eq!(beside, ["secrets.json", "secrets.json.lock"]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(store.file()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ServiceStore::new(dir.path().join("secrets.json"));
+        let written = r#"{"x": {"type": "from-the-future"}}"#;
+        std::fs::write(store.file(), written).unwrap();
+        assert!(store.services().is_empty());
+        let service = Service::query("api.acme.test", "key=abc123").unwrap();
+        assert!(store.store_service("acme", service).is_err());
+        assert!(store.remove_service("x").is_err());
+        assert_eq!(std::fs::read_to_string(store.file()).unwrap(), written);
     }
 }

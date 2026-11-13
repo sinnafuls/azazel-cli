@@ -28,7 +28,7 @@ pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
 pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
 pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
-pub use services::Service;
+pub use services::{Service, ServiceStore};
 pub use stall::StallLimits;
 pub use stream::{EventStream, StreamEvent};
 pub use types::{

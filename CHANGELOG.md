@@ -85,8 +85,9 @@ GitHub are its section here.
   the project and of `~/.azazel` that hold no credentials can be included.
 - `azazel secrets add <name> --host <host> --header "Name: value"` (or `--query "name=value"`, or `--basic
   "user:password"`; `-` asks for the value at the terminal) stores a credential for the requests agents make
-  to one host, in the `services` section of `auth.json`. `azazel secrets list` shows names, hosts and kinds,
-  never a secret; `azazel secrets rm <name>` forgets one; `azazel doctor` names them.
+  to one host, in `~/.azazel/secrets.json` (a file of its own beside `auth.json`, and a secret file for the
+  permission rules). `azazel secrets list` shows names, hosts and kinds, never a secret; `azazel secrets rm
+  <name>` forgets one; `azazel doctor` names them.
 - `http` tool: one request to a web API (`method`, `url`, `headers`, `body` or `json`), returning the status,
   the response headers and the body. The credential stored for the host is added to the request and taken out
   of everything that comes back, so the agent uses a service without holding its key. It is sent over https

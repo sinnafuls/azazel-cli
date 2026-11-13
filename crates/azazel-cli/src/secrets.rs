@@ -1,9 +1,9 @@
-//! `azazel secrets`: the credentials agents use without seeing them, kept in the `services`
-//! section of `auth.json`. A request credential is added by the `http` tool to requests for its
+//! `azazel secrets`: the credentials agents use without seeing them, kept in `secrets.json`
+//! beside `auth.json`. A request credential is added by the `http` tool to requests for its
 //! host; a site login is typed into its sign-in page by the `browser` tool.
 
 use azazel_ai::services::check_name;
-use azazel_ai::{Credentials, Service};
+use azazel_ai::{Service, ServiceStore};
 use azazel_core::Paths;
 use serde_json::json;
 
@@ -44,15 +44,12 @@ fn site_name(pattern: &str) -> String {
         .to_string()
 }
 
-fn store(credentials: &Credentials, name: &str, service: Service) -> Result<String, Failure> {
+fn store(stored: &ServiceStore, name: &str, service: Service) -> Result<String, Failure> {
     check_name(name).map_err(Failure::Usage)?;
     let what = service.describe();
-    let replaced = credentials.store_service(name, service).map_err(|e| {
-        Failure::Failed(format!(
-            "could not write {}: {e}",
-            credentials.auth_file().display()
-        ))
-    })?;
+    let replaced = stored
+        .store_service(name, service)
+        .map_err(|e| Failure::Failed(format!("could not write {}: {e}", stored.file().display())))?;
     Ok(match replaced {
         true => format!("stored `{name}`: {what} (in place of the one stored before)"),
         false => format!("stored `{name}`: {what}"),
@@ -81,7 +78,7 @@ fn entry(name: &str, service: &Service) -> serde_json::Value {
     }
 }
 
-fn act(action: &SecretsAction, credentials: &Credentials) -> Result<String, Failure> {
+fn act(action: &SecretsAction, stored: &ServiceStore) -> Result<String, Failure> {
     match action {
         SecretsAction::Add {
             name,
@@ -98,7 +95,7 @@ fn act(action: &SecretsAction, credentials: &Credentials) -> Result<String, Fail
                 (None, None, Some(basic)) => Service::basic(host, &typed(basic, "login (user:password): ")?),
                 _ => Err("give one of --header, --query and --basic".to_string()),
             };
-            store(credentials, name, service.map_err(Failure::Usage)?)
+            store(stored, name, service.map_err(Failure::Usage)?)
         }
         SecretsAction::AddSite {
             url_pattern,
@@ -112,10 +109,10 @@ fn act(action: &SecretsAction, credentials: &Credentials) -> Result<String, Fail
             )?;
             let service = Service::site(url_pattern, username, &password).map_err(Failure::Usage)?;
             let name = name.clone().unwrap_or_else(|| site_name(service.target()));
-            store(credentials, &name, service)
+            store(stored, &name, service)
         }
         SecretsAction::List { json } => {
-            let services = credentials.services();
+            let services = stored.services();
             if *json {
                 let lines: Vec<String> = services
                     .iter()
@@ -141,12 +138,12 @@ fn act(action: &SecretsAction, credentials: &Credentials) -> Result<String, Fail
                 .collect();
             Ok(lines.join("\n"))
         }
-        SecretsAction::Rm { name } => match credentials.remove_service(name) {
+        SecretsAction::Rm { name } => match stored.remove_service(name) {
             Ok(Some(service)) => Ok(format!("forgot `{name}`: {}", service.describe())),
             Ok(None) => Err(Failure::Failed(format!("nothing is stored as `{name}`"))),
             Err(e) => Err(Failure::Failed(format!(
                 "could not write {}: {e}",
-                credentials.auth_file().display()
+                stored.file().display()
             ))),
         },
     }
@@ -154,7 +151,7 @@ fn act(action: &SecretsAction, credentials: &Credentials) -> Result<String, Fail
 
 /// `azazel secrets add|add-site|list|rm`.
 pub fn run(action: &SecretsAction, paths: &Paths) -> u8 {
-    match act(action, &Credentials::new(paths.auth_file())) {
+    match act(action, &ServiceStore::new(paths.secrets_file())) {
         Ok(text) => {
             if !text.is_empty() {
                 println!("{text}");

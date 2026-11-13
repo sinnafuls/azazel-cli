@@ -214,7 +214,7 @@ azazel secrets rm github
 - The agent never sees the credential. The address shown is the one the agent wrote. In the response, every occurrence of the credential (the header value, the token after `Bearer`, the parameter as sent, the password and the encoded `user:password`) becomes `[redacted:credential]`, in the headers, the body, the saved file and error messages; the value of a `Set-Cookie` header is hidden too, and whatever else looks like a secret is redacted as with [`tools.redact_output`](tools.md). A `401` adds a line saying the stored credential was sent and refused.
 - The tool description names the services stored when the session starts (name and host), so the agent knows what it can reach.
 
-The credentials are kept in the `services` section of `~/.azazel/auth.json`, beside the provider logins and under the same lock; `azazel doctor` names them.
+The credentials are kept in `~/.azazel/secrets.json` (wherever `AZAZEL_HOME` puts it), a file of their own beside the provider logins in `auth.json` and written the same way: mode `0600` on Unix, by temp file and rename under a lock file. It is a [secret file](permissions.md#secret-files): an agent that tries to read it is asked about in every mode but `bypass`. `azazel doctor` names what is stored.
 
 ### Permissions
 

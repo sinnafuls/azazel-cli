@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_ai::services::REDACTED;
-use azazel_ai::{Block, Credentials, Service};
+use azazel_ai::{Block, Service, ServiceStore};
 use azazel_browser::{BrowserSession, BrowserTool, Settings, find_binary};
 use azazel_core::ArtifactStore;
 use base64::Engine;
@@ -84,19 +84,19 @@ struct Bench {
     tool: BrowserTool,
     session: Arc<BrowserSession>,
     /// Where the site logins of this bench are stored.
-    credentials: Arc<Credentials>,
+    logins: Arc<ServiceStore>,
     ctx: ToolCtx,
 }
 
 impl Bench {
     fn new(dir: &Path) -> Bench {
-        let credentials = Arc::new(Credentials::new(dir.join("auth.json")));
+        let logins = Arc::new(ServiceStore::new(dir.join("secrets.json")));
         let settings = Settings {
             path: String::new(),
             headless: true,
             profile: dir.join("profile"),
         };
-        let session = Arc::new(BrowserSession::new(settings).with_logins(credentials.clone()));
+        let session = Arc::new(BrowserSession::new(settings).with_logins(logins.clone()));
         let services = Arc::new(Services::default());
         services.insert(Arc::new(ArtifactStore::new(dir.join("artifacts"))));
         let agent = AgentInfo {
@@ -109,7 +109,7 @@ impl Bench {
         Bench {
             tool: BrowserTool(session.clone()),
             session,
-            credentials,
+            logins,
             ctx: ToolCtx {
                 agent_id: agent.id.clone(),
                 session_id: agent.session_id.clone(),
@@ -438,7 +438,7 @@ async fn a_stored_login_is_typed_into_its_own_page_only_and_never_shown() {
     let bench = Bench::new(dir.path());
     let site = serve(LOGIN_PAGE).await;
     bench
-        .credentials
+        .logins
         .store_service(
             "fixture",
             Service::site(&format!("{site}/login*"), "me@example.com", PASSWORD).unwrap(),

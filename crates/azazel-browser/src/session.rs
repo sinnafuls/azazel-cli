@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use azazel_ai::services::{self, Service};
-use azazel_ai::{Block, Credentials};
+use azazel_ai::{Block, ServiceStore};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::{ArtifactStore, UiBridge, UiError};
 use base64::Engine;
@@ -1112,7 +1112,7 @@ pub struct BrowserSession {
     settings: Settings,
     state: tokio::sync::Mutex<Option<Running>>,
     /// Where the logins of sites are stored, when the session has any.
-    logins: Option<Arc<Credentials>>,
+    logins: Option<Arc<ServiceStore>>,
     /// The passwords typed into pages so far: no result shows them.
     typed: Mutex<Vec<String>>,
 }
@@ -1127,9 +1127,9 @@ impl BrowserSession {
         }
     }
 
-    /// Lets `fill_login` type the site logins stored in `credentials`.
-    pub fn with_logins(mut self, credentials: Arc<Credentials>) -> Self {
-        self.logins = Some(credentials);
+    /// Lets `fill_login` type the site logins kept in `stored`.
+    pub fn with_logins(mut self, stored: Arc<ServiceStore>) -> Self {
+        self.logins = Some(stored);
         self
     }
 
@@ -1159,7 +1159,7 @@ impl BrowserSession {
             let stored = self
                 .logins
                 .as_ref()
-                .map(|credentials| credentials.services())
+                .map(|logins| logins.services())
                 .unwrap_or_default();
             let (said, password) = running.fill_login(&input, &stored).await?;
             let mut typed = self.typed.lock().unwrap_or_else(PoisonError::into_inner);

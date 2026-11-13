@@ -518,7 +518,7 @@ export OPENAI_API_KEY="sk-..."
 
 `auth.json` is written with mode `0600` on Unix, by temp file and rename under a lock file (`auth.json.lock`), so several azazel processes can share it. Sign-in tokens are refreshed automatically when they have less than five minutes left.
 
-Its `services` key is not a provider: it holds the credentials `azazel secrets` stores for agents, the API keys the `http` tool adds to requests by host and the site logins the `browser` tool types. See [credentials for services](web-and-browser.md#credentials-for-services) and [signing in](web-and-browser.md#signing-in). A version of azazel older than 0.5 does not know the key and reads a file that has it as empty, so do not go back to one while services are stored.
+`auth.json` holds the providers' keys and sign-ins and nothing else. The credentials `azazel secrets` stores for agents (the API keys the `http` tool adds to requests by host, and the site logins the `browser` tool types) live in a file of their own beside it, `~/.azazel/secrets.json`, written the same way: mode `0600` on Unix, temp file and rename under `secrets.json.lock`. See [credentials for services](web-and-browser.md#credentials-for-services) and [signing in](web-and-browser.md#signing-in).
 
 `azazel auth status [--json]` lists each provider that has a credential and where it comes from (`--api-key`, an
 environment variable, a `.env` file, `api_key_command`, the configuration, or `auth.json`), and for logins the

@@ -135,7 +135,7 @@ Files that hold credentials are asked about before an agent reads or writes one,
 | Environment files | `.env` and `.env.*` anywhere, except `.env.example`, `.env.sample` and `.env.template` |
 | Keys | `*.pem`, `*.key`, `id_rsa*`, `id_ed25519*` anywhere |
 | Under your home directory | `~/.ssh/**`, `~/.aws/**`, `~/.config/gcloud/**`, `~/.azure/**`, `~/.kube/config`, `~/.docker/config.json`, `~/.netrc`, `~/.npmrc`, `~/.pypirc`, `~/.git-credentials` |
-| azazel's own | `~/.azazel/auth.json` (wherever `AZAZEL_HOME` puts it) and `~/.azazel/.env` |
+| azazel's own | `~/.azazel/auth.json` and `~/.azazel/secrets.json` (wherever `AZAZEL_HOME` puts them) and `~/.azazel/.env` |
 | Yours | Every pattern in `permissions.secret_paths`, written like the path of a rule |
 
 ```toml

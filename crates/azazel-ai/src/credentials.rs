@@ -11,14 +11,9 @@ use serde::{Deserialize, Serialize};
 use crate::error::AiError;
 use crate::limits::LimitStore;
 use crate::providers::presets::{ProviderConfig, ProviderSettings};
-use crate::services::Service;
 
 /// The label of the account kept under the plain provider key of `auth.json`.
 pub const DEFAULT_ACCOUNT: &str = "default";
-
-/// The key of `auth.json` under which the credentials for agents are kept (see
-/// [`crate::services`]); every other key is an account of a provider.
-const SERVICES: &str = "services";
 
 /// The `auth.json` key of `provider`'s account `label`: the provider id for the default account,
 /// `provider#label` for the others.
@@ -511,68 +506,9 @@ impl Credentials {
             .map_err(io::Error::other)?
     }
 
-    /// Replaces the accounts in the file; the `services` section stays as it is. The caller
-    /// holds the lock.
+    /// Replaces the file. The caller holds the lock.
     pub(crate) fn write_entries(&self, entries: &BTreeMap<String, Credential>) -> io::Result<()> {
-        let mut file = serde_json::Map::new();
-        for (key, credential) in entries {
-            file.insert(key.clone(), serde_json::to_value(credential)?);
-        }
-        if let Some(services) = read_raw(&self.auth_file).remove(SERVICES) {
-            file.insert(SERVICES.to_string(), services);
-        }
-        write_private(&self.auth_file, &serde_json::to_vec_pretty(&file)?)
-    }
-
-    /// The credentials stored for agents, by name; empty when there are none or the section
-    /// cannot be read.
-    pub fn services(&self) -> BTreeMap<String, Service> {
-        let Some(section) = read_raw(&self.auth_file).remove(SERVICES) else {
-            return BTreeMap::new();
-        };
-        serde_json::from_value(section).unwrap_or_else(|e| {
-            tracing::warn!("ignoring the services in {}: {e}", self.auth_file.display());
-            BTreeMap::new()
-        })
-    }
-
-    /// Keeps `service` under `name`. Returns whether it took the place of another one.
-    pub fn store_service(&self, name: &str, service: Service) -> io::Result<bool> {
-        let mut replaced = false;
-        self.modify_services(|services| replaced = services.insert(name.to_string(), service).is_some())?;
-        Ok(replaced)
-    }
-
-    /// Forgets the service `name` and returns it when there was one.
-    pub fn remove_service(&self, name: &str) -> io::Result<Option<Service>> {
-        let mut removed = None;
-        self.modify_services(|services| removed = services.remove(name))?;
-        Ok(removed)
-    }
-
-    /// Read-modify-write of the `services` section under the advisory lock; the accounts stay
-    /// as they are.
-    fn modify_services(&self, f: impl FnOnce(&mut BTreeMap<String, Service>)) -> io::Result<()> {
-        let lock = open_lock(&self.auth_file)?;
-        let mut file = read_raw(&self.auth_file);
-        let stored = file.remove(SERVICES).map(serde_json::from_value);
-        let result = match stored.transpose() {
-            // A section that cannot be read is not written over: it may be a newer version's.
-            Err(e) => Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the services in {} cannot be read: {e}", self.auth_file.display()),
-            )),
-            Ok(stored) => {
-                let mut services = stored.unwrap_or_default();
-                f(&mut services);
-                if !services.is_empty() {
-                    file.insert(SERVICES.to_string(), serde_json::to_value(&services)?);
-                }
-                write_private(&self.auth_file, &serde_json::to_vec_pretty(&file)?)
-            }
-        };
-        lock.unlock()?;
-        result
+        write_private(&self.auth_file, &serde_json::to_vec_pretty(entries)?)
     }
 
     pub(crate) fn refreshing(&self) -> &tokio::sync::Mutex<()> {
@@ -603,7 +539,8 @@ fn accounts_in(entries: &BTreeMap<String, Credential>, provider: &str) -> Vec<Ac
     default.into_iter().chain(labelled).collect()
 }
 
-fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
+/// The advisory lock of the credential file `auth_file` (`<name>.json.lock` beside it), taken.
+pub(crate) fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
     if let Some(dir) = auth_file.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -616,29 +553,21 @@ fn open_lock(auth_file: &Path) -> io::Result<std::fs::File> {
     Ok(lock)
 }
 
-/// The file as the JSON object it is; empty when it is missing or is not one.
-fn read_raw(path: &Path) -> serde_json::Map<String, serde_json::Value> {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return serde_json::Map::new();
-    };
-    serde_json::from_str(&text).unwrap_or_else(|e| {
-        tracing::warn!("ignoring {}: {e}", path.display());
-        serde_json::Map::new()
-    })
-}
-
-/// The accounts in the file: every key but `services`.
 fn read_auth_file(path: &Path) -> BTreeMap<String, Credential> {
-    let mut file = read_raw(path);
-    file.remove(SERVICES);
-    serde_json::from_value(serde_json::Value::Object(file)).unwrap_or_else(|e| {
-        tracing::warn!("ignoring {}: {e}", path.display());
-        BTreeMap::new()
-    })
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return BTreeMap::new();
+    };
+    match serde_json::from_str(&text) {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!("ignoring {}: {e}", path.display());
+            BTreeMap::new()
+        }
+    }
 }
 
 /// Temp file in the same directory, then rename; mode 0600 on Unix.
-fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
+pub(crate) fn write_private(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("json.tmp");
     let mut options = std::fs::OpenOptions::new();
     options.create(true).truncate(true).write(true);
@@ -1005,76 +934,5 @@ mod tests {
         for bad in ["", "a b", "a#b", "default", "é"] {
             assert!(check_label(bad).is_err(), "{bad}");
         }
-    }
-    #[test]
-    fn services_live_beside_the_accounts_and_neither_disturbs_the_other() {
-        let dir = tempfile::tempdir().unwrap();
-        let c = creds(dir.path(), &[]);
-        let key = Credential::ApiKey { key: "k-1".into() };
-        // A file written before there were services.
-        std::fs::write(c.auth_file(), r#"{"acme": {"type": "api_key", "key": "k-1"}}"#).unwrap();
-        assert!(c.services().is_empty());
-
-        let api = Service::header("api.acme.test", "Authorization: Bearer tok_12345").unwrap();
-        let login = Service::site("https://acme.test/login", "me", "hunter22").unwrap();
-        assert!(!c.store_service("acme-api", api.clone()).unwrap());
-        assert!(!c.store_service("acme.test", login.clone()).unwrap());
-        assert_eq!(c.load(), BTreeMap::from([("acme".to_string(), key.clone())]));
-        assert_eq!(
-            c.services(),
-            BTreeMap::from([
-                ("acme-api".to_string(), api.clone()),
-                ("acme.test".to_string(), login)
-            ])
-        );
-
-        // Storing, changing and forgetting an account keeps the services.
-        let other = Credential::ApiKey { key: "k-2".into() };
-        c.store("other#work", other.clone()).unwrap();
-        c.modify(|entries| {
-            entries.remove("acme");
-        })
-        .unwrap();
-        assert_eq!(
-            c.load(),
-            BTreeMap::from([("other#work".to_string(), other.clone())])
-        );
-        assert_eq!(c.services().len(), 2);
-
-        // A service under a name in use takes its place.
-        let rotated = Service::header("api.acme.test", "Authorization: Bearer tok_67890").unwrap();
-        assert!(c.store_service("acme-api", rotated.clone()).unwrap());
-        assert_eq!(c.services()["acme-api"], rotated);
-        assert_eq!(c.remove_service("acme-api").unwrap(), Some(rotated));
-        assert_eq!(c.remove_service("acme-api").unwrap(), None);
-        // With the last service the section goes, and the file is the accounts again.
-        assert!(c.remove_service("acme.test").unwrap().is_some());
-        let file: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
-        assert_eq!(
-            file,
-            serde_json::json!({"other#work": {"type": "api_key", "key": "k-2"}})
-        );
-    }
-
-    #[test]
-    fn a_services_section_that_cannot_be_read_is_left_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let c = creds(dir.path(), &[]);
-        let written =
-            r#"{"acme": {"type": "api_key", "key": "k-1"}, "services": {"x": {"type": "from-the-future"}}}"#;
-        std::fs::write(c.auth_file(), written).unwrap();
-        assert!(c.services().is_empty());
-        assert_eq!(c.load().len(), 1);
-        let service = Service::query("api.acme.test", "key=abc123").unwrap();
-        assert!(c.store_service("acme", service).is_err());
-        assert_eq!(std::fs::read_to_string(c.auth_file()).unwrap(), written);
-        // The accounts can still change, and the section survives that.
-        c.store("other", Credential::ApiKey { key: "k-2".into() })
-            .unwrap();
-        let file: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(c.auth_file()).unwrap()).unwrap();
-        assert_eq!(file["services"]["x"]["type"], "from-the-future");
-        assert_eq!(c.load().len(), 2);
     }
 }

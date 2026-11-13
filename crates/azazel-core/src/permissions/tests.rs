@@ -1207,6 +1207,8 @@ fn the_secret_files_are_the_built_in_list_and_what_the_config_adds() {
     f.state.set_mode(PermissionMode::Auto);
     let azazel_login = f.paths.home.join("auth.json");
     let azazel_login = azazel_login.to_string_lossy();
+    let agent_secrets = f.paths.secrets_file();
+    let agent_secrets = agent_secrets.to_string_lossy();
     for path in [
         ".env",
         "services/api/.env.production",
@@ -1226,8 +1228,10 @@ fn the_secret_files_are_the_built_in_list_and_what_the_config_adds() {
         "~/.pypirc",
         "~/.git-credentials",
         "~/.azazel/auth.json",
+        "~/.azazel/secrets.json",
         "~/.azazel/.env",
         &azazel_login,
+        &agent_secrets,
         // From the configuration.
         "config/prod.yaml",
         "vault/notes/db.txt",

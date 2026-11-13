@@ -33,8 +33,9 @@ impl Sandbox {
         self.dir.path().join("home")
     }
 
-    fn auth(&self) -> Value {
-        serde_json::from_str(&std::fs::read_to_string(self.home().join("auth.json")).unwrap()).unwrap()
+    /// What `secrets.json` holds.
+    fn stored(&self) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(self.home().join("secrets.json")).unwrap()).unwrap()
     }
 
     fn command(&self) -> Command {
@@ -113,9 +114,9 @@ fn err(output: &Output) -> String {
 #[test]
 fn credentials_are_stored_listed_without_their_secret_and_forgotten() {
     let sandbox = Sandbox::new();
-    // A login that is there already stays as it is.
-    let account = json!({"acme": {"type": "api_key", "key": "provider-key"}});
-    std::fs::write(sandbox.home().join("auth.json"), account.to_string()).unwrap();
+    // The providers' file is not where these go: it stays byte for byte what it was.
+    let accounts = r#"{"acme": {"type": "api_key", "key": "provider-key"}}"#;
+    std::fs::write(sandbox.home().join("auth.json"), accounts).unwrap();
 
     let empty = sandbox.secrets(&["list"], "");
     assert!(
@@ -165,21 +166,18 @@ fn credentials_are_stored_listed_without_their_secret_and_forgotten() {
     );
 
     assert_eq!(
-        sandbox.auth(),
+        sandbox.stored(),
         json!({
-            "acme": {"type": "api_key", "key": "provider-key"},
-            "services": {
-                "example.com": {
-                    "type": "site", "url": "https://example.com/login*",
-                    "username": "me@example.com", "password": "site-password-1"
-                },
-                "github": {
-                    "type": "header", "host": "api.github.com",
-                    "name": "Authorization", "value": format!("Bearer {TOKEN}")
-                },
-                "maps": {"type": "query", "host": "*.maps.test", "name": "key", "value": "k-123456"},
-                "shop": {"type": "basic", "host": "localhost:8080", "username": "me", "password": "hunter2-pass"},
-            }
+            "example.com": {
+                "type": "site", "url": "https://example.com/login*",
+                "username": "me@example.com", "password": "site-password-1"
+            },
+            "github": {
+                "type": "header", "host": "api.github.com",
+                "name": "Authorization", "value": format!("Bearer {TOKEN}")
+            },
+            "maps": {"type": "query", "host": "*.maps.test", "name": "key", "value": "k-123456"},
+            "shop": {"type": "basic", "host": "localhost:8080", "username": "me", "password": "hunter2-pass"},
         })
     );
 
@@ -208,10 +206,6 @@ fn credentials_are_stored_listed_without_their_secret_and_forgotten() {
             "{secret}"
         );
     }
-    // The providers' side of the file does not take a service for an account.
-    let status = sandbox.command().args(["auth", "status"]).output().unwrap();
-    assert!(status.status.success(), "{}", err(&status));
-    assert!(!out(&status).contains("services"), "{}", out(&status));
 
     // A name in use is replaced, and says so.
     let rotated = sandbox.secrets(
@@ -231,8 +225,11 @@ fn credentials_are_stored_listed_without_their_secret_and_forgotten() {
     let again = sandbox.secrets(&["rm", "github"], "");
     assert_eq!(again.status.code(), Some(1));
     assert_eq!(err(&again), "azazel: nothing is stored as `github`");
-    assert_eq!(sandbox.auth()["services"].as_object().unwrap().len(), 3);
-    assert_eq!(sandbox.auth()["acme"]["key"], "provider-key");
+    assert_eq!(sandbox.stored().as_object().unwrap().len(), 3);
+    assert_eq!(
+        std::fs::read_to_string(sandbox.home().join("auth.json")).unwrap(),
+        accounts
+    );
 }
 
 #[test]
@@ -295,7 +292,7 @@ fn what_cannot_be_stored_is_refused_with_the_reason() {
         assert_eq!(refused.status.code(), Some(2), "{args:?}: {}", err(&refused));
         assert!(err(&refused).contains(why), "{args:?}: {}", err(&refused));
     }
-    assert!(!sandbox.home().join("auth.json").exists());
+    assert!(!sandbox.home().join("secrets.json").exists());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -347,7 +344,8 @@ async fn an_agent_calls_a_service_with_the_stored_credential_and_never_holds_it(
         result.ends_with(r#"{"login":"me","auth":"[redacted:credential]"}"#),
         "{result}"
     );
-    // Neither the model nor the session file got the token.
+    // Neither the model nor the session file got the token: of everything under the home
+    // directory, only the file it was stored in holds it.
     assert!(!result.contains(TOKEN), "{result}");
     let (mut stack, mut read) = (vec![sandbox.home()], 0);
     while let Some(dir) = stack.pop() {
@@ -355,7 +353,7 @@ async fn an_agent_calls_a_service_with_the_stored_credential_and_never_holds_it(
             let entry = entry.unwrap().path();
             if entry.is_dir() {
                 stack.push(entry);
-            } else if entry.file_name().unwrap() != "auth.json"
+            } else if entry.file_name().unwrap() != "secrets.json"
                 && let Ok(text) = std::fs::read_to_string(&entry)
             {
                 read += 1;

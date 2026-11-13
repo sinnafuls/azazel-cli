@@ -13,7 +13,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_ai::Credentials;
+use azazel_ai::ServiceStore;
 use azazel_core::{
     ArtifactStore, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Outcome, Registrar, Ui,
 };
@@ -164,7 +164,7 @@ pub struct BrowserExt {
     /// The browser's user data directory.
     pub profile: PathBuf,
     /// Where the logins `fill_login` types are stored.
-    pub logins: Arc<Credentials>,
+    pub logins: Arc<ServiceStore>,
 }
 
 impl Extension for BrowserExt {

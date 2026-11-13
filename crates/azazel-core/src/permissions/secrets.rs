@@ -8,7 +8,7 @@ use super::{MatchCtx, normal, path_matches};
 const HOME_TREES: [&str; 4] = [".ssh", ".aws", ".config/gcloud", ".azure"];
 
 /// Files under the user's home that are secrets.
-const HOME_FILES: [&str; 8] = [
+const HOME_FILES: [&str; 9] = [
     ".kube/config",
     ".docker/config.json",
     ".netrc",
@@ -16,6 +16,7 @@ const HOME_FILES: [&str; 8] = [
     ".pypirc",
     ".git-credentials",
     ".azazel/auth.json",
+    ".azazel/secrets.json",
     ".azazel/.env",
 ];
 
@@ -66,8 +67,9 @@ pub(super) fn is_secret(path: &Path, extra: &[String], azazel_home: &Path, ctx: 
             return true;
         }
     }
-    // The login file, wherever `AZAZEL_HOME` puts it.
-    if same(&text, &format!("{}/auth.json", normal(azazel_home))) {
+    // The login file and the credentials stored for agents, wherever `AZAZEL_HOME` puts them.
+    let own = |file: &str| same(&text, &format!("{}/{file}", normal(azazel_home)));
+    if own("auth.json") || own("secrets.json") {
         return true;
     }
     extra.iter().any(|pattern| path_matches(pattern, &text, ctx))
