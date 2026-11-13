@@ -53,7 +53,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
 | `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status"}], "blocked_until?"}` |
 
-The session commands change which session is open, or where in it the conversation continues. They are refused while the lead works; send `abort` first.
+The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
 
 | `type` | Members | Does | Response `data` |
 |---|---|---|---|
