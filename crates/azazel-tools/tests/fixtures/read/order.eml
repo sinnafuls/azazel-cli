@@ -1,0 +1,37 @@
+Received: from mail.example.com (mail.example.com [203.0.113.9])
+	by mx.example.org with ESMTPS id abc123
+	for <ada@example.org>; Sun, 01 Mar 2026 15:30:05 +0100
+From: =?UTF-8?Q?Gr=C3=A4ce_Hopper?= <grace@example.com>
+To: Ada Lovelace <ada@example.org>, linus@example.org
+Cc: "Office, Lyon" <lyon@example.com>
+Subject: =?UTF-8?B?T3JkZXIgNDcxMTogZ2VhcnMg4oCTIGNvbmZpcm1lZA==?=
+Date: Sun, 01 Mar 2026 15:30:03 +0100
+Message-ID: <4711@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="=_mixed"
+
+--=_mixed
+Content-Type: multipart/alternative; boundary="=_alt"
+
+--=_alt
+Content-Type: text/plain; charset=iso-8859-1
+Content-Transfer-Encoding: quoted-printable
+
+Dear Ada,
+
+the order is confirmed: 12 gears at 4,50 =A3 each.
+They ship on Monday.
+
+Gr=E4ce
+--=_alt
+Content-Type: text/html; charset=utf-8
+
+<html><body><p>Dear Ada,</p><p>the order is <b>confirmed</b>.</p></body></html>
+--=_alt--
+--=_mixed
+Content-Type: text/csv; name="packing list.csv"
+Content-Disposition: attachment; filename="packing list.csv"
+Content-Transfer-Encoding: base64
+
+aXRlbSxjb3VudApnZWFyLDEyCg==
+--=_mixed--
