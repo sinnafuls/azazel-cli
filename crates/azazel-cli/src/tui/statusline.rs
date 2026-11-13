@@ -1,7 +1,7 @@
 //! What the status line says, from the facts of the session.
 //!
 //! ```text
-//! ask · ⑂ main · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · ⇶ 2 agents · ⚑ goal      ⬢ model · high
+//! manual · ⑂ main · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · ⇶ 2 agents · ⚑ goal      ⬢ model · high
 //! ```
 //!
 //! The left side is in the order of what matters most; when the terminal is too narrow its
@@ -52,9 +52,11 @@ impl StatusLine<'_> {
         let mode = self.mode.to_string();
         let mut left = vec![match self.mode {
             PermissionMode::Plan => theme.paint(Role::ModePlan, &labelled(Glyph::ModePlan, &mode)),
-            PermissionMode::Ask => muted(&mode),
+            PermissionMode::Manual => muted(&mode),
             PermissionMode::AcceptEdits => theme.paint(Role::ModeEdits, &labelled(Glyph::ModeEdits, &mode)),
             PermissionMode::Auto => theme.paint(Role::ModeAuto, &labelled(Glyph::ModeAuto, &mode)),
+            // No guard is left: the mode stands in the colour of errors.
+            PermissionMode::Bypass => theme.paint(Role::Error, &labelled(Glyph::Warning, &mode)),
         }];
         if self.coordinator {
             left.push(theme.paint(Role::Accent, "coordinator"));
@@ -363,7 +365,7 @@ mod tests {
     fn modes_and_missing_facts() {
         let theme = Theme::dark();
         let bare = StatusLine {
-            mode: PermissionMode::Ask,
+            mode: PermissionMode::Manual,
             coordinator: true,
             branch: None,
             cwd: "~",
@@ -381,7 +383,7 @@ mod tests {
         };
         assert_eq!(
             shown(&bare, 60, &theme),
-            sides("ask · coordinator · ~ · ⇶ 1 agent", "⬢ no model · off", 60)
+            sides("manual · coordinator · ~ · ⇶ 1 agent", "⬢ no model · off", 60)
         );
         let mode = |mode| {
             shown(
@@ -397,6 +399,18 @@ mod tests {
         };
         assert!(mode(PermissionMode::AcceptEdits).starts_with("⏵ accept-edits"));
         assert!(mode(PermissionMode::Auto).starts_with("⏵⏵ auto"));
+        assert!(mode(PermissionMode::Manual).starts_with("manual"));
+        // Bypass stands out: its own mark, in the colour of errors.
+        assert!(mode(PermissionMode::Bypass).starts_with("⚠ bypass"));
+        let bypass = StatusLine {
+            mode: PermissionMode::Bypass,
+            ..full(&METERED)
+        };
+        let painted = bypass.render(80, &theme);
+        assert!(
+            painted.starts_with(&format!("{}⚠ bypass", theme.fg(Role::Error))),
+            "{painted:?}"
+        );
     }
 
     #[test]

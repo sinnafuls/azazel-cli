@@ -112,7 +112,7 @@ fn a_prompt_runs_through_an_approval_to_idle() {
     let data = &state["data"];
     assert_eq!(
         (&data["mode"], &data["busy"], &data["turn"]),
-        (&json!("ask"), &json!(false), &json!(0))
+        (&json!("manual"), &json!(false), &json!(0))
     );
     assert_eq!(data["chain"], json!(["@lead"]));
 
@@ -123,7 +123,7 @@ fn a_prompt_runs_through_an_approval_to_idle() {
         json!({ "id": 2, "type": "response", "success": true, "data": null })
     );
 
-    // Writing a file needs the user's word in `ask` mode: the agent waits for the answer.
+    // Writing a file needs the user's word in `manual` mode: the agent waits for the answer.
     let (before, request) = client.until(|line| line["type"] == "approval_request");
     assert!(kinds(&before).contains(&"tool_start"), "{before:?}");
     assert!(!kinds(&before).contains(&"tool_end"));

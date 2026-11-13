@@ -7,6 +7,19 @@ GitHub are its section here.
 
 ### Added
 
+- Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
+  It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
+  with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
+  the project is trusted.
+- Secret files (`.env`, `*.pem`, `*.key`, SSH keys, cloud and package credentials under the home directory,
+  azazel's own login file, and `permissions.secret_paths`) are asked about before an agent reads or writes one,
+  in every mode but `bypass`. A shell command that names one counts (`cat .env`, `curl -d @.env`). The prompt
+  offers `Allow once` and `Allow this session`, never `Always allow`; `grep` over a directory passes them by.
+- A download piped into an interpreter (`curl … | sh`, `iwr … | iex`, `bash <(curl …)`) is a destructive
+  command: asked about in every mode but `bypass`.
+- `tools.redact_output = true` takes secrets out of tool results before the model and the session file get
+  them; the tool card says how many were redacted.
+- RPC: `approval_request` carries `secret`; ACP offers `Allow this file for this session` for a secret file.
 - Stall watchdog: a provider that sends nothing for `retry.first_event_secs` (20) after a request, or for
   `retry.stall_secs` (120) in the middle of a reply, is given up and the same model asked again after a
   pause. The half of a reply that had arrived is dropped and never reaches the model. A model that stalls
@@ -22,6 +35,15 @@ GitHub are its section here.
 
 ### Changed
 
+- The permission mode `ask` is now called `manual`, everywhere a mode is named: `permissions.mode`, `--mode`,
+  `/mode`, RPC `set_mode` and `get_state`, ACP session modes, the `permission_mode` of hooks, `ctx.mode` in
+  Luau. The old name is refused with a message that names the new one. The `ask` list of rules is unchanged.
+- One mode governs the whole session. A change of mode applies at once to the lead and to every sub-agent,
+  running ones included; an agent definition can only narrow it (`mode: plan`).
+- `auto` mode keeps every safety guard: it asks about protected paths, secret files and destructive commands.
+- Plan mode refuses a write or a command before a protected path or an `ask` rule can turn it into a question.
+- Approving a plan leaves plan mode only when the session is in it: a plan from an agent whose definition keeps
+  it in plan mode no longer changes the session's mode.
 - A provider's model list that does not answer no longer holds the first request up for minutes: it is given
   up after `retry.first_event_secs`.
 

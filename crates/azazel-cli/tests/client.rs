@@ -50,7 +50,7 @@ async fn the_client_library_drives_a_prompt_through_an_approval() {
             stop: "stop".into()
         }
     );
-    // Writing needs the user's word in `ask` mode; reading does not.
+    // Writing needs the user's word in `manual` mode; reading does not.
     assert_eq!(asked, [("write".to_string(), vec!["hello.txt".to_string()])]);
     assert_eq!(
         std::fs::read_to_string(project.join("hello.txt")).unwrap(),
@@ -58,11 +58,25 @@ async fn the_client_library_drives_a_prompt_through_an_approval() {
     );
 
     let state: State = serde_json::from_value(client.send(Command::GetState).await.unwrap()).unwrap();
-    assert_eq!((state.mode.as_str(), state.busy), ("ask", false));
+    assert_eq!((state.mode.as_str(), state.busy), ("manual", false));
     let refused = client
         .send(Command::SetMode { mode: "yolo".into() })
         .await
         .unwrap_err();
     assert!(refused.to_string().contains("yolo"), "{refused}");
+    // The mode of a session someone is attached to is changed there, by its new name only.
+    let renamed = client
+        .send(Command::SetMode { mode: "ask".into() })
+        .await
+        .unwrap_err();
+    assert!(renamed.to_string().contains("`manual`"), "{renamed}");
+    client
+        .send(Command::SetMode {
+            mode: "bypass".into(),
+        })
+        .await
+        .unwrap();
+    let state: State = serde_json::from_value(client.send(Command::GetState).await.unwrap()).unwrap();
+    assert_eq!(state.mode, "bypass");
     assert_eq!(client.shutdown().await.unwrap(), Some(0));
 }

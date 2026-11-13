@@ -133,7 +133,7 @@ The second argument of every tool, handler and command (the only argument of a s
 |---|---|
 | `ctx.cwd`, `ctx.session_id` | Working directory and session id |
 | `ctx.agent_id` | The agent the call is about; `"lead"` when it is about none |
-| `ctx.mode` | `"plan"`, `"ask"`, `"accept-edits"` or `"auto"` |
+| `ctx.mode` | The session's permission mode: `"plan"`, `"manual"`, `"accept-edits"`, `"auto"` or `"bypass"`; `"plan"` for an agent whose definition keeps it there |
 | `ctx.ui.confirm(prompt)` | Waits for yes or no; returns a boolean |
 | `ctx.ui.select(prompt, options)` | Returns the chosen option and its position. In the terminal UI a short first line of `prompt` is the title of the box and the lines after it its text; an option written `label<TAB>detail` shows the detail in a column beside the label |
 | `ctx.ui.input(prompt)` | Returns the text typed. The first line of `prompt` is the title of the box, as for `select` |

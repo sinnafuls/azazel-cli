@@ -526,7 +526,7 @@ async fn a_command_hook_receives_the_event_on_stdin_and_the_session_in_its_envir
     assert_eq!(stdin["transcript_path"], session.path().display().to_string());
     assert_eq!(stdin["cwd"], bench.paths.cwd.display().to_string());
     assert_eq!(stdin["agent_id"], "lead");
-    assert_eq!(stdin["permission_mode"], "ask");
+    assert_eq!(stdin["permission_mode"], "manual");
     assert_eq!(stdin["tool_name"], "shell");
     assert_eq!(stdin["tool_input"], json!({"command": "ls"}));
     assert_eq!(stdin["tool_use_id"], "call-1");

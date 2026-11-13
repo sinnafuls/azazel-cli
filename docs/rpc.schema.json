@@ -144,7 +144,7 @@
             "type",
             "mode"
           ],
-          "description": "Changes the permission mode: `plan`, `ask`, `accept-edits` or `auto`."
+          "description": "Changes the permission mode of the session, for the lead and every sub-agent: `plan`,\n`manual`, `accept-edits`, `auto` or `bypass`. `bypass` lifts every guard but deny rules\nand the push guard; a client that offers it should have the user confirm first."
         },
         {
           "type": "object",
@@ -715,7 +715,7 @@
         {
           "type": "string",
           "const": "session",
-          "description": "Allow it, and whatever the request's `rule` covers until the session ends. Nothing is\nsaved."
+          "description": "Allow it, and whatever the request's `rule` covers until the session ends; for a\n`secret` request, the file. Nothing is saved."
         },
         {
           "type": "string",
@@ -1289,6 +1289,10 @@
             "destructive": {
               "type": "boolean",
               "description": "The call would destroy work: approval should not be the answer a stray key gives."
+            },
+            "secret": {
+              "type": "boolean",
+              "description": "The call reads or writes a secret file (`.env`, a private key): `session` allows that\nfile until the session ends, and `always` is not on offer."
             }
           },
           "required": [

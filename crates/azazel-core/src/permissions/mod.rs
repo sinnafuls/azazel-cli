@@ -2,9 +2,10 @@
 
 pub mod gate;
 pub mod plan;
+mod secrets;
 pub mod shell;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 use std::str::FromStr;
@@ -240,9 +241,12 @@ pub type ModeWatcher = std::sync::Arc<dyn Fn(PermissionMode) + Send + Sync>;
 
 /// The session's permission state: mode, rules, and where agents work.
 pub struct PermissionState {
+    /// The one mode of the session: the lead and every sub-agent follow it as it changes.
     mode: RwLock<PermissionMode>,
     mode_watchers: RwLock<Vec<ModeWatcher>>,
-    agent_modes: RwLock<HashMap<String, PermissionMode>>,
+    /// Agents whose definition keeps them in plan mode whatever the session's mode is. A
+    /// definition can only narrow: no agent has a mode that lets it do more than the session.
+    plan_agents: RwLock<HashSet<String>>,
     rules: RwLock<Vec<SourcedRule>>,
     agent_cwds: RwLock<HashMap<String, PathBuf>>,
     /// Tool grants of agents whose definition, or the request that started them, narrows a tool
@@ -258,6 +262,10 @@ pub struct PermissionState {
     local_config: PathBuf,
     /// What a command that destroys work needs.
     destructive: DestructivePolicy,
+    /// `permissions.secret_paths`: patterns added to the built-in list of secret files.
+    secret_patterns: Vec<String>,
+    /// Secret files the user allowed for this session, as normalised paths.
+    secret_grants: RwLock<HashSet<String>>,
 }
 
 fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -308,7 +316,7 @@ impl PermissionState {
         Ok(PermissionState {
             mode: RwLock::new(permissions.mode),
             mode_watchers: RwLock::default(),
-            agent_modes: RwLock::default(),
+            plan_agents: RwLock::default(),
             rules: RwLock::new(rules),
             agent_cwds: RwLock::default(),
             agent_grants: RwLock::default(),
@@ -320,6 +328,8 @@ impl PermissionState {
             plans_dir: paths.plans_dir(),
             local_config: paths.project_local_config(),
             destructive: permissions.destructive,
+            secret_patterns: permissions.secret_paths.clone(),
+            secret_grants: RwLock::default(),
         })
     }
 
@@ -348,16 +358,25 @@ impl PermissionState {
         Self::under(path, &self.plans_dir)
     }
 
-    /// The session mode, unless this agent is pinned to another one.
+    /// The session mode, or plan mode for an agent whose definition keeps it there.
     pub fn mode_for(&self, agent: &AgentInfo) -> PermissionMode {
-        read(&self.agent_modes)
-            .get(&agent.id)
-            .copied()
-            .unwrap_or_else(|| self.mode())
+        if read(&self.plan_agents).contains(&agent.id) {
+            PermissionMode::Plan
+        } else {
+            self.mode()
+        }
     }
 
-    pub fn pin_agent_mode(&self, agent: &str, mode: PermissionMode) {
-        write(&self.agent_modes).insert(agent.to_string(), mode);
+    /// Keeps `agent` in plan mode whatever the session's mode becomes (a definition with
+    /// `mode: plan`).
+    pub fn keep_in_plan_mode(&self, agent: &str) {
+        write(&self.plan_agents).insert(agent.to_string());
+    }
+
+    /// Whether the session runs without the safety guards: only deny rules and the push guard
+    /// stop a call.
+    fn bypass(&self) -> bool {
+        self.mode() == PermissionMode::Bypass
     }
 
     /// Records that `agent` works somewhere other than the session's directory (a worktree).
@@ -407,7 +426,7 @@ impl PermissionState {
     }
 
     pub fn forget_agent(&self, agent: &str) {
-        write(&self.agent_modes).remove(agent);
+        write(&self.plan_agents).remove(agent);
         write(&self.agent_cwds).remove(agent);
         write(&self.agent_grants).remove(agent);
     }
@@ -559,6 +578,7 @@ impl PermissionState {
     pub fn clear_remembered(&self) -> std::io::Result<usize> {
         let source = self.local_config.display().to_string();
         let (mut session, mut remembered) = (0, 0);
+        session += std::mem::take(&mut *write(&self.secret_grants)).len();
         write(&self.rules).retain(|r| {
             if r.source == SESSION {
                 session += 1;
@@ -692,8 +712,9 @@ impl PermissionState {
             .cloned()
     }
 
-    /// Steps that no mode, hook or rule can override: deny rules and the push guard. Also reports
-    /// whether the call writes to a protected path, which forces a prompt.
+    /// Steps that no mode, hook or rule can override: deny rules, what the agent's definition
+    /// grants, the push guard, and `destructive = "deny"`. Also reports whether the call writes
+    /// to a protected path, which forces a prompt in every mode but `bypass`.
     pub fn precheck(&self, call: &Call<'_>) -> Result<bool, String> {
         let cwd = self.cwd_of(call.agent);
         let ctx = self.ctx(&cwd);
@@ -713,7 +734,8 @@ impl PermissionState {
                 "this command {risk}; destructive commands are refused here (`[permissions] destructive = \"deny\"`)"
             ));
         }
-        let protected = call.access == Access::Write
+        let protected = !self.bypass()
+            && call.access == Access::Write
             && subject_kind(call.tool) == SubjectKind::Path
             && call.subjects.iter().any(|s| self.is_protected(&ctx.resolve(s)));
         Ok(protected)
@@ -727,23 +749,93 @@ impl PermissionState {
         })
     }
 
-    /// What makes this call one that is asked about in every mode: the work a destructive command
-    /// would destroy, in words that follow "this command". `None` for other calls, and when
-    /// `[permissions] destructive` is `allow`.
+    /// What makes this call one that is asked about in every mode but `bypass`: the work a
+    /// destructive command would destroy, in words that follow "this command". `None` for other
+    /// calls, and when `[permissions] destructive` is `allow`.
     pub fn destructive(&self, call: &Call<'_>) -> Option<&'static str> {
-        if self.destructive != DestructivePolicy::Ask {
+        if self.destructive != DestructivePolicy::Ask || self.bypass() {
             return None;
         }
         let cwd = self.cwd_of(call.agent);
         self.risk(call, &self.ctx(&cwd))
     }
 
-    /// Ask rules, the mode, then allow rules. `protected` comes from [`PermissionState::precheck`];
-    /// `skip_prompt` is a hook's request to allow without asking. A destructive command is asked
-    /// about whatever the mode, the allow rules and `skip_prompt` say, and "always" is not offered.
+    fn secret_key(path: &Path) -> String {
+        let key = normal(path);
+        if cfg!(windows) {
+            key.to_ascii_lowercase()
+        } else {
+            key
+        }
+    }
+
+    /// Whether `path` is one of the files that hold credentials: the built-in list (`.env`,
+    /// `*.pem`, `*.key`, SSH keys, the cloud and package credentials under the home directory,
+    /// azazel's own login file) or a match of `permissions.secret_paths`.
+    pub fn is_secret(&self, path: &Path) -> bool {
+        secrets::is_secret(path, &self.secret_patterns, &self.home, &self.ctx(&self.cwd))
+    }
+
+    /// Whether a tool that reads the files of a directory has to leave `path` out: it is a
+    /// secret file the user has not allowed for this session, and the session is not in
+    /// `bypass` mode. Naming the file itself is what gets the user asked.
+    pub fn withholds(&self, path: &Path) -> bool {
+        !self.bypass() && self.is_secret(path) && !read(&self.secret_grants).contains(&Self::secret_key(path))
+    }
+
+    /// The secret files a call names, as written and resolved: the path of a file tool, and the
+    /// words of a shell command that are one (`cat .env`, `curl -d @.env`, `< ~/.ssh/id_rsa`).
+    fn secrets_named(&self, call: &Call<'_>, ctx: &MatchCtx<'_>) -> Vec<(String, PathBuf)> {
+        let words: Vec<String> = match (call.shell, call.command) {
+            (Some(analysis), Some(command)) => shell::file_words(command, analysis)
+                .into_iter()
+                .flat_map(secrets::candidates)
+                .collect(),
+            _ if subject_kind(call.tool) == SubjectKind::Path => call.subjects.to_vec(),
+            _ => return Vec::new(),
+        };
+        words
+            .into_iter()
+            .filter_map(|word| {
+                let path = ctx.resolve(&word);
+                secrets::is_secret(&path, &self.secret_patterns, &self.home, ctx).then_some((word, path))
+            })
+            .collect()
+    }
+
+    /// The secret file this call reads or writes without the user having allowed it for the
+    /// session, as the call names it. Such a call is asked about in every mode but `bypass`,
+    /// and can be allowed once or for the session, never for good.
+    pub fn secret(&self, call: &Call<'_>) -> Option<String> {
+        if self.bypass() {
+            return None;
+        }
+        let cwd = self.cwd_of(call.agent);
+        let named = self.secrets_named(call, &self.ctx(&cwd));
+        let granted = read(&self.secret_grants);
+        named
+            .into_iter()
+            .find(|(_, path)| !granted.contains(&Self::secret_key(path)))
+            .map(|(word, _)| word)
+    }
+
+    /// Allows the secret files `call` names until the session ends or `/forget-approvals`.
+    pub fn allow_secrets_for_session(&self, call: &Call<'_>) {
+        let cwd = self.cwd_of(call.agent);
+        let named = self.secrets_named(call, &self.ctx(&cwd));
+        write(&self.secret_grants).extend(named.iter().map(|(_, path)| Self::secret_key(path)));
+    }
+
+    /// Plan mode, then (unless the session is in `bypass`) protected paths, ask rules, the mode
+    /// and the allow rules. `protected` comes from [`PermissionState::precheck`]; `skip_prompt`
+    /// is a hook's request to allow without asking. A destructive command and a call that names
+    /// a secret file are asked about whatever the mode, the allow rules and `skip_prompt` say,
+    /// and "always" is not offered.
     pub fn decide(&self, call: &Call<'_>, protected: bool, skip_prompt: bool) -> Verdict {
         match self.decide_by_rules(call, protected, skip_prompt) {
-            Verdict::Allow | Verdict::Prompt { .. } if self.destructive(call).is_some() => {
+            Verdict::Allow | Verdict::Prompt { .. }
+                if self.destructive(call).is_some() || self.secret(call).is_some() =>
+            {
                 Verdict::Prompt { rule: None }
             }
             verdict => verdict,
@@ -757,15 +849,8 @@ impl PermissionState {
         let prompt = || Verdict::Prompt {
             rule: self.suggest_rule(call, &ctx),
         };
-        if protected {
-            return Verdict::Prompt { rule: None };
-        }
-        if self.first_match(RuleKind::Ask, call, &ctx).is_some() {
-            return if skip_prompt { Verdict::Allow } else { prompt() };
-        }
-
-        let paths_inside =
-            || kind != SubjectKind::Path || call.subjects.iter().all(|s| self.inside_roots(&ctx.resolve(s)));
+        // Plan mode refuses before anything can ask: an approval must not turn into a way to
+        // change things while planning.
         let mode = self.mode_for(call.agent);
         if mode == PermissionMode::Plan && call.access != Access::Read {
             let plan_file = matches!(call.tool, "write" | "edit")
@@ -780,6 +865,20 @@ impl PermissionState {
                 Verdict::Deny(PLAN_DENIED.to_string())
             };
         }
+        // Deny rules and the push guard have had their say in `precheck`; nothing else stands
+        // in the way in bypass mode.
+        if self.bypass() {
+            return Verdict::Allow;
+        }
+        if protected {
+            return Verdict::Prompt { rule: None };
+        }
+        if self.first_match(RuleKind::Ask, call, &ctx).is_some() {
+            return if skip_prompt { Verdict::Allow } else { prompt() };
+        }
+
+        let paths_inside =
+            || kind != SubjectKind::Path || call.subjects.iter().all(|s| self.inside_roots(&ctx.resolve(s)));
         let by_mode = match (mode, call.access) {
             (PermissionMode::Auto, _) => true,
             (_, Access::Read) => paths_inside(),

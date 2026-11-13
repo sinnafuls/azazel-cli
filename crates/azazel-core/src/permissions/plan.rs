@@ -77,7 +77,11 @@ impl Tool for PlanSubmitTool {
         };
         match decision {
             Ok(PlanDecision::Approve) => {
-                self.state.set_mode(PermissionMode::AcceptEdits);
+                // Approval leaves plan mode. A plan from an agent whose definition keeps it in
+                // plan mode does not change the mode the session is in.
+                if self.state.mode() == PermissionMode::Plan {
+                    self.state.set_mode(PermissionMode::AcceptEdits);
+                }
                 ToolOutput::text(PLAN_APPROVED)
             }
             Ok(PlanDecision::Revise(feedback)) => ToolOutput::text(format!(

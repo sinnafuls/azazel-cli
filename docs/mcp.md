@@ -135,7 +135,7 @@ Without a client name all five are read. In a terminal you are asked which serve
 
 Each server tool becomes a tool named `mcp__<server>__<tool>`; characters outside `A-Z a-z 0-9 _ -` in either part become `_`. The server's input schema is passed through unchanged.
 
-- A tool whose `readOnlyHint` annotation is true counts as a read; every other MCP tool counts as `exec`, so in `ask` and `accept-edits` mode you are asked before it runs. To allow tools without a prompt, add rules by name, for example `allow = ["mcp__github__*"]`; see [permissions](permissions.md).
+- A tool whose `readOnlyHint` annotation is true counts as a read; every other MCP tool counts as `exec`, so in `manual` and `accept-edits` mode you are asked before it runs. To allow tools without a prompt, add rules by name, for example `allow = ["mcp__github__*"]`; see [permissions](permissions.md).
 - Results: text stays text and images stay images. Audio and other binary content is saved under the artifacts directory and the path returned. `structuredContent` is appended as JSON when the result has no text. `isError` marks the result as an error.
 - Progress notifications show up as live output of the tool call. Aborting the call sends the server a cancellation.
 - When a server announces that its tool or prompt list changed, the lists are fetched again.

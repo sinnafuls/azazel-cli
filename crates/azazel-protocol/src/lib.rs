@@ -44,8 +44,8 @@ pub struct Image {
 pub enum Decision {
     /// Allow this call once.
     Allow,
-    /// Allow it, and whatever the request's `rule` covers until the session ends. Nothing is
-    /// saved.
+    /// Allow it, and whatever the request's `rule` covers until the session ends; for a
+    /// `secret` request, the file. Nothing is saved.
     Session,
     /// Allow it and remember the request's `rule`.
     Always,
@@ -117,7 +117,9 @@ pub enum Command {
     /// Changes the lead's model chain, e.g. `["provider/model", "@role"]`. Answers with
     /// [`Models`].
     SetModel { chain: Vec<String> },
-    /// Changes the permission mode: `plan`, `ask`, `accept-edits` or `auto`.
+    /// Changes the permission mode of the session, for the lead and every sub-agent: `plan`,
+    /// `manual`, `accept-edits`, `auto` or `bypass`. `bypass` lifts every guard but deny rules
+    /// and the push guard; a client that offers it should have the user confirm first.
     SetMode { mode: String },
     /// Messages a sub-agent by id, or `all`.
     AgentSend { to: String, message: String },
@@ -581,6 +583,10 @@ pub enum Frame {
         /// The call would destroy work: approval should not be the answer a stray key gives.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         destructive: bool,
+        /// The call reads or writes a secret file (`.env`, a private key): `session` allows that
+        /// file until the session ends, and `always` is not on offer.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        secret: bool,
     },
     /// An agent or extension asks the user something.
     UiRequest {

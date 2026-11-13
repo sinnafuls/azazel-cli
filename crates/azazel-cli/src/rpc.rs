@@ -244,6 +244,7 @@ impl UiBridge for RpcBridge {
             rule: request.rule,
             note: request.note,
             destructive: request.destructive,
+            secret: request.secret,
         });
         answer.await.ok()
     }

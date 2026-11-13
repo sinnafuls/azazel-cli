@@ -494,6 +494,7 @@ async fn pump(
                 rule,
                 note,
                 destructive,
+                secret,
             } => {
                 let asked = ApprovalRequest {
                     agent: AgentInfo {
@@ -515,6 +516,7 @@ async fn pump(
                     rule,
                     note,
                     destructive,
+                    secret,
                 };
                 let (reply, answer) = oneshot::channel::<Option<ApprovalDecision>>();
                 let answering = client.clone();
@@ -732,7 +734,7 @@ impl Backend for Remote {
     }
 
     fn mode(&self) -> PermissionMode {
-        self.state().mode.parse().unwrap_or(PermissionMode::Ask)
+        self.state().mode.parse().unwrap_or(PermissionMode::Manual)
     }
 
     fn cwd(&self) -> PathBuf {

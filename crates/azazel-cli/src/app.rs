@@ -32,8 +32,8 @@ use azazel_core::side::{Side, SideCosts};
 use azazel_core::skills::{SkillGrantsExt, SkillsExt, standard_roots};
 use azazel_core::{
     ArtifactStore, Config, EntryKind, Event, ExtCtx, Extension, FileTracker, Headless, Level, LoadOptions,
-    Outcome, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore, StartSource,
-    ToolCaller, Ui,
+    Outcome, OutputRedactor, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore,
+    StartSource, ToolCaller, Ui,
 };
 use azazel_team::{
     Advisor, Checker, Coordinator, GoalExt, GoalSettings, Goals, LeadTools, Team, TeamDeps, TeamExt, Typed,
@@ -610,6 +610,10 @@ impl App {
             services.insert(Arc::new(azazel_tools::format::Formatters::new(
                 config.tools.format.clone(),
             )));
+        }
+        // Results lose their secrets before the model and the session file get them.
+        if config.tools.redact_output {
+            services.insert(Arc::new(OutputRedactor(azazel_tui::text::redact)));
         }
         select_tools(cli, &config, &registry)?;
         // Every process an agent starts inherits the push guard.
