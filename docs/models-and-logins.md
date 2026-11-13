@@ -157,6 +157,57 @@ Some providers serve a request faster for a higher price, or slower for a lower 
 
 While a tier is on, the status line shows `fast` or `slow` before the thinking level. A model that refuses the tier is asked again without it and stays without it for the rest of the session; the transcript says so once (`<model> does not take the priority tier; …`). The catalogue has no tier prices, so `/cost` and the status line count at standard rates; `/cost` says so while a tier is on.
 
+## Prompt cache
+
+Providers charge less, and answer sooner, for the start of a request that repeats the request before it. What
+is cached is a prefix: the tools, then the system prompt, then the conversation. One changed byte early in a
+request makes everything after it new, so azazel keeps what changes out of the prefix:
+
+- The system prompt holds only what stays the same for the session: identity, rules, the team, the skill index,
+  the environment (OS, shell, directories), the context files, and what MCP servers and extensions add.
+- What can change from one request to the next is sent after the conversation, as a `<system-note>` that is
+  not kept in the transcript: the date and the git branch, the permission mode (plan mode), the goal, what
+  memory keeps in the prompt, and the agent's task list. Switching the mode, setting a goal, saving a memory or
+  passing midnight therefore leaves the cache as it was.
+- Tools are sent in name order, whatever order they were registered in.
+
+Editing `AGENTS.md`, connecting an MCP server, changing the model or the thinking level, and compaction do
+change the prefix; the next request pays for it once.
+
+`/cost` shows how well this works: the share of the session's input that was read from the cache, the same per
+model (read, written, not cached, requests), and the last requests that missed the cache. A miss is a request
+that read less than the one before it although the conversation had not been cut down. It is listed with its
+cause, the first thing in the request that was not what it had been:
+
+| Cause | Meaning |
+|---|---|
+| the model changed | Each model has a cache of its own |
+| the tool list changed | Which tools were added, removed or changed (an MCP server connected, a mode that withholds tools) |
+| the system prompt part `<name>` changed, was gained or lost | For example `context_files` after an edit to `AGENTS.md` |
+| the thinking level changed | Anthropic keys the conversation's cache on it |
+| message N of M is not what was sent before | An old tool result was shortened, or a hook rewrote the conversation |
+| N min passed since the request before | The provider keeps an unused cache for 5 minutes |
+| nothing that was sent changed | The provider dropped it |
+
+`[cache] report_misses = true` also prints the miss in the transcript when it happens.
+
+### Keeping the cache warm
+
+A cache that nothing reads for 5 minutes is gone, and the next prompt pays full price for the whole
+conversation. `[cache] warming = "idle"` prevents that while you think: 30 seconds before the cache would
+expire, azazel sends the lead's last request again asking for a single token, which reads the cache and so
+renews it. Reading costs a tenth of the input price; writing the conversation anew costs more than the full
+price.
+
+- Only for the lead, only on the `anthropic-messages` API (the Claude subscription and the Anthropic API), and
+  only when the cached prefix is at least 4096 tokens.
+- It stops `[cache] warm_minutes` (30) after the lead's last own request, when a warming request fails, and
+  when the run's cost limit is reached. A prompt of yours takes over at once.
+- `/cost` shows the warming requests, what they read and cost (also in the session's spend, as `cache
+  warming`), and when the next one is due.
+
+It is off by default: on a subscription each warming request counts towards the usage window.
+
 ## Wire APIs
 
 A provider speaks one wire API. `api` in a provider's settings is one of:

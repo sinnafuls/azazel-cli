@@ -335,7 +335,7 @@ The tool's description lists the callable tools with their arguments, within abo
 The list is shown above the input while work on it remains, and `/todo` shows or changes it. Two things keep an agent on its plan:
 
 - **It is durable.** The lead's list is rebuilt from the session whenever one is opened: after `-c`, `--session`, `--fork`, `/resume`, `/tree`, `/rewind` and `/fork` it is what the last `todo` call that succeeded on that branch set (or what you changed with `/todo` after it). A compacted session keeps its list. A new session starts with none.
-- **The agent is reminded of it.** While the list has an item that is not `done`, every request ends with a note such as `[Plan] 1/3 done`, followed by the list as `[x]`, `[~]` and `[ ]` lines. The note is added to what is sent and is not part of the session, so it costs no context later and leaves the cached part of the conversation as it is. It stops when every item is done or the list is cleared.
+- **The agent is reminded of it.** While the list has an item that is not `done`, every request ends with a note such as `[Plan] 1/3 done`, followed by the list as `[x]`, `[~]` and `[ ]` lines. The note is added to what is sent, after the conversation and beside the date and the mode, and is not part of the session, so it costs no context later and leaves the [cached part](models-and-logins.md#prompt-cache) of the request as it is. It stops when every item is done or the list is cleared.
 
 ### `ask_user`
 

@@ -51,7 +51,7 @@ The global flags `--mode`, `--model`, `--thinking`, `--output text|json`, `--cwd
 | `failed` | The checker rejected it `max_iterations` times |
 | `paused` | Waiting for you: blocked, over budget, stalled, paused by hand, or the session was reopened |
 
-While a goal is open the lead's system prompt carries `<goal>…</goal>` with the objective, and the lead (not sub-agents) has two extra tools:
+While a goal is open every request of the lead ends with a note that carries `<goal>…</goal>` with the objective (after the conversation, so setting or closing a goal leaves the [prompt cache](models-and-logins.md#prompt-cache) as it was), and the lead (not sub-agents) has two extra tools:
 
 | Tool | Input | Effect |
 |---|---|---|
