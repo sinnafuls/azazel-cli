@@ -18,7 +18,7 @@ pub mod text;
 pub mod theme;
 
 pub use components::composer::Composer;
-pub use components::editor::{Draft, Editor, EditorView};
+pub use components::editor::{Atom, Draft, Editor, EditorView};
 pub use components::markdown::StreamingMarkdown;
 pub use components::overlay::{Hint, Scroll};
 pub use components::pager::Pager;

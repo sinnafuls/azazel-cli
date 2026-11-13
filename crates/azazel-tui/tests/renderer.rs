@@ -328,8 +328,8 @@ fn suspend_erases_the_viewport_and_the_next_frame_redraws_it() {
 
 /// Draws a frame the way an application with a bottom-anchored input does: blank rows between
 /// what follows the transcript (`top`) and what stays at the bottom (`bottom`).
-fn anchored(term: &mut Harness, floor: &mut Floor, above: &[&str], top: &[&str], bottom: &[&str]) {
-    anchored_items(term, floor, history(above), top, bottom);
+fn anchored(term: &mut Harness, floor: &mut Floor, above: &[&str], top: &[&str], bottom: &[&str]) -> Vec<u8> {
+    anchored_items(term, floor, history(above), top, bottom)
 }
 
 fn anchored_items(
@@ -338,7 +338,7 @@ fn anchored_items(
     above: Vec<HistoryItem>,
     top: &[&str],
     bottom: &[&str],
-) {
+) -> Vec<u8> {
     let (_, height) = term.renderer.size();
     let rows = above.iter().map(HistoryItem::rows).sum();
     let filler = floor.pad(rows, top.len() + bottom.len(), height);
@@ -349,7 +349,7 @@ fn anchored_items(
         history: above,
         viewport,
         cursor: None,
-    });
+    })
 }
 
 #[test]
@@ -405,13 +405,32 @@ fn floor_follows_the_screen() {
     assert_eq!(floor.pad(0, 3, 10), 7);
     assert_eq!(floor.rows(), 10);
 
-    // A shorter screen caps the region; a taller one leaves it as it is.
-    floor.resize(5);
+    // A shorter screen caps the region; a taller one grows it by the rows the screen gained.
+    floor.resize(5, 10);
     assert_eq!(floor.pad(0, 3, 5), 2);
-    floor.resize(30);
-    assert_eq!(floor.pad(0, 3, 30), 2);
+    floor.resize(30, 5);
+    assert_eq!(floor.rows(), 30);
+    assert_eq!(floor.pad(0, 3, 30), 27);
+
+    // A region the terminal re-wrapped onto more rows keeps them: its bottom is still the
+    // bottom of the screen.
+    let mut wrapped = Floor::new(20);
+    assert_eq!(wrapped.pad(10, 4, 20), 6);
+    wrapped.resize(20, 13);
+    assert_eq!(wrapped.rows(), 13);
+    wrapped.resize(12, 15);
+    assert_eq!(wrapped.rows(), 12);
+
+    // Told where the region begins, the floor is that, within the screen.
+    wrapped.anchor(7);
+    assert_eq!(wrapped.rows(), 7);
+    wrapped.anchor(40);
+    assert_eq!(wrapped.rows(), 12);
+    wrapped.anchor(0);
+    assert_eq!(wrapped.rows(), 1);
 
     // Content taller than the screen needs no padding and does not raise the floor past it.
+    floor.anchor(5);
     assert_eq!(floor.pad(0, 9, 30), 0);
     assert_eq!(floor.pad(0, 40, 30), 0);
     assert_eq!(floor.rows(), 30);
@@ -560,4 +579,375 @@ fn a_block_taller_than_the_screen_is_left_blank() {
         cursor: None,
     });
     assert_eq!(term.screen(), ["", "", "", "v"]);
+}
+
+// ------------------------------------------------------------ changes of size
+
+impl Harness {
+    /// Changes the size the way a terminal that re-wraps does (Windows Terminal, VTE, kitty,
+    /// iTerm2): every row the renderer wrote is a line of its own, a line that no longer fits
+    /// goes on over the next rows, the end of the content stays on screen and the cursor stays
+    /// on its character. The renderer is not told.
+    fn rewrap(&mut self, cols: u16, rows: u16) {
+        let screen = self.parser.screen();
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        let (cursor_row, cursor_col) = (usize::from(cursor_row), usize::from(cursor_col));
+        let mut logical = self.screen();
+        let used = logical
+            .iter()
+            .rposition(|line| !line.is_empty())
+            .map_or(0, |last| last + 1)
+            .max(cursor_row + 1);
+        logical.truncate(used);
+
+        let width = usize::from(cols);
+        let mut parser = vt100::Parser::new(nz(rows), nz(cols), 200);
+        let (mut total, mut cursor) = (0, (0, 0));
+        for (index, line) in logical.iter().enumerate() {
+            let wraps = line.chars().count().div_ceil(width).max(1);
+            if index == cursor_row {
+                let within = (cursor_col / width).min(wraps - 1);
+                let column = if cursor_col / width < wraps {
+                    cursor_col % width
+                } else {
+                    width - 1
+                };
+                cursor = (total + within, column);
+            }
+            total += wraps;
+            if index > 0 {
+                parser.process(b"\r\n");
+            }
+            parser.process(line.as_bytes());
+        }
+        // The last row of the content is on the last row it reached on the screen.
+        let bottom = total.min(usize::from(rows)) - 1;
+        let row = bottom.saturating_sub(total - 1 - cursor.0);
+        parser.process(format!("\x1b[{};{}H", row + 1, cursor.1 + 1).as_bytes());
+        self.parser = parser;
+    }
+
+    /// The renderer and the floor hear of the size the terminal has now.
+    fn settle(&mut self, floor: &mut Floor) {
+        let (rows, cols) = self.parser.screen().size();
+        self.renderer.resize(cols.get(), rows.get());
+        floor.resize(rows.get(), self.renderer.rows_on_screen());
+    }
+
+    /// Tells the floor where the region begins from where the terminal has its cursor, as an
+    /// application does that can ask.
+    fn anchor(&self, floor: &mut Floor) {
+        let (row, _) = self.parser.screen().cursor_position();
+        let (_, height) = self.renderer.size();
+        let top = usize::from(row).saturating_sub(self.renderer.rows_above_cursor());
+        floor.anchor(usize::from(height) - top);
+    }
+
+    /// Every row the terminal holds: its scrollback, then the screen.
+    fn everything(&mut self) -> Vec<String> {
+        self.parser.screen_mut().set_scrollback(usize::MAX);
+        let depth = self.parser.screen().scrollback();
+        let mut rows = Vec::new();
+        for offset in (1..=depth).rev() {
+            self.parser.screen_mut().set_scrollback(offset);
+            rows.push(self.screen()[0].clone());
+        }
+        self.parser.screen_mut().set_scrollback(0);
+        rows.extend(self.screen());
+        rows
+    }
+}
+
+const CHROME: [&str; 3] = ["rule", ">", "status"];
+
+#[test]
+fn a_taller_screen_keeps_the_input_on_the_last_rows() {
+    let mut term = Harness::new(20, 6);
+    let mut floor = Floor::new(6);
+    anchored(&mut term, &mut floor, &["banner", "you: hi"], &[], &CHROME);
+    assert_eq!(term.screen(), ["banner", "you: hi", "", "rule", ">", "status"]);
+
+    // Nothing has scrolled away, so the terminal adds the new rows below the content.
+    term.parser.set_size(nz(9), nz(20));
+    term.settle(&mut floor);
+    let repaint = anchored(&mut term, &mut floor, &[], &[], &CHROME);
+    assert_eq!(
+        term.screen(),
+        ["banner", "you: hi", "", "", "", "", "rule", ">", "status"]
+    );
+    // One repaint of the region, and the transcript is not written again.
+    let repaint = String::from_utf8(repaint).unwrap();
+    assert_eq!(repaint.matches("status").count(), 1);
+    assert!(!repaint.contains("banner"));
+    assert!(anchored(&mut term, &mut floor, &[], &[], &CHROME).is_empty());
+
+    // The transcript goes on growing into the gap.
+    anchored(&mut term, &mut floor, &["reply"], &[], &CHROME);
+    assert_eq!(
+        term.screen(),
+        ["banner", "you: hi", "reply", "", "", "", "rule", ">", "status"]
+    );
+}
+
+#[test]
+fn a_taller_screen_that_brings_scrollback_back_keeps_the_input_on_the_last_rows() {
+    let start = || {
+        let mut term = Harness::new(20, 6);
+        term.parser.process(b"$ ls\r\nfile\r\n$ app\r\n");
+        let mut floor = Floor::new(6);
+        anchored(&mut term, &mut floor, &["banner"], &[], &CHROME);
+        assert_eq!(term.screen(), ["banner", "", "", "rule", ">", "status"]);
+        // This terminal fills the new rows from its scrollback: the content moves down.
+        term.parser.set_size(nz(9), nz(20));
+        assert_eq!(term.screen()[..4], ["$ ls", "file", "$ app", "banner"]);
+        term.settle(&mut floor);
+        (term, floor)
+    };
+
+    // Not knowing what the terminal did, the region takes the rows the screen gained: the
+    // rows that came back leave again, and the input is where it belongs.
+    let (mut term, mut floor) = start();
+    anchored(&mut term, &mut floor, &[], &[], &CHROME);
+    assert_eq!(
+        term.screen(),
+        ["banner", "", "", "", "", "", "rule", ">", "status"]
+    );
+    assert_eq!(term.everything()[..4], ["$ ls", "file", "$ app", "banner"]);
+
+    // Knowing where the cursor is, the region stays as tall as it was and the rows that came
+    // back stay on the screen.
+    let (mut term, mut floor) = start();
+    term.anchor(&mut floor);
+    anchored(&mut term, &mut floor, &[], &[], &CHROME);
+    assert_eq!(
+        term.screen(),
+        ["$ ls", "file", "$ app", "banner", "", "", "rule", ">", "status"]
+    );
+}
+
+#[test]
+fn a_shorter_screen_keeps_the_input_and_loses_no_transcript() {
+    let mut term = Harness::new(20, 8);
+    let mut floor = Floor::new(8);
+    let above = ["one", "two", "three", "four"];
+    // The cursor is in the input, with the status row below it.
+    let paint = |term: &mut Harness, floor: &mut Floor, above: &[&str]| {
+        let (_, height) = term.renderer.size();
+        let filler = floor.pad(above.len(), CHROME.len(), height);
+        let mut viewport = vec![String::new(); filler];
+        viewport.extend(lines(&CHROME));
+        term.render(Frame {
+            history: history(above),
+            viewport,
+            cursor: Some((filler as u16 + 1, 2)),
+        });
+    };
+    paint(&mut term, &mut floor, &above);
+    assert_eq!(
+        term.screen(),
+        ["one", "two", "three", "four", "", "rule", ">", "status"]
+    );
+
+    term.parser.set_size(nz(5), nz(20));
+    term.settle(&mut floor);
+    paint(&mut term, &mut floor, &[]);
+    assert_eq!(term.screen()[2..], ["rule", ">", "status"]);
+    assert_eq!(term.parser.screen().cursor_position(), (3, 2));
+    let all = term.everything();
+    for line in above.iter().chain(&CHROME) {
+        assert_eq!(count(&all, line), 1, "{line} in {all:#?}");
+    }
+}
+
+#[test]
+fn a_burst_of_sizes_is_one_repaint_at_the_last_of_them() {
+    let mut term = Harness::new(20, 6);
+    let mut floor = Floor::new(6);
+    anchored(&mut term, &mut floor, &["banner", "you: hi"], &[], &CHROME);
+
+    // The window is dragged: the terminal is at each size in turn, the renderer hears of the
+    // last one only.
+    for (cols, rows) in [(30, 8), (12, 5), (26, 7), (24, 10)] {
+        term.parser.set_size(nz(rows), nz(cols));
+    }
+    term.settle(&mut floor);
+    let repaint = anchored(&mut term, &mut floor, &[], &[], &CHROME);
+    let repaint = String::from_utf8(repaint).unwrap();
+    assert_eq!(repaint.matches("\x1b[?2026h").count(), 1);
+    for row in CHROME {
+        assert_eq!(repaint.matches(row).count(), 1, "{row}");
+    }
+
+    let screen = term.screen();
+    assert_eq!(screen.len(), 10);
+    assert_eq!(screen[7..], ["rule", ">", "status"]);
+    let all = term.everything();
+    for line in ["banner", "you: hi", "rule", ">", "status"] {
+        assert_eq!(count(&all, line), 1, "{line} in {all:#?}");
+    }
+    assert!(anchored(&mut term, &mut floor, &[], &[], &CHROME).is_empty());
+
+    // Told where the cursor is after such a burst, the floor is exact whatever happened.
+    for (cols, rows) in [(18, 4), (40, 12)] {
+        term.parser.set_size(nz(rows), nz(cols));
+    }
+    term.settle(&mut floor);
+    term.anchor(&mut floor);
+    anchored(&mut term, &mut floor, &["later"], &[], &CHROME);
+    let screen = term.screen();
+    assert_eq!(screen[9..], ["rule", ">", "status"]);
+    let all = term.everything();
+    for line in ["banner", "you: hi", "later", "rule", ">", "status"] {
+        assert_eq!(count(&all, line), 1, "{line} in {all:#?}");
+    }
+}
+
+/// A frame with the cursor in the input, as the application draws it: what is in flight, blank
+/// rows down to the floor, then a rule, the input, a rule and the status line, all as wide as
+/// the screen.
+fn wide_frame(term: &mut Harness, floor: &mut Floor, above: &[&str], top: &[&str]) {
+    let (width, height) = term.renderer.size();
+    let rule = "-".repeat(usize::from(width));
+    let status = format!("{:<1$}think", "model", usize::from(width) - 5);
+    let bottom = [rule.as_str(), "> hello", rule.as_str(), status.as_str()];
+    let filler = floor.pad(above.len(), top.len() + bottom.len(), height);
+    let mut viewport = lines(top);
+    viewport.resize(top.len() + filler, String::new());
+    let input = viewport.len() as u16 + 1;
+    viewport.extend(lines(&bottom));
+    term.render(Frame {
+        history: history(above),
+        viewport,
+        cursor: Some((input, 7)),
+    });
+}
+
+#[test]
+fn a_narrower_screen_that_rewraps_leaves_nothing_of_the_old_region_behind() {
+    let mut term = Harness::new(20, 14);
+    let mut floor = Floor::new(14);
+    let above = ["h1", "h2", "h3", "h4", "h5", "h6"];
+    wide_frame(&mut term, &mut floor, &above, &["streaming"]);
+    assert_eq!(term.screen()[6], "streaming");
+    assert_eq!(term.screen()[13], "model          think");
+
+    // Both rules and the status line now take two rows each: the region is three rows taller
+    // than it was drawn, and the cursor is three rows further from its first row.
+    term.rewrap(12, 14);
+    assert_eq!(
+        count(&term.screen(), "------------") + count(&term.screen(), "--------"),
+        4
+    );
+    term.settle(&mut floor);
+    assert_eq!(term.renderer.rows_on_screen(), 11);
+    assert_eq!(term.renderer.rows_above_cursor(), 6);
+    wide_frame(&mut term, &mut floor, &[], &["streaming"]);
+
+    let screen = term.screen();
+    assert_eq!(screen[..4], ["h4", "h5", "h6", "streaming"]);
+    assert_eq!(
+        screen[10..],
+        ["------------", "> hello", "------------", "model  think"]
+    );
+    // Nothing of the region as it was at the old width is left above the new one.
+    assert!(screen[4..10].iter().all(String::is_empty), "{screen:#?}");
+    let all = term.everything();
+    assert_eq!(count(&all, "streaming"), 1, "{all:#?}");
+    assert_eq!(all.iter().filter(|row| row.starts_with("---")).count(), 2);
+    assert_eq!(term.parser.screen().cursor_position(), (11, 7));
+}
+
+#[test]
+fn a_narrower_screen_that_cuts_rows_keeps_the_region_where_it_was() {
+    let mut term = Harness::new(20, 14);
+    term.renderer.set_rewraps(false);
+    let mut floor = Floor::new(14);
+    let above = ["h1", "h2", "h3", "h4", "h5", "h6"];
+    wide_frame(&mut term, &mut floor, &above, &["streaming"]);
+
+    // This terminal cuts what no longer fits; every row stays on its row.
+    term.parser.set_size(nz(14), nz(12));
+    term.settle(&mut floor);
+    assert_eq!(term.renderer.rows_on_screen(), 8);
+    wide_frame(&mut term, &mut floor, &[], &["streaming"]);
+    let screen = term.screen();
+    assert_eq!(screen[..7], ["h1", "h2", "h3", "h4", "h5", "h6", "streaming"]);
+    assert_eq!(
+        screen[10..],
+        ["------------", "> hello", "------------", "model  think"]
+    );
+}
+
+#[test]
+fn a_popup_that_is_open_while_the_size_changes_is_centred_again_and_returns_to_the_transcript() {
+    use azazel_tui::Theme;
+    use azazel_tui::components::overlay::Frame as Boxed;
+    use azazel_tui::modal::{self, Modal, Screen};
+
+    let theme = Theme::dark();
+    let mut term = Harness::new(60, 16);
+    let mut floor = Floor::new(16);
+    anchored(&mut term, &mut floor, &["h1", "h2", "h3"], &[], &CHROME);
+
+    // The popup opens: the region leaves the screen with the transcript, and the box is
+    // painted on the alternate screen.
+    term.renderer.suspend().unwrap();
+    term.flush();
+    term.parser.process(b"\x1b[?1049h");
+    let mut popup = Modal::new(60, 16);
+    let behind = lines(&["h1", "h2", "h3"]);
+    let paint = |term: &mut Harness, popup: &mut Modal| {
+        let (cols, _) = popup.size();
+        let body = ["one".to_string()];
+        let lines = Boxed::new("Pick", modal::box_width(usize::from(cols))).render(&body, &theme);
+        let mut bytes = Vec::new();
+        let screen = Screen {
+            backdrop: &behind,
+            popup: &lines,
+            cursor: None,
+            working: "working",
+            status: "status",
+        };
+        popup.render(&mut bytes, &screen, &theme).unwrap();
+        term.parser.process(&bytes);
+    };
+    let box_at = |term: &Harness| {
+        let screen = term.screen();
+        let row = screen.iter().position(|row| row.contains("╭─ Pick")).unwrap();
+        let column = screen[row].chars().position(|c| c == '╭').unwrap();
+        (row, column)
+    };
+    paint(&mut term, &mut popup);
+    // 14 rows above the bottom two and a box of 3 rows, 54 columns wide in 60.
+    assert_eq!(box_at(&term), (5, 3));
+
+    // The window grows, then shrinks, while the box is open.
+    for (cols, rows) in [(90, 24), (50, 12)] {
+        term.parser.set_size(nz(rows), nz(cols));
+        popup.resize(cols, rows);
+        term.settle(&mut floor);
+        paint(&mut term, &mut popup);
+        let screen = term.screen();
+        assert_eq!(screen.len(), usize::from(rows));
+        assert_eq!(
+            screen.iter().filter(|row| row.contains("Pick")).count(),
+            1,
+            "{screen:#?}"
+        );
+        let width = modal::box_width(usize::from(cols));
+        let top = (usize::from(rows) - 2 - 3) / 2;
+        assert_eq!(box_at(&term), (top, (usize::from(cols) - width) / 2));
+        assert_eq!(screen[usize::from(rows) - 2..], ["working", "status"]);
+    }
+
+    // It closes: the transcript is back as it was, what was said meanwhile follows it, and
+    // the input is on the last rows of the window as it is now.
+    term.parser.process(b"\x1b[?1049l");
+    anchored(&mut term, &mut floor, &["said meanwhile"], &[], &CHROME);
+    let screen = term.screen();
+    assert_eq!(screen.len(), 12);
+    assert_eq!(screen[9..], ["rule", ">", "status"]);
+    let all = term.everything();
+    let said: Vec<&String> = all.iter().filter(|row| !row.is_empty()).collect();
+    assert_eq!(said, ["h1", "h2", "h3", "said meanwhile", "rule", ">", "status"]);
 }

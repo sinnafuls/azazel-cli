@@ -180,9 +180,15 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
     vec![
         ("submit", vec![plain(KeyCode::Enter)]),
         ("follow_up", vec![alt(KeyCode::Enter)]),
+        // `ctrl+j` is a line feed, which is what a terminal can be told to type for
+        // `shift+enter`; a Windows console hands a line feed over as `ctrl+enter`.
         (
             "newline",
-            vec![KeyCombo::new(KeyCode::Enter, KeyModifiers::SHIFT), ctrl('j')],
+            vec![
+                KeyCombo::new(KeyCode::Enter, KeyModifiers::SHIFT),
+                ctrl('j'),
+                KeyCombo::new(KeyCode::Enter, KeyModifiers::CONTROL),
+            ],
         ),
         ("abort", vec![plain(KeyCode::Esc)]),
         ("clear_or_exit", vec![ctrl('c')]),
@@ -193,7 +199,16 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
         ("toggle_thinking", vec![ctrl('t')]),
         ("model_picker", vec![ctrl('l')]),
         ("history_search", vec![ctrl('r')]),
-        ("paste_image", vec![ctrl('v')]),
+        // Windows Terminal and others paste with `ctrl+v` themselves, and with an image on the
+        // clipboard that pastes nothing: `alt+v` reaches azazel there.
+        ("paste_image", vec![ctrl('v'), alt(KeyCode::Char('v'))]),
+        (
+            "paste_text",
+            vec![
+                KeyCombo::new(KeyCode::Char('v'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                KeyCombo::new(KeyCode::Char('v'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            ],
+        ),
         ("complete", vec![plain(KeyCode::Tab)]),
         ("external_editor", vec![ctrl('g')]),
         (
@@ -311,6 +326,43 @@ impl Keymap {
 
     pub fn actions(&self) -> impl Iterator<Item = &str> {
         self.bindings.iter().map(|(name, _)| name.as_str())
+    }
+
+    /// Keys bound to more than one action, each with those actions in the order they are
+    /// defined: the first is the one the key triggers, the others never hear of it.
+    pub fn duplicates(&self) -> Vec<(KeyCombo, Vec<&str>)> {
+        let mut found: Vec<(KeyCombo, Vec<&str>)> = Vec::new();
+        for (action, combos) in &self.bindings {
+            for combo in combos {
+                match found.iter_mut().find(|(key, _)| key == combo) {
+                    Some((_, actions)) if actions.contains(&action.as_str()) => {}
+                    Some((_, actions)) => actions.push(action),
+                    None => found.push((*combo, vec![action])),
+                }
+            }
+        }
+        found.retain(|(_, actions)| actions.len() > 1);
+        found
+    }
+}
+
+/// Why a terminal that does not report keys the enhanced way (the kitty keyboard protocol)
+/// cannot tell `key` from another key; `None` when the key arrives as itself. Windows consoles
+/// report every key with its modifiers and are not meant here.
+pub fn ambiguous(key: &KeyCombo) -> Option<&'static str> {
+    let KeyCombo { code, mods } = KeyCombo::new(key.code, key.mods);
+    let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let shift = mods.contains(KeyModifiers::SHIFT);
+    match code {
+        KeyCode::Enter if ctrl || shift => Some("arrives as plain enter"),
+        KeyCode::Tab if ctrl => Some("arrives as plain tab"),
+        KeyCode::Char(c) if ctrl && shift && c.is_ascii_alphabetic() => {
+            Some("arrives without shift, as the ctrl key of the same letter")
+        }
+        KeyCode::Char('i') if ctrl => Some("is the same key as tab"),
+        KeyCode::Char('m') if ctrl => Some("is the same key as enter"),
+        KeyCode::Char('[') if ctrl => Some("is the same key as esc"),
+        _ => None,
     }
 }
 
@@ -489,10 +541,10 @@ mod tests {
     #[test]
     fn default_keymap_has_documented_bindings() {
         let keymap = Keymap::defaults();
-        let expected: [(&str, &[&str]); 25] = [
+        let expected: [(&str, &[&str]); 26] = [
             ("submit", &["enter"]),
             ("follow_up", &["alt+enter"]),
-            ("newline", &["shift+enter", "ctrl+j"]),
+            ("newline", &["shift+enter", "ctrl+j", "ctrl+enter"]),
             ("abort", &["esc"]),
             ("clear_or_exit", &["ctrl+c"]),
             ("exit", &["ctrl+d"]),
@@ -502,7 +554,8 @@ mod tests {
             ("toggle_thinking", &["ctrl+t"]),
             ("model_picker", &["ctrl+l"]),
             ("history_search", &["ctrl+r"]),
-            ("paste_image", &["ctrl+v"]),
+            ("paste_image", &["ctrl+v", "alt+v"]),
+            ("paste_text", &["ctrl+shift+v", "alt+shift+v"]),
             ("complete", &["tab"]),
             ("external_editor", &["ctrl+g"]),
             ("dequeue", &["alt+up", "shift+up"]),
@@ -660,6 +713,61 @@ mod tests {
             .merge_toml("open_notes = [\"f9\"]")
             .expect("registered action can be rebound");
         assert_eq!(keymap.keys_for("open_notes"), [combo("f9")]);
+    }
+
+    #[test]
+    fn keys_given_to_two_actions_are_reported_with_the_action_that_gets_them() {
+        // Out of the box no key is bound twice.
+        assert!(Keymap::defaults().duplicates().is_empty());
+
+        // A file that gives one key to two actions it names leaves both with it.
+        let mut keymap = Keymap::defaults();
+        keymap
+            .merge_toml(
+                "stash = [\"ctrl+o\", \"f9\"]\ntoggle_thinking = [\"ctrl+o\"]\nretry = [\"f9\", \"f9\"]\n",
+            )
+            .expect("valid file");
+        assert_eq!(
+            keymap.duplicates(),
+            [
+                (combo("ctrl+o"), vec!["toggle_thinking", "stash"]),
+                (combo("f9"), vec!["stash", "retry"]),
+            ]
+        );
+        // The action defined first is the one the key triggers.
+        assert_eq!(
+            keymap.action_for(&press(KeyCode::Char('o'), KeyModifiers::CONTROL)),
+            Some("toggle_thinking")
+        );
+        // A key taken from an action the file does not name is not a duplicate.
+        assert!(keymap.keys_for("toggle_tool_output").is_empty());
+    }
+
+    #[test]
+    fn keys_a_plain_terminal_cannot_tell_apart_are_known() {
+        for key in [
+            "shift+enter",
+            "ctrl+enter",
+            "ctrl+shift+p",
+            "ctrl+i",
+            "ctrl+m",
+            "ctrl+[",
+            "ctrl+tab",
+        ] {
+            assert!(ambiguous(&combo(key)).is_some(), "{key}");
+        }
+        for key in [
+            "enter",
+            "alt+enter",
+            "ctrl+p",
+            "alt+shift+m",
+            "shift+tab",
+            "shift+up",
+            "f5",
+            "ctrl+j",
+        ] {
+            assert_eq!(ambiguous(&combo(key)), None, "{key}");
+        }
     }
 
     #[test]

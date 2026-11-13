@@ -5,6 +5,44 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Images in the draft: `Ctrl+V` and `Alt+V` take what is on the clipboard. An image is attached and shows as
+  a chip, `[Image #1]`, where the cursor was; copied files and text that is nothing but paths of image files
+  attach those images (other files become `@path` mentions); other text is pasted. The chip is one character
+  to the cursor and the delete keys, the numbers always run from 1 without gaps, undo brings a deleted image
+  back, and the prompt is sent with the labels in the text and the images in that order. Where the system
+  clipboard cannot be read directly, PowerShell (Windows, WSL), `osascript` (macOS) or `wl-paste`/`xclip`
+  (Linux) is asked. BMP images are converted to PNG. `Ctrl+Shift+V` and `Alt+Shift+V` (`paste_text`) paste
+  the clipboard's text as text.
+- Pasted paths: one path a line, quoted paths and Windows paths (`C:\...`, read as `/mnt/c/...` under WSL)
+  are recognised as dropped files.
+- `/terminal-setup`: says whether `Shift+Enter` adds a line in the terminal azazel runs in, and where it does
+  not, adds the key binding that makes it to VS Code's `keybindings.json`, Windows Terminal's `settings.json`
+  (from WSL) or `alacritty.toml`, after asking and with a copy of the file kept beside it; for kitty, WezTerm,
+  Ghostty and iTerm2 it shows what to put in.
+- `/keys` reports key conflicts under the bindings: keys the key bindings file gives to two actions, keys the
+  terminal keeps for itself (`alt+enter` in Windows Terminal, `ctrl+j` in VS Code, the tmux prefix), and keys
+  a terminal without enhanced key reporting cannot tell apart.
+
+### Changed
+
+- `Ctrl+Enter` adds a line, like `Shift+Enter` and `Ctrl+J` (`newline`).
+- A change of the window's size (dragging, or zooming the font) is taken in once the size has been still for
+  60 ms and drawn once. The live region grows with a taller window, so the input stays on the last rows; on
+  Windows it is placed from where the console has its cursor, which is exact. The image row above the input
+  (`[N image(s) attached to the next prompt]`) is gone: the chips in the draft say it.
+
+### Fixed
+
+- After the window got taller (or the font smaller) the input and the status line no longer stay above the
+  bottom of the window.
+- On Windows the size taken after a resize was one column and one row too large, so lines were cut one column
+  late and wrapped.
+- After the window got narrower in a terminal that re-wraps its content, part of the old input box (a rule,
+  a blank row) no longer stays behind in the transcript.
+- The transcript viewer lays its text out once after a drag instead of at every size on the way.
+
 ## [0.5.0] - 2026-11-13
 
 ### Added

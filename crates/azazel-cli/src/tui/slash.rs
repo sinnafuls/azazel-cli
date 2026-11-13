@@ -86,7 +86,14 @@ const BUILTIN: &[(&str, &str)] = &[
         "glyphs",
         "Pick the symbols the UI draws with, or set them: /glyphs nerd|unicode|ascii|auto",
     ),
-    ("keys", "List key bindings"),
+    (
+        "keys",
+        "List key bindings, and those that clash or that the terminal keeps for itself",
+    ),
+    (
+        "terminal-setup",
+        "Make Shift+Enter add a line in this terminal, where it does not already",
+    ),
     (
         "rewind",
         "Go back to before an earlier prompt: files, conversation or both",
@@ -284,6 +291,7 @@ impl Tui {
                 )),
             },
             "keys" => self.show_keys(),
+            "terminal-setup" => self.terminal_setup(),
             "rewind" => self.open_rewind().await,
             "permissions" => match args.strip_prefix("add") {
                 Some(rule) if !rule.trim().is_empty() => self.add_rule(rule),
@@ -308,7 +316,7 @@ impl Tui {
             "diff" => self.diff_command(args).await,
             "commit" => self.commit_command(args).await,
             "loop" => self.loop_command(args).await,
-            "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
+            "init" => self.send_prompt(INIT_PROMPT.to_string(), Vec::new()).await,
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
             "quit" | "exit" => self.quit = true,
@@ -344,7 +352,8 @@ impl Tui {
                 self.warn("the command's model resolves to nothing; using the current one");
             }
         }
-        self.send_prompt(prompt).await;
+        let images = std::mem::take(&mut self.carried);
+        self.send_prompt(prompt, images).await;
     }
 
     /// Whether the lead is idle; says what cannot be done otherwise.
@@ -631,6 +640,11 @@ impl Tui {
             self.env.paths.keybindings_file().display()
         ));
         self.info(&out);
+        // What stands in the way of a binding, apart from the file itself.
+        let conflicts = self.key_conflicts();
+        if !conflicts.is_empty() {
+            self.warn(&format!("key conflicts:\n  {}", conflicts.join("\n  ")));
+        }
     }
 }
 
