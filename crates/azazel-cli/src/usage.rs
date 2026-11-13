@@ -23,7 +23,7 @@ use crate::print::{EXIT_FAILED, EXIT_OK};
 /// An answer of a provider is good for this long.
 const FRESH_SECS: u64 = 5 * 60;
 const BAR: usize = 20;
-/// The share of a window from which the status line mentions it.
+/// The share of a window from which the status line warns about it.
 pub const NEARLY_FULL: f32 = 0.8;
 
 /// What is known about one account.
@@ -227,20 +227,14 @@ pub async fn run(
     if failed { EXIT_FAILED } else { EXIT_OK }
 }
 
-/// The fullest window of an account once it has passed [`NEARLY_FULL`], as `5h 84%`, for the
-/// status line.
-pub fn nearly_full(windows: &[Window]) -> Option<String> {
+/// The fullest window of an account, for the status line: its name (`5h`) and the share of it
+/// that is used. Extra usage is not a window that fills.
+pub fn fullest(windows: &[Window]) -> Option<(String, f32)> {
     windows
         .iter()
-        .filter(|window| window.name != "overage" && window.used >= NEARLY_FULL)
+        .filter(|window| window.name != "overage")
         .max_by(|a, b| a.used.total_cmp(&b.used))
-        .map(|window| {
-            format!(
-                "{} {}%",
-                window.name,
-                (window.used * 100.0).round().clamp(0.0, 999.0) as u32
-            )
-        })
+        .map(|window| (window.name.clone(), window.used))
 }
 
 struct UsageCommand {
@@ -397,17 +391,21 @@ mod tests {
     }
 
     #[test]
-    fn the_status_line_names_a_window_only_once_it_is_nearly_full() {
-        assert_eq!(nearly_full(&[window("5h", 0.79, None, "allowed")]), None);
+    fn the_status_line_names_the_fullest_window_that_can_fill() {
         assert_eq!(
-            nearly_full(&[
+            fullest(&[window("5h", 0.12, None, "allowed")]),
+            Some(("5h".to_string(), 0.12))
+        );
+        assert_eq!(
+            fullest(&[
                 window("5h", 0.84, None, "allowed"),
                 window("7d", 0.91, None, "allowed"),
                 window("overage", 1.0, None, "allowed"),
-            ])
-            .as_deref(),
-            Some("7d 91%")
+            ]),
+            Some(("7d".to_string(), 0.91))
         );
+        assert_eq!(fullest(&[window("overage", 1.0, None, "allowed")]), None);
+        assert_eq!(fullest(&[]), None);
     }
 
     #[tokio::test]

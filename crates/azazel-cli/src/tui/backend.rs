@@ -11,12 +11,13 @@
 //! [`Backend::local`], and is not there for a remote session.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentEvent, AgentStatus, UserInput};
 use azazel_ai::providers::presets;
-use azazel_ai::{Block, ModelSpec, ThinkingLevel, Tier};
+use azazel_ai::{Block, Credentials, ModelSpec, ProviderConfig, ThinkingLevel, Tier};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
@@ -83,9 +84,48 @@ pub(crate) struct Facts {
     /// The open goal, in a few words.
     pub goal: Option<String>,
     pub todo: Vec<TodoItem>,
-    /// The fullest usage window of the account in use, once it is nearly full.
-    pub usage: Option<String>,
+    /// How the lead's model is paid for.
+    pub billing: Billing,
 }
+
+/// How the lead's model is paid for, which decides what the status line says about money.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) enum Billing {
+    /// By the token: an API key, or a server that takes none. The cost is money spent.
+    #[default]
+    Metered,
+    /// A subscription the user signed in to: its tokens are not paid for one by one. `window`
+    /// is the fullest usage window of the account, as its name and the share used, once the
+    /// provider has reported one.
+    Subscription { window: Option<(String, f32)> },
+}
+
+/// The account of `provider` whose sign-in the next request would use; `None` when the
+/// request would carry an API key (from a flag, the environment, a command, the configuration
+/// or the credential store) or no credential at all.
+pub(crate) fn login_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<String> {
+    // Anything that is not in the credential store is a key and wins over what is stored.
+    let stored = credentials
+        .source(provider)
+        .is_some_and(|source| source.starts_with("auth.json"));
+    let label = credentials.selected(&provider.id).filter(|_| stored)?;
+    credentials
+        .accounts(&provider.id)
+        .into_iter()
+        .find(|account| account.label == label && account.login)
+        .map(|account| account.label)
+}
+
+/// Who pays for a provider, as it was last looked up.
+struct Payer {
+    provider: String,
+    asked: Instant,
+    /// The account signed in to, when it is a subscription.
+    login: Option<String>,
+}
+
+/// The answer is read from files: often enough to follow a sign-in, not on every frame.
+const PAYER_FRESH: Duration = Duration::from_secs(2);
 
 #[async_trait]
 pub(crate) trait Backend: Send {
@@ -256,6 +296,9 @@ pub(crate) struct Local {
     team_events: Option<broadcast::Receiver<TeamEvent>>,
     /// Whether the session existed before the UI opened it.
     resumed: bool,
+    /// The providers as configured, to tell where each one's credential comes from.
+    providers: OnceLock<Vec<ProviderConfig>>,
+    payer: Mutex<Option<Payer>>,
 }
 
 impl Local {
@@ -272,8 +315,51 @@ impl Local {
             team_events: team.as_ref().map(|team| team.subscribe()),
             team,
             resumed: active.resumed,
+            providers: OnceLock::new(),
+            payer: Mutex::new(None),
             app,
             active,
+        }
+    }
+
+    /// How the lead's model is paid for: a subscription with its fullest usage window, or by
+    /// the token.
+    fn billing(&self) -> Billing {
+        let status = self.active.lead.status();
+        let Some(provider) = status
+            .model
+            .or_else(|| self.app.router.resolve(&status.chain).into_iter().next())
+            .map(|model| model.provider)
+        else {
+            return Billing::Metered;
+        };
+        let mut payer = self.payer.lock().unwrap_or_else(PoisonError::into_inner);
+        let known = payer
+            .as_ref()
+            .filter(|payer| payer.provider == provider && payer.asked.elapsed() < PAYER_FRESH);
+        let login = match known {
+            Some(payer) => payer.login.clone(),
+            None => {
+                let providers = self
+                    .providers
+                    .get_or_init(|| presets::resolve(&self.app.config.providers).unwrap_or_default());
+                let login = providers
+                    .iter()
+                    .find(|config| config.id == provider)
+                    .and_then(|config| login_in_use(&self.app.credentials, config));
+                *payer = Some(Payer {
+                    provider: provider.clone(),
+                    asked: Instant::now(),
+                    login: login.clone(),
+                });
+                login
+            }
+        };
+        match login {
+            Some(account) => Billing::Subscription {
+                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, &account)),
+            },
+            None => Billing::Metered,
         }
     }
 
@@ -379,12 +465,6 @@ impl Backend for Local {
 
     fn facts(&self) -> Facts {
         let services = &self.app.registry.services;
-        let model = self.active.lead.status().model;
-        let usage = model.and_then(|model| {
-            let account = self.app.credentials.selected(&model.provider)?;
-            let windows = self.app.router.limits().windows(&model.provider, &account);
-            crate::usage::nearly_full(&windows)
-        });
         Facts {
             coordinator: self.app.coordinator.is_on(),
             tier: self.app.router.tier(),
@@ -397,7 +477,7 @@ impl Backend for Local {
                 .get::<TodoStore>()
                 .map(|store| store.get(&self.active.lead.id))
                 .unwrap_or_default(),
-            usage,
+            billing: self.billing(),
         }
     }
 
@@ -774,5 +854,89 @@ impl Backend for Local {
 
     async fn finish(&mut self) {
         self.app.finish(&self.active).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use azazel_ai::Credential;
+
+    use super::*;
+
+    fn login() -> Credential {
+        Credential::OAuth {
+            access: "access".to_string(),
+            refresh: "refresh".to_string(),
+            expires: u64::MAX,
+            extra: Default::default(),
+        }
+    }
+
+    fn key() -> Credential {
+        Credential::ApiKey {
+            key: "sk-test".to_string(),
+        }
+    }
+
+    fn credentials(dir: &std::path::Path, env: &'static [(&'static str, &'static str)]) -> Credentials {
+        Credentials::with_env(
+            dir.join("auth.json"),
+            Arc::new(move |name: &str| {
+                env.iter()
+                    .find(|(known, _)| *known == name)
+                    .map(|(_, value)| (*value).to_string())
+            }),
+        )
+    }
+
+    fn provider(id: &str) -> ProviderConfig {
+        presets::presets()
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .unwrap()
+    }
+
+    #[test]
+    fn a_sign_in_is_a_subscription_and_any_key_is_paid_by_the_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let anthropic = provider("anthropic");
+        let stored = credentials(dir.path(), &[]);
+        assert_eq!(login_in_use(&stored, &anthropic), None, "nothing is stored yet");
+
+        stored.store("anthropic", login()).unwrap();
+        assert_eq!(login_in_use(&stored, &anthropic).as_deref(), Some("default"));
+        // The sign-in of one provider says nothing about another.
+        assert_eq!(login_in_use(&stored, &provider("openai")), None);
+
+        // A key in the environment is what requests carry, whatever is stored.
+        let with_key = credentials(dir.path(), &[("ANTHROPIC_API_KEY", "sk-ant-test")]);
+        assert_eq!(login_in_use(&with_key, &anthropic), None);
+        // So is a key given on the command line.
+        stored.set_flag_key("anthropic", "sk-ant-flag".to_string());
+        assert_eq!(login_in_use(&stored, &anthropic), None);
+
+        // A stored key is a key.
+        let other = tempfile::tempdir().unwrap();
+        let keyed = credentials(other.path(), &[]);
+        keyed.store("anthropic", key()).unwrap();
+        assert_eq!(login_in_use(&keyed, &anthropic), None);
+    }
+
+    #[test]
+    fn the_selected_account_decides_between_a_stored_key_and_a_sign_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let anthropic = provider("anthropic");
+        let stored = credentials(dir.path(), &[]);
+        stored.store("anthropic", key()).unwrap();
+        stored
+            .store(&azazel_ai::credentials::account_key("anthropic", "work"), login())
+            .unwrap();
+        assert_eq!(
+            login_in_use(&stored, &anthropic),
+            None,
+            "the default account is a key"
+        );
+        stored.select("anthropic", "work");
+        assert_eq!(login_in_use(&stored, &anthropic).as_deref(), Some("work"));
     }
 }

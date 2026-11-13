@@ -2,6 +2,8 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::glyphs::Glyphs;
+
 /// Time between spinner frames. A redraw timer is only needed while a spinner is visible.
 pub const INTERVAL: Duration = Duration::from_millis(80);
 
@@ -26,14 +28,34 @@ impl Spinner {
     /// The glyph to draw now. It follows the wall clock, so every spinner drawn in one frame
     /// shows the same glyph and all of them advance together.
     pub fn now() -> &'static str {
-        let since_epoch = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        Spinner::frame(Spinner::tick_at(since_epoch))
+        Spinner::frame(Spinner::tick_at(since_epoch()))
     }
+
+    /// The glyph for a tick in the frames of `glyphs`: braille, or `- \ | /` at the `ascii`
+    /// level.
+    pub fn frame_in(glyphs: Glyphs, tick: u64) -> &'static str {
+        let frames = glyphs.spinner();
+        let count = u64::try_from(frames.len()).unwrap_or(1).max(1);
+        frames
+            .get(usize::try_from(tick % count).unwrap_or_default())
+            .copied()
+            .unwrap_or("")
+    }
+
+    /// [`Spinner::now`] in the frames of `glyphs`.
+    pub fn now_in(glyphs: Glyphs) -> &'static str {
+        Spinner::frame_in(glyphs, Spinner::tick_at(since_epoch()))
+    }
+}
+
+fn since_epoch() -> Duration {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::glyphs::GlyphLevel;
     use crate::text;
 
     #[test]
@@ -59,5 +81,18 @@ mod tests {
     #[test]
     fn the_shared_clock_yields_a_frame() {
         assert!(FRAMES.contains(&Spinner::now()));
+    }
+
+    #[test]
+    fn each_glyph_level_cycles_through_its_own_frames() {
+        let unicode = Glyphs::new(GlyphLevel::Unicode);
+        let braille: Vec<&str> = (0..10).map(|tick| Spinner::frame_in(unicode, tick)).collect();
+        assert_eq!(braille, FRAMES);
+        assert_eq!(Spinner::frame_in(unicode, 13), FRAMES[3]);
+
+        let ascii = Glyphs::new(GlyphLevel::Ascii);
+        let plain: Vec<&str> = (0..5).map(|tick| Spinner::frame_in(ascii, tick)).collect();
+        assert_eq!(plain, ["-", "\\", "|", "/", "-"]);
+        assert!(ascii.spinner().contains(&Spinner::now_in(ascii)));
     }
 }

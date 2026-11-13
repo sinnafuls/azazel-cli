@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use azazel_ai::{Message, StopReason};
-use azazel_tui::{Role, Spinner};
+use azazel_tui::{Glyph, GlyphLevel, Role, Spinner};
 use crossterm::event::{KeyEvent, KeyEventKind};
 use tokio::task::AbortHandle;
 use tokio_util::sync::CancellationToken;
@@ -62,13 +62,18 @@ impl Drop for Voice {
     }
 }
 
-/// A bar that fills with the loudness of what the microphone hears.
-fn meter(level: f32) -> String {
+/// A bar that fills with the loudness of what the microphone hears: `▮▮▮▯▯▯▯▯`, or
+/// `###.....` at the `ascii` glyph level.
+fn meter(level: f32, glyphs: GlyphLevel) -> String {
     let decibels = 20.0 * level.max(f32::MIN_POSITIVE).log10();
     let filled = ((1.0 - decibels / METER_FLOOR_DB) * METER_CELLS as f32)
         .round()
         .clamp(0.0, METER_CELLS as f32) as usize;
-    format!("{}{}", "▮".repeat(filled), "▯".repeat(METER_CELLS - filled))
+    let (full, empty) = match glyphs {
+        GlyphLevel::Ascii => ("#", "."),
+        _ => ("▮", "▯"),
+    };
+    format!("{}{}", full.repeat(filled), empty.repeat(METER_CELLS - filled))
 }
 
 impl Tui {
@@ -145,6 +150,7 @@ impl Tui {
     pub(super) fn voice_status(&self) -> Option<String> {
         let theme = &self.theme;
         let muted = |text: &str| theme.paint(Role::Muted, text);
+        let separator = theme.glyph(Glyph::Separator);
         match &self.voice.dictation {
             Dictation::Recording(recording) => {
                 let seconds = recording.elapsed().as_secs();
@@ -156,22 +162,27 @@ impl Tui {
                     "{} {}",
                     theme.paint(
                         Role::Error,
-                        &format!("● rec {}:{:02}", seconds / 60, seconds % 60)
+                        &format!(
+                            "{} rec {}:{:02}",
+                            theme.glyph(Glyph::Bullet),
+                            seconds / 60,
+                            seconds % 60
+                        )
                     ),
                     muted(&format!(
-                        "{} · {key} transcribes · esc cancels",
-                        meter(recording.level())
+                        "{}{separator}{key} transcribes{separator}esc cancels",
+                        meter(recording.level(), theme.glyphs().level())
                     )),
                 ))
             }
             Dictation::Transcribing(_) => Some(format!(
                 "{} {}",
-                theme.paint(Role::Accent, Spinner::now()),
-                muted("transcribing · esc cancels"),
+                theme.paint(Role::Accent, Spinner::now_in(theme.glyphs())),
+                muted(&format!("transcribing{separator}esc cancels")),
             )),
             // The agent's own activity matters more than a reply still being read.
             Dictation::Idle if self.voice.speaking.is_some() && !self.busy => {
-                Some(muted("speaking · esc or typing stops"))
+                Some(muted(&format!("speaking{separator}esc or typing stops")))
             }
             Dictation::Idle => None,
         }
@@ -299,11 +310,13 @@ mod tests {
 
     #[test]
     fn the_meter_follows_loudness_in_decibels() {
+        let meter = |level| meter(level, GlyphLevel::Unicode);
         assert_eq!(meter(0.0), "▯▯▯▯▯▯▯▯");
         assert_eq!(meter(0.003), "▯▯▯▯▯▯▯▯");
         // -24 dB, a normal speaking level, fills half.
         assert_eq!(meter(0.063), "▮▮▮▮▯▯▯▯");
         assert_eq!(meter(1.0), "▮▮▮▮▮▮▮▮");
         assert_eq!(meter(7.0), "▮▮▮▮▮▮▮▮");
+        assert_eq!(super::meter(0.063, GlyphLevel::Ascii), "####....");
     }
 }
