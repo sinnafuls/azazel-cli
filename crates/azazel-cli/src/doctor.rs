@@ -371,7 +371,12 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     #[cfg(feature = "lsp")]
     {
-        let servers = azazel_tools::lsp::LspManager::new(paths.project_root.clone(), &config.lsp.servers);
+        let servers = azazel_tools::lsp::LspManager::new(&azazel_tools::lsp::LspExt {
+            root: paths.project_root.clone(),
+            servers: config.lsp.servers.clone(),
+            idle: Duration::from_secs(config.lsp.idle_secs),
+            write_severity: config.lsp.write_severity,
+        });
         let mut ready = Vec::new();
         for (name, installed, builtin) in servers.availability() {
             match (installed, builtin) {
@@ -415,6 +420,10 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     match azazel_tools::scan::scanner(config.tools.scan.secrets, config.tools.check_report, trusted) {
         Ok(gitleaks) => report.ok(format!("secret scan: {}", gitleaks.display())),
         Err(why) => report.ok(format!("secret scan: {why}")),
+    }
+    match azazel_tools::ast_grep::program() {
+        Some(program) => report.ok(format!("ast_grep: {}", program.display())),
+        None => report.ok("ast_grep: off, ast-grep is not installed"),
     }
     #[cfg(feature = "memory")]
     match &config.embeddings {

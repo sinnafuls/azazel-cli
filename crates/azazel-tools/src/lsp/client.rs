@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -51,6 +51,8 @@ pub(crate) struct Client {
     shared: Arc<Shared>,
     next: AtomicI64,
     child: tokio::sync::Mutex<Child>,
+    /// What the server said it can do when it answered `initialize`.
+    capabilities: OnceLock<Value>,
 }
 
 async fn write_frame(writer: &tokio::sync::Mutex<ChildStdin>, message: &Value) -> std::io::Result<()> {
@@ -210,6 +212,7 @@ impl Client {
             shared,
             next: AtomicI64::new(1),
             child: tokio::sync::Mutex::new(child),
+            capabilities: OnceLock::new(),
         });
 
         let uri = path_to_uri(root)?;
@@ -224,7 +227,11 @@ impl Client {
             "workspaceFolders": [{ "uri": uri.as_str(), "name": name }],
             "capabilities": {
                 "general": { "positionEncodings": ["utf-16"] },
-                "workspace": { "configuration": true, "workspaceFolders": true },
+                "workspace": {
+                    "configuration": true,
+                    "workspaceFolders": true,
+                    "fileOperations": { "willRename": true, "didRename": true }
+                },
                 "textDocument": {
                     "synchronization": { "didSave": true },
                     "publishDiagnostics": { "relatedInformation": false },
@@ -235,11 +242,21 @@ impl Client {
                 }
             }
         });
-        client
+        let mut answer = client
             .request_within("initialize", params, INITIALIZE_TIMEOUT)
             .await?;
+        let _ = client.capabilities.set(answer["capabilities"].take());
         client.notify("initialized", json!({})).await?;
         Ok(client)
+    }
+
+    /// Whether the server announced the capability at `pointer`, a JSON pointer into its
+    /// capabilities such as `/workspace/fileOperations/willRename`.
+    pub fn supports(&self, pointer: &str) -> bool {
+        self.capabilities
+            .get()
+            .and_then(|capabilities| capabilities.pointer(pointer))
+            .is_some_and(|value| !value.is_null() && value != &Value::Bool(false))
     }
 
     /// Whether the server process has gone.

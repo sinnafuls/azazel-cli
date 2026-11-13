@@ -83,6 +83,7 @@ impl Bench {
                 shell: shell.clone(),
                 shell_timeout: Duration::from_secs(30),
                 artifacts_dir: paths.artifacts_dir(),
+                read_guard: Default::default(),
             })
             .unwrap();
         registry
