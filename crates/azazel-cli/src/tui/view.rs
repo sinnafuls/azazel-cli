@@ -141,6 +141,50 @@ pub fn thinking(text_in: &str, width: usize, theme: &Theme) -> Vec<Line> {
     lines
 }
 
+/// What an `lsp` call asks: the action, then the symbol, the place or the file it is about.
+fn lsp_summary(action: &str, input: &Value) -> String {
+    let field = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    let path = field("path");
+    let place = match input.get("line").and_then(Value::as_u64) {
+        Some(line) => match input.get("column").and_then(Value::as_u64) {
+            Some(column) => format!("{path}:{line}:{column}"),
+            None => format!("{path}:{line}"),
+        },
+        None => path.to_string(),
+    };
+    match action {
+        "read_symbol" => format!("{action} {} in {path}", field("symbol")),
+        "rename" => format!("{action} {place} to {}", field("new_name")),
+        "rename_file" => format!("{action} {path} to {}", field("new_path")),
+        "symbols" if !field("query").is_empty() => format!("{action} {}", field("query")),
+        _ => format!("{action} {place}"),
+    }
+}
+
+/// What an `ast_grep` call looks for, what it puts in its place, and whether it writes.
+fn ast_grep_summary(pattern: &str, input: &Value) -> String {
+    let paths: Vec<&str> = input
+        .get("paths")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    let within = match paths.as_slice() {
+        [] => String::new(),
+        [one] => format!(" in {one}"),
+        [first, rest @ ..] => format!(" in {first} and {} more", rest.len()),
+    };
+    match input.get("rewrite").and_then(Value::as_str) {
+        Some(rewrite) => {
+            let applied = input.get("apply").and_then(Value::as_bool) == Some(true);
+            let verb = if applied { "replace" } else { "preview" };
+            format!("{verb} {pattern} with {rewrite}{within}")
+        }
+        None => format!("{pattern}{within}"),
+    }
+}
+
 /// What a tool call is about, on one line.
 pub fn tool_summary(name: &str, input: &Value) -> String {
     let field = |key: &str| input.get(key).and_then(Value::as_str).map(str::to_string);
@@ -162,6 +206,8 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
                 .collect();
             (!all.is_empty()).then(|| all.join(" | "))
         }
+        "lsp" => field("action").map(|action| lsp_summary(&action, input)),
+        "ast_grep" => field("pattern").map(|pattern| ast_grep_summary(&pattern, input)),
         "memory_search" | "semantic_search" | "tool_search" => field("query"),
         "skill" => field("name"),
         "run_code" => field("code").map(|code| {
@@ -846,6 +892,47 @@ mod tests {
             "fn main"
         );
         assert_eq!(tool_summary("todo", &json!({"items": [1, 2]})), "2 items");
+        let lsp = |input: Value| tool_summary("lsp", &input);
+        assert_eq!(
+            lsp(json!({"action": "outline", "path": "src/a.rs"})),
+            "outline src/a.rs"
+        );
+        assert_eq!(
+            lsp(json!({"action": "read_symbol", "path": "src/a.rs", "symbol": "Config.load"})),
+            "read_symbol Config.load in src/a.rs"
+        );
+        assert_eq!(
+            lsp(json!({"action": "definition", "path": "src/a.rs", "line": 12, "column": 20})),
+            "definition src/a.rs:12:20"
+        );
+        assert_eq!(
+            lsp(json!({"action": "rename", "path": "src/a.rs", "line": 8, "new_name": "load"})),
+            "rename src/a.rs:8 to load"
+        );
+        assert_eq!(
+            lsp(json!({"action": "rename_file", "path": "src/a.rs", "new_path": "src/b/mod.rs"})),
+            "rename_file src/a.rs to src/b/mod.rs"
+        );
+        assert_eq!(
+            lsp(json!({"action": "symbols", "path": "src/a.rs", "query": "parse"})),
+            "symbols parse"
+        );
+        let ast_grep = |input: Value| tool_summary("ast_grep", &input);
+        assert_eq!(
+            ast_grep(json!({"action": "search", "pattern": "log($MSG)", "paths": ["src"]})),
+            "log($MSG) in src"
+        );
+        assert_eq!(
+            ast_grep(json!({"action": "replace", "pattern": "log($MSG)", "rewrite": "print($MSG)"})),
+            "preview log($MSG) with print($MSG)"
+        );
+        assert_eq!(
+            ast_grep(json!({
+                "action": "replace", "pattern": "log($MSG)", "rewrite": "print($MSG)",
+                "apply": true, "paths": ["src/a.ts", "src/b.ts", "src/c.ts"]
+            })),
+            "replace log($MSG) with print($MSG) in src/a.ts and 2 more"
+        );
         assert_eq!(
             tool_summary(
                 "ask_user",
