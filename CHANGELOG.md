@@ -17,7 +17,28 @@ GitHub are its section here.
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
 
+- The status line shows how fast the lead writes (`↯ 78 tok/s`): an estimate while a reply streams, the
+  provider's own token count once it ends. It stays, muted, until the next prompt.
+- A working indicator that moves: a band of light passes over `thinking` / `running <tool>` above the input.
+  `tui.indicator` chooses `shimmer`, `kitt` or `static`, `tui.indicator_text` sets phrases to show in turn, and
+  `tui.session_accent` tints the band with a colour of the session's own.
+- On terminals at least 100 columns wide the status line draws the context window as a bar
+  (`◫ 42% [━━━╸────]`).
+- `/settings`, Appearance: theme (a list of the built-in themes and the files in `~/.azazel/themes`), symbols,
+  working indicator, session colour, tool call style, hiding secrets and popups. All of them change the running
+  UI at once.
+
 ### Changed
+
+- Every symbol outside tool cards and pickers (the prompt, rules, spinner, status line, todo list, roster,
+  queued messages, Markdown bullets, quotes and tables, the transcript viewer, side questions) follows
+  `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
+- The status line shows the cost only when the lead answers with an API key. On a subscription you signed in
+  to, it shows the fullest usage window instead (`◔ 61% 5h`), from the first response on rather than only once
+  the window is nearly full.
+- A status line that does not fit drops whole segments from the end of its left side (goal, agents, cost,
+  speed, context, directory, branch) before it shortens the model. A long working directory keeps its end.
+- `accept-edits` is marked `⏵` in the status line; `⏵⏵` is `auto` alone.
 
 ### Fixed
 

@@ -2,7 +2,7 @@
 //! signing out and changing the everyday settings, all from inside the terminal UI, so that
 //! neither a first run nor a change of taste needs config editing.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -13,6 +13,7 @@ use azazel_core::{
     Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, Registrar, Ui,
     UiError,
 };
+use azazel_tui::Theme;
 
 /// How long a provider may take to list its models before the built-in catalogue is used.
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -84,6 +85,8 @@ enum Kind {
     Switch,
     /// One of these values.
     Choice(&'static [&'static str]),
+    /// One of the themes there are: the built-in ones and the files in `~/.azazel/themes`.
+    Theme,
     /// A number, whole or with a fraction as the setting's default is.
     Number,
     Text,
@@ -121,11 +124,47 @@ const fn setting(
 /// Every setting the menu can change, section by section. Each is saved in the user's
 /// `config.toml`; what a project's own config sets on top still wins in that project.
 const SETTINGS: &[Setting] = &[
+    setting("Appearance", "tui.theme", "Theme", Kind::Theme, true),
     setting(
         "Appearance",
-        "tui.theme",
-        "Theme (dark, light or a file in ~/.azazel/themes)",
-        Kind::Text,
+        "tui.glyphs",
+        "Symbols (nerd needs a Nerd Font)",
+        Kind::Choice(&["auto", "unicode", "nerd", "ascii"]),
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.indicator",
+        "Working indicator",
+        Kind::Choice(&["shimmer", "kitt", "static"]),
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.session_accent",
+        "Session colour in the indicator",
+        Kind::Switch,
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.tool_style",
+        "Tool calls (framed card or one row)",
+        Kind::Choice(&["card", "compact"]),
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.redact",
+        "Hide secrets in what is shown",
+        Kind::Switch,
+        true,
+    ),
+    setting(
+        "Appearance",
+        "tui.popups",
+        "Menus and questions as popups",
+        Kind::Switch,
         true,
     ),
     setting(
@@ -367,6 +406,24 @@ fn sections() -> Vec<&'static str> {
     out
 }
 
+/// The themes there are to choose from: the built-in ones, then the files in `themes` under
+/// `home` (`~/.azazel`) by name.
+pub(crate) fn theme_names(home: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Theme::BUILTINS.iter().map(ToString::to_string).collect();
+    let mut custom: Vec<String> = std::fs::read_dir(home.join("themes"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|extension| extension == "toml"))
+        .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
+        .filter(|name| !Theme::BUILTINS.contains(&name.as_str()))
+        .collect();
+    custom.sort();
+    names.extend(custom);
+    names
+}
+
 /// The value at `table.key` in a configuration table.
 fn lookup<'a>(table: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
     let mut parts = path.split('.');
@@ -419,7 +476,7 @@ fn parse_value(kind: Kind, typed: &str, like: Option<&toml::Value>) -> Result<to
             .parse::<u32>()
             .map(|number| toml::Value::Integer(i64::from(number)))
             .map_err(|_| "expected a whole number that is not negative".to_string()),
-        Kind::Text => Ok(toml::Value::String(typed.to_string())),
+        Kind::Text | Kind::Theme => Ok(toml::Value::String(typed.to_string())),
         Kind::List => Ok(toml::Value::Array(
             typed
                 .split(',')
@@ -557,6 +614,16 @@ impl Settings {
                 }),
                 Kind::Choice(options) => {
                     let options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+                    ui.0.select(setting.label, &options)
+                        .await
+                        .ok()
+                        .and_then(|chosen| options.get(chosen).cloned())
+                }
+                Kind::Theme => {
+                    let options = match self.home_config.parent() {
+                        Some(home) => theme_names(home),
+                        None => Vec::new(),
+                    };
                     ui.0.select(setting.label, &options)
                         .await
                         .ok()
@@ -1035,6 +1102,7 @@ mod tests {
                 }
                 Kind::Number => value.is_integer() || value.is_float(),
                 Kind::Text => value.is_str(),
+                Kind::Theme => value.as_str().is_some_and(|now| Theme::BUILTINS.contains(&now)),
                 Kind::List => value.is_array(),
             };
             assert!(fits, "{} is {value:?}, not a {:?}", setting.path, setting.kind);
@@ -1053,6 +1121,50 @@ mod tests {
                 "Voice",
                 "Team"
             ]
+        );
+    }
+
+    #[test]
+    fn appearance_settings_all_reach_the_running_ui() {
+        let appearance: Vec<(&str, bool)> = SETTINGS
+            .iter()
+            .filter(|setting| setting.section == "Appearance")
+            .map(|setting| (setting.path, setting.live))
+            .collect();
+        assert_eq!(
+            appearance,
+            [
+                ("tui.theme", true),
+                ("tui.glyphs", true),
+                ("tui.indicator", true),
+                ("tui.session_accent", true),
+                ("tui.tool_style", true),
+                ("tui.redact", true),
+                ("tui.popups", true),
+                ("tui.images", false),
+                ("tui.show_thinking", true),
+                ("tui.expand_tools", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn themes_to_choose_from_are_the_built_in_ones_then_the_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(theme_names(dir.path()), Theme::BUILTINS);
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        std::fs::write(themes.join("zenburn.toml"), "accent = \"#dcdccc\"\n").unwrap();
+        std::fs::write(themes.join("amber.toml"), "accent = \"#ffb000\"\n").unwrap();
+        // A file named like a built-in theme is not a second entry; other files are not themes.
+        std::fs::write(themes.join("dark.toml"), "accent = \"#ffffff\"\n").unwrap();
+        std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
+        let names = theme_names(dir.path());
+        assert_eq!(&names[..Theme::BUILTINS.len()], Theme::BUILTINS);
+        assert_eq!(&names[Theme::BUILTINS.len()..], ["amber", "zenburn"]);
+        assert_eq!(
+            parse_value(Kind::Theme, " zenburn ", None),
+            Ok(toml::Value::String("zenburn".into()))
         );
     }
 

@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use super::{format_elapsed, format_tokens, one_line};
+use crate::glyphs::Glyph;
 use crate::render::Line;
 use crate::text;
 use crate::theme::{Role, Theme};
@@ -25,8 +26,9 @@ pub struct RosterRow {
     pub state: RosterState,
 }
 
-/// One line per row: `● <id>  <activity>  <elapsed>  <tokens>`. The bullet is coloured by state
-/// and the activity is shortened first when the line is too long.
+/// One line per row: `● <id>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
+/// `ascii` glyph level). The bullet is coloured by state and the activity is shortened first
+/// when the line is too long.
 pub fn render(rows: &[RosterRow], width: usize, theme: &Theme) -> Vec<Line> {
     rows.iter().map(|row| render_row(row, width, theme)).collect()
 }
@@ -44,15 +46,16 @@ fn render_row(row: &RosterRow, width: usize, theme: &Theme) -> Line {
 
     // Everything except the activity: bullet, id and the two right-hand columns with separators.
     let fixed = 2 + text::width(&id) + 2 + 2 + elapsed.len() + 2 + tokens.len();
-    let activity = text::truncate(&one_line(&row.activity), width.saturating_sub(fixed), "…");
+    let ellipsis = theme.glyph(Glyph::Ellipsis);
+    let activity = text::truncate(&one_line(&row.activity), width.saturating_sub(fixed), ellipsis);
 
     let line = format!(
         "{} {id}  {activity}  {}  {}",
-        theme.paint(role, "●"),
+        theme.paint(role, theme.glyph(Glyph::Bullet)),
         theme.paint(Role::Muted, &elapsed),
         theme.paint(Role::Muted, &tokens),
     );
-    text::truncate(&line, width, "…")
+    text::truncate(&line, width, ellipsis)
 }
 
 #[cfg(test)]
@@ -140,5 +143,25 @@ mod tests {
                 assert!(text::width(&line) <= width, "width {width}: {line:?}");
             }
         }
+    }
+
+    #[test]
+    fn the_ascii_level_draws_with_ascii_only() {
+        let theme = Theme::dark().with_glyphs(crate::glyphs::GlyphLevel::Ascii);
+        let rows = [row(
+            "scout-1",
+            "reading a very long list of files in the repository",
+            42,
+            1234,
+            RosterState::Running,
+        )];
+        let wide = text::strip_ansi(&render(&rows, 80, &theme)[0]);
+        assert!(wide.starts_with("* scout-1  reading"), "{wide:?}");
+        for width in 0..50 {
+            let line = text::strip_ansi(&render(&rows, width, &theme)[0]);
+            assert!(line.is_ascii(), "width {width}: {line:?}");
+            assert!(text::width(&line) <= width, "width {width}: {line:?}");
+        }
+        assert!(text::strip_ansi(&render(&rows, 32, &theme)[0]).ends_with("...  42s  1.2k"));
     }
 }
