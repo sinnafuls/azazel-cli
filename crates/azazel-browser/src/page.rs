@@ -127,6 +127,78 @@ pub fn snapshot(nodes: &[Value]) -> Snapshot {
     out
 }
 
+/// What the `wait` action waits for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Condition {
+    /// JavaScript that is true in the page once the condition holds.
+    Script(String),
+    /// No network activity.
+    Idle,
+    /// A node with this role in the accessibility tree, and this name when one is given.
+    Role { role: String, name: Option<String> },
+}
+
+/// Reads the `for` of a `wait`: `load`, `idle`, `text:<string>`, `role:<role> "<name>"`,
+/// `url:contains:<s>`, `title:contains:<s>`, `gone:<selector>`, or a CSS selector.
+pub fn condition(wanted: &str) -> Result<Condition, String> {
+    let quoted = |text: &str| Value::String(text.to_string()).to_string();
+    let script = |script: String| Ok(Condition::Script(script));
+    if wanted == "load" {
+        script("document.readyState === 'complete'".to_string())
+    } else if wanted == "idle" {
+        Ok(Condition::Idle)
+    } else if let Some(text) = wanted.strip_prefix("text:") {
+        script(format!(
+            "!!document.body && document.body.innerText.includes({})",
+            quoted(text)
+        ))
+    } else if let Some(part) = wanted.strip_prefix("url:contains:") {
+        script(format!("location.href.includes({})", quoted(part)))
+    } else if let Some(part) = wanted.strip_prefix("title:contains:") {
+        script(format!("document.title.includes({})", quoted(part)))
+    } else if let Some(selector) = wanted.strip_prefix("gone:") {
+        script(format!(
+            "document.querySelector({}) === null",
+            quoted(selector.trim())
+        ))
+    } else if let Some(rest) = wanted.strip_prefix("role:") {
+        let rest = rest.trim();
+        let (role, name) = match rest.split_once(char::is_whitespace) {
+            Some((role, name)) => (role, name.trim()),
+            None => (rest, ""),
+        };
+        if role.is_empty() {
+            return Err(format!(
+                "`{wanted}` names no role; write it as in a snapshot line: role:button \"Save\""
+            ));
+        }
+        let name = name
+            .strip_prefix('"')
+            .and_then(|name| name.strip_suffix('"'))
+            .unwrap_or(name);
+        Ok(Condition::Role {
+            role: role.to_string(),
+            name: (!name.is_empty()).then(|| name.to_string()),
+        })
+    } else {
+        script(format!("document.querySelector({}) !== null", quoted(wanted)))
+    }
+}
+
+/// Whether the nodes of `Accessibility.getFullAXTree` hold one with `role` and, when given, the
+/// `name` a snapshot shows for it.
+pub fn has_role(nodes: &[Value], role: &str, name: Option<&str>) -> bool {
+    nodes.iter().any(|node| {
+        let ignored = node.get("ignored").and_then(Value::as_bool).unwrap_or(false);
+        let node_role = node
+            .get("role")
+            .and_then(|r| r.get("value"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        !ignored && node_role == role && name.is_none_or(|name| label(node.get("name")) == name)
+    })
+}
+
 /// The number in a ref such as `e12`.
 pub fn ref_number(reference: &str) -> Option<u32> {
     reference.trim().strip_prefix('e')?.parse().ok()
@@ -354,6 +426,75 @@ mod tests {
         // Only listed nodes get a ref.
         assert_eq!(shot.refs.len(), MAX_SNAPSHOT_LINES);
         assert_eq!(snapshot(&[]), Snapshot::default());
+    }
+
+    #[test]
+    fn wait_conditions_are_read_from_their_prefix_and_a_selector_is_the_rest() {
+        let script = |wanted: &str| match condition(wanted).unwrap() {
+            Condition::Script(script) => script,
+            other => panic!("{wanted}: {other:?}"),
+        };
+        assert_eq!(condition("idle"), Ok(Condition::Idle));
+        assert_eq!(script("load"), "document.readyState === 'complete'");
+        assert_eq!(script("#go"), "document.querySelector(\"#go\") !== null");
+        assert_eq!(
+            script("gone: .spinner"),
+            "document.querySelector(\".spinner\") === null"
+        );
+        // What the model writes is data, never code.
+        assert_eq!(
+            script("url:contains:/done?x=\"1\""),
+            "location.href.includes(\"/done?x=\\\"1\\\"\")"
+        );
+        assert_eq!(
+            script("title:contains:Saved"),
+            "document.title.includes(\"Saved\")"
+        );
+        assert_eq!(
+            script("text:it's \"here\""),
+            "!!document.body && document.body.innerText.includes(\"it's \\\"here\\\"\")"
+        );
+        // A tag with a pseudo-class is still a selector.
+        assert_eq!(
+            script("title:hover"),
+            "document.querySelector(\"title:hover\") !== null"
+        );
+
+        let role = |role: &str, name: Option<&str>| Condition::Role {
+            role: role.into(),
+            name: name.map(str::to_string),
+        };
+        assert_eq!(condition("role:button"), Ok(role("button", None)));
+        assert_eq!(
+            condition("role:button \"Save changes\""),
+            Ok(role("button", Some("Save changes")))
+        );
+        assert_eq!(
+            condition("role: link  Docs home "),
+            Ok(role("link", Some("Docs home")))
+        );
+        assert!(condition("role:").unwrap_err().contains("names no role"));
+    }
+
+    #[test]
+    fn a_role_is_found_by_the_name_the_snapshot_shows() {
+        let mut hidden = node("4", Some("1"), "button", "Hidden", &[], 13);
+        hidden["ignored"] = json!(true);
+        let nodes = [
+            node("1", None, "RootWebArea", "Page", &["2", "3", "4"], 10),
+            node("2", Some("1"), "button", "Save  the \"draft\"", &[], 11),
+            node("3", Some("1"), "link", "Docs", &[], 12),
+            hidden,
+        ];
+        assert!(has_role(&nodes, "button", None));
+        assert!(has_role(&nodes, "button", Some("Save the 'draft'")));
+        assert!(has_role(&nodes, "link", Some("Docs")));
+        assert!(!has_role(&nodes, "button", Some("Save")));
+        assert!(!has_role(&nodes, "button", Some("Hidden")));
+        assert!(!has_role(&nodes, "checkbox", None));
+        // The names in a snapshot are the names a wait takes.
+        let shown = snapshot(&nodes).text;
+        assert!(shown.contains("- button \"Save the 'draft'\""), "{shown}");
     }
 
     #[test]

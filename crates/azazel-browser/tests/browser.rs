@@ -23,8 +23,30 @@ const PAGE: &str = r#"<!doctype html>
 <script>setTimeout(() => { document.getElementById('late').textContent = 'arrived later'; }, 300);</script>
 </body></html>"#;
 
-/// Serves [`PAGE`] for every request and returns the address.
-async fn serve() -> String {
+/// A page that changes 300 ms after its button is pressed: a spinner goes, a button and a status
+/// line arrive, and the title and the address move on.
+const LATER_PAGE: &str = r#"<!doctype html>
+<html><head><title>draft</title></head>
+<body>
+<h1>Editor</h1>
+<button id="save" onclick="save()">Save</button>
+<div id="spinner">working</div>
+<script>
+function save() {
+  setTimeout(() => {
+    document.getElementById('spinner').remove();
+    const undo = document.createElement('button');
+    undo.textContent = 'Undo save';
+    document.body.append(undo);
+    document.title = 'draft (saved)';
+    history.replaceState(null, '', '/editor?state=saved');
+  }, 300);
+}
+</script>
+</body></html>"#;
+
+/// Serves `page` for every request and returns the address.
+async fn serve(page: &'static str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
@@ -33,8 +55,8 @@ async fn serve() -> String {
                 let mut request = [0u8; 4096];
                 let _ = stream.read(&mut request).await;
                 let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{PAGE}",
-                    PAGE.len()
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{page}",
+                    page.len()
                 );
                 let _ = stream.write_all(response.as_bytes()).await;
             });
@@ -111,7 +133,7 @@ async fn a_page_is_opened_read_clicked_typed_into_and_captured() {
     }
     let dir = tempfile::tempdir().unwrap();
     let bench = Bench::new(dir.path());
-    let site = serve().await;
+    let site = serve(PAGE).await;
 
     let opened = bench
         .ok(json!({ "action": "open", "url": format!("{site}/"), "tab": "app" }))
@@ -286,5 +308,101 @@ async fn a_page_is_opened_read_clicked_typed_into_and_captured() {
         .ok(json!({ "action": "open", "url": format!("{site}/") }))
         .await;
     assert!(again.starts_with("tab tab-1 · start"), "{again}");
+    bench.session.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn waits_follow_what_the_page_does_after_an_action() {
+    if find_binary("", &|name| std::env::var(name).ok()).is_none() {
+        eprintln!("skipped: no Chromium-based browser on this machine");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let bench = Bench::new(dir.path());
+    let site = serve(LATER_PAGE).await;
+    let opened = bench
+        .ok(json!({ "action": "open", "url": format!("{site}/editor") }))
+        .await;
+    assert!(opened.contains("button \"Save\""), "{opened}");
+    let state = "[document.title, location.search, !!document.getElementById('spinner')]";
+    let state_now = || async {
+        let value = bench.ok(json!({ "action": "eval", "expression": state })).await;
+        serde_json::from_str::<Value>(&value).unwrap()
+    };
+
+    // Before the button is pressed none of it holds, and a wait says so at its limit, however
+    // long the pause between its looks at the page.
+    assert_eq!(state_now().await, json!(["draft", "", true]));
+    assert!(
+        bench
+            .ok(json!({ "action": "wait", "for": "role:button \"Save\"" }))
+            .await
+            .starts_with("`role:button \"Save\"` after")
+    );
+    for never in [
+        "role:button \"Undo save\"",
+        "role:checkbox",
+        "title:contains:saved",
+        "url:contains:state=saved",
+        "gone:#spinner",
+    ] {
+        let begun = std::time::Instant::now();
+        let out = bench
+            .call(json!({ "action": "wait", "for": never, "timeout_ms": 250, "poll_ms": 60000 }))
+            .await;
+        assert!(
+            out.is_error && out.text_content() == format!("`{never}` did not happen within 250 ms"),
+            "{never}: {}",
+            out.text_content()
+        );
+        assert!(begun.elapsed() < std::time::Duration::from_secs(5), "{never}");
+    }
+
+    // Each wait returns once the page has caught up with the click, and not before.
+    bench.ok(json!({ "action": "click", "selector": "#save" })).await;
+    let waited = bench
+        .ok(json!({ "action": "wait", "for": "role:button \"Undo save\"", "poll_ms": 20 }))
+        .await;
+    assert!(
+        waited.starts_with("`role:button \"Undo save\"` after"),
+        "{waited}"
+    );
+    assert_eq!(state_now().await, json!(["draft (saved)", "?state=saved", false]));
+    for holds in [
+        "title:contains:(saved)",
+        "url:contains:/editor?state=saved",
+        "gone:#spinner",
+        "role:button",
+    ] {
+        let waited = bench.ok(json!({ "action": "wait", "for": holds })).await;
+        assert!(waited.starts_with(&format!("`{holds}` after")), "{waited}");
+    }
+
+    // The same again from a fresh page, each of the other conditions leading the way.
+    for leads in [
+        "gone:#spinner",
+        "title:contains:saved",
+        "url:contains:state=saved",
+    ] {
+        bench
+            .ok(json!({ "action": "navigate", "url": format!("{site}/editor") }))
+            .await;
+        assert_eq!(state_now().await, json!(["draft", "", true]), "{leads}");
+        bench.ok(json!({ "action": "click", "selector": "#save" })).await;
+        bench.ok(json!({ "action": "wait", "for": leads })).await;
+        assert_eq!(
+            state_now().await,
+            json!(["draft (saved)", "?state=saved", false]),
+            "{leads}"
+        );
+    }
+
+    // What cannot be waited for says why at once.
+    let no_role = bench.call(json!({ "action": "wait", "for": "role:" })).await;
+    assert!(no_role.is_error && no_role.text_content().contains("names no role"));
+    let bad = bench
+        .call(json!({ "action": "wait", "for": "gone:a[", "timeout_ms": 5000 }))
+        .await;
+    assert_eq!(bad.text_content(), "invalid selector `gone:a[`");
     bench.session.shutdown().await;
 }

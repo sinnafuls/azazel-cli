@@ -118,7 +118,9 @@ impl Tui {
     /// up and the inline frame must not be drawn.
     pub(super) fn draw_popup(&mut self) -> io::Result<bool> {
         let (columns, rows) = self.renderer.size();
-        let wanted = self.popups && !self.quit && self.overlay.is_some() && modal::fits(columns, rows);
+        // `tui.popups` off, or a window too small for one: the box stands in for the input.
+        let wanted =
+            self.env.config.tui.popups && !self.quit && self.overlay.is_some() && modal::fits(columns, rows);
         if !wanted {
             let Some(popup) = &mut self.popup else {
                 return Ok(false);

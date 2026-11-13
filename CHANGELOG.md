@@ -16,6 +16,28 @@ GitHub are its section here.
   `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
+- `web_fetch` returns a long page in parts: `offset` (first line) and `limit` (characters, default 30000),
+  with a last line that names the lines shown and the offset to continue from. `read` of a URL pages the
+  same way with its own `offset` and `limit`.
+- `web_grep` searches a fetched page by regular expression or plain text and returns the matching lines
+  with their numbers, from the same cache as `web_fetch`. It is governed by the `web_fetch` permission
+  rules, and the `scout`, `planner` and `researcher` agents and coordinator mode have it.
+- `web_search` takes up to five `queries` in one call, searched three at a time, each with its own
+  section; a query that fails says so without losing the others.
+- `web_fetch` returns the text of a PDF, under a first line naming the file it saved.
+- `browser` `wait` can wait for `role:<role> "<name>"`, `url:contains:<s>`, `title:contains:<s>` and
+  `gone:<selector>`, and `poll_ms` sets how often it looks.
+
+- The status line shows how fast the lead writes (`↯ 78 tok/s`): an estimate while a reply streams, the
+  provider's own token count once it ends. It stays, muted, until the next prompt.
+- A working indicator that moves: a band of light passes over `thinking` / `running <tool>` above the input.
+  `tui.indicator` chooses `shimmer`, `kitt` or `static`, `tui.indicator_text` sets phrases to show in turn, and
+  `tui.session_accent` tints the band with a colour of the session's own.
+- On terminals at least 100 columns wide the status line draws the context window as a bar
+  (`◫ 42% [━━━╸────]`).
+- `/settings`, Appearance: theme (a list of the built-in themes and the files in `~/.azazel/themes`), symbols,
+  working indicator, session colour, tool call style, hiding secrets and popups. All of them change the running
+  UI at once.
 - Menus, pickers, questions, approvals, plan reviews and every step of `/settings` open as a box in the middle
   of the window over the dimmed transcript, which is back exactly as it was when the box closes
   (`tui.popups = false`, or a window under 44x12, keeps them in place of the input).
@@ -24,6 +46,16 @@ GitHub are its section here.
 
 ### Changed
 
+- `web_fetch` no longer returns a page of any size in one piece: more than `limit` characters come in parts.
+- Every symbol outside tool cards and pickers (the prompt, rules, spinner, status line, todo list, roster,
+  queued messages, Markdown bullets, quotes and tables, the transcript viewer, side questions) follows
+  `tui.glyphs`. At `ascii` the UI draws with plain ASCII only, and the opening banner uses thin letters.
+- The status line shows the cost only when the lead answers with an API key. On a subscription you signed in
+  to, it shows the fullest usage window instead (`◔ 61% 5h`), from the first response on rather than only once
+  the window is nearly full.
+- A status line that does not fit drops whole segments from the end of its left side (goal, agents, cost,
+  speed, context, directory, branch) before it shortens the model. A long working directory keeps its end.
+- `accept-edits` is marked `⏵` in the status line; `⏵⏵` is `auto` alone.
 - Every list has a bar beside the selected row, details in a column of their own, a scrollbar when it is longer
   than its box and, where it filters as you type, a count of the rows that match.
 - A plan under review is shown in the review box, and a note on an approval stands out in the warning colour;

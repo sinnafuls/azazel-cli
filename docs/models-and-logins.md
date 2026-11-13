@@ -415,8 +415,10 @@ this session's responses said about the account instead, and why. Providers used
 windows to show.
 
 Between looks, the windows are kept up to date from response headers: Anthropic's unified rate-limit headers
-and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend. Once a window of the
-account in use is at least 80 % full, the status line shows the fullest one (`◔ 5h 84%`).
+and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend. While the lead answers on
+a subscription, the status line shows the fullest window of the account in use in place of a cost
+(`◔ 61% 5h`), in the warning colour once it is at least 80 % full; see
+[the status line](tui.md#status-line).
 
 A subscription whose window is full is refused by Anthropic with "You're out of extra usage", which names
 neither the window nor the wait. azazel adds what it knows as a second line:

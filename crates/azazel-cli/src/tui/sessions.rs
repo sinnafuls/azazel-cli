@@ -12,7 +12,7 @@ use azazel_core::paths::canonical;
 use azazel_core::session::{Entry, SessionSummary};
 use azazel_core::side::{Side, SideAnswer, SideQuestion};
 use azazel_core::{EntryKind, SessionStore};
-use azazel_tui::{KeyCombo, SelectItem, text};
+use azazel_tui::{Glyph, KeyCombo, SelectItem, text};
 use crossterm::event::{KeyCode, KeyModifiers};
 use tokio_util::sync::CancellationToken;
 
@@ -533,7 +533,11 @@ impl Tui {
                 for (role, said) in messages {
                     let who = if role == MessageRole::User { "you" } else { "agent" };
                     let line = format!("{who}: {}", said.lines().next().unwrap_or_default());
-                    body.push(text::truncate(&line, width.saturating_sub(1), "…"));
+                    body.push(text::truncate(
+                        &line,
+                        width.saturating_sub(1),
+                        self.theme.glyph(Glyph::Ellipsis),
+                    ));
                 }
                 if let Some(overlay) = &mut self.overlay {
                     overlay.body = body;
@@ -696,23 +700,26 @@ impl Tui {
                 TreeFilter::Prompts => "you have not sent a prompt in this session yet",
             });
         }
+        let on_branch = self.theme.glyph(Glyph::Bullet);
+        let flag = self.theme.glyphs().prefix(Glyph::Label);
         let items = rows
             .iter()
             .map(|row| {
-                let marker = if row.on_branch { "•" } else { " " };
+                let marker = if row.on_branch { on_branch } else { " " };
                 let who = if row.is_user { "you" } else { "agent" };
                 let label = row
                     .label
                     .as_ref()
-                    .map(|label| format!("⚑ {label}"))
+                    .map(|label| format!("{flag}{label}"))
                     .unwrap_or_default();
                 SelectItem::new(format!("{marker} {who}: {}", first_line(&row.said)), label)
             })
             .collect();
         let mut body = vec![
-            "• marks the current branch. Choosing one of your prompts goes back to before it and puts it in the \
-             editor; choosing a reply continues from it."
-                .to_string(),
+            format!(
+                "{on_branch} marks the current branch. Choosing one of your prompts goes back to before it and \
+                 puts it in the editor; choosing a reply continues from it."
+            ),
             TREE_KEYS.to_string(),
         ];
         match filter {

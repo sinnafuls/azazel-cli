@@ -31,7 +31,7 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
-use super::backend::{Backend, Facts, Go, Incoming, Moved};
+use super::backend::{Backend, Billing, Facts, Go, Incoming, Moved};
 use super::bridge::UiRequest;
 use super::overlay::RewindPoint;
 use super::{Internal, btw, slash};
@@ -748,7 +748,9 @@ impl Backend for Remote {
                     },
                 })
                 .collect(),
-            usage: None,
+            // How the other process pays is not part of its state: what it reports as cost
+            // is shown, and nothing when it reports none.
+            billing: Billing::Metered,
         }
     }
 

@@ -347,10 +347,7 @@ impl Tui {
             .map(|(spec, detail)| (spec.clone(), SelectItem::new(spec, detail)))
             .unzip();
         // Favourites are marked; ctrl+f on a row adds it to them or takes it out.
-        let star = match self.theme.glyphs().level() {
-            GlyphLevel::Ascii => "*",
-            _ => "★",
-        };
+        let star = self.theme.glyph(Glyph::Favourite);
         for (item, spec) in items.iter_mut().zip(&specs) {
             if self.favourites.contains(spec) {
                 item.detail = format!("{star} {}", item.detail);
@@ -406,18 +403,7 @@ impl Tui {
     }
 
     fn open_theme_picker(&mut self) {
-        let mut names: Vec<String> = Theme::BUILTINS.iter().map(ToString::to_string).collect();
-        let mut custom: Vec<String> = std::fs::read_dir(self.env.paths.home.join("themes"))
-            .into_iter()
-            .flatten()
-            .flatten()
-            .map(|entry| entry.path())
-            .filter(|path| path.extension().is_some_and(|e| e == "toml"))
-            .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
-            .filter(|name| !Theme::BUILTINS.contains(&name.as_str()))
-            .collect();
-        custom.sort();
-        names.extend(custom);
+        let names = crate::settings::theme_names(&self.env.paths.home);
         // Each row shows the colours it would bring: accent, success, warning, error.
         let dot = self.theme.glyph(Glyph::Bullet);
         let items = names
@@ -478,7 +464,7 @@ impl Tui {
     /// is `auto`.
     pub(super) fn choose_glyphs(&mut self, level: Option<GlyphLevel>) {
         let name = level.map_or("auto", GlyphLevel::name);
-        self.apply_glyphs(name);
+        self.apply_setting("tui.glyphs", &toml::Value::String(name.to_string()));
         let saved = crate::init::set_config_value(
             &self.env.paths.home_config(),
             &["tui", "glyphs"],
@@ -493,12 +479,6 @@ impl Tui {
             Ok(()) => self.info(&format!("glyphs: {name}")),
             Err(e) => self.warn(&format!("glyphs: {name}, for this session only: {e:#}")),
         }
-    }
-
-    /// Applies a `tui.glyphs` value to the running UI.
-    pub(super) fn apply_glyphs(&mut self, setting: &str) {
-        let level = GlyphLevel::detect(setting, |name| std::env::var(name).ok());
-        self.theme = std::mem::take(&mut self.theme).with_glyphs(level);
     }
 
     /// Moves the session to an entry chosen in the tree and restarts the lead from there. One

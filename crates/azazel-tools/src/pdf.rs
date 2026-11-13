@@ -27,6 +27,21 @@ pub fn parse_pages(text: &str) -> Result<(u32, u32), String> {
 /// pass `max_bytes`), each under a `--- page N ---` line, then a footer that says how to go on
 /// when there is more.
 pub fn read(bytes: &[u8], pages: Option<(u32, u32)>, max_bytes: usize) -> Result<String, String> {
+    render(bytes, pages, MAX_PAGES, max_bytes)
+}
+
+/// Every page of the PDF in `bytes`, each under a `--- page N ---` line, for a caller that pages
+/// the text itself.
+pub fn read_all(bytes: &[u8]) -> Result<String, String> {
+    render(bytes, None, u32::MAX, usize::MAX)
+}
+
+fn render(
+    bytes: &[u8],
+    pages: Option<(u32, u32)>,
+    max_pages: u32,
+    max_bytes: usize,
+) -> Result<String, String> {
     // The parser panics on some malformed files; that fails this read and nothing else.
     let parsed = catch_unwind(|| Document::load_mem(bytes))
         .map_err(|_| "the PDF is malformed and could not be read".to_string())?;
@@ -43,7 +58,7 @@ pub fn read(bytes: &[u8], pages: Option<(u32, u32)>, max_bytes: usize) -> Result
         return Err(format!("page {first} is past the end of the PDF ({total} pages)"));
     }
     let wanted_last = wanted_last.min(total);
-    let cap = wanted_last.min(first + MAX_PAGES - 1);
+    let cap = wanted_last.min(first.saturating_add(max_pages - 1));
 
     let mut out = String::new();
     let mut any_text = false;
@@ -195,6 +210,17 @@ pub(crate) mod tests {
             small.ends_with("\n[pages 1-2 of 45; continue with pages=\"3-22\"]"),
             "{small}"
         );
+    }
+
+    #[test]
+    fn every_page_comes_at_once_for_a_caller_that_pages_the_text_itself() {
+        let texts: Vec<String> = (1..=45).map(|n| format!("Text of page {n}")).collect();
+        let pages: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let all = read_all(&fixture(&pages)).unwrap();
+        assert!(all.starts_with("--- page 1 ---\nText of page 1\n"), "{all}");
+        assert!(all.ends_with("--- page 45 ---\nText of page 45"), "{all}");
+        assert_eq!(all.matches("--- page ").count(), 45);
+        assert_eq!(read_all(&fixture(&["", ""])).unwrap_err(), NO_TEXT);
     }
 
     #[test]

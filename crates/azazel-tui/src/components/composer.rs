@@ -7,6 +7,7 @@
 //! ```
 
 use super::editor::Editor;
+use crate::glyphs::Glyph;
 use crate::render::Line;
 use crate::text;
 use crate::theme::{Role, Theme};
@@ -43,7 +44,7 @@ pub fn render(editor: &Editor, composer: &Composer, width: usize, theme: &Theme)
     let mut view = editor.view(width, composer.max_rows, theme, &prompt);
     if editor.is_empty() && !composer.placeholder.is_empty() {
         let room = width.saturating_sub(usize::from(view.cursor.1));
-        let hint = text::truncate(composer.placeholder, room, "…");
+        let hint = text::truncate(composer.placeholder, room, theme.glyph(Glyph::Ellipsis));
         if let Some(first) = view.lines.first_mut() {
             first.push_str(&theme.paint(Role::Muted, &hint));
         }
@@ -53,7 +54,7 @@ pub fn render(editor: &Editor, composer: &Composer, width: usize, theme: &Theme)
     lines.push(rule(
         width,
         composer.status,
-        more("↑", view.above).as_deref(),
+        more(theme.glyph(Glyph::MoreUp), view.above).as_deref(),
         composer.rule,
         theme,
     ));
@@ -61,20 +62,21 @@ pub fn render(editor: &Editor, composer: &Composer, width: usize, theme: &Theme)
     lines.push(rule(
         width,
         None,
-        more("↓", view.below).as_deref(),
+        more(theme.glyph(Glyph::MoreDown), view.below).as_deref(),
         composer.rule,
         theme,
     ));
     (lines, (view.cursor.0.saturating_add(1), view.cursor.1))
 }
 
-/// A full-width `─` rule in the colour of `role`.
+/// A full-width rule (`─`, or `-` at the `ascii` glyph level) in the colour of `role`.
 ///
 /// `lead` is set in near the left end (`── lead ─────`) and may carry its own styling; it is cut
 /// when the rule is too short. `note` is shown muted: centred when it is alone, near the right
 /// end beside a lead, and left out when there is no room for it.
 pub fn rule(width: usize, lead: Option<&str>, note: Option<&str>, role: Role, theme: &Theme) -> Line {
-    let dashes = |n: usize| theme.paint(role, &"─".repeat(n));
+    let dash = theme.glyphs().border().horizontal;
+    let dashes = |n: usize| theme.paint(role, &dash.repeat(n));
     let note = note.filter(|note| !note.is_empty());
     let lead = lead.filter(|lead| !lead.is_empty());
     // A label needs a cap and a space on both sides.
@@ -83,7 +85,7 @@ pub fn rule(width: usize, lead: Option<&str>, note: Option<&str>, role: Role, th
         (Some(lead), note) if width > 2 * (CAP + 1) => {
             let note = note.filter(|note| framed(lead) + text::width(note) + 2 <= width);
             let taken = note.map_or(0, |note| text::width(note) + 2);
-            let lead = text::truncate(lead, width - 2 * (CAP + 1) - taken, "…");
+            let lead = text::truncate(lead, width - 2 * (CAP + 1) - taken, theme.glyph(Glyph::Ellipsis));
             let fill = width - (CAP + 1) - text::width(&lead) - 1 - taken - CAP;
             let mut line = format!("{} {lead} {}", dashes(CAP), dashes(fill));
             if let Some(note) = note {
@@ -109,6 +111,7 @@ pub fn rule(width: usize, lead: Option<&str>, note: Option<&str>, role: Role, th
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::glyphs::GlyphLevel;
 
     fn composer(status: Option<&'static str>) -> Composer<'static> {
         Composer {
@@ -209,6 +212,26 @@ mod tests {
         assert_eq!(&shown[1..6], ["  3", "  4", "  5", "  6", "  7"]);
         assert_eq!(shown[6], "─────── ↓ 1 more ───────");
         assert_eq!(cursor, (1, 3));
+    }
+
+    #[test]
+    fn the_ascii_level_draws_with_ascii_only() {
+        let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        let mut ascii = composer(Some("working | 3s"));
+        ascii.prompt = "> ";
+        let editor = with_text("1\n2\n3\n4\n5\n6\n7\n8");
+        let (lines, _) = render(&editor, &ascii, 30, &theme);
+        let shown = plain(&lines);
+        assert_eq!(shown[0], "-- working | 3s -- ^ 3 more --");
+        assert_eq!(shown[6], "-".repeat(30));
+        for width in 0..40 {
+            let (lines, _) = render(&editor, &ascii, width, &theme);
+            for line in plain(&lines) {
+                assert!(line.is_ascii(), "width {width}: {line:?}");
+            }
+            let (lines, _) = render(&Editor::new(), &ascii, width, &theme);
+            assert!(plain(&lines).iter().all(|line| line.is_ascii()), "width {width}");
+        }
     }
 
     #[test]

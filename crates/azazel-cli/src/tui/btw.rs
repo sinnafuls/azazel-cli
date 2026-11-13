@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use azazel_core::side::SideAnswer;
 use azazel_tui::components::{composer, markdown};
-use azazel_tui::{Editor, Line, Role, Spinner, Theme, text};
+use azazel_tui::{Editor, Glyph, Line, Role, Spinner, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use tokio_util::sync::CancellationToken;
 
@@ -173,7 +173,7 @@ impl Panel {
     fn content(&self, width: usize, theme: &Theme) -> Vec<Line> {
         let mut lines = Vec::new();
         let question = |lines: &mut Vec<Line>, asked: &str| {
-            let mark = theme.paint(Role::Accent, "❯ ");
+            let mark = theme.paint(Role::Accent, &theme.glyphs().prefix(Glyph::Prompt));
             for (at, row) in text::wrap(&text::sanitize(asked), width.saturating_sub(2).max(1))
                 .into_iter()
                 .enumerate()
@@ -190,7 +190,8 @@ impl Panel {
         question(&mut lines, &self.question);
         if self.answer.trim().is_empty() {
             if self.state == State::Answering {
-                lines.push(theme.paint(Role::Muted, "waiting for the answer…"));
+                let waiting = format!("waiting for the answer{}", theme.glyph(Glyph::Ellipsis));
+                lines.push(theme.paint(Role::Muted, &waiting));
             } else if self.state == State::Answered && self.note.is_none() {
                 lines.push(theme.paint(Role::Muted, "(the answer was empty)"));
             }
@@ -218,7 +219,7 @@ impl Panel {
         theme: &Theme,
     ) -> (Vec<Line>, Option<(u16, u16)>) {
         let input = self.follow_up.as_ref().map(|editor| {
-            let prompt = theme.paint(Role::Accent, "❯ ");
+            let prompt = theme.paint(Role::Accent, &theme.glyphs().prefix(Glyph::Prompt));
             editor.view(width, MAX_INPUT_ROWS, theme, &prompt)
         });
         // Two rules, and a third above the follow-up.
@@ -235,20 +236,32 @@ impl Panel {
         let mut lines = vec![composer::rule(
             width,
             Some(&title),
-            more("↑", start).as_deref(),
+            more(theme.glyph(Glyph::MoreUp), start).as_deref(),
             Role::Border,
             theme,
         )];
         lines.extend(content[start..end].iter().cloned());
         let mut cursor = None;
+        let hints = |hints: &[&str]| hints.join(theme.glyph(Glyph::Separator));
         let hint = match (&input, &self.state) {
-            (Some(_), _) => "enter ask · esc back".to_string(),
-            (None, State::Answering) => format!("{} answering · esc close", Spinner::now()),
-            (None, State::Answered) if self.answer.trim().is_empty() => "f follow-up · esc close".to_string(),
-            (None, State::Answered) => {
-                "c copy · s send to the agent · f follow-up · ↑↓ scroll · esc close".to_string()
-            }
-            (None, State::Failed(_)) => "f ask again · esc close".to_string(),
+            (Some(_), _) => hints(&["enter ask", "esc back"]),
+            (None, State::Answering) => hints(&[
+                &format!("{} answering", Spinner::now_in(theme.glyphs())),
+                "esc close",
+            ]),
+            (None, State::Answered) if self.answer.trim().is_empty() => hints(&["f follow-up", "esc close"]),
+            (None, State::Answered) => hints(&[
+                "c copy",
+                "s send to the agent",
+                "f follow-up",
+                &format!(
+                    "{}{} scroll",
+                    theme.glyph(Glyph::MoreUp),
+                    theme.glyph(Glyph::MoreDown)
+                ),
+                "esc close",
+            ]),
+            (None, State::Failed(_)) => hints(&["f ask again", "esc close"]),
         };
         if let Some(view) = input {
             let label = theme.paint(Role::Muted, "follow-up");
@@ -260,7 +273,7 @@ impl Panel {
         lines.push(composer::rule(
             width,
             Some(&hint),
-            more("↓", self.scroll).as_deref(),
+            more(theme.glyph(Glyph::MoreDown), self.scroll).as_deref(),
             Role::Border,
             theme,
         ));

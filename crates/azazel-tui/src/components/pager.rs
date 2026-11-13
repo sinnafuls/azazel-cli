@@ -9,6 +9,7 @@ use std::ops::Range;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::markdown;
+use crate::glyphs::Glyph;
 use crate::render::Line;
 use crate::text;
 use crate::theme::{Role, Theme};
@@ -473,7 +474,11 @@ impl Pager {
             } else {
                 format!("{}/{total}", self.cursor + 1)
             };
-            let title = text::truncate(&self.title, width.saturating_sub(text::width(&place) + 2), "…");
+            let title = text::truncate(
+                &self.title,
+                width.saturating_sub(text::width(&place) + 2),
+                theme.glyph(Glyph::Ellipsis),
+            );
             let gap = width.saturating_sub(text::width(&title) + text::width(&place));
             let line = format!(
                 "{}{}{}",
@@ -491,12 +496,13 @@ impl Pager {
                 out.push(String::new());
                 continue;
             }
+            let mark = |role: Role, glyph: &str| theme.paint(role, &format!("{glyph} "));
             let gutter = if row == self.cursor {
-                theme.paint(Role::Accent, "▌ ")
+                mark(Role::Accent, theme.glyph(Glyph::Rail))
             } else if selected.as_ref().is_some_and(|rows| rows.contains(&row)) {
-                theme.paint(Role::Accent, "│ ")
+                mark(Role::Accent, theme.glyph(Glyph::TreeLine))
             } else if self.matches(row) {
-                theme.paint(Role::Warning, "• ")
+                mark(Role::Warning, theme.glyphs().bullets()[0])
             } else {
                 "  ".to_string()
             };
@@ -510,18 +516,30 @@ impl Pager {
             }
         }
         if height >= 2 {
+            // `↑↓ move · [ ] jump`, with the arrows and the separator of the glyph level.
+            let hints = |hints: &[&str]| {
+                let arrows = format!("{}{}", theme.glyph(Glyph::MoreUp), theme.glyph(Glyph::MoreDown));
+                let joined = hints.join(theme.glyph(Glyph::Separator));
+                theme.paint(Role::Muted, &joined.replace("{arrows}", &arrows))
+            };
             let foot = match (&self.typing, &self.notice) {
                 (Some(query), _) => format!("{}{query}", theme.paint(Role::Accent, "/")),
                 (None, Some(notice)) => theme.paint(Role::Warning, notice),
                 (None, None) if self.selection.is_some() => {
-                    theme.paint(Role::Muted, "selecting lines · ↑↓ extend · y copy · esc cancel")
+                    hints(&["selecting lines", "{arrows} extend", "y copy", "esc cancel"])
                 }
-                (None, None) => theme.paint(
-                    Role::Muted,
-                    "↑↓ move · [ ] jump · / search · y copy · c code · v select · o open · q back",
-                ),
+                (None, None) => hints(&[
+                    "{arrows} move",
+                    "[ ] jump",
+                    "/ search",
+                    "y copy",
+                    "c code",
+                    "v select",
+                    "o open",
+                    "q back",
+                ]),
             };
-            out.push(text::truncate(&foot, width, "…"));
+            out.push(text::truncate(&foot, width, theme.glyph(Glyph::Ellipsis)));
         }
         out.truncate(height);
         out
@@ -813,6 +831,40 @@ mod tests {
         let empty = Pager::new("t", Vec::new()).render(10, 4, &theme);
         assert_eq!(empty.len(), 4);
         assert!(text::strip_ansi(&empty[0]).ends_with("empty"));
+    }
+
+    #[test]
+    fn the_ascii_level_draws_the_gutter_and_the_hints_with_ascii_only() {
+        let theme = Theme::dark().with_glyphs(crate::glyphs::GlyphLevel::Ascii);
+        let mut pager = transcript();
+        // A search marks its rows; a selection marks the rows it covers.
+        press(&mut pager, "/reply\n");
+        let shown: Vec<String> = pager
+            .render(90, 9, &theme)
+            .iter()
+            .map(|l| text::strip_ansi(l))
+            .collect();
+        assert_eq!(shown[2], "> a reply", "{shown:?}");
+        assert_eq!(shown[6], "* another reply", "{shown:?}");
+        assert_eq!(
+            shown[8],
+            "^v move | [ ] jump | / search | y copy | c code | v select | o open | q back"
+        );
+        press(&mut pager, "vj");
+        let shown: Vec<String> = pager
+            .render(90, 9, &theme)
+            .iter()
+            .map(|l| text::strip_ansi(l))
+            .collect();
+        assert_eq!(shown[2], "| a reply", "{shown:?}");
+        assert_eq!(shown[8], "selecting lines | ^v extend | y copy | esc cancel");
+        for width in 1..60 {
+            for line in pager.render(width, 9, &theme) {
+                let line = text::strip_ansi(&line);
+                assert!(line.is_ascii(), "width {width}: {line:?}");
+                assert!(text::width(&line) <= width, "width {width}: {line:?}");
+            }
+        }
     }
 
     #[test]
