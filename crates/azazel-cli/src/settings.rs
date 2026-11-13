@@ -1,8 +1,15 @@
-//! `/settings`: signing in with a subscription, storing API keys, choosing the default model,
-//! signing out and changing the everyday settings, all from inside the terminal UI, so that
-//! neither a first run nor a change of taste needs config editing.
+//! `/settings`: signing in with a subscription, storing API keys, choosing models, signing out
+//! and changing every setting, all from inside the terminal UI, so that neither a first run nor
+//! a change of taste needs config editing.
+//!
+//! In the terminal UI it is one screen of pages behind a row of tabs ([`screen`]). Where there
+//! is no such screen (a session in another process, an RPC client) the same pages are a chain
+//! of prompts.
 
-use std::path::{Path, PathBuf};
+mod screen;
+mod store;
+
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,11 +17,17 @@ use crate::login::{forget_key, sign_in_from_ui, store_key};
 use async_trait::async_trait;
 use azazel_ai::catalog::Cost;
 use azazel_ai::{Credentials, ModelSpec, ProviderConfig, Router};
+use azazel_core::settings::{Kind, Page, SETTINGS, Setting};
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, PermissionMode,
-    Registrar, Ui, UiError,
+    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, LoadOptions, Paths,
+    PermissionMode, Registrar, Ui, UiError,
 };
 use azazel_tui::Theme;
+use tokio::sync::oneshot;
+
+pub(crate) use self::screen::Screen;
+use self::screen::{Accounts, Request};
+use self::store::{Changes, Store, chain_label, parse_entry, parse_value, role_name, shown};
 
 /// How long a provider may take to list its models before the built-in catalogue is used.
 const LIST_TIMEOUT: Duration = Duration::from_secs(20);
@@ -39,15 +52,6 @@ fn key_providers(providers: &[ProviderConfig]) -> Vec<&ProviderConfig> {
         .iter()
         .filter(|p| p.requires_key && !p.api_key_env.is_empty())
         .collect()
-}
-
-/// The chain as written in config (`["anthropic/claude-x", "@smol"]`), for showing.
-fn chain_label(chain: &[ModelSpec]) -> String {
-    chain
-        .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ")
 }
 
 /// What a model picker says beside a model: its context window and what a million tokens in
@@ -78,359 +82,24 @@ fn trim_number(number: f64) -> String {
 struct Settings {
     providers: Vec<ProviderConfig>,
     credentials: Arc<Credentials>,
-    home_config: PathBuf,
-    /// The configuration this run started with, as a table, for showing values the user's
-    /// config file does not set.
-    effective: toml::Table,
+    paths: Paths,
+    /// How the configuration was loaded: trust, the environment, the command line.
+    options: LoadOptions,
 }
 
-/// The menu rows, in order.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Item {
-    Subscription,
-    ApiKey,
-    DefaultModel,
-    Roles,
-    /// One group of the settings in [`SETTINGS`].
-    Section(&'static str),
-    SignOut,
-    Done,
-}
-
-/// How the settings menu reaches the running UI: called with the path and the new value of a
+/// How the settings reach the running UI: called with the path and the new value of a
 /// setting that applies at once. The terminal UI registers it as a service.
 pub struct LiveSettings(pub Arc<ApplySetting>);
 
 /// Called with a setting's path (`editor.mode`) and its new value.
 pub type ApplySetting = dyn Fn(&str, &toml::Value) + Send + Sync;
 
-/// How a setting is edited.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Kind {
-    /// On or off; choosing the row flips it.
-    Switch,
-    /// One of these values.
-    Choice(&'static [&'static str]),
-    /// One of the themes there are: the built-in ones and the files in `~/.azazel/themes`.
-    Theme,
-    /// A number, whole or with a fraction as the setting's default is.
-    Number,
-    Text,
-    /// Several values, typed with commas between them.
-    List,
-}
+/// How the settings screen gets onto the terminal: called with the screen, it shows it and
+/// gives it back once the screen has given up the keyboard. The terminal UI registers it as a
+/// service; without it the settings are a chain of prompts.
+pub(crate) struct SettingsHost(pub Arc<ShowScreen>);
 
-/// One row of a settings section.
-struct Setting {
-    section: &'static str,
-    /// Where it lives in the config file, as `table.key`.
-    path: &'static str,
-    label: &'static str,
-    kind: Kind,
-    /// Applies to the running UI at once; the others take effect in the next session.
-    live: bool,
-}
-
-const fn setting(
-    section: &'static str,
-    path: &'static str,
-    label: &'static str,
-    kind: Kind,
-    live: bool,
-) -> Setting {
-    Setting {
-        section,
-        path,
-        label,
-        kind,
-        live,
-    }
-}
-
-/// Every setting the menu can change, section by section. Each is saved in the user's
-/// `config.toml`; what a project's own config sets on top still wins in that project.
-const SETTINGS: &[Setting] = &[
-    setting("Appearance", "tui.theme", "Theme", Kind::Theme, true),
-    setting(
-        "Appearance",
-        "tui.glyphs",
-        "Symbols (nerd needs a Nerd Font)",
-        Kind::Choice(&["auto", "unicode", "nerd", "ascii"]),
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.indicator",
-        "Working indicator",
-        Kind::Choice(&["shimmer", "kitt", "static"]),
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.session_accent",
-        "Session colour in the indicator",
-        Kind::Switch,
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.tool_style",
-        "Tool calls (card or one row)",
-        Kind::Choice(&["card", "compact"]),
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.redact",
-        "Hide secrets in what is shown",
-        Kind::Switch,
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.popups",
-        "Menus and questions as popups",
-        Kind::Switch,
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.images",
-        "Inline images",
-        Kind::Choice(&["auto", "off", "kitty", "iterm", "sixel"]),
-        false,
-    ),
-    setting(
-        "Appearance",
-        "tui.show_thinking",
-        "Show the model's thinking",
-        Kind::Switch,
-        true,
-    ),
-    setting(
-        "Appearance",
-        "tui.expand_tools",
-        "Show tool output in full",
-        Kind::Switch,
-        true,
-    ),
-    setting(
-        "Editor",
-        "editor.mode",
-        "Keys in the input",
-        Kind::Choice(&["emacs", "vim"]),
-        true,
-    ),
-    setting(
-        "Editor",
-        "editor.command",
-        "External editor command (empty uses $VISUAL, then $EDITOR)",
-        Kind::Text,
-        true,
-    ),
-    setting(
-        "Editor",
-        "editor.fold_paste_lines",
-        "Fold pastes longer than this many lines (0 never folds)",
-        Kind::Number,
-        true,
-    ),
-    setting(
-        "Permissions",
-        "permissions.mode",
-        "Mode a session starts in",
-        Kind::Choice(&["plan", "manual", "accept-edits", "auto", "bypass"]),
-        false,
-    ),
-    setting(
-        "Permissions",
-        "permissions.destructive",
-        "Commands that destroy work",
-        Kind::Choice(&["ask", "allow", "deny"]),
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.bell",
-        "Ring the terminal bell",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.desktop",
-        "Desktop notifications",
-        Kind::Choice(&["auto", "terminal", "system", "off"]),
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.title",
-        "Show the session in the terminal title",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.progress",
-        "Show progress in the terminal tab",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.min_secs",
-        "Notify about runs that took at least this many seconds",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Notifications",
-        "notify.keep_awake",
-        "Keep the computer awake while agents work",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Limits",
-        "limits.max_cost_usd",
-        "Stop a run at this cost in USD (0 is no cap)",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Limits",
-        "limits.warn_cost_usd",
-        "Warn at this cost in USD (0 is no warning)",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Limits",
-        "limits.max_turns",
-        "Requests per prompt for the lead (0 is no limit)",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Sessions",
-        "session.auto_name",
-        "Name sessions automatically",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Sessions",
-        "session.restore_model",
-        "Resume on the model and thinking level last used",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Sessions",
-        "session.retention_days",
-        "Delete sessions unused for this many days (0 keeps all)",
-        Kind::Number,
-        false,
-    ),
-    setting("Memory", "memory.enabled", "Memory", Kind::Switch, false),
-    setting(
-        "Memory",
-        "memory.auto_extract",
-        "Save memories from conversations",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Memory",
-        "memory.auto_index",
-        "Index the project for search",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Updates",
-        "update.check",
-        "Look for a newer release once a day",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Updates",
-        "update.auto",
-        "Install a newer release when the UI exits",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Voice",
-        "voice.stt",
-        "Transcription model (provider/model)",
-        Kind::Text,
-        false,
-    ),
-    setting(
-        "Voice",
-        "voice.tts",
-        "Speech model (provider/model)",
-        Kind::Text,
-        false,
-    ),
-    setting("Voice", "voice.voice", "Voice", Kind::Text, false),
-    setting(
-        "Voice",
-        "voice.auto_send",
-        "Send what was dictated at once",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Voice",
-        "voice.max_secs",
-        "Longest recording in seconds",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Team",
-        "team.coordinator",
-        "Coordinator mode: the lead only plans and delegates",
-        Kind::Switch,
-        false,
-    ),
-    setting(
-        "Team",
-        "team.max_parallel",
-        "Agents working at the same time",
-        Kind::Number,
-        false,
-    ),
-    setting(
-        "Team",
-        "advisor.when",
-        "Second-model advisor",
-        Kind::Choice(&["off", "stop"]),
-        false,
-    ),
-    setting(
-        "Team",
-        "advisor.model",
-        "Advisor model (several with commas: first that answers)",
-        Kind::List,
-        false,
-    ),
-];
-
-/// The sections of [`SETTINGS`], in the order they first appear.
-fn sections() -> Vec<&'static str> {
-    let mut out: Vec<&'static str> = Vec::new();
-    for setting in SETTINGS {
-        if !out.contains(&setting.section) {
-            out.push(setting.section);
-        }
-    }
-    out
-}
+pub(crate) type ShowScreen = dyn Fn(Box<Screen>) -> oneshot::Receiver<Box<Screen>> + Send + Sync;
 
 /// The themes there are to choose from: the built-in ones, then the files in `themes` under
 /// `home` (`~/.azazel`) by name.
@@ -450,123 +119,20 @@ pub(crate) fn theme_names(home: &Path) -> Vec<String> {
     names
 }
 
-/// The value at `table.key` in a configuration table.
-fn lookup<'a>(table: &'a toml::Table, path: &str) -> Option<&'a toml::Value> {
-    let mut parts = path.split('.');
-    let mut value = table.get(parts.next()?)?;
-    for part in parts {
-        value = value.get(part)?;
-    }
-    Some(value)
+/// A row of the menu the chain of prompts starts with.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Item {
+    Page(Page),
+    Done,
 }
 
-/// A value as a menu row shows it.
-fn shown(value: Option<&toml::Value>) -> String {
-    match value {
-        Some(toml::Value::Boolean(true)) => "on".to_string(),
-        Some(toml::Value::Boolean(false)) => "off".to_string(),
-        Some(toml::Value::String(text)) if text.is_empty() => "(not set)".to_string(),
-        Some(toml::Value::String(text)) => text.clone(),
-        Some(toml::Value::Array(items)) if items.is_empty() => "(none)".to_string(),
-        Some(toml::Value::Array(items)) => items
-            .iter()
-            .map(|item| item.as_str().map_or_else(|| item.to_string(), str::to_string))
-            .collect::<Vec<_>>()
-            .join(", "),
-        Some(other) => other.to_string(),
-        None => "(not set)".to_string(),
-    }
+/// A row of a page in the chain of prompts.
+#[derive(Clone, Copy)]
+enum Entry {
+    Run(Request),
+    Edit(&'static Setting),
+    Back,
 }
-
-/// What the user typed for a setting, as the value to save. `like` is the setting's current
-/// value, which decides whether a number is whole.
-fn parse_value(kind: Kind, typed: &str, like: Option<&toml::Value>) -> Result<toml::Value, String> {
-    let typed = typed.trim();
-    match kind {
-        Kind::Switch => match typed {
-            "on" | "true" | "yes" => Ok(toml::Value::Boolean(true)),
-            "off" | "false" | "no" => Ok(toml::Value::Boolean(false)),
-            _ => Err("expected on or off".to_string()),
-        },
-        Kind::Choice(options) => match options.iter().find(|option| **option == typed) {
-            Some(option) => Ok(toml::Value::String(option.to_string())),
-            None => Err(format!("expected one of: {}", options.join(", "))),
-        },
-        Kind::Number if matches!(like, Some(toml::Value::Float(_))) => typed
-            .parse::<f64>()
-            .ok()
-            .filter(|number| number.is_finite() && *number >= 0.0)
-            .map(toml::Value::Float)
-            .ok_or_else(|| "expected a number that is not negative".to_string()),
-        Kind::Number => typed
-            .parse::<u32>()
-            .map(|number| toml::Value::Integer(i64::from(number)))
-            .map_err(|_| "expected a whole number that is not negative".to_string()),
-        Kind::Text | Kind::Theme => Ok(toml::Value::String(typed.to_string())),
-        Kind::List => Ok(toml::Value::Array(
-            typed
-                .split(',')
-                .map(str::trim)
-                .filter(|item| !item.is_empty())
-                .map(|item| toml::Value::String(item.to_string()))
-                .collect(),
-        )),
-    }
-}
-
-/// Whether the configuration accepts `value` at `path`, with its own error when it does not
-/// (an unknown mode, a model name that does not parse).
-fn validate(path: &str, value: &toml::Value) -> Result<(), String> {
-    let mut nested = value.clone();
-    for part in path.rsplit('.') {
-        let mut table = toml::Table::new();
-        table.insert(part.to_string(), nested);
-        nested = toml::Value::Table(table);
-    }
-    nested
-        .try_into::<Config>()
-        .map(|_| ())
-        .map_err(|e| e.message().to_string())
-}
-
-/// A value as an item of the config file.
-fn config_item(value: &toml::Value) -> Option<toml_edit::Item> {
-    Some(match value {
-        toml::Value::Boolean(on) => toml_edit::value(*on),
-        toml::Value::Integer(number) => toml_edit::value(*number),
-        toml::Value::Float(number) => toml_edit::value(*number),
-        toml::Value::String(text) => toml_edit::value(text.as_str()),
-        toml::Value::Array(items) => toml_edit::value(toml_edit::Array::from_iter(
-            items.iter().filter_map(|item| item.as_str()),
-        )),
-        _ => return None,
-    })
-}
-
-/// The roles a person can give a model, in the order the menu lists them, with what each is for.
-/// The lead and every built-in agent have a role of their own, which falls back to a general one
-/// until it is set.
-const ROLES: [(&str, &str); 19] = [
-    ("lead", "the agent you talk to"),
-    ("scout", "fast read-only exploration"),
-    ("planner", "writes implementation plans"),
-    ("coder", "implements changes"),
-    ("tester", "writes and runs tests"),
-    ("reviewer", "reviews diffs"),
-    ("verifier", "checks a goal is really met"),
-    ("researcher", "web research"),
-    ("designer", "user interface work"),
-    ("artist", "images, video, 3D and audio"),
-    ("playtester", "plays builds and reports defects"),
-    ("default", "everything without a model of its own"),
-    ("smol", "small, quick jobs: summaries, memory"),
-    ("slow", "the most capable model, for hard reviews"),
-    ("plan", "planning"),
-    ("verify", "verification"),
-    ("vision", "work that needs to see images"),
-    ("judge", "quick judgements: `classify` in scripts"),
-    ("memory", "extracting memories"),
-];
 
 impl Settings {
     /// Who the providers' credentials come from, one line per provider that has one.
@@ -578,162 +144,17 @@ impl Settings {
             .collect()
     }
 
-    /// The value of a setting: what the user's config file says, else what this run started with.
-    fn current(&self, path: &str) -> Option<toml::Value> {
-        let saved = std::fs::read_to_string(&self.home_config)
-            .ok()
-            .and_then(|text| text.parse::<toml::Table>().ok());
-        saved
-            .as_ref()
-            .and_then(|table| lookup(table, path))
-            .or_else(|| lookup(&self.effective, path))
-            .cloned()
-    }
-
-    /// Saves `value` for a setting in the user's config file and applies it to the running UI
-    /// when it is one that can change at once. Returns the line that says what happened.
-    fn save(&self, setting: &Setting, value: toml::Value, ctx: &ExtCtx) -> Result<String, String> {
-        validate(setting.path, &value).map_err(|why| format!("{}: {why}", setting.label))?;
-        let path: Vec<&str> = setting.path.split('.').collect();
-        // Nothing typed puts the setting back on its default.
-        let cleared = matches!(&value, toml::Value::String(text) if text.is_empty())
-            || matches!(&value, toml::Value::Array(items) if items.is_empty());
-        let item = if cleared { None } else { config_item(&value) };
-        crate::init::set_config_value(&self.home_config, &path, item).map_err(|e| format!("{e:#}"))?;
-        let when = if setting.live {
-            if let Some(live) = ctx.services.get::<LiveSettings>() {
-                (live.0)(setting.path, &value);
-            }
-            ""
-        } else {
-            " (applies to the next session)"
-        };
-        Ok(format!("{} = {}{when}", setting.path, shown(Some(&value))))
-    }
-
-    /// Shows one section until the user goes back; each change is saved as it is made.
-    async fn section(&self, name: &str, ui: &Arc<Ui>, ctx: &ExtCtx, done: &mut Vec<String>) {
-        let rows: Vec<&Setting> = SETTINGS.iter().filter(|s| s.section == name).collect();
-        loop {
-            // A tab sets the value apart from the label: the UI shows it in a column of its own.
-            let mut labels: Vec<String> = rows
-                .iter()
-                .map(|setting| {
-                    format!(
-                        "{}\t{}",
-                        setting.label,
-                        shown(self.current(setting.path).as_ref())
-                    )
-                })
-                .collect();
-            labels.push("Back".to_string());
-            let heading = format!("{name}\nsaved in {}", self.home_config.display());
-            let Ok(index) = ui.0.select(&heading, &labels).await else {
-                return;
-            };
-            let Some(setting) = rows.get(index) else {
-                return;
-            };
-            let current = self.current(setting.path);
-            let typed = match setting.kind {
-                Kind::Switch => Some(match current {
-                    Some(toml::Value::Boolean(true)) => "off".to_string(),
-                    _ => "on".to_string(),
-                }),
-                Kind::Choice(options) => {
-                    let options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
-                    ui.0.select(setting.label, &options)
-                        .await
-                        .ok()
-                        .and_then(|chosen| options.get(chosen).cloned())
-                }
-                Kind::Theme => {
-                    let options = match self.home_config.parent() {
-                        Some(home) => theme_names(home),
-                        None => Vec::new(),
-                    };
-                    ui.0.select(setting.label, &options)
-                        .await
-                        .ok()
-                        .and_then(|chosen| options.get(chosen).cloned())
-                }
-                Kind::Number | Kind::Text | Kind::List => {
-                    let prompt = format!("{} (now: {})", setting.label, shown(current.as_ref()));
-                    ui.0.input(&prompt).await.ok()
-                }
-            };
-            let Some(typed) = typed else { continue };
-            // Bypass as the mode every session starts in is confirmed, with "No" first.
-            if setting.path == "permissions.mode" && typed == PermissionMode::Bypass.as_str() {
-                let question = "Start every session in bypass mode?\nNothing is asked about and no \
-                                safety guard applies: only your deny rules and the push guard are left.";
-                let answers = ["No".to_string(), "Yes, bypass permissions".to_string()];
-                if ui.0.select(question, &answers).await.ok() != Some(1) {
-                    continue;
-                }
-            }
-            let saved = parse_value(setting.kind, &typed, current.as_ref())
-                .map_err(|why| format!("{}: {why}", setting.label))
-                .and_then(|value| self.save(setting, value, ctx));
-            match saved {
-                Ok(line) => {
-                    ui.0.notify(Level::Info, &line);
-                    done.push(line);
-                }
-                Err(why) => ui.0.notify(Level::Error, &why),
-            }
+    /// What the Accounts page shows.
+    fn accounts(&self) -> Accounts {
+        Accounts {
+            signed_in: self.signed_in(),
+            stored: !self.credentials.load().is_empty(),
         }
     }
 
     fn default_model(&self, router: Option<&Router>) -> Option<String> {
         let chain = router?.roles().get("default").cloned()?;
         (!chain.is_empty()).then(|| chain_label(&chain))
-    }
-
-    fn menu(&self, router: Option<&Router>) -> (String, Vec<(Item, String)>) {
-        let signed_in = self.signed_in();
-        let accounts = match signed_in.is_empty() {
-            true => "no provider has a credential yet".to_string(),
-            false => {
-                let names: Vec<&str> = signed_in.iter().map(|(id, _)| id.as_str()).collect();
-                format!("credentials for: {}", names.join(", "))
-            }
-        };
-        let default = self.default_model(router);
-        // The first line is the title of the menu; a tab sets a row's detail apart.
-        let heading = format!(
-            "Settings\n{accounts} · default model: {}",
-            default.as_deref().unwrap_or("none")
-        );
-        let mut items = vec![
-            (
-                Item::Subscription,
-                "Sign in with a subscription\tClaude, ChatGPT".to_string(),
-            ),
-            (Item::ApiKey, "Add an API key".to_string()),
-            (
-                Item::DefaultModel,
-                format!(
-                    "Choose the default model\tnow: {}",
-                    default.as_deref().unwrap_or("none")
-                ),
-            ),
-            (
-                Item::Roles,
-                "Models for each role\tlead, coder, scout, reviewer, ...".to_string(),
-            ),
-        ];
-        items.extend(
-            sections()
-                .into_iter()
-                .map(|section| (Item::Section(section), section.to_string())),
-        );
-        let stored = self.credentials.load();
-        if !stored.is_empty() {
-            items.push((Item::SignOut, "Sign out or forget a key".to_string()));
-        }
-        items.push((Item::Done, "Done".to_string()));
-        (heading, items)
     }
 
     async fn subscription(&self, ui: &Arc<Ui>) -> Result<Option<String>, String> {
@@ -781,7 +202,7 @@ impl Settings {
     }
 
     /// Lets the user pick a model of `only` (or of a provider they choose), then makes it the
-    /// default for this session and later ones.
+    /// model of `role` for this session and later ones.
     async fn model_for(
         &self,
         ui: &Arc<Ui>,
@@ -864,7 +285,8 @@ impl Settings {
         };
         let model = format!("{provider}/{}", ids[index]);
         let spec: ModelSpec = model.parse().map_err(|e| format!("{model}: {e}"))?;
-        crate::init::write_role(&self.home_config, role, Some(&model)).map_err(|e| format!("{e:#}"))?;
+        let home_config = self.paths.home_config();
+        crate::init::write_role(&home_config, role, Some(&model)).map_err(|e| format!("{e:#}"))?;
         router.set_role(role, vec![spec]);
         let what = match role {
             "default" => "the default model".to_string(),
@@ -872,52 +294,30 @@ impl Settings {
         };
         Ok(Some(format!(
             "{what} is now {model} (saved in {})",
-            self.home_config.display()
+            home_config.display()
         )))
     }
 
-    /// Lets the person pick a role and give it a model, or put it back on its fallback.
-    async fn roles(&self, ui: &Arc<Ui>, router: &Router) -> Result<Option<String>, String> {
-        let configured = router.roles();
-        let labels: Vec<String> = ROLES
-            .iter()
-            .map(|(role, what)| {
-                let model = router
-                    .resolve(&[ModelSpec::Role(role.to_string())])
-                    .first()
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| "no model".to_string());
-                let via = match configured.get(*role) {
-                    Some(chain) if chain.iter().any(|spec| matches!(spec, ModelSpec::Model(_))) => {
-                        String::new()
-                    }
-                    Some(chain) => format!(" (via {})", chain_label(chain)),
-                    None => String::new(),
-                };
-                format!("{role}\t{model}{via} · {what}")
-            })
-            .collect();
-        let Ok(index) = ui.0.select("Which role?", &labels).await else {
-            return Ok(None);
+    /// Gives a role a model, or puts it back on the role it falls back to. The default role
+    /// has nothing to fall back to: it goes straight to the models.
+    async fn role(&self, ui: &Arc<Ui>, router: &Router, role: &str) -> Result<Option<String>, String> {
+        let Some(fallback) = Config::default().roles.get(role).cloned() else {
+            return self.model_for(ui, router, None, role).await;
         };
-        let role = ROLES[index].0;
-        let fallback = Config::default().roles.get(role).cloned();
-        let mut actions = vec!["Choose a model".to_string()];
-        if let Some(chain) = &fallback {
-            actions.push(format!("Use the fallback\t{}", chain_label(chain)));
-        }
+        let actions = [
+            "Choose a model".to_string(),
+            format!("Use the fallback\t{}", chain_label(&fallback)),
+        ];
         let Ok(action) = ui.0.select(&format!("Model for {role}"), &actions).await else {
             return Ok(None);
         };
-        match (action, fallback) {
-            (1, Some(chain)) => {
-                crate::init::write_role(&self.home_config, role, None).map_err(|e| format!("{e:#}"))?;
-                let label = chain_label(&chain);
-                router.set_role(role, chain);
-                Ok(Some(format!("{role} now follows {label}")))
-            }
-            _ => self.model_for(ui, router, None, role).await,
+        if action != 1 {
+            return self.model_for(ui, router, None, role).await;
         }
+        crate::init::write_role(&self.paths.home_config(), role, None).map_err(|e| format!("{e:#}"))?;
+        let label = chain_label(&fallback);
+        router.set_role(role, fallback);
+        Ok(Some(format!("{role} now follows {label}")))
     }
 
     async fn sign_out(&self, ui: &Arc<Ui>) -> Result<Option<String>, String> {
@@ -930,6 +330,278 @@ impl Settings {
             return Ok(None);
         };
         forget_key(&self.credentials, &stored[index]).map(Some)
+    }
+
+    /// Runs what a row of the Accounts or the Models page stands for: its prompts, and what
+    /// they led to.
+    async fn flow(
+        &self,
+        request: Request,
+        ui: &Arc<Ui>,
+        router: Option<&Router>,
+    ) -> Result<Option<String>, String> {
+        match request {
+            Request::Close => Ok(None),
+            Request::Subscription => self.subscription(ui).await,
+            Request::ApiKey => self.api_key(ui).await,
+            Request::SignOut => self.sign_out(ui).await,
+            Request::Role(setting) => match router {
+                Some(router) => self.role(ui, router, role_name(setting)).await,
+                None => Err("no model router in this session".to_string()),
+            },
+        }
+    }
+
+    /// Says what a sign-in, a key or a choice of model came to and notes it for the summary.
+    /// A first credential with no default model yet goes straight on to choosing one of that
+    /// provider's models. Returns the last line, for the screen to show.
+    async fn settle(
+        &self,
+        outcome: Result<Option<String>, String>,
+        ui: &Arc<Ui>,
+        router: Option<&Router>,
+        store: &Store,
+    ) -> Option<(Level, String)> {
+        let line = match outcome {
+            Ok(Some(line)) => line,
+            Ok(None) => return None,
+            Err(why) => {
+                ui.0.notify(Level::Error, &why);
+                return Some((Level::Error, why));
+            }
+        };
+        let (mut line, provider) = split_provider(line);
+        ui.0.notify(Level::Info, &line);
+        store.note(line.clone());
+        if let Some(router) = router
+            && !provider.is_empty()
+            && self.default_model(Some(router)).is_none()
+        {
+            match self.model_for(ui, router, Some(&provider), "default").await {
+                Ok(Some(chosen)) => {
+                    ui.0.notify(Level::Info, &chosen);
+                    store.note(chosen.clone());
+                    line = chosen;
+                }
+                Ok(None) => {}
+                Err(why) => {
+                    ui.0.notify(Level::Error, &why);
+                    return Some((Level::Error, why));
+                }
+            }
+        }
+        Some((Level::Info, line))
+    }
+
+    /// The settings as one screen: it is shown until it gives up the keyboard, which is when it
+    /// is closed or when a row needs prompts of its own; after those it opens again where it
+    /// was.
+    async fn paged(&self, host: &SettingsHost, store: Store, ui: &Arc<Ui>, router: Option<&Router>) {
+        let mut screen = Box::new(Screen::new(store, theme_names(&self.paths.home)));
+        loop {
+            screen.refresh(self.accounts());
+            // No answer: the UI went away with the screen.
+            let Ok(back) = (host.0)(screen).await else {
+                return;
+            };
+            screen = back;
+            let request = screen.take_request();
+            if request == Request::Close {
+                return;
+            }
+            let outcome = self.flow(request, ui, router).await;
+            if let Some((level, line)) = self.settle(outcome, ui, router, screen.store()).await {
+                screen.say(level, &line);
+            }
+        }
+    }
+
+    /// The first menu of the chain of prompts: the pages.
+    fn menu(&self, store: &Store, router: Option<&Router>) -> (String, Vec<(Item, String)>) {
+        let signed_in = self.signed_in();
+        let accounts = match signed_in.is_empty() {
+            true => "no provider has a credential yet".to_string(),
+            false => {
+                let names: Vec<&str> = signed_in.iter().map(|(id, _)| id.as_str()).collect();
+                format!("credentials for: {}", names.join(", "))
+            }
+        };
+        let default = self.default_model(router);
+        // The first line is the title of the menu; a tab sets a row's detail apart.
+        let heading = format!(
+            "Settings\n{accounts} · default model: {}",
+            default.as_deref().unwrap_or("none")
+        );
+        let mut items: Vec<(Item, String)> = Page::ALL
+            .into_iter()
+            .map(|page| {
+                let changed = SETTINGS
+                    .iter()
+                    .filter(|setting| setting.page == page && store.changed(setting))
+                    .count();
+                let detail = match changed {
+                    0 => page.lead().to_string(),
+                    changed => format!("{changed} changed · {}", page.lead()),
+                };
+                (Item::Page(page), format!("{}\t{detail}", page.title()))
+            })
+            .collect();
+        items.push((Item::Done, "Done".to_string()));
+        (heading, items)
+    }
+
+    /// The rows of a page in the chain of prompts: what the Accounts page can do, then the
+    /// settings with their values.
+    fn entries(&self, page: Page, store: &Store) -> Vec<(Entry, String)> {
+        let mut entries = Vec::new();
+        if page == Page::Accounts {
+            entries.push((
+                Entry::Run(Request::Subscription),
+                "Sign in with a subscription\tClaude, ChatGPT".to_string(),
+            ));
+            entries.push((Entry::Run(Request::ApiKey), "Add an API key".to_string()));
+            if !self.credentials.load().is_empty() {
+                entries.push((
+                    Entry::Run(Request::SignOut),
+                    "Sign out or forget a key".to_string(),
+                ));
+            }
+        }
+        for setting in SETTINGS.iter().filter(|setting| setting.page == page) {
+            let marker = match store.changed(setting) {
+                true => " *",
+                false => "",
+            };
+            let label = match setting.kind {
+                Kind::Role => format!("{} model", setting.label),
+                _ => setting.label.to_string(),
+            };
+            entries.push((
+                Entry::Edit(setting),
+                format!("{label}\t{}{marker}", store.shown(setting)),
+            ));
+        }
+        entries.push((Entry::Back, "Back".to_string()));
+        entries
+    }
+
+    /// Asks for a new value of a setting and saves it. A list is typed with commas between
+    /// its entries; a table one entry at a time, as `name = value`, and `name =` removes one.
+    async fn ask(
+        &self,
+        setting: &'static Setting,
+        store: &mut Store,
+        ui: &Arc<Ui>,
+    ) -> Option<Result<String, String>> {
+        let now = shown(store.value(setting.path));
+        let typed = match setting.kind {
+            Kind::Role => return None,
+            Kind::Switch => match store.value(setting.path) {
+                Some(toml::Value::Boolean(true)) => "off".to_string(),
+                _ => "on".to_string(),
+            },
+            Kind::Choice(options) => {
+                let options: Vec<String> = options.iter().map(|o| o.to_string()).collect();
+                let chosen = ui.0.select(setting.label, &options).await.ok()?;
+                options.get(chosen)?.clone()
+            }
+            Kind::Theme => {
+                let options = theme_names(&self.paths.home);
+                let chosen = ui.0.select(setting.label, &options).await.ok()?;
+                options.get(chosen)?.clone()
+            }
+            Kind::Number | Kind::Text => {
+                let prompt = format!("{} (now: {now})\n{}", setting.label, setting.description);
+                ui.0.input(&prompt).await.ok()?
+            }
+            Kind::List => {
+                let prompt = format!(
+                    "{} (now: {now})\n{} Several with commas between them.",
+                    setting.label, setting.description
+                );
+                ui.0.input(&prompt).await.ok()?
+            }
+            Kind::Table => {
+                let prompt = format!(
+                    "{} (now: {now})\n{} Type name = value to set an entry, name = to remove one.",
+                    setting.label, setting.description
+                );
+                let typed = ui.0.input(&prompt).await.ok()?;
+                if typed.trim().is_empty() {
+                    return None;
+                }
+                let fail = |why: String| format!("{}: {why}", setting.label);
+                return Some(match parse_entry(&typed).map_err(fail) {
+                    Ok((key, toml::Value::String(text))) if text.is_empty() => {
+                        store.remove_entry(setting, &key)
+                    }
+                    Ok((key, value)) => store.set_entry(setting, &key, value),
+                    Err(why) => Err(why),
+                });
+            }
+        };
+        // Bypass as the mode every session starts in is confirmed, with "No" first.
+        if setting.path == "permissions.mode" && typed == PermissionMode::Bypass.as_str() {
+            let question = "Start every session in bypass mode?\nNothing is asked about and no \
+                            safety guard applies: only your deny rules and the push guard are left.";
+            let answers = ["No".to_string(), "Yes, bypass permissions".to_string()];
+            if ui.0.select(question, &answers).await.ok() != Some(1) {
+                return None;
+            }
+        }
+        let default = setting.default_value();
+        Some(
+            parse_value(setting.kind, &typed, default.as_ref())
+                .map_err(|why| format!("{}: {why}", setting.label))
+                .and_then(|value| store.save(setting, value)),
+        )
+    }
+
+    /// The settings as a chain of prompts, for a UI that has no screen for them: the pages,
+    /// then the rows of one, then the value of one. Each change is saved as it is made.
+    async fn chain(&self, mut store: Store, ui: &Arc<Ui>, router: Option<&Router>) {
+        loop {
+            let (heading, items) = self.menu(&store, router);
+            let labels: Vec<String> = items.iter().map(|(_, label)| label.clone()).collect();
+            let page = match ui.0.select(&heading, &labels).await {
+                Ok(index) => match items[index].0 {
+                    Item::Page(page) => page,
+                    Item::Done => return,
+                },
+                Err(UiError::Cancelled | UiError::NoUser) => return,
+            };
+            loop {
+                let entries = self.entries(page, &store);
+                let labels: Vec<String> = entries.iter().map(|(_, label)| label.clone()).collect();
+                let heading = format!(
+                    "{}\n{} Saved in {}.",
+                    page.title(),
+                    page.lead(),
+                    store.home_config().display()
+                );
+                let Ok(index) = ui.0.select(&heading, &labels).await else {
+                    break;
+                };
+                let request = match entries[index].0 {
+                    Entry::Back => break,
+                    Entry::Run(request) => request,
+                    Entry::Edit(setting) if setting.kind == Kind::Role => Request::Role(setting),
+                    Entry::Edit(setting) => {
+                        match self.ask(setting, &mut store, ui).await {
+                            Some(Ok(line)) => ui.0.notify(Level::Info, &line),
+                            Some(Err(why)) => ui.0.notify(Level::Error, &why),
+                            None => {}
+                        }
+                        continue;
+                    }
+                };
+                let outcome = self.flow(request, ui, router).await;
+                self.settle(outcome, ui, router, &store).await;
+                if let Err(why) = store.reload() {
+                    ui.0.notify(Level::Error, &why);
+                }
+            }
+        }
     }
 }
 
@@ -948,57 +620,23 @@ impl CommandHandler for Settings {
             return CommandOutcome::Error("settings need the interactive UI".to_string());
         };
         let router = ctx.services.get::<Router>();
-        let mut done: Vec<String> = Vec::new();
-        loop {
-            let (heading, items) = self.menu(router.as_deref());
-            let labels: Vec<String> = items.iter().map(|(_, label)| label.clone()).collect();
-            let chosen = match ui.0.select(&heading, &labels).await {
-                Ok(index) => items[index].0,
-                Err(UiError::Cancelled | UiError::NoUser) => break,
-            };
-            let outcome = match chosen {
-                Item::Done => break,
-                Item::Subscription => self.subscription(&ui).await,
-                Item::ApiKey => self.api_key(&ui).await,
-                Item::DefaultModel => match router.as_deref() {
-                    Some(router) => self.model_for(&ui, router, None, "default").await,
-                    None => Err("no model router in this session".to_string()),
-                },
-                Item::Roles => match router.as_deref() {
-                    Some(router) => self.roles(&ui, router).await,
-                    None => Err("no model router in this session".to_string()),
-                },
-                Item::SignOut => self.sign_out(&ui).await,
-                Item::Section(name) => {
-                    self.section(name, &ui, ctx, &mut done).await;
-                    Ok(None)
-                }
-            };
-            match outcome {
-                Ok(Some(line)) => {
-                    let (line, provider) = split_provider(line);
-                    ui.0.notify(Level::Info, &line);
-                    done.push(line);
-                    // A first credential with no default model yet goes straight on to choosing
-                    // one of that provider's models.
-                    if let Some(router) = router.as_deref()
-                        && !provider.is_empty()
-                        && self.default_model(Some(router)).is_none()
-                    {
-                        match self.model_for(&ui, router, Some(&provider), "default").await {
-                            Ok(Some(line)) => {
-                                ui.0.notify(Level::Info, &line);
-                                done.push(line);
-                            }
-                            Ok(None) => {}
-                            Err(why) => ui.0.notify(Level::Error, &why),
-                        }
-                    }
-                }
-                Ok(None) => {}
-                Err(why) => ui.0.notify(Level::Error, &why),
-            }
+        let changes = Changes::default();
+        let store = Store::open(
+            self.paths.clone(),
+            self.options.clone(),
+            ctx.services.get::<LiveSettings>(),
+            router.clone(),
+            changes.clone(),
+        );
+        let store = match store {
+            Ok(store) => store,
+            Err(why) => return CommandOutcome::Error(format!("the configuration does not load: {why}")),
+        };
+        match ctx.services.get::<SettingsHost>() {
+            Some(host) => self.paged(&host, store, &ui, router.as_deref()).await,
+            None => self.chain(store, &ui, router.as_deref()).await,
         }
+        let done = std::mem::take(&mut *changes.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
         if !done.is_empty() {
             azazel_core::ext::config_changed(&ctx.services, "settings").await;
         }
@@ -1013,9 +651,9 @@ impl CommandHandler for Settings {
 pub struct SettingsExt {
     pub providers: Vec<ProviderConfig>,
     pub credentials: Arc<Credentials>,
-    pub home_config: PathBuf,
-    /// The configuration this run started with.
-    pub config: Config,
+    pub paths: Paths,
+    /// How this run loaded its configuration: the settings read the layers the same way.
+    pub options: LoadOptions,
 }
 
 impl Extension for SettingsExt {
@@ -1026,22 +664,35 @@ impl Extension for SettingsExt {
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
         r.command(Command {
             name: "settings".to_string(),
-            description: "Sign in, add API keys, choose models and change settings".to_string(),
+            description: "Sign in, add API keys, choose models and change every setting".to_string(),
             argument_hint: None,
             handler: Arc::new(Settings {
                 providers: self.providers.clone(),
                 credentials: self.credentials.clone(),
-                home_config: self.home_config.clone(),
-                effective: toml::Table::try_from(&self.config).unwrap_or_default(),
+                paths: self.paths.clone(),
+                options: self.options.clone(),
             }),
         });
         Ok(())
     }
 }
+#[cfg(test)]
+pub(crate) use self::store::tests::{Fixture, fixture};
+
+/// A settings screen over the config files of a fixture, for tests of the box it is drawn in.
+#[cfg(test)]
+pub(crate) fn screen_on(fixture: &Fixture) -> Box<Screen> {
+    Box::new(Screen::new(fixture.trusted(), theme_names(&fixture.paths.home)))
+}
 
 #[cfg(test)]
 mod tests {
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
     use azazel_ai::providers::presets;
+    use azazel_core::{ApprovalDecision, ApprovalRequest, Question, UiBridge};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
 
@@ -1116,131 +767,6 @@ mod tests {
     }
 
     #[test]
-    fn the_menu_shows_the_current_default_and_offers_sign_out_only_with_something_stored() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = Settings {
-            providers: presets::presets(),
-            credentials: Arc::new(Credentials::with_env(
-                dir.path().join("auth.json"),
-                Arc::new(|_: &str| None),
-            )),
-            home_config: dir.path().join("config.toml"),
-            effective: toml::Table::try_from(Config::default()).unwrap(),
-        };
-        let router = Router::new(
-            Vec::new(),
-            azazel_ai::Catalog::default(),
-            Default::default(),
-            Default::default(),
-        );
-        let (heading, items) = settings.menu(Some(&router));
-        assert!(heading.contains("default model: none"), "{heading}");
-        assert!(!items.iter().any(|(item, _)| *item == Item::SignOut));
-
-        router.set_role("default", vec!["anthropic/some-model".parse().unwrap()]);
-        settings
-            .credentials
-            .store(
-                "openai",
-                azazel_ai::Credential::ApiKey {
-                    key: "sk".to_string(),
-                },
-            )
-            .unwrap();
-        let (heading, items) = settings.menu(Some(&router));
-        assert!(
-            heading.contains("default model: anthropic/some-model"),
-            "{heading}"
-        );
-        assert!(heading.contains("credentials for: openai"), "{heading}");
-        assert!(items.iter().any(|(item, _)| *item == Item::SignOut));
-    }
-
-    fn settings_in(dir: &std::path::Path) -> Settings {
-        Settings {
-            providers: Vec::new(),
-            credentials: Arc::new(Credentials::with_env(
-                dir.join("auth.json"),
-                Arc::new(|_: &str| None),
-            )),
-            home_config: dir.join("config.toml"),
-            effective: toml::Table::try_from(Config::default()).unwrap(),
-        }
-    }
-
-    fn ctx() -> ExtCtx {
-        ExtCtx {
-            services: Arc::new(azazel_agent::Services::new()),
-            cwd: PathBuf::new(),
-            session_id: String::new(),
-        }
-    }
-
-    #[test]
-    fn every_setting_exists_in_the_configuration_with_a_value_of_its_kind() {
-        let defaults = toml::Table::try_from(Config::default()).unwrap();
-        for setting in SETTINGS {
-            let value = lookup(&defaults, setting.path)
-                .unwrap_or_else(|| panic!("{} is not a configuration key", setting.path));
-            let fits = match setting.kind {
-                Kind::Switch => value.is_bool(),
-                Kind::Choice(options) => {
-                    for option in options {
-                        let candidate = toml::Value::String(option.to_string());
-                        validate(setting.path, &candidate)
-                            .unwrap_or_else(|why| panic!("{} = {option}: {why}", setting.path));
-                    }
-                    value.as_str().is_some_and(|now| options.contains(&now))
-                }
-                Kind::Number => value.is_integer() || value.is_float(),
-                Kind::Text => value.is_str(),
-                Kind::Theme => value.as_str().is_some_and(|now| Theme::BUILTINS.contains(&now)),
-                Kind::List => value.is_array(),
-            };
-            assert!(fits, "{} is {value:?}, not a {:?}", setting.path, setting.kind);
-        }
-        assert_eq!(
-            sections(),
-            [
-                "Appearance",
-                "Editor",
-                "Permissions",
-                "Notifications",
-                "Limits",
-                "Sessions",
-                "Memory",
-                "Updates",
-                "Voice",
-                "Team"
-            ]
-        );
-    }
-
-    #[test]
-    fn appearance_settings_all_reach_the_running_ui() {
-        let appearance: Vec<(&str, bool)> = SETTINGS
-            .iter()
-            .filter(|setting| setting.section == "Appearance")
-            .map(|setting| (setting.path, setting.live))
-            .collect();
-        assert_eq!(
-            appearance,
-            [
-                ("tui.theme", true),
-                ("tui.glyphs", true),
-                ("tui.indicator", true),
-                ("tui.session_accent", true),
-                ("tui.tool_style", true),
-                ("tui.redact", true),
-                ("tui.popups", true),
-                ("tui.images", false),
-                ("tui.show_thinking", true),
-                ("tui.expand_tools", true),
-            ]
-        );
-    }
-
-    #[test]
     fn themes_to_choose_from_are_the_built_in_ones_then_the_files() {
         let dir = tempfile::tempdir().unwrap();
         assert_eq!(theme_names(dir.path()), Theme::BUILTINS);
@@ -1254,127 +780,294 @@ mod tests {
         let names = theme_names(dir.path());
         assert_eq!(&names[..Theme::BUILTINS.len()], Theme::BUILTINS);
         assert_eq!(&names[Theme::BUILTINS.len()..], ["amber", "zenburn"]);
-        assert_eq!(
-            parse_value(Kind::Theme, " zenburn ", None),
-            Ok(toml::Value::String("zenburn".into()))
-        );
     }
 
     #[test]
-    fn typed_values_are_parsed_by_kind_and_checked_against_the_configuration() {
-        let float = toml::Value::Float(0.0);
+    fn the_settings_that_apply_at_once_are_the_ones_the_ui_knows_how_to_apply() {
+        let live: Vec<&str> = SETTINGS
+            .iter()
+            .filter(|setting| setting.live)
+            .map(|setting| setting.path)
+            .collect();
         assert_eq!(
-            parse_value(Kind::Switch, "on", None),
-            Ok(toml::Value::Boolean(true))
+            live,
+            [
+                "tui.theme",
+                "tui.glyphs",
+                "tui.indicator",
+                "tui.session_accent",
+                "tui.tool_style",
+                "tui.redact",
+                "tui.popups",
+                "tui.show_thinking",
+                "tui.expand_tools",
+                "editor.mode",
+                "editor.command",
+                "editor.fold_paste_lines",
+            ]
         );
-        assert!(parse_value(Kind::Switch, "maybe", None).is_err());
-        assert_eq!(
-            parse_value(Kind::Number, " 2.5 ", Some(&float)),
-            Ok(toml::Value::Float(2.5))
-        );
-        assert_eq!(
-            parse_value(Kind::Number, "12", None),
-            Ok(toml::Value::Integer(12))
-        );
-        assert!(
-            parse_value(Kind::Number, "1.5", None).is_err(),
-            "a whole number stays whole"
-        );
-        assert!(parse_value(Kind::Number, "-1", Some(&float)).is_err());
-        assert!(
-            parse_value(Kind::Choice(&["emacs", "vim"]), "nano", None)
-                .unwrap_err()
-                .contains("emacs, vim")
-        );
-        assert_eq!(
-            parse_value(Kind::List, "anthropic/a, @slow ,", None),
-            Ok(toml::Value::Array(vec![
-                toml::Value::String("anthropic/a".into()),
-                toml::Value::String("@slow".into())
-            ]))
-        );
-
-        assert!(validate("editor.mode", &toml::Value::String("vim".into())).is_ok());
-        assert!(validate("editor.mode", &toml::Value::String("nano".into())).is_err());
-        assert!(
-            validate(
-                "advisor.model",
-                &parse_value(Kind::List, "not a model", None).unwrap()
-            )
-            .is_err()
-        );
-        assert!(validate("limits.max_turns", &toml::Value::Integer(5)).is_ok());
     }
 
-    #[test]
-    fn a_saved_setting_lands_in_the_config_file_is_read_back_and_reaches_the_ui_when_live() {
-        let dir = tempfile::tempdir().unwrap();
-        let settings = settings_in(dir.path());
-        std::fs::write(&settings.home_config, "# mine\n[tui]\ntheme = \"light\"\n").unwrap();
-        let by_path = |path: &str| SETTINGS.iter().find(|s| s.path == path).unwrap();
-        assert_eq!(shown(settings.current("tui.theme").as_ref()), "light");
-        assert_eq!(shown(settings.current("editor.mode").as_ref()), "emacs");
-        assert_eq!(shown(settings.current("editor.command").as_ref()), "(not set)");
-        assert_eq!(shown(settings.current("advisor.model").as_ref()), "(none)");
-        assert_eq!(shown(settings.current("notify.bell").as_ref()), "on");
+    /// What the person at a UI without a settings screen does, prompt by prompt.
+    enum Answer {
+        /// Picks the row that starts with this.
+        Pick(&'static str),
+        Type(&'static str),
+    }
 
-        let context = ctx();
-        let seen: Arc<std::sync::Mutex<Vec<(String, toml::Value)>>> = Arc::default();
+    #[derive(Default)]
+    struct Scripted {
+        answers: Mutex<VecDeque<Answer>>,
+        /// Every list that was shown: its prompt and its rows.
+        lists: Mutex<Vec<(String, Vec<String>)>>,
+        notes: Mutex<Vec<String>>,
+    }
+
+    impl Scripted {
+        fn new(answers: Vec<Answer>) -> Arc<Scripted> {
+            Arc::new(Scripted {
+                answers: Mutex::new(answers.into()),
+                ..Scripted::default()
+            })
+        }
+
+        fn typed(&self) -> Result<String, UiError> {
+            match self.answers.lock().unwrap().pop_front() {
+                Some(Answer::Type(text)) => Ok(text.to_string()),
+                Some(Answer::Pick(row)) => panic!("a text was asked for where {row} was to be picked"),
+                None => Err(UiError::Cancelled),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl UiBridge for Scripted {
+        async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
+            Err(UiError::NoUser)
+        }
+
+        async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+            Err(UiError::NoUser)
+        }
+
+        async fn select(&self, prompt: &str, options: &[String]) -> Result<usize, UiError> {
+            self.lists
+                .lock()
+                .unwrap()
+                .push((prompt.to_string(), options.to_vec()));
+            match self.answers.lock().unwrap().pop_front() {
+                Some(Answer::Pick(row)) => Ok(options
+                    .iter()
+                    .position(|option| option.starts_with(row))
+                    .unwrap_or_else(|| panic!("{row} is not among {options:?}"))),
+                Some(Answer::Type(text)) => panic!("a list was shown where {text} was to be typed"),
+                None => Err(UiError::Cancelled),
+            }
+        }
+
+        async fn input(&self, _: &str) -> Result<String, UiError> {
+            self.typed()
+        }
+
+        fn notify(&self, _: Level, text: &str) {
+            self.notes.lock().unwrap().push(text.to_string());
+        }
+
+        async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+            None
+        }
+    }
+
+    fn handler(fixture: &Fixture) -> Settings {
+        Settings {
+            providers: presets::presets_with(&|_| None),
+            credentials: Arc::new(Credentials::with_env(
+                fixture.paths.auth_file(),
+                Arc::new(|_: &str| None),
+            )),
+            paths: fixture.paths.clone(),
+            options: LoadOptions {
+                trusted: true,
+                ..LoadOptions::default()
+            },
+        }
+    }
+
+    fn ctx(ui: Arc<Scripted>) -> ExtCtx {
+        let services = azazel_agent::Services::new();
+        services.insert(Arc::new(Ui(ui)));
+        ExtCtx {
+            services: Arc::new(services),
+            cwd: std::path::PathBuf::new(),
+            session_id: String::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_screen_the_same_pages_are_a_chain_of_prompts() {
+        let f = fixture("# mine\n[tui]\ntheme = \"light\"\n", "");
+        let ui = Scripted::new(vec![
+            Answer::Pick("Appearance"),
+            Answer::Pick("Show the model's thinking"),
+            Answer::Pick("Theme"),
+            Answer::Pick("tokyo-night"),
+            Answer::Pick("Back"),
+            Answer::Pick("Tools"),
+            Answer::Pick("Formatters"),
+            Answer::Type("rs = rustfmt --edition 2024"),
+            Answer::Pick("Disabled tools"),
+            Answer::Type("browser, pty"),
+            Answer::Pick("Largest tool result"),
+            Answer::Type("lots"),
+            Answer::Pick("Back"),
+            Answer::Pick("Permissions"),
+            Answer::Pick("Mode a session starts in"),
+            Answer::Pick("bypass"),
+            Answer::Pick("No"),
+            Answer::Pick("Back"),
+            Answer::Pick("Done"),
+        ]);
+        let outcome = handler(&f).run("", &ctx(ui.clone())).await;
+        let CommandOutcome::Show(summary) = outcome else {
+            panic!("no summary");
+        };
+        assert_eq!(
+            summary,
+            "settings changed:\n\
+             - tui.show_thinking = on\n\
+             - tui.theme = tokyo-night\n\
+             - tools.format.rs = rustfmt --edition 2024 (applies to the next session)\n\
+             - tools.disabled = browser, pty (applies to the next session)"
+        );
+        let saved = f.home_text();
+        assert!(
+            saved.starts_with("# mine\n[tui]\ntheme = \"tokyo-night\"\n"),
+            "{saved}"
+        );
+        let loaded: Config = saved.parse::<toml::Table>().unwrap().try_into().unwrap();
+        assert!(loaded.tui.show_thinking);
+        assert_eq!(loaded.tools.format["rs"], "rustfmt --edition 2024");
+        assert_eq!(loaded.tools.disabled, ["browser", "pty"]);
+        // What was refused, and the mode that was not confirmed, changed nothing.
+        assert_eq!(loaded.tools.max_result_bytes, 50_000);
+        assert_eq!(loaded.permissions.mode, PermissionMode::Manual);
+        assert!(
+            ui.notes
+                .lock()
+                .unwrap()
+                .contains(&"Largest tool result: expected a whole number that is not negative".to_string())
+        );
+
+        let lists = ui.lists.lock().unwrap();
+        // The first menu is the pages, each with what is on it.
+        let (heading, pages) = &lists[0];
+        assert_eq!(
+            heading,
+            "Settings\nno provider has a credential yet · default model: none"
+        );
+        let titles: Vec<&str> = pages.iter().map(|row| row.split('\t').next().unwrap()).collect();
+        let mut expected: Vec<&str> = Page::ALL.iter().map(|page| page.title()).collect();
+        expected.push("Done");
+        assert_eq!(titles, expected);
+        assert!(pages[2].starts_with("Appearance\t1 changed · "), "{}", pages[2]);
+        // A page lists its settings with their values; what is not the default is marked.
+        let (heading, rows) = &lists[1];
+        assert!(heading.starts_with("Appearance\nColours, symbols"), "{heading}");
+        assert_eq!(rows[0], "Theme\tlight *");
+        assert_eq!(rows[1], "Symbols\tauto");
+        assert_eq!(rows.last().unwrap(), "Back");
+    }
+
+    #[tokio::test]
+    async fn the_screen_comes_back_after_a_key_was_stored_and_says_what_changed_when_it_closes() {
+        let f = fixture("", "");
+        let ui = Scripted::new(vec![Answer::Pick("openai"), Answer::Type("sk-test-key")]);
+        let context = ctx(ui.clone());
+        let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+        // What the person at the terminal presses each time the screen is shown.
+        let mut visits: VecDeque<Vec<KeyEvent>> = VecDeque::from([
+            vec![key(KeyCode::Down), key(KeyCode::Enter)],
+            vec![
+                key(KeyCode::Char('/')),
+                key(KeyCode::Char('b')),
+                key(KeyCode::Char('e')),
+                key(KeyCode::Char('l')),
+                key(KeyCode::Char('l')),
+                key(KeyCode::Enter),
+                key(KeyCode::Esc),
+                key(KeyCode::Esc),
+            ],
+        ]);
+        let seen: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
         let sink = seen.clone();
-        context.services.insert(Arc::new(LiveSettings(Arc::new(
-            move |path: &str, value: &toml::Value| {
-                sink.lock().unwrap().push((path.to_string(), value.clone()));
+        let visits = Mutex::new(std::mem::take(&mut visits));
+        context.services.insert(Arc::new(SettingsHost(Arc::new(
+            move |mut screen: Box<Screen>| {
+                let view = screen.view(100, 30, "> ", &Theme::dark());
+                let plain = view
+                    .lines
+                    .iter()
+                    .map(|line| azazel_tui::text::strip_ansi(line).trim_end().to_string())
+                    .collect();
+                sink.lock().unwrap().push(plain);
+                let keys = visits.lock().unwrap().pop_front().expect("shown a third time");
+                let done = keys.iter().any(|key| screen.on_key(key));
+                assert!(done, "the screen kept the keyboard");
+                let (reply, back) = oneshot::channel();
+                reply.send(screen).ok();
+                back
             },
         ))));
 
-        let line = settings
-            .save(
-                by_path("editor.mode"),
-                toml::Value::String("vim".into()),
-                &context,
-            )
-            .unwrap();
-        assert_eq!(line, "editor.mode = vim");
-        let line = settings
-            .save(by_path("limits.max_cost_usd"), toml::Value::Float(2.5), &context)
-            .unwrap();
-        assert_eq!(line, "limits.max_cost_usd = 2.5 (applies to the next session)");
-        settings
-            .save(
-                by_path("advisor.model"),
-                parse_value(Kind::List, "anthropic/a, @slow", None).unwrap(),
-                &context,
-            )
-            .unwrap();
-        // Only the live setting reached the UI.
-        assert_eq!(
-            *seen.lock().unwrap(),
-            [("editor.mode".to_string(), toml::Value::String("vim".into()))]
-        );
+        let outcome = handler(&f).run("", &context).await;
+        let CommandOutcome::Show(summary) = outcome else {
+            panic!("no summary");
+        };
+        let lines: Vec<&str> = summary.lines().collect();
+        assert_eq!(lines.len(), 3, "{summary}");
+        assert!(lines[1].contains("openai"), "{summary}");
+        assert_eq!(lines[2], "- notify.bell = off (applies to the next session)");
+        assert!(f.home_text().contains("bell = false"));
+        let stored = std::fs::read_to_string(f.paths.auth_file()).unwrap();
+        assert!(stored.contains("sk-test-key"));
 
-        let saved = std::fs::read_to_string(&settings.home_config).unwrap();
-        assert!(saved.starts_with("# mine\n[tui]\ntheme = \"light\"\n"), "{saved}");
-        let loaded: Config = saved.parse::<toml::Table>().unwrap().try_into().unwrap();
-        assert_eq!(loaded.editor.mode, azazel_core::config::EditorMode::Vim);
-        assert_eq!(loaded.limits.max_cost_usd, 2.5);
-        assert_eq!(loaded.advisor.model.len(), 2);
-        assert_eq!(
-            shown(settings.current("advisor.model").as_ref()),
-            "anthropic/a, @slow"
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        // First nothing is stored; after the key the page lists it and offers to forget it,
+        // and says what the prompts came to.
+        assert!(!seen[0].iter().any(|row| row.contains("Sign out")));
+        assert!(!seen[0].contains(&"Credentials".to_string()));
+        assert!(seen[1].iter().any(|row| row.contains("Sign out or forget a key")));
+        assert!(seen[1].contains(&"Credentials".to_string()));
+        assert!(
+            seen[1].iter().any(|row| row.trim_start().starts_with("openai")),
+            "{:#?}",
+            seen[1]
         );
+        assert!(seen[1].iter().any(|row| row == lines[1].trim_start_matches("- ")));
+        // The prompts in between were those of the key: the provider, then the key.
+        let lists = ui.lists.lock().unwrap();
+        assert_eq!(lists.len(), 1);
+        assert_eq!(lists[0].0, "Store an API key for which provider?");
+    }
 
-        // A value the configuration rejects is not written; an empty one removes the key.
-        let refused = settings.save(
-            by_path("editor.mode"),
-            toml::Value::String("nano".into()),
-            &context,
+    #[tokio::test]
+    async fn settings_need_someone_to_show_them_to() {
+        let f = fixture("", "");
+        let context = ExtCtx {
+            services: Arc::new(azazel_agent::Services::new()),
+            cwd: std::path::PathBuf::new(),
+            session_id: String::new(),
+        };
+        let outcome = handler(&f).run("", &context).await;
+        assert!(matches!(outcome, CommandOutcome::Error(why) if why.contains("interactive UI")));
+
+        // A config file that does not load is said, with the file.
+        std::fs::write(f.paths.home_config(), "[tui\n").unwrap();
+        let outcome = handler(&f).run("", &ctx(Scripted::new(Vec::new()))).await;
+        assert!(
+            matches!(&outcome, CommandOutcome::Error(why) if why.contains("config.toml")),
+            "{outcome:?}"
         );
-        assert!(refused.unwrap_err().starts_with("Keys in the input: "));
-        settings
-            .save(by_path("tui.theme"), toml::Value::String(String::new()), &context)
-            .unwrap();
-        let saved = std::fs::read_to_string(&settings.home_config).unwrap();
-        assert!(!saved.contains("theme"), "{saved}");
-        assert_eq!(shown(settings.current("tui.theme").as_ref()), "dark");
     }
 }

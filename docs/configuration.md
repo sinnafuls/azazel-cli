@@ -4,6 +4,9 @@ Azazel is configured with TOML files, environment variables and command-line fla
 files live, how they are merged, every table and key with its default, which project settings are held back until
 you trust the project, the command-line flags and the subcommands.
 
+Every key below can also be read and changed from inside the UI: [`/settings`](tui.md#settings) shows each one
+with its value, its default and the layer that sets it.
+
 ## Files and load order
 
 Later layers win:
