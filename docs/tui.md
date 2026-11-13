@@ -88,9 +88,14 @@ width.
 - A window that gets taller: the live region takes the rows the window gained, so the input is on the last row
   again. In a terminal that fills new rows from its scrollback instead of adding them below, blank rows stand
   between the transcript and the input until the transcript grows into them.
+- A window that gets shorter: the terminal keeps its last rows, where the input is, and moves the rows at the
+  top into its scrollback. Nothing is written again, so after a large change the rows above the input can be
+  blank until the transcript grows into them; what was said is in the scrollback.
 - A window that gets narrower: most terminals re-wrap what is on screen, which puts the rules and the status
   line on two rows each. azazel works out how many rows the old live region takes now and erases all of it.
-  xterm, rxvt, st, GNU screen and the Linux console cut rows instead, and are treated that way.
+  Where it cannot be sure it counts too few rows rather than too many: a row of the old input box can then
+  stay behind in the transcript, and no transcript line is erased. xterm, rxvt, st, GNU screen and the Linux
+  console cut rows instead, and are treated that way.
 - On Windows azazel also reads where the console has its cursor after the size settled and after a popup or
   the viewer closes, so the live region gets exactly the rows down to the bottom of the window whatever the
   terminal did with the transcript.

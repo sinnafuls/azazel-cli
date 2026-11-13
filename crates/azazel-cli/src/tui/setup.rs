@@ -538,9 +538,10 @@ fn insert_into_list(source: &str, key: Option<&str>, entry: &[&str]) -> Option<S
                     let mut updated = source.to_string();
                     updated.insert_str(first.end, &member);
                     // An object that was `{}` on one line closes on a line of its own now.
-                    if comma.is_empty() {
-                        let close = tokens.get(1)?.start + member.len();
-                        updated.replace_range(first.end + member.len()..close, "\n");
+                    let close = tokens.get(1)?.start;
+                    if comma.is_empty() && source[first.end..close].trim().is_empty() {
+                        let after = first.end + member.len();
+                        updated.replace_range(after..close + member.len(), "\n");
                     }
                     return Some(updated);
                 }
@@ -569,10 +570,19 @@ fn insert_into_list(source: &str, key: Option<&str>, entry: &[&str]) -> Option<S
     if close == open + 1 {
         let inner = format!("{base}{STEP}");
         let lines = entry.join(&format!("\n{inner}"));
-        updated.replace_range(
-            tokens[open].end..tokens[close].start,
-            &format!("\n{inner}{lines}\n{base}"),
-        );
+        let (from, to) = (tokens[open].end, tokens[close].start);
+        if source[from..to].trim().is_empty() {
+            updated.replace_range(from..to, &format!("\n{inner}{lines}\n{base}"));
+            return Some(updated);
+        }
+        // A list with nothing but comments in it keeps them: the entry goes above the line
+        // the list closes on.
+        let line = source[..to].rfind('\n').map_or(0, |end| end + 1);
+        if source[line..to].trim().is_empty() {
+            updated.insert_str(line, &format!("{inner}{lines}\n"));
+        } else {
+            updated.insert_str(to, &format!("\n{inner}{lines}\n{base}"));
+        }
         return Some(updated);
     }
     // The entries that are there say how far in an entry goes.
@@ -584,9 +594,20 @@ fn insert_into_list(source: &str, key: Option<&str>, entry: &[&str]) -> Option<S
         format!("{base}{STEP}")
     };
     let last = tokens[close - 1];
-    let comma = if last.kind == Kind::Comma { "" } else { "," };
     let lines = entry.join(&format!("\n{inner}"));
-    updated.insert_str(last.end, &format!("{comma}\n{inner}{lines}"));
+    // A comment after the last entry on its line stays with that entry: the new one starts
+    // on the line below, unless the list closes on this line or a comment runs past it.
+    let line_end = source[last.end..]
+        .find('\n')
+        .map_or(source.len(), |end| last.end + end);
+    let at = match line_end <= tokens[close].start && !source[last.end..line_end].contains("/*") {
+        true => line_end,
+        false => last.end,
+    };
+    updated.insert_str(at, &format!("\n{inner}{lines}"));
+    if last.kind != Kind::Comma {
+        updated.insert(last.end, ',');
+    }
     Some(updated)
 }
 
@@ -851,6 +872,33 @@ mod tests {
         );
         assert_eq!(parsed(&with).unwrap().as_array().unwrap().len(), 2);
 
+        // Comments stay where they are: after the last binding on its line, and in a list
+        // that has nothing else.
+        let with = updated(vscode_edit(
+            "[\n  { \"key\": \"f5\", \"command\": \"x\" } // mine\n  // more below\n]\n",
+        ));
+        assert!(
+            with.starts_with(
+                "[\n  { \"key\": \"f5\", \"command\": \"x\" }, // mine\n  {\n      \"key\": \"shift+enter\","
+            ),
+            "{with}"
+        );
+        assert!(with.ends_with("  }\n  // more below\n]\n"), "{with}");
+        let with = updated(vscode_edit(
+            "[\n    // {\n    //   \"key\": \"an example\"\n    // }\n]\n",
+        ));
+        assert!(
+            with.starts_with("[\n    // {\n    //   \"key\": \"an example\"\n    // }\n    {\n        \"key\": \"shift+enter\","),
+            "{with}"
+        );
+        assert!(with.ends_with("    }\n]\n"), "{with}");
+        let with = updated(vscode_edit("[ /* none yet */ ]"));
+        assert!(with.starts_with("[ /* none yet */ \n    {\n"), "{with}");
+        assert_eq!(parsed(&with).unwrap().as_array().unwrap().len(), 1);
+        let with = updated(vscode_edit("[{\"key\": \"f5\"} /* one\n two */\n]"));
+        assert!(with.starts_with("[{\"key\": \"f5\"},\n    {\n"), "{with}");
+        assert!(with.ends_with("    } /* one\n two */\n]"), "{with}");
+
         // A file that is not a list of bindings is not touched.
         assert_eq!(vscode_edit("{\"key\": \"f5\"}"), None);
         assert_eq!(vscode_edit("[ \"unterminated"), None);
@@ -890,6 +938,10 @@ mod tests {
         );
         assert_eq!(parsed(&with).unwrap()["theme"], "dark");
         let with = updated(windows_terminal_edit("{}"));
+        assert_eq!(parsed(&with).unwrap()["actions"][0]["keys"], "shift+enter");
+        assert!(with.ends_with("\n    ]\n}"), "{with}");
+        let with = updated(windows_terminal_edit("{ // nothing set\n}\n"));
+        assert!(with.ends_with("    ] // nothing set\n}\n"), "{with}");
         assert_eq!(parsed(&with).unwrap()["actions"][0]["keys"], "shift+enter");
 
         // A binding of Shift+Enter that is there, in either list and either form, is left.

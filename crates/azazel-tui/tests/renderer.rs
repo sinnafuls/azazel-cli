@@ -827,12 +827,16 @@ fn a_narrower_screen_that_rewraps_leaves_nothing_of_the_old_region_behind() {
     let mut term = Harness::new(20, 14);
     let mut floor = Floor::new(14);
     let above = ["h1", "h2", "h3", "h4", "h5", "h6"];
-    wide_frame(&mut term, &mut floor, &above, &["streaming"]);
-    assert_eq!(term.screen()[6], "streaming");
+    // A row that is filled to the edge with coloured spaces, as a line of a code block is.
+    let code = format!("\x1b[48;5;236mcode{}\x1b[0m", " ".repeat(16));
+    let top = ["streaming", code.as_str()];
+    wide_frame(&mut term, &mut floor, &above, &top);
+    assert_eq!(term.screen()[6..8], ["streaming", "code"]);
     assert_eq!(term.screen()[13], "model          think");
 
     // Both rules and the status line now take two rows each: the region is three rows taller
-    // than it was drawn, and the cursor is three rows further from its first row.
+    // than it was drawn, and the cursor, which is below the first rule, one row further from
+    // its first row. The spaces after `code` are not text and take no row.
     term.rewrap(12, 14);
     assert_eq!(
         count(&term.screen(), "------------") + count(&term.screen(), "--------"),
@@ -841,16 +845,17 @@ fn a_narrower_screen_that_rewraps_leaves_nothing_of_the_old_region_behind() {
     term.settle(&mut floor);
     assert_eq!(term.renderer.rows_on_screen(), 11);
     assert_eq!(term.renderer.rows_above_cursor(), 6);
-    wide_frame(&mut term, &mut floor, &[], &["streaming"]);
+    let code = format!("\x1b[48;5;236mcode{}\x1b[0m", " ".repeat(8));
+    wide_frame(&mut term, &mut floor, &[], &["streaming", code.as_str()]);
 
     let screen = term.screen();
-    assert_eq!(screen[..4], ["h4", "h5", "h6", "streaming"]);
+    assert_eq!(screen[..5], ["h4", "h5", "h6", "streaming", "code"]);
     assert_eq!(
         screen[10..],
         ["------------", "> hello", "------------", "model  think"]
     );
     // Nothing of the region as it was at the old width is left above the new one.
-    assert!(screen[4..10].iter().all(String::is_empty), "{screen:#?}");
+    assert!(screen[5..10].iter().all(String::is_empty), "{screen:#?}");
     let all = term.everything();
     assert_eq!(count(&all, "streaming"), 1, "{all:#?}");
     assert_eq!(all.iter().filter(|row| row.starts_with("---")).count(), 2);

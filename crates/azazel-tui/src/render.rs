@@ -220,7 +220,9 @@ impl<W: io::Write> Renderer<W> {
     /// A terminal that re-wraps its content when it gets narrower has put the rows of the
     /// region that no longer fit on more rows than they were drawn on. The renderer works out
     /// how many from what it drew, so that all of the old region is erased; see
-    /// [`Renderer::set_rewraps`] for terminals that cut rows instead.
+    /// [`Renderer::set_rewraps`] for terminals that cut rows instead. Where it cannot be sure
+    /// it errs towards too few rows: something of the old region may stay behind above the
+    /// new one, and nothing of the transcript is erased.
     pub fn resize(&mut self, width: u16, height: u16) {
         let (width, height) = (width.max(1), height.max(1));
         if (width, height) != (self.width, self.height) {
@@ -263,12 +265,16 @@ impl<W: io::Write> Renderer<W> {
         above + within
     }
 
-    /// Rows of the screen a row drawn earlier takes at the width the terminal has now.
+    /// Rows of the screen a row drawn earlier takes at the width the terminal has now. A
+    /// terminal re-wraps a row up to its last character that is not a space, whatever colour
+    /// the spaces after it have; where one counts those too, a row of the old region is left
+    /// behind, which is the lesser harm: counting too many would erase transcript rows.
     fn wrapped(&self, row: &str) -> usize {
         if !self.rewraps {
             return 1;
         }
-        text::width(row).div_ceil(usize::from(self.width)).max(1)
+        let written = text::width(text::strip_ansi(row).trim_end());
+        written.div_ceil(usize::from(self.width)).max(1)
     }
 
     /// Erases the live region, shows the cursor and leaves it where the region began. Call before
