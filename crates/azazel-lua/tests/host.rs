@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 const GUARD: &str = include_str!("../../../examples/extensions/guard.luau");
 const WORD_COUNT: &str = include_str!("../../../examples/extensions/word_count.luau");
+const AUTO_MODEL: &str = include_str!("../../../examples/extensions/auto_model.luau");
 
 fn lead() -> AgentInfo {
     AgentInfo {
@@ -865,10 +866,10 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
     let surface = bench.shown("surface", "").await;
     assert_eq!(
         surface,
-        "agent agent.list agent.send agent.spawn agent.stop command ctx.agent_id ctx.cwd ctx.session_id \
+        "agent agent.list agent.send agent.spawn agent.stop classify command ctx.agent_id ctx.cwd ctx.session_id \
          ctx.ui ctx.ui.confirm ctx.ui.input ctx.ui.select exec fs fs.data_dir fs.exists fs.list fs.read \
          fs.write http json json.decode json.encode mcp memory memory.save memory.search notify on prompt \
-         provider send session session.compact session.messages session.name session.set_model \
+         provider router send session session.compact session.messages session.name session.set_model \
          session.set_name session.set_thinking shortcut state state.get state.set status tool tools \
          tools.call widget wrap"
     );
@@ -881,6 +882,238 @@ async fn the_type_declarations_cover_everything_a_script_is_given() {
             "`{name}` is missing from the type declarations"
         );
     }
+}
+
+/// A router over `mock`'s models with `roles`, routing virtual models through what the scripts
+/// of `bench` registered.
+fn routed(bench: &Bench, mock: Arc<MockProvider>, roles: &[(&str, &str)]) -> Arc<Router> {
+    let providers: Vec<Arc<dyn Provider>> = vec![mock];
+    let roles = roles
+        .iter()
+        .map(|(role, spec)| (role.to_string(), vec![spec.parse().unwrap()]))
+        .collect();
+    Arc::new(
+        Router::new(providers, Catalog::default(), roles, RetryPolicy::default())
+            .with_virtual(bench.registry.virtual_models.clone()),
+    )
+}
+
+fn lead_on(
+    bench: &Bench,
+    router: Arc<Router>,
+    chain: &str,
+    sink: Arc<azazel_core::SessionStore>,
+) -> azazel_agent::AgentHandle {
+    Agent::spawn(AgentConfig {
+        info: lead(),
+        system: Vec::new(),
+        tools: bench.registry.tools.clone(),
+        chain: vec![chain.parse().unwrap()],
+        thinking: ThinkingLevel::Off,
+        router,
+        gate: Arc::new(AllowAll),
+        bus: bench.registry.agent_hooks(),
+        services: bench.services.clone(),
+        cwd: bench.paths.cwd.clone(),
+        initial_messages: Vec::new(),
+        sink,
+        artifacts: None,
+        limits: Limits::default(),
+        compaction: CompactionSettings::default(),
+    })
+}
+
+/// Sends `text` and waits for the lead to stop; `Err` is why it failed.
+async fn prompted(agent: &azazel_agent::AgentHandle, text: &str) -> Result<(), String> {
+    let mut events = agent.subscribe();
+    assert!(agent.prompt(UserInput::text(text)));
+    loop {
+        let event = tokio::time::timeout(Duration::from_secs(30), events.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match event {
+            AgentEvent::Idle { .. } => return Ok(()),
+            AgentEvent::Failed { error } => return Err(error),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_router_defined_by_a_script_picks_the_model_of_each_request_and_the_session_records_it() {
+    let bench = Bench::new();
+    bench.home_script("auto_model.luau", AUTO_MODEL);
+    bench.home_script(
+        "levels.luau",
+        r#"
+        azazel.router("deep", function(request)
+            return { model = { "nowhere/gone", "@slow" }, thinking = request.thinking == "off" and "high" or "max" }
+        end)
+        azazel.router("broken", function(request) error("no route for " .. request.reason) end)
+        azazel.router("empty", function() return nil end)
+        "#,
+    );
+    bench.load(false);
+    assert_eq!(
+        bench.registry.virtual_models.names(),
+        ["auto", "broken", "deep", "empty"]
+    );
+
+    let mock = Arc::new(MockProvider::new());
+    mock.push("big", MockStep::tools("", &[("c1", "absent", json!({}))]));
+    mock.push("big", MockStep::text("the cache is cold"));
+    mock.push("small", MockStep::text("renamed"));
+    let router = routed(
+        &bench,
+        mock.clone(),
+        &[("slow", "mock/big"), ("smol", "mock/small")],
+    );
+    let session = Arc::new(
+        azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None)
+            .unwrap(),
+    );
+    let agent = lead_on(&bench, router.clone(), "virtual/auto", session.clone());
+
+    // A question that needs thought goes to the slow role, and the request after the tool
+    // result stays on the model that began the turn.
+    prompted(&agent, "Why is the build slow?").await.unwrap();
+    assert_eq!(mock.requests_for("big").len(), 2);
+    let status = agent.status();
+    assert_eq!(status.model.unwrap().to_string(), "mock/big");
+    assert_eq!(status.via.unwrap().to_string(), "virtual/auto");
+    // Anything else goes to the small one.
+    prompted(&agent, "rename x to y").await.unwrap();
+    assert_eq!(mock.requests_for("small").len(), 1);
+    assert_eq!(agent.status().model.unwrap().to_string(), "mock/small");
+    agent.shutdown().await;
+
+    // Each request is in the session with the model it went to and the virtual model behind it.
+    let dispatched: Vec<(String, Option<String>)> = session
+        .entries()
+        .into_iter()
+        .filter_map(|entry| match entry.kind {
+            azazel_core::EntryKind::RequestStarted { model, via } => Some((model, via)),
+            _ => None,
+        })
+        .collect();
+    let via = Some("virtual/auto".to_string());
+    assert_eq!(
+        dispatched,
+        [
+            ("mock/big".to_string(), via.clone()),
+            ("mock/big".to_string(), via.clone()),
+            ("mock/small".to_string(), via),
+        ]
+    );
+
+    // A route may be a chain with a thinking level: the model nobody provides is passed over.
+    mock.push("big", MockStep::text("thought about it"));
+    let agent = lead_on(&bench, router.clone(), "virtual/deep", session.clone());
+    prompted(&agent, "think").await.unwrap();
+    assert_eq!(agent.status().model.unwrap().to_string(), "mock/big:high");
+    assert_eq!(mock.requests_for("big")[2].thinking, ThinkingLevel::High);
+    agent.shutdown().await;
+
+    // A router that fails, or picks nothing, fails the request with its reason.
+    let agent = lead_on(&bench, router.clone(), "virtual/broken", session.clone());
+    let failed = prompted(&agent, "x").await.unwrap_err();
+    assert!(
+        failed.contains("virtual/broken: ") && failed.ends_with("no route for user"),
+        "{failed}"
+    );
+    agent.shutdown().await;
+    let agent = lead_on(&bench, router.clone(), "virtual/empty", session.clone());
+    let failed = prompted(&agent, "x").await.unwrap_err();
+    assert!(
+        failed.ends_with("virtual/empty: the router returned nothing"),
+        "{failed}"
+    );
+    agent.shutdown().await;
+
+    // A reload registers the routers of the scripts that are there now.
+    std::fs::remove_file(bench.paths.home.join("extensions").join("levels.luau")).unwrap();
+    bench.shown("reload", "").await;
+    assert_eq!(bench.registry.virtual_models.names(), ["auto"]);
+    assert_eq!(router.virtual_models(), ["auto"]);
+}
+
+#[tokio::test]
+async fn a_router_is_registered_while_the_script_loads_and_a_script_can_ask_for_a_judgement() {
+    let bench = Bench::new();
+    bench.home_script(
+        "judge.luau",
+        r#"
+        local ok, why = pcall(azazel.router, "not a name", function() end)
+        azazel.status("refused", tostring(why))
+        azazel.command({ name = "late", run = function()
+            azazel.router("late", function() return "@smol" end)
+        end })
+        azazel.command({ name = "judge", run = function(args)
+            local answer = azazel.classify(args, { "docs", "code" })
+            return answer.choice .. " " .. answer.index .. " " .. answer.confidence .. " " .. answer.model
+        end })
+        -- A router may ask a model before it answers.
+        azazel.router("triage", function(request)
+            local answer = azazel.classify("What does this ask for? " .. request.text, { "docs", "code" })
+            return answer.choice == "code" and "mock/big" or "mock/small"
+        end)
+        "#,
+    );
+    bench.load(false);
+    assert!(
+        bench.extras().status()[0].contains(
+            "azazel.router: `not a name` is not a model name; use up to 64 letters, digits, `_`, `-` and `.`"
+        ),
+        "{:?}",
+        bench.extras().status()
+    );
+    match bench.command("late", "").await {
+        CommandOutcome::Error(why) => assert!(why.contains("while the script loads"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    match bench.command("judge", "fix the typo").await {
+        CommandOutcome::Error(why) => {
+            assert!(
+                why.contains("azazel.classify: no model can be asked in this session"),
+                "{why}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let mock = Arc::new(MockProvider::new());
+    let router = routed(&bench, mock.clone(), &[("judge", "mock/judge")]);
+    bench.services.insert(Arc::new(azazel_core::side::Side {
+        router: router.clone(),
+        prompt: bench.registry.prompt.clone(),
+        tools: bench.registry.tools.clone(),
+        costs: Arc::new(azazel_core::side::SideCosts::default()),
+    }));
+    mock.push(
+        "judge",
+        MockStep::text(r#"{"choice": "docs", "confidence": 0.8}"#),
+    );
+    assert_eq!(
+        bench.shown("judge", "fix the typo").await,
+        "docs 1 0.8 mock/judge"
+    );
+
+    mock.push("judge", MockStep::text(r#"{"choice": 2, "confidence": 0.7}"#));
+    mock.push("big", MockStep::text("done"));
+    let session = Arc::new(
+        azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None)
+            .unwrap(),
+    );
+    let agent = lead_on(&bench, router, "virtual/triage", session);
+    prompted(&agent, "add a retry to the uploader").await.unwrap();
+    assert_eq!(agent.status().model.unwrap().to_string(), "mock/big");
+    let asked = mock.requests_for("judge")[1].messages[0].text();
+    assert!(
+        asked.contains("What does this ask for? add a retry to the uploader"),
+        "{asked}"
+    );
+    agent.shutdown().await;
 }
 
 #[tokio::test]

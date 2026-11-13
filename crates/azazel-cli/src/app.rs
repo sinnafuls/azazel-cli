@@ -869,7 +869,9 @@ impl App {
             ..RetryPolicy::default()
         };
         let router = Arc::new(
-            Router::new(providers, catalog, config.roles.clone(), policy).with_accounts(credentials.clone()),
+            Router::new(providers, catalog, config.roles.clone(), policy)
+                .with_accounts(credentials.clone())
+                .with_virtual(registry.virtual_models.clone()),
         );
         router.set_tier(tier);
         // Models named on the command line are this run's `default` role, so that the roles
@@ -903,8 +905,10 @@ impl App {
             (only, false) => {
                 let lists = known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
                 let (known, usable) = only_provider(lists, only.as_deref());
-                crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
-                    .map_err(|why| UsageError(provider_note(why, only.as_deref())))?
+                let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
+                    .map_err(|why| UsageError(provider_note(why, only.as_deref())))?;
+                crate::models::check_virtual(&chain, &router, only.as_deref()).map_err(UsageError)?;
+                chain
             }
         };
         let chosen = !cli.model.is_empty() || cli.provider.is_some();
@@ -1074,8 +1078,10 @@ impl App {
             false,
         );
         let (known, usable) = only_provider(lists, self.provider.as_deref());
-        crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)
-            .map_err(|why| provider_note(why, self.provider.as_deref()))
+        let chain = crate::models::resolve_specs(texts, self.router.catalog(), &known, &usable)
+            .map_err(|why| provider_note(why, self.provider.as_deref()))?;
+        crate::models::check_virtual(&chain, &self.router, self.provider.as_deref())?;
+        Ok(chain)
     }
 
     /// A session given as a path to its file, or as its id (a unique prefix) in this project.
@@ -1098,13 +1104,27 @@ impl App {
         }
     }
 
+    /// The virtual models that can be chosen in this run, as `virtual/<name>`: those extensions
+    /// define, and none while `--provider` keeps the run to one provider's models.
+    pub fn virtual_models(&self) -> Vec<String> {
+        match self.provider {
+            Some(_) => Vec::new(),
+            None => crate::models::virtual_names(&self.router),
+        }
+    }
+
     /// Whether `chain` names a model this process can use: a configured one whose provider needs
-    /// no key or has a credential (the cloud and script providers find their own).
+    /// no key or has a credential (the cloud and script providers find their own), or a virtual
+    /// model an extension that is loaded defines.
     pub fn has_model(&self, chain: &[ModelSpec]) -> bool {
         let Ok(endpoints) = presets::resolve(&self.config.providers) else {
             return false;
         };
+        let defined = self.virtual_models();
         self.router.resolve(chain).iter().any(|model| {
+            if azazel_ai::is_virtual(model) {
+                return defined.contains(&model.key());
+            }
             match endpoints.iter().find(|p| p.id == model.provider) {
                 Some(p) => !p.requires_key || self.credentials.source(p).is_some(),
                 None => true,

@@ -84,18 +84,30 @@ pub async fn run(app: &App, active: &Active, name: &str, args: &str) -> Option<R
     })
 }
 
-/// The model the lead answers with: the one that answered last, else the first its chain
+/// The model the lead answers with: the one that answered last, after the virtual model that
+/// picked it when there is one (`virtual/auto -> provider/model`), else the first its chain
 /// resolves to.
 pub fn model_label(app: &App, active: &Active) -> String {
     let status = active.lead.status();
     match status.model {
-        Some(model) => model.to_string(),
+        Some(model) => routed_label(
+            status.via.as_ref().map(ToString::to_string).as_deref(),
+            &model.to_string(),
+        ),
         None => app
             .router
             .resolve(&status.chain)
             .first()
             .map(|model| model.to_string())
             .unwrap_or_default(),
+    }
+}
+
+/// `model` as the status line names it: after `via`, the virtual model that picked it.
+pub fn routed_label(via: Option<&str>, model: &str) -> String {
+    match via {
+        Some(via) => format!("{via} -> {model}"),
+        None => model.to_string(),
     }
 }
 

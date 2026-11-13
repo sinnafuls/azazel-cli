@@ -3,6 +3,7 @@
 
 pub mod catalog;
 pub mod credentials;
+pub mod dispatch;
 pub mod error;
 pub mod limits;
 pub mod models_file;
@@ -21,6 +22,7 @@ pub mod wire;
 
 pub use catalog::{Catalog, Cost, ModelInfo, ModelOverride};
 pub use credentials::{Account, Auth, Credential, Credentials, DEFAULT_ACCOUNT};
+pub use dispatch::{Route, RouteReason, RouteRequest, VIRTUAL, VirtualModel, VirtualModels, is_virtual};
 pub use error::AiError;
 pub use limits::{AccountLimits, LimitStore, Window};
 pub use models_file::ModelsFile;

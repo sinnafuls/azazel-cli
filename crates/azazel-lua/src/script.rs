@@ -79,6 +79,8 @@ pub(crate) struct Pending {
     /// `(key combination, handler)`.
     pub shortcuts: Vec<(String, Function)>,
     pub providers: Vec<ProviderConfig>,
+    /// `(virtual model name, function that picks the model of a request)`.
+    pub routers: Vec<(String, Function)>,
 }
 
 /// What bounds the script code running right now.

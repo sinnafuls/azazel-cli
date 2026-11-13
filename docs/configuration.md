@@ -76,6 +76,7 @@ thinking = "low"
 | | `smol`, `slow`, `verify`, `vision` | `["@default"]` | Chains for cheap work, hard work, the checker and image input |
 | | `plan` | `["@slow"]` | Chain for planning |
 | | `memory` | `["@smol"]` | Chain for memory extraction |
+| | `judge` | `["@smol"]` | Chain for `classify` in scripts |
 | | `lead`, and one per built-in agent | see [roles](models-and-logins.md#roles) | The lead's chain and each agent's, so each can have its own model |
 | `[providers.<id>]` | `name` | preset, else the id | What the provider is called in menus |
 | | `api` | preset | A [wire API](models-and-logins.md#wire-apis): `anthropic-messages`, `openai-responses`, `openai-chat`, `openrouter`, `google-generative`, `google-gemini-cli`, `ollama-chat`, `azure-openai-responses`, `azure-openai-chat` |

@@ -518,7 +518,10 @@ impl Session {
                     .map_err(|e| e.trim_start_matches("--model ").to_string())?;
                 let router = &self.app.router;
                 let mut usable = router.resolve(&chain);
-                usable.retain(|model| router.provider(&model.provider).is_some());
+                // A virtual model has no provider of its own; that it is defined was checked above.
+                usable.retain(|model| {
+                    router.provider(&model.provider).is_some() || azazel_ai::is_virtual(model)
+                });
                 if usable.is_empty() {
                     return Err("none of these models is configured".to_string());
                 }

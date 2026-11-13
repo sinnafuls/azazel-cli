@@ -91,8 +91,8 @@ pub trait TranscriptSink: Send + Sync {
         String::new()
     }
 
-    /// Records that a request went out to `model`.
-    fn request_started(&self, _model: &str) {}
+    /// Records that a request went out to `model`; `via` is the virtual model that picked it.
+    fn request_started(&self, _model: &str, _via: Option<&str>) {}
 
     /// Records that a tool call was let through and is about to run.
     fn tool_started(&self, _call_id: &str, _name: &str, _input: &Value) {}

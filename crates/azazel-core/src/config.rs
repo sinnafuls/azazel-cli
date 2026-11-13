@@ -632,6 +632,8 @@ impl Default for Config {
             ("verify".to_string(), role(&["default"])),
             ("memory".to_string(), role(&["smol"])),
             ("vision".to_string(), role(&["default"])),
+            // Quick structured judgements: `classify` in scripts.
+            ("judge".to_string(), role(&["smol"])),
             // The lead agent, and one role per built-in agent definition, so each can be given
             // its own model; unset, they fall back to the general roles above.
             ("lead".to_string(), role(&["default"])),

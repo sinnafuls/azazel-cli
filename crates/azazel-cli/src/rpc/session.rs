@@ -192,6 +192,8 @@ impl Session {
             busy: self.busy(),
             turn: status.turn,
             model: status.model.map(|model| model.to_string()),
+            via: status.via.map(|via| via.to_string()),
+            virtual_models: self.app.virtual_models(),
             chain: status.chain.iter().map(ToString::to_string).collect(),
             thinking: status.thinking.to_string(),
             tier: self.app.router.tier().map(|tier| tier.as_str().to_string()),

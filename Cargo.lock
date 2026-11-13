@@ -1052,6 +1052,7 @@ dependencies = [
  "azazel-core",
  "azazel-team",
  "azazel-tools",
+ "futures",
  "mlua",
  "reqwest",
  "serde_json",

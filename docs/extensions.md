@@ -94,6 +94,7 @@ Registering (load only):
 | `azazel.prompt(name, render)` | Adds a part to the system prompt of every agent. `render(ctx)` runs each time a prompt is put together (the lead's when a session opens, a sub-agent's when it starts) and returns the part's text, or `nil` to leave it out; `ctx.agent_id` says whose prompt it is. The part comes after the project's context files. It is part of what the provider caches, so text that changes from request to request (a clock, a counter) makes every request pay for the whole conversation again; `/cost` names the part when that happens. `name` is one word of your own; the names of the built-in parts (`identity`, `rules`, `team`, `skills`, `environment`, `context_files`, `memory`, `mode`, `now`, `plan`) are refused. A part that raises an error disables its script |
 | `azazel.shortcut(key, handler)` | Binds a key such as `"ctrl+k"` or `"alt+shift+p"` in the terminal UI. `handler(ctx)` |
 | `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Makes an HTTP endpoint's models available as `<id>/<model>`. `api` is `"anthropic-messages"`, `"openai-responses"`, `"openai-chat"` or `"google-generative"`. Without `api_key_env` the endpoint needs no key. A provider stays registered across `/reload`. See [models and logins](models-and-logins.md) |
+| `azazel.router(name, route)` | Makes `virtual/<name>` a model that can be chosen like any other; `route(request)` runs before every request made with it and returns the model it goes to. `name`: up to 64 letters, digits, `_`, `-`, `.`. See [virtual models](models-and-logins.md#virtual-models) |
 | `azazel.mcp{ name, ... }` | Adds an MCP server; the other fields are those of an `mcp.json` entry. See [mcp](mcp.md) |
 
 Usable any time:
@@ -123,6 +124,7 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | `azazel.http{ url, method?, headers?, body?, timeout? }` | Default `GET`, timeout 30 s. Returns `{ status, headers, body }`; an HTTP error status is a response, not an error |
 | `azazel.fs.read(path)`, `.write(path, content)`, `.list(path)`, `.exists(path)` | Files inside the project root, the `permissions.additional_dirs` and the script's own data directory `azazel.fs.data_dir` (`~/.azazel/extensions/.data/<id>`). Relative paths start at the project root. A path that leads elsewhere, also through `..` or a symlink, is an error. `list` returns `{ name, is_dir }` entries |
 | `azazel.agent.spawn{ agent, prompt, wait? }` | Starts a sub-agent of the lead. With `wait` (default true) returns its report and its id; with `wait = false` returns the id at once |
+| `azazel.classify(question, choices, { model? })` | Has a small model pick the one of `choices` (2 to 20 strings) that answers `question`; returns `{ choice, index, confidence, reason, model }`. The `judge` role answers unless `model` names a model, a role or a list of them. Errors when no model can be asked or the reply cannot be read. The same as `classify` in [`run_code`](tools.md#code-execution) |
 | `azazel.memory.save(text, kind?, tags?)` | Saves a project memory; `kind` defaults to `"fact"`. Returns the id. Errors with `memory unavailable` when memory is off |
 | `azazel.memory.search(query, limit?)` | `{ id, kind, text, tags, scope }` hits, best first; default limit 8 |
 | `azazel.tools.call(name, args?)` | Calls a tool of the harness, of another extension or of an MCP server as the lead agent, and returns the text of its result. The call passes the permission rules, the mode and the hooks like one the agent makes itself, so it may ask you; a refused or failed call is an error |
@@ -300,6 +302,7 @@ Everything an extension contributes goes through the `Registrar` passed to `regi
 | `command_source(Arc<dyn CommandSource>)` | Commands that come and go |
 | `on(EventKind, Arc<dyn EventHandler>)` | An event handler |
 | `provider(Arc<dyn Provider>)` | A model provider |
+| `virtual_model(name, Arc<dyn VirtualModel>)` | A [virtual model](models-and-logins.md#virtual-models) `virtual/<name>`; a later registration of the name takes its place |
 | `scheme(Arc<dyn Scheme>)` | A URL scheme the `read` tool can resolve |
 | `skill_root(PathBuf, SkillSource)` | A directory of skills, taking precedence over roots added before it |
 | `system_part(name, Arc<dyn SystemPartProvider>)` | A named part of the system prompt, rendered per agent before every request |
@@ -316,6 +319,7 @@ The traits involved:
 | `CommandHandler` | `azazel-core` | `run(args, &ExtCtx) -> CommandOutcome` (`Done`, `Show(text)`, `Prompt { text, model }`, `Error(text)`) |
 | `Scheme` | `azazel-core` | `scheme()`, `read(rest, &ToolCtx)`; optional `access(rest) -> (Access, Option<String>)`, what reading the address touches and the subject permission rules match (default: a plain read of the address) |
 | `SystemPartProvider` | `azazel-core` | `render(&AgentInfo) -> Option<String>` |
+| `VirtualModel` | `azazel-ai` | `route(&RouteRequest) -> Result<Route, String>`: the chain and thinking level of one request |
 
 ### Events in Rust
 

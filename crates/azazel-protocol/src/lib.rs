@@ -727,6 +727,13 @@ pub struct State {
     pub turn: u32,
     /// The model that answered most recently.
     pub model: Option<String>,
+    /// The virtual model (`virtual/<name>`) that picked `model` for that request, when the
+    /// chain names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// The virtual models extensions define, as `virtual/<name>`; `set_model` takes them.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub virtual_models: Vec<String>,
     /// The lead's model chain as given, e.g. `["@default"]`.
     pub chain: Vec<String>,
     pub thinking: String,

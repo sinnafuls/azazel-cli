@@ -178,7 +178,7 @@ impl TranscriptSink for Recorder {
         journal.push(format!("start {run} {}", request_id.unwrap_or("-")));
         run
     }
-    fn request_started(&self, model: &str) {
+    fn request_started(&self, model: &str, _via: Option<&str>) {
         self.journal.lock().unwrap().push(format!("request {model}"));
     }
     fn tool_started(&self, call_id: &str, name: &str, input: &Value) {

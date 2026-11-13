@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput};
-use azazel_ai::Block;
+use azazel_ai::{Block, Route, RouteRequest, VirtualModel};
 use azazel_core::{
     CommandHandler, CommandOutcome, Event, EventHandler, ExtCtx, Level, Outcome, ShortcutHandler,
     SystemPartProvider, ToolWrap, Ui,
@@ -16,6 +16,7 @@ use mlua::Function;
 use serde_json::{Map, Value, json};
 
 use crate::convert::{agent_of, apply, event_table, to_lua, tool_input};
+use crate::models::{route_table, routed};
 use crate::script::{BUDGET, Run, Script, ToolDef, WrapDef, describe};
 
 /// How long a cancelled tool call gets to wind down what it is waiting for.
@@ -399,6 +400,30 @@ impl SystemPartProvider for LuaPrompt {
                 None
             }
         }
+    }
+}
+
+/// A virtual model registered with `azazel.router`: `function` picks the model of each request
+/// made with `virtual/<name>`. A failure fails that request and is shown with it.
+pub(crate) struct LuaRouter {
+    pub script: Arc<Script>,
+    pub function: Function,
+}
+
+#[async_trait]
+impl VirtualModel for LuaRouter {
+    async fn route(&self, request: &RouteRequest<'_>) -> Result<Route, String> {
+        let shared = &self.script.shared;
+        if let Some(error) = shared.error() {
+            return Err(format!("the extension `{}` is disabled: {error}", shared.id));
+        }
+        let asked = route_table(self.script.lua(), request).map_err(|e| describe(&e))?;
+        let returned: mlua::Value = self
+            .script
+            .call(&self.function, asked, Some(BUDGET), None)
+            .await
+            .map_err(|e| describe(&e))?;
+        routed(returned)
     }
 }
 

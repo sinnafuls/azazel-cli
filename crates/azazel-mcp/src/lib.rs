@@ -11,7 +11,6 @@ mod handler;
 pub mod import;
 mod manager;
 pub mod oauth;
-pub mod search;
 pub mod serve;
 pub mod sse;
 

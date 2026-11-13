@@ -1949,6 +1949,20 @@
           ],
           "description": "The model that answered most recently."
         },
+        "via": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The virtual model (`virtual/<name>`) that picked `model` for that request, when the\nchain names one."
+        },
+        "virtual_models": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The virtual models extensions define, as `virtual/<name>`; `set_model` takes them."
+        },
         "chain": {
           "type": "array",
           "items": {

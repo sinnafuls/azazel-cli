@@ -832,6 +832,7 @@ impl Backend for Remote {
             busy: state.busy,
             turn: state.turn,
             model: state.model.as_deref().and_then(|model| model.parse().ok()),
+            via: state.via.as_deref().and_then(|via| via.parse().ok()),
             chain: state
                 .chain
                 .iter()
@@ -855,7 +856,7 @@ impl Backend for Remote {
     fn model_label(&self) -> String {
         let state = self.state();
         if let Some(model) = state.model {
-            return model;
+            return crate::reports::routed_label(state.via.as_deref(), &model);
         }
         // Nothing has answered yet: what the chain starts with, a role as what it stands for.
         match state.chain.first() {
@@ -950,12 +951,18 @@ impl Backend for Remote {
     }
 
     async fn models(&mut self) -> Vec<(String, String)> {
-        let mut rows: Vec<(String, String)> = self
-            .state()
+        let state = self.state();
+        let mut rows: Vec<(String, String)> = state
             .roles
             .into_iter()
             .map(|(role, model)| (format!("@{role}"), model))
             .collect();
+        rows.extend(
+            state
+                .virtual_models
+                .into_iter()
+                .map(|name| (name, crate::models::VIRTUAL_DETAIL.to_string())),
+        );
         let models: Vec<ModelRow> = ask(&self.client, Command::ListModels).await.unwrap_or_default();
         rows.extend(models.into_iter().map(|model| {
             // What the models cost is known where the session runs, not here.

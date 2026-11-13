@@ -7,6 +7,25 @@ GitHub are its section here.
 
 ### Added
 
+- `run_code` scripts orchestrate: `agents.run(agent, prompt, { model, isolation, schema })` starts an agent
+  as `task` does and returns its report, or with a `schema` the value it reported; `parallel{ f, g, ... }`
+  runs functions at the same time (at most `team.max_parallel`) and returns their results in the same
+  places, so tool calls and agents run side by side; `store(key, value)` and `load(key)` keep JSON values in
+  the session, where they survive a resume and follow the session's tree; `tools.search(query)` and
+  `tools.describe(name)` find and describe tools the description does not list, MCP tools that are held
+  back included.
+- `classify(question, choices, { model })` in scripts, and `azazel.classify` in extensions: a small model
+  picks one of the choices and says how sure it is (`{ choice, index, confidence, reason, model }`). It is
+  asked on the new `judge` role, which falls back to `smol`; its cost is in `/cost` under `classify`.
+- Virtual models: an extension's `azazel.router(name, function(request) ... end)` registers `virtual/<name>`,
+  which `/model`, `--model`, roles and `set_model` take like any model. The function picks the model (or
+  chain, with an optional thinking level) of each request from why it is made (`user`, `continuation`,
+  `retry`, `direct`), the model that answered last, and the conversation. The session records the choice
+  and, per request, the model it went to with the virtual model behind it (`request_started` has `via`);
+  the status line shows `virtual/auto -> provider/model`. Rust extensions use `Registrar::virtual_model`.
+  `examples/extensions/auto_model.luau` is a small router. A virtual model is refused while `--provider`
+  keeps a run to one provider's models.
+- RPC: `State` has `via` and `virtual_models`.
 - Schedules: `azazel schedule add "0 9 * * 1-5" "<prompt>"`, `add every 10m "<prompt>"` and
   `add at +2h "<prompt>"` run a prompt at a time, in a background session of its own or, with `--session`,
   in one session every time; `schedule list`, `rm` and `run` manage them. They are kept per project and

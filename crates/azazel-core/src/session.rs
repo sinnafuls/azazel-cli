@@ -108,6 +108,9 @@ pub enum EntryKind {
     /// A request of the run went out to this model.
     RequestStarted {
         model: String,
+        /// The virtual model that picked `model` for this request (`virtual/<name>`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        via: Option<String>,
     },
     /// A tool call of the run was let through and began.
     #[serde(rename_all = "camelCase")]
@@ -345,7 +348,7 @@ fn unfinished(
             {
                 started.push(call_id.clone());
             }
-            EntryKind::RequestStarted { model: asked } if open_calls.is_empty() => {
+            EntryKind::RequestStarted { model: asked, .. } if open_calls.is_empty() => {
                 model = Some(asked.clone())
             }
             _ => {}
@@ -596,6 +599,27 @@ impl SessionStore {
         }
         path.reverse();
         path
+    }
+
+    /// The first value `pick` finds in an entry of the branch ending at `leaf` (default: the
+    /// current leaf), looking from the leaf up: the newest entry of a kind, without copying
+    /// the branch.
+    pub fn latest<T>(&self, leaf: Option<&str>, mut pick: impl FnMut(&Entry) -> Option<T>) -> Option<T> {
+        let inner = self.lock();
+        let mut cursor = leaf.or(inner.leaf.as_deref());
+        let mut walked = 0;
+        while let Some(&i) = cursor.and_then(|id| inner.index.get(id)) {
+            let entry = &inner.entries[i];
+            if let Some(found) = pick(entry) {
+                return Some(found);
+            }
+            walked += 1;
+            if walked > inner.entries.len() {
+                break; // a parent cycle in a damaged file
+            }
+            cursor = entry.parent_id.as_deref();
+        }
+        None
     }
 
     /// The model context at `leaf`: the newest compaction on the branch contributes its summary and
@@ -1219,9 +1243,10 @@ impl TranscriptSink for SessionStore {
         run_id
     }
 
-    fn request_started(&self, model: &str) {
+    fn request_started(&self, model: &str, via: Option<&str>) {
         self.append(EntryKind::RequestStarted {
             model: model.to_string(),
+            via: via.map(str::to_string),
         });
     }
 
@@ -1341,7 +1366,7 @@ mod tests {
         // A run that ended is not interrupted, whatever it did.
         store.message(&Message::user("one"));
         let first = store.run_started(None);
-        store.request_started("mock/lead");
+        store.request_started("mock/lead", None);
         store.message(&assistant("done"));
         store.run_ended(&first, "stop");
         assert_eq!(store.interrupted_run(None), None);
@@ -1349,7 +1374,7 @@ mod tests {
         // The process ends while the model is asked: the request is what is left to do.
         store.message(&Message::user("two"));
         let run_id = store.run_started(Some("req-1"));
-        store.request_started("mock/lead");
+        store.request_started("mock/lead", None);
         let waiting = store.interrupted_run(None).unwrap();
         assert_eq!(
             (waiting.run_id.as_str(), waiting.request_id.as_deref()),
@@ -1404,7 +1429,7 @@ mod tests {
         let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
         let prompt = store.message(&Message::user("go"));
         let run_id = store.run_started(None);
-        store.request_started("mock/lead");
+        store.request_started("mock/lead", None);
         let middle = store.message(&calling(&[("c1", "shell")]));
         store.tool_started("c1", "shell", &json!({}));
         let result = store.message(&Message {
