@@ -23,6 +23,7 @@ pub mod hooks;
 #[cfg(feature = "detach")]
 pub mod host;
 pub mod init;
+pub mod inventory;
 pub mod login;
 pub mod loops;
 #[cfg(feature = "mcp")]

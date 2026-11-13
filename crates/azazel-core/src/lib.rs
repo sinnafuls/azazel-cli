@@ -9,6 +9,7 @@ pub mod checkpoint;
 pub mod classify;
 pub mod commands;
 pub mod config;
+pub mod config_keys;
 pub mod context;
 pub mod ext;
 pub mod frontmatter;

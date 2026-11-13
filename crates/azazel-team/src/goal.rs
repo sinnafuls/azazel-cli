@@ -496,12 +496,15 @@ struct DoneInput {
     evidence: String,
 }
 
+/// The tools the lead is offered while a goal is open, and only then.
+pub const GOAL_TOOLS: [&str; 2] = ["goal_done", "goal_blocked"];
+
 struct GoalDoneTool(Arc<Goals>);
 
 #[async_trait]
 impl Tool for GoalDoneTool {
     fn name(&self) -> &str {
-        "goal_done"
+        GOAL_TOOLS[0]
     }
 
     fn description(&self) -> &str {
@@ -553,7 +556,7 @@ struct GoalBlockedTool(Arc<Goals>);
 #[async_trait]
 impl Tool for GoalBlockedTool {
     fn name(&self) -> &str {
-        "goal_blocked"
+        GOAL_TOOLS[1]
     }
 
     fn description(&self) -> &str {

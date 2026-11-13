@@ -1071,6 +1071,20 @@ const TRUST_GATED: [(&str, Option<&str>); 19] = [
     ("permissions", Some("destructive")),
 ];
 
+/// Every trust-gated setting as the docs name it (`hooks`, `permissions.allow`), `permissions.mode`
+/// included, which is gated only for `bypass`. For `cargo xtask docs-check`.
+pub fn trust_gated_names() -> Vec<String> {
+    let mut names: Vec<String> = TRUST_GATED
+        .iter()
+        .map(|(table, key)| match key {
+            Some(key) => format!("{table}.{key}"),
+            None => table.to_string(),
+        })
+        .collect();
+    names.push("permissions.mode".to_string());
+    names
+}
+
 /// The trust-gated settings a configuration file gives a value to, as they are written in
 /// messages (`hooks`, `permissions.allow`). An empty list, table or string sets nothing.
 pub fn gated_settings(table: &Table) -> Vec<String> {

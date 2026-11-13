@@ -860,6 +860,21 @@ impl Registry {
         self.commands().into_iter().find(|c| c.name == name)
     }
 
+    /// The names of the commands extensions registered outright, sorted: those of dynamic
+    /// sources (skills, custom commands, MCP prompts) depend on the machine and are left out.
+    pub fn registered_commands(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .commands
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(_, command)| command.name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
     /// Providers contributed by extensions, in registration order.
     pub fn providers(&self) -> Vec<Arc<dyn Provider>> {
         self.providers
