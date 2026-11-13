@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-13
+
 ### Added
 
 - `run_code` scripts orchestrate: `agents.run(agent, prompt, { model, isolation, schema })` starts an agent
@@ -596,7 +598,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.1.0...v0.2.0
