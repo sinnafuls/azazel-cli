@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/*",
     "xtask",
+    "xtask/docs-check",
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
     "tests/fixtures/fake-check",
