@@ -486,6 +486,12 @@ impl App {
             searxng_url: config.web.searxng_url.clone(),
             provider_search: config.web.provider_search,
         })?;
+        // What `azazel secrets` stored: the `http` tool and the browser use it, agents never see it.
+        let stored = Arc::new(azazel_ai::ServiceStore::new(paths.secrets_file()));
+        registry.load(&azazel_tools::web::HttpExt {
+            stored: stored.clone(),
+            redact: azazel_tui::text::redact,
+        })?;
         registry.load(&crate::login::LoginExt {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
             credentials: credentials.clone(),
@@ -627,6 +633,7 @@ impl App {
             path: config.browser.path.clone(),
             headless: config.browser.headless,
             profile: paths.browser_profile_dir(),
+            logins: stored.clone(),
         })?;
         #[cfg(feature = "screen")]
         registry.load(&azazel_browser::screen::ScreenExt)?;

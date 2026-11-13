@@ -278,6 +278,10 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
         "read" | "write" | "edit" | "plan_submit" => field("path"),
         "glob" | "grep" => field("pattern"),
         "web_fetch" => field("url"),
+        "http" => field("url").map(|url| {
+            let method = field("method").unwrap_or_else(|| "GET".to_string());
+            format!("{} {url}", method.to_ascii_uppercase())
+        }),
         "web_grep" => {
             field("pattern").map(|pattern| format!("{pattern} in {}", field("url").unwrap_or_default()))
         }
@@ -1074,6 +1078,20 @@ mod tests {
                 &json!({"url": "https://docs.rs/tokio", "pattern": "select!"})
             ),
             "select! in https://docs.rs/tokio"
+        );
+        assert_eq!(
+            tool_summary(
+                "http",
+                &json!({"url": "https://api.test/v1/items", "json": {"a": 1}})
+            ),
+            "GET https://api.test/v1/items"
+        );
+        assert_eq!(
+            tool_summary(
+                "http",
+                &json!({"method": "post", "url": "https://api.test/v1/items"})
+            ),
+            "POST https://api.test/v1/items"
         );
         assert_eq!(tool_summary("web_search", &json!({"query": "one"})), "one");
         assert_eq!(
