@@ -125,6 +125,11 @@ The `read` tool accepts two URLs:
 | `agent://<id>` | The agent's latest report, in full; for a [typed result](#typed-results), the JSON value alone |
 | `agent://<id>/transcript` | A condensed transcript: prompts, everything the agent said, one line per tool call |
 
+A `run_code` script starts agents too: `agents.run(agent, prompt, { model?, isolation?, schema? })` is a
+`task` call for one agent that returns its report (or typed value) to the script, and `parallel` runs several
+at once. The script keeps what the agents return in variables, so only what it prints or returns reaches the
+conversation. See [code execution](tools.md#code-execution).
+
 ## Typed results
 
 An agent normally reports in prose. When the caller needs data, it gives the agent a JSON Schema and gets back

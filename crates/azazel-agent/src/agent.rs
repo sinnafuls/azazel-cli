@@ -654,9 +654,10 @@ impl Actor {
             self.core.forward_route_events(&mut route_rx);
             let (model, mut stream) = started?;
             let via = route.via().cloned();
-            self.core
-                .sink
-                .request_started(&model.to_string(), via.as_ref().map(ToString::to_string).as_deref());
+            self.core.sink.request_started(
+                &model.to_string(),
+                via.as_ref().map(ToString::to_string).as_deref(),
+            );
             {
                 let mut status = locked(&self.core.status);
                 status.model = Some(model.clone());

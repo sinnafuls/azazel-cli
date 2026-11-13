@@ -623,14 +623,20 @@ async fn parallel_runs_calls_at_the_same_time_and_returns_results_in_their_place
         .await;
     assert_eq!(output.text_content(), "10 20 30 40 50 60");
     assert_eq!(nap.peak.load(Ordering::SeqCst), 4);
-    assert!(started.elapsed() < Duration::from_millis(700), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_millis(700),
+        "{:?}",
+        started.elapsed()
+    );
     assert_eq!(output.details, Some(json!({ "tool_calls": 6 })));
     // Every call passed the gate under an id of its own.
     let mut seen = bench.seen();
     seen.sort();
     assert_eq!(
         seen,
-        ["nap c1.1", "nap c1.2", "nap c1.3", "nap c1.4", "nap c1.5", "nap c1.6"]
+        [
+            "nap c1.1", "nap c1.2", "nap c1.3", "nap c1.4", "nap c1.5", "nap c1.6"
+        ]
     );
 
     // Named entries keep their names, and what is not a tool call runs as well.
@@ -777,7 +783,11 @@ async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
         )
         .await;
     assert_eq!(both.text_content(), "alpha beta");
-    assert!(started.elapsed() < Duration::from_millis(580), "{:?}", started.elapsed());
+    assert!(
+        started.elapsed() < Duration::from_millis(580),
+        "{:?}",
+        started.elapsed()
+    );
 
     // What `task` refuses is the script's error to catch.
     let unknown = bench.run(r#"return agents.run("nobody", "x")"#).await;
@@ -796,7 +806,10 @@ async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
         "script error: agents.run: there is no option `wait`; the options are model, isolation, schema and name"
     );
     // An agent whose model fails has not done its work: that is an error, with what it said.
-    mock.push("broken", MockStep::fail(azazel_ai::AiError::Auth("no key".into())));
+    mock.push(
+        "broken",
+        MockStep::fail(azazel_ai::AiError::Auth("no key".into())),
+    );
     let failed = bench
         .run(r#"return agents.run("scout", "x", { model = "mock/broken", name = "probe" })"#)
         .await;
@@ -815,10 +828,7 @@ async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
 async fn stored_values_are_kept_in_the_session_and_follow_its_branches() {
     let bench = Bench::new("manual", CodeLimits::default());
     let homeless = bench.run(r#"store("k", 1)"#).await;
-    assert_eq!(
-        homeless.text_content(),
-        "script error: store: no session is open"
-    );
+    assert_eq!(homeless.text_content(), "script error: store: no session is open");
 
     let session =
         Arc::new(SessionStore::create(&bench.paths.sessions_dir(), &bench.paths.cwd, None).unwrap());
@@ -855,7 +865,10 @@ async fn stored_values_are_kept_in_the_session_and_follow_its_branches() {
     let latest = session.leaf();
     bench.run(r#"store("cursor", nil)"#).await;
     assert_eq!(
-        bench.run(r#"return tostring(load("cursor"))"#).await.text_content(),
+        bench
+            .run(r#"return tostring(load("cursor"))"#)
+            .await
+            .text_content(),
         "nil"
     );
     // Where the conversation goes back to an earlier point, what was stored after it is not seen.
@@ -863,16 +876,18 @@ async fn stored_values_are_kept_in_the_session_and_follow_its_branches() {
     assert_eq!(bench.run(r#"return load("cursor")"#).await.text_content(), "5");
     session.set_leaf(Some(&start));
     assert_eq!(
-        bench.run(r#"return tostring(load("cursor"))"#).await.text_content(),
+        bench
+            .run(r#"return tostring(load("cursor"))"#)
+            .await
+            .text_content(),
         "nil"
     );
 
-    let huge = bench
-        .run(r#"store("big", string.rep("x", 300000))"#)
-        .await;
+    let huge = bench.run(r#"store("big", string.rep("x", 300000))"#).await;
     assert!(
-        huge.text_content()
-            .starts_with("script error: store: the value of `big` is 300002 bytes of JSON; one value may be 262144."),
+        huge.text_content().starts_with(
+            "script error: store: the value of `big` is 300002 bytes of JSON; one value may be 262144."
+        ),
         "{}",
         huge.text_content()
     );
@@ -958,13 +973,15 @@ async fn a_script_finds_and_describes_tools_that_are_not_listed() {
             found: Arc::default(),
         }),
     );
-    bench
-        .registry
-        .tools
-        .add("test", Arc::new(Named("search", "A tool that happens to be called search.")));
+    bench.registry.tools.add(
+        "test",
+        Arc::new(Named("search", "A tool that happens to be called search.")),
+    );
 
     // The ticket tool is not offered until a search finds it; then it is ranked and callable.
-    let hidden = bench.run(r#"return tools.mcp__tracker__create_ticket({ title = "x" })"#).await;
+    let hidden = bench
+        .run(r#"return tools.mcp__tracker__create_ticket({ title = "x" })"#)
+        .await;
     assert!(hidden.is_error, "{}", hidden.text_content());
     let found = bench
         .run(
@@ -1040,7 +1057,12 @@ async fn classify_asks_the_judge_role_and_counts_as_a_call() {
     let roles: BTreeMap<String, Vec<ModelSpec>> =
         BTreeMap::from([("judge".to_string(), vec!["mock/judge".parse().unwrap()])]);
     bench.services.insert(Arc::new(Side {
-        router: Arc::new(Router::new(providers, Catalog::default(), roles, RetryPolicy::default())),
+        router: Arc::new(Router::new(
+            providers,
+            Catalog::default(),
+            roles,
+            RetryPolicy::default(),
+        )),
         prompt: bench.registry.prompt.clone(),
         tools: bench.registry.tools.clone(),
         costs: Arc::new(SideCosts::default()),

@@ -317,10 +317,50 @@ return table.concat(counts, "\n")
 - Every call is made as the agent that runs the script and goes through the permission engine, the mode and the hooks like a call the agent makes itself. `run_code` counts as `read`; each call inside it is judged on its own, so a script cannot do what the agent could not.
 - `print(...)` output and the value the script returns are the result. A returned table comes back as JSON. `json.encode` and `json.decode` are available.
 - The script runs in a fresh sandboxed Luau VM: no file, process or network access except through `tools`.
-- Limits: 120 seconds of the script's own running time (waiting for a tool does not count), 50 tool calls, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
-- `run_code` itself, `task` and the other team tools cannot be called from a script.
+- Limits: 120 seconds of the script's own running time (waiting for a tool, an agent or a model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
+- `run_code` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
 
 The tool's description lists the callable tools with their arguments, within about 3000 tokens; tools that do not fit are named, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
+
+Beside `tools`, `print` and `json` a script has these:
+
+| Global | What it does |
+|---|---|
+| `parallel{ f, g, ... }` | Runs the functions at the same time and returns what each returned (its first value), in the same places: a list gives a list, a table with names keeps its names. At most `team.max_parallel` (4) run at once. A call that only reads runs beside the others; one that changes something (`write`, `edit`, `shell`) waits until it is alone, as it does among an agent's own calls. All of them are waited for; if any raised an error, the first is then raised as `parallel: entry <key>: ...`. Use `pcall` inside a function to keep the results of the others |
+| `agents.run(agent, prompt, { model?, isolation?, schema?, name? })` | Starts one agent of the [team](team.md) and waits for it. The options are those of `task`. Returns the agent's report and its id; with a `schema` the first value is the [typed result](team.md#typed-results) as a table. The call is a `task` call for the permission rules and the hooks, and only an agent that has `task` can make it. An agent that fails or is stopped raises an error with what it said |
+| `classify(question, { "a", "b", ... }, { model? })` | Has a small model pick the one of 2 to 20 choices that answers the question. Returns `{ choice, index, confidence, reason, model }`: the choice as given, its position from 1, how sure the model is from 0 to 1, a sentence of why, and the model that answered. The [`judge` role](models-and-logins.md#roles) answers unless `model` names a model, a role or a list of them. The request carries the question and the choices and nothing of the conversation, so put what is to be judged into the question. Its cost is in `/cost` under `classify` |
+| `store(key, value)`, `load(key)` | Keeps a JSON value (up to 256 KB) for later scripts, and reads it back; `nil` when there is none. Storing `nil` forgets the key. The value is an entry of the session file, so it is there when the session is resumed, and it follows the session's tree: after `/tree`, `/rewind` or a fork a script sees what was stored on the branch it is on. Every agent of a session reads and writes the same values |
+| `tools.search(query, limit?)` | Finds tools by what they do: `{ name, description }` of the best matches (8 unless `limit` says otherwise, at most 25), with the first sentence of each description. It also finds the tools of MCP servers that are held back until searched for (see [MCP](mcp.md)); what it finds is callable at once |
+| `tools.describe(name)` | `{ name, description, parameters, signature }` of one tool: its whole description, its JSON Schema, and its arguments on one line. `nil` when the agent has no such tool |
+
+An audit over many files keeps the intermediate work out of the conversation:
+
+```lua
+local files = load("audit_files") or {}
+local jobs = {}
+for i, path in ipairs(files) do
+    jobs[i] = function()
+        return agents.run("scout", "List the unchecked error paths in " .. path, {
+            schema = {
+                type = "object",
+                properties = { findings = { type = "array", items = { type = "string" } } },
+                required = { "findings" },
+            },
+        })
+    end
+end
+local serious = {}
+for i, result in ipairs(parallel(jobs)) do
+    for _, finding in ipairs(result.findings) do
+        local verdict = classify("Can this lose data?\n" .. finding, { "yes", "no" })
+        if verdict.choice == "yes" and verdict.confidence > 0.7 then
+            table.insert(serious, files[i] .. ": " .. finding)
+        end
+    end
+end
+store("audit_serious", serious)
+return serious
+```
 
 ## Todo list, questions, plans
 

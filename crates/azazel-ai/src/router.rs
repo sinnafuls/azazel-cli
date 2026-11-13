@@ -1432,9 +1432,7 @@ mod tests {
     impl crate::dispatch::VirtualModel for ByReason {
         async fn route(&self, request: &RouteRequest<'_>) -> Result<crate::dispatch::Route, String> {
             let previous = request.previous.as_ref().map(ToString::to_string);
-            let failed = request
-                .failed
-                .map(|(model, error)| format!("{model} ({error})"));
+            let failed = request.failed.map(|(model, error)| format!("{model} ({error})"));
             self.asked.lock().unwrap().push(format!(
                 "{} {} {} previous={} failed={} text={}",
                 request.name,
@@ -1497,7 +1495,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(model.to_string(), "mock/small:low");
-        assert_eq!(state.via().map(ToString::to_string).as_deref(), Some("virtual/auto:low"));
+        assert_eq!(
+            state.via().map(ToString::to_string).as_deref(),
+            Some("virtual/auto:low")
+        );
         let reply = match stream.collect::<Vec<_>>().await.pop() {
             Some(StreamEvent::Done { message }) => message,
             other => panic!("{other:?}"),
@@ -1509,11 +1510,9 @@ mod tests {
         // The request after a tool result is a continuation and knows who answered before.
         let mut after_tools = asking("rename x");
         after_tools.messages.push(reply);
-        after_tools
-            .messages
-            .push(crate::types::Message::tool(vec![crate::types::Block::tool_result(
-                "c1", "done", false,
-            )]));
+        after_tools.messages.push(crate::types::Message::tool(vec![
+            crate::types::Block::tool_result("c1", "done", false),
+        ]));
         let mut state = RouteState::new();
         let (model, _) = r
             .stream_with(&c, &after_tools, CancellationToken::new(), &mut state)
@@ -1549,7 +1548,10 @@ mod tests {
         let mock = Arc::new(MockProvider::new());
         mock.push("small", MockStep::text("cut short"));
         mock.push("big", MockStep::text("whole"));
-        let route = ByReason::new(&[(RouteReason::User, "mock/small"), (RouteReason::Retry, "mock/big")]);
+        let route = ByReason::new(&[
+            (RouteReason::User, "mock/small"),
+            (RouteReason::Retry, "mock/big"),
+        ]);
         let r = with_virtual(mock, "auto", route.clone());
         let c = chain(&["virtual/auto"]);
         let mut state = RouteState::new();
@@ -1593,8 +1595,14 @@ mod tests {
         // A virtual model cannot hand the request to a virtual model, and one nobody registered
         // picks nothing either.
         for (spec, why) in [
-            ("virtual/auto", "virtual/auto: it named no model that is configured"),
-            ("virtual/gone", "virtual/gone: no extension that is loaded defines it"),
+            (
+                "virtual/auto",
+                "virtual/auto: it named no model that is configured",
+            ),
+            (
+                "virtual/gone",
+                "virtual/gone: no extension that is loaded defines it",
+            ),
         ] {
             let failed = r
                 .stream_with(
@@ -1632,7 +1640,10 @@ mod tests {
                 .map(|model| model.to_string())
         };
         assert_eq!(limits("virtual/auto", None).as_deref(), Some("virtual/auto"));
-        assert_eq!(limits("virtual/auto", Some(&answered)).as_deref(), Some("mock/big"));
+        assert_eq!(
+            limits("virtual/auto", Some(&answered)).as_deref(),
+            Some("mock/big")
+        );
         assert_eq!(limits("@cheap", Some(&answered)).as_deref(), Some("mock/small"));
         assert_eq!(limits("@nothing", Some(&answered)), None);
         assert_eq!(r.virtual_models(), ["auto"]);

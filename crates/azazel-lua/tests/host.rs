@@ -906,7 +906,11 @@ async fn a_router_defined_by_a_script_picks_the_model_of_each_request_and_the_se
     mock.push("big", MockStep::tools("", &[("c1", "absent", json!({}))]));
     mock.push("big", MockStep::text("the cache is cold"));
     mock.push("small", MockStep::text("renamed"));
-    let router = routed(&bench, mock.clone(), &[("slow", "mock/big"), ("smol", "mock/small")]);
+    let router = routed(
+        &bench,
+        mock.clone(),
+        &[("slow", "mock/big"), ("smol", "mock/small")],
+    );
     let session = Arc::new(
         azazel_core::SessionStore::create(&bench.dir.path().join("sessions"), &bench.paths.cwd, None)
             .unwrap(),
@@ -1000,8 +1004,9 @@ async fn a_router_is_registered_while_the_script_loads_and_a_script_can_ask_for_
     );
     bench.load(false);
     assert!(
-        bench.extras().status()[0]
-            .contains("azazel.router: `not a name` is not a model name; use up to 64 letters, digits, `_`, `-` and `.`"),
+        bench.extras().status()[0].contains(
+            "azazel.router: `not a name` is not a model name; use up to 64 letters, digits, `_`, `-` and `.`"
+        ),
         "{:?}",
         bench.extras().status()
     );
@@ -1011,7 +1016,10 @@ async fn a_router_is_registered_while_the_script_loads_and_a_script_can_ask_for_
     }
     match bench.command("judge", "fix the typo").await {
         CommandOutcome::Error(why) => {
-            assert!(why.contains("azazel.classify: no model can be asked in this session"), "{why}");
+            assert!(
+                why.contains("azazel.classify: no model can be asked in this session"),
+                "{why}"
+            );
         }
         other => panic!("{other:?}"),
     }
@@ -1024,8 +1032,14 @@ async fn a_router_is_registered_while_the_script_loads_and_a_script_can_ask_for_
         tools: bench.registry.tools.clone(),
         costs: Arc::new(azazel_core::side::SideCosts::default()),
     }));
-    mock.push("judge", MockStep::text(r#"{"choice": "docs", "confidence": 0.8}"#));
-    assert_eq!(bench.shown("judge", "fix the typo").await, "docs 1 0.8 mock/judge");
+    mock.push(
+        "judge",
+        MockStep::text(r#"{"choice": "docs", "confidence": 0.8}"#),
+    );
+    assert_eq!(
+        bench.shown("judge", "fix the typo").await,
+        "docs 1 0.8 mock/judge"
+    );
 
     mock.push("judge", MockStep::text(r#"{"choice": 2, "confidence": 0.7}"#));
     mock.push("big", MockStep::text("done"));

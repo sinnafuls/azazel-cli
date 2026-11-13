@@ -47,9 +47,9 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `label` | A label on an entry, given in `/tree`; an empty label takes it away |
 | `session_info` | The session's name; the newest one counts |
 | `pin` | Whether the session is pinned |
-| `custom` | Extension data |
+| `custom` | Extension data, and under `customType` `run_code_store` a value a script kept with `store` (`data.key`, `data.value`) |
 | `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any. Its `parentId` is the prompt |
-| `request_started` | A request of the run went out to `model` |
+| `request_started` | A request of the run went out to `model`; `via` names the [virtual model](models-and-logins.md#virtual-models) that picked it, when one did |
 | `tool_started` | A tool call of the run was let through and began: `callId`, `name`, `input` |
 | `run_ended` | The run ended: `runId` and `stop` (`stop`, `length`, `tool_use`, `error`, `aborted` or `failed`) |
 

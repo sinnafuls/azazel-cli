@@ -90,7 +90,10 @@ pub async fn run(app: &App, active: &Active, name: &str, args: &str) -> Option<R
 pub fn model_label(app: &App, active: &Active) -> String {
     let status = active.lead.status();
     match status.model {
-        Some(model) => routed_label(status.via.as_ref().map(ToString::to_string).as_deref(), &model.to_string()),
+        Some(model) => routed_label(
+            status.via.as_ref().map(ToString::to_string).as_deref(),
+            &model.to_string(),
+        ),
         None => app
             .router
             .resolve(&status.chain)

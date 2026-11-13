@@ -87,6 +87,8 @@ The session commands report the saved sessions and the open one, change which se
 | `busy` | Whether the lead is working |
 | `turn` | The lead's request number within the current prompt; 0 before the first |
 | `model` | The model that answered most recently, or `null` |
+| `via` | The [virtual model](models-and-logins.md#virtual-models) (`virtual/<name>`) that picked `model` for that request; absent when the chain named the model itself |
+| `virtual_models` | The virtual models extensions define, as `virtual/<name>`; `set_model` takes them. Absent when there are none |
 | `chain` | The lead's model chain as given, e.g. `["@default"]` |
 | `thinking` | The thinking level |
 | `tier` | The service tier, or `null` at the standard tier |

@@ -35,6 +35,7 @@ slow    = ["anthropic/claude-opus-4-5:high", "@default"]
 | `verify` | `@default` | The checker (see [goals](goals.md)) |
 | `memory` | `@smol` | Memory extraction (see [memory](memory.md)) |
 | `vision` | `@default` | Work that reads images |
+| `judge` | `@smol` | Quick judgements: `classify` in `run_code` scripts and extensions (see [tools](tools.md#code-execution)) |
 | `lead` | `@default` | The lead agent |
 | `scout` | `@smol` | The `scout` agent |
 | `planner` | `@plan` | The `planner` agent |
@@ -75,7 +76,7 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 | `azazel init` | Asks for a provider and model, writes `roles.default` to `~/.azazel/config.toml` |
 | `/settings` → "Choose the default model" | Same, from inside the TUI; takes effect at once |
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
-| `/model` or `Ctrl+L` | Picker over roles and the models of providers that have a credential |
+| `/model` or `Ctrl+L` | Picker over roles, [virtual models](#virtual-models) and the models of providers that have a credential |
 | `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
 | `/preset <name>`, `--preset <name>` | Re-points every role a [preset](#presets) names |
 | `model:` in an agent definition, `[agents.<name>] model` | Per-agent chain (see [team](team.md)) |
@@ -87,7 +88,7 @@ resolved in this order:
 
 1. `@role` names a role.
 2. `provider/id` with a provider azazel knows is taken as written, listed in the catalogue or not (local servers
-   name their own models).
+   name their own models). `virtual/<name>` is a [virtual model](#virtual-models) an extension defines.
 3. A model id, among the providers that need no key or have one (all providers when `--api-key` is given).
 4. The single best fuzzy match of `provider/id` among the same models, so `fable` or `haiku:high` work.
 
@@ -103,6 +104,64 @@ azazel --model anthropic/claude-sonnet-4-5 --model ollama/<local-model> -p "summ
 ```
 
 Without a resolvable model, print mode and the subcommands stop with `no model configured: run "azazel init" or pass --model provider/id`. The interactive UI starts anyway so you can use `/settings`.
+
+## Virtual models
+
+A virtual model is a name you choose like a model that stands for none: for each request made with it, an
+[extension](extensions.md) picks the model the request goes to. Use one to route by task, cost or the state
+of the conversation, for example quick questions to a small model and hard ones to a large one, while you
+stay on one entry of `/model`.
+
+```lua
+-- ~/.azazel/extensions/auto_model.luau
+azazel.router("auto", function(request)
+    -- Requests after tool results, and retries, stay on the model that began the turn.
+    if request.reason ~= "user" and request.previous then
+        return request.previous
+    end
+    if string.find(string.lower(request.text or ""), "why", 1, true) then
+        return { model = "@slow", thinking = "high" }
+    end
+    return "@smol"
+end)
+```
+
+`azazel.router(name, route)` registers `virtual/<name>`. It is listed in `/model` beside the roles, and
+`--model virtual/auto`, `/model virtual/auto`, a role (`[roles] default = ["virtual/auto"]`), an agent
+definition's `model:` and the RPC `set_model` take it like any other model. `--model`, `/model` and `set_model`
+refuse a virtual model that no loaded extension defines, and name the ones there are.
+
+`route(request)` runs before every request and returns where it goes: `"provider/model[:thinking]"`,
+`"@role"`, a list of them (a fallback chain, tried in order as any chain is), or `{ model = ..., thinking =
+"high" }`, whose level goes to the models named without one. A level chosen with the virtual model
+(`virtual/auto:high`) holds for what the router returns without a level. It cannot return a virtual model.
+
+| Field of `request` | Meaning |
+|---|---|
+| `name` | The virtual model's name, without `virtual/` |
+| `reason` | `user`: the first request after something you wrote, steering included. `continuation`: any other request of a turn, such as the one after tool results. `retry`: the request is sent again after an attempt that failed while its reply was arriving. `direct`: a request from outside a conversation, such as a summary or a side question |
+| `thinking` | The thinking level the request asks for |
+| `previous` | The model that wrote the latest reply of the conversation, as `provider/model` |
+| `failed` | For a `retry`: `{ model, error }` of the attempt that failed |
+| `text` | The latest message you wrote |
+| `messages` | The conversation: `{ role, text, tools }` per message, with the first 2000 characters of its text and the names of the tools an assistant message calls |
+
+Returning `previous` for a `continuation` keeps the provider's prompt cache valid; changing models in the
+middle of a turn is allowed and pays for the context once more. The function may wait: it can ask
+`azazel.classify` before it answers, which adds that request's time before the first token. It keeps state of
+its own in local variables or `azazel.state`.
+
+What you chose and where each request went are kept apart. The session records the choice as a
+`model_change` entry (`virtual/auto`), so a resumed session comes back on the virtual model, and each request
+as a `request_started` entry with the model it went to and `via`, the virtual model that picked it; replies
+name the model that wrote them. The status line shows both, `virtual/auto -> anthropic/claude-sonnet-4-5`;
+before the first reply it shows the virtual model alone. The context window, prices and `/cost` are those of
+the models that answered.
+
+When the router raises an error, returns nothing or names no model that is configured, the request fails
+with `virtual/<name>: <reason>`, unless the chain has a model after the virtual one, which then answers. When
+the extension is no longer loaded, a session that was left on its virtual model goes on with the default
+chain; the interactive UI says so. `/reload` registers the routers of the scripts that are there then.
 
 ## Retry, cooldown and fallback
 

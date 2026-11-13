@@ -243,7 +243,7 @@ The file a `read`, `write` or `edit` card names is a link to that file in termin
 | `◔ 61% 5h` | the lead answers on a subscription you signed in to | The fullest usage window of the account and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
 | `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
 | `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
-| `⬢ model · level` | always, against the right edge | The model answering and the thinking level |
+| `⬢ model · level` | always, against the right edge | The model answering and the thinking level. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
 
 **Speed.** Each reply of the lead is timed from its first text or thinking to its end, so the wait for the
 model to start is not part of the speed. While a reply streams, the number is an estimate (characters received,

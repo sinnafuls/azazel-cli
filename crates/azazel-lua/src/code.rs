@@ -10,7 +10,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_core::transcript::activity;
-use azazel_core::{ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch};
+use azazel_core::{
+    ArtifactStore, EntryKind, ExtError, Extension, Registrar, SessionStore, ToolCaller, toolsearch,
+};
 use azazel_team::{MemberState, Team};
 use futures::StreamExt;
 use mlua::chunk::ChunkMode;
@@ -340,7 +342,12 @@ impl Run {
 
     /// `tools.search`: the callable tools that match `query`, best first, as `{ name,
     /// description }` with the first sentence of each description.
-    async fn search_tools(&self, lua: &Lua, query: String, limit: Option<usize>) -> mlua::Result<mlua::Value> {
+    async fn search_tools(
+        &self,
+        lua: &Lua,
+        query: String,
+        limit: Option<usize>,
+    ) -> mlua::Result<mlua::Value> {
         if query.trim().is_empty() {
             return Err(runtime("tools.search: the query is empty"));
         }
@@ -470,7 +477,11 @@ impl Run {
             match result {
                 Ok(value) => out.raw_set(key, value)?,
                 Err(e) if failure.is_none() => {
-                    failure = Some(format!("parallel: entry `{}`: {}", key.to_string()?, describe(&e)));
+                    failure = Some(format!(
+                        "parallel: entry `{}`: {}",
+                        key.to_string()?,
+                        describe(&e)
+                    ));
                 }
                 Err(_) => {}
             }
@@ -499,7 +510,9 @@ impl Run {
         }
         let value = match value {
             mlua::Value::Nil => Value::Null,
-            value => from_lua(lua, value).map_err(|e| runtime(format!("{NAME}: `{key}`: {}", describe(&e))))?,
+            value => {
+                from_lua(lua, value).map_err(|e| runtime(format!("{NAME}: `{key}`: {}", describe(&e))))?
+            }
         };
         let size = serde_json::to_string(&value).map_or(0, |text| text.len());
         if size > MAX_STORED_BYTES {

@@ -136,7 +136,10 @@ pub async fn classify(
     let chain = match chain {
         Some(chain) if side.router.resolve(&chain).is_empty() => {
             let named: Vec<String> = chain.iter().map(ToString::to_string).collect();
-            return Err(format!("`{}` names no model that is configured", named.join(", ")));
+            return Err(format!(
+                "`{}` names no model that is configured",
+                named.join(", ")
+            ));
         }
         Some(chain) => chain,
         None => {
@@ -245,8 +248,14 @@ mod tests {
         for (reply, what) in [
             ("It is a bug.", "no JSON object"),
             (r#"{"confidence": 0.5}"#, "no `choice`"),
-            (r#"{"choice": 4, "confidence": 0.5}"#, "`choice` is none of the choices"),
-            (r#"{"choice": "praise", "confidence": 0.5}"#, "`choice` is none of the choices"),
+            (
+                r#"{"choice": 4, "confidence": 0.5}"#,
+                "`choice` is none of the choices",
+            ),
+            (
+                r#"{"choice": "praise", "confidence": 0.5}"#,
+                "`choice` is none of the choices",
+            ),
             (r#"{"choice": 1}"#, "no `confidence`"),
             (r#"{"choice": 1, "confidence": -1}"#, "no `confidence`"),
         ] {
@@ -264,12 +273,14 @@ mod tests {
         let mock = Arc::new(MockProvider::new());
         mock.push(
             "judge",
-            MockStep::text(r#"{"choice": 1, "confidence": 0.75, "reason": "it crashes"}"#).with_usage(Usage {
-                input: 40,
-                output: 12,
-                cost_usd: Some(0.01),
-                ..Usage::default()
-            }),
+            MockStep::text(r#"{"choice": 1, "confidence": 0.75, "reason": "it crashes"}"#).with_usage(
+                Usage {
+                    input: 40,
+                    output: 12,
+                    cost_usd: Some(0.01),
+                    ..Usage::default()
+                },
+            ),
         );
         let side = side(mock.clone(), &[("judge", "mock/judge")]);
         let answer = classify(
@@ -303,7 +314,10 @@ mod tests {
         assert_eq!(side.costs.by_purpose()[PURPOSE].cost_usd, Some(0.01));
 
         // A model named by the caller is asked instead of the role.
-        mock.push("other", MockStep::text(r#"{"choice": "question", "confidence": 0.5}"#));
+        mock.push(
+            "other",
+            MockStep::text(r#"{"choice": "question", "confidence": 0.5}"#),
+        );
         let answer = classify(
             &side,
             &lead(),
@@ -314,7 +328,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!((answer.index, answer.model.to_string()), (1, "mock/other".to_string()));
+        assert_eq!(
+            (answer.index, answer.model.to_string()),
+            (1, "mock/other".to_string())
+        );
     }
 
     #[tokio::test]
@@ -333,12 +350,18 @@ mod tests {
             .await
             .unwrap_err()
         };
-        assert_eq!(ask(&with_judge, " ", &["a", "b"], None).await, "the question is empty");
+        assert_eq!(
+            ask(&with_judge, " ", &["a", "b"], None).await,
+            "the question is empty"
+        );
         assert_eq!(
             ask(&with_judge, "q", &["a"], None).await,
             "there are 1 choices; give from 2 to 20"
         );
-        assert_eq!(ask(&with_judge, "q", &["a", " "], None).await, "choice 2 is empty");
+        assert_eq!(
+            ask(&with_judge, "q", &["a", " "], None).await,
+            "choice 2 is empty"
+        );
         assert_eq!(
             ask(&with_judge, "q", &["Yes", "no", "yes "], None).await,
             "the choice `yes` is there twice"
