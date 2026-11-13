@@ -20,6 +20,7 @@ pub mod shell;
 pub mod util;
 pub mod web;
 pub mod write;
+mod xml;
 
 use std::path::PathBuf;
 use std::sync::Arc;

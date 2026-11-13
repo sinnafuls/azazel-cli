@@ -12,6 +12,8 @@ workspace = true
 [features]
 lsp = ["dep:lsp-types"]
 pdf = ["dep:pdf-extract"]
+# `.docx`, `.pptx`, `.xlsx`, `.msg` and `.eml` files in `read`.
+office = ["dep:zip", "dep:cfb", "dep:mail-parser"]
 
 [dependencies]
 async-trait.workspace = true
@@ -19,6 +21,7 @@ azazel-agent.workspace = true
 azazel-ai.workspace = true
 azazel-core.workspace = true
 base64.workspace = true
+cfb = { workspace = true, optional = true }
 dom_smoothie.workspace = true
 futures.workspace = true
 globset.workspace = true
@@ -27,8 +30,10 @@ grep-searcher.workspace = true
 htmd.workspace = true
 ignore.workspace = true
 lsp-types = { workspace = true, optional = true }
+mail-parser = { workspace = true, optional = true }
 pdf-extract = { workspace = true, optional = true }
 process-wrap.workspace = true
+quick-xml.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
@@ -38,6 +43,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
 which.workspace = true
+zip = { workspace = true, optional = true }
 
 [dev-dependencies]
 image.workspace = true
