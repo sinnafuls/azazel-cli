@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn every_command_has_a_name() {
         let names = Command::names();
-        assert_eq!(names.len(), 37, "{names:?}");
+        assert_eq!(names.len(), 38, "{names:?}");
         assert!(names.contains(&"prompt") && names.contains(&"run_command"));
     }
 }

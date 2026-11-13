@@ -396,7 +396,7 @@ The tool's description lists the callable tools with their arguments, within abo
 | Tool | Input | Behaviour |
 |---|---|---|
 | `todo` | `items: [{text, status}]` | Replaces the agent's task list. `status` is `pending`, `in_progress` or `done`; at most one item may be `in_progress` |
-| `ask_user` | `question`, `type?`, `context?`, `options?`, `multi?`, `allow_freeform?` | Asks you a question and waits; see below |
+| `ask_user` | `question`, `type?`, `context?`, `code?`, `diff?`, `options?`, `multi?`, `recommended?`, `allow_freeform?`; or `questions`; `async?` | Asks you a question, or several in one form, and waits; see below |
 | `plan_submit` | `path` | In plan mode: submits a plan file under `.azazel/plans/` for your approval. See [permissions](permissions.md) |
 
 ### The task list
@@ -414,11 +414,27 @@ The list is shown above the input while work on it remains, and `/todo` shows or
 | `type` | `select` (one of the options), `multiselect` (any number of them), `text` (a typed answer) or `confirm` (yes or no). Left out, it follows from the rest: `text` without `options`, `multiselect` with `multi: true`, otherwise `select` |
 | `context` | What you need to know to answer; shown above the question |
 | `options` | The choices of a `select` or `multiselect`: 2 to 8, each different from the others whatever its case and spacing. Not allowed for `text` and `confirm` |
+| `code`, `diff` | The code, or the unified diff, the question is about: shown between the context and the question, the code numbered, the diff coloured. One of the two at most |
+| `recommended` | The answer the agent would give: one of the `options`, or `yes` or `no` for a `confirm`. It is marked `recommended` and is the row the selection starts on. Not allowed for `text` |
 | `allow_freeform` | `select` only: the list ends with `Other…`, which lets you type an answer instead |
+| `questions` | Instead of `question`: up to 6 questions, each with the fields above and an optional `header` (a word or two, at most 24 characters, that names it in the form). They are answered together in [one form](tui.md#popups) |
+| `async` | The call returns at once; the answers reach the agent later as a message |
 
-A call that breaks one of these rules fails before you are asked anything, with what is wrong (`a `select` question needs 2 to 8 options, not 1`, `the option `red` is offered twice`).
+A call that breaks one of these rules fails before you are asked anything, with what is wrong (`a `select` question needs 2 to 8 options, not 1`, `the option `red` is offered twice`, `question 2: `recommended` names `green`, which is not one of the options`).
 
-The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
+The result of one question is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. The result of several is each question, numbered, with its answer under it; a question you left open reads `(no answer)`:
+
+```text
+1. Which store should the service use?
+postgres
+
+2. Anything else I should know?
+(no answer)
+```
+
+When you dismiss the question or the form, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked: alone it is declined the same way, in a form it is left open.
+
+With `async: true` the agent does not wait. The call returns `The question is with the user. The answer will reach you as a message; go on with what does not depend on it.` and the question is shown to you like any other. When you answer, the agent that asked receives the answers between `<user-answer>` tags: as a steer message before its next request while it works, as a new prompt when it has stopped. Dismissing the question sends `the user declined to answer` the same way. Use it for a decision that is needed later, while there is other work to do first.
 
 ## Recalling the conversation
 

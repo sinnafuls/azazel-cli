@@ -42,13 +42,14 @@ impl Tui {
         self.active_agents() > 0
     }
 
-    /// One line per sub-agent that is queued, working or waiting for an approval.
-    pub(super) fn roster_lines(&self, width: usize) -> Vec<Line> {
-        let rows: Vec<RosterRow> = self
-            .backend
-            .roster()
+    /// One line per sub-agent that is queued, working or waiting for an approval. While the
+    /// keyboard is in the roster the selected row is marked, and a line under the rows says
+    /// what the keys do.
+    pub(super) fn roster_lines(&mut self, width: usize) -> Vec<Line> {
+        let members = self.fleet_rows();
+        let focus = self.fleet_focus(members.len());
+        let rows: Vec<RosterRow> = members
             .into_iter()
-            .filter(|member| member.id != LEAD && member.state.is_active())
             .map(|member| {
                 let (state, activity) = match &member.state {
                     MemberState::Queued => (RosterState::Queued, "queued".to_string()),
@@ -67,14 +68,22 @@ impl Tui {
                 }
             })
             .collect();
-        roster::render(&rows, width, &self.theme)
+        let mut lines = roster::render(&rows, focus, width, &self.theme);
+        if focus.is_some() {
+            lines.push(self.fleet_hint(width));
+        }
+        lines
     }
 
     pub(super) fn on_team(&mut self, event: TeamEvent) {
-        let TeamEvent::Agent { id, event } = event else {
+        let (id, event) = match event {
+            TeamEvent::Agent { id, event } => (id, event),
+            TeamEvent::Input { id, text } => return self.fleet.log(&id).input(text),
             // The roster is read afresh for every frame.
-            return;
+            TeamEvent::Roster => return,
         };
+        // Kept for the fleet view, whether the agent is followed or not.
+        self.fleet.log(&id).event(&event);
         // A provider moving to another account concerns every agent, whoever ran into the limit.
         if let AgentEvent::Account {
             provider,
@@ -157,7 +166,7 @@ impl Tui {
                 SelectItem::new(format!("{}{followed}", member.id), detail)
             })
             .collect();
-        let body = vec!["enter shows the agent's work here".to_string()];
+        let body = vec!["enter shows the agent's work here; o opens it in a popup".to_string()];
         let ids = members.into_iter().map(|member| member.id).collect();
         self.overlay = Some(
             Overlay::select("Agents", body, items, false, Action::Agents(ids))
@@ -176,6 +185,7 @@ impl Tui {
                     Action::AgentMessage(id.to_string()),
                 ));
             }
+            'o' => self.open_agent_pane(id),
             's' => {
                 self.overlay = None;
                 match self.backend.stop_agent(id).await {
@@ -208,6 +218,56 @@ impl Tui {
                 "following {id}: what it says and does appears here, marked [{id}]"
             ));
         }
+    }
+
+    /// `@name text` at the prompt. True when `name` is an agent or a definition and the line
+    /// was dealt with: sent to the agent, or an agent started for it. `@name` alone opens the
+    /// agent's popup.
+    pub(super) async fn mention(&mut self, shown: &str, name: &str, text: &str) -> bool {
+        if text.is_empty() {
+            let known = self
+                .backend
+                .roster()
+                .iter()
+                .any(|member| member.id == name && member.id != LEAD);
+            if known {
+                self.open_agent_pane(name);
+            }
+            return known;
+        }
+        let Some(mentioned) = self.backend.mention(name, text).await else {
+            return false;
+        };
+        let lines = view::user_prompt(shown, self.width(), &self.theme);
+        self.say(lines);
+        match mentioned {
+            Ok(mentioned) if mentioned.started => self.info(&format!(
+                "started {}; its report goes to the lead when it is done",
+                mentioned.agent
+            )),
+            Ok(mentioned) => self.info(&format!("sent to: {}", mentioned.agent)),
+            Err(why) => self.fail(&why),
+        }
+        true
+    }
+
+    /// What `@` completes at the start of a prompt before the files: the sub-agents, then the
+    /// definitions an agent can be started from.
+    pub(super) fn mention_items(&self) -> Vec<SelectItem> {
+        let mut items: Vec<SelectItem> = self
+            .backend
+            .roster()
+            .into_iter()
+            .filter(|member| member.id != LEAD)
+            .map(|member| SelectItem::new(member.id, format!("agent, {}", member.state.label())))
+            .collect();
+        items.extend(
+            self.backend
+                .agent_defs()
+                .into_iter()
+                .map(|(name, about)| SelectItem::new(name, format!("start an agent: {about}"))),
+        );
+        items
     }
 
     pub(super) async fn message_agent(&mut self, id: &str, message: &str) {

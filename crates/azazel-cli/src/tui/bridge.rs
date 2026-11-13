@@ -14,6 +14,11 @@ pub enum UiRequest {
         question: Question,
         reply: Reply<Result<Vec<String>, UiError>>,
     },
+    /// Several questions to answer together; the answers come in their order.
+    Form {
+        questions: Vec<Question>,
+        reply: Reply<Result<Vec<Vec<String>>, UiError>>,
+    },
     Confirm {
         prompt: String,
         reply: Reply<Result<bool, UiError>>,
@@ -49,6 +54,7 @@ impl UiRequest {
     pub fn abandoned(&self) -> bool {
         match self {
             UiRequest::Ask { reply, .. } => reply.is_closed(),
+            UiRequest::Form { reply, .. } => reply.is_closed(),
             UiRequest::Confirm { reply, .. } => reply.is_closed(),
             UiRequest::Select { reply, .. } => reply.is_closed(),
             UiRequest::Input { reply, .. } => reply.is_closed(),
@@ -83,6 +89,12 @@ impl UiBridge for TuiBridge {
     async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
         let question = question.clone();
         self.ask_ui(|reply| UiRequest::Ask { question, reply }, Err(UiError::NoUser))
+            .await
+    }
+
+    async fn ask_form(&self, questions: &[Question]) -> Result<Vec<Vec<String>>, UiError> {
+        let questions = questions.to_vec();
+        self.ask_ui(|reply| UiRequest::Form { questions, reply }, Err(UiError::NoUser))
             .await
     }
 

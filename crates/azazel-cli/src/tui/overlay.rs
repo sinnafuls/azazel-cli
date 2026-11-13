@@ -10,11 +10,13 @@ use azazel_core::{ApprovalDecision, PermissionMode, PlanDecision, UiError};
 use azazel_tui::components::markdown;
 use azazel_tui::components::overlay::Frame;
 use azazel_tui::{
-    Editor, Glyph, GlyphLevel, Hint, KeyCombo, Line, Role, SelectItem, SelectList, Theme, text,
+    Editor, Glyph, GlyphLevel, Hint, KeyCombo, Line, Role, Scroll, SelectItem, SelectList, Theme, text,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::bridge::Reply;
+use super::fleet::{Pane, PaneKey};
+use super::form::{Form, Step};
 use super::sessions::{PickFor, SideRun, TreeFilter};
 
 /// A point the session can be rewound to.
@@ -38,17 +40,13 @@ pub enum ApprovalRow {
 
 /// What happens with an overlay's result.
 pub enum Action {
+    /// One question of an agent, answered in a form.
     Ask {
         reply: Reply<Result<Vec<String>, UiError>>,
-        /// The answer each row stands for.
-        options: Vec<String>,
-        multi: bool,
-        picked: Vec<bool>,
-        /// The question, when a row after the options lets the user type an answer instead.
-        other: Option<String>,
     },
-    AskFree {
-        reply: Reply<Result<Vec<String>, UiError>>,
+    /// Several questions of an agent, answered together.
+    Form {
+        reply: Reply<Result<Vec<Vec<String>>, UiError>>,
     },
     Confirm {
         reply: Reply<Result<bool, UiError>>,
@@ -118,6 +116,8 @@ pub enum Action {
     Agents(Vec<String>),
     /// A message being typed for this agent.
     AgentMessage(String),
+    /// The popup that shows an agent at work.
+    AgentPane,
     /// `/terminals`: the terminal of each row; choosing one shows its screen.
     Terminals(Vec<String>),
     /// `(server, enabled)` per row.
@@ -165,9 +165,8 @@ impl Action {
     /// Answers the waiting agent when the user dismisses the overlay.
     pub fn cancel(self) {
         match self {
-            Action::Ask { reply, .. } | Action::AskFree { reply } => {
-                drop(reply.send(Err(UiError::Cancelled)))
-            }
+            Action::Ask { reply } => drop(reply.send(Err(UiError::Cancelled))),
+            Action::Form { reply } => drop(reply.send(Err(UiError::Cancelled))),
             Action::Confirm { reply } => drop(reply.send(Err(UiError::Cancelled))),
             Action::UiSelect { reply } => drop(reply.send(Err(UiError::Cancelled))),
             Action::UiInput { reply } => drop(reply.send(Err(UiError::Cancelled))),
@@ -186,7 +185,8 @@ impl Action {
     /// browser while its "waiting" overlay was still open, for example).
     pub fn abandoned(&self) -> bool {
         match self {
-            Action::Ask { reply, .. } | Action::AskFree { reply } => reply.is_closed(),
+            Action::Ask { reply } => reply.is_closed(),
+            Action::Form { reply } => reply.is_closed(),
             Action::Confirm { reply } => reply.is_closed(),
             Action::UiSelect { reply } => reply.is_closed(),
             Action::UiInput { reply } => reply.is_closed(),
@@ -208,6 +208,20 @@ pub enum Kind {
         /// Typed text is shown as dots.
         secret: bool,
     },
+    /// The questions of an agent.
+    Form(Box<Form>),
+    /// One agent at work, and a line to type to it.
+    Pane(Box<Pane>),
+}
+
+/// What a form or the popup of an agent draws inside the box, under any text.
+pub struct Widget {
+    pub lines: Vec<Line>,
+    /// The typing cursor as `(row, column)` within `lines`.
+    pub cursor: Option<(usize, usize)>,
+    /// Where a list or a transcript is when it does not fit, and the row of `lines` it starts
+    /// at.
+    pub scroll: Option<(usize, Scroll)>,
 }
 
 pub struct Overlay {
@@ -247,6 +261,12 @@ pub enum Outcome {
     },
     /// `ctrl+o` on a body that does not fit the box: show all of it full screen.
     ReadBody,
+    /// A form was sent: the answers, one list per question.
+    Answers(Vec<Vec<String>>),
+    /// Text typed to the agent of a popup. The popup stays open.
+    Send(String),
+    /// The agent of a popup is to be stopped. The popup stays open.
+    Stop,
 }
 
 /// A key as the hint line names it: `S` rather than `shift+s`.
@@ -257,6 +277,11 @@ fn key_label(combo: &KeyCombo) -> String {
         }
         _ => combo.to_string(),
     }
+}
+
+/// Columns of text in the box of an overlay, in a window `columns` wide.
+pub fn inner_width(columns: usize) -> usize {
+    Frame::inner_width(azazel_tui::modal::box_width(columns)).max(1)
 }
 
 /// The most rows of a list a box shows at once.
@@ -379,34 +404,60 @@ impl Overlay {
         overlay
     }
 
-    /// Flips one option of a multi-choice question in place, keeping the selection on it. False
-    /// when `index` is not such an option.
-    pub fn toggle(&mut self, index: usize) -> bool {
-        let (
-            Action::Ask {
-                options,
-                multi: true,
-                picked,
-                ..
-            },
-            Kind::Select { list, .. },
-        ) = (&mut self.action, &mut self.kind)
-        else {
-            return false;
-        };
-        let Some(flag) = picked.get_mut(index) else {
-            return false;
-        };
-        *flag = !*flag;
-        list.set_items(ask_items(options, picked, true));
-        for _ in 0..index {
-            list.move_down();
+    /// The questions of an agent in a box.
+    pub fn form(form: Form, action: Action) -> Self {
+        Overlay::new(
+            "The agent asks".to_string(),
+            Vec::new(),
+            Kind::Form(Box::new(form)),
+            action,
+        )
+    }
+
+    /// The popup that shows an agent at work. Its title follows the agent.
+    pub fn pane(pane: Pane, action: Action) -> Self {
+        let title = pane.agent.clone();
+        Overlay::new(title, Vec::new(), Kind::Pane(Box::new(pane)), action)
+    }
+
+    /// The editor of an overlay that takes text which may also be written in the user's own
+    /// editor: an input that is not a secret, a typed answer, the line to an agent.
+    pub fn editor_mut(&mut self) -> Option<&mut Editor> {
+        match &mut self.kind {
+            Kind::Input {
+                editor,
+                secret: false,
+            } => Some(editor),
+            Kind::Form(form) => form.editor_mut(),
+            Kind::Pane(pane) => Some(pane.editor_mut()),
+            Kind::Input { secret: true, .. } | Kind::Select { .. } => None,
         }
-        true
     }
 
     pub fn on_key(&mut self, key: &KeyEvent) -> Outcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // A form and the popup of an agent have keys of their own, `esc` among them.
+        match &mut self.kind {
+            Kind::Pane(pane) => {
+                return match pane.on_key(key) {
+                    PaneKey::Pending => Outcome::Pending,
+                    PaneKey::Close => Outcome::Cancelled,
+                    PaneKey::Send(typed) => Outcome::Send(typed),
+                    PaneKey::Stop => Outcome::Stop,
+                };
+            }
+            Kind::Form(form) => {
+                if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
+                    return Outcome::ReadBody;
+                }
+                return match form.on_key(key) {
+                    Step::Pending => Outcome::Pending,
+                    Step::Cancelled => Outcome::Cancelled,
+                    Step::Done(answers) => Outcome::Answers(answers),
+                };
+            }
+            Kind::Select { .. } | Kind::Input { .. } => {}
+        }
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
             return Outcome::Cancelled;
         }
@@ -416,7 +467,7 @@ impl Overlay {
                 Kind::Select { list, .. } => list
                     .selected()
                     .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
-                Kind::Input { .. } => Outcome::Hotkey { index: 0, key },
+                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) => Outcome::Hotkey { index: 0, key },
             };
         }
         if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
@@ -467,6 +518,8 @@ impl Overlay {
                 editor.handle_key(key);
                 Outcome::Pending
             }
+            // Handled above.
+            Kind::Form(_) | Kind::Pane(_) => Outcome::Pending,
         }
     }
 
@@ -482,11 +535,16 @@ impl Overlay {
             }
             Kind::Select { .. } => {}
             Kind::Input { editor, .. } => editor.insert_str(pasted),
+            Kind::Form(form) => form.on_paste(pasted),
+            Kind::Pane(pane) => pane.on_paste(pasted),
         }
     }
 
     /// The body as the full-screen viewer shows it when the box cannot hold all of it.
     pub fn body_text(&self) -> String {
+        if let Kind::Form(form) = &self.kind {
+            return form.body_text();
+        }
         let mut text = self.body.join("\n");
         if let Some(warning) = &self.warning {
             text.push_str("\n\n");
@@ -513,6 +571,9 @@ impl Overlay {
                 }
                 hints.push(Hint::new("enter", "confirm"));
             }
+            Kind::Form(form) => hints.extend(form.hints(theme)),
+            // Its own way out is named among them.
+            Kind::Pane(pane) => return pane.hints(),
         }
         for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
             hints.push(Hint::new(key_label(combo), *what));
@@ -534,9 +595,20 @@ impl Overlay {
             frame.border = Role::Warning;
         }
         let inner = Frame::inner_width(width).max(1);
-        let interior = max_rows.saturating_sub(frame.chrome_rows()).max(1);
+        let total = max_rows.saturating_sub(frame.chrome_rows()).max(1);
+        // The tabs of a form stay whatever else is cut, as long as the box has rows for more
+        // than them.
+        let head: Vec<Line> = match &self.kind {
+            Kind::Form(form) => form.tabs(inner, theme),
+            _ => Vec::new(),
+        };
+        let head = if head.len() + 2 > total { Vec::new() } else { head };
+        let head_rows = head.len();
+        let interior = total - head_rows;
 
-        let mut body: Vec<Line> = if self.markdown {
+        let mut body: Vec<Line> = if let Kind::Form(form) = &self.kind {
+            form.body(inner, theme)
+        } else if self.markdown {
             markdown::render(&self.body.join("\n"), inner, theme)
         } else {
             // What a tool or a model put into the body (a command, a path) is shown as text:
@@ -570,6 +642,8 @@ impl Overlay {
             }
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
+            Kind::Form(form) => form.kept(),
+            Kind::Pane(_) => interior,
         };
         let has_body = !body.is_empty() || !warning.is_empty();
         let text_room = interior.saturating_sub(kept + usize::from(has_body));
@@ -596,9 +670,10 @@ impl Overlay {
                 body.push(theme.paint(Role::Muted, &more));
             }
         }
-        let mut rows = body;
+        let mut rows = head;
+        rows.append(&mut body);
         rows.append(&mut warning);
-        if has_body && !rows.is_empty() {
+        if has_body && rows.len() > head_rows {
             rows.push(String::new());
         }
 
@@ -611,7 +686,7 @@ impl Overlay {
                     cursor = Some((rows.len(), usize::from(column)));
                     rows.push(line);
                 }
-                let room = interior.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
+                let room = total.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
                 let view = list.view(inner, room, theme);
                 frame.scrollbar = view.scroll.map(|scroll| (rows.len(), scroll));
                 rows.extend(view.lines);
@@ -620,7 +695,7 @@ impl Overlay {
                 editor,
                 secret: false,
             } => {
-                let room = interior.saturating_sub(rows.len()).max(1);
+                let room = total.saturating_sub(rows.len()).max(1);
                 let view = editor.view(inner, room, theme, &prompt);
                 cursor = Some((
                     rows.len() + usize::from(view.cursor.0),
@@ -635,6 +710,20 @@ impl Overlay {
                 let before = editor.text()[..editor.cursor()].chars().count().min(dots);
                 cursor = Some((rows.len(), lead + before));
                 rows.push(format!("{prompt}{}", theme.glyph(Glyph::Bullet).repeat(dots)));
+            }
+            Kind::Form(form) => {
+                let room = total.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
+                let widget = form.widget(inner, room, &prompt, theme);
+                cursor = widget.cursor.map(|(row, column)| (rows.len() + row, column));
+                frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                rows.extend(widget.lines);
+            }
+            Kind::Pane(pane) => {
+                let room = total.saturating_sub(rows.len()).max(1);
+                let widget = pane.widget(inner, room, &prompt, theme);
+                cursor = widget.cursor.map(|(row, column)| (rows.len() + row, column));
+                frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                rows.extend(widget.lines);
             }
         }
 
@@ -725,23 +814,9 @@ pub fn approval_rows(
     (items, answers)
 }
 
-/// The rows of an agent's question: the options, and for a multi-choice one their check boxes
-/// followed by a `Done` row.
-pub fn ask_items(options: &[String], picked: &[bool], multi: bool) -> Vec<SelectItem> {
-    if !multi {
-        return options.iter().map(|o| SelectItem::new(o.as_str(), "")).collect();
-    }
-    let mut items: Vec<SelectItem> = options
-        .iter()
-        .zip(picked)
-        .map(|(option, on)| SelectItem::new(option.as_str(), "").checked(*on))
-        .collect();
-    items.push(SelectItem::new("Done", "confirm the selection"));
-    items
-}
-
 #[cfg(test)]
 mod tests {
+    use azazel_core::{AskKind, Question};
     use crossterm::event::KeyEventKind;
 
     use super::*;
@@ -1008,6 +1083,28 @@ mod tests {
         secret.on_paste("sk-secret-secret");
         let mut input = Overlay::input("Why?", body.clone(), Action::Mode);
         input.on_paste("line one\nline two");
+        let (reply, _answers) = tokio::sync::oneshot::channel();
+        let form = Overlay::form(three_questions(), Action::Form { reply });
+        // A choice with a long context, where the user types an answer of their own.
+        let mut asked = Question {
+            kind: AskKind::Select,
+            options: vec!["red".to_string(), "blue".to_string()],
+            allow_freeform: true,
+            ..Question::text("Which colour should the door be painted in the end?")
+        };
+        asked.context = Some(body.join("\n"));
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut typing = Overlay::form(Form::new(vec![asked], "Other…"), Action::Ask { reply });
+        typing.on_key(&key(KeyCode::Char('3')));
+        typing.on_paste("a colour of my own");
+        let mut agent = Pane::new("scout-1");
+        agent.set_lines(
+            (0..50)
+                .map(|row| format!("row {row} of what the agent did"))
+                .collect(),
+        );
+        let mut pane = Overlay::pane(agent, Action::AgentPane);
+        pane.on_paste("look again");
         let overlays = [
             Overlay::select("Model", body.clone(), long, true, Action::Mode),
             Overlay::select(
@@ -1029,6 +1126,9 @@ mod tests {
             .markdown(),
             input,
             secret,
+            form,
+            typing,
+            pane,
         ];
         for overlay in &overlays {
             for width in 5..=160 {
@@ -1379,24 +1479,15 @@ mod tests {
     #[test]
     fn a_multi_choice_question_has_check_boxes_that_toggle() {
         let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
-        let options = vec!["tests".to_string(), "docs".to_string()];
-        let picked = vec![false; 2];
+        let question = Question {
+            kind: AskKind::Multiselect,
+            options: vec!["tests".to_string(), "docs".to_string()],
+            ..Question::text("What should change?")
+        };
         let (reply, _answer) = tokio::sync::oneshot::channel();
-        let mut overlay = Overlay::select(
-            "The agent asks",
-            vec!["What should change?".to_string()],
-            ask_items(&options, &picked, true),
-            false,
-            Action::Ask {
-                reply,
-                options,
-                multi: true,
-                picked,
-                other: None,
-            },
-        );
+        let mut overlay = Overlay::form(Form::new(vec![question], "Other..."), Action::Ask { reply });
         overlay.on_key(&key(KeyCode::Down));
-        assert!(overlay.toggle(1));
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Pending));
         let rows = shown(&overlay.render(44, 20, &theme).0);
         assert_eq!(
             rows,
@@ -1407,9 +1498,145 @@ mod tests {
                 "|   [ ] tests                              |",
                 "| > [x] docs                               |",
                 "|   Done  confirm the selection            |",
-                "+- ^v move | enter pick | esc cancel ------+",
+                "+- ^v move | enter tick | esc cancel ------+",
             ]
         );
         assert!(rows.iter().all(|row| row.is_ascii()));
+        overlay.on_key(&key(KeyCode::Down));
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Enter)),
+            Outcome::Answers(answers) if answers == [["docs"]]
+        ));
+    }
+
+    fn three_questions() -> Form {
+        let mut store = Question {
+            kind: AskKind::Select,
+            options: vec!["sqlite".to_string(), "postgres".to_string()],
+            ..Question::text("Which store should the service use?")
+        };
+        store.header = Some("Store".to_string());
+        store.context = Some("The service keeps sessions.".to_string());
+        store.recommended = Some("postgres".to_string());
+        let mut auth = Question {
+            kind: AskKind::Confirm,
+            ..Question::text("Add sign-in now?")
+        };
+        auth.header = Some("Auth".to_string());
+        let mut notes = Question::text("Anything else?");
+        notes.header = Some("Notes".to_string());
+        Form::new(vec![store, auth, notes], "Other...")
+    }
+
+    #[test]
+    fn several_questions_are_one_box_with_tabs_and_a_tab_that_sends() {
+        let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut overlay = Overlay::form(three_questions(), Action::Form { reply });
+        let (lines, cursor) = overlay.render(60, 20, &theme);
+        assert_eq!(cursor, None, "a list has no typing cursor");
+        assert_eq!(
+            shown(&lines),
+            [
+                "+- The agent asks -----------------------------------------+",
+                "| 1 Store  2 Auth  3 Notes  Send                           |",
+                "|                                                          |",
+                "| The service keeps sessions.                              |",
+                "|                                                          |",
+                "| Which store should the service use?                      |",
+                "|                                                          |",
+                "|   sqlite                                                 |",
+                "| > postgres  recommended                                  |",
+                "+- ^v move | enter pick | tab next question | esc cancel --+",
+            ]
+        );
+        // The recommended row is the one a stray Enter takes; the next question follows.
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Pending));
+        assert!(matches!(overlay.on_key(&key(KeyCode::Tab)), Outcome::Pending));
+        overlay.on_paste("ship it");
+        let (lines, cursor) = overlay.render(60, 20, &theme);
+        let rows = shown(&lines);
+        assert_eq!(
+            rows[1],
+            "| 1 Store [+]  2 Auth  3 Notes  Send                       |"
+        );
+        assert_eq!(
+            rows[3],
+            "| Anything else?                                           |"
+        );
+        assert_eq!(
+            rows[5],
+            "| > ship it                                                |"
+        );
+        // Row 5 of the box, after the border, the space, the prompt and the text.
+        assert_eq!(cursor, Some((5, 11)));
+        assert!(
+            overlay.editor_mut().is_some(),
+            "a typed answer can be written in an editor"
+        );
+
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Pending));
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('1'))),
+            Outcome::Pending
+        ));
+        let rows = shown(&overlay.render(60, 20, &theme).0);
+        assert_eq!(
+            rows[3..10],
+            [
+                "| 1. Which store should the service use?                   |",
+                "|    postgres                                              |",
+                "| 2. Add sign-in now?                                      |",
+                "|    yes                                                   |",
+                "| 3. Anything else?                                        |",
+                "|    ship it                                               |",
+                "|                                                          |",
+            ]
+        );
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Enter)),
+            Outcome::Answers(answers) if answers == [vec!["postgres"], vec!["yes"], vec!["ship it"]]
+        ));
+    }
+
+    #[test]
+    fn a_form_keeps_its_tabs_and_its_list_when_the_text_is_too_long_for_the_box() {
+        let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        let mut long = Question {
+            kind: AskKind::Select,
+            options: vec!["apply".to_string(), "skip".to_string()],
+            ..Question::text("Apply the patch?")
+        };
+        long.excerpt = Some(azazel_core::Excerpt::Code(
+            (1..=40).map(|n| format!("line {n}\n")).collect::<String>(),
+        ));
+        let extra = Question::text("Why?");
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut overlay = Overlay::form(Form::new(vec![long, extra], "Other..."), Action::Form { reply });
+        for width in [30, 44, 80] {
+            for rows in [8, 12, 20] {
+                let (lines, _) = overlay.render(width, rows, &theme);
+                let drawn = shown(&lines);
+                assert!(drawn.len() <= rows, "{width}x{rows}: {} rows", drawn.len());
+                assert!(
+                    drawn.iter().all(|row| text::width(row) == width),
+                    "{width}x{rows}"
+                );
+                let all = drawn.join("\n");
+                assert!(all.contains("Send"), "{width}x{rows}: the tabs stay\n{all}");
+                assert!(
+                    all.contains("apply") && all.contains("skip"),
+                    "{width}x{rows}\n{all}"
+                );
+                assert!(all.contains("more lines"), "{width}x{rows}\n{all}");
+            }
+        }
+        // What was cut can be read whole.
+        let ctrl_o = KeyEvent {
+            modifiers: KeyModifiers::CONTROL,
+            ..key(KeyCode::Char('o'))
+        };
+        assert!(matches!(overlay.on_key(&ctrl_o), Outcome::ReadBody));
+        assert!(overlay.body_text().contains("line 40"));
     }
 }

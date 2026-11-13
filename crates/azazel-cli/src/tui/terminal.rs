@@ -317,7 +317,7 @@ impl Action {
         matches!(
             self,
             Action::Ask { .. }
-                | Action::AskFree { .. }
+                | Action::Form { .. }
                 | Action::Approval { .. }
                 | Action::DenyFeedback { .. }
                 | Action::Plan { .. }

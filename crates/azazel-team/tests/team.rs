@@ -19,9 +19,9 @@ use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
 use azazel_core::{
     CommandOutcome, Config, ExtCtx, Extension, Headless, LoadOptions, Paths, PermissionGate, PermissionState,
-    Registrar, Registry, SessionStore, Ui,
+    Post, Registrar, Registry, SessionStore, Ui,
 };
-use azazel_team::{BUILTIN_AGENTS, MemberState, Team, TeamDeps, TeamEvent, TeamExt};
+use azazel_team::{BUILTIN_AGENTS, MemberState, Mentioned, Team, TeamDeps, TeamEvent, TeamExt};
 use azazel_tools::CoreToolsExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -733,6 +733,93 @@ async fn the_user_starts_a_reviewer_or_any_agent_and_the_lead_gets_the_report() 
             .await
             .unwrap_err()
             .starts_with("usage: /task")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mention_starts_an_agent_from_a_definition_or_reaches_the_agent_of_that_id() {
+    let mut bench = Bench::new(4, false).await;
+    let mut team_events = bench.team.subscribe();
+    // Neither an agent nor a definition: not a mention, and nothing is started.
+    assert!(bench.team.mention("ghost", "do it").await.is_none());
+    assert!(bench.team.mention("f.txt", "explain").await.is_none());
+    assert_eq!(bench.team.list().len(), 1);
+
+    bench.mock.push("scout", MockStep::text("f.txt holds one line"));
+    bench.mock.push("lead", MockStep::text("thanks"));
+    let started = bench
+        .team
+        .mention("scout", "what is in f.txt?")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        started,
+        Mentioned {
+            agent: "scout-1".to_string(),
+            started: true
+        }
+    );
+    bench.until_idle().await;
+    let told = user_texts(&bench.mock.requests_for("lead")[0].messages).join("\n");
+    assert!(told.contains("f.txt holds one line"), "{told}");
+
+    // The id of that agent names it from now on: the text is a message, which starts it again.
+    bench.mock.push("scout", MockStep::text("it says one"));
+    bench.mock.push("lead", MockStep::text("noted"));
+    let sent = bench
+        .team
+        .mention("scout-1", "what does it say?")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        sent,
+        Mentioned {
+            agent: "scout-1".to_string(),
+            started: false
+        }
+    );
+    bench.until_idle().await;
+    assert_eq!(bench.team.list().len(), 2, "no second agent was started");
+    let asked = user_texts(&bench.mock.requests_for("scout")[1].messages);
+    assert_eq!(asked.last().map(String::as_str), Some("what does it say?"));
+
+    // What is posted to an agent from outside its turn (the answers to a question it asked
+    // without waiting) reaches it the same way; an agent that is not there is not reached.
+    let post = bench.registry.services.get::<Post>().unwrap();
+    assert!(!(post.0)("ghost", "hello".to_string()));
+    bench.mock.push("scout", MockStep::text("understood"));
+    bench.mock.push("lead", MockStep::text("fine"));
+    assert!((post.0)(
+        "scout-1",
+        "<user-answer>\nWhich?\nblue\n</user-answer>".to_string()
+    ));
+    bench.until_idle().await;
+    let answered = user_texts(&bench.mock.requests_for("scout")[2].messages);
+    assert!(
+        answered.last().is_some_and(|text| text.contains("Which?\nblue")),
+        "{answered:?}"
+    );
+
+    // Whoever watches the team is told what the agent was handed: its task, then each message.
+    let mut handed = Vec::new();
+    while let Ok(event) = team_events.try_recv() {
+        if let TeamEvent::Input { id, text } = event {
+            handed.push((id, text));
+        }
+    }
+    let handed: Vec<(&str, &str)> = handed
+        .iter()
+        .map(|(id, text)| (id.as_str(), text.as_str()))
+        .collect();
+    assert_eq!(
+        handed,
+        [
+            ("scout-1", "what is in f.txt?"),
+            ("scout-1", "what does it say?"),
+            ("scout-1", "<user-answer>\nWhich?\nblue\n</user-answer>"),
+        ]
     );
 }
 

@@ -21,6 +21,6 @@ pub use ext::TeamExt;
 pub use goal::{Budget, Goal, GoalExt, GoalSettings, GoalStatus, Goals};
 pub use report::{REPORT_TOOL, Typed};
 pub use team::{
-    Finished, LEAD, MemberInfo, MemberState, ORCHESTRATION_TOOLS, SpawnRequest, Team, TeamDeps, TeamEvent,
-    WaitOutcome,
+    Finished, LEAD, MemberInfo, MemberState, Mentioned, ORCHESTRATION_TOOLS, SpawnRequest, Team, TeamDeps,
+    TeamEvent, WaitOutcome,
 };
