@@ -92,7 +92,7 @@ does as lines and reads lines from you:
 |---|---|
 | any text | Sent to the session as a message |
 | `/approve`, `/session`, `/always`, `/deny [what to do instead]` | Answers the oldest permission request: once, for the rest of the session, for good, or not at all |
-| `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. `/answer` alone dismisses it |
+| `/answer <text>` | Answers the oldest question: text, the number of an option (several, separated by commas, where several may be chosen), `yes` or `no`. Where the question lets you type your own answer, anything that is not an option is that answer. Several questions asked together are printed numbered and take one answer each, separated by `;` (`/answer 2; yes; ship it`); an empty one leaves its question open. `/answer` alone dismisses it |
 | `/abort` | Stops the current work |
 | `/continue` | Goes on with a run that was interrupted (see [below](#when-a-background-session-dies)) |
 | `/detach` | Leaves; the session goes on (so does the end of the input, and `Ctrl+C`) |

@@ -78,7 +78,7 @@ When a call needs your word, azazel sends `session/request_permission` for it wi
 
 Dismissing the request refuses the call.
 
-Questions use the same request, with one option per choice: the `ask_user` tool's choices (its `context` is the request's text), a yes-or-no confirmation, and the review of a plan (approve it, or keep planning). A question that needs a typed answer cannot be asked this way: the agent is told the user declined to answer, and a choice that would let you type another answer offers its options only.
+Questions use the same request, with one option per choice: the `ask_user` tool's choices (its `context` is the request's text), a yes-or-no confirmation, and the review of a plan (approve it, or keep planning). A question that needs a typed answer cannot be asked this way: the agent is told the user declined to answer, and a choice that would let you type another answer offers its options only. The option the agent would take reads `(recommended)`, and code or a diff the question is about follows the context in the request's text, fenced. Several questions asked together (`questions`) come as one request each, in their order; one that needs typing is left open, and dismissing any of them declines them all.
 
 ## Not in this version
 

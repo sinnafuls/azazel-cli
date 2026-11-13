@@ -239,8 +239,12 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 
 | Control | Effect |
 |---|---|
+| `Down` in an empty input | Puts the keyboard in the roster: `Up`/`Down` move, `Enter` opens the selected agent's work in a popup you can type to it in, `x` stops it, `Esc` returns. See [the fleet view](tui.md#the-fleet-view) |
+| `@<id> <text>` | Sends the text to that agent, as `/msg` does; `@<id>` alone opens its popup |
+| `@<definition> <text>` | Starts an agent from that definition with the text as its task, as `/task` does |
 | `Alt+A` | Opens the agent hub: every agent with its definition, state, time and tokens |
 | `Enter` in the hub | Follows that agent: what it says and does appears in the transcript marked `[<id>]`. Choose `lead` to stop following. |
+| `o` in the hub | Opens the selected agent's work in the popup of the fleet view, for finished agents too |
 | `m` in the hub | Message the selected agent |
 | `s` / `S` in the hub | Stop the selected agent / stop all sub-agents |
 | `/agents` | Lists the session's agents, every definition with its source, and invalid definition files |
@@ -255,6 +259,7 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 The lead decides when to delegate, but you can start an agent without asking it:
 
 ```text
+❯ @scout where is the retry policy configured?
 ❯ /task scout where is the retry policy configured?
 ❯ /task coder name=fixer make the flaky upload test deterministic
 ❯ /review
@@ -264,6 +269,8 @@ The lead decides when to delegate, but you can start an agent without asking it:
 
 - `/task <agent> [name=<id>] <prompt>` starts the named definition with your prompt. The agent appears in the
   roster like any other, and its report is sent to the lead when it finishes, so the lead can act on it.
+- `@<agent> <prompt>` at the start of a prompt does the same without the command; `@` there completes the
+  definitions. When a running agent has that id, the text is a message to it instead.
 - `/review` starts the `reviewer` on the uncommitted changes: it is told to run `git diff HEAD` and is given the
   names of new, untracked files to read. `/review <ref>` reviews the commits since a branch, tag or commit with
   `git diff <ref>...HEAD`. The reviewer reports findings with `file:line`, a severity and a fix, and may not edit

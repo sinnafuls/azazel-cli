@@ -83,6 +83,21 @@ GitHub are its section here.
 - `@path` in `AGENTS.md`, `CLAUDE.md` and rule files places that file in the text, relative to the including
   file or the project root, up to `context.include_depth` files deep. Cycles are refused, and only files of
   the project and of `~/.azazel` that hold no credentials can be included.
+- `ask_user` asks several things at once: `questions` (up to 6, each with a short `header`) are answered in
+  one form with a tab per question (`Tab`, `Shift+Tab`) and a `Send` tab that shows the answers first.
+  A question can carry the `code` or the `diff` it is about and name the option the agent would take
+  (`recommended`), which is marked and is where the selection starts.
+- `ask_user` with `async: true` returns at once; the answers reach the agent that asked as a message, a steer
+  while it works and a new prompt when it has stopped.
+- The fleet view: `Down` in an empty input puts the keyboard in the roster. `Enter` opens the selected
+  agent's work in a popup (its task, its replies as they are written, its tool cards), typing there steers
+  it, `Ctrl+X` stops it; `x` in the roster stops the selected agent. `o` in the agent hub opens the same
+  popup for any agent, finished ones included.
+- `@<agent id> text` at the prompt sends the text to that agent and `@<definition> text` starts an agent from
+  that definition; `@` at the start of a prompt completes both before the files.
+- RPC: the `form` request, `recommended`, `code` and `diff` on `ask`, the `agent_mention` command, and
+  `user_input` frames with `agent` for what a sub-agent is handed. `azazel attach --plain` answers a form
+  with `/answer a; b; c`.
 
 ### Changed
 
@@ -117,6 +132,8 @@ GitHub are its section here.
   as a `<system-note>`, outside what a provider caches. A mode switch, a new goal or a saved memory used to
   make the next request pay for the whole conversation again; now the cached prefix is read as before.
 - The task list reminder is part of that note instead of a message of its own.
+- A select question that allows your own answer takes it in the same box, under the options, instead of in
+  a second one; `Esc` there returns to the options.
 
 ## [0.4.0] - 2026-11-13
 
