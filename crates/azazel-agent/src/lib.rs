@@ -10,7 +10,7 @@ pub mod tool;
 
 pub use agent::{Agent, AgentConfig, AgentHandle, AgentStatus, Limits};
 pub use compaction::{CompactionSettings, ContextEntry};
-pub use event::{AgentCmd, AgentEvent, AgentId, AgentInfo, UserInput};
+pub use event::{AgentCmd, AgentEvent, AgentId, AgentInfo, Resume, UserInput};
 pub use gate::{AllowAll, Gate, GateDecision};
 pub use hooks::{AgentHooks, NoHooks, NullSink, TranscriptSink};
 pub use tool::{

@@ -254,7 +254,14 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         return ssh::run(&cli, paths, host).await;
     }
     let interactive = cli.interactive();
-    if cli.print && cli.prompt.is_empty() && std::io::stdin().is_terminal() {
+    if cli.continue_run && (!cli.prompt.is_empty() || !(cli.resume_latest || cli.session.is_some())) {
+        eprintln!(
+            "azazel: --continue-run goes on with the run a session's last process did not finish: it takes -c or \
+             --session, and no prompt"
+        );
+        return print::EXIT_USAGE;
+    }
+    if cli.print && !cli.continue_run && cli.prompt.is_empty() && std::io::stdin().is_terminal() {
         eprintln!("azazel: -p needs a prompt: azazel -p \"what to do\", or text piped on standard input");
         return print::EXIT_USAGE;
     }
@@ -358,7 +365,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         #[cfg(feature = "acp")]
         Some(Sub::Acp) => return acp::run(extensions).await,
         #[cfg(feature = "detach")]
-        Some(Sub::Bg { .. }) => return detach::bg(&paths).await,
+        Some(Sub::Bg { request_id, .. }) => return detach::bg(&paths, request_id.as_deref()).await,
         #[cfg(feature = "detach")]
         Some(Sub::Ps { json }) => return detach::ps(&paths, *json),
         #[cfg(feature = "detach")]
@@ -370,7 +377,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         #[cfg(feature = "detach")]
         Some(Sub::Host { .. }) => None,
         #[cfg(feature = "detach")]
-        Some(Sub::Rpc { attach: Some(wanted) }) => return detach::bridge(&paths, wanted).await,
+        Some(Sub::Rpc { attach: Some(wanted) }) => return detach::bridge(&cli, &paths, wanted).await,
         #[cfg(not(feature = "detach"))]
         Some(Sub::Rpc { attach: Some(_) }) => {
             eprintln!("azazel: this build has no background sessions");
@@ -457,6 +464,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if let Some(Sub::Host {
         id,
         idle_secs,
+        request_id,
         prompt,
     }) = &cli.command
     {
@@ -465,20 +473,43 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             id: id.clone(),
             idle: Duration::from_secs(*idle_secs),
             prompt: (!prompt.trim().is_empty()).then_some(prompt),
+            request_id: request_id.clone(),
+            carried: host_carried(&cli),
         };
         return host::run(Arc::new(app), active, options).await;
     }
     let prompt = cli.prompt_text();
     if cli.print {
-        print::run(&app, &active, &prompt, cli.output).await
+        let what = match cli.continue_run {
+            true => print::What::ContinueRun,
+            false => print::What::Prompt(&prompt),
+        };
+        print::run(&app, &active, what, cli.output).await
     } else {
-        tui::run(
-            Arc::new(app),
-            active,
-            (!prompt.trim().is_empty()).then_some(prompt),
-        )
-        .await
+        // Going on with an interrupted run is a command of the UI, sent as if typed.
+        let first = match cli.continue_run {
+            true => Some("/continue".to_string()),
+            false => (!prompt.trim().is_empty()).then_some(prompt),
+        };
+        tui::run(Arc::new(app), active, first).await
     }
+}
+
+/// The options a background session was started with that a process started in its place
+/// (`azazel attach` on one that died) is to have. A key given on the command line is not
+/// among them: the entry they are kept in is a file.
+#[cfg(feature = "detach")]
+fn host_carried(cli: &Cli) -> Vec<String> {
+    let mut carried = Vec::new();
+    let mut args = cli.carried().into_iter();
+    while let Some(arg) = args.next() {
+        if arg == "--api-key" {
+            args.next();
+            continue;
+        }
+        carried.push(arg.to_string_lossy().into_owned());
+    }
+    carried
 }
 
 /// The configuration, providers and credentials, for commands that only look at providers.
@@ -546,7 +577,7 @@ async fn goal_mode(
         app.finish(active).await;
         return print::EXIT_FAILED;
     }
-    let code = print::run(app, active, &goal_prompt(objective), output).await;
+    let code = print::run(app, active, print::What::Prompt(&goal_prompt(objective)), output).await;
     if code != print::EXIT_OK {
         return code;
     }

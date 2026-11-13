@@ -248,6 +248,10 @@ pub enum Sub {
     /// Run a prompt in a background session and print the session's id
     #[cfg(feature = "detach")]
     Bg {
+        /// A name for this request: the same command sent again starts nothing and prints
+        /// the id of the session the first one started
+        #[arg(long, value_name = "ID")]
+        request_id: Option<String>,
         /// What to do
         #[arg(required = true, value_name = "PROMPT")]
         prompt: Vec<String>,
@@ -276,7 +280,8 @@ pub enum Sub {
     Attach {
         /// Its id as `azazel ps` shows it (the start of it is enough), or its name
         id: String,
-        /// End the background session after its current work and continue it here
+        /// End the background session after its current work, which disconnects every client,
+        /// and continue it here
         #[arg(long)]
         take: bool,
         /// With --take: stop the current work instead of waiting for it
@@ -299,6 +304,9 @@ pub enum Sub {
         /// How long to stay with nothing to do and nobody attached
         #[arg(long, value_name = "SECONDS", default_value_t = 600)]
         idle_secs: u64,
+        /// The name `azazel bg` was given for the first message
+        #[arg(long, value_name = "ID")]
+        request_id: Option<String>,
         /// The first message; without one the session waits for a client
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
@@ -467,6 +475,11 @@ pub struct Cli {
         conflicts_with = "fork"
     )]
     pub session: Option<String>,
+
+    /// With -c or --session: go on with the run the session's last process did not finish,
+    /// instead of sending a prompt
+    #[arg(long = "continue-run")]
+    pub continue_run: bool,
 
     /// Continue a copy of a session, given like --session, leaving the original as it is
     #[arg(long, value_name = "PATH|ID")]

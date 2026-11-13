@@ -300,18 +300,6 @@ fn an_approval_raised_with_nobody_attached_is_answered_after_attach() {
         ]
     );
 
-    // One client at a time.
-    let second = sandbox.run(&["attach", &id]);
-    let (_, why) = text(&second);
-    assert_eq!(second.status.code(), Some(1), "{why}");
-    assert!(
-        why.contains(&format!(
-            "another client is attached to this session (process {})",
-            first.id()
-        )),
-        "{why}"
-    );
-
     writeln!(typing, "/approve").unwrap();
     let rest = read_until(&shown, "· done");
     assert!(
@@ -581,4 +569,378 @@ fn bg_as_a_command_continues_a_copy_of_the_session_in_the_background() {
         "{last}"
     );
     assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
+}
+
+/// Ends a process the hard way, with whatever it started: nothing of it gets to clean up.
+fn kill_process(pid: u64) {
+    #[cfg(windows)]
+    let killed = Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output();
+    #[cfg(unix)]
+    let killed = Command::new("kill").args(["-9", &pid.to_string()]).output();
+    assert!(killed.unwrap().status.success(), "could not kill {pid}");
+}
+
+#[test]
+fn a_background_session_killed_in_a_tool_call_is_listed_and_goes_on_when_attached() {
+    // A read, then a command that outlives the test.
+    let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "tool_calls": [
+        { "id": "c1", "name": "read", "input": { "path": "notes.txt" } },
+        { "id": "c2", "name": "shell", "input": { "command": "sleep 45" } },
+    ] } }] }));
+    std::fs::write(sandbox.project().join("notes.txt"), "remember the milk\n").unwrap();
+    let id = sandbox.bg(&["--mode", "auto", "--name", "night shift"], "do the work");
+    let row = sandbox.wait_for_state(&id, "working");
+    // The process dies while the command runs.
+    let started = Instant::now();
+    while !sandbox.session_files().iter().any(|file| {
+        std::fs::read_to_string(file)
+            .unwrap_or_default()
+            .contains("\"type\":\"tool_started\",\"callId\":\"c2\"")
+    }) {
+        assert!(started.elapsed() < LIMIT, "the command never started");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    kill_process(row["pid"].as_u64().unwrap());
+
+    // It is still listed, as what it is; the session can be told from one that runs.
+    let row = sandbox.wait_for_state(&id, "interrupted");
+    assert_eq!(row["name"], "night shift");
+    let listed = sandbox.ok(&["ps"]);
+    assert!(
+        listed.contains("interrupted") && listed.contains("azazel attach <id>"),
+        "{listed}"
+    );
+    assert!(
+        text(&sandbox.run(&["logs", &id])).0.contains("→ shell sleep 45"),
+        "its log is still there"
+    );
+
+    // Attaching starts it again on the same session, in the mode it was in, and it goes on:
+    // the read is run again, the command is not, and the model is told so.
+    std::fs::write(
+        sandbox.dir.path().join("script.json"),
+        json!({ "lead": [{ "reply": { "text": "Picked up where it stopped." } }] }).to_string(),
+    )
+    .unwrap();
+    let mut client = sandbox
+        .azazel(&["attach", &id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut typing = client.stdin.take().unwrap();
+    let shown = lines_of(client.stdout.take().unwrap());
+    let went_on = read_until(&shown, "· done");
+    assert_eq!(
+        went_on,
+        [
+            "→ read notes.txt",
+            "→ shell sleep 45",
+            "  ✗ shell: interrupted: the process stopped before this call finished; check its effects \
+             before retrying",
+            "Picked up where it stopped.",
+            "· done"
+        ]
+    );
+    let row = sandbox.wait_for_state(&id, "idle");
+    assert_eq!(row["mode"], "auto", "{row}");
+    assert_eq!(sandbox.session_files().len(), 1, "the same session, not another");
+    let requests = sandbox.requests();
+    let results = &requests.last().unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["content"];
+    assert_eq!(results[0]["is_error"], false, "{results}");
+    assert!(
+        results[0]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("remember the milk"),
+        "{results}"
+    );
+    assert_eq!(results[1]["is_error"], true, "{results}");
+    writeln!(typing, "/kill").unwrap();
+    read_until(&shown, "the background session has ended");
+    assert!(client.wait().unwrap().success());
+    assert!(sandbox.ps().is_empty());
+}
+
+#[test]
+fn a_session_that_died_in_a_run_waits_for_continue_when_it_is_not_to_resume_by_itself() {
+    let sandbox =
+        Sandbox::new(&json!({ "lead": [{ "delay_ms": 600_000, "reply": { "text": "too late" } }] }));
+    let quiet = ["--set", "session.resume_runs=false"];
+    let id = sandbox.bg(&quiet, "do the work");
+    let other = sandbox.bg(&quiet, "more work");
+    let started = Instant::now();
+    let asked = |file: &PathBuf| {
+        std::fs::read_to_string(file)
+            .unwrap_or_default()
+            .contains("\"type\":\"request_started\"")
+    };
+    while !(sandbox.session_files().len() == 2 && sandbox.session_files().iter().all(asked)) {
+        assert!(started.elapsed() < LIMIT, "the requests never went out");
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    for row in sandbox.ps() {
+        kill_process(row["pid"].as_u64().unwrap());
+    }
+    sandbox.wait_for_state(&id, "interrupted");
+    sandbox.wait_for_state(&other, "interrupted");
+
+    // One of them is forgotten: it leaves the list, and its session file stays.
+    assert_eq!(sandbox.ok(&["kill", &other]).trim(), format!("stopped {other}"));
+    let listed: Vec<Value> = sandbox.ps();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(sandbox.session_files().len(), 2);
+
+    std::fs::write(
+        sandbox.dir.path().join("script.json"),
+        json!({ "lead": [{ "reply": { "text": "Here now." } }] }).to_string(),
+    )
+    .unwrap();
+    let mut client = sandbox
+        .azazel(&["attach", &id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut typing = client.stdin.take().unwrap();
+    let shown = lines_of(client.stdout.take().unwrap());
+    // It was started with the options of the one that died: it does nothing by itself.
+    sandbox.wait_for_state(&id, "idle");
+    assert_eq!(sandbox.requests().len(), 2, "nothing was sent again yet");
+    writeln!(typing, "/continue").unwrap();
+    let went_on = read_until(&shown, "· done");
+    assert_eq!(went_on, ["Here now.", "· done"]);
+    assert_eq!(sandbox.requests().len(), 3);
+    writeln!(typing, "/kill").unwrap();
+    read_until(&shown, "the background session has ended");
+    assert!(client.wait().unwrap().success());
+    assert!(sandbox.ps().is_empty());
+}
+
+/// A program on a background session's socket, speaking the protocol.
+struct Bridge {
+    process: std::process::Child,
+    commands: Option<std::process::ChildStdin>,
+    frames: Receiver<String>,
+}
+
+impl Bridge {
+    /// Connects and attaches; returns the bridge and the data of `attach`.
+    fn attach(sandbox: &Sandbox, id: &str, replay: &str) -> (Bridge, Value) {
+        let mut process = sandbox
+            .azazel(&["rpc", "--attach", id])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let mut bridge = Bridge {
+            commands: process.stdin.take(),
+            frames: lines_of(process.stdout.take().unwrap()),
+            process,
+        };
+        assert_eq!(bridge.next()["type"], "hello");
+        bridge.send(json!({ "id": "attach", "type": "attach", "replay": replay }));
+        let attached = bridge.until(|frame| frame["id"] == "attach").pop().unwrap();
+        assert_eq!(attached["success"], true, "{attached}");
+        (bridge, attached["data"].clone())
+    }
+
+    fn send(&mut self, command: Value) {
+        writeln!(self.commands.as_mut().unwrap(), "{command}").unwrap();
+    }
+
+    fn next(&self) -> Value {
+        let line = self.frames.recv_timeout(LIMIT).expect("a frame within a minute");
+        let frame: Frame = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
+        assert_ne!(frame, Frame::Unknown, "{line}");
+        serde_json::from_str(&line).unwrap()
+    }
+
+    /// Reads up to the first frame `wanted` accepts; returns all of them.
+    fn until(&self, wanted: impl Fn(&Value) -> bool) -> Vec<Value> {
+        let mut read = Vec::new();
+        loop {
+            let frame = self.next();
+            let found = wanted(&frame);
+            read.push(frame);
+            if found {
+                return read;
+            }
+        }
+    }
+
+    fn detach(mut self) {
+        drop(self.commands.take());
+        assert!(self.process.wait().unwrap().success());
+    }
+}
+
+/// The events among `frames`, as `type` and what tells two of a type apart: what every client
+/// of a session is sent alike. Responses and what answers one client only are left out.
+fn events(frames: &[Value]) -> Vec<String> {
+    frames
+        .iter()
+        .filter(|frame| {
+            !matches!(
+                frame["type"].as_str(),
+                Some("response" | "request_closed" | "user_input" | "roster")
+            )
+        })
+        .map(|frame| {
+            let what = frame["call_id"]
+                .as_str()
+                .or(frame["event"]["delta"].as_str())
+                .or(frame["stop"].as_str())
+                .unwrap_or_default();
+            format!("{} {what}", frame["type"].as_str().unwrap())
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn two_clients_of_one_session_see_the_same_and_either_answers_an_approval() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/scripts/write_read.json");
+    let mut script: Value = serde_json::from_str(&std::fs::read_to_string(script).unwrap()).unwrap();
+    script["lead"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "reply": { "text": "And once more." } }));
+    let sandbox = Sandbox::new(&script);
+    let id = sandbox.bg(&[], "create hello");
+    sandbox.wait_for_state(&id, "waiting for you");
+
+    // Both are told where the session stands: the lead works, a call runs, a request waits.
+    let (mut one, first) = Bridge::attach(&sandbox, &id, "none");
+    let (mut two, second) = Bridge::attach(&sandbox, &id, "none");
+    assert_eq!((&first["clients"], &second["clients"]), (&json!(1), &json!(2)));
+    for attached in [&first, &second] {
+        let snapshot = &attached["snapshot"];
+        assert_eq!(snapshot["busy"], true, "{snapshot}");
+        assert_eq!(snapshot["tools"][0]["name"], "write", "{snapshot}");
+        assert_eq!(snapshot["tools"][0]["call_id"], "c1", "{snapshot}");
+        assert_eq!(snapshot["pending"].as_array().unwrap().len(), 1, "{snapshot}");
+        // The conversation so far: the prompt, and the reply that asks for the call.
+        let tail = snapshot["tail"].as_array().unwrap();
+        assert_eq!(tail.len(), 2, "{snapshot}");
+        assert_eq!(tail[0]["message"]["content"][0]["text"], "create hello");
+    }
+    // And both are shown the request.
+    let asked_one = one
+        .until(|frame| frame["type"] == "approval_request")
+        .pop()
+        .unwrap();
+    let asked_two = two
+        .until(|frame| frame["type"] == "approval_request")
+        .pop()
+        .unwrap();
+    assert_eq!(asked_one, asked_two);
+    let request_id = asked_one["request_id"].as_str().unwrap().to_string();
+    assert_eq!(first["snapshot"]["pending"][0], json!(request_id));
+
+    // The second answers. Both number their commands alike; each gets its own answer.
+    two.send(json!({ "id": 1, "type": "approval_response", "request_id": request_id, "decision": "allow" }));
+    one.send(json!({ "id": 1, "type": "get_state" }));
+    let seen_one = one.until(|frame| frame["type"] == "idle");
+    let seen_two = two.until(|frame| frame["type"] == "idle");
+    let answer_one = seen_one.iter().find(|frame| frame["id"] == 1).unwrap();
+    let answer_two = seen_two.iter().find(|frame| frame["id"] == 1).unwrap();
+    assert!(answer_one["data"]["session_id"].is_string(), "{answer_one}");
+    assert_eq!(answer_two["data"], Value::Null, "{answer_two}");
+    // The request closed on the client that did not answer it, and only there.
+    let closed = |frames: &[Value]| {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "request_closed")
+            .map(|frame| frame["request_id"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(closed(&seen_one), std::slice::from_ref(&request_id));
+    assert!(closed(&seen_two).is_empty());
+    // From there to the end of the run both were sent the same.
+    assert_eq!(events(&seen_one), events(&seen_two));
+    assert!(
+        events(&seen_one).contains(&"tool_end c1".to_string()),
+        "{seen_one:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(sandbox.project().join("hello.txt")).unwrap(),
+        "hello from azazel\n"
+    );
+    // An answer that comes late is told so.
+    one.send(json!({ "id": 2, "type": "approval_response", "request_id": request_id, "decision": "deny" }));
+    let late = one.until(|frame| frame["id"] == 2).pop().unwrap();
+    assert_eq!(late["success"], false, "{late}");
+
+    // Either may prompt: the other reads what was typed, the one that typed does not.
+    one.send(json!({ "id": 3, "type": "prompt", "text": "once more" }));
+    let seen_one = one.until(|frame| frame["type"] == "idle");
+    let seen_two = two.until(|frame| frame["type"] == "idle");
+    let typed = |frames: &[Value]| {
+        frames
+            .iter()
+            .filter(|frame| frame["type"] == "user_input")
+            .map(|frame| frame["text"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    assert!(typed(&seen_one).is_empty(), "{seen_one:?}");
+    assert_eq!(typed(&seen_two), ["once more"]);
+    assert_eq!(events(&seen_one), events(&seen_two));
+
+    // A third client that comes while two are there is replayed nothing it need not see.
+    let (three, third) = Bridge::attach(&sandbox, &id, "missed");
+    assert_eq!(third["clients"], 3);
+    assert_eq!(third["snapshot"]["busy"], false);
+    one.detach();
+    two.detach();
+    three.detach();
+    sandbox.wait_for_state(&id, "idle");
+    assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
+}
+
+#[test]
+fn a_named_bg_sent_again_starts_no_second_session() {
+    let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "text": "Done." } }] }));
+    let named = ["bg", "--request-id", "nightly-1", "do the nightly work"];
+    let first = sandbox.ok(&named).trim().to_string();
+    let again = sandbox.run(&named);
+    let (out, err) = text(&again);
+    assert!(again.status.success(), "{err}");
+    assert_eq!(out.trim(), first);
+    assert!(err.contains("nothing was started"), "{err}");
+    let ids: Vec<String> = sandbox
+        .ps()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, std::slice::from_ref(&first));
+    // Another name is another session.
+    let other = sandbox.ok(&["bg", "--request-id", "nightly-2", "do the nightly work"]);
+    assert_ne!(other.trim(), first);
+    // The name went with the prompt into the session: the run it started can be asked for.
+    sandbox.wait_for_state(&first, "idle");
+    let (mut bridge, _) = Bridge::attach(&sandbox, &first, "none");
+    bridge
+        .send(json!({ "id": 1, "type": "prompt", "text": "do the nightly work", "request_id": "nightly-1" }));
+    let seen = bridge.until(|frame| frame["id"] == 1).pop().unwrap();
+    assert_eq!(
+        (
+            &seen["data"]["duplicate"],
+            &seen["data"]["state"],
+            &seen["data"]["text"]
+        ),
+        (&json!(true), &json!("ended"), &json!("Done.")),
+        "{seen}"
+    );
+    bridge.detach();
 }

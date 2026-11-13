@@ -5,6 +5,32 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
+  `tool_started`, `run_ended`). A session whose process was killed in the middle of a run says so when it is
+  opened again, and `/continue`, `azazel -c --continue-run` and the RPC command `continue_run` go on with it:
+  calls that only read are run again, other calls that had started are reported to the model as interrupted,
+  and a request that was never answered is sent again.
+- `azazel ps` lists a background session whose process died in the middle of a run as `interrupted`, and
+  `azazel attach <id>` starts it again on the same session, with the options and mode it had, and goes on
+  (`[session] resume_runs = false` makes it wait for `/continue`). `azazel kill <id>` forgets it.
+- Several clients can be attached to one background session at once. Each is told where the session stands
+  when it attaches (`snapshot` in the `attach` response: the reply being written, running tools, queued input,
+  waiting requests) and then sent everything; any of them may prompt, steer or answer, what one types shows
+  on the others (`user_input`), and a request one answers closes on the others (`request_closed`).
+- Named prompts: `request_id` on the RPC `prompt`, `azazel bg --request-id <id>` and `_meta.requestId` on an
+  ACP `session/prompt`. A prompt sent again under the same name starts nothing and answers with the state of
+  the run the first one started, for as long as the session exists.
+
+### Changed
+
+- `azazel attach` no longer refuses a second client, and `attach --take` disconnects every client.
+- Responses of a background session go to the connection that sent the command, under the id that client
+  chose, so two clients need not agree on ids.
+- A prompt sent after a reply whose tool calls never got a result (a killed process, a conversation taken up
+  in the middle of a run) now answers those calls first, so the provider no longer rejects the request.
+
 ## [0.4.0] - 2026-11-13
 
 ### Added

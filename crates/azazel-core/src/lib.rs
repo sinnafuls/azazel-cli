@@ -45,7 +45,9 @@ pub use permissions::gate::PermissionGate;
 pub use permissions::{PermissionState, Rule, RuleKind};
 pub use prompt::{PromptBuilder, SystemPartProvider};
 pub use scheme::{Lines, Scheme, Schemes};
-pub use session::{AgentRun, Entry, EntryKind, SessionFacts, SessionStore, SessionSummary};
+pub use session::{
+    AgentRun, Entry, EntryKind, InterruptedRun, RequestRun, SessionFacts, SessionStore, SessionSummary,
+};
 pub use skills::{Skill, SkillGrants, SkillGrantsExt, SkillRegistry, SkillRoot, SkillSource};
 pub use subagent::{SubagentRunner, Subagents};
 pub use toolcall::ToolCaller;

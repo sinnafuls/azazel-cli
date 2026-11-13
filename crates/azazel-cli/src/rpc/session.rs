@@ -87,6 +87,10 @@ fn kind_name(kind: &EntryKind) -> &'static str {
         EntryKind::SessionInfo { .. } => "session_info",
         EntryKind::ThinkingChange { .. } => "thinking_change",
         EntryKind::Pin { .. } => "pin",
+        EntryKind::RunStarted { .. } => "run_started",
+        EntryKind::RequestStarted { .. } => "request_started",
+        EntryKind::ToolStarted { .. } => "tool_started",
+        EntryKind::RunEnded { .. } => "run_ended",
     }
 }
 
@@ -226,6 +230,11 @@ impl Session {
                     Some((role.clone(), first.first()?.to_string()))
                 })
                 .collect(),
+            // A run that is being gone on with has no end in the file yet either.
+            interrupted: (!self.busy())
+                .then(|| self.active.session.interrupted_run(None))
+                .flatten()
+                .map(|run| run.describe()),
         }
     }
 

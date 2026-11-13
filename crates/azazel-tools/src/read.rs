@@ -119,6 +119,10 @@ impl Tool for ReadTool {
             .map_or(Access::Read, |(access, _)| access)
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         let path = input.get("path").and_then(Value::as_str);
         let subject = self.scheme_access(input).and_then(|(_, subject)| subject);

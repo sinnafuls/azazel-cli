@@ -180,6 +180,7 @@ impl<W: Write> Printer<W> {
                 _ => self.line("· done"),
             },
             Frame::Failed { agent, error } => self.of(agent, &format!("error: {error}")),
+            Frame::RequestClosed { .. } => self.line("  the request was answered elsewhere"),
             Frame::Roster { members } => {
                 for member in members.iter().filter(|member| member.id != LEAD) {
                     let known = self.members.insert(member.id.clone(), member.state.clone());

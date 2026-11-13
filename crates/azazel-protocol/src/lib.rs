@@ -79,7 +79,8 @@ pub enum ExportFormat {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Replay {
-    /// The frames written since the last client left; everything for the first client.
+    /// The frames written since the last client left; everything for the first client. With
+    /// another client attached already, the frames of the run in progress.
     #[default]
     Missed,
     /// Every frame since the background session started.
@@ -96,12 +97,21 @@ fn yes() -> bool {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    /// Starts work on the input. While the lead is busy it is queued.
+    /// Starts work on the input. While the lead is busy it is queued. With a `request_id`,
+    /// answers with [`RunState`], and a prompt whose `request_id` the session has seen before
+    /// starts nothing: the answer says where the run the first one started stands.
     Prompt {
         text: String,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         images: Vec<Image>,
+        /// A name of the client's choosing for this prompt, to send it again safely.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<String>,
     },
+    /// Goes on with the run that the end of the session's process cut short (`interrupted` of
+    /// [`State`]): tool calls without a result get one, and the request the model never
+    /// answered is sent again. Answers with [`RunState`].
+    ContinueRun,
     /// Hands the working lead input before its next model request.
     Steer {
         text: String,
@@ -238,10 +248,10 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         args: String,
     },
-    /// Background sessions only, and the first command on a connection to one: takes the place
-    /// of its one client. The frames `replay` asks for follow the response, then the requests
-    /// that still wait for an answer. `pid` is told to a client that is refused while this one
-    /// is attached. Answers with [`Attached`].
+    /// Background sessions only, and the first command on a connection to one: makes the
+    /// connection a client of the session, beside any that are attached already. The frames
+    /// `replay` asks for follow the response, then the requests that still wait for an answer,
+    /// then what the session does from then on. Answers with [`Attached`].
     Attach {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pid: Option<u32>,
@@ -591,11 +601,16 @@ pub enum Frame {
         delta: String,
     },
     /// Background sessions only: what a client sent the lead. `kind` is `prompt`, `steer` or
-    /// `follow_up`. It is in the log and in what a later client is replayed, never in what the
-    /// sender itself reads.
+    /// `follow_up`. It is in the log, in what a later client is replayed and in what the other
+    /// clients read, never in what the sender itself reads.
     UserInput {
         kind: String,
         text: String,
+    },
+    /// Background sessions only: the `approval_request` or `ui_request` with this id no longer
+    /// waits. Another client answered it, or whoever asked gave up.
+    RequestClosed {
+        request_id: String,
     },
     /// A frame this version of the crate does not know.
     #[serde(other)]
@@ -695,6 +710,33 @@ pub struct State {
     /// The model each role (`default`, `smol`, ...) resolves to first.
     #[serde(default)]
     pub roles: std::collections::BTreeMap<String, String>,
+    /// Where the session's last run stopped, when the end of a process cut it short and
+    /// `continue_run` can go on with it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted: Option<String>,
+}
+
+/// The data of a `prompt` that carries a `request_id`, and of `continue_run`: where a run
+/// stands.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RunState {
+    /// The `request_id` of the prompt that started the run, when it had one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
+    /// The run as the session file names it; absent until the lead has taken the prompt up.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// `queued` (the lead has not taken it up yet), `running` or `ended`.
+    pub state: String,
+    /// Whether this answers a prompt that had been sent before: nothing was started.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub duplicate: bool,
+    /// How an ended run ended: a stop reason of `idle`, or `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop: Option<String>,
+    /// The last thing the lead said in the run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
 }
 
 /// One item of the lead's task list.
@@ -851,7 +893,7 @@ pub struct CommandRow {
 }
 
 /// The data of `attach`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Attached {
     /// The id of the background session, as `azazel ps` lists it.
     pub host: String,
@@ -860,6 +902,60 @@ pub struct Attached {
     pub session_id: String,
     /// The session file.
     pub session_file: String,
+    /// How many clients are attached, this one counted.
+    #[serde(default)]
+    pub clients: u32,
+    /// Where the session stands at this moment.
+    #[serde(default)]
+    pub snapshot: Snapshot,
+}
+
+/// A background session at the moment a client attaches: what a client needs to show the work
+/// in progress before the frames that follow.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default)]
+pub struct Snapshot {
+    /// Whether the lead is working.
+    pub busy: bool,
+    /// The last messages of the conversation, oldest first.
+    pub tail: Vec<MessageRow>,
+    /// The replies being written, one per agent that is writing one.
+    pub streaming: Vec<Streaming>,
+    /// The tool calls that are running.
+    pub tools: Vec<RunningTool>,
+    /// What clients sent the lead that it has not taken up yet, oldest first.
+    pub queue: Vec<Queued>,
+    /// The ids of the requests that wait for an answer; the requests follow as frames.
+    pub pending: Vec<String>,
+}
+
+/// A reply in the making.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Streaming {
+    pub agent: String,
+    /// The text so far.
+    pub text: String,
+    /// The thinking so far.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub thinking: String,
+}
+
+/// A tool call that has started and not ended.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct RunningTool {
+    pub agent: String,
+    pub call_id: String,
+    pub name: String,
+    pub input: Value,
+    /// For how long it has run.
+    pub elapsed_ms: u64,
+}
+
+/// Input the lead has not taken up yet. `kind` is `prompt`, `steer` or `follow_up`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Queued {
+    pub kind: String,
+    pub text: String,
 }
 
 /// The data of `run_command`.
@@ -893,6 +989,7 @@ pub fn schema() -> Value {
     generator.subschema_for::<BtwAnswer>();
     generator.subschema_for::<CommandResult>();
     generator.subschema_for::<Attached>();
+    generator.subschema_for::<RunState>();
     generator.subschema_for::<SessionCopy>();
     generator.subschema_for::<CommandRow>();
     let definitions = generator.take_definitions(true);

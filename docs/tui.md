@@ -415,6 +415,7 @@ Session and display:
 | `/tree` | Go back to an earlier point of this session; `Alt+L` labels an entry, `Ctrl+L` and `Ctrl+U` filter |
 | `/fork` | Continue from here in a copy of this session |
 | `/retry` | Send your last prompt again from where it was sent; the first attempt stays as a branch |
+| `/continue` | Go on with the run that was cut short when azazel was last killed in the middle of it |
 | `/handoff [what matters]` | Continue in a new session that starts from a brief of this one |
 | `/consult [question]` | Ask a saved session a question without resuming it |
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
@@ -438,8 +439,8 @@ Session and display:
 | `/keys` | List key bindings |
 | `/quit`, `/exit` | Exit |
 
-`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/handoff`, `/consult`, `/rewind`,
-`/compact` and `/export` are covered in [sessions and checkpoints](sessions-and-checkpoints.md).
+`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,
+`/rewind`, `/compact` and `/export` are covered in [sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
 

@@ -5,6 +5,7 @@
 //! the session last reported it, and brought up to date as frames arrive. What the UI reads of
 //! the session's contents is a copy, fetched again once the session has changed.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -12,7 +13,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, AgentEvent, AgentInfo, AgentStatus, ToolOutput};
-use azazel_ai::{Block, ModelRef, ModelSpec, ThinkingLevel, Usage};
+use azazel_ai::{Block, ModelRef, ModelSpec, StreamEvent, ThinkingLevel, Usage};
 use azazel_client::{Client, Error};
 use azazel_core::session::{Entry, Header, SessionSummary};
 use azazel_core::side::SideAnswer;
@@ -22,7 +23,7 @@ use azazel_core::{
 };
 use azazel_protocol::{
     self as protocol, Attached, BtwAnswer, Command, CommandResult, CommandRow, Decision, Exported, Frame,
-    Member, ModelRow, Replay, RewindWhat, SessionCopy, SessionRow, ShellResult, State,
+    Member, ModelRow, Replay, RewindWhat, SessionCopy, SessionRow, ShellResult, Snapshot, State,
 };
 use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
@@ -53,6 +54,9 @@ struct Shared {
     refreshing: AtomicBool,
     /// Where the text of the side question being answered goes.
     btw: Mutex<Option<(u64, mpsc::UnboundedSender<Internal>)>>,
+    /// The requests of the session the UI shows and has not answered: cancelling one takes
+    /// it off the screen without an answer (another client gave it).
+    asked: Mutex<HashMap<String, CancellationToken>>,
 }
 
 /// Where a session that is not in this process runs.
@@ -251,6 +255,35 @@ pub(crate) fn agent_event(frame: Frame) -> Option<(String, AgentEvent)> {
     })
 }
 
+/// The lead's events that stand for what was in flight when the UI attached: the reply being
+/// written so far, and the tool calls that run.
+fn in_flight(snapshot: &Snapshot) -> Vec<AgentEvent> {
+    let mut events = Vec::new();
+    if let Some(reply) = snapshot.streaming.iter().find(|reply| reply.agent == LEAD) {
+        events.push(AgentEvent::MessageStart);
+        if !reply.thinking.is_empty() {
+            events.push(AgentEvent::Stream(StreamEvent::ThinkingDelta {
+                index: 0,
+                delta: reply.thinking.clone(),
+            }));
+        }
+        if !reply.text.is_empty() {
+            events.push(AgentEvent::Stream(StreamEvent::TextDelta {
+                index: 0,
+                delta: reply.text.clone(),
+            }));
+        }
+    }
+    for tool in snapshot.tools.iter().filter(|tool| tool.agent == LEAD) {
+        events.push(AgentEvent::ToolStart {
+            call_id: tool.call_id.clone(),
+            name: tool.name.clone(),
+            input: tool.input.clone(),
+        });
+    }
+    events
+}
+
 /// A member of the roster as the session's own process would list it. `since` is how long ago
 /// the roster arrived.
 fn member_info(member: &Member, since: Duration) -> MemberInfo {
@@ -336,23 +369,57 @@ fn refresh(client: &Arc<Client>, shared: &Arc<Shared>) {
     });
 }
 
+/// Notes a request the UI is about to show. The token is cancelled when the session says the
+/// request no longer waits.
+fn asked(shared: &Shared, request_id: &str) -> CancellationToken {
+    let closed = CancellationToken::new();
+    locked(&shared.asked).insert(request_id.to_string(), closed.clone());
+    closed
+}
+
+/// Waits for what the UI answers a request with. `None` when the session said meanwhile that
+/// the request no longer waits: giving the answer up here takes the request off the screen.
+async fn answered<T>(
+    shared: &Shared,
+    request_id: &str,
+    closed: CancellationToken,
+    reply: oneshot::Receiver<T>,
+) -> Option<Result<T, ()>> {
+    let answer = tokio::select! {
+        answer = reply => Some(answer.map_err(|_| ())),
+        _ = closed.cancelled() => None,
+    };
+    locked(&shared.asked).remove(request_id);
+    answer
+}
+
 /// Answers a request once the UI has: `value` turns what the user chose into the `value` of a
 /// `ui_response`; a request that was dismissed is answered with `null`.
 fn answer_later<T: Send + 'static>(
     client: &Arc<Client>,
+    shared: &Arc<Shared>,
     request_id: String,
     reply: oneshot::Receiver<T>,
     value: impl FnOnce(T) -> Value + Send + 'static,
 ) {
-    let client = client.clone();
+    let (client, shared) = (client.clone(), shared.clone());
+    let closed = asked(&shared, &request_id);
     tokio::spawn(async move {
-        let value = reply.await.map(value).unwrap_or(Value::Null);
+        let Some(answer) = answered(&shared, &request_id, closed, reply).await else {
+            return;
+        };
+        let value = answer.map(value).unwrap_or(Value::Null);
         let _ = client.send(Command::UiResponse { request_id, value }).await;
     });
 }
 
 /// Hands a request of the session to the UI, and its answer back to the session.
-fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest) -> UiRequest {
+fn request(
+    client: &Arc<Client>,
+    shared: &Arc<Shared>,
+    request_id: String,
+    asked: protocol::UiRequest,
+) -> UiRequest {
     match asked {
         protocol::UiRequest::Notify { level, text } => UiRequest::Notify {
             level: match level.as_str() {
@@ -379,6 +446,7 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
             };
             answer_later(
                 client,
+                shared,
                 request_id,
                 answer,
                 move |chosen: Result<Vec<String>, UiError>| match (chosen, kind) {
@@ -403,6 +471,7 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
             let (reply, answer) = oneshot::channel();
             answer_later(
                 client,
+                shared,
                 request_id,
                 answer,
                 |confirmed: Result<bool, UiError>| match confirmed {
@@ -416,6 +485,7 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
             let (reply, answer) = oneshot::channel();
             answer_later(
                 client,
+                shared,
                 request_id,
                 answer,
                 |chosen: Result<usize, UiError>| match chosen {
@@ -433,6 +503,7 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
             let (reply, answer) = oneshot::channel();
             answer_later(
                 client,
+                shared,
                 request_id,
                 answer,
                 |typed: Result<String, UiError>| match typed {
@@ -450,6 +521,7 @@ fn request(client: &Arc<Client>, request_id: String, asked: protocol::UiRequest)
             let (reply, answer) = oneshot::channel();
             answer_later(
                 client,
+                shared,
                 request_id,
                 answer,
                 |decision: Result<PlanDecision, UiError>| match decision {
@@ -515,10 +587,14 @@ async fn pump(
                     destructive,
                 };
                 let (reply, answer) = oneshot::channel::<Option<ApprovalDecision>>();
-                let answering = client.clone();
+                let (answering, asked_of) = (client.clone(), shared.clone());
+                let closed = self::asked(&shared, &request_id);
                 tokio::spawn(async move {
+                    let Some(answer) = answered(&asked_of, &request_id, closed, answer).await else {
+                        return;
+                    };
                     // An approval nobody gave is a refusal, as it is with nobody there.
-                    let (decision, feedback) = match answer.await.ok().flatten() {
+                    let (decision, feedback) = match answer.ok().flatten() {
                         Some(ApprovalDecision::AllowOnce) => (Decision::Allow, None),
                         Some(ApprovalDecision::AllowSession) => (Decision::Session, None),
                         Some(ApprovalDecision::Always) => (Decision::Always, None),
@@ -542,7 +618,17 @@ async fn pump(
             Frame::UiRequest {
                 request_id,
                 request: asked,
-            } => incoming.send(Incoming::Request(request(&client, request_id, asked))),
+            } => incoming.send(Incoming::Request(request(&client, &shared, request_id, asked))),
+            Frame::RequestClosed { request_id } => {
+                if let Some(closed) = locked(&shared.asked).get(&request_id) {
+                    closed.cancel();
+                }
+                Ok(())
+            }
+            Frame::UserInput { kind, text } => {
+                shared.stale.store(true, Ordering::SeqCst);
+                incoming.send(Incoming::UserInput { kind, text })
+            }
             Frame::BtwDelta { delta, .. } => {
                 if let Some((id, updates)) = locked(&shared.btw).as_ref() {
                     let _ = updates.send(Internal::Btw(btw::Update::Text { id: *id, delta }));
@@ -591,6 +677,7 @@ impl Remote {
     /// runs; a background session is attached to first.
     pub(crate) async fn open(client: Client, place: Place) -> Result<Remote, String> {
         let client = Arc::new(client);
+        let mut snapshot = None;
         let ended = if place.background().is_some() {
             let attached: Attached = ask(
                 &client,
@@ -601,6 +688,7 @@ impl Remote {
                 },
             )
             .await?;
+            snapshot = Some(attached.snapshot);
             format!("the background session {} has ended", attached.host)
         } else {
             format!("the session {} has ended", place.name())
@@ -614,8 +702,13 @@ impl Remote {
             stale: AtomicBool::new(false),
             refreshing: AtomicBool::new(false),
             btw: Mutex::new(None),
+            asked: Mutex::new(HashMap::new()),
         });
         let (sender, incoming) = mpsc::unbounded_channel();
+        // What was in flight when the UI attached is shown as if it had been seen to start.
+        for event in snapshot.iter().flat_map(in_flight) {
+            let _ = sender.send(Incoming::Lead(event));
+        }
         tokio::spawn(pump(client.clone(), shared.clone(), sender, ended));
         Ok(Remote {
             client,
@@ -645,11 +738,13 @@ impl Remote {
     /// Takes in the state a session command answered with: the conversation is elsewhere now.
     fn moved_to(&mut self, state: State, resumed: bool) -> Moved {
         *locked(&self.shared.roster) = (state.agents.clone(), Instant::now());
+        let interrupted = state.interrupted.clone();
         *locked(&self.shared.state) = state;
         self.shared.stale.store(true, Ordering::SeqCst);
         Moved {
             resumed,
             notice: None,
+            interrupted,
         }
     }
 }
@@ -680,6 +775,7 @@ impl Backend for Remote {
         Moved {
             resumed: has_messages,
             notice: None,
+            interrupted: self.state().interrupted,
         }
     }
 
@@ -826,9 +922,18 @@ impl Backend for Remote {
         let command = Command::Prompt {
             text,
             images: images(attached),
+            request_id: None,
         };
         self.client
             .send(command)
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
+    async fn continue_run(&mut self) -> Result<(), String> {
+        self.client
+            .send(Command::ContinueRun)
             .await
             .map(|_| ())
             .map_err(|e| e.to_string())

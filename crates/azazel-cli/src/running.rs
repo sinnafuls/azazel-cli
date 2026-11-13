@@ -6,6 +6,8 @@
 //! - `<id>.log`: every event frame it has written, one JSON object per line;
 //! - `<id>.err`: why it could not start, when it could not;
 //! - `<id>.lock`: a file it holds locked for as long as it lives;
+//! - `req-<hash>.req`: the id of the session a named `azazel bg` started, so that the same
+//!   command sent again starts nothing;
 //! - `session-<session id>.lock`: the same for the session it has open, so that no other
 //!   process writes to that session's file.
 //!
@@ -17,10 +19,16 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
+use azazel_core::SessionStore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-/// How long the log of a session that has ended is kept.
+/// How long the log of a session that has ended is kept, and the entry of one whose process
+/// died in the middle of a run.
 const KEEP_LOGS: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// The state of a session whose process is gone while its last run was cut short.
+pub const INTERRUPTED: &str = "interrupted";
 
 /// What a background session says about itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,9 +44,20 @@ pub struct Entry {
     /// What a client connects to: a socket file on Unix, a named pipe on Windows.
     pub socket: String,
     pub version: String,
-    /// `working`, `waiting for you` or `idle`.
+    /// `working`, `waiting for you` or `idle`; `interrupted` once the process is gone and the
+    /// session's last run was cut short.
     pub state: String,
     pub cost_usd: Option<f64>,
+    /// The permission mode it works in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// The options it was started with that a process started in its place is to have.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<String>,
+    /// The size of the session file when its last run was found cut short: while the file
+    /// keeps that size, it need not be read again.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_at: Option<u64>,
 }
 
 pub fn run_dir(home: &Path) -> PathBuf {
@@ -89,6 +108,34 @@ impl Entry {
     /// Whether the process that wrote the entry is still there.
     pub fn alive(&self, home: &Path) -> bool {
         Lock::held(&host_lock(home, &self.id))
+    }
+
+    /// Whether the process is gone and left a run unfinished: `azazel attach` starts it again.
+    pub fn interrupted(&self) -> bool {
+        self.state == INTERRUPTED
+    }
+
+    /// Looks at the session of an entry whose process is gone. `Some` with the entry as it is
+    /// listed when the session's last run was cut short, nobody else has the session open, and
+    /// the process has not been gone for too long.
+    fn left_unfinished(mut self, home: &Path) -> Option<Entry> {
+        let recent = std::fs::metadata(entry_file(home, &self.id))
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|modified| SystemTime::now().duration_since(modified).ok())
+            .is_some_and(|age| age <= KEEP_LOGS);
+        if !recent || Lock::held(&session_lock(home, &self.session_id)) {
+            return None;
+        }
+        let size = std::fs::metadata(&self.session_file).ok()?.len();
+        if self.interrupted_at != Some(size) {
+            SessionStore::interrupted_in(&self.session_file)?;
+            self.state = INTERRUPTED.to_string();
+            self.interrupted_at = Some(size);
+            // Kept, so that the next listing need not read the session again.
+            let _ = self.write(home);
+        }
+        Some(self)
     }
 }
 
@@ -200,13 +247,7 @@ fn read_entries(home: &Path) -> Vec<Entry> {
 /// of sessions that ended long ago.
 fn sweep(home: &Path, dead: &[Entry]) {
     for entry in dead {
-        let _ = std::fs::remove_file(entry_file(home, &entry.id));
-        let _ = std::fs::remove_file(host_lock(home, &entry.id));
-        let _ = std::fs::remove_file(session_lock(home, &entry.session_id));
-        // A socket file; a named pipe went with its process.
-        if Path::new(&entry.socket).is_absolute() && !entry.socket.starts_with(r"\\") {
-            let _ = std::fs::remove_file(&entry.socket);
-        }
+        forget(home, entry);
     }
     let Ok(files) = std::fs::read_dir(run_dir(home)) else {
         return;
@@ -214,6 +255,15 @@ fn sweep(home: &Path, dead: &[Entry]) {
     let now = SystemTime::now();
     for file in files.flatten() {
         let path = file.path();
+        // The name of a session that is neither listed nor logged any more names nothing.
+        if path.extension().is_some_and(|extension| extension == "req") {
+            let named = std::fs::read_to_string(&path).unwrap_or_default();
+            let named = named.trim();
+            if !entry_file(home, named).exists() && !log_file(home, named).exists() {
+                let _ = std::fs::remove_file(path);
+            }
+            continue;
+        }
         let kept = path
             .extension()
             .is_some_and(|extension| extension == "log" || extension == "err");
@@ -229,19 +279,77 @@ fn sweep(home: &Path, dead: &[Entry]) {
     }
 }
 
-/// The background sessions that are running, oldest first. Entries whose process has gone are
-/// removed on the way.
-pub fn list(home: &Path) -> Vec<Entry> {
-    let (mut alive, dead): (Vec<Entry>, Vec<Entry>) = read_entries(home)
-        .into_iter()
-        .partition(|entry| entry.alive(home));
-    sweep(home, &dead);
-    alive.sort_by(|a, b| a.started.cmp(&b.started));
-    alive
+/// Removes what the background session of `entry`, whose process has gone, left behind. Its
+/// log stays for as long as logs are kept.
+pub fn forget(home: &Path, entry: &Entry) {
+    let _ = std::fs::remove_file(entry_file(home, &entry.id));
+    let _ = std::fs::remove_file(host_lock(home, &entry.id));
+    let _ = std::fs::remove_file(session_lock(home, &entry.session_id));
+    // A socket file; a named pipe went with its process.
+    if Path::new(&entry.socket).is_absolute() && !entry.socket.starts_with(r"\\") {
+        let _ = std::fs::remove_file(&entry.socket);
+    }
 }
 
-/// The running background session `wanted` names: its id or the start of it, its session's
-/// name, or the start of its session's id.
+/// The background sessions, oldest first: those that are running, and those whose process
+/// died in the middle of a run (state `interrupted`). Entries of other processes that have
+/// gone are removed on the way.
+pub fn list(home: &Path) -> Vec<Entry> {
+    let (mut listed, dead): (Vec<Entry>, Vec<Entry>) = read_entries(home)
+        .into_iter()
+        .partition(|entry| entry.alive(home));
+    let mut gone = Vec::new();
+    for entry in dead {
+        match entry.clone().left_unfinished(home) {
+            Some(unfinished) => listed.push(unfinished),
+            None => gone.push(entry),
+        }
+    }
+    sweep(home, &gone);
+    listed.sort_by(|a, b| a.started.cmp(&b.started));
+    listed
+}
+
+fn request_file(home: &Path, request_id: &str) -> PathBuf {
+    let digest = Sha256::digest(request_id);
+    let name: String = digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect();
+    run_dir(home).join(format!("req-{name}.req"))
+}
+
+/// Notes that the background session `id` is the one the request named `request_id` starts.
+/// `Err` carries the id of the session an earlier request of that name started, when that
+/// session is still listed or logged.
+pub fn claim_request(home: &Path, request_id: &str, id: &str) -> io::Result<Result<(), String>> {
+    create_run_dir(home)?;
+    let file = request_file(home, request_id);
+    loop {
+        // Created in one step, so that of two requests at the same moment one finds the other.
+        match File::options().write(true).create_new(true).open(&file) {
+            Ok(mut created) => {
+                io::Write::write_all(&mut created, id.as_bytes())?;
+                return Ok(Ok(()));
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
+                let named = std::fs::read_to_string(&file).unwrap_or_default();
+                let named = named.trim();
+                if !named.is_empty() && (entry_file(home, named).exists() || log_file(home, named).exists()) {
+                    return Ok(Err(named.to_string()));
+                }
+                // The session it names never started, or is long gone.
+                std::fs::remove_file(&file)?;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Takes back [`claim_request`] for a session that did not start.
+pub fn release_request(home: &Path, request_id: &str) {
+    let _ = std::fs::remove_file(request_file(home, request_id));
+}
+
+/// The background session `wanted` names, running or interrupted: its id or the start of it,
+/// its session's name, or the start of its session's id.
 pub fn find(home: &Path, wanted: &str) -> Result<Entry, String> {
     let all = list(home);
     let pick = |matches: Vec<&Entry>| match matches.as_slice() {
@@ -294,6 +402,9 @@ mod tests {
             version: "0".into(),
             state: "idle".into(),
             cost_usd: None,
+            mode: None,
+            args: Vec::new(),
+            interrupted_at: None,
         }
     }
 
@@ -358,5 +469,89 @@ mod tests {
                 .unwrap_err()
                 .starts_with("no background session `old`")
         );
+    }
+    /// A session file whose last run has a start and no end.
+    fn cut_short(dir: &Path) -> (String, PathBuf) {
+        use azazel_agent::TranscriptSink;
+        let store = SessionStore::create(dir, Path::new("/work"), None).unwrap();
+        store.run_started(None);
+        store.message(&azazel_ai::Message::user("go"));
+        (store.id(), store.path())
+    }
+
+    #[test]
+    fn a_session_whose_process_died_in_a_run_stays_listed_as_interrupted() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        create_run_dir(home).unwrap();
+        let (session_id, session_file) = cut_short(&home.join("sessions"));
+        let dead = Entry {
+            session_file: session_file.clone(),
+            state: "working".into(),
+            ..entry("dead", &session_id, Some("night"))
+        };
+        dead.write(home).unwrap();
+
+        let listed = list(home);
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].interrupted() && !listed[0].alive(home));
+        assert_eq!(find(home, "night").unwrap().state, INTERRUPTED);
+        // Found once, the session file is not read again while it keeps its size.
+        let kept = read_entry(home, "dead").unwrap();
+        assert_eq!(
+            kept.interrupted_at,
+            Some(std::fs::metadata(&session_file).unwrap().len())
+        );
+        assert_eq!(list(home).len(), 1);
+
+        // Someone went on with the run elsewhere and it ended: the entry has nothing to say.
+        {
+            use azazel_agent::TranscriptSink;
+            let store = SessionStore::open(&session_file).unwrap();
+            let run = store.interrupted_run(None).unwrap();
+            store.message(&azazel_ai::Message {
+                role: azazel_ai::Role::Assistant,
+                content: vec![azazel_ai::Block::text("done")],
+                meta: None,
+            });
+            store.run_ended(&run.run_id, "stop");
+        }
+        assert!(list(home).is_empty());
+        assert!(!entry_file(home, "dead").exists());
+    }
+
+    #[test]
+    fn an_interrupted_session_another_process_holds_is_not_listed() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        create_run_dir(home).unwrap();
+        let (session_id, session_file) = cut_short(&home.join("sessions"));
+        let dead = Entry {
+            session_file,
+            ..entry("dead", &session_id, None)
+        };
+        dead.write(home).unwrap();
+        // The background session that was started in its place has the session.
+        let _held = lock_session(home, &session_id).unwrap();
+        assert!(list(home).is_empty());
+    }
+
+    #[test]
+    fn a_named_request_is_claimed_once() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        assert_eq!(claim_request(home, "nightly-42", "ab12").unwrap(), Ok(()));
+        // The session it started is listed: the same request again names it.
+        entry("ab12", "s-1", None).write(home).unwrap();
+        assert_eq!(
+            claim_request(home, "nightly-42", "cd34").unwrap(),
+            Err("ab12".to_string())
+        );
+        assert_eq!(claim_request(home, "another", "cd34").unwrap(), Ok(()));
+        // A session that never started, or is long gone, is not in the way.
+        std::fs::remove_file(entry_file(home, "ab12")).unwrap();
+        assert_eq!(claim_request(home, "nightly-42", "ef56").unwrap(), Ok(()));
+        release_request(home, "nightly-42");
+        assert_eq!(claim_request(home, "nightly-42", "0a0a").unwrap(), Ok(()));
     }
 }

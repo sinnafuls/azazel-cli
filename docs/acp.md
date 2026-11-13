@@ -38,6 +38,12 @@ Each editor session is an azazel session in the directory the editor names, stor
 
 A prompt that arrives while another runs cancels that one first.
 
+A client may name a prompt with `_meta.requestId` (any string) to be able to send it again safely. A
+`session/prompt` whose `requestId` the session has seen starts nothing and cancels nothing: it is answered with
+the stop reason of the prompt that was sent first, at once when that one has ended, or when it ends. When the
+azazel that ran it was killed in the middle and the session was loaded again, the prompt goes on from where it
+stopped instead of starting over (see [interrupted runs](sessions-and-checkpoints.md#interrupted-runs)).
+
 A project's own configuration counts only when the project is trusted: nobody is asked in this mode, so trust it once from a terminal (`azazel` there asks), or pass `--trust`. See [configuration](configuration.md).
 
 ## What the editor shows

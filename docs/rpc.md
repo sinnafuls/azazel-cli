@@ -17,6 +17,8 @@ azazel rpc --cwd /path/to/project --mode ask
 | `--trust` | Trust the project's configuration for this run |
 | `-c` / `-r <id>` | Continue the latest session or resume one by id; these go before the subcommand: `azazel -c rpc` |
 
+A session whose last process was killed in the middle of a run says so in `get_state` (`interrupted`); `continue_run` goes on with it. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs).
+
 Rules of the transport:
 
 - Each line in either direction is one JSON object, ended by a line feed. Blank input lines are ignored.
@@ -31,7 +33,8 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 
 | `type` | Members | Does | Response `data` |
 |---|---|---|---|
-| `prompt` | `text`, `images?` | Starts work on the input. While the lead is busy it is queued | `null` |
+| `prompt` | `text`, `images?`, `request_id?` | Starts work on the input. While the lead is busy it is queued. With a `request_id` the prompt can be sent again safely: see [named prompts](#named-prompts) | `null`; with a `request_id`, the run's state |
+| `continue_run` | | Goes on with the run that the end of the session's process cut short: tool calls without a result get one, and the request the model never answered is sent again. Refused when no run was interrupted or the lead works | The run's state: `{"run_id", "state": "running", "request_id?"}` |
 | `steer` | `text`, `images?` | Hands the working lead input before its next model request | `null` |
 | `follow_up` | `text` | Queues input for when the lead would go idle | `null` |
 | `abort` | | Stops the lead's current work | `null` |
@@ -94,6 +97,22 @@ The session commands report the saved sessions and the open one, change which se
 | `coordinator`, `goal` | Whether coordinator mode is on; the open goal in a few words, or `null` |
 | `todo` | The lead's task list: `{"text", "status"}` with `pending`, `in_progress` or `done` |
 | `roles` | The model each role (`default`, `smol`, ...) resolves to first |
+| `interrupted` | Present when the session's last run was cut short by the end of a process and `continue_run` can go on with it: where it stopped, in a few words (`stopped while shell ran`) |
+
+### Named prompts
+
+A client that cannot tell whether its `prompt` arrived (a connection that dropped, a retry after a timeout) names it: `request_id` is any string of the client's choosing. The first `prompt` with a given `request_id` starts a run and answers `{"request_id": "...", "state": "queued"}`. Any later `prompt` with the same `request_id` starts nothing, whatever its text, and answers with where that run stands:
+
+| Member | Meaning |
+|---|---|
+| `request_id` | The name |
+| `run_id` | The run as the session file records it; absent while the lead has not taken the prompt up |
+| `state` | `queued` (the lead has not taken it up yet), `running`, `ended`, or `interrupted` (the process that ran it ended first; `continue_run` goes on with it) |
+| `duplicate` | `true`: this is not the first prompt of that name |
+| `stop` | For an ended run: the `stop` of its `idle` event, or `failed` |
+| `text` | The last thing the lead said in the run |
+
+The events of a run that is still going on arrive on the connection as they would have; a run that has ended is read from the response. The names are kept in the session file, so they hold for as long as the session does, across processes. `azazel bg --request-id <id>` and the `_meta.requestId` of an ACP prompt do the same for those two ways in (see [background sessions](background-and-remote.md) and [ACP](acp.md)).
 
 ## Responses
 
@@ -130,7 +149,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 
 One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. A request whose reply a rule withdrew has `rule` where `message_end` would be. Stream deltas are for display; `message_end` carries the authoritative message.
 
-Four more frame types come from the session rather than an agent.
+Five more frame types come from the session rather than an agent.
 
 ### `roster`
 
@@ -193,7 +212,14 @@ An `ask` request is a question of the `ask_user` tool (or of an extension). `con
 
 Written by a [background session](background-and-remote.md) only: what a client sent the lead,
 `{"type": "user_input", "kind": "prompt", "text": "..."}` with `kind` `prompt`, `steer` or `follow_up`. It is in
-the session's log and in what a client that attaches later is replayed, so both show what was asked.
+the session's log, in what a client that attaches later is replayed, and in what the session's other clients
+read, so all of them show what was asked. The client that sent the input is not sent the frame.
+
+### `request_closed`
+
+Written by a background session only: `{"type": "request_closed", "request_id": "r3"}` says that an
+`approval_request` or `ui_request` no longer waits, because another client answered it or whoever asked gave up.
+A client that shows the request takes it away. The client that answered is not sent the frame.
 
 ### `btw_delta`
 
@@ -207,11 +233,35 @@ output to it. Two commands exist only there:
 
 | `type` | Members | Does | Response `data` |
 |---|---|---|---|
-| `attach` | `pid?`, `replay?` | The first command on a connection: takes the place of the session's one client. `replay` is `missed` (what was written since the last client left; the default), `all` or `none`; those frames follow the response, then the requests that still wait for an answer. A second client is refused, and told the `pid` the first one gave | `{"host", "pid", "session_id", "session_file"}` |
+| `attach` | `pid?`, `replay?` | The first command on a connection: makes it a client of the session, beside any that are attached already. `replay` is `missed` (the default), `all` or `none`; those frames follow the response, then the requests that still wait for an answer, then everything the session does from then on | `{"host", "pid", "session_id", "session_file", "clients", "snapshot"}` |
 | `stop` | `now?` | Ends the session once the lead has finished what it is doing; with `now` the lead is stopped first. Any connection may send it, attached or not. The connection closes when the session has ended | `null` |
 
-Until `attach` has been answered, every other command is refused. Responses and `btw_delta` frames go to the
-client that is attached and are not logged; every other frame is appended to `~/.azazel/run/<id>.log`.
+Until `attach` has been answered, every other command is refused.
+
+Any number of clients may be attached. Each is sent every event; any of them may prompt, steer, abort or answer a
+request. A response and the `btw_delta` frames of a `btw` go to the client that sent the command, under the `id`
+that client gave it, so two clients need not agree on ids. What one client sends the lead reaches the others as
+`user_input`, and a request one of them answered closes on the others with `request_closed`. A second answer to
+the same request is refused. Responses, `btw_delta` and `request_closed` are not logged; every other frame is
+appended to `~/.azazel/run/<id>.log`.
+
+`replay: "missed"` replays what was written since the last client left (everything, for the first client). When
+another client is attached already, nobody was away: the frames of the run in progress are replayed, from the
+input that started it.
+
+`snapshot` in the response to `attach` says where the session stands at that moment, for a client that draws the
+session's state rather than replaying frames:
+
+| Member | Meaning |
+|---|---|
+| `busy` | Whether the lead is working |
+| `tail` | The last messages of the conversation (at most 20), oldest first, as `get_messages` gives them |
+| `streaming` | The replies being written: `{"agent", "text", "thinking?"}` with the text so far |
+| `tools` | The tool calls that run: `{"agent", "call_id", "name", "input", "elapsed_ms"}` |
+| `queue` | What clients sent the lead that it has not taken up yet: `{"kind", "text"}` |
+| `pending` | The `request_id`s of the requests that wait for an answer; the requests themselves follow as frames |
+
+`clients` counts the clients attached, the new one included.
 
 ## Example
 

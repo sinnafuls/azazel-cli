@@ -243,13 +243,29 @@ async fn start(home: &Path, args: Vec<OsString>, id: &str) -> Result<(), String>
 }
 
 /// `azazel bg <prompt>`: the prompt runs in a session of its own that outlives this terminal.
-pub async fn bg(paths: &Paths) -> u8 {
+/// With a `request_id`, the command sent again starts nothing and prints the id of the session
+/// the first one started.
+pub async fn bg(paths: &Paths, request_id: Option<&str>) -> u8 {
     let id = new_id(&paths.home);
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
     let Some(args) = host_args(&args, &id) else {
         eprintln!("azazel: bg needs a prompt: azazel bg \"what to do\"");
         return EXIT_USAGE;
     };
+    if let Some(request_id) = request_id {
+        match running::claim_request(&paths.home, request_id, &id) {
+            Ok(Ok(())) => {}
+            Ok(Err(started)) => {
+                println!("{started}");
+                eprintln!("this request started {started} before; nothing was started");
+                return EXIT_OK;
+            }
+            Err(e) => {
+                eprintln!("azazel: cannot note the request: {e}");
+                return EXIT_FAILED;
+            }
+        }
+    }
     match start(&paths.home, args, &id).await {
         Ok(()) => {
             println!("{id}");
@@ -257,10 +273,59 @@ pub async fn bg(paths: &Paths) -> u8 {
             EXIT_OK
         }
         Err(e) => {
+            if let Some(request_id) = request_id {
+                running::release_request(&paths.home, request_id);
+            }
             eprintln!("azazel: {e}");
             EXIT_FAILED
         }
     }
+}
+
+/// Starts the background session of `entry` again, whose process died in the middle of a run,
+/// on the same session and under the same id. It works as the one before did, in the mode
+/// asked for now or else the one it was in; with `[session] resume_runs` it goes on with the
+/// run by itself. Returns the entry of the new process.
+async fn revive(cli: &Cli, paths: &Paths, entry: &Entry) -> Result<Entry, String> {
+    let home = &paths.home;
+    let mut args: Vec<OsString> = entry.args.iter().map(OsString::from).collect();
+    args.extend(["--cwd".into(), entry.cwd.clone().into()]);
+    args.extend(["--session".into(), entry.session_file.clone().into()]);
+    if let Some(mode) = cli.mode.as_ref().or(entry.mode.as_ref()) {
+        args.extend(["--mode".into(), mode.into()]);
+    }
+    for spec in &cli.model {
+        args.extend(["--model".into(), spec.into()]);
+    }
+    if let Some(key) = &cli.api_key {
+        args.extend(["--api-key".into(), key.into()]);
+    }
+    args.extend(["host", "--id", &entry.id].map(OsString::from));
+    // The entry of the process that died stands where the new one is looked for.
+    let _ = std::fs::remove_file(running::entry_file(home, &entry.id));
+    eprintln!(
+        "background session {} had stopped in the middle of a run; starting it again…",
+        entry.id
+    );
+    match start(home, args, &entry.id).await {
+        Ok(()) => running::read_entry(home, &entry.id)
+            .ok_or_else(|| format!("the background session {} ended as soon as it started", entry.id)),
+        Err(e) => {
+            // Still there to try again.
+            let _ = entry.write(home);
+            Err(e)
+        }
+    }
+}
+
+/// The background session `wanted` names, running: one whose process died in the middle of a
+/// run is started again first.
+async fn find_running(cli: &Cli, paths: &Paths, wanted: &str) -> Result<Entry, String> {
+    let entry = running::find(&paths.home, wanted)?;
+    if entry.interrupted() {
+        return revive(cli, paths, &entry).await;
+    }
+    Ok(entry)
 }
 
 fn elapsed_since(started: &str) -> Duration {
@@ -271,7 +336,8 @@ fn elapsed_since(started: &str) -> Duration {
         .unwrap_or_default()
 }
 
-/// `azazel ps`: the background sessions that are running.
+/// `azazel ps`: the background sessions that are running, and those whose process died in the
+/// middle of a run.
 pub fn ps(paths: &Paths, json: bool) -> u8 {
     let entries = running::list(&paths.home);
     if json {
@@ -321,6 +387,12 @@ pub fn ps(paths: &Paths, json: bool) -> u8 {
     print(&heads.map(str::to_string));
     for row in &rows {
         print(row);
+    }
+    if entries.iter().any(Entry::interrupted) {
+        println!(
+            "interrupted: the process stopped in the middle of a run; `azazel attach <id>` starts it again \
+             and goes on, `azazel kill <id>` forgets it"
+        );
     }
     EXIT_OK
 }
@@ -438,9 +510,14 @@ async fn stop(home: &Path, entry: &Entry, now: bool, limit: Option<Duration>) ->
     }
 }
 
-/// `azazel kill <id>`: stops the lead, ends the session, and the process exits.
+/// `azazel kill <id>`: stops the lead, ends the session, and the process exits. A session
+/// whose process is gone already is taken off the list.
 pub async fn kill(paths: &Paths, wanted: &str) -> u8 {
     let outcome = match running::find(&paths.home, wanted) {
+        Ok(entry) if entry.interrupted() => {
+            running::forget(&paths.home, &entry);
+            Ok(entry.id)
+        }
         Ok(entry) => stop(&paths.home, &entry, true, Some(KILL_LIMIT))
             .await
             .map(|()| entry.id),
@@ -462,6 +539,11 @@ pub async fn kill(paths: &Paths, wanted: &str) -> u8 {
 /// its session can be opened here.
 pub async fn take(paths: &Paths, wanted: &str, now: bool) -> Result<Entry, String> {
     let entry = running::find(&paths.home, wanted)?;
+    // Its process is gone: the session is free to be opened here.
+    if entry.interrupted() {
+        running::forget(&paths.home, &entry);
+        return Ok(entry);
+    }
     if !now && entry.state != "idle" {
         eprintln!(
             "waiting for {} to finish what it is doing (--now stops it instead)…",
@@ -557,7 +639,8 @@ fn answer(request: &UiRequest, text: &str) -> Result<Value, String> {
 
 const ATTACH_HELP: &str = "text is sent to the session as a message; /approve, /session, /always and /deny \
                            [note] answer a permission request; /answer <text> answers a question; /abort stops the current \
-                           work; /detach leaves the session running; /kill ends it";
+                           work; /continue goes on with a run that was interrupted; /detach leaves the session running; \
+                           /kill ends it";
 
 /// What one typed line asks for.
 enum Typed {
@@ -575,6 +658,7 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
             false => Typed::Send(Command::Prompt {
                 text: line.to_string(),
                 images: Vec::new(),
+                request_id: None,
             }),
         };
     };
@@ -614,6 +698,7 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
             }
         }
         "abort" => Typed::Send(Command::Abort),
+        "continue" => Typed::Send(Command::ContinueRun),
         "kill" => Typed::Send(Command::Stop { now: true }),
         "detach" => Typed::Detach,
         "help" => Typed::Say(ATTACH_HELP.to_string()),
@@ -624,7 +709,7 @@ fn typed(line: &str, asked: &mut VecDeque<Asked>) -> Typed {
 /// `azazel attach <id>`: the background session in the full UI, or with `--plain` (and where
 /// there is no terminal) as lines.
 pub async fn attach(cli: &Cli, paths: Paths, wanted: &str) -> u8 {
-    let entry = match running::find(&paths.home, wanted) {
+    let entry = match find_running(cli, &paths, wanted).await {
         Ok(entry) => entry,
         Err(e) => {
             eprintln!("azazel: {e}");
@@ -659,8 +744,8 @@ pub async fn attach(cli: &Cli, paths: Paths, wanted: &str) -> u8 {
 
 /// `azazel rpc --attach <id>`: standard input and output become the connection to a background
 /// session, for a program that speaks the protocol (and for azazel on another machine, over SSH).
-pub async fn bridge(paths: &Paths, wanted: &str) -> u8 {
-    let connected = match running::find(&paths.home, wanted) {
+pub async fn bridge(cli: &Cli, paths: &Paths, wanted: &str) -> u8 {
+    let connected = match find_running(cli, paths, wanted).await {
         Ok(entry) => socket::connect(&entry.socket)
             .await
             .map_err(|e| format!("cannot reach the background session {}: {e}", entry.id)),
@@ -747,6 +832,10 @@ pub async fn line_client(client: Client) -> u8 {
                         {
                             asked.push_back(Asked::Ui(request_id.clone(), request.clone()));
                         }
+                        // Another client answered it, or whoever asked gave up.
+                        Frame::RequestClosed { request_id } => asked.retain(|asked| match asked {
+                            Asked::Approval(id) | Asked::Ui(id, _) => id != request_id,
+                        }),
                         _ => {}
                     }
                     printer.frame(&frame);

@@ -787,3 +787,60 @@ fn a_script_adds_a_prompt_part_and_acts_on_the_session() {
 
     assert_eq!(client.finish(), Some(0));
 }
+
+#[test]
+fn a_named_prompt_sent_again_starts_nothing_and_says_where_its_run_stands() {
+    let script = json!({ "lead": [
+        { "delay_ms": 1500, "reply": { "text": "First." } },
+        { "reply": { "text": "Second." } },
+    ] });
+    let mut client = Client::start(&script, &[]);
+    let named = json!({ "type": "prompt", "text": "one", "request_id": "job-1" });
+    let first = client.ok(named.clone());
+    assert_eq!(first, json!({ "request_id": "job-1", "state": "queued" }));
+    // The same line again, while the run it started goes on.
+    let again = client.ok(named.clone());
+    assert_eq!(
+        (&again["duplicate"], &again["request_id"]),
+        (&json!(true), &json!("job-1")),
+        "{again}"
+    );
+    assert!(
+        again["state"] == "queued" || again["state"] == "running",
+        "{again}"
+    );
+    let (_, idle) = client.until(|line| line["type"] == "idle" || line["type"] == "failed");
+    assert_eq!(idle["type"], "idle", "{idle}");
+
+    // And once it has ended: how it ended and what was said, read from the session file.
+    let ended = client.ok(named);
+    let run_id = ended["run_id"].as_str().unwrap().to_string();
+    assert_eq!(
+        ended,
+        json!({ "request_id": "job-1", "run_id": run_id, "state": "ended", "duplicate": true,
+                "stop": "stop", "text": "First." })
+    );
+    assert_eq!(client.requests().len(), 1, "one run, one request");
+    assert_eq!(
+        client.messages(),
+        [pair("user", "one"), pair("assistant", "First.")]
+    );
+
+    // Another name is another prompt; none at all answers as it always did.
+    client.ok(json!({ "type": "prompt", "text": "two", "request_id": "job-2" }));
+    let (_, idle) = client.until(|line| line["type"] == "idle" || line["type"] == "failed");
+    assert_eq!(idle["type"], "idle", "{idle}");
+    assert_eq!(client.requests().len(), 2);
+    let second = client.ok(json!({ "type": "prompt", "text": "two", "request_id": "job-2" }));
+    assert_eq!(
+        (&second["state"], &second["text"]),
+        (&json!("ended"), &json!("Second."))
+    );
+    // A new session has not seen the name.
+    client.ok(json!({ "type": "new_session" }));
+    let fresh = client.ok(json!({ "type": "prompt", "text": "one", "request_id": "job-1" }));
+    assert_eq!(fresh["state"], "queued", "{fresh}");
+    assert_eq!(fresh.get("duplicate"), None, "{fresh}");
+    client.until(|line| line["type"] == "idle" || line["type"] == "failed");
+    assert_eq!(client.finish(), Some(0));
+}

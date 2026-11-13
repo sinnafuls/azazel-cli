@@ -102,6 +102,10 @@ impl Tool for GlobTool {
         Access::Read
     }
 
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         input
             .get("path")
@@ -343,6 +347,10 @@ impl Tool for GrepTool {
 
     fn access(&self, _: &Value) -> Access {
         Access::Read
+    }
+
+    fn replay_safe(&self, _: &Value) -> bool {
+        true
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {
