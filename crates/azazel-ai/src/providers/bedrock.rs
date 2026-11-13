@@ -423,6 +423,7 @@ impl ConverseDecoder {
             stop,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         }
     }
 
@@ -902,6 +903,7 @@ mod tests {
             stop: StopReason::ToolUse,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         };
         let thinking_delta = |delta: &str| StreamEvent::ThinkingDelta {
             index: 0,
@@ -1091,6 +1093,7 @@ mod tests {
                         stop: StopReason::ToolUse,
                         response_id: None,
                         duration_ms: 0,
+                        sources: Vec::new(),
                     },
                 ),
                 Message::tool(vec![Block::ToolResult {
@@ -1110,6 +1113,7 @@ mod tests {
             temperature: Some(0.5),
             cache_key: None,
             tier: None,
+            hosted: Vec::new(),
         }
     }
 

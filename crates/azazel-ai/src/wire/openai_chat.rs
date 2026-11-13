@@ -902,6 +902,7 @@ impl ChatDecoder {
             stop,
             response_id: self.response_id.clone(),
             duration_ms: 0,
+            sources: Vec::new(),
         }
     }
 

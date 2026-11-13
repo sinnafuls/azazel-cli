@@ -182,9 +182,9 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `auto_extract` | `true` | Extract memories at session end and after compaction |
 | | `auto_index` | `true` | Refresh the code index in the background |
 | `[embeddings]` | `provider`, `model` | absent | Embedding endpoint; both keys are required. Absent means word search only |
-| `[web]` | `search` | `"auto"` | `auto`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
+| `[web]` | `search` | `"auto"` | `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
 | | `searxng_url` | `""` | Address of a SearXNG instance |
-| | `provider_search` | `true` | Search through the lead model's provider when it offers a search tool |
+| | `provider_search` | `true` | Under `search = "auto"`, search through the lead model's provider first when it has a search tool; see [the provider's own search](web-and-browser.md#the-providers-own-search) |
 | `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith` |
 | | `endpoint` | `""` | Collector address; empty uses the exporter's default |
 | | `project` | `""` | Project name shown by the backend |

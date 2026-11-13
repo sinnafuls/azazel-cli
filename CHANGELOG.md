@@ -45,9 +45,20 @@ GitHub are its section here.
   a turn tells the agent to form a new hypothesis before trying it again.
 - Runaway guard (`guards.runaway`): a reply that repeats a block of 200 characters or more three times in a
   row is stopped as it is written and asked for again, like a reply that matched a stream rule.
+- `web_search` asks the lead's own model provider to search when it has a search tool: Anthropic's
+  `web_search` server tool, the `web_search` tool of the Responses API (OpenAI, the ChatGPT login, xAI) and
+  Gemini's Google Search grounding. It needs no search key and works on a subscription login. Each query is
+  one request on the lead's model; the numbered results are read from the pages its answer cites. A search
+  that fails, or cites nothing, is answered by the configured backend instead. `[web] search = "provider"`
+  uses the provider alone, `provider_search = false` leaves it out, and `/cost` counts the requests under
+  `web_search`.
 
 ### Changed
 
+- `[web] search = "auto"` now tries the lead's provider first, then `brave`, `tavily`, `exa`, `searxng` and
+  `duckduckgo` as before. `azazel doctor` names who answers: `web search: provider (<model>), then <backend>`.
+- The details of a `web_search` result name the backend of each query, and `provider_error` when the
+  provider's search was passed over.
 - The permission mode `ask` is now called `manual`, everywhere a mode is named: `permissions.mode`, `--mode`,
   `/mode`, RPC `set_mode` and `get_state`, ACP session modes, the `permission_mode` of hooks, `ctx.mode` in
   Luau. The old name is refused with a message that names the new one. The `ask` list of rules is unchanged.

@@ -1,14 +1,17 @@
-//! `web_search`: one tool in front of several search services.
+//! `web_search`: one tool in front of several search services, the first of them the search
+//! tool of the lead's own model provider.
 
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_ai::{HostedTool, ModelRef, WebSource};
+use azazel_core::side::{LeadModel, Side};
 use dom_smoothie::Readability;
 use futures::StreamExt;
 use reqwest::Url;
-use reqwest::header::ACCEPT;
+use reqwest::header::{ACCEPT, LOCATION};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -27,6 +30,25 @@ const SNIPPET_CHARS: usize = 500;
 pub const MAX_QUERIES: usize = 5;
 /// Queries of one call sent at the same time.
 pub const CONCURRENT_QUERIES: usize = 3;
+
+/// The name the provider's own search has in `[web] search` and in a result's details.
+pub const PROVIDER: &str = "provider";
+/// How long the provider may take over one search before the configured backend is asked.
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(90);
+/// The most searches the provider runs for one query, where it takes a limit.
+const PROVIDER_SEARCHES: u32 = 2;
+/// Where Gemini's grounding puts the pages it found: links that redirect to the page.
+pub const GROUNDING_LINKS: &str = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/";
+/// How long one such link may take to say where it leads.
+const LINK_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// What the provider's model is told when it searches for the tool. The results are read from
+/// the citations of its answer, so the answer has to cite every page it reports.
+const PROVIDER_INSTRUCTIONS: &str = "You are the search step of a `web_search` tool; a program reads your \
+answer. Search the web for the query. Then report what the most relevant pages say about it: one or two \
+sentences per page, citing that page, each page on a line of its own, the most relevant first. Cover as \
+many different pages as the request asks for. Always search; never answer from memory. Write nothing but \
+those lines: no introduction, no conclusion, no advice.";
 
 /// The backends that need an API key, in the order `auto` tries them, with the variable holding it.
 static KEYED: [(&str, &str); 3] = [
@@ -560,10 +582,11 @@ fn key(env: &dyn Fn(&str) -> Option<String>, var: &str) -> Option<String> {
     env(var).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
-/// The backend `web_search` would use with this configuration and environment, for `azazel doctor`:
-/// `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`, or `none` when `search` names no backend.
-/// `auto` is the first of brave, tavily and exa whose key is set, then searxng when a URL is set,
-/// then duckduckgo.
+/// The backend `web_search` would use with this configuration and environment when the lead's
+/// provider is not asked or does not answer, for `azazel doctor`: `brave`, `tavily`, `exa`,
+/// `searxng` or `duckduckgo`; `provider` when only the provider's own search is allowed; `none`
+/// when `search` names no backend. `auto` is the first of brave, tavily and exa whose key is set,
+/// then searxng when a URL is set, then duckduckgo.
 pub fn active_backend(search: &str, searxng_url: &str, env: &dyn Fn(&str) -> Option<String>) -> &'static str {
     match search.trim().to_ascii_lowercase().as_str() {
         "" | "auto" => match KEYED.iter().find(|(_, var)| key(env, var).is_some()) {
@@ -576,12 +599,39 @@ pub fn active_backend(search: &str, searxng_url: &str, env: &dyn Fn(&str) -> Opt
         "exa" => "exa",
         "searxng" => "searxng",
         "duckduckgo" => "duckduckgo",
+        "provider" => PROVIDER,
         _ => "none",
+    }
+}
+
+/// How far `web_search` goes through the search tool of the lead's model provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderSearch {
+    /// Never: only the configured backend is asked.
+    Off,
+    /// First, when the lead's provider has a search tool; the configured backend answers when
+    /// it has none or its search fails.
+    First,
+    /// Nothing else: a search fails when the provider cannot answer it.
+    Only,
+}
+
+impl ProviderSearch {
+    /// What `[web] search` and `[web] provider_search` ask for: `search = "provider"` is the
+    /// provider alone, `auto` puts it first unless `provider_search` is off, and a backend
+    /// named explicitly is used alone.
+    pub fn from_config(search: &str, provider_search: bool) -> Self {
+        match search.trim().to_ascii_lowercase().as_str() {
+            "provider" => ProviderSearch::Only,
+            "" | "auto" if provider_search => ProviderSearch::First,
+            _ => ProviderSearch::Off,
+        }
     }
 }
 
 /// The backend for this configuration and environment pointed at the real service, or why it
 /// cannot be used: an explicitly chosen backend without its key or URL, or an unknown name.
+/// `provider` has no backend of its own.
 pub fn backend_from_config(
     search: &str,
     searxng_url: &str,
@@ -610,27 +660,255 @@ pub fn backend_from_config(
             Arc::new(Searxng::new(url))
         }
         "duckduckgo" => Arc::new(DuckDuckGo::new(DUCKDUCKGO_URL)),
+        PROVIDER => return Err(NO_PROVIDER.to_string()),
         _ => {
             return Err(format!(
-                "unknown search backend {search:?}: set [web] search to auto, brave, tavily, exa, searxng \
-                 or duckduckgo"
+                "unknown search backend {search:?}: set [web] search to auto, provider, brave, tavily, exa, \
+                 searxng or duckduckgo"
             ));
         }
     };
     Ok(backend)
 }
 
+/// What a search says when only the provider may answer it and the lead's provider has no
+/// search tool.
+const NO_PROVIDER: &str = "[web] search is \"provider\", but the lead's model has no web search of its \
+                           own (Anthropic, OpenAI, ChatGPT, Gemini and xAI models do): choose such a \
+                           model, or set [web] search to auto or to a backend";
+
 pub struct WebSearchTool {
     backend: Result<Arc<dyn SearchBackend>, String>,
     client: reqwest::Client,
+    provider: ProviderSearch,
+    /// What the addresses of pages start with when the provider hands out redirect links.
+    links: String,
+    /// Asks a redirect link where it leads without going there.
+    unfollowed: reqwest::Client,
 }
 
 impl WebSearchTool {
     /// `backend` is the service to query, or the reason none is usable, which every call then
-    /// reports (see [`backend_from_config`]).
+    /// reports (see [`backend_from_config`]). The provider's own search is not used; see
+    /// [`WebSearchTool::with_provider`].
     pub fn new(backend: Result<Arc<dyn SearchBackend>, String>, client: reqwest::Client) -> Self {
-        WebSearchTool { backend, client }
+        let unfollowed = reqwest::Client::builder()
+            .timeout(LINK_TIMEOUT)
+            .user_agent(USER_AGENT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap_or_else(|_| client.clone());
+        WebSearchTool {
+            backend,
+            client,
+            provider: ProviderSearch::Off,
+            links: GROUNDING_LINKS.to_string(),
+            unfollowed,
+        }
     }
+
+    /// Searches through the lead's provider as `provider` says. The lead's model and the means
+    /// to ask it come from the services of the call ([`Side`], [`LeadModel`]).
+    pub fn with_provider(mut self, provider: ProviderSearch) -> Self {
+        self.provider = provider;
+        self
+    }
+
+    /// Takes addresses that start with `prefix` for the provider's redirect links
+    /// ([`GROUNDING_LINKS`] unless said otherwise).
+    pub fn with_links_at(mut self, prefix: impl Into<String>) -> Self {
+        self.links = prefix.into();
+        self
+    }
+
+    /// The lead's model and the way to ask it, when this tool searches through the lead's
+    /// provider and that provider has a search tool.
+    fn hosted(&self, ctx: &ToolCtx) -> Option<Hosted> {
+        if self.provider == ProviderSearch::Off {
+            return None;
+        }
+        let side = ctx.services.get::<Side>()?;
+        let lead = ctx.services.get::<LeadModel>()?;
+        let model = side.search_model(&(lead.0)())?;
+        Some(Hosted { side, model })
+    }
+
+    /// The pages the lead's provider finds for `query`, as hits. `Err` says why there are none.
+    async fn ask_provider(
+        &self,
+        hosted: &Hosted,
+        query: &SearchQuery,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Result<Vec<SearchHit>, String> {
+        let tool = HostedTool::WebSearch {
+            domains: query.site.iter().cloned().collect(),
+            max_uses: Some(PROVIDER_SEARCHES),
+        };
+        let request = cancel.child_token();
+        let asked = hosted.side.search(
+            &hosted.model,
+            PROVIDER_INSTRUCTIONS,
+            provider_question(query),
+            tool,
+            request.clone(),
+        );
+        let answer = match tokio::time::timeout(PROVIDER_TIMEOUT, asked).await {
+            Ok(answer) => answer?,
+            Err(_) => {
+                request.cancel();
+                return Err(format!("no answer within {} s", PROVIDER_TIMEOUT.as_secs()));
+            }
+        };
+        let pages =
+            futures::future::join_all(answer.sources.into_iter().map(|page| self.page_hit(page))).await;
+        let hits: Vec<SearchHit> = pages
+            .into_iter()
+            .filter(|hit| query.site.as_deref().is_none_or(|site| on_site(&hit.url, site)))
+            .take(query.limit)
+            .collect();
+        if hits.is_empty() {
+            return Err("its search named no pages".to_string());
+        }
+        Ok(hits)
+    }
+
+    /// A page of the provider's search as a hit, a redirect link replaced by where it leads.
+    async fn page_hit(&self, page: WebSource) -> SearchHit {
+        let url = match page.url.starts_with(&self.links) {
+            true => self.destination(&page.url).await.unwrap_or(page.url),
+            false => page.url,
+        };
+        SearchHit {
+            title: tidy(&page.title),
+            url,
+            snippet: tidy(&page.snippet),
+        }
+    }
+
+    /// Where the redirect link `link` leads, asked of the link's own host only.
+    async fn destination(&self, link: &str) -> Option<String> {
+        let response = self.unfollowed.get(link).send().await.ok()?;
+        let target = response.headers().get(LOCATION)?.to_str().ok()?;
+        Url::parse(target)
+            .ok()
+            .filter(|url| matches!(url.scheme(), "http" | "https"))
+            .map(String::from)
+    }
+
+    /// One query answered by the provider's search when there is one, else by the configured
+    /// backend.
+    async fn answer(
+        &self,
+        query: &SearchQuery,
+        hosted: Option<&Hosted>,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> Answer {
+        let mut refused = None;
+        if let Some(hosted) = hosted {
+            match self.ask_provider(hosted, query, cancel).await {
+                Ok(hits) => {
+                    return Answer {
+                        found: Ok(hits),
+                        backend: PROVIDER,
+                        refused: None,
+                    };
+                }
+                Err(why) => refused = Some(why),
+            }
+        }
+        let provider_failed = |why: &str| format!("the provider's web search failed: {why}");
+        match (&self.backend, self.provider) {
+            (_, ProviderSearch::Only) => Answer {
+                found: Err(refused.map_or_else(|| NO_PROVIDER.to_string(), |why| provider_failed(&why))),
+                backend: PROVIDER,
+                refused: None,
+            },
+            (Ok(backend), _) => {
+                let found = backend.search(&self.client, query).await.map(|mut hits| {
+                    hits.truncate(query.limit);
+                    hits
+                });
+                Answer {
+                    found,
+                    backend: backend.name(),
+                    refused,
+                }
+            }
+            (Err(reason), _) => Answer {
+                found: Err(match &refused {
+                    Some(why) => format!("{}; {reason}", provider_failed(why)),
+                    None => reason.clone(),
+                }),
+                backend: "none",
+                refused: None,
+            },
+        }
+    }
+}
+
+/// The lead's model and the way to send it a request of its own.
+struct Hosted {
+    side: Arc<Side>,
+    model: ModelRef,
+}
+
+/// What one query came to.
+struct Answer {
+    found: Result<Vec<SearchHit>, String>,
+    /// Who answered: [`PROVIDER`] or the backend's name.
+    backend: &'static str,
+    /// Why the provider's search did not answer, when the backend answered in its place.
+    refused: Option<String>,
+}
+
+impl Answer {
+    /// The answer for a result's details: who gave it, its hits or its failure, and why the
+    /// provider's search was passed over.
+    fn details(&self, entry: &mut serde_json::Map<String, Value>) {
+        entry.insert("backend".to_string(), json!(self.backend));
+        match &self.found {
+            Ok(hits) => entry.insert("results".to_string(), json!(hits)),
+            Err(error) => entry.insert("error".to_string(), json!(error)),
+        };
+        if let Some(why) = &self.refused {
+            entry.insert("provider_error".to_string(), json!(why));
+        }
+    }
+}
+
+/// What the provider's model is asked for `query`.
+fn provider_question(query: &SearchQuery) -> String {
+    let mut question = format!("Query: {}\nPages wanted: {}", query.query, query.limit);
+    if let Some(site) = &query.site {
+        question.push_str(&format!("\nOnly pages on the site {site}."));
+    }
+    if let Some(recency) = query.recency {
+        question.push_str(&format!(
+            "\nOnly pages published or updated in the last {}.",
+            recency.word()
+        ));
+    }
+    question
+}
+
+/// Whether `url` is a page of `site`: a bare domain, which covers its subdomains, optionally
+/// with the start of a path (`docs.rs/tokio`).
+fn on_site(url: &str, site: &str) -> bool {
+    let Ok(url) = Url::parse(url) else {
+        return false;
+    };
+    let (domain, path) = match site.split_once('/') {
+        Some((domain, path)) => (domain, path),
+        None => (site, ""),
+    };
+    let domain = domain.to_ascii_lowercase();
+    let on_domain = url.host_str().is_some_and(|host| {
+        host == domain
+            || host
+                .strip_suffix(domain.as_str())
+                .is_some_and(|sub| sub.ends_with('.'))
+    });
+    on_domain && url.path().trim_start_matches('/').starts_with(path)
 }
 
 #[derive(Deserialize)]
@@ -736,6 +1014,8 @@ impl Tool for WebSearchTool {
         Access::Net
     }
 
+    /// The host of the configured backend. A search through the lead's provider goes to the
+    /// host the session's model requests already go to, which is no subject of its own.
     fn subjects(&self, _: &Value) -> Vec<String> {
         let Ok(backend) = &self.backend else {
             return Vec::new();
@@ -762,10 +1042,7 @@ impl Tool for WebSearchTool {
         };
         let limit = input.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let site = input.site.as_deref().and_then(bare_domain);
-        let backend = match &self.backend {
-            Ok(backend) => backend,
-            Err(reason) => return ToolOutput::error(reason.clone()),
-        };
+        let hosted = self.hosted(ctx);
         let searches = futures::stream::iter(wanted.into_iter().map(|query| {
             let query = SearchQuery {
                 query,
@@ -773,56 +1050,59 @@ impl Tool for WebSearchTool {
                 site: site.clone(),
                 recency: input.recency,
             };
+            let hosted = hosted.as_ref();
             async move {
-                let found = backend.search(&self.client, &query).await.map(|mut hits| {
-                    hits.truncate(limit);
-                    hits
-                });
-                (query.query, found)
+                let answer = self.answer(&query, hosted, &ctx.cancel).await;
+                (query.query, answer)
             }
         }))
         .buffered(CONCURRENT_QUERIES)
         .collect::<Vec<_>>();
-        let mut found = tokio::select! {
+        let mut answers = tokio::select! {
             _ = ctx.cancel.cancelled() => return ToolOutput::error("aborted by user"),
-            found = searches => found,
+            answers = searches => answers,
         };
 
         // One query answers as it always did.
-        if found.len() == 1 {
-            return match found.remove(0) {
-                (query, Ok(hits)) => {
-                    let details = json!({"backend": backend.name(), "results": hits});
-                    ToolOutput::text(render(&query, &hits)).with_details(details)
-                }
-                (_, Err(error)) => ToolOutput::error(error),
+        if answers.len() == 1 {
+            let (query, answer) = answers.remove(0);
+            let mut details = serde_json::Map::new();
+            answer.details(&mut details);
+            return match answer.found {
+                Ok(hits) => ToolOutput::text(render(&query, &hits)).with_details(Value::Object(details)),
+                Err(error) => ToolOutput::error(error),
             };
         }
         let mut text = String::new();
         let mut details = Vec::new();
-        let all_failed = found.iter().all(|(_, found)| found.is_err());
-        for (query, found) in &found {
+        let all_failed = answers.iter().all(|(_, answer)| answer.found.is_err());
+        for (query, answer) in &answers {
             if !text.is_empty() {
                 text.push_str("\n\n");
             }
             text.push_str(&format!("## {query}\n"));
-            match found {
-                Ok(hits) => {
-                    text.push_str(&render(query, hits));
-                    details.push(json!({"query": query, "results": hits}));
-                }
-                Err(error) => {
-                    text.push_str(error);
-                    details.push(json!({"query": query, "error": error}));
-                }
+            match &answer.found {
+                Ok(hits) => text.push_str(&render(query, hits)),
+                Err(error) => text.push_str(error),
             }
+            let mut entry = serde_json::Map::new();
+            entry.insert("query".to_string(), json!(query));
+            answer.details(&mut entry);
+            details.push(Value::Object(entry));
         }
         let output = if all_failed {
             ToolOutput::error(text)
         } else {
             ToolOutput::text(text)
         };
-        output.with_details(json!({"backend": backend.name(), "queries": details}))
+        // Who answered the call: the queries of one call may be answered by different services
+        // when the provider's search fails for some of them.
+        let backend = answers
+            .iter()
+            .find(|(_, answer)| answer.found.is_ok())
+            .or(answers.first())
+            .map_or("none", |(_, answer)| answer.backend);
+        output.with_details(json!({"backend": backend, "queries": details}))
     }
 }
 

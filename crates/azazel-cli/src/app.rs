@@ -411,6 +411,7 @@ impl App {
         registry.load(&azazel_tools::web::WebExt {
             search: config.web.search.clone(),
             searxng_url: config.web.searxng_url.clone(),
+            provider_search: config.web.provider_search,
         })?;
         registry.load(&crate::login::LoginExt {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
@@ -1045,6 +1046,12 @@ impl App {
         let woken = lead.clone();
         services.insert(Arc::new(azazel_core::hooks::Wake(Arc::new(move |text| {
             woken.steer(UserInput::text(text));
+        }))));
+        // Requests made on the lead's model from outside its conversation (a web search through
+        // its provider) follow the model it is on now.
+        let asked = lead.clone();
+        services.insert(Arc::new(azazel_core::side::LeadModel(Arc::new(move || {
+            asked.status().chain
         }))));
         if let Some(goals) = services.get::<Goals>() {
             goals.attach(lead.clone(), session.clone(), checkpoints.clone());

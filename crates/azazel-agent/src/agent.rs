@@ -957,6 +957,7 @@ impl Core {
             // The tier is the session's, so every agent's own requests carry it; summaries and
             // other side requests stay at the provider's default.
             tier: self.router.tier(),
+            hosted: Vec::new(),
         };
         self.hooks.before_request(&self.info, &mut request).await;
         // A hook may have withdrawn tools; only what was offered can be called.

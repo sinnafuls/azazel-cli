@@ -389,6 +389,7 @@ impl OllamaDecoder {
             stop,
             response_id: None,
             duration_ms: 0,
+            sources: Vec::new(),
         };
         out.push(StreamEvent::Done {
             message: Message::assistant(std::mem::take(&mut self.blocks), meta),
