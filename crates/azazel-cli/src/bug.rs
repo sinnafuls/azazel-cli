@@ -250,11 +250,12 @@ impl Report {
         std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
         let stamp = jiff::Timestamp::now().strftime("%Y%m%dT%H%M%SZ");
         let mut file = dir.join(format!("azazel-report-{stamp}.zip"));
-        // A second report within the second gets a name of its own.
+        // A second report within the second gets a name of its own, one that sorts after the
+        // first.
         let mut again = 1;
         while file.exists() {
             again += 1;
-            file = dir.join(format!("azazel-report-{stamp}-{again}.zip"));
+            file = dir.join(format!("azazel-report-{stamp}_{again}.zip"));
         }
         let failed = |e: &dyn std::fmt::Display| format!("could not write {}: {e}", file.display());
         let out = std::fs::File::create(&file).map_err(|e| failed(&e))?;
@@ -543,7 +544,7 @@ mod tests {
         let file = report.write(&paths.reports_dir()).unwrap();
         assert_eq!(file.parent().unwrap(), home.join("reports"));
         let again = report.write(&paths.reports_dir()).unwrap();
-        assert_ne!(file, again, "a second report took the place of the first");
+        assert!(file < again, "a second report is not listed after the first");
         let files = unzip(&file);
         let names: Vec<&str> = files.keys().map(String::as_str).collect();
         assert_eq!(
