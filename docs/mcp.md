@@ -78,6 +78,7 @@ azazel mcp login docs
 azazel mcp logout docs
 azazel mcp approve fs                             # let a server this project defines start
 azazel mcp import cursor                          # copy the servers another client has
+azazel mcp serve                                  # be an MCP server for another client
 ```
 
 | Command | Does |
@@ -89,6 +90,7 @@ azazel mcp import cursor                          # copy the servers another cli
 | `azazel mcp login <name>` / `logout <name>` | OAuth login for an HTTP server; see below |
 | `azazel mcp approve <name>...` / `approve --all` / `reject <name>` | Decides whether a server the project defines may start; see [approving a project's servers](#approving-a-projects-servers) |
 | `azazel mcp import [client] [--yes]` | Copies the servers another client is configured with into `~/.azazel/mcp.json`; see [importing](#importing-from-other-clients) |
+| `azazel mcp serve` | Serves azazel to another MCP client on standard input and output; see [serving azazel over MCP](#serving-azazel-over-mcp) |
 
 In the terminal UI, `/mcp` opens a list of servers; picking one offers `reconnect`, `disable`, `login` and `logout` (or `enable` for a disabled one). The same actions can be typed: `/mcp list`, `/mcp reconnect <server>`, `/mcp enable <server>`, `/mcp disable <server>`, `/mcp approve <server>`, `/mcp reject <server>`, `/mcp login <server>`, `/mcp logout <server>`. Enabling or disabling writes `enabled` into the file that defines the server.
 
@@ -176,5 +178,26 @@ Trusting a project does not start whatever servers it defines, now or later. Eac
 - `--trust` approves every project server for that run and records nothing.
 
 Servers in `~/.azazel/mcp.json`, in installed packages and from extensions are not subject to this.
+
+## Serving azazel over MCP
+
+`azazel mcp serve` turns this around: azazel is the server, on standard input and output, and another MCP client (an editor, a chat application, another agent) uses it. In the other client's configuration:
+
+```json
+{ "mcpServers": { "azazel": { "command": "azazel", "args": ["mcp", "serve"] } } }
+```
+
+It serves these tools:
+
+| Tool | Does |
+|---|---|
+| `azazel_prompt` | Hands azazel a task and returns its final reply when it has finished. Arguments: `prompt`; optional `cwd` (the directory to work in, the server's own by default), `mode` (the permission mode), `model`, and `session` |
+| `read`, `glob`, `grep`, `web_search`, `web_fetch` | azazel's own read-only tools, under their own names, in the directory the server was started in. See [tools](tools.md) |
+
+Every `azazel_prompt` call runs a session of its own to the end of the prompt. The reply ends with `session: <id>`, and the structured result carries `reply` and `session_id`. Pass the id back as `session`, with the same `cwd`, to continue that conversation; `azazel sessions list` shows these sessions like any other.
+
+The permission rules apply as they do everywhere. When a call needs your word, azazel asks through MCP elicitation: the client shows the question ("azazel wants to use `write` on notes.txt. Allow it?") with one yes-or-no field. A client without elicitation cannot be asked, so the call is refused and the agent is told; start the task with `"mode": "auto"`, or add allow rules, to let it work unasked. See [permissions](permissions.md).
+
+Flags before the subcommand apply to every session: `azazel --model <spec> --trust mcp serve`. The read-only tools need no model; `azazel_prompt` answers with an error while none is configured.
 
 Luau extensions can add servers with `azazel.mcp{...}`; see [extensions](extensions.md). To write a server of your own, load the built-in `mcp-builder` skill; see [skills and commands](skills-and-commands.md).

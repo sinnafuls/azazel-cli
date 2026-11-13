@@ -109,6 +109,18 @@ GitHub are its section here.
 - Advisor (`[advisor] model`, `when = "stop"`): a second model reviews the lead's work before it stops and can
   send it back for one more round. `/advise [question]` asks it on demand.
 - `azazel doctor` reports the advisor and coordinator settings.
+- `azazel acp`: use azazel as the agent of an editor that speaks the Agent Client Protocol. Prompts, tool calls
+  with diffs, permission requests, the task list as the plan, modes, cancel, and loading a stored session.
+- `azazel mcp serve`: serve azazel to another MCP client. `azazel_prompt` runs a task and returns the reply and
+  a session id to continue with; `read`, `glob`, `grep`, `web_search` and `web_fetch` are served under their
+  own names.
+- RPC commands: `new_session`, `resume_session`, `fork_session`, `list_sessions`, `get_messages`, `get_tree`,
+  `set_leaf`, `set_name`, `set_thinking`, `set_tier`, `compact`, `retry`, `rewind`, `shell`, `export`, `btw`,
+  `list_models`, `get_usage`, `run_command`. The first line is `{"type":"hello","protocol":1,"version":…}`.
+- Crates `azazel-protocol` (typed commands and frames) and `azazel-client` (a Rust client),
+  `examples/client-demo`, a Python example, and `docs/rpc.schema.json`.
+- Luau: `azazel.prompt(name, render)` adds a system prompt part; `azazel.session` reads and changes the open
+  session.
 - `[voice]` settings: `stt`, `tts`, `voice`, `language`, `record_command`, `stt_command`, `play_command`,
   `auto_send`, `max_secs`. Speech uses the `audio/transcriptions` and `audio/speech` endpoints of any
   configured provider, or local programs; `azazel doctor` reports what is set up and what is missing.
@@ -127,6 +139,8 @@ GitHub are its section here.
 - `Ctrl+Y` pastes from the kill ring; redo is `Ctrl+Shift+Z`.
 - `/cost` also lists what side questions, commit drafts and the advisor cost.
 - `/tools` marks tools withheld in coordinator mode.
+- RPC `get_state` also reports `name` and `tier`; RPC `set_model` is recorded in the session; RPC errors for a
+  wrong member name its kind, for example "`chain` must be a list".
 - A reopened session comes back on the model and thinking level it last used (`[session] restore_model`);
   `--model` and `--thinking` win.
 - Naming, pinning or labelling a session no longer counts as using it.
@@ -138,6 +152,7 @@ GitHub are its section here.
 ### Fixed
 
 - On Windows, a multi-line paste no longer sends the prompt at its first line break.
+- `/retry` no longer sends an image that an `@mention` attached twice.
 - An MCP server that fails the moment it is started (a missing program) is reported as failed instead of
   staying `connecting`.
 - The approval prompt for a destructive command starts on "Deny", so a stray Enter cannot approve it.

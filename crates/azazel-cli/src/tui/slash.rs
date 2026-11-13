@@ -151,7 +151,7 @@ const BUILTIN: &[(&str, &str)] = &[
 ];
 
 /// How the note about a files-only rewind starts in the agent's context.
-const REWIND_NOTE: &str = "I rewound the project files";
+pub(crate) const REWIND_NOTE: &str = "I rewound the project files";
 
 const INIT_PROMPT: &str = "Explore this repository and write AGENTS.md at the project root for the coding agents \
 that will work here later. Use exactly these sections: Build, Test, Layout, Conventions. Read the build files, the \
@@ -742,6 +742,6 @@ impl Tui {
 }
 
 /// Whether a user message in the transcript was written by the UI rather than typed as a prompt.
-pub(super) fn is_note(message: &str) -> bool {
+pub(crate) fn is_note(message: &str) -> bool {
     message.starts_with(SHELL_NOTE) || message.starts_with(REWIND_NOTE)
 }

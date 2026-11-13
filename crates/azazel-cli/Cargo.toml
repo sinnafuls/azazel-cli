@@ -20,6 +20,7 @@ path = "src/main.rs"
 default = [
     "lua",
     "mcp",
+    "acp",
     "memory",
     "browser",
     "screen",
@@ -32,6 +33,7 @@ default = [
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
+acp = ["dep:agent-client-protocol"]
 memory = ["dep:azazel-memory"]
 browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
@@ -47,6 +49,7 @@ test-support = ["azazel-ai/test-support"]
 azazel-ai.workspace = true
 azazel-agent.workspace = true
 azazel-core.workspace = true
+azazel-protocol.workspace = true
 azazel-tools.workspace = true
 azazel-team.workspace = true
 azazel-tui.workspace = true
@@ -55,6 +58,7 @@ azazel-memory = { workspace = true, optional = true }
 azazel-lua = { workspace = true, optional = true }
 azazel-browser = { workspace = true, optional = true }
 azazel-media = { workspace = true, optional = true }
+agent-client-protocol = { workspace = true, optional = true }
 anyhow.workspace = true
 arboard.workspace = true
 async-trait.workspace = true
@@ -91,6 +95,9 @@ assert_cmd.workspace = true
 # The package depends on itself so that its tests, and the `azazel` binary they drive, are built
 # with the scripted mock provider.
 azazel-cli = { path = ".", features = ["test-support"] }
+agent-client-protocol.workspace = true
+azazel-client.workspace = true
 dunce.workspace = true
+rmcp.workspace = true
 tempfile.workspace = true
 wiremock.workspace = true

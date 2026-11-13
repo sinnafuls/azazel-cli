@@ -36,10 +36,11 @@ New here? Read [getting started](getting-started.md) first.
 
 | Page | What it covers |
 |---|---|
-| [MCP](mcp.md) | Connecting MCP servers |
+| [MCP](mcp.md) | Connecting MCP servers; serving azazel to another MCP client |
 | [Hooks](hooks.md) | Running commands on tool calls and other events |
 | [Rules](rules.md) | Rule files that apply always, by path or on request; stream rules; other tools' rule files |
 | [Extensions](extensions.md) | Luau scripts and Rust extensions |
 | [Skills and commands](skills-and-commands.md) | Skills, built-in skills, custom slash commands |
 | [Packages](packages.md) | Installing bundles of skills, agents, commands and extensions |
-| [RPC mode](rpc.md) | Driving azazel from another program over JSON lines |
+| [RPC mode](rpc.md) | Driving azazel from another program over JSON lines; the protocol and client crates |
+| [Agent Client Protocol](acp.md) | Using azazel as the agent of an editor that speaks ACP |

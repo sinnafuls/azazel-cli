@@ -1,12 +1,16 @@
 //! The `azazel` command-line harness: argument parsing, run modes and the embedding [`Builder`].
 
 pub mod accounts;
+#[cfg(feature = "acp")]
+pub mod acp;
 pub mod app;
 pub mod changelog;
 pub mod cli;
 pub mod doctor;
 pub mod export;
 pub mod git;
+#[cfg(any(feature = "mcp", feature = "acp"))]
+pub mod headless;
 pub mod history;
 pub mod hooks;
 pub mod init;
@@ -19,6 +23,7 @@ pub mod models;
 pub mod orchestration;
 pub mod pkg;
 pub mod print;
+pub mod retry;
 pub mod routing;
 pub mod rpc;
 pub mod rules;
@@ -101,7 +106,7 @@ fn init_logging(paths: &Paths, debug: bool) -> Option<tracing_appender::non_bloc
 
 /// Whether this run may execute what the project's configuration asks for. A project that has
 /// such configuration and no recorded decision is asked about once, when a person is present.
-fn project_trust(cli: &Cli, paths: &Paths, interactive: bool) -> bool {
+pub(crate) fn project_trust(cli: &Cli, paths: &Paths, interactive: bool) -> bool {
     if cli.trust {
         return true;
     }
@@ -242,6 +247,10 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Pkg { action }) => return pkg::run(action, &paths),
         Some(Sub::Skills { action }) => return pkg::run_skills(action, &paths),
         #[cfg(feature = "mcp")]
+        Some(Sub::Mcp {
+            action: cli::McpAction::Serve,
+        }) => return mcp::serve::run(extensions).await,
+        #[cfg(feature = "mcp")]
         Some(Sub::Mcp { action }) => return mcp::run(action, &paths, trusted, cli.trust).await,
         #[cfg(feature = "memory")]
         Some(Sub::Memory { action }) => {
@@ -261,6 +270,8 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             max_cost,
             max_minutes,
         }) => Some((objective.clone(), *max_iterations, *max_cost, *max_minutes)),
+        #[cfg(feature = "acp")]
+        Some(Sub::Acp) => return acp::run(extensions).await,
         Some(Sub::Rpc) | None => None,
     };
 

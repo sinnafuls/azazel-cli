@@ -22,7 +22,7 @@ const MAX_VERSION: Duration = Duration::from_millis(30);
 const MAX_PROMPT: Duration = Duration::from_millis(150);
 const MAX_BINARY_BYTES: u64 = 56 * 1024 * 1024;
 const BENCH_RUNS: usize = 20;
-const TASKS: &str = "catalog, bench-startup, dist";
+const TASKS: &str = "catalog, bench-startup, dist, rpc-schema";
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);
@@ -30,6 +30,7 @@ fn main() -> ExitCode {
         Some("catalog") => catalog(),
         Some("bench-startup") => bench_startup(),
         Some("dist") => dist(),
+        Some("rpc-schema") => rpc_schema(),
         Some(other) => Err(anyhow::anyhow!("unknown task `{other}`; tasks: {TASKS}")),
         None => Err(anyhow::anyhow!("usage: cargo xtask <task>; tasks: {TASKS}")),
     };
@@ -87,6 +88,17 @@ fn platform_of(triple: &str) -> Result<(&'static str, String)> {
         bail!("unsupported target `{triple}`");
     };
     Ok((os, arch))
+}
+
+/// Writes the JSON Schema of the RPC protocol to `docs/rpc.schema.json`. A test of
+/// `azazel-protocol` fails while the file is not what this writes.
+fn rpc_schema() -> Result<()> {
+    let file = workspace_root().join("docs").join("rpc.schema.json");
+    let mut text = serde_json::to_string_pretty(&azazel_protocol::schema())?;
+    text.push('\n');
+    std::fs::write(&file, text).with_context(|| format!("could not write {}", file.display()))?;
+    println!("wrote {}", file.display());
+    Ok(())
 }
 
 /// Builds the release binary (for `--target <triple>`, else this machine) and packs it with the

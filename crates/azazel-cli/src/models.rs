@@ -104,7 +104,7 @@ fn model_line(m: &ModelInfo) -> String {
     )
 }
 
-fn model_json(m: &ModelInfo) -> Value {
+pub(crate) fn model_json(m: &ModelInfo) -> Value {
     json!({
         "model": format!("{}/{}", m.provider, m.id),
         "context_window": m.context_window,

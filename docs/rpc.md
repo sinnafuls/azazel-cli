@@ -20,6 +20,7 @@ azazel rpc --cwd /path/to/project --mode ask
 Rules of the transport:
 
 - Each line in either direction is one JSON object, ended by a line feed. Blank input lines are ignored.
+- The first line azazel writes is `{"type":"hello","protocol":1,"version":"0.2.0"}`. `protocol` grows when a change would break a client written for the version before.
 - Standard output carries protocol lines only. Logs go to the log file under `~/.azazel/logs`, and startup errors to standard error.
 - The session ends when standard input closes. Open requests are then cancelled and the process exits with code 0. If the session cannot be started, the exit code is 1.
 - RPC mode has no terminal to ask in, so a project that needs trust is treated as untrusted unless it was trusted before or `--trust` is passed. See [configuration](configuration.md).
@@ -41,6 +42,32 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `agent_stop` | `agent` | Stops a sub-agent and the agents it started, or `all` | `{"agents": [...]}`: ids stopped |
 | `approval_response` | `request_id`, `decision`, `feedback?` | Answers an `approval_request` | `null` |
 | `ui_response` | `request_id`, `value` | Answers a `ui_request`; `null` dismisses it | `null` |
+| `set_name` | `name` | Names the session | `null` |
+| `set_thinking` | `level` | Changes the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `null` |
+| `set_tier` | `tier` | Changes the service tier: `priority`, `standard`, `economy` | `null` |
+| `compact` | `instructions?` | Summarises the conversation so far to free context; a `compaction` event follows | `null` |
+| `shell` | `command`, `share?` | Runs a command in your shell, outside the permission rules. With `share` (the default) the lead is told what was run and what it printed | `{"output": "...", "status": "exit code: 0"}` |
+| `btw` | `question` | Asks a question on the side, without interrupting the lead. The answer streams as `btw_delta` frames | `{"answer": "...", "model": "...", "dropped_tools?": [...]}` |
+| `export` | `format?`, `path?` | Writes the session to a file: `markdown`, `html` or `jsonl`. The format comes from `format`, else from the file name, else it is Markdown; the default file is `azazel-session-<id>.<ext>` in the working directory | `{"path": "..."}` |
+| `run_command` | `name`, `args?` | Runs a slash command an extension registered (`fast`, `preset`, a custom command), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
+| `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
+| `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status"}], "blocked_until?"}` |
+
+The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
+
+| `type` | Members | Does | Response `data` |
+|---|---|---|---|
+| `new_session` | `name?` | Leaves the open session and starts a new one | The state |
+| `resume_session` | `session_id` or `path` | Opens a saved session by its id (a unique prefix is enough) or by its file | The state |
+| `fork_session` | `entry_id?` | Continues in a copy of the open session, cut at `entry_id` when it is given | The state |
+| `list_sessions` | `query?` | The saved sessions of this project, most recently used first; with `query`, those whose messages contain it | A list of `{"id", "path", "name", "created", "updated", "first_prompt", "messages", "prompts", "pinned", "usage", "matches?"}` |
+| `get_messages` | `leaf?` | The messages from the start of the session to `leaf` (the current leaf when left out) | A list of `{"entry_id", "timestamp", "message"}` |
+| `get_tree` | | Every entry of the session file | A list of `{"id", "parent_id", "timestamp", "kind", "role?", "text?", "target_id?", "current"}`; `current` marks the branch that ends at the current leaf |
+| `set_leaf` | `entry_id` | Continues the conversation from another entry of the tree | The state |
+| `retry` | | Goes back to before the last prompt and sends it again; the earlier attempt stays in the file as a branch | `null` |
+| `rewind` | `entry_id`, `what?` | Goes back to a checkpoint. `entry_id` names a `checkpoint` entry of the tree, or the prompt that followed it. `what` is `code` (the files), `conversation` or `both` (the default) | `null` |
+
+`resume_session` takes `session_id` rather than `id` because `id` is the command's own id. After a `rewind` of the files only, the lead is told that files changed under it. See [sessions and checkpoints](sessions-and-checkpoints.md).
 
 `images` is a list of `{"mime": "image/png", "data": "<base64>"}`.
 
@@ -48,13 +75,14 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 
 | Member | Meaning |
 |---|---|
-| `session_id`, `cwd` | The session and its working directory |
+| `session_id`, `name`, `cwd` | The session, its name (`null` until it has one) and its working directory |
 | `mode` | The permission mode |
 | `busy` | Whether the lead is working |
 | `turn` | The lead's request number within the current prompt; 0 before the first |
 | `model` | The model that answered most recently, or `null` |
 | `chain` | The lead's model chain as given, e.g. `["@default"]` |
 | `thinking` | The thinking level |
+| `tier` | The service tier, or `null` at the standard tier |
 | `context_tokens`, `context_window` | Context in use and the model's window |
 | `usage` | Token and cost totals of the lead |
 | `agents` | The roster, with the same members as the `roster` event below |
@@ -66,7 +94,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 {"id": 2, "type": "response", "success": false, "error": "unknown command `dance`"}
 ```
 
-A response means the command was accepted or rejected, not that the work is finished: `prompt` answers at once and the work shows up as events. A line that is not a JSON object is answered with `"id": null`. A `prompt` can be rejected, for example by a `user_prompt_submit` hook; the reason is the `error`.
+A response means the command was accepted or rejected, not that the work is finished: `prompt` answers at once and the work shows up as events. `shell`, `btw` and `run_command` answer when they are done, and other commands are answered meanwhile. A line that is not a JSON object is answered with `"id": null`. A `prompt` can be rejected, for example by a `user_prompt_submit` hook; the reason is the `error`.
 
 ## Events
 
@@ -94,7 +122,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 
 One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. A request whose reply a rule withdrew has `rule` where `message_end` would be. Stream deltas are for display; `message_end` carries the authoritative message.
 
-Three more event types come from the session rather than an agent.
+Four more frame types come from the session rather than an agent.
 
 ### `roster`
 
@@ -148,6 +176,10 @@ Sent when an agent or extension asks the user something. Answer with `ui_respons
 | `plan` | `path`, `plan` | `true` to approve the plan, or a string of feedback to revise it |
 | `notify` | `level` (`info`, `warn`, `error`), `text` | None; no answer is expected |
 
+### `btw_delta`
+
+A piece of the answer to a `btw` command: `{"type": "btw_delta", "id": <the command's id>, "delta": "..."}`. The command's response carries the whole answer.
+
 ## Example
 
 Lines sent by the client are marked `>`, lines from azazel `<`. Long members are shortened with `…` and most `stream` lines are left out.
@@ -175,6 +207,84 @@ Lines sent by the client are marked `>`, lines from azazel `<`. Long members are
 ```
 
 A client typically reads lines in a loop, routes `response` lines by `id`, renders events by `agent`, and answers every `approval_request` and every `ui_request` other than `notify`.
+
+## A client in Python
+
+This uses only the standard library. It sends one prompt, prints the reply as it is written, allows every tool call, and stops when the lead is idle.
+
+```python
+import json
+import subprocess
+import sys
+
+azazel = subprocess.Popen(
+    ["azazel", "rpc", "--cwd", "."],
+    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, encoding="utf-8",
+)
+
+def send(command):
+    azazel.stdin.write(json.dumps(command) + "\n")
+    azazel.stdin.flush()
+
+hello = json.loads(azazel.stdout.readline())
+assert hello["type"] == "hello" and hello["protocol"] == 1, hello
+send({"id": 1, "type": "prompt", "text": " ".join(sys.argv[1:]) or "say hello"})
+
+for line in azazel.stdout:
+    frame = json.loads(line)
+    kind = frame["type"]
+    if kind == "response" and not frame["success"]:
+        sys.exit(frame["error"])
+    elif kind == "stream" and frame["agent"] == "lead":
+        if frame["event"]["type"] == "text_delta":
+            print(frame["event"]["delta"], end="", flush=True)
+    elif kind == "tool_start":
+        print(f"\n[{frame['agent']}] {frame['name']}", file=sys.stderr)
+    elif kind == "approval_request":
+        send({"type": "approval_response", "request_id": frame["request_id"], "decision": "allow"})
+    elif kind == "ui_request" and frame["kind"] != "notify":
+        send({"type": "ui_response", "request_id": frame["request_id"], "value": None})
+    elif kind == "failed" and frame["agent"] == "lead":
+        sys.exit(frame["error"])
+    elif kind == "idle" and frame["agent"] == "lead":
+        break
+
+print()
+azazel.stdin.close()
+azazel.wait()
+```
+
+## A client in Rust
+
+Two crates of the workspace are for clients. Neither depends on the rest of azazel.
+
+- `azazel-protocol` has the types of every line: `Command`, `Frame`, and the `data` of the responses (`State`, `SessionRow`, `TreeRow`, ...). A `Frame` it does not know reads as `Frame::Unknown`, so a client keeps working with a newer azazel.
+- `azazel-client` starts `azazel rpc` (`Client::spawn`) or connects to one over any pair of byte streams (`Client::connect`), sends commands (`send`), hands out frames (`frames`), and runs one prompt to its end (`prompt_and_wait`).
+
+```rust
+use azazel_client::protocol::{Command, Decision, Frame};
+use azazel_client::{Client, Options};
+
+let client = Client::spawn(Options::new("azazel")).await?;
+let run = client
+    .prompt_and_wait("fix the failing test", |frame| match frame {
+        Frame::ApprovalRequest { request_id, .. } => Some(Command::ApprovalResponse {
+            request_id: request_id.clone(),
+            decision: Decision::Allow,
+            feedback: None,
+        }),
+        _ => None,
+    })
+    .await?;
+println!("{}", run.text);
+client.shutdown().await?;
+```
+
+`examples/client-demo` is a complete program: `cargo run -p client-demo -- --allow "create hello.txt"`.
+
+## Schema
+
+[`rpc.schema.json`](rpc.schema.json) is the JSON Schema of every line and of the responses' `data`, generated from `azazel-protocol` with `cargo xtask rpc-schema`. A test fails when the file is out of date.
 
 ## Related
 

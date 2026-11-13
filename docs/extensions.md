@@ -89,6 +89,7 @@ Registering (load only):
 | `azazel.tool{ name, description, parameters?, access?, execute }` | `name`: up to 64 letters, digits, `_`, `-`. `parameters`: a JSON Schema object as a table; omitted means no arguments. `access`: `"read"`, `"write"`, `"exec"` (default) or `"net"`; it decides when you are asked (see [permissions](permissions.md)). `execute(args, ctx)` returns a string or `{ content = string, is_error = boolean }` |
 | `azazel.on(event, handler)` | `handler(ev, ctx)` returns `nil`, `{ block = true, reason = string }`, or a table of replacement fields. Events are listed below |
 | `azazel.command{ name, description?, argument_hint?, run }` | Adds `/name`. `run(args, ctx)` gets the text after the command; a returned string is shown to you |
+| `azazel.prompt(name, render)` | Adds a part to the system prompt of every agent. `render(ctx)` runs each time a prompt is put together (the lead's when a session opens, a sub-agent's when it starts) and returns the part's text, or `nil` to leave it out; `ctx.agent_id` says whose prompt it is. The part comes after the project's context files. `name` is one word of your own; the names of the built-in parts (`identity`, `rules`, `team`, `skills`, `environment`, `context_files`, `memory`, `mode`) are refused. A part that raises an error disables its script |
 | `azazel.shortcut(key, handler)` | Binds a key such as `"ctrl+k"` or `"alt+shift+p"` in the terminal UI. `handler(ctx)` |
 | `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Makes an HTTP endpoint's models available as `<id>/<model>`. `api` is `"anthropic-messages"`, `"openai-responses"`, `"openai-chat"` or `"google-generative"`. Without `api_key_env` the endpoint needs no key. A provider stays registered across `/reload`. See [models and logins](models-and-logins.md) |
 | `azazel.mcp{ name, ... }` | Adds an MCP server; the other fields are those of an `mcp.json` entry. See [mcp](mcp.md) |
@@ -108,6 +109,11 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | Function | Contract |
 |---|---|
 | `azazel.send(text, { deliver? })` | Sends `text` to the lead agent as the user: `"follow_up"` (default, when it would otherwise go idle) or `"steer"` (after its current step) |
+| `azazel.session.name()`, `azazel.session.set_name(text)` | The open session's name (`nil` until it has one), and naming it |
+| `azazel.session.set_model(specs)` | Changes the lead's model: `"provider/model[:thinking]"`, `"@role"`, or a list of them tried in order. The change is recorded in the session |
+| `azazel.session.set_thinking(level)` | Changes the lead's thinking level: `"off"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"` or `"max"`. Recorded in the session |
+| `azazel.session.compact(instructions?)` | Summarises the conversation so far to free context, once the lead is idle |
+| `azazel.session.messages()` | The messages from the start of the session to where the conversation is now: `{ id, role, text, content }` each. `role` is `"user"`, `"assistant"` or `"tool"`; `content` is the message's blocks as the session file has them, without the bytes of images |
 | `azazel.agent.send(to, message)` | Messages an agent id or `"all"` as the user; returns the ids reached |
 | `azazel.agent.stop(id)` | Stops an agent id or `"all"`, with the agents it started; returns the ids stopped |
 | `azazel.agent.list()` | `{ id, def, parent, depth, state, elapsed_secs, tokens, cost_usd }` per agent |
@@ -119,7 +125,9 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | `azazel.memory.search(query, limit?)` | `{ id, kind, text, tags, scope }` hits, best first; default limit 8 |
 | `azazel.tools.call(name, args?)` | Calls a tool of the harness, of another extension or of an MCP server as the lead agent, and returns the text of its result. The call passes the permission rules, the mode and the hooks like one the agent makes itself, so it may ask you; a refused or failed call is an error |
 
-The second argument of every tool, handler and command (the only argument of a shortcut) is `ctx`, read-only:
+The `azazel.session` functions error with `no session is open` while there is none, as when the script loads.
+
+The second argument of every tool, handler and command (the only argument of a shortcut and of a prompt part) is `ctx`, read-only:
 
 | Field | Value |
 |---|---|

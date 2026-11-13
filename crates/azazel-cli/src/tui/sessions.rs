@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use azazel_ai::{Block, Message, Role as MessageRole, Usage};
+use azazel_ai::{Message, Role as MessageRole, Usage};
 use azazel_core::names;
 use azazel_core::paths::canonical;
 use azazel_core::session::{Entry, SessionFacts, SessionSummary};
@@ -20,10 +20,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::overlay::{Action, Kind, Overlay};
 use super::pager::{self, Source, Start};
-use super::slash::is_note;
 use super::{Internal, Tui, first_line, view};
 use crate::app::Open;
 use crate::history;
+use crate::retry::{self, Again, HANDOFF_NOTE};
 use crate::sessions::local_time;
 
 /// Messages shown when `tab` previews a session in a picker.
@@ -36,9 +36,6 @@ const HISTORY_ROWS: usize = 2000;
 const PANEL_ROWS: usize = 12;
 /// Longest session name taken from `/name`.
 const MAX_NAME_CHARS: usize = 80;
-
-/// How the first message of a session that continues another one starts.
-const HANDOFF_NOTE: &str = "Hand-off brief from session ";
 
 const HANDOFF_PROMPT: &str = "Write a hand-off brief for whoever continues this work in a new session that has \
 none of this conversation. Use these headings: Goal, State, Decisions, Files touched, Next steps, Open questions. \
@@ -221,13 +218,6 @@ fn tree_rows(
 
 /// A prompt as it was typed: without the `<file>` blocks its `@` mentions were expanded into.
 /// Sending it again expands them again, from the files as they are now.
-fn typed_prompt(sent: &str) -> &str {
-    match sent.find("\n\n<file path=\"") {
-        Some(at) => &sent[..at],
-        None => sent,
-    }
-}
-
 /// A session name as typed: one line, not too long. `None` when nothing is left.
 fn clean_name(typed: &str) -> Option<String> {
     let line = typed.lines().next().unwrap_or_default().trim();
@@ -875,24 +865,15 @@ impl Tui {
             return;
         }
         let session = self.active.session.clone();
-        let skip = |sent: &str| is_note(sent) || sent.starts_with(HANDOFF_NOTE);
-        let Some(Entry {
-            parent_id,
-            kind: EntryKind::Message { message },
-            ..
-        }) = session.last_prompt(None, &skip)
+        let Some(Again {
+            parent,
+            text: prompt,
+            images,
+        }) = retry::last_prompt(&session, &self.app.paths.cwd)
         else {
             return self.info("there is no prompt to send again yet");
         };
-        let images: Vec<Block> = message
-            .content
-            .iter()
-            .filter(|block| matches!(block, Block::Image { .. }))
-            .cloned()
-            .collect();
-        let sent = message.text();
-        let prompt = typed_prompt(&sent).to_string();
-        if !session.set_leaf(parent_id.as_deref()) {
+        if !session.set_leaf(parent.as_deref()) {
             return self.fail("that prompt is no longer part of the session");
         }
         self.swap_session(Open::Store(session), StartSource::Resume).await;
@@ -1164,11 +1145,11 @@ impl Tui {
                 .rev()
                 .filter_map(|entry| match entry.kind {
                     EntryKind::Message { message } if message.role == MessageRole::User => {
-                        Some(typed_prompt(&message.text()).to_string())
+                        Some(retry::typed(&message.text()).to_string())
                     }
                     _ => None,
                 })
-                .filter(|sent| !is_note(sent) && !sent.starts_with(HANDOFF_NOTE)),
+                .filter(|sent| retry::is_prompt(sent)),
         );
         for sent in earlier {
             if !sent.trim().is_empty() && seen.insert(sent.clone()) {
@@ -1207,6 +1188,7 @@ fn toggled(current: TreeFilter, filter: TreeFilter) -> TreeFilter {
 mod tests {
     use std::path::Path;
 
+    use azazel_ai::Block;
     use azazel_core::session::AgentRun;
 
     use super::*;
@@ -1361,9 +1343,9 @@ mod tests {
     #[test]
     fn a_prompt_is_sent_again_as_typed_and_names_are_one_short_line() {
         let sent = "review @src/lib.rs please\n\n<file path=\"src/lib.rs\">\nfn main() {}\n</file>";
-        assert_eq!(typed_prompt(sent), "review @src/lib.rs please");
+        assert_eq!(retry::typed(sent), "review @src/lib.rs please");
         assert_eq!(
-            typed_prompt("no mentions\n\nsecond paragraph"),
+            retry::typed("no mentions\n\nsecond paragraph"),
             "no mentions\n\nsecond paragraph"
         );
 

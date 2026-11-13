@@ -234,6 +234,9 @@ pub enum Sub {
     },
     /// Serve one session to another program: JSON lines on standard input and output
     Rpc,
+    /// Serve editors that speak the Agent Client Protocol, on standard input and output
+    #[cfg(feature = "acp")]
+    Acp,
     /// Show, search and forget what is remembered about this project
     #[cfg(feature = "memory")]
     Memory {
@@ -319,6 +322,8 @@ pub enum McpAction {
     },
     /// Keep a server this project defines from starting
     Reject { name: String },
+    /// Serve azazel to another MCP client on standard input and output
+    Serve,
     /// Copy the servers another client is configured with into ~/.azazel/mcp.json
     Import {
         /// claude-desktop, claude-code, cursor, vscode or windsurf; all of them when left out
