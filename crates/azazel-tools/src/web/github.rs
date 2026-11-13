@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use azazel_agent::ToolCtx;
@@ -247,8 +248,8 @@ pub struct GitHub {
     api: String,
     raw: String,
     remote: String,
-    gh: Option<PathBuf>,
-    git: Option<PathBuf>,
+    gh: Program,
+    git: Program,
     signed_in: OnceCell<bool>,
     /// Held while a repository is cloned, so that two calls never clone into one directory.
     cloning: Mutex<()>,
@@ -257,13 +258,46 @@ pub struct GitHub {
 impl Default for GitHub {
     /// GitHub itself, with the `gh` and `git` programs on `PATH`.
     fn default() -> Self {
-        GitHub::new(which::which("gh").ok(), which::which("git").ok())
+        GitHub::with(Program::on_path("gh"), Program::on_path("git"))
+    }
+}
+
+/// A program GitHub is reached with: where it is, or a name to look for on `PATH` the first
+/// time it is needed, so that a session that never names GitHub never looks.
+struct Program {
+    name: &'static str,
+    path: OnceLock<Option<PathBuf>>,
+}
+
+impl Program {
+    fn on_path(name: &'static str) -> Program {
+        Program {
+            name,
+            path: OnceLock::new(),
+        }
+    }
+
+    fn at(path: Option<PathBuf>) -> Program {
+        Program {
+            name: "",
+            path: OnceLock::from(path),
+        }
+    }
+
+    /// Where the program is; `None` when it is not installed.
+    fn path(&self) -> Option<&Path> {
+        let found = self.path.get_or_init(|| which::which(self.name).ok());
+        found.as_deref()
     }
 }
 
 impl GitHub {
     /// GitHub itself, reached with these programs; `None` is a program that is not installed.
     pub fn new(gh: Option<PathBuf>, git: Option<PathBuf>) -> Self {
+        GitHub::with(Program::at(gh), Program::at(git))
+    }
+
+    fn with(gh: Program, git: Program) -> Self {
         GitHub {
             api: "https://api.github.com".to_string(),
             raw: "https://raw.githubusercontent.com".to_string(),
@@ -325,7 +359,9 @@ impl GitHub {
     /// given up before `gh` answers leaves the question open.
     async fn signed_in(&self, ctx: &ToolCtx) -> bool {
         let ask = || async {
-            let Some(gh) = &self.gh else { return Ok(false) };
+            let Some(gh) = self.gh.path() else {
+                return Ok(false);
+            };
             let mut command = Command::new(gh);
             // Whether there is a token is all that is asked: the token itself is not read.
             command
@@ -722,7 +758,7 @@ impl Call<'_> {
     }
 
     async fn api_within(&self, path: &str, accept: &str, limit: usize) -> Result<Vec<u8>, Failure> {
-        match &self.github.gh {
+        match self.github.gh.path() {
             Some(gh) if self.github.signed_in(self.ctx).await => {
                 let ask = |escapes: bool| {
                     let mut command = program(gh);
@@ -909,7 +945,7 @@ impl Call<'_> {
         if dir.join(".git").exists() {
             return Ok(dir);
         }
-        let git = self.github.git.as_ref().ok_or("git is not installed")?;
+        let git = self.github.git.path().ok_or("git is not installed")?;
         // Cloned beside its place and moved there whole, so a clone that was cut short is never
         // taken for a repository.
         let call: String = self
@@ -930,7 +966,7 @@ impl Call<'_> {
             "--config",
             "core.autocrlf=false",
         ];
-        let command = match &self.github.gh {
+        let command = match self.github.gh.path() {
             Some(gh) if self.github.signed_in(self.ctx).await => {
                 let mut command = program(gh);
                 command.args(["repo", "clone"]).arg(repo.to_string());
@@ -968,7 +1004,7 @@ impl Call<'_> {
     /// The branch and commit a clone is at, as ` (branch main, commit 1a2b3c4)`, or nothing
     /// when git does not say.
     async fn head(&self, dir: &Path) -> String {
-        let Some(git) = &self.github.git else {
+        let Some(git) = self.github.git.path() else {
             return String::new();
         };
         let mut command = program(git);
