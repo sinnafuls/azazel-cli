@@ -32,6 +32,7 @@ pub mod orchestration;
 pub mod pkg;
 pub mod print;
 pub mod reports;
+pub mod resources;
 pub mod retry;
 pub mod routing;
 pub mod rpc;
@@ -80,14 +81,15 @@ impl Builder {
 
     /// Parses the process arguments and runs the selected mode to completion.
     pub fn run(self) -> ExitCode {
-        let cli = Cli::parse();
         let extensions = self.extensions;
         // The run gets a thread of its own, with the stack a main thread has on Linux. The main
-        // thread of a Windows process has one megabyte, which a debug build does not fit in.
+        // thread of a Windows process has one megabyte, which a debug build does not fit in:
+        // not the run, and not reading a command line with this many subcommands.
         let running = std::thread::Builder::new()
             .name("azazel".to_string())
             .stack_size(RUN_STACK)
             .spawn(move || {
+                let cli = Cli::parse();
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(runtime) => runtime,
                     Err(e) => {
@@ -524,7 +526,7 @@ fn provider_setup(
     Vec<azazel_ai::providers::presets::ProviderConfig>,
     azazel_ai::Credentials,
 )> {
-    let loaded = app::config_overrides(cli).and_then(|overrides| {
+    let loaded = app::config_overrides(cli, paths).and_then(|overrides| {
         Config::load(
             paths,
             &LoadOptions {

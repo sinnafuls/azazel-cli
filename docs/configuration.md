@@ -296,7 +296,12 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--disallowed-tools <NAMES>` | Never offer these tools, on top of `[tools] disabled` |
 | `--system-prompt <TEXT\|@FILE>` | Replace the lead's built-in instructions (its identity and rules); sub-agents keep theirs |
 | `--append-system-prompt <TEXT\|@FILE>` | Add text to the lead's instructions, after the context files |
-| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md) |
+| `-e`, `--extension <PATH>` | Load a Luau script, or a directory laid out like a [package](packages.md), for this run; repeatable. See [resources for one run](#resources-for-one-run) |
+| `--skill <PATH>` | Add a skill (its directory or its `SKILL.md`) or a directory of skills for this run; repeatable |
+| `--mcp-config <FILE>` | Connect to the MCP servers of this `mcp.json` for this run; repeatable |
+| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, one from `~/.azazel/themes`, or a theme file |
+| `--provider <ID>` | Take this run's models from one provider only; see [choosing the model](models-and-logins.md#choosing-the-model) |
+| `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md). What `--extension`, `--skill` and `--mcp-config` name still loads |
 | `--bare` | All six `--no-*` switches |
 | `--max-turns <N>` | Requests the lead may make per prompt (`[limits] max_turns`) |
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
@@ -315,8 +320,33 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--version`, `--help` | Print the version or the usage |
 
 `--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
-`--tier`, `--preset`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and `--plain`
-may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+`--tier`, `--preset`, `--theme`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and
+`--plain` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
+
+### Resources for one run
+
+`--extension`, `--skill`, `--mcp-config` and `--theme` load something for one run without installing it: to
+try an extension while writing it, to give a CI job the one skill it needs, to see a theme before keeping it.
+Nothing is copied and nothing is remembered; the next run without the flag does not have it.
+
+| Flag | Takes | Loads |
+|---|---|---|
+| `-e`, `--extension` | A `.luau` file | That script. Its id is the file's name, or the directory's for `<name>/init.luau` |
+| | A directory | Everything a [package](packages.md#what-a-package-contains) in that directory would offer (skills, agent definitions, commands, Luau scripts, MCP servers) with its code enabled, plus an `init.luau` at its top |
+| `--skill` | A skill's directory, its `SKILL.md`, or a directory of skill directories | Those skills, shown as `command line` |
+| `--mcp-config` | A file with an `mcpServers` object, as [`mcp.json`](mcp.md#configuration-files) | Its servers |
+| `--theme` | A theme's name, or a [theme file](tui.md#themes) | The colours of the UI; the same as `--set tui.theme=<name>` for a name |
+
+- A path is relative to the working directory (`--cwd`). One that does not exist, or holds nothing of the
+  kind, ends the run with status 2 and the reason.
+- They are **your** word, so they are trusted like the files under `~/.azazel`: they load in a project that is
+  not trusted, a script may run commands, and the hooks of a skill count.
+- They come last, so they win: a skill, command, agent definition, script id or MCP server of the same name
+  found elsewhere is replaced for this run.
+- They load with the matching `--no-*` switch and with `--bare`, which then leave only them:
+  `azazel --bare -e ./audit.luau -p "..."` runs with that one script and nothing else that was discovered.
+- A background session started from the run (`/bg`) has them too. `--extension`, `--skill` and `--mcp-config`
+  name files of this machine and cannot be combined with `--ssh`.
 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
 unknown tier or preset) exits with status 2.

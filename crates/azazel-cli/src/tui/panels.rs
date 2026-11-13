@@ -4,7 +4,7 @@
 
 use azazel_agent::ContextReport;
 use azazel_core::agents;
-use azazel_core::commands::{CustomCommandsExt, command_roots};
+use azazel_core::commands::CustomCommandsExt;
 use azazel_core::hooks::HooksExt;
 use azazel_core::packages::Packages;
 use azazel_core::permissions::{Rule, RuleKind, SESSION, SourcedRule};
@@ -551,7 +551,7 @@ impl Tui {
 
         // Custom commands: registered again from the files as they are now.
         let custom = CustomCommandsExt {
-            roots: command_roots(&app.paths, compat, &packages),
+            roots: app.run.command_roots(&app.paths, compat, &packages),
             shell: app.shell.clone(),
             cwd: app.paths.cwd.clone(),
             trusted: app.trusted,
@@ -577,7 +577,7 @@ impl Tui {
             let before = def_names(defs);
             let mut fresh = agents::discover(
                 azazel_team::BUILTIN_AGENTS,
-                &agents::def_roots(&app.paths, compat, &packages),
+                &app.run.def_roots(&app.paths, compat, &packages),
             );
             fresh.apply_overrides(config.as_ref().map_or(&app.config.agents, |c| &c.agents));
             for invalid in fresh.invalid() {

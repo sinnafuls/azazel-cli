@@ -35,6 +35,8 @@ pub enum SkillSource {
     Home,
     Package(String),
     Project,
+    /// Named on the command line for one run (`--skill`).
+    CommandLine,
 }
 
 impl SkillSource {
@@ -45,6 +47,7 @@ impl SkillSource {
             SkillSource::Home => "home".to_string(),
             SkillSource::Package(name) => format!("package {name}"),
             SkillSource::Project => "project".to_string(),
+            SkillSource::CommandLine => "command line".to_string(),
         }
     }
 }
@@ -332,7 +335,9 @@ impl SkillGrants {
                 .roots()
                 .first()
                 .is_some_and(|root| canonical(&skill.dir).starts_with(root)),
-            SkillSource::Builtin | SkillSource::Home | SkillSource::Package(_) => false,
+            SkillSource::Builtin | SkillSource::Home | SkillSource::Package(_) | SkillSource::CommandLine => {
+                false
+            }
         }
     }
 

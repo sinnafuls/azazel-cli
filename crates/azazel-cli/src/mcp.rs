@@ -32,13 +32,13 @@ fn manager(paths: &Paths, trusted: bool, approve_all: bool) -> McpManager {
         .unwrap_or_default();
     let services = Arc::new(Services::new());
     services.insert(Arc::new(Ui(Arc::new(Headless))));
+    let packages = azazel_core::packages::Packages::new(paths).load();
     mcp_manager(
         paths,
-        trusted,
         &config,
         services,
         Arc::new(crate::app::credentials(paths, trusted)),
-        &azazel_core::packages::Packages::new(paths).load().mcp_files,
+        &crate::app::mcp_files(paths, trusted, &packages.mcp_files),
         approve_all,
     )
 }

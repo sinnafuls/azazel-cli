@@ -21,7 +21,8 @@ pub enum ExtAction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum PkgAction {
-    /// Install a package: a git URL, github:<owner>/<repo>[@ref], a directory, or a registry name
+    /// Install a package: a git URL, github:<owner>/<repo>[@ref], npm:<name>[@version], a directory,
+    /// or a registry name
     Add {
         source: String,
         /// The name to install it under instead of its own
@@ -538,11 +539,32 @@ pub struct Cli {
     #[arg(long = "append-system-prompt", value_name = "TEXT|@FILE")]
     pub append_system_prompt: Option<String>,
 
-    /// Load no Luau extensions
+    /// Load this Luau script, or this directory laid out like a package, for this run; repeat
+    /// for more
+    #[arg(short = 'e', long = "extension", value_name = "PATH", conflicts_with = "ssh")]
+    pub extension: Vec<PathBuf>,
+
+    /// Add this skill, or this directory of skills, for this run; repeat for more
+    #[arg(long = "skill", value_name = "PATH", conflicts_with = "ssh")]
+    pub skill: Vec<PathBuf>,
+
+    /// Connect to the MCP servers this file defines, for this run; repeat for more
+    #[arg(long = "mcp-config", value_name = "FILE", conflicts_with = "ssh")]
+    pub mcp_config: Vec<PathBuf>,
+
+    /// Show this run in a theme: the name of a built-in or installed one, or a theme file
+    #[arg(long, value_name = "NAME|FILE", global = true)]
+    pub theme: Option<String>,
+
+    /// Take this run's models from this provider only
+    #[arg(long, value_name = "ID")]
+    pub provider: Option<String>,
+
+    /// Load no Luau extensions but those named with --extension
     #[arg(long = "no-extensions")]
     pub no_extensions: bool,
 
-    /// Load no skills
+    /// Load no skills but those named with --skill
     #[arg(long = "no-skills")]
     pub no_skills: bool,
 
@@ -554,7 +576,7 @@ pub struct Cli {
     #[arg(long = "no-context-files")]
     pub no_context_files: bool,
 
-    /// Connect to no MCP servers
+    /// Connect to no MCP servers but those named with --mcp-config
     #[arg(long = "no-mcp")]
     pub no_mcp: bool,
 
@@ -673,6 +695,18 @@ impl Cli {
         }
         for dir in &self.add_dir {
             value("--add-dir", dir.into());
+        }
+        for path in &self.extension {
+            value("--extension", path.into());
+        }
+        for path in &self.skill {
+            value("--skill", path.into());
+        }
+        for file in &self.mcp_config {
+            value("--mcp-config", file.into());
+        }
+        if let Some(provider) = &self.provider {
+            value("--provider", provider.into());
         }
         if let Some(dir) = &self.session_dir {
             value("--session-dir", dir.into());
