@@ -118,6 +118,24 @@ GitHub are its section here.
   Markdown in a directory under the artifacts directory and returns an outline by line; pictures, every sheet
   as CSV and attachments are files beside it. `offset` and `limit` then read lines of the Markdown. New cargo
   feature `office`, part of the default build.
+- `azazel secrets add <name> --host <host> --header "Name: value"` (or `--query "name=value"`, or `--basic
+  "user:password"`; `-` asks for the value at the terminal) stores a credential for the requests agents make
+  to one host, in `~/.azazel/secrets.json` (a file of its own beside `auth.json`, and a secret file for the
+  permission rules). `azazel secrets list` shows names, hosts and kinds, never a secret; `azazel secrets rm
+  <name>` forgets one; `azazel doctor` names them.
+- `http` tool: one request to a web API (`method`, `url`, `headers`, `body` or `json`), returning the status,
+  the response headers and the body. The credential stored for the host is added to the request and taken out
+  of everything that comes back, so the agent uses a service without holding its key. It is sent over https
+  (or to this machine) only and never to another host; redirects are followed for a `GET` or `HEAD` on the
+  same host only. Permission subjects are `domain:<host>` and, with a stored credential, `auth:<service>`:
+  an `allow` has to cover both.
+- `azazel secrets add-site <url-pattern> --username <name>` stores the login of a site, and the `browser`
+  action `fill_login` types it into the fields `ref_user` and `ref_password` when the address of the page
+  matches the pattern. The password goes into a password field or nowhere, and is taken out of whatever the
+  browser tool returns afterwards.
+- `browser` action `handoff`: the browser is shown in a window on the same profile with the same tabs, you
+  are asked to finish there (`reason`) and press Enter, and the agent carries on with the page as you left
+  it. For logins you type yourself, second factors and CAPTCHAs.
 
 ### Changed
 
