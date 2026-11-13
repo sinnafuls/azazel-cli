@@ -1253,8 +1253,10 @@ impl BrowserSession {
                 .await;
         }
 
+        // A short first line: an interface with boxes makes it the title of the box.
         let prompt = format!(
-            "{reason}\nFinish in the browser window, then press Enter here. What you type goes to the agent."
+            "Your turn in the browser\n{reason}\nFinish in the browser window, then press Enter here. What you \
+             type goes to the agent."
         );
         let note = match ui.input(&prompt).await {
             Ok(note) => note,
@@ -1518,8 +1520,8 @@ mod tests {
         assert_eq!(
             *user.asked.lock().unwrap(),
             [
-                "Sign in to the fixture\nFinish in the browser window, then press Enter here. What you type goes \
-              to the agent."
+                "Your turn in the browser\nSign in to the fixture\nFinish in the browser window, then press \
+              Enter here. What you type goes to the agent."
             ]
         );
         // The agent gets the user's words, the tabs as they are now and the page of its tab.
