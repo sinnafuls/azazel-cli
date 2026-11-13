@@ -424,7 +424,7 @@ fn another_program_drives_a_background_session_through_the_bridge() {
         .unwrap();
     let mut commands = bridge.stdin.take().unwrap();
     let frames = lines_of(bridge.stdout.take().unwrap());
-    let mut next = || -> Value {
+    let next = || -> Value {
         let line = frames.recv_timeout(LIMIT).expect("a frame within a minute");
         let frame: Frame = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"));
         assert_ne!(frame, Frame::Unknown, "{line}");
@@ -437,12 +437,20 @@ fn another_program_drives_a_background_session_through_the_bridge() {
     let refused = next();
     assert_eq!((&refused["id"], &refused["success"]), (&json!(1), &json!(false)));
     assert!(
-        refused["error"].as_str().unwrap().starts_with("send `attach` first"),
+        refused["error"]
+            .as_str()
+            .unwrap()
+            .starts_with("send `attach` first"),
         "{refused}"
     );
 
     // Attaching answers, then replays what was asked for: here, everything.
-    writeln!(commands, "{}", json!({ "id": 2, "type": "attach", "replay": "all" })).unwrap();
+    writeln!(
+        commands,
+        "{}",
+        json!({ "id": 2, "type": "attach", "replay": "all" })
+    )
+    .unwrap();
     let attached = next();
     assert_eq!(attached["success"], true, "{attached}");
     assert_eq!(attached["data"]["host"], json!(id));
@@ -455,16 +463,28 @@ fn another_program_drives_a_background_session_through_the_bridge() {
             break;
         }
     }
-    assert_eq!(replayed.first().map(String::as_str), Some("user_input"), "{replayed:?}");
+    assert_eq!(
+        replayed.first().map(String::as_str),
+        Some("user_input"),
+        "{replayed:?}"
+    );
     assert!(replayed.contains(&"message_end".to_string()), "{replayed:?}");
 
     // From here on it is the protocol of `azazel rpc`.
-    writeln!(commands, "{}", json!({ "id": 3, "type": "prompt", "text": "two" })).unwrap();
+    writeln!(
+        commands,
+        "{}",
+        json!({ "id": 3, "type": "prompt", "text": "two" })
+    )
+    .unwrap();
     let mut said = String::new();
     loop {
         let frame = next();
         if frame["type"] == "message_end" {
-            said = frame["message"]["content"][0]["text"].as_str().unwrap().to_string();
+            said = frame["message"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
         }
         if frame["type"] == "idle" {
             break;
