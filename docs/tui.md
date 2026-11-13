@@ -518,6 +518,7 @@ Session and display:
 | `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost; how much of the input was read from the [prompt cache](models-and-logins.md#prompt-cache), per model, and why a request missed it |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/bg <prompt>` | Run a prompt in the background, in a copy of this session; see [background sessions](background-and-remote.md) |
+| `/loop <count \| interval \| until "<condition>"> <prompt>` | Send a prompt again and again; see [loops](#loops) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
@@ -668,6 +669,36 @@ default. `--json` is one object:
 `kind` is `system`, `tools`, `messages`, `tool_results` or `images`; `estimate` is the counter's number and
 `tokens` the scaled one. Over [RPC](rpc.md), `run_command` with the name `context` returns the text table,
 with `args: "json"` this object, and with `args: "text <request> <category index>"` the text of one category.
+
+## Loops
+
+`/loop` sends one prompt again and again, each round once the lead has finished the one before:
+
+| Command | What it does |
+|---|---|
+| `/loop 5 fix one failing test` | Five rounds, then it ends. `5x` works too; at most 1000 |
+| `/loop 10m look at the deploy and say what changed` | A round every ten minutes, counted from the start of the round before (`30s`, `10m`, `1h`; five seconds at least). A round that takes longer is followed at once |
+| `/loop until "cargo test passes" fix the next failing test` | After every round the `smol` role is asked whether the condition holds, and the loop ends when it says yes. The condition goes in quotes |
+| `/loop` | Where the loop stands |
+| `/loop stop` | Ends it; the round in progress goes on |
+
+A loop ends by itself when it has had its rounds or its condition holds. It is stopped by:
+
+- `Esc`, which also stops the round in progress;
+- a round that fails: the provider gives up, the run hits a limit, or it is interrupted;
+- a check that fails: the judge cannot be asked, or answers neither yes nor no. A loop nothing could
+  end is not left running;
+- `[schedule] loop_max` rounds (50) for an interval or a condition; `0` takes the limit away.
+
+The judge is a request of its own, outside the session: it is shown the condition, the prompt and the
+end of the conversation (what was said, the tool calls and what they printed), and told to go by what
+was done, not by what the agent says it will do. Its `YES` or `NO` and its reason are shown; `/cost`
+lists what it cost under `loop`. A condition needs a session of this process: it does not work on a
+background session you are attached to, while a counted or timed loop does.
+
+What you type while a loop runs works as always: a message steers the round in progress, `Alt+Enter`
+queues one, which goes out before the next round. To run a prompt at a time whether or not the UI is
+open, use a [schedule](background-and-remote.md#schedules).
 
 ## Side questions
 

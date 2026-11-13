@@ -38,7 +38,7 @@ const KILL_LIMIT: Duration = Duration::from_secs(30);
 const FOLLOW_EVERY: Duration = Duration::from_millis(200);
 
 /// An id for a new background session: eight hex digits nobody else on this machine has.
-fn new_id(home: &Path) -> String {
+pub(crate) fn new_id(home: &Path) -> String {
     let mut salt = 0u32;
     loop {
         let nanos = std::time::SystemTime::now()
@@ -105,8 +105,7 @@ fn host_args(args: &[OsString], id: &str) -> Option<Vec<OsString>> {
 }
 
 /// One argument as the Windows C runtime reads it back from a command line.
-#[cfg(windows)]
-fn quoted(arg: &str) -> String {
+pub(crate) fn quoted(arg: &str) -> String {
     if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '"']) {
         return arg.to_string();
     }
@@ -235,7 +234,7 @@ fn start_blocking(home: &Path, args: &[OsString], id: &str) -> Result<(), String
 }
 
 /// [`start_blocking`] beside the async work. The process handle never crosses an await.
-async fn start(home: &Path, args: Vec<OsString>, id: &str) -> Result<(), String> {
+pub(crate) async fn start(home: &Path, args: Vec<OsString>, id: &str) -> Result<(), String> {
     let (home, id) = (home.to_path_buf(), id.to_string());
     tokio::task::spawn_blocking(move || start_blocking(&home, &args, &id))
         .await
@@ -475,7 +474,7 @@ pub async fn logs(paths: &Paths, wanted: &str, follow: bool, json: bool) -> u8 {
 }
 
 /// Connects to a background session; nothing has been said to it yet.
-async fn connect(entry: &Entry) -> Result<Client, String> {
+pub(crate) async fn connect(entry: &Entry) -> Result<Client, String> {
     let (reader, writer) = socket::connect(&entry.socket)
         .await
         .map_err(|e| format!("cannot reach the background session {}: {e}", entry.id))?;
