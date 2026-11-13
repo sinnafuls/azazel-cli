@@ -23,6 +23,7 @@ pub mod hooks;
 pub mod host;
 pub mod init;
 pub mod login;
+pub mod loops;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "memory")]
@@ -37,6 +38,8 @@ pub mod routing;
 pub mod rpc;
 pub mod rules;
 pub mod running;
+#[cfg(feature = "detach")]
+pub mod schedule;
 pub mod sessions;
 pub mod settings;
 pub mod side;
@@ -377,6 +380,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         #[cfg(feature = "detach")]
         Some(Sub::Attach { id, .. }) => return detach::attach(&cli, paths, id).await,
         #[cfg(feature = "detach")]
+        Some(Sub::Schedule { action }) => {
+            let Some(config) = load_config(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            return schedule::run(&cli, &paths, config.schedule, action).await;
+        }
+        #[cfg(feature = "detach")]
         Some(Sub::Host { .. }) => None,
         #[cfg(feature = "detach")]
         Some(Sub::Rpc { attach: Some(wanted) }) => return detach::bridge(&cli, &paths, wanted).await,
@@ -501,7 +511,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
 /// (`azazel attach` on one that died) is to have. A key given on the command line is not
 /// among them: the entry they are kept in is a file.
 #[cfg(feature = "detach")]
-fn host_carried(cli: &Cli) -> Vec<String> {
+pub(crate) fn host_carried(cli: &Cli) -> Vec<String> {
     let mut carried = Vec::new();
     let mut args = cli.carried().into_iter();
     while let Some(arg) = args.next() {
@@ -514,16 +524,9 @@ fn host_carried(cli: &Cli) -> Vec<String> {
     carried
 }
 
-/// The configuration, providers and credentials, for commands that only look at providers.
-fn provider_setup(
-    cli: &Cli,
-    paths: &Paths,
-    trusted: bool,
-) -> Option<(
-    Config,
-    Vec<azazel_ai::providers::presets::ProviderConfig>,
-    azazel_ai::Credentials,
-)> {
+/// The configuration as this run has it, for commands that open no session. A configuration
+/// that cannot be read is complained about.
+fn load_config(cli: &Cli, paths: &Paths, trusted: bool) -> Option<Config> {
     let loaded = app::config_overrides(cli).and_then(|overrides| {
         Config::load(
             paths,
@@ -535,13 +538,26 @@ fn provider_setup(
         )
         .map_err(Into::into)
     });
-    let config = match loaded {
-        Ok(loaded) => loaded.config,
+    match loaded {
+        Ok(loaded) => Some(loaded.config),
         Err(e) => {
             eprintln!("azazel: {e:#}");
-            return None;
+            None
         }
-    };
+    }
+}
+
+/// The configuration, providers and credentials, for commands that only look at providers.
+fn provider_setup(
+    cli: &Cli,
+    paths: &Paths,
+    trusted: bool,
+) -> Option<(
+    Config,
+    Vec<azazel_ai::providers::presets::ProviderConfig>,
+    azazel_ai::Credentials,
+)> {
+    let config = load_config(cli, paths, trusted)?;
     let providers = match models::providers(&config) {
         Ok(providers) => providers,
         Err(e) => {

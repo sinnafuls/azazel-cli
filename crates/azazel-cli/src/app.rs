@@ -359,7 +359,12 @@ pub fn discover_paths(cli: &Cli) -> Result<Paths> {
     if !cwd.is_dir() {
         bail!("{} is not a directory", cwd.display());
     }
-    let mut paths = Paths::discover(&cwd, std::env::var("AZAZEL_HOME").ok().as_deref());
+    // `--home` is how a process azazel starts for itself is told what `AZAZEL_HOME` told this one.
+    let home = match &cli.home {
+        Some(home) => Some(home.to_string_lossy().into_owned()),
+        None => std::env::var("AZAZEL_HOME").ok(),
+    };
+    let mut paths = Paths::discover(&cwd, home.as_deref());
     paths.sessions_override = if cli.no_session {
         Some(ephemeral_dir(&paths))
     } else {
@@ -513,6 +518,13 @@ impl App {
             paths: paths.clone(),
             permissions: permissions.clone(),
             carried: cli.carried(),
+            ephemeral: cli.no_session,
+        })?;
+        #[cfg(feature = "detach")]
+        registry.load(&crate::schedule::tool::ScheduleExt {
+            scheduler: crate::schedule::Scheduler::new(cli, &paths, config.schedule.clone()),
+            permissions: permissions.clone(),
+            carried: crate::host_carried(cli),
             ephemeral: cli.no_session,
         })?;
         // Rule files count as context files; `[[stream_rules]]` are settings and always apply.

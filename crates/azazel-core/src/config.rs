@@ -287,6 +287,15 @@ config_table!(GuardsConfig {
     /// Stop a reply that repeats one block of text three times in a row, and ask again.
     runaway: bool = true,
 });
+config_table!(ScheduleConfig {
+    /// Hand schedules to the operating system's scheduler (Task Scheduler, cron, launchd). Off,
+    /// they run only when `azazel schedule run` is called.
+    register: bool = true,
+    /// Seconds between two looks at the CI runs of a `ci-failure` trigger (10 at least).
+    poll_secs: u64 = 60,
+    /// Rounds after which `/loop <interval>` and `/loop until` stop by themselves; 0 is no limit.
+    loop_max: u32 = 50,
+});
 config_table!(CacheConfig {
     /// Keep the prompt cache warm between prompts.
     warming: CacheWarming = CacheWarming::Off,
@@ -595,6 +604,7 @@ pub struct Config {
     pub advisor: AdvisorConfig,
     pub rules: RulesConfig,
     pub guards: GuardsConfig,
+    pub schedule: ScheduleConfig,
     pub cache: CacheConfig,
     pub context: ContextConfig,
     pub telemetry: TelemetryConfig,
@@ -667,6 +677,7 @@ impl Default for Config {
             advisor: AdvisorConfig::default(),
             rules: RulesConfig::default(),
             guards: GuardsConfig::default(),
+            schedule: ScheduleConfig::default(),
             cache: CacheConfig::default(),
             context: ContextConfig::default(),
             telemetry: TelemetryConfig::default(),
@@ -678,7 +689,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-const TABLES: [&str; 35] = [
+const TABLES: [&str; 36] = [
     "roles",
     "providers",
     "models",
@@ -711,6 +722,7 @@ const TABLES: [&str; 35] = [
     "rules",
     "presets",
     "guards",
+    "schedule",
     "cache",
     "context",
     "telemetry",

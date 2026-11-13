@@ -99,6 +99,49 @@ pub enum SessionsAction {
     },
 }
 
+#[cfg(feature = "detach")]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ScheduleAction {
+    /// Add a schedule: `add "0 9 * * 1-5" "<prompt>"`, `add every 10m "<prompt>"`,
+    /// `add at +2h "<prompt>"`, or `add --on ci-failure "<prompt>"`
+    Add {
+        /// Run when this happens instead of at a time: ci-failure, or file:<glob>
+        #[arg(long, value_name = "EVENT")]
+        on: Option<String>,
+        /// Send the prompt to this session every time, instead of starting a new one
+        #[arg(long, value_name = "ID", conflicts_with = "new")]
+        session: Option<String>,
+        /// Start a new background session every time (what a time does unless --session is given)
+        #[arg(long)]
+        new: bool,
+        /// When to run (five cron fields, `every 10m`, `at +2h`), then the prompt as the last word
+        #[arg(required = true, value_name = "WHEN… PROMPT")]
+        spec: Vec<String>,
+    },
+    /// The schedules of this project, when each runs next and what it last did
+    List {
+        /// One JSON object per schedule
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove a schedule, from the system's scheduler too
+    Rm {
+        /// Its id as `azazel schedule list` shows it (the start of it is enough)
+        id: String,
+    },
+    /// Run a schedule now
+    Run {
+        /// Its id as `azazel schedule list` shows it (the start of it is enough)
+        id: Option<String>,
+        /// Run only what is due now: every schedule of the project, or the one named
+        #[arg(long)]
+        due: bool,
+        /// How the system's scheduler calls it: run only when due, and print nothing
+        #[arg(long, hide = true)]
+        scheduled: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
 pub enum AuthAction {
     /// Where each provider's credential comes from, without printing it
@@ -318,6 +361,12 @@ pub enum Sub {
         /// The first message; without one the session waits for a client
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
+    },
+    /// Run prompts at a time or when something happens: add, list, rm, run
+    #[cfg(feature = "detach")]
+    Schedule {
+        #[command(subcommand)]
+        action: ScheduleAction,
     },
     /// Serve editors that speak the Agent Client Protocol, on standard input and output
     #[cfg(feature = "acp")]
@@ -599,6 +648,11 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub trust: bool,
 
+    /// Keep azazel's own files in this directory instead of ~/.azazel, as AZAZEL_HOME does. A
+    /// process azazel starts for itself (a scheduled run, a background session) is told so.
+    #[arg(long, value_name = "DIR", global = true, hide = true)]
+    pub home: Option<PathBuf>,
+
     /// Work on another machine: azazel runs there, reached over SSH, and is shown here
     #[arg(long, value_name = "HOST", global = true)]
     pub ssh: Option<String>,
@@ -676,6 +730,9 @@ impl Cli {
         }
         if let Some(dir) = &self.session_dir {
             value("--session-dir", dir.into());
+        }
+        if let Some(dir) = &self.home {
+            value("--home", dir.into());
         }
         if let Some(tools) = &self.tools {
             value("--tools", tools.join(",").into());

@@ -100,6 +100,9 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
     // Tests send follow-up messages through the queue the terminal UI holds them in.
     #[cfg(feature = "test-support")]
     let mut queued = crate::tui::queue_from_env();
+    // Tests run a `/loop` through the rounds the terminal UI would send.
+    #[cfg(feature = "test-support")]
+    let mut looped = crate::loops::from_env(app.config.schedule.loop_max);
     let mut interrupt = std::pin::pin!(tokio::signal::ctrl_c());
     let mut interrupted = false;
     let mut code = loop {
@@ -153,6 +156,20 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                                 eprintln!("prompt rejected: {reason}");
                                 break EXIT_FAILED;
                             }
+                        }
+                    }
+                    #[cfg(feature = "test-support")]
+                    if let Some(looped) = &mut looped {
+                        let side = app.registry.services.get::<azazel_core::side::Side>();
+                        match crate::loops::drive(looped, side, &active.lead, &active.session).await {
+                            Ok(prompt) => match app.submit(active, prompt, Vec::new()).await {
+                                Ok(()) => continue,
+                                Err(reason) => {
+                                    eprintln!("prompt rejected: {reason}");
+                                    break EXIT_FAILED;
+                                }
+                            },
+                            Err(why) => eprintln!("{why}"),
                         }
                     }
                     break EXIT_OK;

@@ -973,6 +973,7 @@ dependencies = [
  "crossterm_winapi",
  "dunce",
  "futures",
+ "globset",
  "ignore",
  "image",
  "interprocess",
