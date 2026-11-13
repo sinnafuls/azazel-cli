@@ -148,6 +148,15 @@ pub enum Action {
         top: PathBuf,
         stage_all: bool,
     },
+    /// `/share`: whether to upload this; the first row says yes.
+    Share(Box<crate::share::Shared>),
+    /// `/bug`: per row, whether the report takes the conversation along; `None` cancels.
+    Bug {
+        description: String,
+        rows: Vec<Option<bool>>,
+    },
+    /// Whether to open an issue with the summary of this report; the second row says yes.
+    BugIssue(Box<crate::bug::Report>),
 }
 
 impl Action {

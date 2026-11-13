@@ -70,7 +70,7 @@ was besides, the way to end the background session and continue its session in a
 
 Most of the UI works the same on a background session: prompts, steering, queued messages, approvals
 and questions, `/model`, `/thinking`, `/mode`, `/new`, `/resume`, `/fork`, `/tree`, `/retry`,
-`/rewind`, `/compact`, `/name <text>`, `/export`, `/search`, `/btw`, `!commands`, the transcript
+`/rewind`, `/compact`, `/name <text>`, `/export`, `/share`, `/bug`, `/search`, `/btw`, `!commands`, the transcript
 viewer, `/copy`, the agent hub, the reports (`/cost`, `/context`, `/session`, `/tools`, `/todo`,
 `/dirs`, `/add-dir`, `/rules`, `/hooks`, `/doctor`, `/trust`, `/forget-approvals`) and every command an
 extension added (`/settings`, `/usage`, `/mcp ...`, `/goal`, skills).

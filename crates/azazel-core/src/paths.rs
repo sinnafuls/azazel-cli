@@ -62,6 +62,10 @@ impl Paths {
     pub fn logs_dir(&self) -> PathBuf {
         self.home.join("logs")
     }
+    /// Where bug reports are written.
+    pub fn reports_dir(&self) -> PathBuf {
+        self.home.join("reports")
+    }
     /// The user data directory of the browser agents drive.
     pub fn browser_profile_dir(&self) -> PathBuf {
         self.home.join("browser-profile")

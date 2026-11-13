@@ -283,10 +283,11 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     match azazel_tools::schemes::gh_program() {
         Some(gh) => report.ok(format!(
-            "gh: {}; `read` takes pr:// and issue:// addresses",
+            "gh: {}; `read` takes pr:// and issue:// addresses, /share and /bug upload through it",
             gh.display()
         )),
-        None => report.ok("gh: not found on PATH; pr:// and issue:// addresses are off"),
+        None => report
+            .ok("gh: not found on PATH; pr:// and issue:// addresses, /share and the issue of /bug are off"),
     }
 
     let store = Packages::new(paths);
@@ -456,6 +457,30 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     match azazel_tools::ast_grep::program() {
         Some(program) => report.ok(format!("ast_grep: {}", program.display())),
         None => report.ok("ast_grep: off, ast-grep is not installed"),
+    }
+    let variable = |name: &str| std::env::var(name).ok();
+    match crate::telemetry::Wire::from_config(&config.telemetry, &variable) {
+        None => report.ok("trace export: off"),
+        Some(wire) => {
+            report.ok(format!(
+                "trace export: {}, {} prompt and reply text",
+                wire.describe(),
+                if config.telemetry.content {
+                    "with"
+                } else {
+                    "without"
+                }
+            ));
+            let named = &config.telemetry.api_key_env;
+            let keyless = wire.headers().is_empty();
+            if !named.is_empty() && variable(named).is_none_or(|key| key.trim().is_empty()) {
+                report.warn(format!(
+                    "trace export: {named} (telemetry.api_key_env) is not set; spans go out without a key"
+                ));
+            } else if keyless && matches!(wire, crate::telemetry::Wire::Langsmith { .. }) {
+                report.warn("trace export: no LangSmith key; set LANGSMITH_API_KEY or telemetry.api_key_env");
+            }
+        }
     }
     #[cfg(feature = "memory")]
     match &config.embeddings {

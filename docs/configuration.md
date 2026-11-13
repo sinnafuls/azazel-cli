@@ -185,11 +185,11 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[web]` | `search` | `"auto"` | `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
 | | `searxng_url` | `""` | Address of a SearXNG instance |
 | | `provider_search` | `true` | Under `search = "auto"`, search through the lead model's provider first when it has a search tool; see [the provider's own search](web-and-browser.md#the-providers-own-search) |
-| `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith` |
+| `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith`; see [trace export](#trace-export) |
 | | `endpoint` | `""` | Collector address; empty uses the exporter's default |
-| | `project` | `""` | Project name shown by the backend |
+| | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |
 | | `api_key_env` | `""` | Environment variable holding the backend's key |
-| | `content` | `false` | Send prompt and reply text, not only the shape of each step |
+| | `content` | `false` | Send prompt and reply text, tool input and tool output, not only the shape of each step |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
@@ -231,6 +231,51 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `keep_awake` | `true` | Keep the machine from sleeping while agents work |
 | `[update]` | `check` | `true` | Look for a newer release at most once a day |
 | | `auto` | `false` | Also download a newer release in the background and install it when the UI exits; see [updating](getting-started.md#updating) |
+
+## Trace export
+
+With `[telemetry] exporter` set, azazel sends what a session does to a tracing backend as spans. It is off by
+default, and a project's config can turn it on only once the project is [trusted](#trust).
+
+```toml
+[telemetry]
+exporter = "otlp"                      # or "langsmith"
+endpoint = "http://localhost:4318"     # the collector; /v1/traces is added
+api_key_env = "OTEL_KEY"               # sent as `Authorization: Bearer …`
+```
+
+Each time a session is open is one trace, and each prompt one tree in it:
+
+| Span | Name | Carries |
+|---|---|---|
+| Session | `session` | `session.id`, whether it was resumed; at its end the prompts, requests, tool calls, tokens and cost under it |
+| Prompt | `prompt` | The agent (`gen_ai.agent.name`, `gen_ai.agent.id`), how it ended (`azazel.stop`), its requests, tool calls, tokens and cost; the error of a prompt that failed |
+| Model request | `chat <model>` | Provider and model, input, output, cached and reasoning tokens, cost (`azazel.cost_usd`), the stop reason, the time to the first token, retries, stalls and the model it fell back from; the error of a request that failed |
+| Tool call | `execute_tool <name>` | The tool, its call id, how long it ran, the size of its output and whether it reported an error |
+
+A tool call hangs under the request whose reply asked for it. A sub-agent's prompt hangs under the tool call that
+was running in its parent when it started, so a delegated task reads as one tree. Attribute names follow the
+OpenTelemetry conventions for generative AI (`gen_ai.*`) where one exists. Requests outside a conversation
+(session names, summaries, `/btw`, the advisor) are not traced.
+
+**What was said is not sent** unless `content = true`: without it a span holds names, counts, sizes, durations
+and the errors of providers, and a failed tool call says only that it failed. With it, a prompt's span carries the
+prompt and the final reply, a request's span the reply and the tool calls it asked for, and a tool call's span its
+input and output. What looks like a secret is replaced by `[redacted:<kind>]` first, and a text longer than
+20,000 characters is cut. A sub-agent's prompt is the input of the tool call that started it.
+
+| Exporter | Where to | Key |
+|---|---|---|
+| `otlp` | OTLP over HTTP as JSON, posted to `<endpoint>/v1/traces`. Without `endpoint`: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, else `OTEL_EXPORTER_OTLP_ENDPOINT`, else `http://localhost:4318` | The variable `api_key_env` names, as `Authorization: Bearer <key>` (a value with a space in it, such as `Basic …`, is sent as it is). `OTEL_EXPORTER_OTLP_HEADERS` (`name=value,…`) adds headers |
+| `langsmith` | The runs API, `<endpoint>/runs/batch`. Without `endpoint`: `LANGSMITH_ENDPOINT`, else `https://api.smith.langchain.com`. Runs go to the project `project`, else `LANGSMITH_PROJECT`, else `azazel`; the session id is each run's `thread_id` | The variable `api_key_env` names, else `LANGSMITH_API_KEY`, as `x-api-key` |
+
+Over OTLP a span is sent when it ends, so the session's own span arrives when the session closes. LangSmith gets
+the session's run when it opens and its end later, and shows the trace while it grows.
+
+Spans are sent beside the session, in batches: every two seconds, or sooner when 64 wait. No turn waits for the
+backend. When azazel exits, it waits up to three seconds for the last batch and then leaves it. A batch the
+backend refuses is dropped; the first failure is written to `~/.azazel/logs/azazel.log` and later ones are not.
+`azazel doctor` says where traces go, whether text goes with them and whether the key is missing.
 
 ## Trust
 

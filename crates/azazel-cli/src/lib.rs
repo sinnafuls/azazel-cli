@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod acp;
 pub mod app;
 mod attention;
+pub mod bug;
 pub mod changelog;
 pub mod cli;
 pub mod context;
@@ -39,9 +40,11 @@ pub mod rules;
 pub mod running;
 pub mod sessions;
 pub mod settings;
+pub mod share;
 pub mod side;
 pub mod ssh;
 pub mod stats;
+pub mod telemetry;
 mod tui;
 pub mod update;
 pub mod usage;
@@ -80,14 +83,15 @@ impl Builder {
 
     /// Parses the process arguments and runs the selected mode to completion.
     pub fn run(self) -> ExitCode {
-        let cli = Cli::parse();
         let extensions = self.extensions;
         // The run gets a thread of its own, with the stack a main thread has on Linux. The main
-        // thread of a Windows process has one megabyte, which a debug build does not fit in.
+        // thread of a Windows process has one megabyte, which a debug build does not fit in:
+        // not the run, and not reading a command line with this many subcommands.
         let running = std::thread::Builder::new()
             .name("azazel".to_string())
             .stack_size(RUN_STACK)
             .spawn(move || {
+                let cli = Cli::parse();
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(runtime) => runtime,
                     Err(e) => {
@@ -281,6 +285,21 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         }
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
+        Some(Sub::Bug {
+            description,
+            transcript,
+            session,
+            issue,
+        }) => {
+            let description = description.join(" ");
+            let args = bug::Args {
+                description: &description,
+                transcript: *transcript,
+                session: session.as_deref(),
+                issue: *issue,
+            };
+            return bug::run(&paths, trusted, args).await;
+        }
         Some(Sub::Login { provider, key, label }) => {
             return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
         }

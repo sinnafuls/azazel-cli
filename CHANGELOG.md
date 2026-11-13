@@ -7,6 +7,18 @@ GitHub are its section here.
 
 ### Added
 
+- Trace export: `[telemetry] exporter = "otlp"` or `"langsmith"` sends each session as a span tree (session,
+  prompt, model request, tool call; a sub-agent under the call that started it) with models, tokens, cost,
+  errors and durations, to an OpenTelemetry collector over HTTP or to LangSmith's runs API. Off by default.
+  Prompt and reply text, tool input and output go only with `content = true`, secrets hidden. Spans are sent in
+  batches beside the session: no turn waits for the backend, and its first failure is logged once.
+- `/share` uploads the conversation, secrets hidden, as a secret gist through `gh` and prints the link. It says
+  what is uploaded and asks first.
+- `/bug [what went wrong]` and `azazel bug` write a bug report to a zip under `~/.azazel/reports/`: version,
+  system, `azazel doctor`, the settings in effect with secrets removed, the end of the log and, when asked for,
+  the conversation with secrets hidden. They offer to open an issue with the summary through `gh`; the zip stays
+  on the machine.
+- `azazel doctor` says where traces go and whether `gh` is there for `/share` and `/bug`.
 - Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
   It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
   with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
