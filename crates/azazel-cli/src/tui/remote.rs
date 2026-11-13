@@ -974,7 +974,8 @@ impl Backend for Remote {
         Ok(self.moved_to(state, true))
     }
 
-    async fn export(&mut self, path: &str) -> Result<String, String> {
+    /// The machine the session runs on writes the file, with its own `tui.redact`.
+    async fn export(&mut self, path: &str, _redact: bool) -> Result<String, String> {
         let command = Command::Export {
             format: None,
             path: Some(path.to_string()).filter(|path| !path.is_empty()),

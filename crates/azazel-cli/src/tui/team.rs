@@ -120,17 +120,13 @@ impl Tui {
                     .position(|tool| tool.call_id == call_id)
                 {
                     let tool = self.followed_tools.remove(at);
-                    let lines = view::tool_done(
-                        &format!("[{id}] {}", tool.name),
-                        &tool.input,
-                        &output,
-                        Duration::from_millis(duration_ms),
-                        self.expand_tools,
-                        None,
-                        width,
-                        &self.theme,
-                    );
-                    self.say_card(lines);
+                    self.tool_finished(super::calls::Finished {
+                        agent: Some(id),
+                        name: tool.name,
+                        input: tool.input,
+                        output,
+                        elapsed: Duration::from_millis(duration_ms),
+                    });
                 }
             }
             AgentEvent::Idle { .. } => self.info(&format!("[{id}] finished")),

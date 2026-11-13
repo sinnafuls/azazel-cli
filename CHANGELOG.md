@@ -54,6 +54,17 @@ GitHub are its section here.
   (`tui.popups = false`, or a window under 44x12, keeps them in place of the input).
 - `/glyphs` picks the symbol set from a list in which every row is drawn in its own symbols, and saves it.
 - `Ctrl+O` in a box whose text does not fit (a long plan, a long command) opens all of it full screen.
+- The card of a `read` shows the file as a listing: its line numbers in a column and the code coloured by
+  its language. A directory is a tree, with sizes in a column.
+- The cards of `grep` and `web_grep` put the lines found under the name of their file, behind their line
+  numbers, with the text searched for picked out; `glob` puts files under their directory.
+- `tui.glyphs = "nerd"` adds an icon before files and directories in tool cards.
+- `tui.tool_style = "compact"` shows a finished tool call on one row and calls that follow one another as a
+  tree under a row that counts them; an edit keeps its diff. `Ctrl+O` writes the last group as full cards.
+- `tui.redact` (on by default) hides API keys, tokens, `Bearer` tokens, `…KEY=`/`…TOKEN=`/`…SECRET=`/
+  `…PASSWORD=` values and PEM private keys in tool cards, the transcript viewer and Markdown and HTML
+  exports (`[redacted:<kind>]`). The model and the session file keep the text.
+- A tool card whose body was cut says how long the whole output is (`4.1k chars`).
 - The task list survives: it is rebuilt from the session on `-c`, `--session`, `--fork`, `/resume`, `/tree`,
   `/rewind` and `/fork`, and while it has open items the agent is reminded of it with every request.
 - `ask_user` takes a `type` (`select`, `multiselect`, `text`, `confirm`), a `context` shown above the
@@ -79,6 +90,8 @@ GitHub are its section here.
 - A status line that does not fit drops whole segments from the end of its left side (goal, agents, cost,
   speed, context, directory, branch) before it shortens the model. A long working directory keeps its end.
 - `accept-edits` is marked `⏵` in the status line; `⏵⏵` is `auto` alone.
+- Tool cards follow `tui.glyphs` like the rest of the UI: at `ascii` their frame is `+`, `-` and a vertical
+  bar and their state is `[+]`, `[!]` or `[-]`.
 - Every list has a bar beside the selected row, details in a column of their own, a scrollbar when it is longer
   than its box and, where it filters as you type, a count of the rows that match.
 - A plan under review is shown in the review box, and a note on an approval stands out in the warning colour;
@@ -96,6 +109,8 @@ GitHub are its section here.
 
 ### Fixed
 
+- The card of a followed sub-agent's tool call shows what the call was about (the file, the command) instead
+  of its raw arguments.
 - `write` refuses file names Windows reserves for devices (`aux.c`, `NUL`, `com1.txt`), on every system.
 - The task list of the previous session no longer stays on screen after `/new` or `/resume`.
 - A `git` that hangs can no longer hold up a prompt: a snapshot is stopped after `checkpoints.timeout_ms`

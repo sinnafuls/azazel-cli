@@ -500,7 +500,7 @@ impl Session {
                 (cwd.join(default_file_name(session, format)), format)
             }
         };
-        std::fs::write(&file, render(session, format))
+        std::fs::write(&file, render(session, format, self.app.config.tui.redact))
             .map_err(|e| format!("could not write {}: {e}", file.display()))?;
         data(Exported {
             path: file.display().to_string(),
