@@ -457,6 +457,8 @@ Session and display:
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
 | `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
+| `/share` | Upload the conversation, secrets hidden, as a secret gist and print its link; asks first |
+| `/bug [what went wrong]` | Write a bug report to a zip and offer to open an issue |
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
 | `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
@@ -476,7 +478,8 @@ Session and display:
 | `/quit`, `/exit` | Exit |
 
 `/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,
-`/rewind`, `/compact` and `/export` are covered in [sessions and checkpoints](sessions-and-checkpoints.md).
+`/rewind`, `/compact`, `/export`, `/share` and `/bug` are covered in
+[sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
 

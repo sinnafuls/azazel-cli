@@ -18,6 +18,7 @@ mod quick;
 mod rate;
 mod remote;
 mod sessions;
+mod share;
 mod slash;
 mod statusline;
 mod team;
@@ -248,6 +249,8 @@ enum Internal {
     CommitDraft(gitcmd::Draft),
     /// A reply to a request made outside the conversation (`/consult`, `/handoff`, `/name`).
     Side(sessions::SideEvent),
+    /// A session was shared, a bug report written or its issue opened; or not.
+    Sent(share::Sent),
 }
 
 pub struct Tui {
@@ -1251,6 +1254,7 @@ impl Tui {
             Internal::Btw(update) => return self.on_btw(update),
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Side(event) => return self.on_side(event).await,
+            Internal::Sent(sent) => return self.on_sent(sent),
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -2028,6 +2032,9 @@ impl Tui {
             }
             action @ (Action::CommitStage(_) | Action::Commit { .. }) => {
                 self.finish_commit(action, choice, typed)
+            }
+            action @ (Action::Share(_) | Action::Bug { .. } | Action::BugIssue(_)) => {
+                self.finish_share(action, choice)
             }
             action @ (Action::CopyCode(_)
             | Action::Context(_)

@@ -8,10 +8,10 @@ New here? Read [getting started](getting-started.md) first.
 |---|---|
 | [Getting started](getting-started.md) | Install, first run, a first prompt, print mode, updating, uninstalling |
 | [The terminal UI](tui.md) | Layout, keys, input prefixes, every slash command, themes |
-| [Configuration](configuration.md) | Config files, load order, every setting, trust, command-line flags |
+| [Configuration](configuration.md) | Config files, load order, every setting, trace export, trust, command-line flags |
 | [Models and logins](models-and-logins.md) | Providers, roles and fallback chains, thinking levels, API keys, subscription and cloud sign-in |
 | [Permissions](permissions.md) | Permission modes, rules, the approval prompt, destructive commands, the git push guard, plan mode |
-| [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, compaction, `/rewind` |
+| [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, exporting and sharing, bug reports, compaction, `/rewind` |
 | [Background sessions and remote work](background-and-remote.md) | `azazel bg`, `ps`, `logs`, `attach`, `kill`; working on another machine with `--ssh` |
 
 ## Working as a team

@@ -46,6 +46,7 @@ use azazel_tools::CoreToolsExt;
 
 use crate::cli::{Cli, Discovery};
 use crate::running::{self, Lock};
+use crate::telemetry::{Telemetry, Watch};
 
 pub const NO_MODEL: &str = "no model configured: run \"azazel init\" or pass --model provider/id";
 
@@ -88,6 +89,8 @@ pub struct App {
     background: bool,
     /// The lock on the open session, by its id, for when the same session is opened again.
     session_lock: Mutex<Option<(String, Weak<Lock>)>>,
+    /// Trace export, when `[telemetry]` asks for it.
+    telemetry: Option<Arc<Telemetry>>,
 }
 
 /// One open session and its lead agent.
@@ -101,6 +104,8 @@ pub struct Active {
     pub notice: Option<String>,
     /// Keeps other processes out of the session while a background session has it open.
     _lock: Option<Arc<Lock>>,
+    /// The spans of this session on their way to a tracing backend.
+    trace: Option<Watch>,
 }
 
 pub enum Open {
@@ -886,6 +891,7 @@ impl App {
             }
         }));
 
+        let telemetry = Telemetry::start(&config.telemetry);
         Ok(App {
             paths,
             config,
@@ -910,6 +916,7 @@ impl App {
             current,
             background: cli.background(),
             session_lock: Mutex::default(),
+            telemetry,
         })
     }
 
@@ -1152,6 +1159,10 @@ impl App {
         if let Some(advisor) = services.get::<Advisor>() {
             advisor.attach(&lead, session.clone(), checkpoints.clone());
         }
+        let trace = self
+            .telemetry
+            .as_ref()
+            .map(|telemetry| telemetry.watch(&session, lead.clone(), services.get::<Team>()));
         Ok(Active {
             session,
             lead,
@@ -1159,6 +1170,7 @@ impl App {
             resumed,
             notice,
             _lock: lock,
+            trace,
         })
     }
 
@@ -1281,6 +1293,9 @@ impl App {
             team.detach().await;
         }
         active.lead.shutdown().await;
+        if let Some(trace) = &active.trace {
+            trace.close().await;
+        }
     }
 
     /// Ends the last session: tells extensions, stops the lead and background jobs.
@@ -1291,6 +1306,9 @@ impl App {
         }
         self.registry.bus.emit(&mut Event::SessionEnd).await;
         self.close(active).await;
+        if let Some(telemetry) = &self.telemetry {
+            telemetry.flush().await;
+        }
         active.checkpoints.tidy().await;
         if let Some(jobs) = self.registry.services.get::<azazel_tools::Jobs>() {
             jobs.kill_all();
