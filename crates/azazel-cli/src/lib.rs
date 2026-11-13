@@ -150,8 +150,11 @@ pub(crate) fn project_trust(cli: &Cli, paths: &Paths, interactive: bool) -> bool
         overrides: toml::Table::new(),
         env: std::env::vars().collect(),
     };
-    let compat = Config::load(paths, &options).map_or(true, |loaded| loaded.config.compat.claude);
-    let reasons = needs_trust(paths, compat);
+    let (compat, tools) = match Config::load(paths, &options) {
+        Ok(loaded) => (loaded.config.compat.claude, loaded.config.tools),
+        Err(_) => (true, Default::default()),
+    };
+    let reasons = needs_trust(paths, compat, &tools);
     if reasons.is_empty() || !interactive {
         return false;
     }

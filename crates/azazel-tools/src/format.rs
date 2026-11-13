@@ -11,7 +11,7 @@ use azazel_core::process::AgentEnv;
 /// How long a formatter may take on one file.
 const TIMEOUT: Duration = Duration::from_secs(5);
 /// Stands for the file's path in a configured command; without it the path is appended.
-const FILE: &str = "{file}";
+pub(crate) const FILE: &str = "{file}";
 
 /// The formatters used when the configuration names none for a file's extension, each for the
 /// extensions after it. They apply only when the program is installed.
@@ -37,7 +37,7 @@ pub struct Formatters {
 
 /// `command` as words. Quotes group words with spaces; a backslash is an ordinary character, so
 /// Windows paths need no escaping.
-fn words(command: &str) -> Vec<String> {
+pub(crate) fn words(command: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut word = String::new();
     let mut started = false;

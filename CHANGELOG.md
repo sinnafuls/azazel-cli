@@ -16,6 +16,17 @@ GitHub are its section here.
   `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
+- Checks on write: after `write` and `edit` the linter for the file's kind runs on it when it is installed
+  (clippy, ruff, eslint or oxlint, shellcheck, go vet, actionlint, hadolint, or your own from `[tools.check]`).
+  Errors join the tool result; when the lead stops it is told once what was found on the lines the turn
+  changed (`tools.check_report`), with the files that could not be checked. A write waits 5 seconds for its
+  checker; a slower one finishes in the background (60 seconds at most) and its findings come with that report.
+- clippy, eslint and go vet run the project's own code to check a file (build scripts, macros, the eslint
+  config), so they run only in a trusted project. A project with a `Cargo.toml`, an eslint config or a `go.mod`
+  at its root now has something to trust when one of them is installed, and the UI asks once.
+- Secret scan: with `gitleaks` installed and a trusted project, the project is scanned once per session in the
+  background and the places found join that report, never the secrets.
+- `azazel doctor` lists the installed checkers and says whether secrets are scanned for.
 - `web_fetch` returns a long page in parts: `offset` (first line) and `limit` (characters, default 30000),
   with a last line that names the lines shown and the offset to continue from. `read` of a URL pages the
   same way with its own `offset` and `limit`.

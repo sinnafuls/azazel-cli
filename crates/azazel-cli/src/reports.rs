@@ -507,7 +507,7 @@ fn trust(app: &App, args: &str) -> Result<String, String> {
             Err(e) => Err(format!("could not save the decision: {e}")),
         };
     }
-    let gated = needs_trust(paths, app.config.compat.claude);
+    let gated = needs_trust(paths, app.config.compat.claude, &app.config.tools);
     let mut out = match (app.trusted, store.decision(&paths.project_root)) {
         (true, Some(true)) => "this project is trusted".to_string(),
         (true, _) => "this project is trusted for this run (--trust)".to_string(),

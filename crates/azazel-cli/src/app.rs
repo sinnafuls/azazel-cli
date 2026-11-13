@@ -487,6 +487,23 @@ impl App {
             max_nudges: config.goal.max_nudges,
             on_stop: config.verify.on_stop,
         };
+        // After the advisor, which reviews only a stop that nothing has answered yet, and before
+        // the goal, whose own check has the last word.
+        registry.load(&azazel_tools::check::ChecksExt {
+            root: paths.project_root.clone(),
+            on_write: config.tools.check_on_write,
+            configured: config.tools.check.clone(),
+            trusted,
+            report: config.tools.check_report,
+            timeout: azazel_tools::check::TIMEOUT,
+            limit: azazel_tools::check::LIMIT,
+            gitleaks: azazel_tools::scan::scanner(
+                config.tools.scan.secrets,
+                config.tools.check_report,
+                trusted,
+            )
+            .ok(),
+        })?;
         registry.load(&GoalExt {
             goals: Arc::new(Goals::new(checker, goal_settings)),
         })?;
