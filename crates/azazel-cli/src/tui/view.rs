@@ -161,6 +161,45 @@ fn lsp_summary(action: &str, input: &Value) -> String {
     }
 }
 
+/// What a `pty` call does to a terminal: what it types and presses, or what it waits for.
+fn pty_summary(action: &str, input: &Value) -> String {
+    let field = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    let id = field("id");
+    match action {
+        "send" => {
+            let mut sent: Vec<String> = Vec::new();
+            if !field("text").is_empty() {
+                sent.push(format!("{:?}", field("text")));
+            }
+            let keys = input.get("keys").and_then(Value::as_array);
+            sent.extend(
+                keys.into_iter()
+                    .flatten()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string),
+            );
+            if input.get("submit").and_then(Value::as_bool) == Some(true) {
+                sent.push("enter".to_string());
+            }
+            format!("type {} {id}", sent.join(" ")).trim_end().to_string()
+        }
+        "read" => {
+            let wait = match (field("wait_for"), field("wait")) {
+                ("", "") => String::new(),
+                ("", wait) => format!("after a wait for {wait}"),
+                (wanted, _) => format!("once it shows {wanted:?}"),
+            };
+            let parts = ["read", id, wait.as_str()];
+            parts
+                .into_iter()
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        _ => format!("{action} {id}").trim_end().to_string(),
+    }
+}
+
 /// What an `ast_grep` call looks for, what it puts in its place, and whether it writes.
 fn ast_grep_summary(pattern: &str, input: &Value) -> String {
     let paths: Vec<&str> = input
@@ -265,6 +304,7 @@ pub fn tool_summary(name: &str, input: &Value) -> String {
             let lines = code.trim().lines().count();
             format!("Luau script, {lines} line{}", if lines == 1 { "" } else { "s" })
         }),
+        "pty" => field("action").map(|action| pty_summary(&action, input)),
         "job" => Some(format!(
             "{} {}",
             field("action").unwrap_or_default(),
@@ -1002,6 +1042,22 @@ mod tests {
             tool_summary("ask_user", &json!({"question": "Paint it?", "type": "confirm"})),
             "Paint it?"
         );
+        let pty = |input: Value| tool_summary("pty", &input);
+        assert_eq!(
+            pty(json!({"action": "send", "id": "pty-1", "text": "y", "keys": ["down"], "submit": true})),
+            "type \"y\" down enter pty-1"
+        );
+        assert_eq!(pty(json!({"action": "send", "keys": ["ctrl+c"]})), "type ctrl+c");
+        assert_eq!(
+            pty(json!({"action": "read", "id": "pty-2", "wait": "exit"})),
+            "read pty-2 after a wait for exit"
+        );
+        assert_eq!(
+            pty(json!({"action": "read", "wait_for": "Password:"})),
+            "read once it shows \"Password:\""
+        );
+        assert_eq!(pty(json!({"action": "stop", "id": "pty-1"})), "stop pty-1");
+        assert_eq!(pty(json!({"action": "list"})), "list");
         let recall = |input: Value| tool_summary("session_recall", &input);
         assert_eq!(
             recall(json!({"query": "parser tests", "limit": 5})),

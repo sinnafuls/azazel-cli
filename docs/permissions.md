@@ -95,6 +95,19 @@ So `shell(cargo test:*)` allows `cargo test -p core` but not `cargo test; rm -rf
 
 A command line that cannot be parsed, and any command when the resolved shell is PowerShell, is treated as one opaque string: deny rules and glob patterns still see it, but allow rules never auto-allow it.
 
+### Programs in a terminal
+
+A [program in a terminal](tools.md#programs-in-a-terminal) is started by a `shell` call (`interactive: true`), which is decided like every other `shell` call: the same rules, the same guards, the same prompt.
+
+The `pty` tool then types into the program and stops it. There are no rules for `pty` to write: those for `shell` decide.
+
+- `pty` `send` and `stop` are allowed where running the program is. They are matched against the command that runs in the terminal, as the `shell` call that started it was. With `allow = ["shell(npm init:*)"]` an agent starts `npm init` and answers its questions without a prompt; in `manual` mode without such a rule you are asked for each `send`, the prompt shows what would be typed, and `Allow this session` and `Always allow` add the rule for the program.
+- What is typed is held to the limits no mode lifts, as if it were a command of its own, because the program may be a shell: a `deny` rule for `shell` that matches the text refuses the call, the push guard refuses `git push`, a [destructive command](#destructive-commands) and a command that names a [secret file](#secret-files) are asked about in every mode but `bypass`, and `destructive = "deny"` refuses the first. Keys (`enter`, `ctrl+c`, arrows) are not text and are not checked.
+- `pty` `read` and `list` only look: they are reads.
+- Text you type into a terminal yourself is yours and is never checked.
+
+These checks read what the agent sends, not what the program does with it. Like the checks on `shell` they catch mistakes, and are no sandbox.
+
 ## How a call is decided
 
 In this order; the first step that settles the call wins.

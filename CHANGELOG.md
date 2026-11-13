@@ -7,6 +7,18 @@ GitHub are its section here.
 
 ### Added
 
+- Interactive programs: `shell` with `interactive: true` runs a command in a real terminal (a pseudo-terminal;
+  ConPTY on Windows) for programs that ask questions, wait for keys or draw a screen: editors, REPLs,
+  installers, `git rebase -i`, logins. The call returns the first screen and a terminal id, and the new `pty`
+  tool reads the screen (`read`, which can wait for a change, for a text or for the end), types text and keys
+  (`send` with `text`, `keys` such as `ctrl+c` or `down`, and `submit`), and ends the program (`stop`). With
+  `wake_on_exit` the lead is told when the program ends, with its last screen and the saved log
+  (an `artifact://` address).
+- The terminal of such a program opens as a popup and follows it live. `Enter` gives you the keyboard, after
+  which every key goes to the program and the agent's input waits; `Ctrl+G` hands it back, `Esc` hides the
+  box, `Ctrl+X` stops the program. `F3` (`terminal`) and `/terminals` bring a hidden terminal back.
+- Typing into a terminal is decided by the rules for `shell`: it is allowed where the program is, and the text
+  is held to `deny` rules, the push guard and the destructive-command and secret-file checks like a command.
 - Permission mode `bypass`: nothing is asked and no guard applies except your `deny` rules and the push guard.
   It is entered with `/mode bypass` (a warning box that starts on `No`), `--mode bypass` or `/settings`, never
   with `Shift+Tab`; the status line shows it in the colour of errors; a project's config may set it only once
