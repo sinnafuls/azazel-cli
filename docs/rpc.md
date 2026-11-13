@@ -159,7 +159,7 @@ Sent when a tool call needs the user's permission. The agent waits until the mat
 | `tool`, `input` | The tool and its full input |
 | `access` | `read`, `write`, `exec` or `net` |
 | `subjects` | What permission rules are matched against: paths, commands, `domain:<host>` |
-| `rule` | Optional: the allow rule that `always` would add |
+| `rule` | Optional: the allow rule that `session` and `always` would add. Without it both act as `allow` |
 | `note` | Optional: a remark to show, such as a cost warning |
 | `destructive` | Optional, `true` when the call would destroy work: approval should not be the answer a stray key gives |
 
@@ -168,6 +168,7 @@ Sent when a tool call needs the user's permission. The agent waits until the mat
 | Decision | Effect |
 |---|---|
 | `allow` | Allow this call once |
+| `session` | Allow it and add `rule` as an allow rule until the process ends; nothing is written to a file |
 | `always` | Allow it and add `rule` as an allow rule for the session and in `.azazel/config.local.toml` |
 | `deny` | Refuse; optional `feedback` is passed to the model |
 
@@ -179,12 +180,14 @@ Sent when an agent or extension asks the user something. Answer with `ui_respons
 
 | `kind` | Members | Expected `value` |
 |---|---|---|
-| `ask` | `question`, `options`, `multi` | A list of the chosen options, or one string when there are no options |
+| `ask` | `question`, `context?`, `expects`, `options`, `multi`, `allow_freeform?` | What `expects` names: a list of the chosen options for `select` and `multiselect`, a string for `text`, `true` or `false` for `confirm`. See below |
 | `confirm` | `prompt` | `true` or `false` |
 | `select` | `prompt`, `options` | The index of the chosen option (the option's text is accepted too) |
 | `input` | `prompt`, `secret?` | A string. A `secret` one (a key, a password) should not be shown as it is typed |
 | `plan` | `path`, `plan` | `true` to approve the plan, or a string of feedback to revise it |
 | `notify` | `level` (`info`, `warn`, `error`), `text` | None; no answer is expected |
+
+An `ask` request is a question of the `ask_user` tool (or of an extension). `context`, when present, is what the user needs to know and belongs above the question. `options` is empty for `text` and `confirm`; `multi` is `true` exactly when `expects` is `multiselect`. With `allow_freeform` the user may type an answer instead of choosing: send it as a string, or as a list with that one string. A single chosen option may be sent as a string too, and `yes` and `no` are accepted for a `confirm`.
 
 ### `user_input`
 

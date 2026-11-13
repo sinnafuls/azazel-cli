@@ -367,7 +367,7 @@ impl Tui {
             .map(|server| {
                 let detail = match server.state {
                     azazel_mcp::State::Ready => format!("ready · {} tools · {}", server.tools, server.target),
-                    _ => format!("{} · {}", server.state, server.target),
+                    _ => format!("{} · {}", server.state_text(), server.target),
                 };
                 SelectItem::new(server.name.as_str(), detail)
             })

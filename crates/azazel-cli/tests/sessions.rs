@@ -241,6 +241,96 @@ fn a_reopened_session_comes_back_on_its_model_and_thinking_level() {
 }
 
 #[test]
+fn the_task_list_is_back_when_a_session_is_continued_and_the_agent_is_reminded_of_it() {
+    let sandbox = Sandbox::new();
+    let quiet = ["--no-memory", "--set", "session.auto_name=false"];
+    let run = |script: &Value, args: &[&str]| {
+        let args: Vec<&str> = quiet.iter().chain(args).copied().collect();
+        let output = sandbox.azazel(script, &args);
+        assert!(output.status.success(), "{}", stderr(&output));
+    };
+    // The last message of each request the scripted provider received.
+    let last_sent = || -> Vec<String> {
+        std::fs::read_to_string(sandbox.dir.path().join("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| {
+                let request: Value = serde_json::from_str(line).unwrap();
+                let last = request["request"]["messages"].as_array().unwrap().last().unwrap();
+                last["content"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect()
+    };
+    let todo = |id: &str, items: Value| json!({ "reply": { "tool_calls": [{ "id": id, "name": "todo", "input": { "items": items } }] } });
+    let reply = |text: &str| json!({ "reply": { "text": text } });
+    let plan = json!([
+        { "text": "find the bug", "status": "done" },
+        { "text": "fix it", "status": "in_progress" },
+        { "text": "add a test", "status": "pending" }
+    ]);
+    let reminder = "[Plan] 1/3 done (your todo list; keep it current with `todo`)\n\
+                    [x] find the bug\n[~] fix it\n[ ] add a test";
+
+    run(
+        &json!({ "lead": [todo("c1", plan.clone()), reply("planned")] }),
+        &["-p", "plan the fix"],
+    );
+    // Before there is a list nothing is added; once there is, it follows what was sent.
+    assert_eq!(last_sent(), ["plan the fix", reminder]);
+
+    // Another process, the same session: the list is there before the agent has done anything.
+    let lines = sandbox.rpc(
+        &json!({ "lead": [] }),
+        &["-c"],
+        &[json!({ "id": 1, "type": "get_state" })],
+    );
+    let state = lines
+        .iter()
+        .find(|line| line["type"] == "response" && line["id"] == 1)
+        .unwrap();
+    assert_eq!(state["data"]["todo"], plan, "{state}");
+
+    run(&json!({ "lead": [reply("going on")] }), &["-c", "-p", "go on"]);
+    assert_eq!(last_sent(), [reminder]);
+    // The reminder is sent, never kept.
+    let file = sandbox.session_file();
+    assert!(!std::fs::read_to_string(&file).unwrap().contains("[Plan]"));
+
+    // With everything done the agent is left alone, in this run and in the next.
+    let done = json!([
+        { "text": "find the bug", "status": "done" },
+        { "text": "fix it", "status": "done" },
+        { "text": "add a test", "status": "done" }
+    ]);
+    run(
+        &json!({ "lead": [todo("c2", done), reply("all done")] }),
+        &["-c", "-p", "finish"],
+    );
+    assert_eq!(last_sent()[0], reminder);
+    assert!(!last_sent()[1].contains("[Plan]"), "{:?}", last_sent());
+    run(
+        &json!({ "lead": [reply("nothing left")] }),
+        &["-c", "-p", "anything else?"],
+    );
+    assert_eq!(last_sent(), ["anything else?"]);
+
+    // A new session starts without a list.
+    let lines = sandbox.rpc(
+        &json!({ "lead": [] }),
+        &[],
+        &[json!({ "id": 1, "type": "get_state" })],
+    );
+    let state = lines
+        .iter()
+        .find(|line| line["type"] == "response" && line["id"] == 1)
+        .unwrap();
+    assert_eq!(state["data"]["todo"], json!([]), "{state}");
+}
+
+#[test]
 fn sessions_are_listed_searched_exported_pruned_and_deleted_from_the_shell() {
     let sandbox = Sandbox::new();
     let script = json!({ "lead": [{ "reply": { "text": "Answer about <tokio>." } }] });

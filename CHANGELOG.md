@@ -16,10 +16,36 @@ GitHub are its section here.
   `tools.read_guard`, `tools.scan.secrets`, `lsp.idle_secs`, `lsp.write_severity`,
   `lsp.servers.<name>.warm_files`, `checkpoints.timeout_ms`, `checkpoints.exclude` and
   `mcp.idle_timeout_secs`.
+- The task list survives: it is rebuilt from the session on `-c`, `--session`, `--fork`, `/resume`, `/tree`,
+  `/rewind` and `/fork`, and while it has open items the agent is reminded of it with every request.
+- `ask_user` takes a `type` (`select`, `multiselect`, `text`, `confirm`), a `context` shown above the
+  question, and `allow_freeform`, which adds an `Other…` row to type an answer.
+- `Allow this session` in the permission prompt allows a rule until azazel exits without saving it (RPC:
+  decision `session`; ACP: option `allow_session`; plain attach: `/session`).
+- MCP servers have a `lifecycle` (`eager`, `lazy`, `lazy-keep-alive`). A `lazy` server is started by the
+  first call into it and stopped after `mcp.idle_timeout_secs` without one; its tools, prompts and
+  instructions are offered meanwhile from `~/.azazel/cache/mcp/`.
+- `includeTools` and `excludeTools` in an MCP server's entry choose which of its tools agents get.
+- Checkpoints: a fork continues the history of its parent, the shadow repository is packed at the end of a
+  session, and `checkpoints.exclude` is applied.
 
 ### Changed
 
+- MCP servers that run as a local command are `lazy` by default: they are no longer started with the
+  session. `"lifecycle": "eager"` in an entry keeps the old behaviour.
+- A question the user dismisses, or that nobody can answer, is no longer a failed tool call: `ask_user`
+  returns `the user declined to answer`. Its options are checked (2 to 8, no duplicates).
+- The last choice of the permission prompt is `Deny and say why`.
+- A prompt that changed no file takes no snapshot of its own.
+- RPC: an `ask` request carries `expects`, `context` and `allow_freeform`.
+
 ### Fixed
+
+- `write` refuses file names Windows reserves for devices (`aux.c`, `NUL`, `com1.txt`), on every system.
+- The task list of the previous session no longer stays on screen after `/new` or `/resume`.
+- A `git` that hangs can no longer hold up a prompt: a snapshot is stopped after `checkpoints.timeout_ms`
+  and checkpoints turn off for the session.
+- A rewind that fails part of the way puts the files back as they were.
 
 ## [0.3.0] - 2026-11-13
 

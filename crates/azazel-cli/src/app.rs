@@ -261,6 +261,9 @@ pub fn mcp_manager(
     let options = azazel_mcp::Options {
         startup_wait: Duration::from_millis(config.mcp.startup_wait_ms),
         defer_threshold: config.mcp.defer_threshold,
+        idle_timeout: (config.mcp.idle_timeout_secs > 0)
+            .then(|| Duration::from_secs(config.mcp.idle_timeout_secs)),
+        cache_dir: Some(paths.cache_dir().join("mcp")),
     };
     let manager = azazel_mcp::McpManager::new(loaded, services, roots, credentials, options);
     manager.record_approvals(

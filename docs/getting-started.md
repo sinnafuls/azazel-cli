@@ -125,7 +125,7 @@ Type a request and press `Enter`:
 - `@path` attaches a file, `!command` runs a command in your own shell, `/` starts a slash command.
 - The reply streams in; finished output scrolls into your terminal's normal scrollback.
 - In the default `ask` mode, edits and shell commands need your approval. The prompt offers `Allow once`,
-  `Always allow <rule>`, `Deny` and `Deny and say what to do instead`. `Shift+Tab` switches the mode; see
+  `Allow this session`, `Always allow <rule>`, `Deny` and `Deny and say why`. `Shift+Tab` switches the mode; see
   [permissions](permissions.md).
 - `Enter` while the agent is working steers it; `Esc` interrupts it.
 - `/rewind` puts files, conversation or both back to before an earlier prompt; see

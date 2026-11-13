@@ -280,7 +280,7 @@ impl CommandSource for McpManager {
 pub fn status_report(manager: &McpManager) -> String {
     let mut out = String::new();
     for server in manager.status() {
-        out.push_str(&format!("{}  {}", server.name, server.state));
+        out.push_str(&format!("{}  {}", server.name, server.state_text()));
         if server.state == State::Ready {
             out.push_str(&format!(" · {} tools · {} prompts", server.tools, server.prompts));
         }

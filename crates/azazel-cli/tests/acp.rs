@@ -221,7 +221,10 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .iter()
             .map(|option| option["kind"].as_str().unwrap())
             .collect();
-        assert_eq!(offered, ["allow_once", "allow_always", "reject_once"]);
+        assert_eq!(
+            offered,
+            ["allow_once", "allow_session", "allow_always", "reject_once"]
+        );
 
         // The session is named after its first reply, and the client is told. The name may come
         // before or after this point, so it is waited for before the updates are taken.

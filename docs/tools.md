@@ -26,7 +26,7 @@ Fields marked `?` are optional.
 
 Freshness rule for `write` and `edit`: an agent may only overwrite a file it has read (or written) and that has not changed since. Otherwise the call fails with `read the file before overwriting it` or `file changed since you last read it; read it again`. The check compares content, not timestamps. Files you attach with `@path` count as read. When one agent writes a file another agent has read, the other agent is told to read it again before editing.
 
-`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md).
+`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. `write` refuses a file name whose stem is a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`, so `aux.c` and `NUL` too) with `` `aux.c` is a reserved Windows device name; pick another file name ``, on every system: such a file cannot be opened on Windows, where the project may be cloned. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md).
 
 ### Format on write
 
@@ -108,8 +108,29 @@ The tool's description lists the callable tools with their arguments, within abo
 | Tool | Input | Behaviour |
 |---|---|---|
 | `todo` | `items: [{text, status}]` | Replaces the agent's task list. `status` is `pending`, `in_progress` or `done`; at most one item may be `in_progress` |
-| `ask_user` | `question`, `options?`, `multi?` | Asks you a question and waits. Without `options` you type a free answer. Without an interactive user it fails with `no interactive user` |
+| `ask_user` | `question`, `type?`, `context?`, `options?`, `multi?`, `allow_freeform?` | Asks you a question and waits; see below |
 | `plan_submit` | `path` | In plan mode: submits a plan file under `.azazel/plans/` for your approval. See [permissions](permissions.md) |
+
+### The task list
+
+The list is shown above the input while work on it remains, and `/todo` shows or changes it. Two things keep an agent on its plan:
+
+- **It is durable.** The lead's list is rebuilt from the session whenever one is opened: after `-c`, `--session`, `--fork`, `/resume`, `/tree`, `/rewind` and `/fork` it is what the last `todo` call that succeeded on that branch set (or what you changed with `/todo` after it). A compacted session keeps its list. A new session starts with none.
+- **The agent is reminded of it.** While the list has an item that is not `done`, every request ends with a note such as `[Plan] 1/3 done`, followed by the list as `[x]`, `[~]` and `[ ]` lines. The note is added to what is sent and is not part of the session, so it costs no context later and leaves the cached part of the conversation as it is. It stops when every item is done or the list is cleared.
+
+### `ask_user`
+
+| Input | Meaning |
+|---|---|
+| `question` | What is asked |
+| `type` | `select` (one of the options), `multiselect` (any number of them), `text` (a typed answer) or `confirm` (yes or no). Left out, it follows from the rest: `text` without `options`, `multiselect` with `multi: true`, otherwise `select` |
+| `context` | What you need to know to answer; shown above the question |
+| `options` | The choices of a `select` or `multiselect`: 2 to 8, each different from the others whatever its case and spacing. Not allowed for `text` and `confirm` |
+| `allow_freeform` | `select` only: the list ends with `Other…`, which lets you type an answer instead |
+
+A call that breaks one of these rules fails before you are asked anything, with what is wrong (`a `select` question needs 2 to 8 options, not 1`, `the option `red` is offered twice`).
+
+The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
 
 ## Web
 
