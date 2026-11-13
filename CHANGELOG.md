@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-13
+
 ### Added
 
 - Built-in themes `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark` and `dark-daltonized`, and two new theme
@@ -38,7 +40,6 @@ GitHub are its section here.
 - `web_fetch` returns the text of a PDF, under a first line naming the file it saved.
 - `browser` `wait` can wait for `role:<role> "<name>"`, `url:contains:<s>`, `title:contains:<s>` and
   `gone:<selector>`, and `poll_ms` sets how often it looks.
-
 - The status line shows how fast the lead writes (`↯ 78 tok/s`): an estimate while a reply streams, the
   provider's own token count once it ends. It stays, muted, until the next prompt.
 - A working indicator that moves: a band of light passes over `thinking` / `running <tool>` above the input.
@@ -358,7 +359,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/sinnafuls/azazel-cli/releases/tag/v0.1.0
