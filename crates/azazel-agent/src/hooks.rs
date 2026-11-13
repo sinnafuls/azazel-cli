@@ -70,9 +70,9 @@ pub trait TranscriptSink: Send + Sync {
     /// of the compaction entry.
     fn compaction(&self, summary: &str, first_kept: &str, tokens_before: u64) -> String;
 
-    /// Records that a run began: the work one prompt starts. Returns the run's id, which
-    /// [`TranscriptSink::run_ended`] repeats. `request_id` is the name whoever sent the prompt
-    /// gave it.
+    /// Records that a run began: the work one prompt starts. Called right after the prompt's
+    /// message was appended. Returns the run's id, which [`TranscriptSink::run_ended`] repeats.
+    /// `request_id` is the name whoever sent the prompt gave it.
     fn run_started(&self, _request_id: Option<&str>) -> String {
         String::new()
     }

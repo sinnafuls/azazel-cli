@@ -474,8 +474,8 @@ mod tests {
     fn cut_short(dir: &Path) -> (String, PathBuf) {
         use azazel_agent::TranscriptSink;
         let store = SessionStore::create(dir, Path::new("/work"), None).unwrap();
-        store.run_started(None);
         store.message(&azazel_ai::Message::user("go"));
+        store.run_started(None);
         (store.id(), store.path())
     }
 

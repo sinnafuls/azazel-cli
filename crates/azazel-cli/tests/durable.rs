@@ -34,6 +34,7 @@ impl Sandbox {
             .env("AZAZEL_HOME", self.dir.path().join("home"))
             .env("AZAZEL_MOCK_SCRIPT", &script_path)
             .env("AZAZEL_MOCK_REQUESTS", self.dir.path().join("requests.jsonl"))
+            .env("AZAZEL_MOCK_TOOLS", "1")
             .args(["--set", "session.auto_name=false", "--no-memory"])
             .arg("--cwd")
             .arg(self.dir.path().join("project"))
@@ -99,14 +100,10 @@ impl Sandbox {
     }
 }
 
-/// Ends a process the hard way, with whatever it started: nothing of it gets to clean up.
+/// Ends a process the hard way: nothing of it gets to clean up.
 fn kill(child: &mut Child) {
-    #[cfg(windows)]
-    let _ = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &child.id().to_string()])
-        .output();
-    let _ = child.kill();
-    let _ = child.wait();
+    child.kill().unwrap();
+    child.wait().unwrap();
 }
 
 fn text(output: &Output) -> (String, String) {
@@ -135,7 +132,7 @@ fn a_run_killed_before_the_model_answered_is_gone_on_with_in_print_mode() {
     let entries = sandbox.entries();
     // A run with a start and no end.
     assert!(
-        kinds(&entries).ends_with(&["run_started", "message", "request_started"]),
+        kinds(&entries).ends_with(&["message", "run_started", "request_started"]),
         "{:?}",
         kinds(&entries)
     );
@@ -196,10 +193,10 @@ fn a_run_killed_in_a_tool_call_is_gone_on_with_over_rpc() {
         "remember the milk\n",
     )
     .unwrap();
-    // A read, then a command that outlives the test: the process dies while it runs.
+    // A read, then a call that outlives the test: the process dies while it runs.
     let stuck = json!({ "lead": [{ "reply": { "tool_calls": [
         { "id": "c1", "name": "read", "input": { "path": "notes.txt" } },
-        { "id": "c2", "name": "shell", "input": { "command": "sleep 45" } },
+        { "id": "c2", "name": "test_wait", "input": { "ms": 600_000 } },
     ] } }] });
     sandbox.killed_after(&stuck, "tool_started\",\"callId\":\"c2");
 
@@ -229,7 +226,7 @@ fn a_run_killed_in_a_tool_call_is_gone_on_with_over_rpc() {
     send(json!({ "id": 1, "type": "get_state" }));
     let state = until(&|line| line["id"] == 1).pop().unwrap();
     assert_eq!(
-        state["data"]["interrupted"], "stopped while read, shell ran",
+        state["data"]["interrupted"], "stopped while read, test_wait ran",
         "{state}"
     );
     assert_eq!(state["data"]["busy"], false);
@@ -253,7 +250,7 @@ fn a_run_killed_in_a_tool_call_is_gone_on_with_over_rpc() {
         })
         .collect();
     assert_eq!(results.len(), 2, "{frames:?}");
-    // The read only reads: it ran again. The command may have done anything: it did not.
+    // The read only reads: it ran again. The other call may have done anything: it did not.
     assert_eq!((results[0].0, results[0].1), ("c1", false));
     assert!(results[0].2.contains("remember the milk"), "{results:?}");
     assert_eq!((results[1].0, results[1].1), ("c2", true));

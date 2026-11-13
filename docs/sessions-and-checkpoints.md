@@ -48,13 +48,16 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `session_info` | The session's name; the newest one counts |
 | `pin` | Whether the session is pinned |
 | `custom` | Extension data |
-| `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any |
+| `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any. Its `parentId` is the prompt |
 | `request_started` | A request of the run went out to `model` |
 | `tool_started` | A tool call of the run was let through and began: `callId`, `name`, `input` |
-| `run_ended` | The run ended: `runId` and `stop` (`stop`, `length`, `tool_use`, `error`, `aborted`, `failed`, or `forked` in a copy taken while the run went on) |
+| `run_ended` | The run ended: `runId` and `stop` (`stop`, `length`, `tool_use`, `error`, `aborted` or `failed`) |
 
 The last four are the journal of a run. Tool results and replies are `message` entries as always; a
 `run_started` with no `run_ended` is a run its process did not finish (see [interrupted runs](#interrupted-runs)).
+Journal entries are notes beside the conversation: each hangs from the entry it was written after, and nothing
+continues from one, so the conversation reads the same with or without them (an azazel from before 0.5 skips
+them).
 
 The entries form a tree. Going back and continuing from an earlier point adds a new branch; nothing is rewritten
 or deleted, so every branch stays in the file. A line that cannot be parsed is skipped with a warning in the log
@@ -128,8 +131,8 @@ Sending a new prompt instead of continuing is fine too: the calls that were left
 answered with a note that they may not have run, and the conversation goes on from your prompt. Nothing is
 continued twice, and a run that was gone on with is the same run in the file: it gets its one `run_ended`.
 
-A session copied with `/fork`, `--fork` or `/bg` while a run goes on holds the run up to that point; the copy
-marks it `forked` and has nothing to continue.
+A session copied with `/fork`, `--fork` or `/bg` holds the conversation and nothing of the journal, so a copy
+never has a run to continue; the original keeps its own.
 
 ## Names
 

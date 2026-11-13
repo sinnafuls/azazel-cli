@@ -45,6 +45,7 @@ impl Sandbox {
             .env("AZAZEL_HOME", self.home())
             .env("AZAZEL_MOCK_SCRIPT", self.dir.path().join("script.json"))
             .env("AZAZEL_MOCK_REQUESTS", self.dir.path().join("requests.jsonl"))
+            .env("AZAZEL_MOCK_TOOLS", "1")
             .args(["--set", "session.auto_name=false", "--no-memory"])
             // No toast on the machine that runs the tests.
             .args(["--set", "notify.desktop=\"off\""])
@@ -571,11 +572,11 @@ fn bg_as_a_command_continues_a_copy_of_the_session_in_the_background() {
     assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
 }
 
-/// Ends a process the hard way, with whatever it started: nothing of it gets to clean up.
+/// Ends a process the hard way: nothing of it gets to clean up.
 fn kill_process(pid: u64) {
     #[cfg(windows)]
     let killed = Command::new("taskkill")
-        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .args(["/F", "/PID", &pid.to_string()])
         .output();
     #[cfg(unix)]
     let killed = Command::new("kill").args(["-9", &pid.to_string()]).output();
@@ -584,22 +585,22 @@ fn kill_process(pid: u64) {
 
 #[test]
 fn a_background_session_killed_in_a_tool_call_is_listed_and_goes_on_when_attached() {
-    // A read, then a command that outlives the test.
+    // A read, then a call that outlives the test.
     let sandbox = Sandbox::new(&json!({ "lead": [{ "reply": { "tool_calls": [
         { "id": "c1", "name": "read", "input": { "path": "notes.txt" } },
-        { "id": "c2", "name": "shell", "input": { "command": "sleep 45" } },
+        { "id": "c2", "name": "test_wait", "input": { "ms": 600_000 } },
     ] } }] }));
     std::fs::write(sandbox.project().join("notes.txt"), "remember the milk\n").unwrap();
     let id = sandbox.bg(&["--mode", "auto", "--name", "night shift"], "do the work");
     let row = sandbox.wait_for_state(&id, "working");
-    // The process dies while the command runs.
+    // The process dies while the call runs.
     let started = Instant::now();
     while !sandbox.session_files().iter().any(|file| {
         std::fs::read_to_string(file)
             .unwrap_or_default()
             .contains("\"type\":\"tool_started\",\"callId\":\"c2\"")
     }) {
-        assert!(started.elapsed() < LIMIT, "the command never started");
+        assert!(started.elapsed() < LIMIT, "the call never started");
         std::thread::sleep(Duration::from_millis(25));
     }
     kill_process(row["pid"].as_u64().unwrap());
@@ -613,12 +614,12 @@ fn a_background_session_killed_in_a_tool_call_is_listed_and_goes_on_when_attache
         "{listed}"
     );
     assert!(
-        text(&sandbox.run(&["logs", &id])).0.contains("→ shell sleep 45"),
+        text(&sandbox.run(&["logs", &id])).0.contains("→ test_wait"),
         "its log is still there"
     );
 
     // Attaching starts it again on the same session, in the mode it was in, and it goes on:
-    // the read is run again, the command is not, and the model is told so.
+    // the read is run again, the other call is not, and the model is told so.
     std::fs::write(
         sandbox.dir.path().join("script.json"),
         json!({ "lead": [{ "reply": { "text": "Picked up where it stopped." } }] }).to_string(),
@@ -638,8 +639,8 @@ fn a_background_session_killed_in_a_tool_call_is_listed_and_goes_on_when_attache
         went_on,
         [
             "→ read notes.txt",
-            "→ shell sleep 45",
-            "  ✗ shell: interrupted: the process stopped before this call finished; check its effects \
+            "→ test_wait {\"ms\":600000}",
+            "  ✗ test_wait: interrupted: the process stopped before this call finished; check its effects \
              before retrying",
             "Picked up where it stopped.",
             "· done"

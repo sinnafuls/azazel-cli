@@ -386,9 +386,10 @@ impl Actor {
 
     async fn run_prompt(&mut self, input: UserInput) {
         let cancel = self.begin();
-        let run_id = self.core.sink.run_started(input.request_id.as_deref());
+        let request_id = input.request_id.clone();
         self.core.close_open_calls();
         self.core.push(input.into_message());
+        let run_id = self.core.sink.run_started(request_id.as_deref());
         let outcome = self.turns(&cancel).await;
         self.end(&run_id, outcome);
     }

@@ -235,6 +235,66 @@ fn mock_provider(_: &mut Config) -> Result<Option<Arc<dyn Provider>>> {
     Ok(None)
 }
 
+/// A tool for tests that does nothing for as long as it is told to (`test_wait {"ms": 500}`):
+/// a call that is still running when a test kills the process. Offered in a test build when
+/// `AZAZEL_MOCK_TOOLS` is set.
+#[cfg(feature = "test-support")]
+mod mock_tools {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use async_trait::async_trait;
+    use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+    use azazel_core::{ExtError, Extension, Registrar};
+    use serde_json::{Value, json};
+
+    struct Wait;
+
+    #[async_trait]
+    impl Tool for Wait {
+        fn name(&self) -> &str {
+            "test_wait"
+        }
+
+        fn description(&self) -> &str {
+            "Waits for `ms` milliseconds."
+        }
+
+        fn schema(&self) -> Value {
+            json!({ "type": "object", "properties": { "ms": { "type": "integer" } }, "required": ["ms"] })
+        }
+
+        fn access(&self, _: &Value) -> Access {
+            Access::Exec
+        }
+
+        fn subjects(&self, _: &Value) -> Vec<String> {
+            Vec::new()
+        }
+
+        async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+            let wait = Duration::from_millis(input["ms"].as_u64().unwrap_or(0));
+            tokio::select! {
+                _ = ctx.cancel.cancelled() => ToolOutput::error("the wait was cut short"),
+                _ = tokio::time::sleep(wait) => ToolOutput::text("waited"),
+            }
+        }
+    }
+
+    pub struct MockToolsExt;
+
+    impl Extension for MockToolsExt {
+        fn id(&self) -> &str {
+            "mock-tools"
+        }
+
+        fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
+            r.tool(Arc::new(Wait));
+            Ok(())
+        }
+    }
+}
+
 /// The MCP servers configured for this run: those of installed packages, then the user's.
 /// Project files count only for a trusted project.
 #[cfg(feature = "mcp")]
@@ -399,6 +459,10 @@ impl App {
             artifacts_dir: paths.artifacts_dir(),
             read_guard: config.tools.read_guard,
         })?;
+        #[cfg(feature = "test-support")]
+        if std::env::var_os("AZAZEL_MOCK_TOOLS").is_some() {
+            registry.load(&mock_tools::MockToolsExt)?;
+        }
         #[cfg(feature = "lsp")]
         registry.load(&azazel_tools::lsp::LspExt {
             root: paths.project_root.clone(),

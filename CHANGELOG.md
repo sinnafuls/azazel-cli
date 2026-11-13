@@ -8,7 +8,7 @@ GitHub are its section here.
 ### Added
 
 - Durable runs: the session file now records where each run stands (`run_started`, `request_started`,
-  `tool_started`, `run_ended`). A session whose process was killed in the middle of a run says so when it is
+  `tool_started`, `run_ended`), as notes beside the conversation that an older azazel skips. A session whose process was killed in the middle of a run says so when it is
   opened again, and `/continue`, `azazel -c --continue-run` and the RPC command `continue_run` go on with it:
   calls that only read are run again, other calls that had started are reported to the model as interrupted,
   and a request that was never answered is sent again.
