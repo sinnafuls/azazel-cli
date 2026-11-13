@@ -223,7 +223,17 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             .collect();
         assert_eq!(offered, ["allow_once", "allow_always", "reject_once"]);
 
-        let updates = seen.take();
+        // The session is named after its first reply, and the client is told. The name may come
+        // before or after this point, so it is waited for before the updates are taken.
+        let named = seen
+            .wait_for(|update| update["sessionUpdate"] == "session_info_update")
+            .await;
+        assert_eq!(named["title"], "Hello file");
+        let updates: Vec<Value> = seen
+            .take()
+            .into_iter()
+            .filter(|update| update["sessionUpdate"] != "session_info_update")
+            .collect();
         assert_eq!(
             kinds(&updates)[..5],
             [
@@ -268,11 +278,6 @@ async fn an_editor_runs_prompts_answers_permissions_cancels_and_loads_a_session(
             (&json!("c2"), &json!("read"))
         );
         assert_eq!(updates[4]["content"]["text"], "Wrote and verified hello.txt.");
-        // The session is named after its first reply, and the client is told.
-        let named = seen
-            .wait_for(|update| update["sessionUpdate"] == "session_info_update")
-            .await;
-        assert_eq!(named["title"], "Hello file");
 
         // The mode is the permission mode; the change is announced.
         agent
