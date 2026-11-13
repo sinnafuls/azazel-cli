@@ -468,6 +468,19 @@ impl PermissionState {
         });
     }
 
+    /// Allows what `rule` covers until the session ends ("allow this session"). Nothing is
+    /// written to a file, and `/forget-approvals` takes it back.
+    pub fn allow_for_session(&self, rule: &Rule) {
+        let mut rules = write(&self.rules);
+        if !rules.iter().any(|r| r.kind == RuleKind::Allow && &r.rule == rule) {
+            rules.push(SourcedRule {
+                rule: rule.clone(),
+                kind: RuleKind::Allow,
+                source: SESSION.to_string(),
+            });
+        }
+    }
+
     /// Adds an allow rule for this session and appends it to `.azazel/config.local.toml`.
     pub fn remember_allow(&self, rule: &Rule) -> std::io::Result<()> {
         if !read(&self.rules)

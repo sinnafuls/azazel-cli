@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::future::Future;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, Weak};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_ai::{Block, Credentials};
-use azazel_core::{Level, TrustStore, Ui};
+use azazel_core::{AskKind, Level, Question, TrustStore, Ui};
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CancelledNotificationParam, ClientRequest,
     GetPromptRequestParams, JsonObject, ProgressToken, Prompt, ReadResourceRequestParams, ServerResult,
@@ -21,8 +21,9 @@ use serde_json::Value;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
+use crate::catalog::{self, Cached, CachedTool};
 use crate::client::{self, ConnectError};
-use crate::config::{self, Approval, Loaded, ServerConfig, Transport};
+use crate::config::{self, Approval, Lifecycle, Loaded, ServerConfig, Transport};
 use crate::handler::{self, Handler};
 use crate::{convert, oauth, search};
 
@@ -82,12 +83,31 @@ pub struct ServerStatus {
     pub source: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+impl ServerStatus {
+    /// The state in words. A server that starts on demand and has not been started says how many
+    /// tools are known from the last time it ran.
+    pub fn state_text(&self) -> String {
+        match (&self.state, self.tools) {
+            (State::Idle, 0) => self.state.to_string(),
+            (State::Idle, 1) => "not started (cached 1 tool)".to_string(),
+            (State::Idle, tools) => format!("not started (cached {tools} tools)"),
+            (state, _) => state.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Options {
     /// How long the first request of a session waits for servers that are still connecting.
     pub startup_wait: Duration,
     /// With more MCP tools than this, they are found through `tool_search` instead of being listed.
     pub defer_threshold: usize,
+    /// A server started on demand (`lifecycle: lazy`) is stopped after this long without a
+    /// call; `None` leaves it running.
+    pub idle_timeout: Option<Duration>,
+    /// Where the lists of what servers offer are kept between sessions. Without it a server
+    /// that starts on demand is started once per session, to ask it.
+    pub cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,20 +129,39 @@ pub(crate) struct ProxyTool {
 }
 
 impl ProxyTool {
-    fn new(inner: Weak<Inner>, server: &str, tool: &rmcp::model::Tool) -> Self {
+    fn new(inner: Weak<Inner>, server: &str, tool: CachedTool) -> Self {
         ProxyTool {
             name: crate::tool_name(server, &tool.name),
-            description: tool.description.as_deref().unwrap_or_default().to_string(),
-            schema: Value::Object((*tool.input_schema).clone()),
-            read_only: tool
-                .annotations
-                .as_ref()
-                .and_then(|a| a.read_only_hint)
-                .unwrap_or(false),
+            description: tool.description,
+            schema: tool.schema,
+            read_only: tool.read_only,
             server: server.to_string(),
-            tool: tool.name.to_string(),
+            tool: tool.name,
             inner,
         }
+    }
+
+    /// The tool as it is kept between sessions.
+    fn cached(&self) -> CachedTool {
+        CachedTool {
+            name: self.tool.clone(),
+            description: self.description.clone(),
+            schema: self.schema.clone(),
+            read_only: self.read_only,
+        }
+    }
+}
+
+fn described(tool: &rmcp::model::Tool) -> CachedTool {
+    CachedTool {
+        name: tool.name.to_string(),
+        description: tool.description.as_deref().unwrap_or_default().to_string(),
+        schema: Value::Object((*tool.input_schema).clone()),
+        read_only: tool
+            .annotations
+            .as_ref()
+            .and_then(|a| a.read_only_hint)
+            .unwrap_or(false),
     }
 }
 
@@ -160,22 +199,123 @@ impl Tool for ProxyTool {
     }
 }
 
-/// What a connected server offers.
-struct Live {
-    peer: Peer<RoleClient>,
+/// What a server offers: asked of it when it connected, or for one that starts on demand, read
+/// from what was kept the last time it ran.
+struct Catalog {
     tools: Vec<Arc<ProxyTool>>,
     prompts: Vec<Prompt>,
     instructions: Option<String>,
 }
 
+impl Catalog {
+    fn of(inner: &Weak<Inner>, cached: Cached) -> Catalog {
+        Catalog {
+            tools: cached
+                .tools
+                .into_iter()
+                .map(|tool| Arc::new(ProxyTool::new(inner.clone(), &cached.server, tool)))
+                .collect(),
+            prompts: cached.prompts,
+            instructions: cached.instructions,
+        }
+    }
+
+    fn cached(&self, config: &ServerConfig) -> Cached {
+        Cached {
+            server: config.name.clone(),
+            fingerprint: config.fingerprint.clone(),
+            tools: self.tools.iter().map(|tool| tool.cached()).collect(),
+            prompts: self.prompts.clone(),
+            instructions: self.instructions.clone(),
+        }
+    }
+}
+
+/// The calls in flight on a server and when the last one ended: what decides whether a server
+/// started on demand has been idle long enough to stop.
+struct Activity {
+    busy: AtomicUsize,
+    used: Mutex<Instant>,
+}
+
+impl Activity {
+    fn new() -> Arc<Activity> {
+        Arc::new(Activity {
+            busy: AtomicUsize::new(0),
+            used: Mutex::new(Instant::now()),
+        })
+    }
+
+    fn touch(&self) {
+        *self.used.lock().unwrap_or_else(PoisonError::into_inner) = Instant::now();
+    }
+
+    /// How long nothing has used the server; zero while a call is in flight.
+    fn idle_for(&self) -> Duration {
+        if self.busy.load(Ordering::SeqCst) > 0 {
+            return Duration::ZERO;
+        }
+        self.used.lock().unwrap_or_else(PoisonError::into_inner).elapsed()
+    }
+}
+
+/// Held while a request to a server is in flight.
+struct InUse(Arc<Activity>);
+
+impl InUse {
+    fn new(activity: &Arc<Activity>) -> InUse {
+        activity.busy.fetch_add(1, Ordering::SeqCst);
+        InUse(activity.clone())
+    }
+}
+
+impl Drop for InUse {
+    fn drop(&mut self) {
+        self.0.touch();
+        self.0.busy.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 struct Entry {
     config: ServerConfig,
     state: State,
-    live: Option<Live>,
+    /// The connection, while there is one.
+    peer: Option<Peer<RoleClient>>,
+    catalog: Option<Catalog>,
     task: Option<JoinHandle<()>>,
     /// How many times the server has been connected; a call that lost its connection waits for
     /// this to move on.
     connections: u64,
+    activity: Arc<Activity>,
+}
+
+impl Entry {
+    fn new(config: ServerConfig, catalog: Option<Catalog>) -> Entry {
+        Entry {
+            state: resting(&config),
+            config,
+            peer: None,
+            catalog,
+            task: None,
+            connections: 0,
+            activity: Activity::new(),
+        }
+    }
+
+    /// Whether the first call into the server starts it.
+    fn on_demand(&self) -> bool {
+        self.config.lifecycle != Lifecycle::Eager
+    }
+
+    /// What agents are offered of this server right now: what a connected server said it has,
+    /// and for one that starts on demand also while it is not running.
+    fn offers(&self) -> Option<&Catalog> {
+        match self.state {
+            State::Ready => self.catalog.as_ref(),
+            State::Idle | State::Connecting if self.on_demand() => self.catalog.as_ref(),
+            _ => None,
+        }
+    }
 }
 
 pub(crate) struct Inner {
@@ -198,6 +338,16 @@ pub(crate) struct Inner {
     approvals: std::sync::OnceLock<(TrustStore, PathBuf, Vec<PathBuf>)>,
     /// Whether the user was asked about the servers that wait for approval.
     asked: AtomicBool,
+}
+
+/// What is known from earlier sessions of what `config`'s server offers. Only a server that
+/// starts on demand is offered from that; one that is kept connected is asked.
+fn known(inner: &Weak<Inner>, options: &Options, config: &ServerConfig) -> Option<Catalog> {
+    if config.lifecycle == Lifecycle::Eager {
+        return None;
+    }
+    let cached = catalog::read(options.cache_dir.as_deref()?, config)?;
+    Some(Catalog::of(inner, cached))
 }
 
 /// The state a server is in before anything connects.
@@ -231,22 +381,24 @@ fn target(config: &ServerConfig) -> String {
     }
 }
 
-/// Lists what a freshly connected (or changed) server offers. A list that cannot be fetched is
-/// logged and left empty.
+/// Lists what a freshly connected (or changed) server offers, without the tools its entry
+/// leaves out. A list that cannot be fetched is logged and left empty.
 async fn fetch(
     inner: &Weak<Inner>,
-    server: &str,
+    config: &ServerConfig,
     peer: &Peer<RoleClient>,
-    limit: Duration,
 ) -> (Vec<Arc<ProxyTool>>, Vec<Prompt>) {
+    let (server, limit) = (config.name.as_str(), config.timeout);
     let capabilities = peer.peer_info().map(|info| info.capabilities.clone());
     let mut tools = Vec::new();
     if capabilities.as_ref().is_none_or(|c| c.tools.is_some()) {
         match tokio::time::timeout(limit, peer.list_all_tools()).await {
             Ok(Ok(listed)) => {
+                let filter = config.tool_filter();
                 tools = listed
                     .iter()
-                    .map(|tool| Arc::new(ProxyTool::new(inner.clone(), server, tool)))
+                    .filter(|tool| filter.allows(&tool.name))
+                    .map(|tool| Arc::new(ProxyTool::new(inner.clone(), server, described(tool))))
                     .collect();
             }
             Ok(Err(e)) => tracing::warn!("mcp server {server}: could not list tools: {e}"),
@@ -264,8 +416,40 @@ async fn fetch(
     (tools, prompts)
 }
 
+/// Ends when the server `name` has had no call for `after`, having marked it as not started.
+/// Never ends for a server that is not stopped when idle.
+async fn idle(weak: &Weak<Inner>, name: &str, after: Option<Duration>) {
+    let Some(after) = after else {
+        return std::future::pending().await;
+    };
+    loop {
+        let Some(inner) = weak.upgrade() else { return };
+        let idle_for = {
+            // Decided with the entry locked: a call that found the server ready has counted
+            // itself in before this can run.
+            let mut servers = inner.write();
+            let Some(entry) = servers.get_mut(name) else {
+                return;
+            };
+            let idle_for = entry.activity.idle_for();
+            if idle_for >= after {
+                entry.peer = None;
+                entry.state = State::Idle;
+            }
+            idle_for
+        };
+        if idle_for >= after {
+            inner.changed.notify_waiters();
+            return;
+        }
+        drop(inner);
+        tokio::time::sleep(after - idle_for).await;
+    }
+}
+
 /// Keeps one server connected: connects, waits for the connection to end, and tries again with
-/// growing delays until it gives up.
+/// growing delays until it gives up. A server that starts on demand is not connected again when
+/// its connection ends, and is stopped when it has been idle for long enough.
 async fn supervise(weak: Weak<Inner>, name: String) {
     let mut failures = 0usize;
     loop {
@@ -280,27 +464,52 @@ async fn supervise(weak: Weak<Inner>, name: String) {
             Ok(running) => {
                 let connected = Instant::now();
                 let peer = running.peer().clone();
-                let (tools, prompts) = fetch(&weak, &name, &peer, config.timeout).await;
+                let (tools, prompts) = fetch(&weak, &config, &peer).await;
                 let instructions = peer.peer_info().and_then(|info| info.instructions.clone());
+                let catalog = Catalog {
+                    tools,
+                    prompts,
+                    instructions,
+                };
+                inner.keep(&config, &catalog);
                 inner.update(&name, |entry| {
-                    entry.live = Some(Live {
-                        peer,
-                        tools,
-                        prompts,
-                        instructions,
-                    });
+                    entry.peer = Some(peer);
+                    entry.catalog = Some(catalog);
                     entry.state = State::Ready;
                     entry.connections += 1;
+                    // The time to stop counts from now, not from the call that woke it.
+                    entry.activity.touch();
                 });
+                let idle_after = match config.lifecycle {
+                    Lifecycle::Lazy => inner.options.idle_timeout,
+                    Lifecycle::Eager | Lifecycle::LazyKeepAlive => None,
+                };
                 drop(inner);
-                let ended = running.waiting().await;
-                tracing::warn!("mcp server {name} disconnected: {ended:?}");
+                let stop = running.cancellation_token();
+                let mut ended = std::pin::pin!(running.waiting());
+                tokio::select! {
+                    ended = &mut ended => tracing::warn!("mcp server {name} disconnected: {ended:?}"),
+                    () = idle(&weak, &name, idle_after) => {
+                        tracing::info!("mcp server {name}: stopped, nothing has called it for a while");
+                        stop.cancel();
+                        let _ = ended.await;
+                        return;
+                    }
+                }
                 if connected.elapsed() >= STABLE_AFTER {
                     failures = 0;
                 }
                 let Some(inner) = weak.upgrade() else { return };
+                if config.lifecycle == Lifecycle::Lazy {
+                    // The next call starts it again.
+                    inner.update(&name, |entry| {
+                        entry.peer = None;
+                        entry.state = State::Idle;
+                    });
+                    return;
+                }
                 inner.update(&name, |entry| {
-                    entry.live = None;
+                    entry.peer = None;
                     entry.state = State::Connecting;
                 });
                 "the server keeps disconnecting".to_string()
@@ -363,10 +572,46 @@ impl Inner {
             if let Some(previous) = entry.task.take() {
                 previous.abort();
             }
-            entry.live = None;
+            entry.peer = None;
             entry.state = State::Connecting;
             entry.task = Some(tokio::spawn(supervise(me, name.to_string())));
         });
+    }
+
+    /// Starts a server that waits for its first call. Whoever calls first starts it; the others
+    /// find it connecting.
+    fn wake(self: &Arc<Self>, name: &str) {
+        let me = Arc::downgrade(self);
+        self.update(name, |entry| {
+            if entry.state == State::Idle && entry.on_demand() {
+                entry.state = State::Connecting;
+                entry.task = Some(tokio::spawn(supervise(me, name.to_string())));
+            }
+        });
+    }
+
+    /// Brings a server that may run to where it belongs once the session's servers are up:
+    /// connected, or, for one that starts on demand and whose tools are known, waiting for its
+    /// first call.
+    fn bring_up(self: &Arc<Self>, name: &str) {
+        let waits = self
+            .read()
+            .get(name)
+            .is_some_and(|entry| entry.on_demand() && entry.catalog.is_some());
+        if waits {
+            self.stop(name, State::Idle);
+        } else {
+            self.spawn(name);
+        }
+    }
+
+    /// Keeps what a server that starts on demand offers for the sessions to come.
+    fn keep(&self, config: &ServerConfig, catalog: &Catalog) {
+        if config.lifecycle != Lifecycle::Eager
+            && let Some(dir) = &self.options.cache_dir
+        {
+            catalog::write(dir, &catalog.cached(config));
+        }
     }
 
     /// Drops the connection to `name` and leaves it in `state`.
@@ -375,7 +620,7 @@ impl Inner {
             if let Some(task) = entry.task.take() {
                 task.abort();
             }
-            entry.live = None;
+            entry.peer = None;
             entry.state = state;
         });
     }
@@ -412,37 +657,47 @@ impl Inner {
             let servers = self.read();
             servers
                 .get(server)
-                .and_then(|entry| Some((entry.live.as_ref()?.peer.clone(), entry.config.timeout)))
+                .and_then(|entry| Some((entry.peer.clone()?, entry.config.clone())))
         };
-        let Some((peer, limit)) = found else { return };
-        let (tools, prompts) = fetch(&Arc::downgrade(self), server, &peer, limit).await;
+        let Some((peer, config)) = found else { return };
+        let (tools, prompts) = fetch(&Arc::downgrade(self), &config, &peer).await;
         self.update(server, |entry| {
-            if let Some(live) = &mut entry.live {
-                live.tools = tools;
-                live.prompts = prompts;
+            if entry.peer.is_some()
+                && let Some(catalog) = &mut entry.catalog
+            {
+                catalog.tools = tools;
+                catalog.prompts = prompts;
+                self.keep(&config, catalog);
             }
         });
     }
 
-    /// The connection to `server`, waiting while it is being (re)established. `after` is the
-    /// connection count a caller already saw fail.
+    /// The connection to `server`, waiting while it is being (re)established; a server that
+    /// waits for its first call is started. `after` is the connection count a caller already
+    /// saw fail. The server counts as in use until the last value returned is dropped.
     async fn ready_peer(
-        &self,
+        self: &Arc<Self>,
         server: &str,
         after: u64,
-    ) -> Result<(Peer<RoleClient>, Duration, u64), String> {
+    ) -> Result<(Peer<RoleClient>, Duration, u64, InUse), String> {
         let deadline = Instant::now() + READY_WAIT;
         loop {
-            {
+            let asleep = {
                 let servers = self.read();
                 let Some(entry) = servers.get(server) else {
                     return Err(format!("no MCP server named `{server}`"));
                 };
-                match (&entry.state, &entry.live) {
-                    (State::Ready, Some(live)) if entry.connections > after => {
-                        return Ok((live.peer.clone(), entry.config.timeout, entry.connections));
+                match (&entry.state, &entry.peer) {
+                    (State::Ready, Some(peer)) if entry.connections > after => {
+                        return Ok((
+                            peer.clone(),
+                            entry.config.timeout,
+                            entry.connections,
+                            InUse::new(&entry.activity),
+                        ));
                     }
-                    (State::Ready | State::Connecting, _) => {}
+                    (State::Ready | State::Connecting, _) => false,
+                    (State::Idle, _) if entry.on_demand() => true,
                     (State::NeedsAuth, _) => {
                         return Err(format!(
                             "MCP server `{server}` needs a login: the user can run /mcp login {server}"
@@ -450,6 +705,9 @@ impl Inner {
                     }
                     (state, _) => return Err(format!("MCP server `{server}` is {state}")),
                 }
+            };
+            if asleep {
+                self.wake(server);
             }
             if Instant::now() >= deadline {
                 return Err(format!("MCP server `{server}` is still connecting"));
@@ -459,11 +717,15 @@ impl Inner {
     }
 
     /// Runs one request against `server` within its timeout.
-    async fn request<T, F>(&self, server: &str, send: impl FnOnce(Peer<RoleClient>) -> F) -> Result<T, String>
+    async fn request<T, F>(
+        self: &Arc<Self>,
+        server: &str,
+        send: impl FnOnce(Peer<RoleClient>) -> F,
+    ) -> Result<T, String>
     where
         F: Future<Output = Result<T, ServiceError>>,
     {
-        let (peer, limit, _) = self.ready_peer(server, 0).await?;
+        let (peer, limit, _, _in_use) = self.ready_peer(server, 0).await?;
         match tokio::time::timeout(limit, send(peer)).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(e)) => Err(format!("MCP server `{server}`: {e}")),
@@ -474,7 +736,13 @@ impl Inner {
         }
     }
 
-    async fn call_tool(&self, server: &str, tool: &str, input: Value, ctx: &ToolCtx) -> ToolOutput {
+    async fn call_tool(
+        self: &Arc<Self>,
+        server: &str,
+        tool: &str,
+        input: Value,
+        ctx: &ToolCtx,
+    ) -> ToolOutput {
         let arguments: Option<JsonObject> = match input {
             Value::Object(map) => Some(map),
             Value::Null => None,
@@ -483,7 +751,7 @@ impl Inner {
         let mut seen = 0;
         // A connection found dead before the request left is replaced once.
         for attempt in 0..2 {
-            let (peer, limit, connection) = match self.ready_peer(server, seen).await {
+            let (peer, limit, connection, _in_use) = match self.ready_peer(server, seen).await {
                 Ok(ready) => ready,
                 Err(why) => return ToolOutput::error(why),
             };
@@ -559,25 +827,17 @@ impl McpManager {
         credentials: Arc<Credentials>,
         options: Options,
     ) -> Self {
-        let servers = loaded
-            .servers
-            .into_iter()
-            .map(|config| {
-                let state = resting(&config);
-                (
-                    config.name.clone(),
-                    Entry {
-                        config,
-                        state,
-                        live: None,
-                        task: None,
-                        connections: 0,
-                    },
-                )
-            })
-            .collect();
-        McpManager(Arc::new(Inner {
-            servers: RwLock::new(servers),
+        McpManager(Arc::new_cyclic(|inner| Inner {
+            servers: RwLock::new(
+                loaded
+                    .servers
+                    .into_iter()
+                    .map(|config| {
+                        let catalog = known(inner, &options, &config);
+                        (config.name.clone(), Entry::new(config, catalog))
+                    })
+                    .collect(),
+            ),
             problems: loaded.problems,
             services,
             roots,
@@ -644,7 +904,7 @@ impl McpManager {
             self.0.update(&name, |entry| entry.config.approval = approval);
             let state = self.0.config(&name).map(|config| resting(&config));
             match state {
-                Some(State::Idle) if self.0.started.load(Ordering::SeqCst) => self.0.spawn(&name),
+                Some(State::Idle) if self.0.started.load(Ordering::SeqCst) => self.0.bring_up(&name),
                 Some(state) => self.0.stop(&name, state),
                 None => {}
             }
@@ -666,9 +926,16 @@ impl McpManager {
             .iter()
             .map(|server| format!("{}: {}", server.name, server.target))
             .collect();
-        let question = "This project defines MCP servers that are new or have changed. Each one is a program \
-                        or an address the project chose. Which may start?";
-        let Ok(chosen) = ui.0.ask(question, &options, true).await else {
+        let question = Question {
+            text: "This project defines MCP servers that are new or have changed. Each one is a program \
+                   or an address the project chose. Which may start?"
+                .to_string(),
+            context: None,
+            kind: AskKind::Multiselect,
+            options: options.clone(),
+            allow_freeform: false,
+        };
+        let Ok(chosen) = ui.0.ask(&question).await else {
             return;
         };
         let decisions: Vec<(String, bool)> = waiting
@@ -691,6 +958,7 @@ impl McpManager {
     pub fn add(&self, config: ServerConfig) -> Result<(), String> {
         let name = config.name.clone();
         let state = resting(&config);
+        let catalog = known(&Arc::downgrade(&self.0), &self.0.options, &config);
         {
             let mut servers = self.0.write();
             if let Some(existing) = servers.get(&name) {
@@ -704,25 +972,17 @@ impl McpManager {
                     task.abort();
                 }
             }
-            servers.insert(
-                name.clone(),
-                Entry {
-                    config,
-                    state: state.clone(),
-                    live: None,
-                    task: None,
-                    connections: 0,
-                },
-            );
+            servers.insert(name.clone(), Entry::new(config, catalog));
         }
         if state == State::Idle && self.0.started.load(Ordering::SeqCst) {
-            self.0.spawn(&name);
+            self.0.bring_up(&name);
         }
         self.0.changed.notify_waiters();
         Ok(())
     }
 
-    /// Begins connecting every enabled server in the background. Later calls do nothing.
+    /// Begins connecting the servers that are kept connected, in the background, and those that
+    /// start on demand when nothing is known yet of what they offer. Later calls do nothing.
     pub fn start(&self) {
         if self.0.started.swap(true, Ordering::SeqCst) {
             return;
@@ -735,7 +995,7 @@ impl McpManager {
             .map(|(name, _)| name.clone())
             .collect();
         for name in names {
-            self.0.spawn(&name);
+            self.0.bring_up(&name);
         }
     }
 
@@ -770,8 +1030,8 @@ impl McpManager {
             .map(|entry| ServerStatus {
                 name: entry.config.name.clone(),
                 state: entry.state.clone(),
-                tools: entry.live.as_ref().map_or(0, |live| live.tools.len()),
-                prompts: entry.live.as_ref().map_or(0, |live| live.prompts.len()),
+                tools: entry.offers().map_or(0, |catalog| catalog.tools.len()),
+                prompts: entry.offers().map_or(0, |catalog| catalog.prompts.len()),
                 target: target(&entry.config),
                 source: entry.config.source.clone(),
             })
@@ -807,7 +1067,7 @@ impl McpManager {
         self.0.update(name, |entry| entry.config.enabled = enabled);
         // Enabling does not approve: a project's server still waits for that.
         match self.0.config(name).map(|config| resting(&config)) {
-            Some(State::Idle) => self.0.spawn(name),
+            Some(State::Idle) => self.0.bring_up(name),
             Some(state) => self.0.stop(name, state),
             None => {}
         }
@@ -830,8 +1090,8 @@ impl McpManager {
         self.0
             .read()
             .values()
-            .filter_map(|entry| entry.live.as_ref())
-            .flat_map(|live| live.tools.iter().cloned())
+            .filter_map(Entry::offers)
+            .flat_map(|catalog| catalog.tools.iter().cloned())
             .collect()
     }
 
@@ -889,11 +1149,11 @@ impl McpManager {
         hits
     }
 
-    /// The `mcp` part of the system prompt: each connected server's instructions.
+    /// The `mcp` part of the system prompt: the instructions of each server agents can use.
     pub fn instructions(&self) -> Option<String> {
         let mut out = String::new();
         for (name, entry) in self.0.read().iter() {
-            let Some(text) = entry.live.as_ref().and_then(|live| live.instructions.as_deref()) else {
+            let Some(text) = entry.offers().and_then(|catalog| catalog.instructions.as_deref()) else {
                 continue;
             };
             let text = text.trim();
@@ -907,19 +1167,20 @@ impl McpManager {
             return None;
         }
         Some(format!(
-            "# MCP servers\nInstructions from the connected servers.\n\n{}",
+            "# MCP servers\nInstructions from the servers.\n\n{}",
             out.trim_end()
         ))
     }
 
-    /// Every prompt of every connected server, as `(server, prompt)`.
+    /// Every prompt of every server agents can use, as `(server, prompt)`.
     pub fn prompts(&self) -> Vec<(String, Prompt)> {
         let servers = self.0.read();
         servers
             .iter()
-            .filter_map(|(name, entry)| Some((name, entry.live.as_ref()?)))
-            .flat_map(|(name, live)| {
-                live.prompts
+            .filter_map(|(name, entry)| Some((name, entry.offers()?)))
+            .flat_map(|(name, catalog)| {
+                catalog
+                    .prompts
                     .iter()
                     .map(move |prompt| (name.clone(), prompt.clone()))
             })
@@ -979,18 +1240,10 @@ impl McpManager {
         };
         let mut out = String::new();
         for name in &names {
-            let offers = self.0.read().get(name).and_then(|entry| {
-                Some(
-                    entry
-                        .live
-                        .as_ref()?
-                        .peer
-                        .peer_info()?
-                        .capabilities
-                        .resources
-                        .is_some(),
-                )
-            });
+            let offers =
+                self.0.read().get(name).and_then(|entry| {
+                    Some(entry.peer.as_ref()?.peer_info()?.capabilities.resources.is_some())
+                });
             if offers == Some(false) {
                 continue;
             }

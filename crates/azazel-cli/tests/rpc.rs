@@ -174,6 +174,90 @@ fn a_prompt_runs_through_an_approval_to_idle() {
 }
 
 #[test]
+fn questions_say_what_they_expect_and_an_approval_can_hold_for_the_session() {
+    let mut client = Client::start("questions.json");
+    let (_, accepted) = client.ask(1, json!({ "type": "prompt", "text": "paint" }));
+    assert_eq!(accepted["success"], true);
+    let result_of = |events: &[Value], call: &str| -> Value {
+        events
+            .iter()
+            .find(|line| line["type"] == "tool_end" && line["call_id"] == call)
+            .unwrap_or_else(|| panic!("no result of {call} in {events:?}"))["output"]
+            .clone()
+    };
+    let asked = |line: &Value| line["type"] == "ui_request" && line["kind"] == "ask";
+
+    // A choice that also takes a typed answer, with what the user needs to know.
+    let (_, choice) = client.until(asked);
+    assert_eq!(
+        choice,
+        json!({ "type": "ui_request", "request_id": choice["request_id"], "kind": "ask",
+                "question": "Which colour?", "context": "Two paints are left.", "expects": "select",
+                "options": ["red", "blue"], "multi": false, "allow_freeform": true })
+    );
+    client.ask(
+        2,
+        json!({ "type": "ui_response", "request_id": choice["request_id"], "value": "teal" }),
+    );
+
+    // Yes or no.
+    let (before, confirm) = client.until(asked);
+    let typed = result_of(&before, "c1");
+    assert_eq!(typed["content"], json!([{ "type": "text", "text": "teal" }]));
+    assert_eq!(typed["details"]["freeform"], true);
+    assert_eq!(
+        (&confirm["expects"], &confirm["options"], &confirm["question"]),
+        (&json!("confirm"), &json!([]), &json!("Paint it?"))
+    );
+    assert!(confirm.get("allow_freeform").is_none() && confirm.get("context").is_none());
+    client.ask(
+        3,
+        json!({ "type": "ui_response", "request_id": confirm["request_id"], "value": true }),
+    );
+
+    // Allowed for the session: the next write the rule covers is not asked about, and nothing
+    // is saved for the project.
+    let (before, approval) = client.until(|line| line["type"] == "approval_request");
+    assert_eq!(
+        result_of(&before, "c2")["content"],
+        json!([{ "type": "text", "text": "yes" }])
+    );
+    assert_eq!(approval["rule"], "write(notes/**)");
+    let (_, answered) = client.ask(
+        4,
+        json!({ "type": "approval_response", "request_id": approval["request_id"], "decision": "session" }),
+    );
+    assert_eq!(answered["success"], true, "{answered}");
+
+    let (before, last) = client.until(asked);
+    assert!(
+        !kinds(&before).contains(&"approval_request"),
+        "the second write was asked about: {before:?}"
+    );
+    assert_eq!(result_of(&before, "c4")["is_error"], false);
+    assert_eq!(
+        std::fs::read_to_string(client.project().join("notes/b.txt")).unwrap(),
+        "dry\n"
+    );
+    assert!(!client.project().join(".azazel/config.local.toml").exists());
+    assert_eq!(last["expects"], "text");
+
+    // Dismissed: the agent is told so, and that is not a failed call.
+    client.ask(
+        5,
+        json!({ "type": "ui_response", "request_id": last["request_id"], "value": null }),
+    );
+    let (after, _) = client.until(|line| line["type"] == "idle");
+    let declined = result_of(&after, "c5");
+    assert_eq!(
+        (&declined["is_error"], &declined["content"][0]["text"]),
+        (&json!(false), &json!("the user declined to answer"))
+    );
+    assert_eq!(declined["details"]["cancelled"], true);
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
 fn commands_change_the_session_and_mistakes_are_answered() {
     let mut client = Client::start("write_read.json");
 

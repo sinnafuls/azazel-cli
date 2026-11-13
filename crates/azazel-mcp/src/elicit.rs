@@ -137,7 +137,7 @@ mod tests {
     use std::sync::Mutex;
 
     use async_trait::async_trait;
-    use azazel_core::{ApprovalDecision, ApprovalRequest, Headless, Level};
+    use azazel_core::{ApprovalDecision, ApprovalRequest, Headless, Level, Question};
     use serde_json::json;
 
     use super::*;
@@ -170,8 +170,8 @@ mod tests {
 
     #[async_trait]
     impl UiBridge for Scripted {
-        async fn ask(&self, question: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
-            self.next(question).map(|answer| vec![answer])
+        async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
+            self.next(&question.text).map(|answer| vec![answer])
         }
         async fn confirm(&self, prompt: &str) -> Result<bool, UiError> {
             self.next(prompt).map(|answer| answer == "yes")

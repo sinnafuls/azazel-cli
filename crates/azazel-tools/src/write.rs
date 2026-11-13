@@ -9,11 +9,29 @@ use azazel_core::{FileTracker, Freshness};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::check::{Checked, Checks};
 use crate::format::Formatters;
 use crate::util::{display_path, parse_input, resolve_path, unified_diff, write_atomic};
 
 pub const NEVER_READ: &str = "read the file before overwriting it";
 pub const CHANGED: &str = "file changed since you last read it; read it again";
+
+/// Names Windows keeps for devices. A file with one of them as its stem (`aux.c`, `NUL`) cannot
+/// be opened there, so none is written anywhere: a project made on Linux is cloned on Windows.
+const RESERVED_STEMS: [&str; 22] = [
+    "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// The refusal for a path whose file name is a device name up to its first dot.
+fn reserved_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    RESERVED_STEMS
+        .iter()
+        .any(|reserved| stem.eq_ignore_ascii_case(reserved))
+        .then(|| format!("`{name}` is a reserved Windows device name; pick another file name"))
+}
 
 /// Above this size no diff is attached to the result.
 const MAX_DIFF_BYTES: usize = 1024 * 1024;
@@ -86,11 +104,29 @@ async fn format_written(
     }
 }
 
-/// `summary`, then what the formatter did.
+/// Runs the checker for `path` when checks on write are on, while the caller still holds the
+/// file's lock and after the formatter. `old` is what the file held before the write, `written`
+/// what it holds now.
+async fn check_written(ctx: &ToolCtx, path: &Path, old: Option<&str>, written: &str) -> Checked {
+    match ctx.services.get::<Checks>() {
+        Some(checks) => checks.after_write(ctx, path, old, written).await,
+        None => Checked::default(),
+    }
+}
+
+/// `summary`, then what the formatter did or why the file was not checked.
 fn with_note(summary: String, note: Option<String>) -> String {
     match note {
         Some(note) => format!("{summary}; {note}"),
         None => summary,
+    }
+}
+
+/// `text`, then the errors the file's checker found.
+fn with_checks(text: String, block: Option<String>) -> String {
+    match block {
+        Some(block) => format!("{text}\n{block}"),
+        None => text,
     }
 }
 
@@ -156,6 +192,9 @@ impl Tool for WriteTool {
             Err(error) => return error,
         };
         let path = resolve_path(&ctx.cwd, &input.path);
+        if let Some(refusal) = reserved_name(&path) {
+            return ToolOutput::error(refusal);
+        }
         let guard = self.tracker.lock(&path).await;
         if path.is_dir() {
             return ToolOutput::error(format!("{} is a directory", path.display()));
@@ -174,6 +213,7 @@ impl Tool for WriteTool {
         self.tracker
             .record_write(&ctx.agent_id, &path, input.content.as_bytes());
         let (content, formatted) = format_written(ctx, &self.tracker, &path, input.content).await;
+        let checked = check_written(ctx, &path, old.as_deref(), &content).await;
         drop(guard);
         let verb = if old.is_some() { "replaced" } else { "created" };
         let summary = format!(
@@ -181,13 +221,9 @@ impl Tool for WriteTool {
             display_path(&ctx.cwd, &path),
             content.len()
         );
-        let summary = with_note(summary, formatted);
-        ToolOutput::text(with_diagnostics(ctx, &path, summary).await).with_details(diff_details(
-            ctx,
-            &path,
-            old.as_deref().unwrap_or(""),
-            &content,
-        ))
+        let summary = with_note(with_note(summary, formatted), checked.note);
+        let text = with_checks(with_diagnostics(ctx, &path, summary).await, checked.block);
+        ToolOutput::text(text).with_details(diff_details(ctx, &path, old.as_deref().unwrap_or(""), &content))
     }
 }
 
@@ -340,6 +376,7 @@ impl Tool for EditTool {
         self.tracker
             .record_write(&ctx.agent_id, &path, updated.as_bytes());
         let (updated, formatted) = format_written(ctx, &self.tracker, &path, updated).await;
+        let checked = check_written(ctx, &path, Some(&original), &updated).await;
         let noun = if replaced == 1 {
             "replacement"
         } else {
@@ -347,9 +384,9 @@ impl Tool for EditTool {
         };
         drop(guard);
         let summary = format!("edited {} ({replaced} {noun})", display_path(&ctx.cwd, &path));
-        let summary = with_note(summary, formatted);
-        ToolOutput::text(with_diagnostics(ctx, &path, summary).await)
-            .with_details(diff_details(ctx, &path, &original, &updated))
+        let summary = with_note(with_note(summary, formatted), checked.note);
+        let text = with_checks(with_diagnostics(ctx, &path, summary).await, checked.block);
+        ToolOutput::text(text).with_details(diff_details(ctx, &path, &original, &updated))
     }
 }
 

@@ -274,6 +274,7 @@ fn convert(entry: &Value) -> Result<(RawServer, Option<String>), String> {
         timeout: None,
         oauth: None,
         enabled: disabled.then_some(false),
+        ..RawServer::default()
     };
     let unfilled = unfilled.into_inner();
     let note = (!unfilled.is_empty()).then(|| {

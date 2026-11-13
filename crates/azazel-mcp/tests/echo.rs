@@ -40,7 +40,8 @@ static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
 });
 
 struct Bench {
-    dir: tempfile::TempDir,
+    _dir: tempfile::TempDir,
+    pid_file: PathBuf,
     manager: McpManager,
     registry: Arc<Registry>,
     mock: Arc<MockProvider>,
@@ -58,15 +59,66 @@ fn lead() -> AgentInfo {
     }
 }
 
+/// How a [`Bench`] differs from a session whose echo server is connected from the start.
+struct Setup {
+    defer_threshold: usize,
+    /// Keys of the server's entry beside its command.
+    entry: serde_json::Value,
+    idle_timeout: Option<Duration>,
+    /// Where what servers offer is kept between sessions.
+    cache_dir: Option<PathBuf>,
+    /// Where the server writes its process id; a file of the session's own when `None`. Sessions
+    /// that are to share what is kept of the server need the same entry, so the same file.
+    pid_file: Option<PathBuf>,
+}
+
+impl Setup {
+    /// A server that starts on demand, as a local program does unless its entry says otherwise.
+    fn on_demand(shared: &Path) -> Setup {
+        Setup {
+            defer_threshold: 40,
+            entry: json!({}),
+            idle_timeout: None,
+            cache_dir: Some(shared.join("cache")),
+            pid_file: Some(shared.join("pid")),
+        }
+    }
+}
+
 impl Bench {
-    /// A session whose only MCP server is the echo fixture.
+    /// A session whose only MCP server is the echo fixture, connected when the session starts.
     async fn new(defer_threshold: usize) -> Bench {
+        Bench::with(Setup {
+            defer_threshold,
+            entry: json!({ "lifecycle": "eager" }),
+            idle_timeout: None,
+            cache_dir: None,
+            pid_file: None,
+        })
+        .await
+    }
+
+    async fn with(setup: Setup) -> Bench {
+        let Setup {
+            defer_threshold,
+            entry: extra,
+            idle_timeout,
+            cache_dir,
+            pid_file,
+        } = setup;
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mcp.json");
-        let entry = json!({ "mcpServers": { "echo": {
+        let pid_file = pid_file.unwrap_or_else(|| dir.path().join("pid"));
+        // Whatever an earlier session started is none of this one's.
+        let _ = std::fs::remove_file(&pid_file);
+        let mut server = json!({
             "command": FIXTURE.as_path(),
-            "env": { "MCP_ECHO_PID_FILE": dir.path().join("pid") }
-        } } });
+            "env": { "MCP_ECHO_PID_FILE": &pid_file }
+        });
+        for (key, value) in extra.as_object().unwrap() {
+            server[key] = value.clone();
+        }
+        let entry = json!({ "mcpServers": { "echo": server } });
         std::fs::write(&file, entry.to_string()).unwrap();
         let loaded = config::load(&[file], dir.path(), &|_| None);
         assert_eq!(loaded.problems, []);
@@ -88,6 +140,8 @@ impl Bench {
         let options = Options {
             startup_wait: Duration::from_secs(30),
             defer_threshold,
+            idle_timeout,
+            cache_dir,
         };
         let credentials = Arc::new(Credentials::new(dir.path().join("auth.json")));
         let manager = McpManager::new(
@@ -136,7 +190,8 @@ impl Bench {
         });
         let events = agent.subscribe();
         Bench {
-            dir,
+            _dir: dir,
+            pid_file,
             manager,
             registry,
             mock,
@@ -164,9 +219,63 @@ impl Bench {
     }
 
     fn pid(&self) -> Option<String> {
-        std::fs::read_to_string(self.dir.path().join("pid"))
+        std::fs::read_to_string(&self.pid_file)
             .ok()
             .filter(|pid| !pid.is_empty())
+    }
+}
+
+impl Bench {
+    fn state(&self) -> (State, String) {
+        let status = self.manager.status().remove(0);
+        (status.state.clone(), status.state_text())
+    }
+
+    /// Waits until the echo server is in `state`.
+    async fn until(&self, state: State) {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.state().0 != state {
+            assert!(
+                Instant::now() < deadline,
+                "the server is {:?}, not {state:?}",
+                self.state()
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    /// Runs a prompt in which the lead calls `tool` once, and returns the result.
+    async fn call(&mut self, tool: &str, input: serde_json::Value) -> String {
+        self.mock.push("a", MockStep::tools("", &[("c", tool, input)]));
+        self.mock.push("a", MockStep::text("done"));
+        self.run("go").await.remove(0)
+    }
+}
+
+/// Whether the process `pid` still runs.
+fn alive(pid: &str) -> bool {
+    if cfg!(windows) {
+        let listed = Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&listed.stdout).contains(&format!("\"{pid}\""))
+    } else {
+        Command::new("kill")
+            .args(["-0", pid])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    }
+}
+
+/// Waits until the process `pid` has ended.
+async fn gone(pid: &str) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while alive(pid) {
+        assert!(Instant::now() < deadline, "process {pid} still runs");
+        tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
 
@@ -367,4 +476,190 @@ async fn resources_prompts_and_instructions_reach_the_session() {
         "{report}"
     );
     bench.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_that_starts_on_demand_is_asked_once_and_then_started_by_its_first_call() {
+    let cache = tempfile::tempdir().unwrap();
+
+    // Nothing is known of the server yet: the first session starts it to ask what it has, and
+    // keeps the answer.
+    let mut first = Bench::with(Setup::on_demand(cache.path())).await;
+    assert_eq!(first.call("mcp__echo__echo", json!({ "text": "hi" })).await, "hi");
+    assert!(first.pid().is_some());
+    let kept = std::fs::read_to_string(cache.path().join("cache").join("echo.json")).unwrap();
+    assert!(
+        kept.contains("Returns the text it was given") && kept.contains("Echo fixture"),
+        "{kept}"
+    );
+    let started = first.pid().unwrap();
+    first.manager.shutdown();
+    gone(&started).await;
+
+    // The next session offers the tools, the prompt and the instructions from what was kept,
+    // and starts nothing.
+    let mut second = Bench::with(Setup::on_demand(cache.path())).await;
+    second.mock.push("a", MockStep::text("nothing to do"));
+    second.run("hello").await;
+    let offered = second.mock.requests_for("a");
+    let names = tool_names(&offered[0]);
+    assert!(
+        names.contains(&"mcp__echo__echo") && names.contains(&"mcp__echo__add"),
+        "{names:?}"
+    );
+    let add = second
+        .registry
+        .tools
+        .tools(&lead())
+        .into_iter()
+        .find(|tool| tool.name() == "mcp__echo__add")
+        .unwrap();
+    assert_eq!(add.access(&json!({})), azazel_agent::Access::Read);
+    assert_eq!(
+        second.state(),
+        (State::Idle, "not started (cached 2 tools)".to_string())
+    );
+    let system = second.registry.prompt.render(&lead()).await;
+    assert!(
+        system
+            .iter()
+            .any(|part| part.text.contains("## echo\nEcho fixture"))
+    );
+    let greet = second.registry.command("mcp:echo:greet").unwrap();
+    assert_eq!(second.pid(), None, "nothing has called the server yet");
+
+    // The first call starts it; the session goes on with it connected.
+    assert_eq!(
+        second.call("mcp__echo__add", json!({ "a": 2, "b": 40 })).await,
+        "42"
+    );
+    assert!(second.pid().is_some());
+    assert_eq!(second.state().0, State::Ready);
+    second.manager.shutdown();
+
+    // A prompt of a server that is not running starts it as a call does.
+    let third = Bench::with(Setup::on_demand(cache.path())).await;
+    assert_eq!(third.pid(), None);
+    let greet_again = third.registry.command("mcp:echo:greet").unwrap();
+    assert_eq!(greet_again.argument_hint, greet.argument_hint);
+    assert_eq!(
+        greet_again.handler.run("Ada", &third.registry.bus.ctx()).await,
+        CommandOutcome::Prompt {
+            text: "Say hello to Ada.".into(),
+            model: None
+        }
+    );
+    assert!(third.pid().is_some());
+    third.manager.shutdown();
+
+    // An entry that changed is another server for all the cache knows: it is asked again.
+    let mut changed = Setup::on_demand(cache.path());
+    changed.entry = json!({ "timeout": 30 });
+    let changed = Bench::with(changed).await;
+    changed.until(State::Ready).await;
+    assert!(changed.pid().is_some());
+    changed.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn tools_of_a_server_that_is_not_running_are_found_through_tool_search() {
+    let cache = tempfile::tempdir().unwrap();
+    let first = Bench::with(Setup::on_demand(cache.path())).await;
+    first.until(State::Ready).await;
+    first.manager.shutdown();
+
+    let mut setup = Setup::on_demand(cache.path());
+    setup.defer_threshold = 1;
+    let mut bench = Bench::with(setup).await;
+    let found = bench
+        .call("tool_search", json!({ "query": "sum two integers" }))
+        .await;
+    assert!(
+        found.starts_with("## mcp__echo__add\nAdds two integers\n"),
+        "{found}"
+    );
+    assert_eq!(bench.pid(), None, "searching starts nothing");
+    assert_eq!(bench.call("mcp__echo__add", json!({ "a": 1, "b": 2 })).await, "3");
+    assert!(bench.pid().is_some());
+    bench.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_started_on_demand_is_stopped_when_idle_and_started_again_by_the_next_call() {
+    let cache = tempfile::tempdir().unwrap();
+    let mut setup = Setup::on_demand(cache.path());
+    setup.idle_timeout = Some(Duration::from_millis(300));
+    let mut bench = Bench::with(setup).await;
+    assert_eq!(
+        bench.call("mcp__echo__echo", json!({ "text": "one" })).await,
+        "one"
+    );
+    let first = bench.pid().unwrap();
+
+    bench.until(State::Idle).await;
+    gone(&first).await;
+    assert_eq!(bench.state().1, "not started (cached 2 tools)");
+
+    assert_eq!(
+        bench.call("mcp__echo__echo", json!({ "text": "two" })).await,
+        "two"
+    );
+    let second = bench.pid().unwrap();
+    assert_ne!(second, first);
+    bench.until(State::Idle).await;
+    gone(&second).await;
+    bench.manager.shutdown();
+
+    // One that is kept alive once started stays, however long nothing calls it.
+    let mut setup = Setup::on_demand(cache.path());
+    setup.entry = json!({ "lifecycle": "lazy-keep-alive" });
+    setup.idle_timeout = Some(Duration::from_millis(100));
+    let mut kept = Bench::with(setup).await;
+    assert_eq!(
+        kept.call("mcp__echo__echo", json!({ "text": "three" })).await,
+        "three"
+    );
+    let pid = kept.pid().unwrap();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert_eq!(kept.state().0, State::Ready);
+    assert!(alive(&pid));
+    kept.manager.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_chooses_which_of_its_servers_tools_are_offered() {
+    let cache = tempfile::tempdir().unwrap();
+    for (entry, expected) in [
+        (json!({ "excludeTools": ["a*"] }), vec!["mcp__echo__echo"]),
+        (
+            json!({ "includeTools": ["add", "nothing"] }),
+            vec!["mcp__echo__add"],
+        ),
+        (
+            json!({ "includeTools": ["*"], "excludeTools": ["ech?"], "lifecycle": "eager" }),
+            vec!["mcp__echo__add"],
+        ),
+    ] {
+        let mut setup = Setup::on_demand(cache.path());
+        setup.entry = entry.clone();
+        let mut bench = Bench::with(setup).await;
+        bench.mock.push("a", MockStep::text("nothing to do"));
+        bench.run("hello").await;
+        let requests = bench.mock.requests_for("a");
+        let offered: Vec<&str> = tool_names(&requests[0])
+            .into_iter()
+            .filter(|name| name.starts_with("mcp__"))
+            .collect();
+        assert_eq!(offered, expected, "{entry}");
+        assert_eq!(bench.manager.status()[0].tools, 1, "{entry}");
+        // What is left out cannot be called either.
+        let hidden = if expected[0].ends_with("add") {
+            "mcp__echo__echo"
+        } else {
+            "mcp__echo__add"
+        };
+        let refused = bench.call(hidden, json!({ "text": "x", "a": 1, "b": 1 })).await;
+        assert!(refused.contains(hidden), "{refused}");
+        bench.manager.shutdown();
+    }
 }

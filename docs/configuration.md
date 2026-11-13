@@ -140,10 +140,10 @@ thinking = "low"
 | | `format_on_write` | `false` | Run the file's formatter after `write` and `edit`; see [tools](tools.md#format-on-write) |
 | | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"` |
 | | `check_on_write` | `true` | Run the file's checkers (linters) after `write` and `edit`, when they are installed; see [tools](tools.md#checks-on-write) |
-| | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path |
-| | `check_report` | `"delta"` | What the agent is told about findings when it stops: `delta` (lines it changed), `all` or `off` |
+| | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
+| | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off` |
-| `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed |
+| `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
@@ -174,7 +174,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
 | | `defer_threshold` | `40` | Above this many MCP tools, they are found through `tool_search` instead |
-| | `idle_timeout_secs` | `600` | A server started on demand stops after this many seconds without a call |
+| | `idle_timeout_secs` | `600` | A server started on demand (`lifecycle: lazy` in its entry) stops after this many seconds without a call; `0` never stops it. See [mcp](mcp.md#when-servers-start) |
 | `[media]` | `output_dir` | `"assets/generated"` | Where generated files go; see [media and sprites](media-and-sprites.md) |
 | `[media.models]` | `image`, `video`, `model3d`, `audio` | `""` | Model per kind, as `<backend>:<model id>` |
 | `[lsp.servers.<name>]` | `command`, `extensions` | required | Language server program and the file extensions it handles; see [LSP](lsp.md) |
@@ -222,6 +222,9 @@ back. A project needs a trust decision when it has any of:
 - one of the gated settings in `.azazel/config.toml` or `.azazel/config.local.toml`
 - `.azazel/models.yml`
 - a project skill with `hooks` in its frontmatter
+- a `Cargo.toml`, an eslint config file or a `go.mod` at its root, when checks on write are on and clippy, eslint
+  or go is installed: checking a file with them runs the project's build scripts, macros or lint configuration;
+  see [tools](tools.md#checkers-that-run-the-projects-code)
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
@@ -238,6 +241,7 @@ In an untrusted project:
 - gated settings in the two project config files are dropped; everything else in them still applies
 - the project's `models.yml` is not read
 - project extensions, project MCP servers and skill hooks are not loaded
+- the checkers that run the project's code (clippy, eslint, go vet) are off; the others still check what is written
 - API keys in the project's `.env` are not read
 - `` !`command` `` lines in custom commands are left as text
 - context files, rule files, skills, agent definitions and custom commands still load

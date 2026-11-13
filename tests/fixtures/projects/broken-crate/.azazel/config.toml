@@ -2,3 +2,7 @@
 [roles]
 smol = ["mock/scout"]
 verify = ["mock/verifier"]
+
+# The goal's own check builds the crate; a second build after each edit would only race it.
+[tools]
+check_on_write = false

@@ -113,6 +113,20 @@ fn a_server_is_added_listed_used_by_an_agent_and_removed() {
     );
     assert_eq!(result["output"]["is_error"], false);
 
+    // What the server has is known now, so listing it starts nothing and says so.
+    let listed = sandbox.azazel().args(["mcp", "list"]).output().unwrap();
+    assert!(
+        stdout(&listed).starts_with("echo  not started (cached 2 tools)\n"),
+        "{}",
+        stdout(&listed)
+    );
+    let doctor = sandbox.azazel().arg("doctor").output().unwrap();
+    assert!(
+        stdout(&doctor).contains("(enabled, starts on first use)"),
+        "{}",
+        stdout(&doctor)
+    );
+
     let removed = sandbox.azazel().args(["mcp", "remove", "echo"]).output().unwrap();
     assert!(
         stdout(&removed).starts_with("removed `echo` from "),

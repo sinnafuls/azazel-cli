@@ -367,7 +367,7 @@ mod tests {
         assert!(
             Action::Approval {
                 reply,
-                has_rule: false
+                rows: Vec::new()
             }
             .asked_by_agent()
         );

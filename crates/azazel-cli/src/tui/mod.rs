@@ -38,7 +38,7 @@ use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::{
-    ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
+    ApprovalDecision, AskKind, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
@@ -68,7 +68,7 @@ use bridge::UiRequest;
 pub(crate) use input::Queue;
 #[cfg(feature = "test-support")]
 pub(crate) use input::queue_from_env;
-use overlay::{Action, Outcome, Overlay, ask_items};
+use overlay::{Action, ApprovalRow, Outcome, Overlay, approval_rows, ask_items};
 #[cfg(test)]
 pub(crate) use remote::agent_event;
 pub(crate) use remote::{Place, Remote};
@@ -1268,7 +1268,7 @@ impl Tui {
                 self.announce(*level, text.clone());
                 None
             }
-            UiRequest::Ask { question, .. } => Some(question.clone()),
+            UiRequest::Ask { question, .. } => Some(question.text.clone()),
             UiRequest::Confirm { prompt, .. }
             | UiRequest::Select { prompt, .. }
             | UiRequest::Input { prompt, .. } => {
@@ -1291,39 +1291,46 @@ impl Tui {
                 Level::Warn => self.warn(&text),
                 Level::Error => self.fail(&text),
             },
-            UiRequest::Ask {
-                question,
-                options,
-                reply,
-                ..
-            } if options.is_empty() => {
-                self.overlay = Some(Overlay::input(
-                    "The agent asks",
-                    vec![question],
-                    Action::AskFree { reply },
-                ));
-            }
-            UiRequest::Ask {
-                question,
-                options,
-                multi,
-                reply,
-            } => {
-                let picked = vec![false; options.len()];
-                let items = ask_items(&options, &picked, multi);
-                let action = Action::Ask {
-                    reply,
-                    options,
-                    multi,
-                    picked,
-                };
-                self.overlay = Some(Overlay::select(
-                    "The agent asks",
-                    vec![question],
-                    items,
-                    false,
-                    action,
-                ));
+            UiRequest::Ask { question, reply } => {
+                // What the user needs to know comes first, then the question itself.
+                let mut body: Vec<String> = question
+                    .context
+                    .iter()
+                    .flat_map(|context| context.lines().map(str::to_string).chain([String::new()]))
+                    .collect();
+                body.push(question.text.clone());
+                self.overlay = Some(match question.kind {
+                    AskKind::Text => Overlay::input("The agent asks", body, Action::AskFree { reply }),
+                    AskKind::Confirm => {
+                        let action = Action::Ask {
+                            reply,
+                            options: vec!["yes".to_string(), "no".to_string()],
+                            multi: false,
+                            picked: Vec::new(),
+                            other: None,
+                        };
+                        Overlay::select("The agent asks", body, pick(&["Yes", "No"]), false, action)
+                    }
+                    AskKind::Select | AskKind::Multiselect => {
+                        let multi = question.kind == AskKind::Multiselect;
+                        let picked = vec![false; question.options.len()];
+                        let mut items = ask_items(&question.options, &picked, multi);
+                        let other = (question.allow_freeform && !multi).then_some(question.text);
+                        if other.is_some() {
+                            // "Other…", drawn in the symbols in use.
+                            let label = format!("Other{}", self.theme.glyph(Glyph::Ellipsis));
+                            items.push(SelectItem::new(label, "type your own answer"));
+                        }
+                        let action = Action::Ask {
+                            reply,
+                            options: question.options,
+                            multi,
+                            picked,
+                            other,
+                        };
+                        Overlay::select("The agent asks", body, items, false, action)
+                    }
+                });
             }
             UiRequest::Confirm { prompt, reply } => {
                 let items = pick(&["Yes", "No"]);
@@ -1369,23 +1376,12 @@ impl Tui {
             }
             UiRequest::Approval { request, reply } => {
                 let body = overlay::approval_body(&request.subjects, &request.input);
-                let mut items = vec![SelectItem::new("Allow once", "")];
-                if let Some(rule) = &request.rule {
-                    items.push(SelectItem::new(
-                        format!("Always allow {rule}"),
-                        "saved for this project",
-                    ));
-                }
-                items.push(SelectItem::new("Deny", ""));
-                items.push(SelectItem::new("Deny and say what to do instead", ""));
+                let (items, rows) = approval_rows(request.rule.as_deref(), request.destructive);
                 let title = format!("{} wants to use {}", request.agent.id, request.tool);
                 // A stray Enter must not approve a command that destroys work: start on "Deny".
-                let deny = if request.rule.is_some() { 2 } else { 1 };
-                let start = if request.destructive { deny } else { 0 };
-                let action = Action::Approval {
-                    reply,
-                    has_rule: request.rule.is_some(),
-                };
+                let deny = rows.iter().position(|row| *row == ApprovalRow::Deny);
+                let start = deny.filter(|_| request.destructive).unwrap_or(0);
+                let action = Action::Approval { reply, rows };
                 // The note stands out under the subjects; a call that destroys work has the
                 // whole box in the warning colour.
                 self.overlay = Some(
@@ -1813,9 +1809,23 @@ impl Tui {
             Action::AskFree { reply } => drop(reply.send(Ok(vec![typed]))),
             Action::Ask {
                 reply,
+                other: Some(question),
+                options,
+                ..
+            } if choice == options.len() => {
+                // "Other…": the answer is typed instead.
+                self.overlay = Some(Overlay::input(
+                    "The agent asks",
+                    vec![question],
+                    Action::AskFree { reply },
+                ));
+            }
+            Action::Ask {
+                reply,
                 options,
                 multi,
                 picked,
+                ..
             } => {
                 let chosen = if multi {
                     options
@@ -1832,25 +1842,18 @@ impl Tui {
             Action::Confirm { reply } => drop(reply.send(Ok(choice == 0))),
             Action::UiSelect { reply } => drop(reply.send(Ok(choice))),
             Action::UiInput { reply } => drop(reply.send(Ok(typed))),
-            Action::Approval { reply, has_rule } => {
-                // Rows: allow once, [always], deny, deny with feedback.
-                let row = if has_rule {
-                    choice
-                } else if choice == 0 {
-                    0
-                } else {
-                    choice + 1
-                };
-                match row {
-                    0 => drop(reply.send(Some(ApprovalDecision::AllowOnce))),
-                    1 => drop(reply.send(Some(ApprovalDecision::Always))),
-                    2 => drop(reply.send(Some(ApprovalDecision::Deny { feedback: None }))),
-                    _ => {
-                        let body = vec!["Tell the agent what to do instead.".to_string()];
-                        self.overlay = Some(Overlay::input("Deny", body, Action::DenyFeedback { reply }));
-                    }
+            Action::Approval { reply, rows } => match rows.get(choice) {
+                Some(ApprovalRow::Once) => drop(reply.send(Some(ApprovalDecision::AllowOnce))),
+                Some(ApprovalRow::Session) => drop(reply.send(Some(ApprovalDecision::AllowSession))),
+                Some(ApprovalRow::Always) => drop(reply.send(Some(ApprovalDecision::Always))),
+                Some(ApprovalRow::Deny) | None => {
+                    drop(reply.send(Some(ApprovalDecision::Deny { feedback: None })))
                 }
-            }
+                Some(ApprovalRow::DenyWhy) => {
+                    let body = vec!["Tell the agent what to do instead.".to_string()];
+                    self.overlay = Some(Overlay::input("Deny", body, Action::DenyFeedback { reply }));
+                }
+            },
             Action::DenyFeedback { reply } => drop(reply.send(Some(ApprovalDecision::Deny {
                 feedback: Some(typed).filter(|t| !t.trim().is_empty()),
             }))),

@@ -33,7 +33,13 @@ An entry in a later file replaces the whole entry of the same name. Each file ho
       "timeout": 60,
       "oauth": { "clientId": "", "scope": "", "callbackPort": 0 }
     },
-    "legacy": { "type": "sse", "url": "https://example.com/sse", "enabled": false }
+    "legacy": { "type": "sse", "url": "https://example.com/sse", "enabled": false },
+    "github": {
+      "command": "github-mcp-server",
+      "lifecycle": "lazy-keep-alive",
+      "includeTools": ["get_*", "list_*", "search_*"],
+      "excludeTools": ["get_secret*"]
+    }
   }
 }
 ```
@@ -49,6 +55,9 @@ An entry in a later file replaces the whole entry of the same name. Each file ho
 | `timeout` | all | Seconds one request may take. Default 60 |
 | `oauth` | http, sse | `clientId` (empty: register a client dynamically), `scope` (space separated), `callbackPort` (0: any free port) |
 | `enabled` | all | `false` keeps the entry but does not start it. Default true |
+| `lifecycle` | all | When the server starts: `eager`, `lazy` or `lazy-keep-alive`; see [when servers start](#when-servers-start). Default `lazy` for `stdio`, `eager` for `http` and `sse` |
+| `includeTools` | all | Globs on the server's own tool names (`get_*`). With any, only matching tools are offered |
+| `excludeTools` | all | Globs on the server's own tool names. Matching tools are not offered, whatever `includeTools` says |
 
 Keys Azazel does not know are ignored, so a file shared with other MCP clients loads.
 
@@ -64,12 +73,24 @@ Keys Azazel does not know are ignored, so a file shared with other MCP clients l
 | `http` | Streamable HTTP to `url` |
 | `sse` | Tries streamable HTTP first; when the server refuses it, falls back to the legacy SSE transport |
 
-Servers start connecting in the background when a session starts. The first request of the session waits at most `startup_wait_ms` for them; servers that come up later add their tools to a later request. A server that fails or disconnects is retried after 1, 2, 4, 8 and 16 seconds and then marked `failed` (a connection that lasted 30 seconds starts the count over). States shown by the tools below: `ready`, `connecting`, `not started`, `disabled`, `waiting for approval`, `rejected`, `needs login`, `failed: <why>`.
+### When servers start
+
+| `lifecycle` | Starts | Stops |
+|---|---|---|
+| `eager` | When the session starts, in the background | When the session ends |
+| `lazy` | With the first call into it: a tool call, a prompt, a resource read | After `mcp.idle_timeout_secs` (default 600) without a call; the next call starts it again. `0` never stops it |
+| `lazy-keep-alive` | With the first call into it | When the session ends |
+
+A local program (`stdio`) is `lazy` unless its entry says otherwise, so a session with ten configured servers starts none of them until an agent uses one. A remote server (`http`, `sse`) is `eager`: a connection costs nothing to keep.
+
+A server that is not running can still be offered because azazel keeps what each `lazy` server said it has (tools with their schemas, prompts, instructions) in `~/.azazel/cache/mcp/<server>.json`. From that file the tools are listed and found by `tool_search`, the prompts are slash commands and the instructions are in the system prompt, all without starting anything. The file holds for one version of the entry: a server whose entry changed, or that has no file yet, is started once when the session starts, asked, and from then on treated as its lifecycle says. Every connection refreshes the file.
+
+Eager servers start connecting in the background when a session starts. The first request of the session waits at most `startup_wait_ms` for them; servers that come up later add their tools to a later request. A server that fails or disconnects is retried after 1, 2, 4, 8 and 16 seconds and then marked `failed` (a connection that lasted 30 seconds starts the count over). A `lazy` server whose connection ends is not retried; the next call starts it. States shown by the tools below: `ready`, `connecting`, `not started`, `not started (cached N tools)` for a server that waits for its first call, `disabled`, `waiting for approval`, `rejected`, `needs login`, `failed: <why>`.
 
 ## Managing servers
 
 ```bash
-azazel mcp list                                   # every server and whether it connects
+azazel mcp list                                   # every server and its state
 azazel mcp add fs -- npx -y @modelcontextprotocol/server-filesystem .
 azazel mcp add docs --url https://example.com/mcp --header 'Authorization=Bearer ${DOCS_TOKEN}'
 azazel mcp add fs --project -- npx -y some-server # write to <project>/.azazel/mcp.json
@@ -83,7 +104,7 @@ azazel mcp serve                                  # be an MCP server for another
 
 | Command | Does |
 |---|---|
-| `azazel mcp list` | Gives servers up to 10 seconds to connect, then prints each one's state, tool and prompt counts, command line or URL, and the file it comes from |
+| `azazel mcp list` | Gives the servers it starts up to 10 seconds to connect, then prints each one's state, tool and prompt counts, command line or URL, and the file it comes from. It starts what a session would start: a `lazy` server whose tools are known is listed as `not started (cached N tools)`; `"lifecycle": "eager"` in its entry, or `/mcp reconnect <server>` in a session, connects it to see that it works |
 | `azazel mcp add <name> [--project] -- <command> [args...]` | Adds a stdio server to `~/.azazel/mcp.json`, or with `--project` to `<project>/.azazel/mcp.json` |
 | `azazel mcp add <name> [--project] --url <url> [--header NAME=VALUE]...` | Adds an HTTP server |
 | `azazel mcp remove <name>` | Removes the entry from the first of `<project>/.azazel/mcp.json`, `<project>/.mcp.json`, `~/.azazel/mcp.json` that has it |
@@ -119,14 +140,15 @@ Each server tool becomes a tool named `mcp__<server>__<tool>`; characters outsid
 - Progress notifications show up as live output of the tool call. Aborting the call sends the server a cancellation.
 - When a server announces that its tool or prompt list changed, the lists are fetched again.
 - A server's `instructions` are added to the system prompt, up to 2000 characters per server.
+- `includeTools` and `excludeTools` in the server's entry choose which of its tools exist for agents at all. A tool that is left out is not listed, not found by `tool_search` and cannot be called. The globs match the server's own tool name (`get_issue`), not `mcp__<server>__get_issue`.
 
 ### Many tools: `tool_search`
 
-When connected servers offer more tools than `defer_threshold` (default 40), MCP tools are no longer listed in every request. Agents get `tool_search { query, limit? }` instead: it ranks all MCP tools against the query (BM25 over names and descriptions), returns each hit with its description and input schema, and makes the hits callable from the agent's next step for the rest of the session.
+When the servers offer more tools than `defer_threshold` (default 40), counting those of servers that wait for their first call, MCP tools are no longer listed in every request. Agents get `tool_search { query, limit? }` instead: it ranks all MCP tools against the query (BM25 over names and descriptions), returns each hit with its description and input schema, and makes the hits callable from the agent's next step for the rest of the session.
 
 ## Resources and prompts
 
-- `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`.
+- `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`. Without `server` it asks the servers that are connected; naming a `lazy` server that is not running starts it, as reading one of its resources does.
 - The `read` tool accepts those addresses: `read mcp://docs/file:///guide.md`. Text and images are returned; other binary content is saved as an artifact.
 - Each server prompt is a slash command `/mcp:<server>:<prompt>`. Arguments are filled by position, or by name as `key=value`; quotes group words. The prompt's text is sent to the lead as your message.
 
@@ -160,8 +182,9 @@ Servers can ask the client for things. Azazel answers these requests:
 
 ```toml
 [mcp]
-startup_wait_ms = 250   # how long the first request waits for servers to connect
-defer_threshold = 40    # above this many MCP tools, use tool_search
+startup_wait_ms = 250     # how long the first request waits for servers to connect
+defer_threshold = 40      # above this many MCP tools, use tool_search
+idle_timeout_secs = 600   # a lazy server stops after this long without a call; 0 never stops it
 ```
 
 ## Trust

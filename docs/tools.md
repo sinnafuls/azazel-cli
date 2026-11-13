@@ -1,6 +1,6 @@
 # Tools
 
-Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the freshness rule for edits, format on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
+Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the freshness rule for edits, format on write, checks on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
 
 Every call goes through the permission engine first; see [permissions](permissions.md). Each tool declares what a call touches (`read`, `write`, `exec` or `net`), and the permission mode decides from that whether you are asked. When all the calls in one assistant message are read-only they run at the same time; otherwise they run one after another in order.
 
@@ -26,7 +26,7 @@ Fields marked `?` are optional.
 
 Freshness rule for `write` and `edit`: an agent may only overwrite a file it has read (or written) and that has not changed since. Otherwise the call fails with `read the file before overwriting it` or `file changed since you last read it; read it again`. The check compares content, not timestamps. Files you attach with `@path` count as read. When one agent writes a file another agent has read, the other agent is told to read it again before editing.
 
-`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md).
+`edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. `write` refuses a file name whose stem is a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`, so `aux.c` and `NUL` too) with `` `aux.c` is a reserved Windows device name; pick another file name ``, on every system: such a file cannot be opened on Windows, where the project may be cloned. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md). When a checker covers it, so are the checker's errors; see [checks on write](#checks-on-write).
 
 ### Format on write
 
@@ -55,6 +55,100 @@ The command is run directly, without a shell. The file's path is appended, or pu
 | `c`, `h`, `cc`, `cpp`, `cxx`, `hpp`, `hh` | `clang-format -i` |
 
 Both settings name programs to run, so a project's config can set them only when the project is trusted.
+
+### Checks on write
+
+After a successful `write` or `edit`, and after the formatter, the checker (linter) for the file's kind runs on it. This is on by default (`[tools] check_on_write = true`) and does nothing for a kind of file whose checker is not installed. The errors it finds are appended to the tool result, at most 10 of them, in the shape of a language server's diagnostics:
+
+```
+edited src/config.rs (1 replacement); formatted with rustfmt
+checks:
+src/config.rs:42:17 error mismatched types [E0308] [clippy]
+… 2 more errors
+```
+
+Warnings and notes are not in the result; they are kept for the report the lead gets when it stops (below). What a checker says about other files is dropped. Each line ends with the checker's name, after the code the checker gave the finding when it has one.
+
+These checkers are built in. Each is used only when its program is on `PATH`. Three of them run code of the project in order to check it, so they are used only in a project you trust (below):
+
+| Files | Checker | Command |
+|---|---|---|
+| `rs` | clippy (trusted projects) | `cargo clippy -p <package> --message-format=short`, run in the directory of the nearest `Cargo.toml` that names a package; `--all-targets` is added for a file under `tests/`, `benches/` or `examples/`. A file that belongs to no package is not checked |
+| `py`, `pyi` | ruff | `ruff check --output-format concise --no-fix <file>` |
+| `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `mts`, `cts` | eslint (trusted projects), else oxlint | `eslint -f json <file>` when an eslint config file (`eslint.config.*`, `.eslintrc*`) is beside the file or above it inside the project; otherwise `oxlint -f unix <file>` |
+| `sh`, `bash` | shellcheck | `shellcheck -f gcc <file>` |
+| `go` | go vet (trusted projects) | `go vet .` in the file's directory |
+| `yml`, `yaml` under `.github/workflows` | actionlint | `actionlint -oneline <file>` |
+| `Dockerfile`, `Dockerfile.*`, `*.dockerfile` | hadolint | `hadolint --no-color <file>` |
+
+`[tools.check]` names your own checker for an extension. It replaces the built-in one, and an empty command turns the check off for that extension:
+
+```toml
+[tools.check]
+py = "pylint --output-format=parseable"
+sql = "sqlfluff lint {file} --format github-annotation-native"
+rs = ""                      # no clippy after edits
+dockerfile = "docker-lint"   # the key for Dockerfiles
+```
+
+The command is run directly, without a shell, in the agent's working directory. The file's path is appended, or put where `{file}` stands. Its output is read line by line, from both streams, for `file:line:column: severity: message` (the column and the severity may be missing; a line without a severity is a warning; `error`, `warning` and `note`, `info`, `style`, `help` are understood). An exit code other than 0 is expected when something was found.
+
+Limits, none of which ever fails the write:
+
+- A write waits 5 seconds for its checker. One that takes longer goes on in the background, and the result says so: `; clippy is still running; what it finds joins the report when you stop`. When the lead stops, the report waits for it, and for the files that waited behind it, for two minutes at most. A checker may run for 60 seconds in all; then it is ended with everything it started, and the file is named in the report as not checked.
+- One run of a checker for a kind of file goes on in the background per directory it runs in (per package for clippy). A file written there meanwhile waits behind it, without making its write wait: `; clippy is still checking an earlier write; what it finds here joins the report when you stop`. When the run is done, the files that waited are checked, with one run for all that share a command line, so one clippy run serves every file of a package. A file written several times while it waited is checked once.
+- Your next prompt ends the checks that are still running. With `check_report = "off"` nothing would show what a background run finds, so a checker is ended after the 5 seconds and the result says `; clippy did not finish within 5 s`.
+- A checker that exits with an error and reports nothing adds `; ruff failed: <its first line>`. A checker named in `[tools.check]` that is not installed adds ``; checker `pylint` was not found``.
+- At most 3 checkers run at the same time over all agents. Files larger than 1 MB are not checked.
+
+`cargo clippy` builds the package, so on a large crate, and the first time on any, it takes longer than a write waits. Its findings then come with the report at the end of the turn instead of with the write.
+
+#### Checkers that run the project's code
+
+To check a file, `cargo clippy` builds and runs the package's build scripts and procedural macros, `eslint` loads the project's configuration file, which is a program, and `go vet` builds the package (with cgo, a C compiler too). That is the project's code running without a tool call you could have refused, so these three are off in a project that is not trusted; for scripts, oxlint is used in the place of eslint. ruff, oxlint, shellcheck, actionlint and hadolint only read the file and run everywhere. A checker you name in your own `[tools.check]` is yours to vouch for and runs everywhere too.
+
+So that a plain Rust, JavaScript or Go project gets its checker, the project counts as having something to trust when checks on write are on, the checker is installed, `[tools.check]` does not replace it, and the project root has a `Cargo.toml` (clippy), an eslint config file (eslint) or a `go.mod` (go vet). The interactive UI then asks once, as it does for hooks and MCP servers; see [trust](configuration.md#trust). Print mode, RPC mode and the subcommands do not ask: there an undecided project gets these checkers only with `--trust`.
+
+#### The report when the lead stops
+
+When the lead is about to stop, azazel first waits for the checks still running in the background (the transcript says `checks: waiting for a checker that is still running`). If the checkers found something in the files written since your last prompt (by the lead or by the agents it started), the lead is then told once, as a user message, and takes one more round:
+
+```
+<checks>
+The checkers found 1 error, 3 warnings in 2 files written in this turn:
+src/config.rs: 1 error, 1 warning
+tools/release.py: 2 warnings
+On the lines changed in this turn:
+src/config.rs:42:17 error mismatched types [E0308] [clippy]
+tools/release.py:9:5 warning F841 Local variable `tag` is assigned to but never used [ruff]
+1 file was not checked, so nothing found there does not mean it is clean: web/app.ts (oxlint did not finish within 60 s)
+</checks>
+This is an automatic report, not a message from the user. Fix what your changes caused, say in a line what you leave and why, then finish.
+```
+
+The transcript shows one muted line, such as `checks: 1 error, 3 warnings in 2 files, 2 on changed lines; the agent was told`. `[tools] check_report` chooses what is listed:
+
+| Value | Listed |
+|---|---|
+| `"delta"` (default) | Findings on lines the turn changed, and on the two lines that meet where it removed some. Lines are followed through later edits of the same file, and a new file is changed everywhere. The counts are of everything found in the written files |
+| `"all"` | Every finding in the written files |
+| `"off"` | No report; errors still join the result of each write |
+
+There is a report only when there is something to list: a turn whose files have findings only on lines it left alone, or only files that were not checked, ends without one. Each file's findings are those of its last write, so what the agent fixed during the turn is not reported. At most 30 findings are listed. The report comes after the [advisor](team.md#advisor)'s review and before a [goal](goals.md)'s own check and your `stop` [hooks](hooks.md).
+
+#### Secret scan
+
+With `[tools.scan] secrets = true` (the default), `gitleaks` on `PATH` and a trusted project (`--trust`, or a project you answered the trust question for), azazel runs `gitleaks detect --no-banner --report-format json` over the project once per session, in the background, starting at your first prompt. What it finds joins the next report the lead gets when it stops, or makes one:
+
+```
+gitleaks found 2 secrets in the project (file, line and the rule that matched):
+config/dev.env:3 generic-api-key
+deploy/keys.txt:12 aws-access-token
+```
+
+The secret itself is never read from the scan's output, shown or sent to a model. A project that is not a git repository is scanned as files (`--no-git`). At most 20 places are listed; the scan gets 2 minutes and ends with the session. `check_report = "off"` turns the scan off too, since the report is the only place its findings go.
+
+`azazel doctor` lists the built-in checkers that are installed (`checks on write: clippy (rs), shellcheck (sh, bash)`), names each one that is off for lack of trust (`checks on write: clippy (rs): off, the project is not trusted`), warns about a `[tools.check]` program that is missing, and says whether secrets are scanned for and, if not, why. `[tools.check]` and `[tools.scan]` name or start programs, so a project's config can set them only when the project is trusted.
 
 ## Search
 
@@ -108,8 +202,29 @@ The tool's description lists the callable tools with their arguments, within abo
 | Tool | Input | Behaviour |
 |---|---|---|
 | `todo` | `items: [{text, status}]` | Replaces the agent's task list. `status` is `pending`, `in_progress` or `done`; at most one item may be `in_progress` |
-| `ask_user` | `question`, `options?`, `multi?` | Asks you a question and waits. Without `options` you type a free answer. Without an interactive user it fails with `no interactive user` |
+| `ask_user` | `question`, `type?`, `context?`, `options?`, `multi?`, `allow_freeform?` | Asks you a question and waits; see below |
 | `plan_submit` | `path` | In plan mode: submits a plan file under `.azazel/plans/` for your approval. See [permissions](permissions.md) |
+
+### The task list
+
+The list is shown above the input while work on it remains, and `/todo` shows or changes it. Two things keep an agent on its plan:
+
+- **It is durable.** The lead's list is rebuilt from the session whenever one is opened: after `-c`, `--session`, `--fork`, `/resume`, `/tree`, `/rewind` and `/fork` it is what the last `todo` call that succeeded on that branch set (or what you changed with `/todo` after it). A compacted session keeps its list. A new session starts with none.
+- **The agent is reminded of it.** While the list has an item that is not `done`, every request ends with a note such as `[Plan] 1/3 done`, followed by the list as `[x]`, `[~]` and `[ ]` lines. The note is added to what is sent and is not part of the session, so it costs no context later and leaves the cached part of the conversation as it is. It stops when every item is done or the list is cleared.
+
+### `ask_user`
+
+| Input | Meaning |
+|---|---|
+| `question` | What is asked |
+| `type` | `select` (one of the options), `multiselect` (any number of them), `text` (a typed answer) or `confirm` (yes or no). Left out, it follows from the rest: `text` without `options`, `multiselect` with `multi: true`, otherwise `select` |
+| `context` | What you need to know to answer; shown above the question |
+| `options` | The choices of a `select` or `multiselect`: 2 to 8, each different from the others whatever its case and spacing. Not allowed for `text` and `confirm` |
+| `allow_freeform` | `select` only: the list ends with `Other…`, which lets you type an answer instead |
+
+A call that breaks one of these rules fails before you are asked anything, with what is wrong (`a `select` question needs 2 to 8 options, not 1`, `the option `red` is offered twice`).
+
+The result is the chosen option, the chosen options one per line, the typed text, or `yes` or `no`. When you dismiss the question, or nobody is there to answer (print mode, a session without a client), the result is `the user declined to answer`. That is an answer, not a failed call: the agent goes on without one. Over [ACP](acp.md) a question that needs typing cannot be asked and is declined the same way.
 
 ## Web
 
@@ -247,9 +362,17 @@ max_result_bytes = 50000              # text kept from one tool result
 shell_timeout_secs = 120              # default timeout of the shell tool
 shell = ""                            # program name or path; empty means auto-resolve
 format_on_write = false               # run the file's formatter after write and edit
+check_on_write = true                 # run the file's checker after write and edit
+check_report = "delta"                # what the lead is told when it stops: delta, all or off
 
 [tools.format]                        # file extension to formatter command
 rs = "rustfmt --edition 2024"
+
+[tools.check]                         # file extension to checker command
+py = "pylint --output-format=parseable"
+
+[tools.scan]
+secrets = true                        # scan the project with gitleaks once per session
 ```
 
 | Key | Default | Meaning |
@@ -260,6 +383,10 @@ rs = "rustfmt --edition 2024"
 | `shell` | `""` | Shell to use instead of the resolved one. In a project config this is honoured only when the project is trusted |
 | `format_on_write` | `false` | Runs the file's formatter after `write` and `edit`; see [format on write](#format-on-write). Project config: trusted projects only |
 | `format` | `{}` | Formatter command per file extension. Project config: trusted projects only |
+| `check_on_write` | `true` | Runs the file's checker after `write` and `edit` when it is installed; see [checks on write](#checks-on-write) |
+| `check` | `{}` | Checker command per file extension, replacing the built-in one; empty turns the check off. Project config: trusted projects only |
+| `check_report` | `"delta"` | What the lead is told when it stops: findings on the lines the turn changed (`delta`), every finding (`all`), or nothing (`off`) |
+| `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
 

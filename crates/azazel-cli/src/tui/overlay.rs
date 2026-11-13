@@ -26,13 +26,26 @@ pub struct RewindPoint {
     pub prompt: String,
 }
 
+/// What a row of a permission prompt answers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApprovalRow {
+    Once,
+    Session,
+    Always,
+    Deny,
+    DenyWhy,
+}
+
 /// What happens with an overlay's result.
 pub enum Action {
     Ask {
         reply: Reply<Result<Vec<String>, UiError>>,
+        /// The answer each row stands for.
         options: Vec<String>,
         multi: bool,
         picked: Vec<bool>,
+        /// The question, when a row after the options lets the user type an answer instead.
+        other: Option<String>,
     },
     AskFree {
         reply: Reply<Result<Vec<String>, UiError>>,
@@ -48,7 +61,8 @@ pub enum Action {
     },
     Approval {
         reply: Reply<Option<ApprovalDecision>>,
-        has_rule: bool,
+        /// What each row answers, in the order shown.
+        rows: Vec<ApprovalRow>,
     },
     DenyFeedback {
         reply: Reply<Option<ApprovalDecision>>,
@@ -632,6 +646,26 @@ pub fn option_item(option: &str) -> SelectItem {
     }
 }
 
+/// The rows of a permission prompt and what each answers. Allowing for the session or for good
+/// needs a rule that covers the call, and is never offered for a command that destroys work.
+pub fn approval_rows(rule: Option<&str>, destructive: bool) -> (Vec<SelectItem>, Vec<ApprovalRow>) {
+    let mut rows = vec![(ApprovalRow::Once, SelectItem::new("Allow once", ""))];
+    if let Some(rule) = rule.filter(|_| !destructive) {
+        rows.push((
+            ApprovalRow::Session,
+            SelectItem::new("Allow this session", "until azazel exits; nothing is saved"),
+        ));
+        rows.push((
+            ApprovalRow::Always,
+            SelectItem::new(format!("Always allow {rule}"), "saved for this project"),
+        ));
+    }
+    rows.push((ApprovalRow::Deny, SelectItem::new("Deny", "")));
+    rows.push((ApprovalRow::DenyWhy, SelectItem::new("Deny and say why", "")));
+    let (answers, items) = rows.into_iter().unzip();
+    (items, answers)
+}
+
 /// The rows of an agent's question: the options, and for a multi-choice one their check boxes
 /// followed by a `Done` row.
 pub fn ask_items(options: &[String], picked: &[bool], multi: bool) -> Vec<SelectItem> {
@@ -1002,7 +1036,7 @@ mod tests {
             Overlay::select(
                 "lead wants to use shell",
                 subjects.clone(),
-                items(&["Allow once", "Deny", "Deny and say what to do instead"]),
+                items(&["Allow once", "Deny", "Deny and say why"]),
                 false,
                 Action::Mode,
             )
@@ -1197,6 +1231,44 @@ mod tests {
     }
 
     #[test]
+    fn an_approval_offers_what_can_hold_for_its_call() {
+        let labels = |rule: Option<&str>, destructive: bool| {
+            let (items, rows) = approval_rows(rule, destructive);
+            assert_eq!(items.len(), rows.len());
+            let labels: Vec<String> = items.iter().map(|item| item.label.clone()).collect();
+            (labels, rows)
+        };
+        // A rule that covers the call can be given for the session or for good.
+        let (shown, rows) = labels(Some("shell(cargo test:*)"), false);
+        assert_eq!(
+            shown,
+            [
+                "Allow once",
+                "Allow this session",
+                "Always allow shell(cargo test:*)",
+                "Deny",
+                "Deny and say why"
+            ]
+        );
+        assert_eq!(
+            rows,
+            [
+                ApprovalRow::Once,
+                ApprovalRow::Session,
+                ApprovalRow::Always,
+                ApprovalRow::Deny,
+                ApprovalRow::DenyWhy
+            ]
+        );
+        // Without one, and for a call that destroys work whatever rule there is, it is this
+        // call or nothing.
+        let once = [ApprovalRow::Once, ApprovalRow::Deny, ApprovalRow::DenyWhy];
+        assert_eq!(labels(None, false).1, once);
+        assert_eq!(labels(Some("shell(git reset:*)"), true).1, once);
+        assert_eq!(labels(None, true).0, ["Allow once", "Deny", "Deny and say why"]);
+    }
+
+    #[test]
     fn a_multi_choice_question_has_check_boxes_that_toggle() {
         let theme = Theme::dark().with_glyphs(GlyphLevel::Ascii);
         let options = vec!["tests".to_string(), "docs".to_string()];
@@ -1212,6 +1284,7 @@ mod tests {
                 options,
                 multi: true,
                 picked,
+                other: None,
             },
         );
         overlay.on_key(&key(KeyCode::Down));

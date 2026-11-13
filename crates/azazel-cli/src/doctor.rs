@@ -111,7 +111,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         }
     };
 
-    let reasons = needs_trust(paths, config.compat.claude);
+    let reasons = needs_trust(paths, config.compat.claude, &config.tools);
     match (
         TrustStore::new(paths.trust_file()).decision(&paths.project_root),
         trusted,
@@ -330,7 +330,7 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     #[cfg(feature = "mcp")]
     {
-        use azazel_mcp::config::{Approval, Transport, apply_approvals, config_files, load};
+        use azazel_mcp::config::{Approval, Lifecycle, Transport, apply_approvals, config_files, load};
         let mut files = packages.mcp_files.clone();
         files.extend(config_files(paths, trusted));
         let mut loaded = load(&files, &paths.project_root, &|name| std::env::var(name).ok());
@@ -340,7 +340,11 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
                 Transport::Stdio { command, .. } => command,
                 Transport::Http { url, .. } => url,
             };
-            let state = if server.enabled { "enabled" } else { "disabled" };
+            let state = match (server.enabled, server.lifecycle) {
+                (false, _) => "disabled",
+                (true, Lifecycle::Eager) => "enabled",
+                (true, Lifecycle::Lazy | Lifecycle::LazyKeepAlive) => "enabled, starts on first use",
+            };
             match server.approval {
                 Approval::Granted => report.ok(format!("mcp server {}: {target} ({state})", server.name)),
                 Approval::Waiting => report.warn(format!(
@@ -386,6 +390,35 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         } else {
             report.ok(format!("lsp: {}", ready.join(", ")));
         }
+    }
+    if config.tools.check_on_write {
+        let installed = azazel_tools::check::installed(trusted);
+        let named = |used: bool| -> Vec<&str> {
+            let of_kind = installed.iter().filter(|(_, is_used)| *is_used == used);
+            of_kind.map(|(checker, _)| checker.as_str()).collect()
+        };
+        match named(true) {
+            ready if !ready.is_empty() => report.ok(format!("checks on write: {}", ready.join(", "))),
+            _ if installed.is_empty() => {
+                report.ok("checks on write: none of the built-in checkers is installed");
+            }
+            _ => {}
+        }
+        // These run the project's code (build scripts, lint configuration) to check a file.
+        for checker in named(false) {
+            report.ok(format!(
+                "checks on write: {checker}: off, the project is not trusted"
+            ));
+        }
+        for (kind, program) in azazel_tools::check::missing(&config.tools.check) {
+            report.warn(format!("checker for `{kind}` files: `{program}` was not found"));
+        }
+    } else {
+        report.ok("checks on write: off");
+    }
+    match azazel_tools::scan::scanner(config.tools.scan.secrets, config.tools.check_report, trusted) {
+        Ok(gitleaks) => report.ok(format!("secret scan: {}", gitleaks.display())),
+        Err(why) => report.ok(format!("secret scan: {why}")),
     }
     #[cfg(feature = "memory")]
     match &config.embeddings {

@@ -9,7 +9,7 @@ use super::shell::analyze;
 use super::*;
 use crate::config::{Config, LoadOptions};
 use crate::ext::{Event, EventBus, EventHandler, EventKind, ExtCtx, Outcome};
-use crate::ui::{ApprovalDecision, ApprovalRequest, Headless, Ui, UiBridge, UiError};
+use crate::ui::{ApprovalDecision, ApprovalRequest, Headless, Question, Ui, UiBridge, UiError};
 
 struct Fixture {
     _tmp: tempfile::TempDir,
@@ -594,7 +594,7 @@ struct Answers(
 
 #[async_trait]
 impl UiBridge for Answers {
-    async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
         Err(UiError::NoUser)
     }
     async fn confirm(&self, _: &str) -> Result<bool, UiError> {
@@ -730,6 +730,65 @@ async fn the_user_can_allow_once_allow_always_or_deny_with_feedback() {
             .unwrap_err(),
         "the user denied this call: use npm instead"
     );
+}
+
+#[tokio::test]
+async fn allowing_for_the_session_asks_no_more_and_writes_nothing() {
+    let rig = rig("");
+    let answers = Arc::new(Answers(
+        std::sync::Mutex::new(vec![
+            ApprovalDecision::AllowSession,
+            ApprovalDecision::AllowSession,
+            ApprovalDecision::Deny { feedback: None },
+        ]),
+        std::sync::Mutex::default(),
+    ));
+    rig.services.insert(Arc::new(Ui(answers.clone())));
+    let local = rig.f.paths.project_local_config();
+
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build"})).await,
+        Ok(None)
+    );
+    // What the rule covers runs without a question from now on.
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "cargo build --release"})).await,
+        Ok(None)
+    );
+    assert_eq!(answers.1.lock().unwrap().len(), 1);
+    assert!(!local.exists(), "nothing is saved for the project");
+    let session: Vec<String> = rig
+        .f
+        .state
+        .rules()
+        .into_iter()
+        .filter(|rule| rule.source == SESSION)
+        .map(|rule| rule.rule.to_string())
+        .collect();
+    assert_eq!(session, ["shell(cargo build:*)"]);
+
+    // Another command is asked about as before, and the same answer twice keeps one rule.
+    assert_eq!(before(&rig, &SHELL, json!({"command": "make"})).await, Ok(None));
+    rig.f.state.allow_for_session(&"shell(make:*)".parse().unwrap());
+    assert_eq!(
+        rig.f
+            .state
+            .rules()
+            .iter()
+            .filter(|rule| rule.source == SESSION)
+            .count(),
+        2
+    );
+
+    // `/forget-approvals` takes it back: the next call asks again.
+    assert_eq!(rig.f.state.clear_remembered().unwrap(), 2);
+    assert!(
+        before(&rig, &SHELL, json!({"command": "cargo build"}))
+            .await
+            .is_err()
+    );
+    assert_eq!(answers.1.lock().unwrap().len(), 3);
+    assert!(!local.exists());
 }
 
 #[tokio::test]

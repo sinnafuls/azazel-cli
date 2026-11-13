@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 
-use azazel_protocol::{Frame, StreamEvent, UiRequest};
+use azazel_protocol::{AskKind, Frame, StreamEvent, UiRequest};
 use serde_json::Value;
 
 use crate::tui::view::tool_summary;
@@ -193,6 +193,7 @@ impl<W: Write> Printer<W> {
                 tool,
                 subjects,
                 input,
+                rule,
                 note,
                 ..
             } => {
@@ -206,7 +207,10 @@ impl<W: Write> Printer<W> {
                     self.line(&format!("  {note}"));
                 }
                 if self.interactive {
-                    self.line("  /approve, /always, or /deny [what to do instead]");
+                    self.line(match rule {
+                        Some(_) => "  /approve, /session, /always, or /deny [what to do instead]",
+                        None => "  /approve, or /deny [what to do instead]",
+                    });
                 }
             }
             Frame::UiRequest { request, .. } => self.request(request),
@@ -225,19 +229,25 @@ impl<W: Write> Printer<W> {
             }
             UiRequest::Ask {
                 question,
+                context,
+                expects,
                 options,
                 multi,
+                allow_freeform,
             } => {
+                if let Some(context) = context {
+                    self.line(context);
+                }
                 self.line(&format!("? {question}"));
-                if options.is_empty() {
-                    "/answer <text>"
-                } else {
+                if !options.is_empty() {
                     self.line(&numbered(options));
-                    if *multi {
-                        "/answer <numbers, separated by commas>"
-                    } else {
-                        "/answer <number>"
-                    }
+                }
+                match AskKind::of(*expects, options, *multi) {
+                    AskKind::Text => "/answer <text>",
+                    AskKind::Confirm => "/answer yes, or /answer no",
+                    AskKind::Multiselect => "/answer <numbers, separated by commas>",
+                    AskKind::Select if *allow_freeform => "/answer <number>, or /answer <your own answer>",
+                    AskKind::Select => "/answer <number>",
                 }
             }
             UiRequest::Confirm { prompt } => {
@@ -318,19 +328,33 @@ mod tests {
     fn requests_say_how_to_answer_only_to_someone_who_can() {
         let frames = [
             json!({ "type": "approval_request", "request_id": "r1", "agent": "lead", "tool": "shell",
-                    "access": "exec", "subjects": ["cargo test"], "input": {}, "note": "runs for a while" }),
+                    "access": "exec", "subjects": ["cargo test"], "input": {}, "note": "runs for a while",
+                    "rule": "shell(cargo test:*)" }),
+            json!({ "type": "approval_request", "request_id": "r4", "agent": "lead", "tool": "shell",
+                    "access": "exec", "subjects": ["git reset --hard"], "input": {}, "destructive": true }),
             json!({ "type": "ui_request", "request_id": "r2", "kind": "ask", "question": "Which?",
-                    "options": ["a", "b"], "multi": false }),
+                    "context": "Two builds exist.", "expects": "select", "options": ["a", "b"],
+                    "multi": false, "allow_freeform": true }),
+            // A session that does not say what it expects: its options do.
+            json!({ "type": "ui_request", "request_id": "r5", "kind": "ask", "question": "Why?",
+                    "options": [], "multi": false }),
+            json!({ "type": "ui_request", "request_id": "r6", "kind": "ask", "question": "Sure?",
+                    "expects": "confirm", "options": [], "multi": false }),
             json!({ "type": "ui_request", "request_id": "r3", "kind": "notify", "level": "warn", "text": "careful" }),
         ];
         assert_eq!(
             printed(&frames, true),
-            "? lead wants to use shell: cargo test\n  runs for a while\n  /approve, /always, or /deny [what to do instead]\n\
-             ? Which?\n  1. a\n  2. b\n  /answer <number>\nwarn: careful\n"
+            "? lead wants to use shell: cargo test\n  runs for a while\n  \
+             /approve, /session, /always, or /deny [what to do instead]\n\
+             ? lead wants to use shell: git reset --hard\n  /approve, or /deny [what to do instead]\n\
+             Two builds exist.\n? Which?\n  1. a\n  2. b\n  /answer <number>, or /answer <your own answer>\n\
+             ? Why?\n  /answer <text>\n? Sure?\n  /answer yes, or /answer no\nwarn: careful\n"
         );
         assert_eq!(
             printed(&frames, false),
-            "? lead wants to use shell: cargo test\n  runs for a while\n? Which?\n  1. a\n  2. b\nwarn: careful\n"
+            "? lead wants to use shell: cargo test\n  runs for a while\n\
+             ? lead wants to use shell: git reset --hard\n\
+             Two builds exist.\n? Which?\n  1. a\n  2. b\n? Why?\n? Sure?\nwarn: careful\n"
         );
     }
 }

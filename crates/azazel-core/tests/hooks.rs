@@ -13,8 +13,8 @@ use azazel_core::hooks::HooksExt;
 use azazel_core::process::Shell;
 use azazel_core::{
     ApprovalDecision, ApprovalRequest, Config, Event, EventBus, ExtCtx, Level, LoadOptions, Outcome, Paths,
-    PermissionState, Registry, SessionStore, Skill, SkillRoot, SkillSource, StartSource, SubagentRunner,
-    Subagents, Ui, UiBridge, UiError,
+    PermissionState, Question, Registry, SessionStore, Skill, SkillRoot, SkillSource, StartSource,
+    SubagentRunner, Subagents, Ui, UiBridge, UiError,
 };
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -182,7 +182,7 @@ struct Notes(Mutex<Vec<(Level, String)>>);
 
 #[async_trait]
 impl UiBridge for Notes {
-    async fn ask(&self, _: &str, _: &[String], _: bool) -> Result<Vec<String>, UiError> {
+    async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
         Err(UiError::NoUser)
     }
     async fn confirm(&self, _: &str) -> Result<bool, UiError> {

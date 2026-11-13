@@ -24,8 +24,8 @@ use azazel_agent::AgentEvent;
 use azazel_ai::{Block, Role, StopReason, StreamEvent};
 use azazel_core::names::Namer;
 use azazel_core::{
-    ApprovalDecision, ApprovalRequest, EntryKind, Event, EventHandler, EventKind, ExtCtx, Extension, Level,
-    McpServers, Outcome, PermissionMode, PlanDecision, StartSource, Ui, UiBridge, UiError,
+    ApprovalDecision, ApprovalRequest, AskKind, EntryKind, Event, EventHandler, EventKind, ExtCtx, Extension,
+    Level, McpServers, Outcome, PermissionMode, PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
 };
 use azazel_team::LEAD;
 use azazel_tools::{TodoStatus, TodoStore};
@@ -203,13 +203,27 @@ struct Bridge {
 
 #[async_trait]
 impl UiBridge for Bridge {
-    async fn ask(&self, question: &str, options: &[String], _multi: bool) -> Result<Vec<String>, UiError> {
-        // The protocol has a way to choose, not a way to type an answer.
-        if options.is_empty() {
-            return Err(UiError::NoUser);
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
+        let context = question.context.as_deref();
+        match question.kind {
+            // The protocol has a way to choose, not a way to type an answer.
+            AskKind::Text => Err(UiError::NoUser),
+            AskKind::Confirm => {
+                let options = ["Yes".to_string(), "No".to_string()];
+                let said = match self.shared.pick(&question.text, context, &options).await? {
+                    0 => "yes",
+                    _ => "no",
+                };
+                Ok(vec![said.to_string()])
+            }
+            AskKind::Select | AskKind::Multiselect => {
+                let index = self
+                    .shared
+                    .pick(&question.text, context, &question.options)
+                    .await?;
+                Ok(vec![question.options[index].clone()])
+            }
         }
-        let index = self.shared.pick(question, None, options).await?;
-        Ok(vec![options[index].clone()])
     }
 
     async fn confirm(&self, prompt: &str) -> Result<bool, UiError> {
@@ -267,7 +281,12 @@ impl UiBridge for Bridge {
             "Allow",
             acp::PermissionOptionKind::AllowOnce,
         )];
-        if let Some(rule) = &request.rule {
+        if let Some(rule) = request.rule.as_ref().filter(|_| !request.destructive) {
+            options.push(acp::PermissionOption::new(
+                "allow_session",
+                "Allow for this session",
+                acp::PermissionOptionKind::AllowAlways,
+            ));
             options.push(acp::PermissionOption::new(
                 "allow_always",
                 format!("Always allow {rule}"),
@@ -285,6 +304,7 @@ impl UiBridge for Bridge {
             .await;
         Some(match chosen.as_deref() {
             Some("allow_once") => ApprovalDecision::AllowOnce,
+            Some("allow_session") => ApprovalDecision::AllowSession,
             Some("allow_always") => ApprovalDecision::Always,
             _ => ApprovalDecision::Deny { feedback: None },
         })

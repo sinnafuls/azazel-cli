@@ -5,8 +5,25 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::config::ToolsConfig;
 use crate::frontmatter;
 use crate::paths::{Paths, canonical};
+
+/// A file of one of these names means a project uses eslint, which loads it as code.
+pub const ESLINT_CONFIGS: [&str; 12] = [
+    "eslint.config.js",
+    "eslint.config.mjs",
+    "eslint.config.cjs",
+    "eslint.config.ts",
+    "eslint.config.mts",
+    "eslint.config.cts",
+    ".eslintrc",
+    ".eslintrc.js",
+    ".eslintrc.cjs",
+    ".eslintrc.json",
+    ".eslintrc.yml",
+    ".eslintrc.yaml",
+];
 
 /// The user's word on one MCP server a project defines.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -166,9 +183,36 @@ pub fn project_skill_roots(paths: &Paths, claude_compat: bool) -> Vec<PathBuf> {
     roots
 }
 
+/// The checkers that would run on this project's files after a write and that run code of the
+/// project while they check: each as what the trust prompt says of it. A checker counts when its
+/// program is installed (`installed` looks one up on `PATH`), the project root has the file that
+/// makes it apply, and `[tools.check]` does not replace it.
+fn checks_that_run_code(root: &Path, tools: &ToolsConfig, installed: &dyn Fn(&str) -> bool) -> Vec<String> {
+    if !tools.check_on_write {
+        return Vec::new();
+    }
+    let mut reasons = Vec::new();
+    let replaced = |kind: &str| tools.check.contains_key(kind);
+    if root.join("Cargo.toml").is_file() && !replaced("rs") && installed("cargo-clippy") && installed("cargo")
+    {
+        reasons.push(
+            "Rust code that checks on write would build with cargo clippy, running its build scripts and macros"
+                .to_string(),
+        );
+    }
+    if ESLINT_CONFIGS.iter().any(|name| root.join(name).is_file()) && installed("eslint") {
+        reasons.push("an eslint config that checks on write would have eslint load and run".to_string());
+    }
+    if root.join("go.mod").is_file() && !replaced("go") && installed("go") {
+        reasons.push("Go code that checks on write would build with go vet".to_string());
+    }
+    reasons
+}
+
 /// What in this project could run code or widen permissions. Empty means no trust decision is
-/// needed. Each entry is a short description for the trust prompt and for `doctor`.
-pub fn needs_trust(paths: &Paths, claude_compat: bool) -> Vec<String> {
+/// needed. Each entry is a short description for the trust prompt and for `doctor`. `tools` is
+/// the `[tools]` table as it is without the project's own gated settings.
+pub fn needs_trust(paths: &Paths, claude_compat: bool, tools: &ToolsConfig) -> Vec<String> {
     let mut reasons = Vec::new();
     let project = paths.project_dir();
     if has_entries(&project.join("extensions")) {
@@ -213,6 +257,9 @@ pub fn needs_trust(paths: &Paths, claude_compat: bool) -> Vec<String> {
             }
         }
     }
+    reasons.extend(checks_that_run_code(&paths.project_root, tools, &|program| {
+        which::which(program).is_ok()
+    }));
     reasons
 }
 
@@ -313,7 +360,10 @@ mod tests {
             "---\nname: notes\ndescription: d\n---\nx",
         )
         .unwrap();
-        assert_eq!(needs_trust(&paths, true), Vec::<String>::new());
+        assert_eq!(
+            needs_trust(&paths, true, &ToolsConfig::default()),
+            Vec::<String>::new()
+        );
     }
 
     #[test]
@@ -336,7 +386,7 @@ mod tests {
         )
         .unwrap();
 
-        let reasons = needs_trust(&paths, true);
+        let reasons = needs_trust(&paths, true, &ToolsConfig::default());
         for expected in [
             "extensions in .azazel/extensions/",
             "MCP servers in .azazel/mcp.json",
@@ -353,9 +403,50 @@ mod tests {
         }
         // Without compatibility mode the .claude skill root is not read at all.
         assert!(
-            !needs_trust(&paths, false)
+            !needs_trust(&paths, false, &ToolsConfig::default())
                 .iter()
                 .any(|r| r.contains("skill gate"))
         );
+    }
+
+    #[test]
+    fn a_checker_that_runs_the_project_s_code_is_a_reason_when_it_would_apply() {
+        let (_tmp, paths) = project();
+        let root = &paths.project_root;
+        let all = |_: &str| true;
+        let mut tools = ToolsConfig::default();
+        let reasons = |tools: &ToolsConfig, installed: &dyn Fn(&str) -> bool| {
+            checks_that_run_code(root, tools, installed)
+        };
+        // Nothing in the project for such a checker to run on.
+        std::fs::write(root.join("pyproject.toml"), "").unwrap();
+        assert_eq!(reasons(&tools, &all), Vec::<String>::new());
+
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(root.join("eslint.config.mjs"), "export default [];\n").unwrap();
+        std::fs::write(root.join("go.mod"), "module example.com/demo\n").unwrap();
+        assert_eq!(
+            reasons(&tools, &all),
+            [
+                "Rust code that checks on write would build with cargo clippy, running its build scripts and macros",
+                "an eslint config that checks on write would have eslint load and run",
+                "Go code that checks on write would build with go vet",
+            ]
+        );
+        // Only what is installed: clippy needs cargo and its own program.
+        assert_eq!(
+            reasons(&tools, &|program| program == "cargo" || program == "go"),
+            ["Go code that checks on write would build with go vet"]
+        );
+        assert_eq!(reasons(&tools, &|_| false), Vec::<String>::new());
+        // A checker of the user's own for the kind, or none at all, takes the built-in one away.
+        tools.check.insert("rs".to_string(), String::new());
+        tools.check.insert("go".to_string(), "staticcheck".to_string());
+        assert_eq!(
+            reasons(&tools, &all),
+            ["an eslint config that checks on write would have eslint load and run"]
+        );
+        tools.check_on_write = false;
+        assert_eq!(reasons(&tools, &all), Vec::<String>::new());
     }
 }

@@ -714,6 +714,11 @@
         },
         {
           "type": "string",
+          "const": "session",
+          "description": "Allow it, and whatever the request's `rule` covers until the session ends. Nothing is\nsaved."
+        },
+        {
+          "type": "string",
           "const": "always",
           "description": "Allow it and remember the request's `rule`."
         },
@@ -1314,13 +1319,36 @@
                 "question": {
                   "type": "string"
                 },
+                "context": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "What the user needs to know to answer, to be shown with the question."
+                },
+                "expects": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/AskKind"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "description": "Always sent; a client reads a request without it with [`AskKind::of`]."
+                },
                 "options": {
                   "type": "array",
                   "items": {
                     "type": "string"
-                  }
+                  },
+                  "description": "The choices of a `select` or `multiselect`; empty otherwise."
                 },
                 "multi": {
+                  "type": "boolean",
+                  "description": "Whether `expects` is `multiselect`."
+                },
+                "allow_freeform": {
                   "type": "boolean"
                 }
               },
@@ -1330,7 +1358,7 @@
                 "options",
                 "multi"
               ],
-              "description": "Expects a list of the chosen options, or one string when there are no options."
+              "description": "A question from an agent. Expects what `expects` says: a list of the chosen options\n(`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With\n`allow_freeform`, a string that is none of the options is an answer the user typed."
             },
             {
               "type": "object",
@@ -1718,6 +1746,31 @@
         "tokens"
       ],
       "description": "One agent of the roster."
+    },
+    "AskKind": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "select",
+          "description": "One of the options: a list with the chosen one."
+        },
+        {
+          "type": "string",
+          "const": "multiselect",
+          "description": "Any number of the options: a list of the chosen ones."
+        },
+        {
+          "type": "string",
+          "const": "text",
+          "description": "A typed answer: a string."
+        },
+        {
+          "type": "string",
+          "const": "confirm",
+          "description": "Yes or no: `true` or `false`."
+        }
+      ],
+      "description": "How an `ask` request is answered."
     },
     "State": {
       "type": "object",

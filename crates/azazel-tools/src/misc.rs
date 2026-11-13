@@ -5,7 +5,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::{Ui, UiError};
+use azazel_ai::{Block, Message, Role};
+use azazel_core::session::{Entry, EntryKind};
+use azazel_core::{AskKind, Event, EventHandler, ExtCtx, Outcome, Question, Ui, UiError};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -47,6 +49,116 @@ impl TodoStore {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(agent.to_string(), items);
+    }
+
+    /// Makes the lists what a session's transcript says they are: `agent` gets the list `branch`
+    /// last recorded (see [`recorded`]) and every other agent's list goes, because their agents
+    /// ended with the session that was open before.
+    pub fn rehydrate(&self, agent: &str, branch: &[Entry]) {
+        let items = recorded(branch);
+        let mut lists = self.lists.lock().unwrap_or_else(PoisonError::into_inner);
+        lists.clear();
+        if !items.is_empty() {
+            lists.insert(agent.to_string(), items);
+        }
+    }
+
+    /// What `agent` is reminded of before each request while work on its list remains: how far
+    /// it is, and the list. `None` for an empty list and for one that is all done.
+    pub fn reminder(&self, agent: &str) -> Option<String> {
+        let lists = self.lists.lock().unwrap_or_else(PoisonError::into_inner);
+        let items = lists.get(agent)?;
+        let done = items
+            .iter()
+            .filter(|item| item.status == TodoStatus::Done)
+            .count();
+        (done < items.len()).then(|| {
+            format!(
+                "[Plan] {done}/{} done (your todo list; keep it current with `todo`)\n{}",
+                items.len(),
+                render(items)
+            )
+        })
+    }
+}
+
+/// The session entry `/todo` writes when the user changes the list, so that the change is still
+/// there when the session is opened again.
+pub const TODO_ENTRY: &str = "todo";
+
+/// What `/todo` records for a list the user changed.
+pub fn todo_entry(items: &[TodoItem]) -> EntryKind {
+    EntryKind::Custom {
+        custom_type: TODO_ENTRY.to_string(),
+        data: json!({"items": items}),
+    }
+}
+
+fn items_of(value: &Value) -> Option<Vec<TodoItem>> {
+    serde_json::from_value(value.get("items")?.clone()).ok()
+}
+
+/// The task list a branch of a session ends with: the items of the last `todo` call that
+/// succeeded, or of the user's later change to them.
+pub fn recorded(branch: &[Entry]) -> Vec<TodoItem> {
+    // Calls whose result has not been seen yet, by call id.
+    let mut asked: HashMap<&str, &Value> = HashMap::new();
+    let mut current = Vec::new();
+    for entry in branch {
+        match &entry.kind {
+            EntryKind::Custom { custom_type, data } if custom_type == TODO_ENTRY => {
+                if let Some(items) = items_of(data) {
+                    current = items;
+                }
+            }
+            EntryKind::Message { message } => record_message(message, &mut asked, &mut current),
+            _ => {}
+        }
+    }
+    current
+}
+
+fn record_message<'a>(
+    message: &'a Message,
+    asked: &mut HashMap<&'a str, &'a Value>,
+    current: &mut Vec<TodoItem>,
+) {
+    for block in &message.content {
+        match block {
+            Block::ToolCall { id, name, input, .. } if message.role == Role::Assistant && name == "todo" => {
+                asked.insert(id, input);
+            }
+            Block::ToolResult {
+                call_id, is_error, ..
+            } => {
+                if let Some(input) = asked.remove(call_id.as_str())
+                    && !is_error
+                    && let Some(items) = items_of(input)
+                {
+                    *current = items;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Puts the plan in front of an agent with every request while it has work left on its list.
+/// The note is added to what is sent, after everything else, and is never part of the transcript.
+pub(crate) struct PlanReminder;
+
+#[async_trait]
+impl EventHandler for PlanReminder {
+    async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
+        if let Event::Context { agent, messages } = event
+            && let Some(note) = ctx
+                .services
+                .get::<TodoStore>()
+                .and_then(|store| store.reminder(&agent.id))
+        {
+            messages.push(Message::user(note));
+        }
+        Outcome::Continue
     }
 }
 
@@ -155,10 +267,107 @@ pub struct AskUserTool;
 #[derive(Deserialize)]
 struct AskInput {
     question: String,
+    #[serde(default, rename = "type")]
+    kind: Option<AskKind>,
+    #[serde(default)]
+    context: Option<String>,
     #[serde(default)]
     options: Vec<String>,
     #[serde(default)]
     multi: bool,
+    #[serde(default)]
+    allow_freeform: bool,
+}
+
+/// Fewest and most options a choice may offer.
+const OPTIONS: std::ops::RangeInclusive<usize> = 2..=8;
+
+/// How an option is compared with the others: case and spacing make no difference.
+fn folded(option: &str) -> String {
+    option
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+impl AskInput {
+    /// The question to put to the user, or what is wrong with the call.
+    fn question(self) -> Result<Question, String> {
+        if self.question.trim().is_empty() {
+            return Err("`question` is empty".to_string());
+        }
+        let kind = self.kind.unwrap_or(match (self.options.is_empty(), self.multi) {
+            (true, _) => AskKind::Text,
+            (false, true) => AskKind::Multiselect,
+            (false, false) => AskKind::Select,
+        });
+        let name = match kind {
+            AskKind::Select => "select",
+            AskKind::Multiselect => "multiselect",
+            AskKind::Text => "text",
+            AskKind::Confirm => "confirm",
+        };
+        if self.allow_freeform && kind != AskKind::Select {
+            return Err(format!("`allow_freeform` goes with `select` only, not `{name}`"));
+        }
+        match kind {
+            AskKind::Text | AskKind::Confirm if !self.options.is_empty() => {
+                return Err(format!("a `{name}` question takes no `options`"));
+            }
+            AskKind::Text | AskKind::Confirm => {}
+            AskKind::Select | AskKind::Multiselect => {
+                if !OPTIONS.contains(&self.options.len()) {
+                    return Err(format!(
+                        "a `{name}` question needs {} to {} options, not {}",
+                        OPTIONS.start(),
+                        OPTIONS.end(),
+                        self.options.len()
+                    ));
+                }
+                let mut seen: Vec<String> = Vec::with_capacity(self.options.len() + 1);
+                if self.allow_freeform {
+                    seen.push(folded(Question::OTHER));
+                }
+                for option in &self.options {
+                    let folded = folded(option);
+                    if folded.is_empty() {
+                        return Err("an option is empty".to_string());
+                    }
+                    if seen.contains(&folded) {
+                        return Err(format!("the option `{option}` is offered twice"));
+                    }
+                    seen.push(folded);
+                }
+            }
+        }
+        Ok(Question {
+            text: self.question,
+            context: self.context.filter(|context| !context.trim().is_empty()),
+            kind,
+            options: self.options,
+            allow_freeform: self.allow_freeform,
+        })
+    }
+}
+
+/// What the agent is told when nobody answered. Not an error: the user saying nothing is an
+/// answer, and the agent goes on without one.
+pub const DECLINED: &str = "the user declined to answer";
+
+fn ask_details(question: &Question, answers: Option<&[String]>, reason: Option<&str>) -> Value {
+    json!({
+        "question": question.text,
+        "context": question.context,
+        "type": question.kind,
+        "options": question.options,
+        "answers": answers,
+        // An answer the user typed where options were offered.
+        "freeform": question.allow_freeform
+            && answers.is_some_and(|answers| answers.iter().any(|answer| !question.options.contains(answer))),
+        "cancelled": answers.is_none(),
+        "reason": reason,
+    })
 }
 
 #[async_trait]
@@ -168,9 +377,12 @@ impl Tool for AskUserTool {
     }
 
     fn description(&self) -> &str {
-        "Ask the user a question and wait for the answer. Give `options` to offer choices (`multi` lets \
-         them pick several); without options the user types a free answer. Ask only what you cannot find \
-         out yourself and what changes what you do next."
+        "Ask the user a question and wait for the answer. `type` is `select` (one of 2 to 8 `options`; \
+         `allow_freeform` lets the user type another answer), `multiselect` (several of the options), \
+         `text` (a typed answer) or `confirm` (yes or no); left out, it follows from `options` and \
+         `multi`. Put what the user needs to know to answer in `context`. Ask only what you cannot find \
+         out yourself and what changes what you do next. A user who declines gives no answer: go on \
+         without one."
     }
 
     fn schema(&self) -> Value {
@@ -178,8 +390,11 @@ impl Tool for AskUserTool {
             "type": "object",
             "properties": {
                 "question": {"type": "string"},
-                "options": {"type": "array", "items": {"type": "string"}},
-                "multi": {"type": "boolean"}
+                "type": {"type": "string", "enum": ["select", "multiselect", "text", "confirm"]},
+                "context": {"type": "string", "description": "Background shown above the question"},
+                "options": {"type": "array", "items": {"type": "string"}, "minItems": 2, "maxItems": 8},
+                "multi": {"type": "boolean", "description": "Without `type`: several options may be chosen"},
+                "allow_freeform": {"type": "boolean", "description": "`select` only: offer \"Other…\" and take a typed answer"}
             },
             "required": ["question"]
         })
@@ -202,18 +417,30 @@ impl Tool for AskUserTool {
             Ok(input) => input,
             Err(error) => return error,
         };
+        let question = match input.question() {
+            Ok(question) => question,
+            Err(wrong) => return ToolOutput::error(wrong),
+        };
+        let declined = |reason: String| {
+            ToolOutput::text(DECLINED).with_details(ask_details(&question, None, Some(&reason)))
+        };
         let Some(ui) = ctx.services.get::<Ui>() else {
-            return ToolOutput::error(UiError::NoUser.to_string());
+            return declined(UiError::NoUser.to_string());
         };
         let answer = tokio::select! {
             _ = ctx.cancel.cancelled() => return ToolOutput::error("aborted by user"),
-            answer = ui.0.ask(&input.question, &input.options, input.multi) => answer,
+            answer = ui.0.ask(&question) => answer,
         };
         match answer {
-            Ok(answers) if answers.is_empty() => ToolOutput::text("(the user gave no answer)"),
-            Ok(answers) => ToolOutput::text(answers.join("\n")),
-            Err(UiError::Cancelled) => ToolOutput::error("the user dismissed the question"),
-            Err(e) => ToolOutput::error(e.to_string()),
+            Ok(answers) => {
+                let text = match answers.is_empty() {
+                    true => "(the user gave no answer)".to_string(),
+                    false => answers.join("\n"),
+                };
+                ToolOutput::text(text).with_details(ask_details(&question, Some(&answers), None))
+            }
+            Err(UiError::Cancelled) => declined("the user dismissed the question".to_string()),
+            Err(e) => declined(e.to_string()),
         }
     }
 }
