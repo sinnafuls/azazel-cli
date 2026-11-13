@@ -47,6 +47,11 @@ pub enum UiRequest {
         plan: String,
         reply: Reply<Result<PlanDecision, UiError>>,
     },
+    /// The settings screen, which comes back once it has given up the keyboard.
+    Settings {
+        screen: Box<crate::settings::Screen>,
+        reply: Reply<Box<crate::settings::Screen>>,
+    },
 }
 
 impl UiRequest {
@@ -61,6 +66,7 @@ impl UiRequest {
             UiRequest::Notify { .. } => false,
             UiRequest::Approval { reply, .. } => reply.is_closed(),
             UiRequest::Plan { reply, .. } => reply.is_closed(),
+            UiRequest::Settings { reply, .. } => reply.is_closed(),
         }
     }
 }

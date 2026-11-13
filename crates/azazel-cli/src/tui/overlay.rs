@@ -159,6 +159,10 @@ pub enum Action {
     },
     /// Whether to open an issue with the summary of this report; the second row says yes.
     BugIssue(Box<crate::bug::Report>),
+    /// `/settings`: the screen goes back to the command once it has given up the keyboard.
+    Settings {
+        reply: Reply<Box<crate::settings::Screen>>,
+    },
 }
 
 impl Action {
@@ -192,6 +196,7 @@ impl Action {
             Action::UiInput { reply } => reply.is_closed(),
             Action::Approval { reply, .. } | Action::DenyFeedback { reply } => reply.is_closed(),
             Action::Plan { reply } | Action::PlanFeedback { reply } => reply.is_closed(),
+            Action::Settings { reply } => reply.is_closed(),
             _ => false,
         }
     }
@@ -212,6 +217,8 @@ pub enum Kind {
     Form(Box<Form>),
     /// One agent at work, and a line to type to it.
     Pane(Box<Pane>),
+    /// The settings: pages behind tabs, with keys, rows and hints of their own.
+    Settings(Box<crate::settings::Screen>),
 }
 
 /// What a form or the popup of an agent draws inside the box, under any text.
@@ -420,6 +427,11 @@ impl Overlay {
         Overlay::new(title, Vec::new(), Kind::Pane(Box::new(pane)), action)
     }
 
+    /// The settings screen in a box.
+    pub fn settings(screen: Box<crate::settings::Screen>, action: Action) -> Self {
+        Overlay::new("Settings".to_string(), Vec::new(), Kind::Settings(screen), action)
+    }
+
     /// The editor of an overlay that takes text which may also be written in the user's own
     /// editor: an input that is not a secret, a typed answer, the line to an agent.
     pub fn editor_mut(&mut self) -> Option<&mut Editor> {
@@ -430,7 +442,7 @@ impl Overlay {
             } => Some(editor),
             Kind::Form(form) => form.editor_mut(),
             Kind::Pane(pane) => Some(pane.editor_mut()),
-            Kind::Input { secret: true, .. } | Kind::Select { .. } => None,
+            Kind::Input { secret: true, .. } | Kind::Select { .. } | Kind::Settings(_) => None,
         }
     }
 
@@ -456,6 +468,14 @@ impl Overlay {
                     Step::Done(answers) => Outcome::Answers(answers),
                 };
             }
+            // Done with the keyboard: closed, or a row of it needs prompts of its own. The
+            // command that opened the screen gets it back and finds out which.
+            Kind::Settings(screen) => {
+                return match screen.on_key(key) {
+                    true => Outcome::Chosen(0),
+                    false => Outcome::Pending,
+                };
+            }
             Kind::Select { .. } | Kind::Input { .. } => {}
         }
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
@@ -467,7 +487,9 @@ impl Overlay {
                 Kind::Select { list, .. } => list
                     .selected()
                     .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
-                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) => Outcome::Hotkey { index: 0, key },
+                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) => {
+                    Outcome::Hotkey { index: 0, key }
+                }
             };
         }
         if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
@@ -519,7 +541,7 @@ impl Overlay {
                 Outcome::Pending
             }
             // Handled above.
-            Kind::Form(_) | Kind::Pane(_) => Outcome::Pending,
+            Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) => Outcome::Pending,
         }
     }
 
@@ -537,6 +559,7 @@ impl Overlay {
             Kind::Input { editor, .. } => editor.insert_str(pasted),
             Kind::Form(form) => form.on_paste(pasted),
             Kind::Pane(pane) => pane.on_paste(pasted),
+            Kind::Settings(screen) => screen.on_paste(pasted),
         }
     }
 
@@ -574,6 +597,7 @@ impl Overlay {
             Kind::Form(form) => hints.extend(form.hints(theme)),
             // Its own way out is named among them.
             Kind::Pane(pane) => return pane.hints(),
+            Kind::Settings(screen) => return screen.hints(theme),
         }
         for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
             hints.push(Hint::new(key_label(combo), *what));
@@ -643,7 +667,7 @@ impl Overlay {
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
             Kind::Form(form) => form.kept(),
-            Kind::Pane(_) => interior,
+            Kind::Pane(_) | Kind::Settings(_) => interior,
         };
         let has_body = !body.is_empty() || !warning.is_empty();
         let text_room = interior.saturating_sub(kept + usize::from(has_body));
@@ -724,6 +748,13 @@ impl Overlay {
                 cursor = widget.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
                 rows.extend(widget.lines);
+            }
+            Kind::Settings(screen) => {
+                let room = total.saturating_sub(rows.len()).max(1);
+                let view = screen.view(inner, room, &prompt, theme);
+                cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
+                frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                rows.extend(view.lines);
             }
         }
 
@@ -1638,5 +1669,62 @@ mod tests {
         };
         assert!(matches!(overlay.on_key(&ctrl_o), Outcome::ReadBody));
         assert!(overlay.body_text().contains("line 40"));
+    }
+
+    #[test]
+    fn the_settings_screen_fills_its_box_and_keeps_its_own_keys() {
+        let files = crate::settings::fixture("", "");
+        let (reply, back) = tokio::sync::oneshot::channel();
+        let mut overlay = Overlay::settings(crate::settings::screen_on(&files), Action::Settings { reply });
+        let theme = Theme::dark();
+        for width in [3, 20, 44, 80, 100] {
+            for rows in [1, 3, 8, 12, 26, 60] {
+                let (lines, cursor) = overlay.render(width, rows, &theme);
+                assert!(lines.len() <= rows.max(3), "{width}x{rows}: {} rows", lines.len());
+                assert!(
+                    lines.iter().all(|line| text::width(line) <= width),
+                    "{width}x{rows}"
+                );
+                assert_eq!(cursor, None);
+            }
+        }
+        let (lines, _) = overlay.render(100, 30, &theme);
+        let rows = shown(&lines);
+        assert!(rows[0].starts_with("╭─ Settings "), "{}", rows[0]);
+        assert!(rows[1].contains("Accounts  Models  Appearance"), "{}", rows[1]);
+        let hints = rows.last().unwrap();
+        assert!(
+            hints.contains("tab page") && hints.contains("esc close"),
+            "{hints}"
+        );
+        assert!(!panels_text_input(&overlay));
+        assert!(overlay.editor_mut().is_none());
+
+        // The box is as tall on every page, and the keys are the screen's: `/` searches, and
+        // the first Esc ends the search instead of closing the box.
+        assert!(matches!(overlay.on_key(&key(KeyCode::Tab)), Outcome::Pending));
+        assert_eq!(overlay.render(100, 30, &theme).0.len(), lines.len());
+        assert!(matches!(
+            overlay.on_key(&key(KeyCode::Char('/'))),
+            Outcome::Pending
+        ));
+        overlay.on_paste("theme");
+        let (searching, cursor) = overlay.render(100, 30, &theme);
+        assert_eq!(searching.len(), lines.len());
+        let searching = shown(&searching);
+        assert!(searching[2].contains("⌕ theme"), "{}", searching[2]);
+        // The cursor stands after what was typed, inside the frame.
+        assert_eq!(cursor, Some((2, 9)));
+        assert!(searching.last().unwrap().contains("type to search"));
+        assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Pending));
+        assert!(!overlay.action.abandoned());
+        // The second Esc closes it: the box is done, and the command gets its screen back.
+        assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Chosen(0)));
+        drop(back);
+        assert!(overlay.action.abandoned());
+    }
+
+    fn panels_text_input(overlay: &Overlay) -> bool {
+        super::super::panels::is_text_input(overlay)
     }
 }

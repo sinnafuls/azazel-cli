@@ -559,8 +559,8 @@ impl App {
         registry.load(&crate::settings::SettingsExt {
             providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
             credentials: credentials.clone(),
-            home_config: paths.home_config(),
-            config: config.clone(),
+            paths: paths.clone(),
+            options: options.clone(),
         })?;
         registry.load(&crate::accounts::AccountsExt {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
