@@ -1243,6 +1243,14 @@ async fn every_source_ends_in_a_home_azazel_loads_with_its_conversations_as_sess
         let store = SessionStore::open(&sessions[0].path).unwrap();
         let context = store.build_context(None);
         assert_eq!(context[0].message.role, azazel_ai::Role::User, "{name}");
+        // Its tool calls name azazel's tools wherever azazel has one for them.
+        for entry in &context {
+            for block in &entry.message.content {
+                if let Block::ToolCall { name: tool, .. } = block {
+                    assert_eq!(super::convert::tool_name(source, tool), None, "{name}: {tool}");
+                }
+            }
+        }
         // And nothing of it is brought a second time.
         let again = sandbox.migrate(source, &everything()).await;
         assert_eq!(again.count(Status::Imported), 0, "{name}: {}", again.render());
@@ -1382,6 +1390,44 @@ async fn a_dry_run_says_what_a_run_would_do_and_writes_nothing() {
             "0f0f0f0f-0000-4000-8000-000000000002 (/work/app)",
         ]
     );
+}
+
+#[tokio::test]
+async fn skills_agents_and_commands_with_the_name_of_a_built_in_are_left_out() {
+    let sandbox = Sandbox::new("omp");
+    let agent = sandbox.path("home/.omp/agent");
+    std::fs::create_dir_all(agent.join("skills/code-review")).unwrap();
+    std::fs::write(
+        agent.join("skills/code-review/SKILL.md"),
+        "---\nname: code-review\ndescription: Reviews code\n---\nReview it.\n",
+    )
+    .unwrap();
+    // An agent is known by the name its definition gives, whatever its file is called.
+    std::fs::write(
+        agent.join("agents/explorer.md"),
+        "---\nname: scout\ndescription: Looks around\n---\nLook around.\n",
+    )
+    .unwrap();
+    std::fs::write(agent.join("commands/model.md"), "Pick a model.\n").unwrap();
+
+    let report = sandbox.migrate(Source::Omp, &everything()).await;
+    let skipped = |kind| report.of(Source::Omp, kind, Status::Skipped);
+    let built_in = |kind| {
+        skipped(kind)
+            .into_iter()
+            .filter(|line| line.ends_with("built-in, azazel has its own"))
+            .count()
+    };
+    assert_eq!(built_in(Kind::Skills), 1, "{}", report.render());
+    assert_eq!(built_in(Kind::Agents), 1, "{}", report.render());
+    assert_eq!(built_in(Kind::Commands), 1, "{}", report.render());
+    let home = sandbox.path("azazel");
+    assert!(!home.join("skills/code-review").exists());
+    assert!(!home.join("agents/explorer.md").exists());
+    assert!(!home.join("commands/model.md").exists());
+    // The others come over as before.
+    assert!(home.join("agents/auditor.md").is_file());
+    assert!(home.join("commands/standup.md").is_file());
 }
 
 #[tokio::test]

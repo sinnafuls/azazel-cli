@@ -406,6 +406,10 @@ pub struct Tui {
     notice: Option<String>,
     last_escape: Option<Instant>,
     last_interrupt: Option<Instant>,
+    /// A `ctrl+v` press reached azazel and its release has not yet (Windows).
+    paste_key_down: bool,
+    /// When the last burst of typed or pasted keys was taken (Windows).
+    last_burst: Option<Instant>,
     /// The chain to go back to after a command that ran one prompt on another model.
     restore_chain: Option<Vec<ModelSpec>>,
     /// The sub-agent whose work is shown in the transcript next to the lead's.
@@ -663,6 +667,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         notice: None,
         last_escape: None,
         last_interrupt: None,
+        paste_key_down: false,
+        last_burst: None,
         restore_chain: None,
         follow: None,
         followed_tools: Vec::new(),
@@ -717,7 +723,14 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     let closing = tui.attention.close();
     tui.write_out(&closing);
     tui.guard.suspend();
-    tui.backend.finish().await;
+    // The terminal is the user's again. A Ctrl+C while the session ends ends azazel at once.
+    tokio::select! {
+        () = tui.backend.finish() => {}
+        _ = tokio::signal::ctrl_c() => {
+            tracing::warn!("ctrl+c while the session ended: azazel ends at once");
+            std::process::exit(130);
+        }
+    }
     // Starting again returns to the session by itself: nobody has to be told how.
     if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended && !tui.restarting) {
         println!("{farewell}");
@@ -1651,6 +1664,22 @@ impl Tui {
     // ------------------------------------------------------------ terminal input
 
     async fn on_terminal(&mut self, event: Event) {
+        // Windows Terminal keeps `ctrl+v` for its own paste. When the clipboard holds no text
+        // (a screenshot) it pastes nothing, and only the key's release reaches azazel.
+        if cfg!(windows)
+            && let Event::Key(key) = &event
+            && input::is_paste_key(key)
+        {
+            if key.kind != KeyEventKind::Release {
+                self.paste_key_down = true;
+            } else if input::press_was_kept(
+                std::mem::take(&mut self.paste_key_down),
+                self.last_burst.map(|at| at.elapsed()),
+            ) {
+                self.on_key(KeyEvent::new(key.code, key.modifiers)).await;
+                return;
+            }
+        }
         // Windows consoles have no bracketed paste: a paste is a burst of key presses.
         let event = if cfg!(windows)
             && let Event::Key(key) = &event
@@ -1666,6 +1695,7 @@ impl Tui {
                     self.on_key(input::key_for(typed)).await;
                 }
             }
+            self.last_burst = Some(Instant::now());
             // What ended the burst is handled like any other event.
             match after {
                 Some(event) => event,

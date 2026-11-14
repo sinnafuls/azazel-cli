@@ -118,6 +118,10 @@ Console account the key came from, not a sign-in.
   omp's `bash` is `shell`, `thinkingLevel` and `effort` become `thinking`. Every other key (`color`,
   `hooks`, `mcpServers`, `blocking`, ...) is dropped and named. A definition azazel could not load after
   that is left out with the reason.
+- A skill, agent or command with the name of one built into azazel (a built-in skill such as
+  `code-review`, an agent such as `scout` or `reviewer`, a slash command such as `/model`) is left out and
+  reported as `skipped`, `built-in, azazel has its own`. A skill or agent is known by the `name` its
+  frontmatter gives, else by its file.
 - What azazel reads where it is stays there and is reported as `in place`: `~/.claude/skills`,
   `~/.agents/skills`, and a project's `.claude/skills`, `.claude/commands`, `.claude/agents`,
   `.claude/rules` and `.mcp.json` (see [skills and commands](skills-and-commands.md), [team](team.md),
@@ -198,8 +202,19 @@ times of the original (it sorts by when it was last used there), and the origina
   Messages on branches that were left are counted in the report and not imported.
 - Thinking is kept as text. The signature that lets a provider take its own thinking back is kept for
   Anthropic's and dropped for the others.
-- Tool calls keep the names and inputs the other harness gave them. A call without a recorded result gets
-  one that says so; a result without a call is left out; both are counted in the report.
+- Tool calls are renamed to the azazel tool that does the same, so that a resumed session calls azazel's
+  tools: pi's and omp's `bash` is `shell`, `ls` is `read`, `find` is `glob`; Claude Code's `Bash` is `shell`,
+  `Read`, `Write`, `Edit`, `MultiEdit`, `Glob` and `Grep` are `read`, `write`, `edit`, `edit`, `glob` and
+  `grep`, `WebFetch` and `WebSearch` are `web_fetch` and `web_search`, `Task` is `task`, `TodoWrite` is
+  `todo`; Codex's `exec_command` and `local_shell` are `shell`, `apply_patch` is `patch`, `update_plan` is
+  `todo`; jcode's `bash` is `shell`, `webfetch` is `web_fetch`. A name azazel has nothing for (an MCP
+  tool, a tool of the harness's own) is kept. Inputs stay as they were, and each call keeps its id and its
+  result. A call without a recorded result gets one that says so; a result without a call is left out;
+  both are counted in the report.
+- Conversations imported before tool calls were renamed are fixed with `azazel migrate --fix-chats`: it
+  renames the calls in every imported session (and its sub-agents' transcripts) of every project, keeps
+  each file it changes beside it as `<file>.jsonl.bak`, and leaves azazel's own sessions alone. Running it
+  again changes nothing.
 - Sub-agents' conversations (omp's `<session>/<Agent>.jsonl`, Claude Code's `subagents/agent-*.jsonl`)
   become the session's agent transcripts; a sub-agent's own sub-agent is named after both (`Scout.Helper`).
 - A command you ran with `!` in pi or omp becomes the note azazel writes for its own `!` commands. What a

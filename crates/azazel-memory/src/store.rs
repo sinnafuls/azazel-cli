@@ -2,7 +2,7 @@
 //! on the search index.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use azazel_ai::Credentials;
@@ -21,6 +21,8 @@ pub const KINDS: [&str; 5] = ["fact", "decision", "preference", "convention", "g
 const PINNED_CHARS: usize = 4800;
 /// Rows embedded per request when catching up.
 const EMBED_BATCH: i64 = 64;
+/// Times an extraction left for a later session is started before it is let go.
+const EXTRACTION_ATTEMPTS: i64 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Scope {
@@ -359,6 +361,60 @@ impl MemoryStore {
                 > 0;
         }
         Ok(found)
+    }
+
+    /// Puts the conversation in the session file `session` in line for extraction, which a later
+    /// session of this project does in the background.
+    pub(crate) async fn queue_extraction(&self, session: &Path) -> Result<(), String> {
+        let session = session.to_string_lossy().into_owned();
+        self.project
+            .call(move |conn| {
+                conn.execute(
+                    "INSERT INTO pending_extractions (session) VALUES (?1)
+                     ON CONFLICT (session) DO UPDATE SET attempts = 0",
+                    params![session],
+                )
+            })
+            .await
+            .map(drop)
+    }
+
+    /// The session files in line for extraction, each counted as tried once more. One that was
+    /// tried [`EXTRACTION_ATTEMPTS`] times already is let go: a process that ends before an
+    /// extraction finishes does not have every later one pay for it again.
+    pub(crate) async fn take_extractions(&self) -> Result<Vec<PathBuf>, String> {
+        self.project
+            .call(|conn| {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "DELETE FROM pending_extractions WHERE attempts >= ?1",
+                    params![EXTRACTION_ATTEMPTS],
+                )?;
+                tx.execute("UPDATE pending_extractions SET attempts = attempts + 1", [])?;
+                let sessions: Vec<String> = {
+                    let mut statement =
+                        tx.prepare("SELECT session FROM pending_extractions ORDER BY rowid")?;
+                    let rows = statement.query_map([], |row| row.get(0))?;
+                    rows.collect::<rusqlite::Result<_>>()?
+                };
+                tx.commit()?;
+                Ok(sessions.into_iter().map(PathBuf::from).collect())
+            })
+            .await
+    }
+
+    /// Takes `session` out of the line: it was extracted, or there is nothing left to extract.
+    pub(crate) async fn extracted(&self, session: &Path) -> Result<(), String> {
+        let session = session.to_string_lossy().into_owned();
+        self.project
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM pending_extractions WHERE session = ?1",
+                    params![session],
+                )
+            })
+            .await
+            .map(drop)
     }
 
     /// Every memory of both stores, superseded ones included, as JSON lines, oldest first.
