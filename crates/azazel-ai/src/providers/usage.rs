@@ -17,8 +17,8 @@ use crate::limits::{REJECTED, Window, read_file, update_file};
 use crate::oauth::refresh::{fresh_login, stored_login};
 use crate::providers::presets::ProviderConfig;
 
-const ANTHROPIC: &str = "anthropic";
-const CHATGPT: &str = "openai-codex";
+pub(crate) const ANTHROPIC: &str = "anthropic";
+pub(crate) const CHATGPT: &str = "openai-codex";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// What extra usage (requests beyond the plan, paid for one by one) has cost in the current
@@ -36,9 +36,11 @@ pub struct Spend {
 /// Resets of usage windows the account holds and may spend when a window is full.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetOffer {
-    /// What the provider hands out: `credits` for the reset credits of a ChatGPT plan.
+    /// What the provider hands out: `credits` for the reset credits of a ChatGPT plan,
+    /// `session` for the weekly reset of a Claude subscription's 5-hour window, `weekly` for
+    /// its earned resets of a weekly window (see [`super::resets`]).
     pub kind: String,
-    /// How many can be spent now.
+    /// How many the account holds.
     pub available: u32,
     /// Unix seconds at which the first of them lapses, when the provider says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -47,6 +49,31 @@ pub struct ResetOffer {
     /// says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_available_at: Option<u64>,
+    /// False when the provider says the account does not take part in this kind of reset.
+    #[serde(default = "yes")]
+    pub eligible: bool,
+    /// Whether one can be spent as things stand: some can only be spent while the window
+    /// they give back is full. `None` when the provider does not say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usable: Option<bool>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl ResetOffer {
+    /// `count` resets of `kind` that the account holds, with nothing else known about them.
+    pub fn held(kind: &str, count: u32) -> ResetOffer {
+        ResetOffer {
+            kind: kind.to_string(),
+            available: count,
+            expires_at: None,
+            next_available_at: None,
+            eligible: true,
+            usable: None,
+        }
+    }
 }
 
 /// What one account has left, as the provider reported it.
@@ -64,9 +91,14 @@ pub struct UsageReport {
     /// What that has cost so far, when it is on and the provider says.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub spend: Option<Spend>,
-    /// The resets the account holds, as far as the usage endpoint itself tells.
+    /// The resets the account holds: what the usage endpoint itself tells, or what the
+    /// provider said when it was last asked about them ([`super::resets`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub resets: Vec<ResetOffer>,
+    /// Unix seconds at which the provider was asked about the resets, when that takes a
+    /// question of its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resets_asked_at: Option<u64>,
     /// Unix seconds.
     pub fetched_at: u64,
 }
@@ -74,6 +106,79 @@ pub struct UsageReport {
 /// Whether `provider` has an endpoint that reports a login's usage.
 pub fn supported(provider: &ProviderConfig) -> bool {
     provider.oauth.is_some() && matches!(provider.id.as_str(), ANTHROPIC | CHATGPT)
+}
+
+/// The token and the headers of one stored login, as a request to the provider's account
+/// endpoints carries them.
+pub(crate) struct Login {
+    pub access: String,
+    /// The account fields kept with the login (`account_id`, `org_id`, ...).
+    pub fields: BTreeMap<String, String>,
+    headers: Vec<(String, String)>,
+}
+
+impl Login {
+    /// The login stored as `account` of `provider`. With `renew`, one that is about to expire
+    /// is renewed first, as for any request; without it the stored token is used while it
+    /// lasts, and there is no login to use once it has run out.
+    pub(crate) async fn of(
+        provider: &ProviderConfig,
+        credentials: &Credentials,
+        account: &str,
+        renew: bool,
+    ) -> Result<Login, String> {
+        let id = provider.id.as_str();
+        let is_login = credentials
+            .accounts(id)
+            .iter()
+            .any(|stored| stored.label == account && stored.login);
+        if !is_login {
+            return Err(format!(
+                "account {account} of {id} is not a login; usage is reported for subscriptions only"
+            ));
+        }
+        let key = account_key(id, account);
+        let (access, fields) = match renew {
+            true => fresh_login(credentials, provider, &key)
+                .await
+                .map_err(|e| e.to_string())?,
+            false => stored_login(credentials, &key).ok_or_else(|| {
+                format!(
+                    "the login of account {account} of {id} is due for renewal; it is renewed when it is next used"
+                )
+            })?,
+        };
+        let headers = (Auth::OAuth {
+            access: access.clone(),
+            fields: fields.clone(),
+        })
+        .login_headers(provider);
+        Ok(Login {
+            access,
+            fields,
+            headers,
+        })
+    }
+
+    /// `request` with the login on it.
+    pub(crate) fn on(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let mut request = request
+            .bearer_auth(&self.access)
+            .header("accept", "application/json");
+        for (name, value) in &self.headers {
+            request = request.header(name, value);
+        }
+        request
+    }
+}
+
+/// The address the account endpoints of the ChatGPT backend sit under: requests go to
+/// `{root}/codex`, the account endpoints are beside it.
+pub(crate) fn chatgpt_root(provider: &ProviderConfig) -> &str {
+    provider
+        .base_url
+        .strip_suffix("/codex")
+        .unwrap_or(&provider.base_url)
 }
 
 /// Asks `provider` what the login stored as `account` has left, and keeps the answer in the
@@ -91,43 +196,12 @@ pub async fn fetch(
     let id = provider.id.as_str();
     let url = match id {
         ANTHROPIC => format!("{}/api/oauth/usage", provider.base_url),
-        // Requests go to `{root}/codex`; the account endpoints sit beside it.
-        CHATGPT => format!(
-            "{}/wham/usage",
-            provider
-                .base_url
-                .strip_suffix("/codex")
-                .unwrap_or(&provider.base_url)
-        ),
+        CHATGPT => format!("{}/wham/usage", chatgpt_root(provider)),
         _ => return Err(format!("{id} does not report usage")),
     };
-    let is_login = credentials
-        .accounts(id)
-        .iter()
-        .any(|stored| stored.label == account && stored.login);
-    if !is_login {
-        return Err(format!(
-            "account {account} of {id} is not a login; usage is reported for subscriptions only"
-        ));
-    }
-    let key = account_key(id, account);
-    let (access, fields) = match renew {
-        true => fresh_login(credentials, provider, &key)
-            .await
-            .map_err(|e| e.to_string())?,
-        false => stored_login(credentials, &key).ok_or_else(|| {
-            format!("the login of account {account} of {id} is due for renewal; it is renewed when it is next used")
-        })?,
-    };
-    let mut request = client
-        .get(url)
-        .timeout(TIMEOUT)
-        .bearer_auth(&access)
-        .header("accept", "application/json");
-    for (name, value) in (Auth::OAuth { access, fields }).login_headers(provider) {
-        request = request.header(name, value);
-    }
-    let response = request
+    let login = Login::of(provider, credentials, account, renew).await?;
+    let response = login
+        .on(client.get(url).timeout(TIMEOUT))
         .send()
         .await
         .map_err(|e| format!("could not reach {id} for its usage: {}", e.without_url()))?;
@@ -179,8 +253,20 @@ pub fn keep(file: &Path, report: &UsageReport) {
     };
     update_file(file, |all| {
         let key = account_key(&report.provider, &report.account);
-        if let Some(blocks) = all.get(&key).and_then(|stored| stored.get("blocks")) {
-            value["blocks"] = blocks.clone();
+        if let Some(stored) = all.get(&key) {
+            if let Some(blocks) = stored.get("blocks") {
+                value["blocks"] = blocks.clone();
+            }
+            // An answer that did not ask about the resets leaves what is known of them.
+            if report.resets_asked_at.is_none()
+                && report.resets.is_empty()
+                && let Some(asked_at) = stored.get("resets_asked_at").filter(|at| !at.is_null())
+            {
+                value["resets_asked_at"] = asked_at.clone();
+                if let Some(resets) = stored.get("resets") {
+                    value["resets"] = resets.clone();
+                }
+            }
         }
         all.insert(key, value);
     });
@@ -195,6 +281,7 @@ fn blank() -> UsageReport {
         extra_usage: None,
         spend: None,
         resets: Vec::new(),
+        resets_asked_at: None,
         fetched_at: 0,
     }
 }
@@ -205,7 +292,7 @@ fn status(used: f32) -> String {
 }
 
 /// The words of `text` in lower case with dashes between them: what a window name ends in.
-fn dashed(text: &str) -> String {
+pub(crate) fn dashed(text: &str) -> String {
     text.split(|c: char| !c.is_ascii_alphanumeric())
         .filter(|word| !word.is_empty())
         .map(str::to_ascii_lowercase)
@@ -417,12 +504,10 @@ pub fn parse_chatgpt(body: &Value, now: u64) -> UsageReport {
         );
     }
     if let Some(available) = body["rate_limit_reset_credits"]["available_count"].as_u64() {
-        report.resets.push(ResetOffer {
-            kind: "credits".to_string(),
-            available: u32::try_from(available).unwrap_or(u32::MAX),
-            expires_at: None,
-            next_available_at: None,
-        });
+        report.resets.push(ResetOffer::held(
+            super::resets::CREDITS,
+            u32::try_from(available).unwrap_or(u32::MAX),
+        ));
     }
     report
 }
@@ -439,7 +524,7 @@ pub(crate) fn window_name(seconds: Option<u64>, field: &str) -> String {
 }
 
 /// Unix seconds of an RFC 3339 time such as `2026-11-12T18:00:00.123+00:00`.
-fn unix_seconds(text: &str) -> Option<u64> {
+pub(crate) fn unix_seconds(text: &str) -> Option<u64> {
     let (date, time) = text.trim().split_once(['T', 't', ' '])?;
     let mut date = date.split('-').map(|part| part.parse::<i64>().ok());
     let (year, month, day) = (date.next()??, date.next()??, date.next()??);
@@ -730,12 +815,7 @@ mod tests {
         assert!(!report.windows[3].exhausted());
         assert_eq!(
             report.resets,
-            [ResetOffer {
-                kind: "credits".into(),
-                available: 2,
-                expires_at: None,
-                next_available_at: None
-            }]
+            [ResetOffer::held("credits", 2)]
         );
 
         // A plan the backend refuses for as a whole, said at the top of the answer.

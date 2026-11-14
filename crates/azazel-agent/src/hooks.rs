@@ -4,8 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
-use azazel_ai::{Message, ModelSpec, Request};
+use azazel_ai::{AiError, Message, ModelSpec, Request};
 use serde_json::Value;
+use tokio_util::sync::CancellationToken;
 
 use crate::event::AgentInfo;
 use crate::inspect::ContextReport;
@@ -66,7 +67,47 @@ pub trait AgentHooks: Send + Sync {
     fn stream_thinking(&self, _agent: &AgentInfo, _so_far: &str) -> Option<String> {
         None
     }
+
+    /// A request to `chain` failed with `error` because an account is out of its allowance and
+    /// no model of the chain could answer. What comes back decides whether the request is
+    /// sent again; the default leaves the failure as it is. `cancel` ends the run.
+    async fn out_of_allowance(
+        &self,
+        _agent: &AgentInfo,
+        _chain: &[ModelSpec],
+        _error: &AiError,
+        _cancel: &CancellationToken,
+    ) -> Recovery {
+        Recovery::Fail
+    }
 }
+
+/// What to do about a request that failed for lack of allowance.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Recovery {
+    /// Nothing: the failure ends the run.
+    Fail,
+    /// Send the request again: the allowance is back, or may be.
+    Retry,
+    /// Send the request to these models, and the agent's later requests too.
+    Model(Vec<ModelSpec>),
+}
+
+/// Decides what happens when an account runs out of allowance in the middle of a run: the
+/// application registers one as the service [`OnLimit`].
+#[async_trait]
+pub trait LimitHandler: Send + Sync {
+    async fn out_of_allowance(
+        &self,
+        agent: &AgentInfo,
+        chain: &[ModelSpec],
+        error: &AiError,
+        cancel: &CancellationToken,
+    ) -> Recovery;
+}
+
+/// The service under which the [`LimitHandler`] of a run is registered.
+pub struct OnLimit(pub Arc<dyn LimitHandler>);
 
 pub struct NoHooks;
 
