@@ -345,6 +345,8 @@ fn summary(row: SessionRow) -> (SessionSummary, Vec<String>) {
         prompts: row.prompts as usize,
         models: Default::default(),
         tools: Default::default(),
+        cwd: String::new(),
+        archived: false,
     };
     (summary, row.matches)
 }
@@ -1073,6 +1075,20 @@ impl Backend for Remote {
         };
         self.client.send(command).await.map_err(|e| e.to_string())?;
         locked(&self.shared.state).mode = mode.to_string();
+        Ok(())
+    }
+
+    fn agents(&self) -> (Vec<azazel_protocol::PrimaryAgent>, String) {
+        let state = self.state();
+        (state.primary_agents, state.agent)
+    }
+
+    async fn set_agent(&mut self, name: &str) -> Result<(), String> {
+        let command = Command::SetAgent {
+            agent: name.to_string(),
+        };
+        self.client.send(command).await.map_err(|e| e.to_string())?;
+        locked(&self.shared.state).agent = name.to_string();
         Ok(())
     }
 

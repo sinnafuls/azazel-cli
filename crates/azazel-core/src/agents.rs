@@ -1,5 +1,6 @@
 //! Agent definitions: Markdown files whose frontmatter describes a specialist (tools, model, limits)
-//! and whose body is its system prompt.
+//! and whose body is its system prompt. A definition is a sub-agent the team starts, a primary
+//! agent the lead can be ([`LeadAgent`]), or both.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,30 @@ pub enum Isolation {
     Worktree,
 }
 
+/// What a definition may be used as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgentMode {
+    /// An agent the team starts with `task` (the default).
+    #[default]
+    Subagent,
+    /// A persona of the lead, which the user switches to.
+    Primary,
+    /// Both.
+    All,
+}
+
+impl AgentMode {
+    /// Whether the team may start it as a sub-agent.
+    pub fn subagent(self) -> bool {
+        self != AgentMode::Primary
+    }
+
+    /// Whether the lead can be it.
+    pub fn primary(self) -> bool {
+        self != AgentMode::Subagent
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentDef {
     pub name: String,
@@ -59,8 +84,11 @@ pub struct AgentDef {
     /// The fallback chain; never empty when present.
     pub model: Option<Vec<ModelSpec>>,
     pub thinking: Option<ThinkingLevel>,
-    /// `mode: plan`: the agent works read-only whatever the session mode is.
+    /// `permission-mode: plan`: the agent works read-only whatever the session mode is.
     pub plan_mode: bool,
+    pub mode: AgentMode,
+    /// `#rrggbb`: the colour the UI shows the agent in.
+    pub color: Option<String>,
     pub max_turns: Option<u32>,
     pub skills: Vec<String>,
     /// Definitions this agent may spawn itself.
@@ -126,6 +154,33 @@ impl AgentDefs {
     /// Sorted by name.
     pub fn list(&self) -> Vec<Arc<AgentDef>> {
         self.read().defs.values().cloned().collect()
+    }
+
+    /// The definition `name` when the team may start it as a sub-agent.
+    pub fn subagent(&self, name: &str) -> Option<Arc<AgentDef>> {
+        self.get(name).filter(|def| def.mode.subagent())
+    }
+
+    /// The definitions the team may start, sorted by name.
+    pub fn subagents(&self) -> Vec<Arc<AgentDef>> {
+        self.list()
+            .into_iter()
+            .filter(|def| def.mode.subagent())
+            .collect()
+    }
+
+    /// The definition `name` when the lead can be it.
+    pub fn primary(&self, name: &str) -> Option<Arc<AgentDef>> {
+        self.get(name).filter(|def| def.mode.primary())
+    }
+
+    /// The definitions the lead can be, in the order `tab` steps through them: `build` first,
+    /// then the others by name.
+    pub fn primaries(&self) -> Vec<Arc<AgentDef>> {
+        let mut primaries: Vec<Arc<AgentDef>> =
+            self.list().into_iter().filter(|def| def.mode.primary()).collect();
+        primaries.sort_by_key(|def| def.name != BUILD);
+        primaries
     }
 
     pub fn invalid(&self) -> Vec<InvalidDef> {
@@ -357,6 +412,63 @@ fn choice(key: &str, value: &Value, default: &str, other: &str) -> Result<bool, 
     }
 }
 
+fn agent_mode(key: &str, value: &Value) -> Result<AgentMode, String> {
+    match value {
+        Value::Null => Ok(AgentMode::Subagent),
+        other => match shown(other).as_str() {
+            "subagent" => Ok(AgentMode::Subagent),
+            "primary" => Ok(AgentMode::Primary),
+            "all" => Ok(AgentMode::All),
+            // What `mode` meant before primary agents: the key for it is `permission-mode` now.
+            text @ ("plan" | "inherit") => Err(format!(
+                "{key}: expected `subagent`, `primary` or `all`; `{text}` is a value of `permission-mode`"
+            )),
+            text => Err(format!(
+                "{key}: expected `subagent`, `primary` or `all`, got `{text}`"
+            )),
+        },
+    }
+}
+
+/// The colours a definition can name, besides `#rrggbb`: Claude Code's and the usual ones.
+const COLORS: [(&str, &str); 11] = [
+    ("red", "#e5534b"),
+    ("orange", "#e8913a"),
+    ("yellow", "#d4b02f"),
+    ("green", "#57ab5a"),
+    ("cyan", "#39c5cf"),
+    ("blue", "#539bf5"),
+    ("purple", "#a371f7"),
+    ("magenta", "#c061cb"),
+    ("pink", "#e275ad"),
+    ("gray", "#8b949e"),
+    ("grey", "#8b949e"),
+];
+
+/// `#rrggbb`, lowercased, or the value of a colour name.
+fn agent_color(key: &str, value: &Value) -> Result<Option<String>, String> {
+    let Some(text) = scalar(value).filter(|text| !text.is_empty()) else {
+        return Ok(None);
+    };
+    let lower = text.to_ascii_lowercase();
+    if let Some(hex) = lower.strip_prefix('#')
+        && hex.len() == 6
+        && hex.bytes().all(|b| b.is_ascii_hexdigit())
+    {
+        return Ok(Some(lower));
+    }
+    match COLORS.iter().find(|(name, _)| *name == lower) {
+        Some((_, hex)) => Ok(Some((*hex).to_string())),
+        None => {
+            let names: Vec<&str> = COLORS.iter().map(|(name, _)| *name).collect();
+            Err(format!(
+                "{key}: expected `#rrggbb` or one of {}, got `{text}`",
+                names.join(", ")
+            ))
+        }
+    }
+}
+
 fn turn_limit(key: &str, value: &Value) -> Result<Option<u32>, String> {
     let turns = match value {
         Value::Null => return Ok(None),
@@ -415,11 +527,21 @@ pub fn parse_def(file: &Path, text: &str, source: DefSource) -> Result<AgentDef,
         .map(|(key, value)| thinking_level(key, value))
         .transpose()?
         .flatten();
-    let plan_mode = match field(&meta, &["mode", "permissionMode"]) {
+    let plan_mode = match field(&meta, &["permission-mode", "permissionMode"]) {
         None => false,
         // Claude Code's other modes have no counterpart here: such an agent follows the session.
         Some((_, value)) if source == DefSource::Compat => value.as_str() == Some("plan"),
         Some((key, value)) => choice(key, value, "inherit", "plan")?,
+    };
+    let mode = field(&meta, &["mode"])
+        .map(|(key, value)| agent_mode(key, value))
+        .transpose()?
+        .unwrap_or_default();
+    let color = match field(&meta, &["color"]) {
+        None => None,
+        // A colour Claude Code knows and azazel does not is left to the theme.
+        Some((key, value)) if source == DefSource::Compat => agent_color(key, value).ok().flatten(),
+        Some((key, value)) => agent_color(key, value)?,
     };
     let max_turns = field(&meta, &["max-turns", "maxTurns"])
         .map(|(key, value)| turn_limit(key, value))
@@ -450,6 +572,8 @@ pub fn parse_def(file: &Path, text: &str, source: DefSource) -> Result<AgentDef,
         model,
         thinking,
         plan_mode,
+        mode,
+        color,
         max_turns,
         skills,
         spawns,
@@ -532,6 +656,128 @@ pub fn discover(builtin: &[(&str, &str)], roots: &[(PathBuf, DefSource)]) -> Age
     defs
 }
 
+/// The primary agent a session starts with when `[agents] default` names no other.
+pub const BUILD: &str = "build";
+
+type LeadWatcher = Arc<dyn Fn(&Arc<AgentDef>) + Send + Sync>;
+
+/// Why `name` cannot be the lead, with the agents that can.
+pub fn not_primary(defs: &AgentDefs, name: &str) -> String {
+    let primaries: Vec<String> = defs.primaries().iter().map(|def| def.name.clone()).collect();
+    let primaries = match primaries.as_slice() {
+        [] => "there are none".to_string(),
+        names => format!("the primary agents are: {}", names.join(", ")),
+    };
+    match defs.get(name) {
+        Some(_) => format!("`{name}` is a sub-agent, not a primary agent; {primaries}"),
+        None => format!("there is no agent `{name}`; {primaries}"),
+    }
+}
+
+/// The primary agent the lead is: the definition whose body is the lead's identity and whose
+/// model, thinking level, tools, limits, skills and colour apply to the lead while it is
+/// selected. Registered as a service; the prompt, the lead's tools and the UI read it.
+pub struct LeadAgent {
+    defs: Arc<AgentDefs>,
+    default: String,
+    current: RwLock<String>,
+    watchers: RwLock<Vec<LeadWatcher>>,
+}
+
+impl LeadAgent {
+    /// The lead starts as `default`; `Err` when that is not a primary agent.
+    pub fn new(defs: Arc<AgentDefs>, default: &str) -> Result<LeadAgent, String> {
+        if defs.primary(default).is_none() {
+            return Err(not_primary(&defs, default));
+        }
+        Ok(LeadAgent {
+            defs,
+            default: default.to_string(),
+            current: RwLock::new(default.to_string()),
+            watchers: RwLock::default(),
+        })
+    }
+
+    /// The agent a session starts as (`[agents] default`).
+    pub fn default_name(&self) -> &str {
+        &self.default
+    }
+
+    pub fn name(&self) -> String {
+        self.current
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
+
+    /// The definition of the agent the lead is; `None` when the files were read again without it.
+    pub fn def(&self) -> Option<Arc<AgentDef>> {
+        self.defs.primary(&self.name())
+    }
+
+    /// The agents the lead can be, in the order `tab` steps through them.
+    pub fn primaries(&self) -> Vec<Arc<AgentDef>> {
+        self.defs.primaries()
+    }
+
+    /// Makes the lead `name` and tells the watchers when that changed it. Returns whether it did.
+    pub fn set(&self, name: &str) -> Result<bool, String> {
+        let def = self
+            .defs
+            .primary(name)
+            .ok_or_else(|| not_primary(&self.defs, name))?;
+        let previous = std::mem::replace(
+            &mut *self.current.write().unwrap_or_else(PoisonError::into_inner),
+            name.to_string(),
+        );
+        if previous == name {
+            return Ok(false);
+        }
+        let watchers = self
+            .watchers
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        for watcher in watchers {
+            watcher(&def);
+        }
+        Ok(true)
+    }
+
+    /// Puts the lead back to the agent a session recorded, without telling the watchers: nothing
+    /// changed that would need recording again.
+    pub fn restore(&self, name: &str) -> Result<Arc<AgentDef>, String> {
+        let def = self
+            .defs
+            .primary(name)
+            .ok_or_else(|| not_primary(&self.defs, name))?;
+        *self.current.write().unwrap_or_else(PoisonError::into_inner) = name.to_string();
+        Ok(def)
+    }
+
+    /// The primary agent after the one the lead is (before it, when `forward` is false), going
+    /// round; `None` when there is no other.
+    pub fn next(&self, forward: bool) -> Option<String> {
+        let names: Vec<String> = self.primaries().iter().map(|def| def.name.clone()).collect();
+        let current = self.name();
+        let at = names.iter().position(|name| *name == current);
+        let next = match (at, forward) {
+            (None, _) => 0,
+            (Some(at), true) => (at + 1) % names.len(),
+            (Some(at), false) => (at + names.len() - 1) % names.len(),
+        };
+        names.get(next).filter(|name| **name != current).cloned()
+    }
+
+    /// `watcher` is called with the new definition after every change of the agent.
+    pub fn on_change(&self, watcher: LeadWatcher) {
+        self.watchers
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(watcher);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -543,7 +789,8 @@ tools: read, grep, glob, shell(git diff:*), shell(git log:*), shell(git show:*)
 disallowed-tools: write, edit
 model: [\"@slow\", \"@default\"]
 thinking: high
-mode: plan
+permission-mode: plan
+color: purple
 max-turns: 40
 skills: [code-review]
 spawns: []
@@ -600,6 +847,8 @@ System prompt body.
                 model: Some(vec![spec("@slow"), spec("@default")]),
                 thinking: Some(ThinkingLevel::High),
                 plan_mode: true,
+                mode: AgentMode::Subagent,
+                color: Some("#a371f7".into()),
                 max_turns: Some(40),
                 skills: strings(&["code-review"]),
                 spawns: Vec::new(),
@@ -626,6 +875,8 @@ System prompt body.
                 model: None,
                 thinking: None,
                 plan_mode: false,
+                mode: AgentMode::Subagent,
+                color: None,
                 max_turns: None,
                 skills: Vec::new(),
                 spawns: Vec::new(),
@@ -636,7 +887,7 @@ System prompt body.
                 path: Some(PathBuf::from("agent.md")),
             }
         );
-        let explicit = parse("mode: inherit\nisolation: worktree", DefSource::Home).unwrap();
+        let explicit = parse("permission-mode: inherit\nisolation: worktree", DefSource::Home).unwrap();
         assert!(!explicit.plan_mode);
         assert_eq!(explicit.isolation, Isolation::Worktree);
     }
@@ -726,8 +977,26 @@ System prompt body.
             "thinking: unknown level `loud`; expected one of off, minimal, low, medium, high, xhigh, max"
         );
         assert_eq!(
+            extra("permission-mode: yolo"),
+            "permission-mode: expected `inherit` or `plan`, got `yolo`"
+        );
+        assert_eq!(
             extra("mode: yolo"),
-            "mode: expected `inherit` or `plan`, got `yolo`"
+            "mode: expected `subagent`, `primary` or `all`, got `yolo`"
+        );
+        assert_eq!(
+            extra("mode: plan"),
+            "mode: expected `subagent`, `primary` or `all`; `plan` is a value of `permission-mode`"
+        );
+        assert_eq!(
+            extra("color: chartreuse"),
+            "color: expected `#rrggbb` or one of red, orange, yellow, green, cyan, blue, purple, magenta, \
+             pink, gray, grey, got `chartreuse`"
+        );
+        assert_eq!(
+            extra("color: \"#12345\""),
+            "color: expected `#rrggbb` or one of red, orange, yellow, green, cyan, blue, purple, magenta, \
+             pink, gray, grey, got `#12345`"
         );
         assert_eq!(
             extra("permissionMode: acceptEdits"),
@@ -799,7 +1068,7 @@ System prompt body.
         }
         // Other empty values fall back to their defaults.
         let def = parse(
-            "model: []\nthinking:\nmode:\nmax-turns:\nskills:\nisolation:",
+            "model: []\nthinking:\nmode:\npermission-mode:\ncolor:\nmax-turns:\nskills:\nisolation:",
             DefSource::Project,
         )
         .unwrap();
@@ -808,10 +1077,20 @@ System prompt body.
                 def.model,
                 def.thinking,
                 def.plan_mode,
+                def.mode,
+                def.color,
                 def.max_turns,
                 def.isolation
             ),
-            (None, None, false, None, Isolation::None)
+            (
+                None,
+                None,
+                false,
+                AgentMode::Subagent,
+                None,
+                None,
+                Isolation::None
+            )
         );
         assert!(def.skills.is_empty());
     }
@@ -853,7 +1132,7 @@ System prompt body.
 
         let both = parse(
             "disallowedTools: write\ndisallowed-tools: edit\nmaxTurns: 7\nmax-turns: 9\n\
-             permissionMode: plan\nmode: inherit",
+             permissionMode: plan\npermission-mode: inherit",
             DefSource::Project,
         )
         .unwrap();
@@ -1135,5 +1414,106 @@ System prompt body.
         ];
         let labels = sources.map(|source| source.label());
         assert_eq!(labels, ["built-in", "package", "user", "compat", "project"]);
+    }
+
+    fn primaries_and_subagents(extra: &[(&str, &str)]) -> Arc<AgentDefs> {
+        let mut builtin = vec![
+            (
+                "build.md",
+                "---\nname: build\ndescription: builds\nmode: primary\n---\nB",
+            ),
+            (
+                "plan.md",
+                "---\nname: plan\ndescription: plans\nmode: primary\n---\nP",
+            ),
+            ("scout.md", "---\nname: scout\ndescription: looks\n---\nS"),
+            ("docs.md", "---\nname: docs\ndescription: both\nmode: all\n---\nD"),
+        ];
+        builtin.extend_from_slice(extra);
+        Arc::new(discover(&builtin, &[]))
+    }
+
+    #[test]
+    fn a_definition_is_a_subagent_a_primary_agent_or_both() {
+        assert_eq!(parse("", DefSource::Home).unwrap().mode, AgentMode::Subagent);
+        for (written, mode) in [
+            ("subagent", AgentMode::Subagent),
+            ("primary", AgentMode::Primary),
+            ("all", AgentMode::All),
+        ] {
+            assert_eq!(
+                parse(&format!("mode: {written}"), DefSource::Home).unwrap().mode,
+                mode
+            );
+        }
+        let defs = primaries_and_subagents(&[]);
+        let names = |defs: Vec<Arc<AgentDef>>| defs.iter().map(|def| def.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(defs.primaries()), ["build", "docs", "plan"]);
+        assert_eq!(names(defs.subagents()), ["docs", "scout"]);
+        assert!(defs.subagent("plan").is_none());
+        assert!(defs.primary("scout").is_none());
+        assert!(defs.subagent("docs").is_some() && defs.primary("docs").is_some());
+    }
+
+    #[test]
+    fn colours_are_hex_or_names_and_claude_code_colours_never_fail() {
+        assert_eq!(
+            parse("color: \"#A0B1C2\"", DefSource::Home)
+                .unwrap()
+                .color
+                .as_deref(),
+            Some("#a0b1c2")
+        );
+        assert_eq!(
+            parse("color: blue", DefSource::Home).unwrap().color.as_deref(),
+            Some("#539bf5")
+        );
+        assert_eq!(parse("color: chartreuse", DefSource::Compat).unwrap().color, None);
+    }
+
+    #[test]
+    fn the_lead_switches_only_between_primary_agents_and_tells_its_watchers() {
+        let defs = primaries_and_subagents(&[]);
+        assert_eq!(
+            LeadAgent::new(defs.clone(), "scout").err().unwrap(),
+            "`scout` is a sub-agent, not a primary agent; the primary agents are: build, docs, plan"
+        );
+        let lead = LeadAgent::new(defs.clone(), "build").unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let watching = seen.clone();
+        lead.on_change(Arc::new(move |def| {
+            watching.lock().unwrap().push(def.name.clone())
+        }));
+
+        assert_eq!(lead.next(true).as_deref(), Some("docs"));
+        assert_eq!(lead.next(false).as_deref(), Some("plan"));
+        assert_eq!(lead.set("plan"), Ok(true));
+        assert_eq!(lead.set("plan"), Ok(false));
+        assert_eq!(lead.next(true).as_deref(), Some("build"));
+        assert!(lead.set("scout").is_err());
+        assert!(
+            lead.set("ghost")
+                .unwrap_err()
+                .starts_with("there is no agent `ghost`")
+        );
+        assert_eq!(lead.name(), "plan");
+        assert_eq!(lead.def().unwrap().body, "P");
+        // Coming back to what a session recorded tells nobody.
+        assert_eq!(lead.restore("build").unwrap().name, "build");
+        assert_eq!(*seen.lock().unwrap(), ["plan"]);
+        assert_eq!(lead.default_name(), "build");
+
+        let alone = LeadAgent::new(
+            Arc::new(discover(
+                &[(
+                    "build.md",
+                    "---\nname: build\ndescription: b\nmode: primary\n---\n",
+                )],
+                &[],
+            )),
+            "build",
+        )
+        .unwrap();
+        assert_eq!(alone.next(true), None);
     }
 }

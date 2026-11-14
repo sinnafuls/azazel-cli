@@ -854,7 +854,7 @@ fn claude_settings_become_rules_modes_and_keys_azazel_has() {
         serde_json::json!(["read", "grep", "shell(git diff:*)"])
     );
     assert_eq!(meta["model"], "@slow");
-    assert_eq!(meta["mode"], "plan");
+    assert_eq!(meta["permission-mode"], "plan");
     assert_eq!(meta["max-turns"], 20);
     assert!(!meta.contains_key("color"));
 

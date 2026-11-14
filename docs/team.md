@@ -66,14 +66,16 @@ already been applied. Report the files you created and the commands you ran.
 | `disallowed-tools` | Tool names removed from the set | none |
 | `model` | A spec or a list of specs (fallback chain) | `@default` |
 | `thinking` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `off` |
-| `mode` | `inherit` or `plan` (read-only whatever the session mode is). A definition can only narrow the session's mode, never widen it | `inherit` |
+| `mode` | `subagent` (the team starts it with `task`), `primary` (a persona of the lead, see [primary agents](#primary-agents)) or `all` (both) | `subagent` |
+| `permission-mode` | `inherit` or `plan` (read-only whatever the session mode is). A definition can only narrow the session's mode, never widen it | `inherit` |
+| `color` | `#rrggbb`, or `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `magenta`, `pink`, `gray`: the colour the UI shows a primary agent in | none |
 | `max-turns` | Model requests per prompt before the agent is told to give its final report | no limit |
 | `skills` | [Skills](skills-and-commands.md) whose text is appended to the system prompt | none |
 | `spawns` | Definitions this agent may itself start | none |
 | `isolation` | `none` or `worktree` | `none` |
 | `output-schema` | A JSON Schema (a YAML mapping, or JSON in a string) the agent's result must match; see [typed results](#typed-results) | none |
 
-`disallowedTools`, `maxTurns`, `permissionMode` and `outputSchema` are accepted as aliases. Other keys are ignored.
+`disallowedTools`, `maxTurns`, `permissionMode` and `outputSchema` are accepted as aliases. Other keys are ignored. A definition written before primary agents with `mode: plan` is refused with a message: that is `permission-mode: plan` now.
 
 ### Where definitions live
 
@@ -101,6 +103,41 @@ thinking = "high"
 ```
 
 `[agents.<name>]` takes `model` (a list) and `thinking`. It applies to any existing definition, built-in or your own. `model = []` removes the definition's chain so the agent uses `@default`.
+
+## Primary agents
+
+The lead is an agent too, and its persona is a definition: a **primary agent**. Two are built in, and `tab` in an empty input switches between them (`shift+tab` stays the [permission mode](permissions.md)):
+
+| Name | What the lead is |
+|---|---|
+| `build` | The default: the lead as it always worked, with every tool |
+| `plan` | Investigates read-only and writes a plan under `.azazel/plans/`; it changes nothing else, and the agents it starts are held to the same limit. It is plan mode as a persona (`permission-mode: plan`): `plan_submit` asks you to approve the plan, and approving it switches the lead to `build`, which carries it out |
+
+Any definition with `mode: primary` (or `all`) is one more. While the lead is a primary agent:
+
+- the definition's body replaces the lead's identity at the top of the system prompt; the rules, the environment, the context files and the rest stay;
+- its `tools` and `disallowed-tools` decide what the lead is offered, and `tool(pattern)` grants restrict the lead's calls as they restrict a sub-agent's;
+- `permission-mode: plan` keeps the lead (and every agent it starts) in plan mode;
+- its `model` and `thinking` replace the lead's while it is selected, and the lead goes back to its own when you switch to an agent without them (`--model` and `--thinking` on the command line win);
+- its `skills` are appended to its prompt, and its `color` paints the status line's `agent` segment and the rules around the input.
+
+```markdown
+---
+name: docs
+description: Writes and edits documentation only.
+mode: primary
+tools: read, glob, grep, web_search, web_fetch, write(docs/**), edit(docs/**)
+color: green
+---
+You are azazel, and you write documentation. Change files under docs/ only.
+```
+
+Switch with `tab`, with `/agent` (a picker) or `/agent <name>`; start a run as one with `--agent <name>`; set the agent sessions start as with `[agents] default` (`build` unless set). A client of [RPC](rpc.md) switches with `set_agent`, an [ACP](acp.md) client with the session option `agent`. The switch is written to the session, and resuming it comes back on the same agent. A primary agent is never started by `task`; one with `mode: all` is both.
+
+```toml
+[agents]
+default = "plan"
+```
 
 ## Orchestration tools
 

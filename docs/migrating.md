@@ -113,7 +113,7 @@ Console account the key came from, not a sign-in.
   `$ARGUMENTS[0]` becomes `$1`, and Codex's `$$` becomes `$`. Forms azazel has nothing for stay as written
   and are named: argument slices (`${@:2}`, `$@[2:1]`) and Codex's named arguments (`$FILES`).
 - An agent definition keeps `name`, `description`, `tools`, `disallowed-tools`, `model`, `thinking`,
-  `mode` (`plan`), `max-turns`, `skills`, `spawns`, `isolation` and an `output-schema` written as a
+  `permission-mode` (`plan`), `max-turns`, `skills`, `spawns`, `isolation` and an `output-schema` written as a
   mapping. Claude Code's tool names and model aliases are translated (`Bash` is `shell`, `opus` is `@slow`),
   omp's `bash` is `shell`, `thinkingLevel` and `effort` become `thinking`. Every other key (`color`,
   `hooks`, `mcpServers`, `blocking`, ...) is dropped and named. A definition azazel could not load after

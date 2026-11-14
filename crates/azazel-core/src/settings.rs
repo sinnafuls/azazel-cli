@@ -12,8 +12,8 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, EditorMode,
-    GlyphSetting, ImageMode, Indicator, PermissionMode, QueueMode, ReadGuard, StatusPreset, StatusSeparator,
-    TelemetryExporter, ToolStyle, WriteSeverity,
+    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, StatusPreset,
+    StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -235,6 +235,8 @@ settings! {
             "The chain of the second model: the first that answers is used; empty means no advisor.";
     }
     Models / "Agents" {
+        "agents.default": Text, "Lead agent",
+            "The primary agent the lead is when a session starts: build, plan or one of your own (tab switches).";
         "agents": Kind::Table, "Agent overrides",
             "Per agent, a model chain and a thinking level that replace its definition's, such as scout = { model = [\"@smol\"], thinking = \"low\" }.";
     }
@@ -344,13 +346,16 @@ settings! {
         "tools.max_result_bytes": Number, "Largest tool result", "Tool output beyond this many bytes is cut and saved as an artifact.";
         "tools.shell_timeout_secs": Number, "Shell time limit", "The default time limit of a shell call, in seconds.";
         "tools.shell": Text, "Shell", "The shell program; empty finds one (bash, sh; on Windows Git's bash, pwsh, powershell).";
+        "tools.patch": Choice(PatchMode::NAMES), "Patch tool",
+            "Who gets the patch tool: auto gives it instead of edit to OpenAI GPT and Codex models, on to every model.";
         "tools.redact_output": Switch, "Redact secrets for the model",
             "Replace secrets in tool results with [redacted:<kind>] before the model and the session file get them.";
     }
     Tools / "After a write" {
-        "tools.format_on_write": Switch, "Format on write", "Run the file's formatter after write and edit.";
+        "tools.format_on_write": Switch, "Format on write",
+            "Run the file's formatter after a tool changes it: the configured one, else one the project uses.";
         "tools.format": Kind::Table, "Formatters",
-            "File extension (without the dot) to formatter command, such as rs = rustfmt --edition 2024.";
+            "File extension (without the dot) to formatter command, such as rs = rustfmt --edition 2024; empty turns it off.";
         "tools.check_on_write": Switch, "Check on write", "Run the file's checkers (linters) after write and edit, when they are installed.";
         "tools.check": Kind::Table, "Checkers",
             "File extension to checker command, replacing the built-in one; {file} is the file's path.";
@@ -546,8 +551,10 @@ mod tests {
         // are an open table, and `embeddings` is absent until it is set.
         let leaves: BTreeSet<&str> = leaves.iter().map(String::as_str).collect();
         for path in rows.iter().chain(&fixed) {
+            // `agents` holds the overrides the user names beside its own `default`.
             let known = leaves.contains(path)
                 || *path == "roles.default"
+                || *path == "agents"
                 || (*path == "embeddings" && TABLES.contains(path));
             assert!(known, "{path} is not a configuration key");
         }

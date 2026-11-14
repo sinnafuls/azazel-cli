@@ -61,6 +61,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     ("thinking", "Pick the thinking level, or set it: /thinking high"),
     ("mode", "Pick the permission mode, or set it: /mode auto"),
+    (
+        "agent",
+        "Pick the primary agent the lead is, or switch to one: /agent plan (tab in an empty input steps through them)",
+    ),
     ("new", "Start a new session"),
     (
         "resume",
@@ -196,7 +200,17 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     (
         "open",
-        "Open the last link of the last reply: /open, /open <n>, /open <path>, /open diagram",
+        "Open a session of any project; /open link opens the last link of the last reply, /open <n>, \
+         /open <path> and /open diagram the others",
+    ),
+    (
+        "cd",
+        "Go on in another directory: /cd <dir>; a directory of another project moves the session there",
+    ),
+    (
+        "worktree",
+        "Go on in a new git worktree with the uncommitted changes: /worktree [name], /worktree list, \
+         /worktree remove <name>",
     ),
     ("dirs", "List the directories agents may work in"),
     (
@@ -332,6 +346,8 @@ impl Tui {
                 Ok(mode) => self.set_mode(mode).await,
                 Err(e) => self.fail(&e),
             },
+            "agent" if args.is_empty() => self.open_agent_picker(),
+            "agent" => self.set_agent(args, false).await,
             "new" => {
                 if self.idle_to("start a new session") {
                     self.go(Go::New).await;
@@ -353,6 +369,9 @@ impl Tui {
                 self.notice = Some("compacting…".to_string());
             }
             "clear" => self.clear_screen(),
+            "export" if args.split_whitespace().any(|word| word == "--sanitize") => {
+                self.export_sanitized(args)
+            }
             "export" => match self.backend.export(args, self.env.config.tui.redact).await {
                 Ok(file) => self.info(&format!("exported to {file}")),
                 Err(why) => self.fail(&why),
@@ -392,7 +411,11 @@ impl Tui {
                 }
                 Err(e) => self.fail(&e),
             },
+            "open" if args.is_empty() => self.open_picker().await,
+            "open" if args == "link" => self.open_command(""),
             "open" => self.open_command(args),
+            "cd" => self.cd_command(args),
+            "worktree" => self.worktree_command(args).await,
             "btw" => self.btw_command(args),
             "diff" => self.diff_command(args).await,
             "commit" => self.commit_command(args).await,
@@ -413,6 +436,20 @@ impl Tui {
                 None => self.other_command(name, args),
             },
         }
+    }
+
+    /// `/agent`: the primary agents, the one the lead is highlighted.
+    fn open_agent_picker(&mut self) {
+        let (agents, current) = self.backend.agents();
+        let items = agents
+            .iter()
+            .map(|agent| SelectItem::new(agent.name.clone(), agent.description.clone()))
+            .collect();
+        let at = agents.iter().position(|agent| agent.name == current).unwrap_or(0);
+        let names = agents.into_iter().map(|agent| agent.name).collect();
+        let body = vec![format!("current: {current}")];
+        self.overlay =
+            Some(Overlay::select("Agent", body, items, false, Action::Agent(names)).starting_at(at));
     }
 
     /// A skill (`/skill:<name>`) or a command registered by an extension. They run beside the
@@ -462,11 +499,41 @@ impl Tui {
             Ok(reopen) => {
                 let original: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
                 let live = self.backend.local().is_some();
-                crate::restart::request(crate::restart::arguments(&original, &reopen, live));
+                crate::restart::request(crate::restart::arguments(&original, &reopen, live, &[]), None);
                 self.restarting = true;
                 self.quit = true;
             }
             Err(why) => self.fail(&why),
+        }
+    }
+
+    /// `/export [path] --sanitize`: the conversation, with secrets hidden and what files held left
+    /// out, to share.
+    fn export_sanitized(&mut self, args: &str) {
+        use crate::export::{Format, default_file_name, render, sanitized};
+        let path = args
+            .split_whitespace()
+            .filter(|word| *word != "--sanitize")
+            .collect::<Vec<_>>()
+            .join(" ");
+        let Some(local) = self.backend.local() else {
+            self.here_only("/export --sanitize");
+            return;
+        };
+        let session = &local.active.session;
+        let file = match path.is_empty() {
+            true => local
+                .app
+                .paths
+                .cwd
+                .join(default_file_name(session, Format::Markdown)),
+            false => local.app.paths.cwd.join(path),
+        };
+        let format = Format::from_path(&file).unwrap_or(Format::Markdown);
+        let written = std::fs::write(&file, render(&sanitized(session), format, true));
+        match written {
+            Ok(()) => self.info(&format!("exported, sanitized, to {}", file.display())),
+            Err(e) => self.fail(&format!("could not write {}: {e}", file.display())),
         }
     }
 

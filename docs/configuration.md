@@ -106,6 +106,7 @@ thinking = "low"
 | | `vision`, `reasoning` | catalogue | Capabilities; unknown models get `false` |
 | | `thinking_levels` | every level | The thinking levels the model accepts, for example `["low", "medium", "high"]` |
 | | `cost` | catalogue | `{ input, output, cache_read, cache_write }` in USD per million tokens |
+| `[agents]` | `default` | `"build"` | The [primary agent](team.md#primary-agents) the lead is when a session starts; one that is no primary agent stops azazel with a message |
 | `[agents.<name>]` | `model` | definition | Chain (a list) replacing the agent definition's; see [team](team.md) |
 | | `thinking` | definition | Thinking level replacing the definition's |
 | `[retry]` | `max_attempts` | `3` | Tries per model before moving down the chain |
@@ -155,8 +156,9 @@ thinking = "low"
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
 | | `shell` | `""` | Shell program; empty means auto-detect (`bash`, else `sh`; on Windows Git's bash, `pwsh`, `powershell`) |
-| | `format_on_write` | `false` | Run the file's formatter after `write` and `edit`; see [tools](tools.md#format-on-write) |
-| | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"` |
+| | `format_on_write` | `true` | Run the file's formatter after `write`, `edit` and `patch`: the configured one, else one the file's project uses; see [tools](tools.md#format-on-write) |
+| | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"`; an empty command turns formatting off for the extension |
+| | `patch` | `"auto"` | Which models get the [`patch`](tools.md#patch) tool: `auto` (OpenAI GPT and Codex models, in place of `edit`), `on` (every model, beside `edit`) or `off` |
 | | `check_on_write` | `true` | Run the file's checkers (linters) after `write` and `edit`, when they are installed; see [tools](tools.md#checks-on-write) |
 | | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |
@@ -241,7 +243,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
 | | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together as one prompt; see [queued messages](tui.md#queued-messages-and-stashed-drafts) |
 | `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full`; see [the status line](tui.md#status-line). `/statusline` sets these keys up with the line in view |
-| | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`, `extensions`. Empty takes the preset's; `["none"]` is an empty side |
+| | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `agent`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`, `extensions`. Empty takes the preset's; `["none"]` is an empty side |
 | | `separator` | `"dot"` | Between segments: `dot`, `bar`, `space`, or `powerline` (each segment a block of colour, ended by an arrow with `tui.glyphs = "nerd"`). The `powerline` preset is drawn in blocks while this is `dot` |
 | | `segments.<name>` | `{}` | Options of one segment: `priority` (`0` to `100`; the lowest leaves a narrow line first) and `icon` (`false` leaves the symbol out) for all; `max` columns for `path`, `model`, `branch`, `goal`, `session`, `account`, `extensions`; `style` for `path` (`short`, `full`, `basename`), `model` (`full`, `short`), `context` (`percent`, `tokens`) and `account` (`label`, `email`); `format` (`24h`, `12h`) and `seconds` for `time`; `cells` and `min_width` for `bar`. For example `[statusline.segments.path] style = "basename"` |
 | | `command` | `""` | A program whose first line of output replaces the left side of the status line; it is given the session as JSON on its standard input, runs at most once a second and is ended after two seconds. Empty runs nothing. See [your own command](tui.md#your-own-command) |
@@ -355,6 +357,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--models <SPECS>` | What `Ctrl+P` steps through in this run, in place of `tui.favourites`: models and `@roles` separated by commas, named as for `--model`; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `--thinking <LEVEL>` | `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
+| `--agent <NAME>` | The [primary agent](team.md#primary-agents) the lead is for this run: `build`, `plan` or one of your own; a name that is no primary agent exits with status 2 |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
 | `--continue-run` | With `-c` or `--session`: go on with the run the session's last process did not finish, instead of sending a prompt; see [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
@@ -381,6 +384,9 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
 | `--coordinator` | Start in [coordinator mode](team.md#coordinator-mode): the lead plans and delegates |
 | `--json-schema <FILE\|JSON>` | With `-p`: the run must end in JSON that matches this schema, and only that JSON is printed; see [typed results](team.md#typed-results) |
+| `-f`, `--file <PATH>` | With `-p`: a file for the prompt, repeatable up to 100. A text file is added to the prompt as an `@path` mention is, an image is attached. A file that is missing, larger than 256 KB of text or neither text nor an image ends the run with status 2 before anything is sent |
+| `--worktree[=NAME]` | With `-p`: run in a new git worktree, `.azazel/worktrees/<NAME>` on a new branch `azazel/<NAME>` from HEAD (named after the time when no name is given); its path is printed at the end. See [worktrees](sessions-and-checkpoints.md#worktrees) |
+| `--archived` | With `-p`: keep the session out of `/resume`, `/open`, `-c` and `azazel sessions list` (`--all` lists it); for runs from scripts and CI |
 | `--tier <TIER>` | [Service tier](models-and-logins.md#service-tiers) of the requests: `priority`, `standard`, `economy` |
 | `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
@@ -393,7 +399,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--debug` | Write debug-level logs to `~/.azazel/logs/azazel.log` |
 | `--version`, `--help` | Print the version or the usage |
 
-`--model`, `--thinking`, `--mode`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
+`--model`, `--thinking`, `--mode`, `--agent`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
 `--tier`, `--preset`, `--theme`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and
 `--plain` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
@@ -443,8 +449,9 @@ unknown tier or preset) exits with status 2.
 | `azazel models` | | List the models of the providers you have a credential for |
 | `azazel usage` | | What your subscriptions have left; see [usage](models-and-logins.md#usage) |
 | `azazel secrets` | `add`, `add-site`, `list`, `rm` | Credentials agents use without seeing them; see [stored credentials](web-and-browser.md#credentials-for-services) |
-| `azazel sessions` | `list`, `search`, `delete`, `prune`, `export` | Manage saved sessions; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
-| `azazel export` | | Write a session to a file |
+| `azazel sessions` | `list`, `search`, `delete`, `prune`, `export`, `import` | Manage saved sessions, and bring one in from a file; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
+| `azazel export` | | Write a session to a file; `--sanitize` for sharing |
+| `azazel open` | | Pick a recent session of any project and open it in the UI; see [projects and directories](sessions-and-checkpoints.md#projects-and-directories) |
 | `azazel context` | | What the last request of a session was made of |
 | `azazel stats` | | Sessions, prompts, tokens and cost per day, model, project and tool |
 | `azazel migrate` | | Bring models, keys, skills, commands, agents, MCP servers, rules, settings, chats and memory over from pi, omp, jcode, Claude Code or Codex CLI; see [migrating](migrating.md) |

@@ -97,6 +97,8 @@ impl Sandbox {
             .args(["--set", "memory.auto_index=false"])
             .args(["--set", "session.auto_name=false"])
             .args(["--set", "tools.check_on_write=false"])
+            // The files are written as the lead wrote them, whatever formatter is installed.
+            .args(["--set", "tools.format_on_write=false"])
             // The lead says it is done after its last call and is not sent back to prove it.
             .args(["--set", "guards.done_check=false"])
             .args(args)

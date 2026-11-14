@@ -37,6 +37,7 @@ fn bench() -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: dir.path().join(".artifacts"),
             read_guard: Default::default(),
+            patch: Default::default(),
         })
         .unwrap();
     Bench { dir, registry }
@@ -354,13 +355,11 @@ async fn a_formatter_changes_the_written_file_and_the_next_edit_is_not_stale() {
     let tools = bench.path("tools");
     std::fs::create_dir_all(&tools).unwrap();
     let command = fake_formatter(&tools, false);
-    bench
-        .registry
-        .services
-        .insert(Arc::new(Formatters::new(BTreeMap::from([(
-            "txt".to_string(),
-            command,
-        )]))));
+    bench.registry.services.insert(Arc::new(Formatters::new(
+        BTreeMap::from([("txt".to_string(), command)]),
+        bench.dir.path().to_path_buf(),
+        true,
+    )));
 
     let written = bench
         .call("write", json!({"path": "a.txt", "content": "messy   text\n"}))
@@ -406,13 +405,11 @@ async fn a_failing_formatter_adds_a_note_and_never_fails_the_write() {
     let tools = bench.path("tools");
     std::fs::create_dir_all(&tools).unwrap();
     let command = fake_formatter(&tools, true);
-    bench
-        .registry
-        .services
-        .insert(Arc::new(Formatters::new(BTreeMap::from([(
-            "txt".to_string(),
-            command,
-        )]))));
+    bench.registry.services.insert(Arc::new(Formatters::new(
+        BTreeMap::from([("txt".to_string(), command)]),
+        bench.dir.path().to_path_buf(),
+        true,
+    )));
     let written = bench
         .call("write", json!({"path": "a.txt", "content": "kept\n"}))
         .await;

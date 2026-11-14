@@ -15,7 +15,7 @@ use azazel_core::PermissionMode;
 use azazel_core::config::{StatusPreset, StatusSeparator, StatuslineConfig};
 use azazel_tui::components::format_tokens;
 use azazel_tui::components::status::{self, Segment, Separator};
-use azazel_tui::{Glyph, Line, Role, Theme, text};
+use azazel_tui::{Color, Glyph, Line, Role, Theme, text};
 
 use super::backend::Billing;
 use crate::usage::NEARLY_FULL;
@@ -35,6 +35,7 @@ pub(crate) const NONE: &str = "none";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Name {
     Mode,
+    Agent,
     Model,
     Thinking,
     Tier,
@@ -58,8 +59,9 @@ pub(crate) enum Name {
 }
 
 impl Name {
-    pub(crate) const ALL: [Name; 21] = [
+    pub(crate) const ALL: [Name; 22] = [
         Name::Mode,
+        Name::Agent,
         Name::Model,
         Name::Thinking,
         Name::Tier,
@@ -86,6 +88,7 @@ impl Name {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Name::Mode => "mode",
+            Name::Agent => "agent",
             Name::Model => "model",
             Name::Thinking => "thinking",
             Name::Tier => "tier",
@@ -117,6 +120,7 @@ impl Name {
     pub(crate) fn about(self) -> &'static str {
         match self {
             Name::Mode => "the permission mode",
+            Name::Agent => "the primary agent the lead is",
             Name::Model => "the model that answers",
             Name::Thinking => "the thinking level",
             Name::Tier => "the service tier, while one is on",
@@ -145,6 +149,7 @@ impl Name {
         match self {
             Name::Mode => 100,
             Name::Model => 95,
+            Name::Agent => 90,
             Name::Branch => 85,
             Name::GitDirty => 84,
             Name::Path => 80,
@@ -171,7 +176,7 @@ impl Name {
         match self {
             Name::Path | Name::Model | Name::Account => &["max", "style"],
             Name::Context => &["style"],
-            Name::Branch | Name::Goal | Name::Session | Name::Extensions => &["max"],
+            Name::Agent | Name::Branch | Name::Goal | Name::Session | Name::Extensions => &["max"],
             Name::Time => &["format", "seconds"],
             Name::Bar => &["cells", "min_width"],
             _ => &[],
@@ -185,7 +190,7 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
     match preset {
         StatusPreset::Default => (
             &[
-                Mode, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Extensions,
+                Mode, Agent, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Extensions,
             ],
             &[Model, Tier, Thinking],
         ),
@@ -196,8 +201,8 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
         ),
         StatusPreset::Full => (
             &[
-                Mode, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal, Todo,
-                Queue, Extensions,
+                Mode, Agent, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal,
+                Todo, Queue, Extensions,
             ],
             &[Session, Account, Model, Tier, Thinking, Time],
         ),
@@ -413,6 +418,9 @@ impl Layout {
 pub(super) struct StatusLine<'a> {
     pub mode: PermissionMode,
     pub coordinator: bool,
+    /// The primary agent the lead is, and its colour when its definition gives one.
+    pub agent: &'a str,
+    pub agent_color: Option<Color>,
     pub branch: Option<&'a str>,
     /// Files changed since the last commit, once git has been asked.
     pub dirty: Option<usize>,
@@ -521,6 +529,13 @@ impl StatusLine<'_> {
                 }
                 None
             }
+            Name::Agent => (!self.agent.is_empty()).then(|| {
+                let name = cut(self.agent, None);
+                match self.agent_color {
+                    Some(color) => Segment::styled(format!("{}{name}", theme.fg_color(color))),
+                    None => Segment::new(Role::Accent, name),
+                }
+            }),
             Name::Branch => self
                 .branch
                 .map(|branch| Segment::new(Role::Muted, labelled(Glyph::Branch, &cut(branch, None)))),
@@ -699,6 +714,8 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
     StatusLine {
         mode: PermissionMode::AcceptEdits,
         coordinator: false,
+        agent: "build",
+        agent_color: None,
         branch: Some("main"),
         dirty: Some(3),
         cwd: "~/src/app",
@@ -745,6 +762,8 @@ mod tests {
         StatusLine {
             mode: PermissionMode::Plan,
             coordinator: false,
+            agent: "",
+            agent_color: None,
             branch: Some("main"),
             dirty: None,
             cwd: "~/src/app",
@@ -929,7 +948,7 @@ mod tests {
         };
         let row = shown(&long, 120, &Theme::dark());
         assert!(
-            row.starts_with("⏸ plan · coordinator · ⑂ main · …/with/several/levels/below/it · ◫ 42% · "),
+            row.starts_with("⏸ plan · coordinator · build · ⑂ main · …/with/several/levels/below/it · ◫ 42%"),
             "{row:?}"
         );
         let row = shown(&long, 200, &Theme::dark());
@@ -1056,8 +1075,8 @@ mod tests {
         assert_eq!(
             shown_in(&sample(&METERED), &full, 240, &theme),
             sides(
-                "⏵ accept-edits · ⑂ main · ± 3 · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · ≋ 87% · \
-                 ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⏵ 1 queued · ci ok",
+                "⏵ accept-edits · build · ⑂ main · ± 3 · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · \
+                 ≋ 87% · ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⏵ 1 queued · ci ok",
                 "❖ fix the build · ♙ work · ⬢ anthropic/claude-opus-5-5 · priority · high · ◷ 14:05",
                 240
             )
@@ -1069,12 +1088,12 @@ mod tests {
         assert!(row.contains(" · ↯ 78 tok/s · ◔ 61% 5h · ≋ 87% · "), "{row:?}");
         let ascii = Theme::dark().with_glyphs(GlyphLevel::Ascii);
         assert_eq!(
-            shown_in(&sample(&METERED), &full, 240, &ascii),
+            shown_in(&sample(&METERED), &full, 250, &ascii),
             sides(
-                "> accept-edits | git: main | +- 3 | ~/src/app | ctx 42% [===>----] | 78 tok/s | $0.42 | \
-                 cache 87% | 2 agents | goal active | todo 2/5 | > 1 queued | ci ok",
+                "> accept-edits | build | git: main | +- 3 | ~/src/app | ctx 42% [===>----] | 78 tok/s | \
+                 $0.42 | cache 87% | 2 agents | goal active | todo 2/5 | > 1 queued | ci ok",
                 "fix the build | as work | anthropic/claude-opus-5-5 | priority | high | 14:05",
-                240
+                250
             )
         );
         // A clean tree, a finished list and an empty queue.
@@ -1094,6 +1113,30 @@ mod tests {
             shown_in(&sample(&METERED), &minimal, 60, &theme),
             sides("⏵ accept-edits · ~/src/app", "⬢ anthropic/claude-opus-5-5", 60)
         );
+    }
+
+    #[test]
+    fn the_agent_stands_after_the_mode_in_its_own_colour() {
+        let theme = Theme::dark();
+        let plan = StatusLine {
+            agent: "plan",
+            ..full(&METERED)
+        };
+        assert!(shown(&plan, 160, &theme).starts_with("⏸ plan · plan · ⑂ main · "));
+        assert!(painted(&plan, 160, &theme).contains(&theme.paint(Role::Accent, "plan")));
+        let blue = Color::Rgb(83, 155, 245);
+        let coloured = StatusLine {
+            agent_color: Some(blue),
+            ..plan
+        };
+        assert!(painted(&coloured, 160, &theme).contains(&format!("{}plan", theme.fg_color(blue))));
+        // It leaves a narrow line after the mode and the model.
+        assert_eq!(
+            shown(&coloured, 35, &theme),
+            "⏸ plan  ⬢ anthropic/claude-opus-5-5"
+        );
+        let minimal = layout("preset = \"minimal\"");
+        assert!(!shown_in(&coloured, &minimal, 160, &theme).contains("· plan"));
     }
 
     #[test]
@@ -1126,7 +1169,8 @@ mod tests {
         let found = problems("left = [\"mode\", \"clock\", \"mode\"]\nright = [\"mode\"]");
         assert_eq!(found.len(), 3, "{found:?}");
         assert!(
-            found[0].starts_with("statusline.left: there is no segment `clock` (segments: mode, model, ")
+            found[0]
+                .starts_with("statusline.left: there is no segment `clock` (segments: mode, agent, model, ")
         );
         assert_eq!(found[1], "statusline.left: `mode` is listed twice");
         assert_eq!(found[2], "statusline.right: `mode` is listed twice");
@@ -1140,7 +1184,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                "statusline.segments.clock: there is no segment `clock` (segments: mode, model, thinking, \
+                "statusline.segments.clock: there is no segment `clock` (segments: mode, agent, model, thinking, \
                  tier, path, branch, context, bar, rate, cost, usage, agents, goal, todo, queue, session, \
                  time, git_dirty, account, cache, extensions)",
                 "statusline.segments.mode: there is no option `max` (options: icon, priority)",

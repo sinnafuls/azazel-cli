@@ -1,20 +1,24 @@
 //! `azazel sessions ...` and `azazel export`: the sessions of this project (or of every project)
-//! from the shell, and the retention prune that runs at start.
+//! from the shell, bringing one in from a file, and the retention prune that runs at start.
 
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use azazel_core::paths::canonical;
-use azazel_core::session::SessionSummary;
+use azazel_core::session::{SessionSummary, parse_lines};
 use azazel_core::{Config, LoadOptions, Paths, SessionStore, TrustStore};
 use serde_json::json;
 
 use crate::cli::SessionsAction;
-use crate::export::{Format, default_file_name, has_messages, render};
+use crate::export::{Format, default_file_name, has_messages, render, sanitized};
 use crate::print::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 
+/// How long fetching a session to import may take.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// The session directories to look in: this project's, or every project's.
-fn session_dirs(paths: &Paths, all_projects: bool) -> Vec<PathBuf> {
+pub(crate) fn session_dirs(paths: &Paths, all_projects: bool) -> Vec<PathBuf> {
     if !all_projects {
         return vec![paths.sessions_dir()];
     }
@@ -62,6 +66,8 @@ fn summary_json(summary: &SessionSummary) -> serde_json::Value {
         "updated": summary.updated,
         "messages": summary.messages,
         "pinned": summary.pinned,
+        "archived": summary.archived,
+        "cwd": summary.cwd,
         "cost_usd": summary.usage.cost_usd,
     })
 }
@@ -122,12 +128,17 @@ fn confirm(question: &str, yes: bool) -> Result<bool, String> {
     Ok(matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
 }
 
-pub fn run(action: &SessionsAction, paths: &Paths) -> u8 {
+pub async fn run(action: &SessionsAction, paths: &Paths) -> u8 {
     match action {
-        SessionsAction::List { all_projects, json } => {
+        SessionsAction::List {
+            all_projects,
+            all,
+            json,
+        } => {
             let sessions: Vec<SessionSummary> = session_dirs(paths, *all_projects)
                 .iter()
                 .flat_map(|dir| SessionStore::list(dir))
+                .filter(|session| *all || !session.archived)
                 .collect();
             for s in &sessions {
                 if *json {
@@ -135,13 +146,14 @@ pub fn run(action: &SessionsAction, paths: &Paths) -> u8 {
                 } else {
                     let cost = s.usage.cost_usd.map(|c| format!("${c:.2}")).unwrap_or_default();
                     println!(
-                        "{} {}  {:<60} {:>4} msgs {:>7}{}",
+                        "{} {}  {:<60} {:>4} msgs {:>7}{}{}",
                         &s.id[..s.id.len().min(8)],
                         local_time(&s.updated),
                         label(s),
                         s.messages,
                         cost,
-                        if s.pinned { "  pinned" } else { "" }
+                        if s.pinned { "  pinned" } else { "" },
+                        if s.archived { "  archived" } else { "" }
                     );
                 }
             }
@@ -248,8 +260,93 @@ pub fn run(action: &SessionsAction, paths: &Paths) -> u8 {
             session,
             format,
             file,
-        } => export(paths, session.as_deref(), *format, file.as_deref()),
+            sanitize,
+        } => export(paths, session.as_deref(), *format, file.as_deref(), *sanitize),
+        SessionsAction::Import { source, project } => import(paths, source, project.as_deref()).await,
     }
+}
+
+/// The text of what `source` names: a file, or an `http(s)://` address.
+async fn read_source(paths: &Paths, source: &str) -> Result<String, String> {
+    if !(source.starts_with("https://") || source.starts_with("http://")) {
+        let file = paths.cwd.join(source);
+        return std::fs::read_to_string(&file).map_err(|e| format!("cannot read {}: {e}", file.display()));
+    }
+    let client = azazel_ai::tls::client_builder()
+        .timeout(FETCH_TIMEOUT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let response = client
+        .get(source)
+        .send()
+        .await
+        .map_err(|e| format!("cannot fetch {source}: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("cannot fetch {source}: the server answered {status}"));
+    }
+    response
+        .text()
+        .await
+        .map_err(|e| format!("cannot fetch {source}: {e}"))
+}
+
+/// `azazel sessions import <file|URL> [--project DIR]`: the entries of a session file, or of an
+/// export as JSON lines, become a new session of the project. Nothing in them is changed.
+pub async fn import(paths: &Paths, source: &str, project: Option<&Path>) -> u8 {
+    let target = match project {
+        Some(dir) => {
+            let dir = paths.cwd.join(dir);
+            if !dir.is_dir() {
+                eprintln!("azazel: --project {} is not a directory", dir.display());
+                return EXIT_USAGE;
+            }
+            let mut target = Paths::discover(&dir, Some(&paths.home.to_string_lossy()));
+            target.sessions_override = paths.sessions_override.clone();
+            target
+        }
+        None => paths.clone(),
+    };
+    let text = match read_source(paths, source).await {
+        Ok(text) => text,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            return EXIT_FAILED;
+        }
+    };
+    let (header, entries, skipped) = parse_lines(&text);
+    if entries.is_empty() {
+        eprintln!(
+            "azazel: {source} holds no session: it takes a session file, or the JSON lines `azazel export --format \
+             jsonl` writes"
+        );
+        return EXIT_FAILED;
+    }
+    let count = entries.len();
+    // It keeps the time it began, so it sorts among the others where it belongs.
+    let created = header
+        .map(|header| header.timestamp)
+        .into_iter()
+        .chain(entries.first().map(|entry| entry.timestamp.clone()))
+        .find_map(|stamp| stamp.parse::<jiff::Timestamp>().ok())
+        .unwrap_or_else(jiff::Timestamp::now);
+    let store = match SessionStore::import(&target.sessions_dir(), &target.cwd, created, entries) {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("azazel: could not write the session: {e}");
+            return EXIT_FAILED;
+        }
+    };
+    let id = store.id();
+    println!(
+        "imported {count} entries as session {} of {}",
+        &id[..id.len().min(8)],
+        target.project_root.display()
+    );
+    if skipped > 0 {
+        println!("{skipped} line(s) were not entries of a session and were left out");
+    }
+    EXIT_OK
 }
 
 /// `tui.redact` as the configuration has it, for an export made outside a session. On unless
@@ -277,9 +374,15 @@ pub(crate) fn pick(paths: &Paths, session: Option<&str>) -> Result<SessionSummar
     }
 }
 
-/// `azazel export [ID] [--format] [-o FILE]`: the latest session of this project when no id is
-/// given; the format from `--format`, else the file's extension, else Markdown.
-pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, output: Option<&Path>) -> u8 {
+/// `azazel export [ID] [--format] [-o FILE] [--sanitize]`: the latest session of this project
+/// when no id is given; the format from `--format`, else the file's extension, else Markdown.
+pub fn export(
+    paths: &Paths,
+    session: Option<&str>,
+    format: Option<Format>,
+    output: Option<&Path>,
+    sanitize: bool,
+) -> u8 {
     let summary = pick(paths, session);
     let store = match summary.and_then(|s| SessionStore::open(&s.path).map_err(|e| e.to_string())) {
         Ok(store) => store,
@@ -295,7 +398,10 @@ pub fn export(paths: &Paths, session: Option<&str>, format: Option<Format>, outp
     let format = format
         .or_else(|| output.and_then(Format::from_path))
         .unwrap_or(Format::Markdown);
-    let text = render(&store, format, redact_exports(paths));
+    let text = match sanitize {
+        true => render(&sanitized(&store), format, true),
+        false => render(&store, format, redact_exports(paths)),
+    };
     match output {
         Some(path) if path == Path::new("-") => {
             print!("{text}");

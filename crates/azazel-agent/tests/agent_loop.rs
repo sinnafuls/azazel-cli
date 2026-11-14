@@ -181,11 +181,12 @@ impl TranscriptSink for Recorder {
     fn request_started(&self, model: &str, _via: Option<&str>) {
         self.journal.lock().unwrap().push(format!("request {model}"));
     }
-    fn tool_started(&self, call_id: &str, name: &str, input: &Value) {
-        self.journal
-            .lock()
-            .unwrap()
-            .push(format!("tool {call_id} {name} {input}"));
+    fn tool_started(&self, call_id: &str, name: &str, input: &Value, repairs: &[String]) {
+        let mut line = format!("tool {call_id} {name} {input}");
+        for repair in repairs {
+            line.push_str(&format!(" [{repair}]"));
+        }
+        self.journal.lock().unwrap().push(line);
     }
     fn run_ended(&self, run_id: &str, stop: &str) {
         self.journal.lock().unwrap().push(format!("end {run_id} {stop}"));
@@ -721,6 +722,155 @@ async fn bad_calls_become_error_results_and_the_agent_carries_on() {
             stop: StopReason::Stop
         })
     ));
+}
+
+/// Answers with the input it got, so a test sees what the call ran with.
+struct Echo {
+    name: &'static str,
+    schema: Value,
+}
+
+#[async_trait]
+impl Tool for Echo {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "echo"
+    }
+    fn schema(&self) -> Value {
+        self.schema.clone()
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text(input.to_string())
+    }
+}
+
+#[tokio::test]
+async fn malformed_calls_are_mended_before_they_run_and_the_result_says_how() {
+    let shell = Echo {
+        name: "shell",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "timeout": {"type": "integer"},
+                "background": {"type": "boolean"}
+            },
+            "required": ["command"]
+        }),
+    };
+    let edit = Echo {
+        name: "edit",
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "path": {"type": "string"},
+                "edits": {"type": "array", "items": {"type": "object"}}
+            },
+            "required": ["path", "edits"],
+            "additionalProperties": false
+        }),
+    };
+    let read = Echo {
+        name: "read",
+        schema: json!({
+            "type": "object",
+            "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}},
+            "required": ["path"]
+        }),
+    };
+    let mut session = start(Setup {
+        tools: vec![Arc::new(shell), Arc::new(edit), Arc::new(read)],
+        ..Setup::default()
+    });
+    session.mock.push(
+        "a",
+        MockStep::tools(
+            "",
+            &[
+                (
+                    "c1",
+                    "bash",
+                    json!({"command": "make", "timeout": "20", "background": "false"}),
+                ),
+                (
+                    "c2",
+                    "str_replace",
+                    json!({"path": "a.rs", "edits": "[{\"old\": \"a\", \"new\": \"b\"}]", "dry_run": true}),
+                ),
+                ("c3", "Read", json!({"path": "a.rs", "offset": null})),
+                ("c4", "read", json!({"path": "a.rs", "offset": 3})),
+            ],
+        ),
+    );
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+
+    let outputs = tool_outputs(&events);
+    let ran: Vec<Value> = outputs
+        .iter()
+        .map(|(_, _, text)| serde_json::from_str(text.lines().next().unwrap()).unwrap())
+        .collect();
+    assert_eq!(
+        ran[0],
+        json!({"command": "make", "timeout": 20, "background": false})
+    );
+    assert_eq!(
+        ran[1],
+        json!({"path": "a.rs", "edits": [{"old": "a", "new": "b"}]})
+    );
+    assert_eq!(ran[2], json!({"path": "a.rs"}));
+    let notes: Vec<Option<&str>> = outputs.iter().map(|(_, _, text)| text.lines().nth(1)).collect();
+    assert_eq!(
+        notes[0],
+        Some(
+            "note: called as `bash`; the tool is `shell`; `timeout` was a number in a string, read as a number; \
+             `background` was `false` in a string, read as a boolean"
+        )
+    );
+    assert!(
+        notes[1]
+            .unwrap()
+            .starts_with("note: called as `str_replace`; the tool is `edit`; ")
+    );
+    assert!(
+        notes[1]
+            .unwrap()
+            .contains("`dry_run` is not a field of this tool, dropped")
+    );
+    assert_eq!(
+        notes[2],
+        Some("note: called as `Read`; the tool is `read`; `offset` was null, left out")
+    );
+    // A call that was right gets no note.
+    assert_eq!(notes[3], None);
+
+    // The cards are of the real tools, and the model sees the note in the result.
+    let started: Vec<&str> = events
+        .iter()
+        .filter_map(|event| match event {
+            AgentEvent::ToolStart { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(started, ["shell", "edit", "read", "read"]);
+    let sent = session.mock.requests_for("a");
+    assert!(result_texts(&sent[1])[0].ends_with("the tool is `shell`; `timeout` was a number in a string, read as a number; `background` was `false` in a string, read as a boolean"));
+
+    // The session records what was mended with the call.
+    let journal = session.recorder.journal.lock().unwrap().clone();
+    assert!(
+        journal.contains(&r#"tool c3 read {"path":"a.rs"} [called as `Read`; the tool is `read`] [`offset` was null, left out]"#.to_string()),
+        "{journal:?}"
+    );
+    assert!(journal.contains(&r#"tool c4 read {"path":"a.rs","offset":3}"#.to_string()));
 }
 
 #[tokio::test]

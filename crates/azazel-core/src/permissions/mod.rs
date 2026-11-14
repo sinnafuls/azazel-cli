@@ -83,7 +83,7 @@ pub enum SubjectKind {
 pub fn subject_kind(tool: &str) -> SubjectKind {
     match tool {
         "shell" => SubjectKind::Command,
-        "read" | "write" | "edit" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
+        "read" | "write" | "edit" | "patch" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
         "web_fetch" | "web_grep" | "browser" | "http" => SubjectKind::Domain,
         _ => SubjectKind::Other,
     }
@@ -156,8 +156,12 @@ impl MatchCtx<'_> {
 }
 
 impl Rule {
+    /// Whether this rule is about `tool`. A `patch` writes files the way `write` and `edit` do,
+    /// so their rules cover it too.
     pub fn matches_tool(&self, tool: &str) -> bool {
-        self.tool == tool || glob(&self.tool, false).is_some_and(|g| g.is_match(tool))
+        let named =
+            |name: &str| self.tool == name || glob(&self.tool, false).is_some_and(|g| g.is_match(name));
+        named(tool) || (tool == "patch" && (named("write") || named("edit")))
     }
 
     /// Whether this rule covers one subject of a call to `tool`. A rule without a pattern covers
@@ -384,6 +388,25 @@ impl PermissionState {
     /// `mode: plan`).
     pub fn keep_in_plan_mode(&self, agent: &str) {
         write(&self.plan_agents).insert(agent.to_string());
+    }
+
+    /// Whether `agent` is kept in plan mode whatever the session's mode is.
+    pub fn kept_in_plan_mode(&self, agent: &str) -> bool {
+        read(&self.plan_agents).contains(agent)
+    }
+
+    /// Puts `agent` under the limits of the definition it follows now, in place of those of the
+    /// one before: kept in plan mode or not, and restricted to `grants` or not (the lead switching
+    /// between primary agents).
+    pub fn set_limits(&self, agent: &str, plan: bool, grants: Option<Vec<Rule>>) {
+        match plan {
+            true => write(&self.plan_agents).insert(agent.to_string()),
+            false => write(&self.plan_agents).remove(agent),
+        };
+        match grants {
+            Some(grants) => write(&self.agent_grants).insert(agent.to_string(), vec![grants]),
+            None => write(&self.agent_grants).remove(agent),
+        };
     }
 
     /// Whether the session runs without the safety guards: only deny rules and the push guard
@@ -893,7 +916,7 @@ impl PermissionState {
         // change things while planning.
         let mode = self.mode_for(call.agent);
         if mode == PermissionMode::Plan && call.access != Access::Read {
-            let plan_file = matches!(call.tool, "write" | "edit")
+            let plan_file = matches!(call.tool, "write" | "edit" | "patch")
                 && !call.subjects.is_empty()
                 && call
                     .subjects

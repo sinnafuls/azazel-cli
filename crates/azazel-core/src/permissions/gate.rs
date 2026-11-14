@@ -314,14 +314,24 @@ impl Gate for PermissionGate {
         if let Some(redactor) = self.services.get::<OutputRedactor>() {
             redact(output, &redactor);
         }
-        // The file tools report the path they changed, relative to the agent's directory.
-        let changed = output
-            .details
-            .as_ref()
-            .and_then(|details| details.get("path"))
-            .and_then(Value::as_str)
-            .filter(|_| !output.is_error && matches!(tool.name(), "write" | "edit"));
-        if let Some(path) = changed {
+        // The file tools report the paths they changed, relative to the agent's directory:
+        // `write` and `edit` one `path`, `patch` its `files` (a deleted one is no longer there).
+        let details = output.details.as_ref().filter(|_| !output.is_error);
+        let changed: Vec<&str> = match (tool.name(), details) {
+            ("write" | "edit", Some(details)) => {
+                details.get("path").and_then(Value::as_str).into_iter().collect()
+            }
+            ("patch", Some(details)) => details
+                .get("files")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|file| file.get("status").and_then(Value::as_str) != Some("deleted"))
+                .filter_map(|file| file.get("path").and_then(Value::as_str))
+                .collect(),
+            _ => Vec::new(),
+        };
+        for path in changed {
             let path = self.state.cwd_of(agent).join(path);
             self.bus
                 .emit(&mut Event::FileChanged {

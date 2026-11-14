@@ -297,16 +297,240 @@ fn format_on_write_runs_the_formatter_and_the_next_edit_is_not_stale() {
     );
     assert_eq!(results[1], "edited notes.txt (1 replacement); formatted with fmt");
 
-    // Off by default: the same write is left as the agent wrote it.
+    // Off: the same write is left as the agent wrote it.
     let plain = sandbox.azazel(
         &calls(&[(
             "write",
             json!({ "path": "other.txt", "content": "messy   text\n" }),
         )]),
-        &["--mode", "auto", "--set", &setting],
+        &[
+            "--mode",
+            "auto",
+            "--set",
+            &setting,
+            "--set",
+            "tools.format_on_write=false",
+        ],
     );
     assert!(plain.status.success(), "{}", stderr(&plain));
     assert_eq!(sandbox.results(), ["created other.txt (13 bytes)"]);
+}
+
+/// A program called `name` in `dir` that replaces the content of the last file it is given
+/// with `formatted`.
+fn fake_program(dir: &Path, name: &str) {
+    std::fs::create_dir_all(dir).unwrap();
+    let (file, body) = if cfg!(windows) {
+        (
+            format!("{name}.cmd"),
+            "@echo off\r\nfor %%a in (%*) do set last=%%a\r\necho formatted> %last%\r\n",
+        )
+    } else {
+        (
+            name.to_string(),
+            "#!/bin/sh\nfor last; do :; done\nprintf 'formatted\\n' > \"$last\"\n",
+        )
+    };
+    let program = dir.join(file);
+    std::fs::write(&program, body).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+}
+
+#[test]
+fn format_on_write_uses_the_formatter_the_project_uses_and_doctor_names_it() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.project();
+    std::fs::write(
+        project.join("package.json"),
+        r#"{"devDependencies": {"prettier": "^3"}}"#,
+    )
+    .unwrap();
+    fake_program(&project.join("node_modules/.bin"), "prettier");
+
+    // Trusted: the project's own prettier formats what the lead writes.
+    let script = calls(&[("write", json!({ "path": "src/app.ts", "content": "let  a=1\n" }))]);
+    let output = sandbox.azazel(
+        &script,
+        &["--mode", "auto", "--trust", "--set", "guards.done_check=false"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    // The size is of the formatted file, whose line ending is the system's.
+    let results = sandbox.results();
+    assert!(
+        results[0].starts_with("created src/app.ts (") && results[0].ends_with("; formatted with prettier"),
+        "{results:?}"
+    );
+    let written = std::fs::read_to_string(project.join("src/app.ts")).unwrap();
+    assert_eq!(written.trim_end(), "formatted");
+
+    // Not trusted: prettier would run the project's code, so nothing formats the file.
+    let script = calls(&[("write", json!({ "path": "src/b.ts", "content": "let  b=1\n" }))]);
+    let output = sandbox.azazel(&script, &["--mode", "auto", "--set", "guards.done_check=false"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(sandbox.results(), ["created src/b.ts (9 bytes)"]);
+
+    let doctor = |trust: bool| {
+        let mut command = Command::cargo_bin("azazel").unwrap();
+        command
+            .env("AZAZEL_HOME", sandbox.home())
+            .arg("--cwd")
+            .arg(&project);
+        if trust {
+            command.arg("--trust");
+        }
+        let output = command.arg("doctor").output().unwrap();
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+    let lines = |report: String| -> Vec<String> {
+        report
+            .lines()
+            .filter(|line| line.contains("format on write:"))
+            .map(str::to_string)
+            .collect()
+    };
+    let trusted = lines(doctor(true));
+    assert!(
+        trusted
+            .iter()
+            .any(|line| line.contains("prettier (js, jsx, mjs, … 26 kinds)")),
+        "{trusted:?}"
+    );
+    let untrusted = lines(doctor(false));
+    assert!(
+        untrusted.contains(&"ok    format on write: prettier: off, the project is not trusted".to_string()),
+        "{untrusted:?}"
+    );
+}
+
+/// The lead on `mock/gpt-5`, a model of the family `patch` is made for.
+fn on_gpt(calls: &[(&str, Value)]) -> Value {
+    let script = self::calls(calls);
+    json!({ "gpt-5": script["lead"] })
+}
+
+#[test]
+fn a_gpt_model_gets_patch_in_place_of_edit_and_patches_files() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.project();
+    std::fs::write(
+        project.join("app.py"),
+        "def greet():\n    print(\"Hi\")\n\nprint(\"end\")\n",
+    )
+    .unwrap();
+    std::fs::write(project.join("old.txt"), "old\n").unwrap();
+    std::fs::write(project.join("keep.txt"), "a\nb\n").unwrap();
+    let patch = "*** Begin Patch\n\
+                 *** Add File: docs/new.md\n+# New\n\
+                 *** Update File: app.py\n*** Move to: main.py\n@@ def greet():\n-    print(\"Hi\")\n+    print(\"Hello\")\n\
+                 *** Update File: keep.txt\n@@\n a\n-b\n+B\n\
+                 *** Delete File: old.txt\n\
+                 *** End Patch";
+    let script = on_gpt(&[
+        ("read", json!({ "path": "app.py" })),
+        ("read", json!({ "path": "old.txt" })),
+        ("read", json!({ "path": "keep.txt" })),
+        ("patch", json!({ "patch_text": patch })),
+    ]);
+    let output = sandbox.azazel(
+        &script,
+        &[
+            "--mode",
+            "auto",
+            "--model",
+            "mock/gpt-5",
+            "--set",
+            "tools.format_on_write=false",
+            "--set",
+            "tools.check_on_write=false",
+            "--set",
+            "guards.done_check=false",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let requests = sandbox.requests();
+    assert!(tool(&requests[0], "patch").is_some() && tool(&requests[0], "edit").is_none());
+    assert_eq!(
+        sandbox.results()[3],
+        "patched 4 files\nA docs/new.md: created (6 bytes)\nR app.py -> main.py: 1 hunk\n\
+         M keep.txt: 1 hunk\nD old.txt: deleted"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("docs/new.md")).unwrap(),
+        "# New\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("main.py")).unwrap(),
+        "def greet():\n    print(\"Hello\")\n\nprint(\"end\")\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("keep.txt")).unwrap(),
+        "a\nB\n"
+    );
+    assert!(!project.join("app.py").exists() && !project.join("old.txt").exists());
+}
+
+#[test]
+fn a_patch_with_a_hunk_that_does_not_fit_changes_nothing() {
+    let sandbox = Sandbox::new();
+    let project = sandbox.project();
+    std::fs::write(project.join("a.txt"), "one\ntwo\n").unwrap();
+    std::fs::write(project.join("b.txt"), "three\n").unwrap();
+    let patch = "*** Begin Patch\n\
+                 *** Update File: a.txt\n@@\n-one\n+ONE\n\
+                 *** Update File: b.txt\n@@\n-four\n+FOUR\n\
+                 *** Add File: c.txt\n+new\n\
+                 *** End Patch";
+    let script = on_gpt(&[
+        ("read", json!({ "path": "a.txt" })),
+        ("read", json!({ "path": "b.txt" })),
+        ("patch", json!({ "patch_text": patch })),
+        // Not read: the read guard stops the whole patch.
+        (
+            "patch",
+            json!({ "patch_text": "*** Begin Patch\n*** Update File: unread.txt\n@@\n-x\n+y\n*** End Patch" }),
+        ),
+    ]);
+    std::fs::write(project.join("unread.txt"), "x\n").unwrap();
+    let output = sandbox.azazel(&script, &["--mode", "auto", "--model", "mock/gpt-5"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let results = sandbox.results();
+    assert_eq!(
+        results[2],
+        "b.txt, hunk 1: its lines were not found, starting with `four`; nothing was changed"
+    );
+    assert_eq!(
+        results[3],
+        "nothing was written:\nunread.txt: read the file before overwriting it"
+    );
+    assert_eq!(
+        std::fs::read_to_string(project.join("a.txt")).unwrap(),
+        "one\ntwo\n"
+    );
+    assert!(!project.join("c.txt").exists());
+}
+
+#[test]
+fn which_models_get_patch_follows_tools_patch() {
+    let sandbox = Sandbox::new();
+    let offered = |args: &[&str]| -> (bool, bool) {
+        let script =
+            json!({ "lead": [{ "reply": { "text": "done" } }], "gpt-5": [{ "reply": { "text": "done" } }] });
+        let output = sandbox.azazel(&script, args);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let request = &sandbox.requests()[0];
+        (tool(request, "patch").is_some(), tool(request, "edit").is_some())
+    };
+    assert_eq!(offered(&[]), (false, true));
+    assert_eq!(offered(&["--model", "mock/gpt-5"]), (true, false));
+    assert_eq!(offered(&["--set", "tools.patch=\"on\""]), (true, true));
+    assert_eq!(
+        offered(&["--model", "mock/gpt-5", "--set", "tools.patch=\"off\""]),
+        (false, true)
+    );
 }
 
 #[test]

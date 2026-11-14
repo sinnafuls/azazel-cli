@@ -249,10 +249,15 @@ config_table!(ToolsConfig {
     shell_timeout_secs: u64 = 120,
     /// Empty means auto-resolve.
     shell: String = String::new(),
-    /// Run the file's formatter after `write` and `edit`.
-    format_on_write: bool = false,
-    /// File extension (without the dot) to formatter command; the file path is appended.
+    /// Run the file's formatter after a tool changes it: the configured one for its extension,
+    /// else a built-in one the file's project uses.
+    format_on_write: bool = true,
+    /// File extension (without the dot) to formatter command; `{file}` is replaced by the file
+    /// path, else the path is appended. An empty command turns formatting off for the extension.
     format: BTreeMap<String, String> = BTreeMap::new(),
+    /// Which models get the `patch` tool: `auto` gives it in place of `edit` to OpenAI GPT and
+    /// Codex models, `on` gives both to every model, `off` gives it to none.
+    patch: PatchMode = PatchMode::Auto,
     /// Run the file's checkers (linters) after `write` and `edit`.
     check_on_write: bool = true,
     /// File extension (without the dot) to checker command, replacing the built-in one; `{file}`
@@ -565,6 +570,11 @@ config_enum!(
     ReadGuard { Range = "range", File = "file", Off = "off" } default Range
 );
 config_enum!(WriteSeverity { Error = "error", Warning = "warning" } default Error);
+config_enum!(
+    /// `auto`: `patch` instead of `edit` for OpenAI GPT and Codex models; `on`: both for every
+    /// model; `off`: never `patch`.
+    PatchMode { Auto = "auto", On = "on", Off = "off" } default Auto
+);
 
 impl From<&CompactionConfig> for CompactionSettings {
     fn from(c: &CompactionConfig) -> Self {
@@ -606,6 +616,27 @@ pub struct AgentOverride {
     pub thinking: Option<ThinkingLevel>,
 }
 
+/// `[agents]`: the primary agent a session starts as, and `[agents.<name>]` overrides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// The primary agent the lead is when a session starts.
+    pub default: String,
+    /// Any other key is the name of a definition. `deny_unknown_fields` does not work beside a
+    /// flattened map; the map's entries are checked by their own type instead.
+    #[serde(flatten)]
+    pub overrides: BTreeMap<String, AgentOverride>,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        AgentsConfig {
+            default: crate::agents::BUILD.to_string(),
+            overrides: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -615,7 +646,7 @@ pub struct Config {
     /// Keyed by `provider/model-id`.
     pub models: BTreeMap<String, ModelOverride>,
     pub retry: RetryConfig,
-    pub agents: BTreeMap<String, AgentOverride>,
+    pub agents: AgentsConfig,
     pub permissions: PermissionsConfig,
     pub checkpoints: CheckpointsConfig,
     pub team: TeamConfig,
@@ -694,7 +725,7 @@ impl Default for Config {
             providers: BTreeMap::new(),
             models: BTreeMap::new(),
             retry: RetryConfig::default(),
-            agents: BTreeMap::new(),
+            agents: AgentsConfig::default(),
             permissions: PermissionsConfig::default(),
             checkpoints: CheckpointsConfig::default(),
             team: TeamConfig::default(),
@@ -1587,6 +1618,7 @@ mod tests {
             [tools]
             check_report = "all"
             read_guard = "file"
+            patch = "on"
             [tools.format]
             rs = "rustfmt"
             [tools.check]
@@ -1658,6 +1690,7 @@ mod tests {
             (CheckReport::All, ReadGuard::File)
         );
         assert!(c.tools.check_on_write && !c.tools.scan.secrets);
+        assert_eq!(c.tools.patch, PatchMode::On);
         assert_eq!(
             (c.tui.glyphs, c.tui.indicator, c.tui.tool_style),
             (GlyphSetting::Nerd, Indicator::Kitt, ToolStyle::Compact)
@@ -1682,6 +1715,7 @@ mod tests {
             "[notify]\ndesktop = \"loud\"\n",
             "[tui]\nglyphs = \"loud\"\n",
             "[tools]\nread_guard = \"loud\"\n",
+            "[tools]\npatch = \"loud\"\n",
             "[lsp]\nwrite_severity = \"loud\"\n",
         ] {
             let f = fixture(bad, "", "");

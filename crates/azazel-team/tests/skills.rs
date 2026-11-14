@@ -84,6 +84,7 @@ impl Bench {
                 shell_timeout: Duration::from_secs(30),
                 artifacts_dir: paths.artifacts_dir(),
                 read_guard: Default::default(),
+                patch: Default::default(),
             })
             .unwrap();
         registry

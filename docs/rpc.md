@@ -41,6 +41,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `get_state` | | Reports the session's state | See below |
 | `set_model` | `chain` | Changes the lead's model chain, e.g. `["provider/model", "@role"]` | `{"models": [...]}`: the usable models it resolves to |
 | `set_mode` | `mode` | Changes the permission mode of the session, for the lead and every sub-agent, running ones included: `plan`, `manual`, `accept-edits`, `auto` or `bypass`. `ask`, the old name of `manual`, is an error that names `manual`. `bypass` lifts every guard but deny rules and the push guard: a client that offers it should have its user confirm first | `{"mode": "..."}` |
+| `set_agent` | `agent` | Makes the lead another [primary agent](team.md#primary-agents) (`build`, `plan`, or one of your definitions with `mode: primary`): its identity, tools, limits, model and thinking level apply from the next request, and the switch is written to the session. A name that is no primary agent is an error that lists them | `{"agent": "..."}` |
 | `agent_send` | `to`, `message` | Messages a sub-agent by id, or `all` | `{"agents": [...]}`: ids reached |
 | `agent_stop` | `agent` | Stops a sub-agent and the agents it started, or `all` | `{"agents": [...]}`: ids stopped |
 | `agent_mention` | `name`, `text` | `@name text` as the user types it at a prompt: sends `text` to the sub-agent with the id `name`, or starts an agent from the definition of that name with `text` as its task (its report goes to the lead) | `{"agent": "scout-1", "started": true}`, or `null` when `name` is neither an agent nor a definition |
@@ -98,6 +99,7 @@ The session commands report the saved sessions and the open one, change which se
 | `agents` | The roster, with the same members as the `roster` event below |
 | `branch` | The checked-out git branch of the project, or `null` |
 | `coordinator`, `goal` | Whether coordinator mode is on; the open goal in a few words, or `null` |
+| `agent`, `primary_agents` | The primary agent the lead is; the ones `set_agent` takes, as `{"name", "description", "color"}` (`color` is `#rrggbb`, absent when the definition gives none), in the order a client steps through them |
 | `todo` | The lead's task list: `{"text", "status"}` with `pending`, `in_progress` or `done` |
 | `roles` | The model each role (`default`, `smol`, ...) resolves to first |
 | `interrupted` | Present when the session's last run was cut short by the end of a process and `continue_run` can go on with it: where it stopped, in a few words (`stopped while shell ran`) |

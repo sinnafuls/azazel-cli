@@ -39,6 +39,7 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `model_change` | A model chosen with `/model`, the model picker or `--model` |
 | `thinking_change` | A thinking level chosen with `/thinking`, the thinking key or `--thinking` |
 | `mode_change` | A change of permission mode |
+| `agent_change` | The [primary agent](team.md#primary-agents) the lead switched to, with `tab`, `/agent` or `--agent`; resuming the session comes back on it |
 | `context_edit` | An old tool result replaced by a short note (see compaction) |
 | `compaction` | A summary standing in for older history |
 | `checkpoint` | The snapshot taken before a prompt |
@@ -47,10 +48,11 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `label` | A label on an entry, given in `/tree`; an empty label takes it away |
 | `session_info` | The session's name; the newest one counts |
 | `pin` | Whether the session is pinned |
+| `archive` | Whether the session is [archived](#archived-sessions): kept out of the lists of sessions |
 | `custom` | Extension data, and under `customType` `run_code_store` a value a script kept with `store` (`data.key`, `data.value`) |
 | `run_started` | A run began (the work one prompt starts): `runId`, and the `requestId` its sender gave the prompt, if any. Its `parentId` is the prompt |
 | `request_started` | A request of the run went out to `model`; `via` names the [virtual model](models-and-logins.md#virtual-models) that picked it, when one did |
-| `tool_started` | A tool call of the run was let through and began: `callId`, `name`, `input` |
+| `tool_started` | A tool call of the run was let through and began: `callId`, `name` (the tool's own name), `input` (as it ran), and `repairs` when the call was [mended](tools.md#calls-that-are-mended) first |
 | `run_ended` | The run ended: `runId` and `stop` (`stop`, `length`, `tool_use`, `error`, `aborted` or `failed`) |
 
 The last four are the journal of a run. Tool results and replies are `message` entries as always; a
@@ -290,14 +292,16 @@ passes 6,000.
 
 | Command | What it does |
 |---|---|
-| `azazel sessions list [--all-projects] [--json]` | One line per session: id, last used, name or first prompt, messages, cost, pinned |
+| `azazel sessions list [--all-projects] [--all] [--json]` | One line per session: id, last used, name or first prompt, messages, cost, pinned. [Archived](#archived-sessions) sessions only with `--all` |
 | `azazel sessions search <text> [--all-projects] [--json]` | Sessions whose messages contain the text (case-insensitive), as `date · name · matching line` |
 | `azazel sessions delete <PATH\|ID> [--yes]` | Deletes the session file and its sub-agents' transcripts. Asks first; without a terminal it needs `--yes` |
 | `azazel sessions prune [--older-than 30d] [--all-projects] [--dry-run]` | Deletes unpinned sessions not used for that long (`h`, `d` or `w`) |
-| `azazel sessions export [PATH\|ID] [--format F] [-o FILE]` | Same as `azazel export` |
+| `azazel sessions export [PATH\|ID] [--format F] [-o FILE] [--sanitize]` | Same as `azazel export` |
+| `azazel sessions import <FILE\|URL> [--project DIR]` | Makes a new session of this project, or of the project of `DIR`, from a session file or a JSON lines export (`--format jsonl`), read from a file or fetched from an `https://` address. Its entries are taken as they are; it gets an id of its own, and the time of its first entry |
+| `azazel open` | Starts the UI with the [`/open`](#projects-and-directories) picker up |
 | `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project. `/stats [days]` shows the same in the UI |
 | `azazel context [PATH\|ID] [--json]` | What the last request of a session was made of: tokens per category (each part of the system prompt, tool schemas, messages, tool results, images). The latest session of this project by default; see [the context inspector](tui.md#the-context-inspector) |
-| `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output |
+| `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE] [--sanitize]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output. `--sanitize` writes it [for sharing](#sanitized-exports) |
 | `azazel bug [what went wrong] [--transcript] [--session PATH\|ID] [--issue]` | Writes a [bug report](#bug-reports) to a zip under `~/.azazel/reports/` |
 
 Export formats:
@@ -312,6 +316,19 @@ With `tui.redact` on (the default), what looks like a secret is replaced by `[re
 or HTML export, as it is [on screen](tui.md#hiding-secrets). A JSON lines export holds the entries as stored,
 secrets included, so that it opens as a session again: mind where you send it.
 
+### Sanitized exports
+
+`azazel export --sanitize` and `/export [path] --sanitize` write a session to share with someone who should
+not see your code or your keys, in any format:
+
+- what looks like a secret is replaced by `[redacted:<kind>]` everywhere, whatever `tui.redact` says, the JSON
+  lines included;
+- the results of the tools that read, search or change files (`read`, `grep`, `edit`, `write`, `patch`, `lsp`,
+  `ast_grep`) become `[file content removed]`, and so does the text `write`, `edit` and `patch` were given;
+- the conversation, the other tools' output and pictures stay.
+
+A sanitized JSON lines export still opens as a session (`azazel sessions import`), without what was removed.
+
 With `[session] retention_days = N` (0, the default, keeps everything), sessions of the project not used for `N`
 days are deleted in the background when azazel starts, at most once a day. Pinned sessions and the open one are
 kept.
@@ -322,6 +339,52 @@ left out. Compacted history appears under the heading `Earlier (summarised)` in 
 Conversations held in pi, omp, jcode, Claude Code or Codex CLI become sessions with `azazel migrate --only chats`
 (or `/migrate`): each in the project it was held in, named `imported from <source>: <title>`, with the times
 of the original. See [migrating](migrating.md#conversations).
+
+### Archived sessions
+
+`azazel -p --archived "..."` keeps the session of the run out of `/resume`, `/open`, `-c` and `azazel sessions
+list`: a script or a CI job can run azazel without filling your lists. The session is kept as any other;
+`azazel sessions list --all` lists it, marked `archived`, and `-r <id>` opens it.
+
+## Projects and directories
+
+A session belongs to the project it works in, and azazel reads that project once, when it starts: its root, its
+trust, its configuration, context files, rules and MCP servers. The commands below go to another directory by
+starting azazel again there, in the same terminal, the way [`/restart`](#starting-azazel-again) does: the
+session goes on, and everything about the project is read afresh, the trust question included when the
+project has configuration that needs it.
+
+| Command | What it does |
+|---|---|
+| `/open` | A picker of the recent sessions of every project, newest first, each with the directory it works in; type to filter. Its keys rename, delete, pin and preview as in [the session picker](#the-session-picker). A session of this project opens in place, as with `/resume`; one of another project opens there, on the model and thinking level it last used. `azazel open` starts the UI with this picker up |
+| `/cd <dir>` | The session goes on in another directory, relative to the one it is in, or under `~`; `Tab` completes directory names. A directory of the same project keeps the session where it is; one of another project moves the session into that project's sessions |
+| `/worktree [name]` | Makes a [worktree](#worktrees) and the session goes on in it, with the uncommitted changes |
+| `/worktree list` | The worktrees of the project, with their branches, the one the session is in marked `(here)` |
+| `/worktree remove <name> [--force]` | Removes a worktree. One with uncommitted changes is kept unless `--force`; its branch is deleted only when another branch holds all its commits |
+
+A session that moves to another project takes its sub-agents' transcripts with it, and from then on is listed
+there. Its [checkpoints](#checkpoints) and saved tool outputs stay with the project they were taken in, so
+`/rewind` goes back no further than the move. A `--trust` given on the command line is not carried into
+another project (it is into a worktree, which holds the same configuration). A session that keeps no file
+(`--no-session`) cannot move, and a session that runs elsewhere (`azazel attach`, `--ssh`) does none of this.
+
+### Worktrees
+
+`/worktree [name]` makes `.azazel/worktrees/<name>` of the project (of the main project, when the session is
+already in a worktree) on a new branch `azazel/<name>` from the HEAD of the tree the session is in; without a
+name it is named after the time. The session goes on in the same place inside it (`crates/x` stays `crates/x`).
+
+The uncommitted changes move with the session: they are stashed in the tree it leaves (`git stash push
+--include-untracked`, the project's `.azazel/` left out), and the stash is popped in the new worktree, which
+starts at the same commit, so they apply as they were, staged changes staged. The tree it left is clean
+afterwards. Ignored files stay where they are. When the stash cannot be applied there, it is put back where it
+was and nothing is made; should it apply only in part, the worktree stays with what did, the stash (`git stash
+list`) keeps all of it, and you finish by hand.
+
+A worktree of a project you trust is trusted. `azazel -p --worktree[=NAME]` runs a prompt in a new worktree in
+the same way, from HEAD: it takes no uncommitted changes, and leaves the tree it was started in as it is. Its
+path and branch are printed at the end, on standard error, or as the last line `{"type":"worktree",...}` with
+`--output json`.
 
 ## Sharing a session
 

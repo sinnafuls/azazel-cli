@@ -15,7 +15,7 @@ use azazel_ai::providers::presets;
 use azazel_ai::{
     Block, Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, StallLimits, ThinkingLevel,
 };
-use azazel_core::agents;
+use azazel_core::agents::{self, AgentDef, LeadAgent};
 use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, expand_mentions};
@@ -83,6 +83,12 @@ pub struct App {
     lead_tools: Arc<LeadTools>,
     /// `--coordinator` was given and no session has been opened yet.
     coordinator_forced: AtomicBool,
+    /// The primary agent the lead is: its identity, model, limits and colour.
+    pub lead_agent: Arc<LeadAgent>,
+    /// `--agent`, until the first session has been opened.
+    agent_flag: Mutex<Option<String>>,
+    /// What the lead was on before its primary agent's own model or thinking level.
+    before: Arc<Mutex<Before>>,
     /// A `--no-session` run: its transcripts are deleted when it ends.
     ephemeral: bool,
     /// `--model` and `--thinking` were given: they win over what a reopened session last used.
@@ -119,6 +125,114 @@ pub enum Open {
     File(PathBuf),
     /// A store already in memory (a fork, or a session whose leaf was moved).
     Store(Arc<SessionStore>),
+}
+
+/// What the lead was on before a primary agent with a model or a thinking level of its own took
+/// over: switching to an agent without one gives it back.
+#[derive(Default)]
+struct Before {
+    chain: Option<Vec<ModelSpec>>,
+    thinking: Option<ThinkingLevel>,
+}
+
+/// What the lead takes up as it becomes a primary agent: a model chain and a thinking level
+/// where they change, and what the user should know.
+#[derive(Debug, Default, PartialEq)]
+struct Follow {
+    chain: Option<Vec<ModelSpec>>,
+    thinking: Option<ThinkingLevel>,
+    notice: Option<String>,
+}
+
+/// The model chain and thinking level of a lead on `chain` and `thinking` that becomes `def`:
+/// the agent's own, with what the lead was on kept in `before`; that again when the agent has
+/// none. What the command line chose (`pinned`: `--model`, `--thinking`) stays.
+fn follow(
+    def: &AgentDef,
+    chain: &[ModelSpec],
+    thinking: ThinkingLevel,
+    before: &mut Before,
+    router: &Router,
+    pinned: (bool, bool),
+) -> Follow {
+    let mut notice = None;
+    let own = def.model.clone().filter(|own| {
+        let usable = !router.resolve(own).is_empty();
+        if !usable {
+            let names: Vec<String> = own.iter().map(ToString::to_string).collect();
+            notice = Some(format!(
+                "agent {} names no model that can be used ({}); the lead stays on its model",
+                def.name,
+                names.join(", ")
+            ));
+        }
+        usable
+    });
+    let chain = match own {
+        _ if pinned.0 => None,
+        Some(own) => {
+            before.chain.get_or_insert_with(|| chain.to_vec());
+            (own != chain).then_some(own)
+        }
+        None => before.chain.take().filter(|back| back != chain),
+    };
+    let thinking = match def.thinking {
+        _ if pinned.1 => None,
+        Some(own) => {
+            before.thinking.get_or_insert(thinking);
+            (own != thinking).then_some(own)
+        }
+        None => before.thinking.take().filter(|back| *back != thinking),
+    };
+    Follow {
+        chain,
+        thinking,
+        notice,
+    }
+}
+
+/// The limits of `def` on the lead: kept in plan mode or not, and the tools it grants.
+fn lead_limits(permissions: &PermissionState, def: &AgentDef) {
+    permissions.set_limits(azazel_team::LEAD, def.plan_mode, def.tools.clone());
+}
+
+/// What a switch of the lead's primary agent changes on the running lead.
+struct Switched {
+    permissions: Arc<PermissionState>,
+    services: Weak<Services>,
+    router: Arc<Router>,
+    before: Arc<Mutex<Before>>,
+    pinned: (bool, bool),
+}
+
+impl Switched {
+    fn apply(&self, def: &AgentDef) {
+        lead_limits(&self.permissions, def);
+        let Some(services) = self.services.upgrade() else {
+            return;
+        };
+        let Some(lead) = services.get::<Team>().and_then(|team| team.lead()) else {
+            return;
+        };
+        let status = lead.status();
+        let follow = follow(
+            def,
+            &status.chain,
+            status.thinking,
+            &mut self.before.lock().unwrap_or_else(PoisonError::into_inner),
+            &self.router,
+            self.pinned,
+        );
+        if let Some(chain) = follow.chain {
+            lead.send(AgentCmd::SetModel(chain));
+        }
+        if let Some(level) = follow.thinking {
+            lead.send(AgentCmd::SetThinking(level));
+        }
+        if let (Some(notice), Some(ui)) = (follow.notice, services.get::<Ui>()) {
+            ui.0.notify(Level::Warn, &notice);
+        }
+    }
 }
 
 /// A mistake in how azazel was called; the run exits with status 2.
@@ -508,10 +622,30 @@ impl App {
         if let Some(why) = &packages.problem {
             tracing::warn!("installed packages are not loaded: {why}");
         }
+        let mut agent_defs = agents::discover(
+            azazel_team::BUILTIN_AGENTS,
+            &run.def_roots(&paths, compat, &packages),
+        );
+        agent_defs.apply_overrides(&config.agents.overrides);
+        let agent_defs = Arc::new(agent_defs);
+        let lead_agent = Arc::new(
+            LeadAgent::new(agent_defs.clone(), &config.agents.default)
+                .map_err(|why| anyhow!("[agents] default: {why}"))?,
+        );
+        let agent_flag = match &cli.agent {
+            Some(name) if agent_defs.primary(name).is_none() => {
+                return Err(
+                    UsageError(format!("--agent: {}", agents::not_primary(&agent_defs, name))).into(),
+                );
+            }
+            other => other.clone(),
+        };
+        services.insert(lead_agent.clone());
         registry.load(&BasePromptExt {
             cwd: paths.cwd.clone(),
             project_root: paths.project_root.clone(),
             shell: shell.name().to_string(),
+            lead: lead_agent.clone(),
             system: cli
                 .system_prompt
                 .as_deref()
@@ -535,6 +669,7 @@ impl App {
             shell_timeout: Duration::from_secs(config.tools.shell_timeout_secs),
             artifacts_dir: paths.artifacts_dir(),
             read_guard: config.tools.read_guard,
+            patch: config.tools.patch,
         })?;
         #[cfg(feature = "test-support")]
         if std::env::var_os("AZAZEL_MOCK_TOOLS").is_some() {
@@ -648,12 +783,6 @@ impl App {
             cwd: paths.cwd.clone(),
             trusted,
         })?;
-        let mut agent_defs = agents::discover(
-            azazel_team::BUILTIN_AGENTS,
-            &run.def_roots(&paths, compat, &packages),
-        );
-        agent_defs.apply_overrides(&config.agents);
-        let agent_defs = Arc::new(agent_defs);
         let coordinator = crate::orchestration::load(&registry, &config, cli)?;
         registry.load(&TeamExt {
             defs: agent_defs.clone(),
@@ -792,6 +921,8 @@ impl App {
         if config.tools.format_on_write {
             services.insert(Arc::new(azazel_tools::format::Formatters::new(
                 config.tools.format.clone(),
+                paths.project_root.clone(),
+                trusted,
             )));
         }
         // Results lose their secrets before the model and the session file get them.
@@ -984,6 +1115,7 @@ impl App {
             registry.tools.clone(),
             coordinator.clone(),
             report.clone(),
+            Some(lead_agent.clone()),
         ));
         // A script run for the lead reaches what the lead is offered, and no more.
         if let Some(caller) = services.get::<ToolCaller>() {
@@ -1045,6 +1177,25 @@ impl App {
                 });
             }
         }));
+        // A switch of the primary agent is recorded, and the lead takes up its limits, its model
+        // and its thinking level at once.
+        let switched = Switched {
+            permissions: permissions.clone(),
+            services: Arc::downgrade(&services),
+            router: router.clone(),
+            before: Arc::default(),
+            pinned: (chosen, cli.thinking.is_some()),
+        };
+        let before = switched.before.clone();
+        let recorder = current.clone();
+        lead_agent.on_change(Arc::new(move |def| {
+            if let Some(session) = recorder.read().unwrap_or_else(PoisonError::into_inner).as_ref() {
+                session.append(EntryKind::AgentChange {
+                    agent: def.name.clone(),
+                });
+            }
+            switched.apply(def);
+        }));
 
         let telemetry = Telemetry::start(&config.telemetry);
         Ok(App {
@@ -1067,6 +1218,9 @@ impl App {
             report,
             lead_tools,
             coordinator_forced: AtomicBool::new(cli.coordinator),
+            lead_agent,
+            agent_flag: Mutex::new(agent_flag),
+            before,
             ephemeral: cli.no_session,
             model_flag: chosen,
             thinking_flag: cli.thinking.is_some(),
@@ -1089,8 +1243,9 @@ impl App {
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
         if cli.resume_latest {
-            return match SessionStore::list(&dir).first() {
-                Some(latest) => Ok(Open::File(latest.path.clone())),
+            // An archived session (`-p --archived`) is not one to go on with.
+            return match SessionStore::list(&dir).into_iter().find(|s| !s.archived) {
+                Some(latest) => Ok(Open::File(latest.path)),
                 None => bail!("this project has no session to continue"),
             };
         }
@@ -1225,6 +1380,73 @@ impl App {
         (chain, thinking, notice)
     }
 
+    /// Puts the lead to the primary agent `session` is on: the one `--agent` names, else the one
+    /// its branch last switched to, else the one the lead is now. A session that is opened as
+    /// another agent than it records gets the new one written down. Returns the model chain and
+    /// thinking level the lead starts on as that agent, and what the user should be told.
+    fn open_agent(
+        &self,
+        session: &SessionStore,
+        chain: Vec<ModelSpec>,
+        thinking: ThinkingLevel,
+        mut notice: Option<String>,
+    ) -> (Vec<ModelSpec>, ThinkingLevel, Option<String>) {
+        let lead = &self.lead_agent;
+        let default = lead.default_name();
+        let recorded = session.last_agent(None);
+        let forced = self
+            .agent_flag
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        let wanted = forced.or_else(|| recorded.clone()).unwrap_or_else(|| lead.name());
+        let def = match lead.restore(&wanted) {
+            Ok(def) => def,
+            Err(_) => {
+                let gone = format!(
+                    "this session was last the agent {wanted}, which is gone; it goes on as {default}"
+                );
+                notice = Some(notice.map_or(gone.clone(), |first| format!("{first}; {gone}")));
+                // The default is a primary agent: `LeadAgent::new` made sure of it.
+                match lead.restore(default) {
+                    Ok(def) => def,
+                    Err(_) => return (chain, thinking, notice),
+                }
+            }
+        };
+        if recorded.as_deref().unwrap_or(default) != def.name {
+            session.append(EntryKind::AgentChange {
+                agent: def.name.clone(),
+            });
+        }
+        lead_limits(&self.permissions, &def);
+        let mut before = self.before.lock().unwrap_or_else(PoisonError::into_inner);
+        *before = Before::default();
+        let follow = follow(
+            &def,
+            &chain,
+            thinking,
+            &mut before,
+            &self.router,
+            (self.model_flag, self.thinking_flag),
+        );
+        if let Some(more) = follow.notice {
+            notice = Some(notice.map_or(more.clone(), |first| format!("{first}; {more}")));
+        }
+        (
+            follow.chain.unwrap_or(chain),
+            follow.thinking.unwrap_or(thinking),
+            notice,
+        )
+    }
+
+    /// Makes the lead the primary agent `name`: it is recorded in the session, and the lead takes
+    /// up the agent's identity, limits, model and thinking level. Returns whether that changed
+    /// anything.
+    pub fn set_agent(&self, name: &str) -> Result<bool, String> {
+        self.lead_agent.set(name)
+    }
+
     /// Opens a session and starts its lead agent on `chain`. A session read from its file comes
     /// back on the model and thinking level it last used instead (see [`App::as_left`]).
     pub async fn open(&self, how: Open, chain: Vec<ModelSpec>, thinking: ThinkingLevel) -> Result<Active> {
@@ -1265,6 +1487,7 @@ impl App {
             &session,
             self.coordinator_forced.swap(false, Ordering::SeqCst),
         );
+        let (chain, thinking, notice) = self.open_agent(&session, chain, thinking, notice);
         // The task list is the one this branch of the session ended with.
         if let Some(todos) = self.registry.services.get::<azazel_tools::TodoStore>() {
             todos.rehydrate("lead", &session.branch(None));

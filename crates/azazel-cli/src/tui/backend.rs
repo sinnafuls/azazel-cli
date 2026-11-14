@@ -22,6 +22,7 @@ use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
 use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
+use azazel_protocol::PrimaryAgent;
 use azazel_team::{Goals, MemberInfo, Mentioned, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
 use tokio::sync::{broadcast, mpsc};
@@ -288,6 +289,13 @@ pub(crate) trait Backend: Send {
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String>;
 
     async fn set_mode(&mut self, mode: PermissionMode) -> Result<(), String>;
+
+    /// The primary agents the lead can be, in the order `tab` steps through them, and the name
+    /// of the one it is.
+    fn agents(&self) -> (Vec<PrimaryAgent>, String);
+
+    /// Makes the lead the primary agent `name`.
+    async fn set_agent(&mut self, name: &str) -> Result<(), String>;
 
     // ------------------------------------------------------------ the session and its tree
 
@@ -781,6 +789,24 @@ impl Backend for Local {
         Ok(())
     }
 
+    fn agents(&self) -> (Vec<PrimaryAgent>, String) {
+        let lead = &self.app.lead_agent;
+        let agents = lead
+            .primaries()
+            .iter()
+            .map(|def| PrimaryAgent {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                color: def.color.clone(),
+            })
+            .collect();
+        (agents, lead.name())
+    }
+
+    async fn set_agent(&mut self, name: &str) -> Result<(), String> {
+        self.app.set_agent(name).map(|_| ())
+    }
+
     async fn set_name(&mut self, name: String) -> Result<(), String> {
         self.active.session.append(EntryKind::SessionInfo { name });
         Ok(())
@@ -1061,7 +1087,7 @@ impl Backend for Local {
             return Vec::new();
         };
         team.defs()
-            .list()
+            .subagents()
             .iter()
             .map(|def| (def.name.clone(), def.description.clone()))
             .collect()

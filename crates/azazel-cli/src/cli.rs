@@ -54,6 +54,9 @@ pub enum SessionsAction {
         /// Of every project
         #[arg(long)]
         all_projects: bool,
+        /// Archived sessions too (those of `azazel -p --archived`)
+        #[arg(long)]
+        all: bool,
         /// One JSON object per session
         #[arg(long)]
         json: bool,
@@ -97,6 +100,18 @@ pub enum SessionsAction {
         /// The file to write, or - for standard output
         #[arg(short = 'o', long = "output-file", value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Hide secrets and leave out what files held, for sharing
+        #[arg(long)]
+        sanitize: bool,
+    },
+    /// Make a session of this project from a session file or an export as JSON lines: a path
+    /// or an https:// address
+    Import {
+        #[arg(value_name = "FILE|URL")]
+        source: String,
+        /// The project to bring it into instead of this one
+        #[arg(long, value_name = "DIR")]
+        project: Option<PathBuf>,
     },
 }
 
@@ -305,7 +320,12 @@ pub enum Sub {
         /// The file to write, or - for standard output
         #[arg(short = 'o', long = "output-file", value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Hide secrets and leave out what files held, for sharing
+        #[arg(long)]
+        sanitize: bool,
     },
+    /// Pick a recent session of any project and open it in the interactive UI
+    Open,
     /// Install the newest release from GitHub over this binary
     Update {
         /// Only report whether a newer release exists
@@ -606,6 +626,10 @@ pub struct Cli {
     #[arg(long, value_name = "MODE", global = true)]
     pub mode: Option<String>,
 
+    /// Primary agent the lead is for this run: build, plan or one of your own (see azazel agents)
+    #[arg(long, value_name = "NAME", global = true)]
+    pub agent: Option<String>,
+
     /// Output of print mode
     #[arg(long, value_enum, default_value = "text", global = true)]
     pub output: OutputFormat,
@@ -742,6 +766,28 @@ pub struct Cli {
     /// Coordinator mode: the lead plans and delegates, and gets no tool that edits or runs commands
     #[arg(long, global = true)]
     pub coordinator: bool,
+
+    /// With -p: a file for the prompt; text is added to it as an @path mention is, an image is
+    /// attached. Repeat for more, up to 100
+    #[arg(short = 'f', long = "file", value_name = "PATH", requires = "print")]
+    pub files: Vec<PathBuf>,
+
+    /// With -p: run in a new git worktree on a new branch from HEAD, named NAME or after the
+    /// time; its path is printed at the end. The name goes after `=`: --worktree=NAME
+    #[arg(
+        long,
+        value_name = "NAME",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "",
+        requires = "print",
+        conflicts_with_all = ["resume_latest", "session", "fork"]
+    )]
+    pub worktree: Option<String>,
+
+    /// With -p: keep the session out of /resume, /open and `azazel sessions list`
+    #[arg(long, requires = "print")]
+    pub archived: bool,
 
     /// With -p: the run must end in JSON that matches this schema (a file, or the schema itself);
     /// only that JSON is printed
