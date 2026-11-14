@@ -331,7 +331,7 @@ mod tests {
         let editor = editor("");
         let rows = shown(&editor, 160, 40);
         assert!(
-            rows[0].starts_with("⏵ accept-edits · ⑂ main · ~/src/app · ◫ 42% [━━━╸────] · "),
+            rows[0].starts_with("⏵ accept-edits · build · ⑂ main · ~/src/app · ◫ 42% · "),
             "{rows:?}"
         );
         assert!(rows[0].ends_with("⬢ anthropic/claude-opus-5-5 · priority · high"));
@@ -339,12 +339,13 @@ mod tests {
         assert_eq!(rows[2], "▌ Preset      default");
         assert_eq!(rows[3], "  Separator   dot");
         assert_eq!(rows[4], "  ▣ mode        left   the permission mode");
+        assert_eq!(rows[5], "  ▣ agent       left   the primary agent the lead is");
         assert_eq!(
-            rows[14],
+            rows[15],
             "  ▣ extensions  left   what extensions show with azazel.status"
         );
-        assert_eq!(rows[15], "  ▣ model       right  the model that answers");
-        assert_eq!(rows[18], "  □ todo               todo items done");
+        assert_eq!(rows[16], "  ▣ model       right  the model that answers");
+        assert_eq!(rows[19], "  □ todo               todo items done");
         // Every segment and the two choices, whatever is on the line.
         assert_eq!(rows.len(), 2 + 2 + Name::ALL.len());
         // A small box keeps the list.
@@ -467,7 +468,7 @@ mod tests {
         let mut editor = editor("");
         go_to(&mut editor, "branch");
         press(&mut editor, KeyCode::Char(' '));
-        assert!(shown(&editor, 100, 40)[0].starts_with("⏵ accept-edits · ~/src/app · "));
+        assert!(shown(&editor, 100, 40)[0].starts_with("⏵ accept-edits · build · ~/src/app · "));
         let subscription = StatusEditor::new(&StatuslineConfig::default(), true);
         assert!(shown(&subscription, 120, 40)[0].contains("◔ 61% 5h"));
         let theme = Theme::dark();
