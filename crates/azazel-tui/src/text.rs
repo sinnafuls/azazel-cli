@@ -721,6 +721,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_line_of_a_program_keeps_its_colours_and_nothing_else_that_moves_the_terminal() {
+        assert_eq!(keep_colours("plain text"), "plain text");
+        assert_eq!(
+            keep_colours("\x1b[1;32mmain\x1b[0m \x1b[38;2;1;2;3m~/src\x1b[m"),
+            "\x1b[1;32mmain\x1b[0m \x1b[38;2;1;2;3m~/src\x1b[m"
+        );
+        // Moving the cursor, clearing the line, a title and a bell are not colours.
+        assert_eq!(keep_colours("\x1b[2K\x1b[5Ca\x1b]0;title\x07b\x07\tc\r"), "ab c");
+        assert_eq!(keep_colours(""), "");
+    }
+
+    #[test]
     fn width_ignores_escape_sequences() {
         assert_eq!(width("plain"), 5);
         assert_eq!(width("\x1b[1;38;2;10;20;30mbold\x1b[0m"), 4);

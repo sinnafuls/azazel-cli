@@ -314,7 +314,7 @@ branch outside a repository, no cost on a subscription) is left out.
 |---|---|---|
 | `mode` | always | The permission mode: `manual`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, `⚠ bypass`, in the colour of the input rules (`bypass` in the colour of errors). `coordinator` follows it while [coordinator mode](team.md#coordinator-mode) is on |
 | `branch` | the project is a git repository | `⑂ main`: the checked-out branch |
-| `git_dirty` | files differ from the last commit | `± 3`: how many files are changed or untracked. Counted after every turn and every `!command`, at most every five seconds |
+| `git_dirty` | files differ from the last commit | `± 3`: how many files are changed or untracked. Counted again after every turn and every `!command`, and otherwise at most every five seconds |
 | `path` | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
 | `context` | the model's context window is known | `◫ 42%`: how full the context window is; warning colour above 70 %, error colour above 90 % |
 | `bar` | the context window is known and the terminal is at least 100 columns wide | `[━━━╸────]`: the context window as a bar. Right behind `context` it stands with it as one piece |
@@ -1193,9 +1193,9 @@ With the feature:
 | Page | What is on it |
 |---|---|
 | Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
-| Models | The default model and the model of every role, favourite models, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
+| Models | The default model and the model of every role, favourite models\*, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
 | Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
-| Status line | Preset, left and right segments, separator, segment options, command |
+| Status line | Preset\*, left and right segments\*, separator\*, segment options\*, command\*; [`/statusline`](#setting-it-up) sets the same line up with the segments in a list |
 | Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
 | Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |
 | Tools | Disabled tools, result size, shell and its time limit, redaction for the model; formatters and checkers after a write, the findings report, the read guard, the secret scan; language servers; MCP; web search and the browser; media models; verification and goals |
