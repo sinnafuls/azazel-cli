@@ -34,6 +34,7 @@ GitHub are its section here.
 
 ### Fixed
 
+- `--set` takes quoted key parts as TOML does, so `--set 'models."openai/gpt-5.5".context_window=400000'` reaches that model; the quotes were kept in the name before and the setting did nothing. An unclosed quote is an error.
 - A reply that Anthropic's safety system stops (`stop_reason: refusal`) ended the turn with nothing on screen. It is now an error that gives the provider's reason and explanation, for example `the model declined to answer (cyber): Cyber safeguards flagged this message…`; it is not retried, and no other model is asked on its own.
 
 ## [0.7.0] - 2026-11-14
