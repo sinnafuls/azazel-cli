@@ -98,6 +98,9 @@ pub(crate) struct Facts {
     pub todo: Vec<TodoItem>,
     /// How the lead's model is paid for.
     pub billing: Billing,
+    /// What a run is waiting for while its account is out of allowance, and the Unix seconds
+    /// at which the wait is over.
+    pub waiting: Option<(String, u64)>,
     /// The stored account of the lead's provider that requests go out with: a sign-in or a
     /// stored key. None for a key from elsewhere.
     pub account: Option<String>,
@@ -594,6 +597,9 @@ impl Backend for Local {
                 .map(|store| store.get(&self.active.lead.id))
                 .unwrap_or_default(),
             billing,
+            waiting: services
+                .get::<crate::resets::Waits>()
+                .and_then(|waits| waits.current()),
             account,
             account_email,
         }

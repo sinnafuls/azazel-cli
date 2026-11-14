@@ -213,6 +213,8 @@ Sent when an agent or extension asks the user something. Answer with `ui_respons
 
 An `ask` request is a question of the `ask_user` tool (or of an extension). `context`, when present, is what the user needs to know and belongs above the question. `options` is empty for `text` and `confirm`; `multi` is `true` exactly when `expects` is `multiselect`. With `allow_freeform` the user may type an answer instead of choosing: send it as a string, or as a list with that one string. A single chosen option may be sent as a string too, and `yes` and `no` are accepted for a `confirm`. `code` or `diff` (never both) is source text the question is about, to be shown with it: code as it is written, a unified diff as a diff. `recommended` is the answer the agent would give, one of the `options` or `yes` or `no`: mark it, and start the selection on it.
 
+A `select` request is also how azazel asks what to do when a subscription has run out in the middle of a run: its `prompt` starts with the line `Usage limit reached`, and its options are `Use the reset` (when the account holds one), `Wait until reset` and `Pick another model`. Dismissing it lets the run fail with the provider's refusal; see [when every account is out](models-and-logins.md#when-every-account-is-out).
+
 A `form` request is an `ask_user` call with several `questions`, to be answered together:
 
 ```json

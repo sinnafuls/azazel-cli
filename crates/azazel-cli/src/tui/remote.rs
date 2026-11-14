@@ -924,6 +924,8 @@ impl Backend for Remote {
             // How the other process pays is not part of its state: what it reports as cost
             // is shown, and nothing when it reports none.
             billing: Billing::Metered,
+            // The other process says so in a notice of its own.
+            waiting: None,
             account: None,
             account_email: None,
         }

@@ -20,7 +20,7 @@ use tokio_util::sync::CancellationToken;
 use crate::compaction::{self, CompactionSettings, ContextEntry};
 use crate::event::{AgentCmd, AgentEvent, AgentId, AgentInfo, Resume, UserInput};
 use crate::gate::{Gate, GateDecision};
-use crate::hooks::{AgentHooks, TranscriptSink};
+use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
 use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, tool_spec};
 
@@ -530,7 +530,7 @@ impl Actor {
                 return Err(reason);
             }
 
-            let chain = self.inbox.chain.clone();
+            let mut chain = self.inbox.chain.clone();
             let thinking = self.inbox.thinking;
             if let Err(error) = self.inbox.drive(self.core.maintain_context(&chain, cancel)).await {
                 tracing::warn!("compaction skipped: {error}");
@@ -543,7 +543,36 @@ impl Actor {
             self.core.record_request(&request);
 
             let watched = rule_stops < MAX_RULE_STOPS;
-            let message = match self.stream_message(&chain, &request, cancel, watched).await {
+            // A request that fails because the account is out of allowance is sent again when
+            // the application gets the allowance back, waits for it, or names other models.
+            let reply = loop {
+                let reply = self.stream_message(&chain, &request, cancel, watched).await;
+                let Err(error @ (AiError::Quota { .. } | AiError::RateLimit { .. })) = &reply else {
+                    break reply;
+                };
+                let recovery = self
+                    .inbox
+                    .drive(
+                        self.core
+                            .hooks
+                            .out_of_allowance(&self.core.info, &chain, error, cancel),
+                    )
+                    .await;
+                if cancel.is_cancelled() {
+                    break Err(AiError::Aborted);
+                }
+                match recovery {
+                    Recovery::Fail => break reply,
+                    // A model chosen by hand in the meantime is the one that is asked.
+                    Recovery::Retry => chain = self.inbox.chain.clone(),
+                    Recovery::Model(next) => {
+                        self.inbox.chain = next.clone();
+                        locked(&self.core.status).chain = next.clone();
+                        chain = next;
+                    }
+                }
+            };
+            let message = match reply {
                 Ok(Reply::Message(message)) => message,
                 Ok(Reply::Withdrawn(note)) => {
                     rule_stops += 1;

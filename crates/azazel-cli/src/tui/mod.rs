@@ -1003,7 +1003,18 @@ impl Tui {
         let mode = self.indicator();
         let since = self.busy_since.elapsed();
         let tick = shimmer::tick_at(since);
-        let running = self.tools.last().map(|tool| format!("running {}", tool.name));
+        // A run that waits for a usage window to reset says so, with the time that is left.
+        let running = match self.backend.facts().waiting {
+            Some((what, until)) => {
+                let left = until.saturating_sub(azazel_ai::credentials::now_ms() / 1000);
+                Some(format!(
+                    "{what}{}{} left",
+                    self.theme.glyph(Glyph::Separator),
+                    azazel_ai::limits::time_left(left)
+                ))
+            }
+            None => self.tools.last().map(|tool| format!("running {}", tool.name)),
+        };
         let (what, phase) = match &running {
             Some(running) => (running.as_str(), tick),
             None => shimmer::phrase(&config.indicator_text, tick, mode).unwrap_or({

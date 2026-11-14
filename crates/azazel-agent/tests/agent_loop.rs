@@ -10,7 +10,7 @@ use azazel_agent::agent::{ABORTED_TEXT, INTERRUPTED_TEXT, TURN_LIMIT_TEXT, UNFIN
 use azazel_agent::{
     Access, Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, AllowAll,
     ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks,
-    Resume, Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
+    Recovery, Resume, Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
@@ -1225,6 +1225,123 @@ async fn a_turn_start_hook_can_end_the_run_before_the_next_request() {
         matches!(events.last(), Some(AgentEvent::Failed { error }) if error == "the cost limit is reached"),
         "{events:?}"
     );
+}
+
+/// Answers a request that failed for lack of allowance with what it was given, in turn, and
+/// keeps what it was asked about.
+struct Allowance {
+    answers: Mutex<Vec<Recovery>>,
+    asked: Mutex<Vec<(Vec<ModelSpec>, AiError)>>,
+}
+
+impl Allowance {
+    fn answering(answers: Vec<Recovery>) -> Arc<Allowance> {
+        Arc::new(Allowance {
+            answers: Mutex::new(answers),
+            asked: Mutex::default(),
+        })
+    }
+}
+
+#[async_trait]
+impl AgentHooks for Allowance {
+    async fn out_of_allowance(
+        &self,
+        _: &AgentInfo,
+        chain: &[ModelSpec],
+        error: &AiError,
+        _: &tokio_util::sync::CancellationToken,
+    ) -> Recovery {
+        self.asked.lock().unwrap().push((chain.to_vec(), error.clone()));
+        let mut answers = self.answers.lock().unwrap();
+        match answers.is_empty() {
+            true => Recovery::Fail,
+            false => answers.remove(0),
+        }
+    }
+}
+
+fn used_up() -> AiError {
+    AiError::Quota {
+        resets_at: None,
+        message: "the weekly limit is used up".into(),
+    }
+}
+
+#[tokio::test]
+async fn a_request_refused_for_lack_of_allowance_goes_again_when_the_allowance_is_back() {
+    let hooks = Allowance::answering(vec![Recovery::Retry]);
+    let mut session = start(Setup {
+        hooks: hooks.clone(),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::fail(used_up()));
+    session.mock.push("a", MockStep::text("here again"));
+    let events = session.run("go").await;
+
+    assert!(
+        matches!(
+            events.last(),
+            Some(AgentEvent::Idle {
+                stop: StopReason::Stop
+            })
+        ),
+        "{events:?}"
+    );
+    // The same request went out twice, in one turn, and the refusal left no trace in the
+    // conversation.
+    let requests = session.mock.requests_for("a");
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].messages, requests[1].messages);
+    assert_eq!(
+        kinds(&events)
+            .iter()
+            .filter(|kind| kind.starts_with("turn_start"))
+            .count(),
+        1
+    );
+    let asked = hooks.asked.lock().unwrap().clone();
+    assert_eq!(asked, [(vec!["mock/a".parse().unwrap()], used_up())]);
+
+    // Without an answer the failure stands, as before.
+    session.mock.push("a", MockStep::fail(used_up()));
+    let events = session.run("again").await;
+    assert!(
+        matches!(events.last(), Some(AgentEvent::Failed { error }) if error.contains("the weekly limit is used up")),
+        "{events:?}"
+    );
+    assert_eq!(hooks.asked.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn a_request_refused_for_lack_of_allowance_can_go_on_with_other_models() {
+    let other: Vec<ModelSpec> = vec!["mock/b".parse().unwrap()];
+    let hooks = Allowance::answering(vec![Recovery::Model(other.clone())]);
+    let mut session = start(Setup {
+        hooks: hooks.clone(),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::fail(used_up()));
+    session.mock.push("b", MockStep::text("the other one answers"));
+    session.mock.push("b", MockStep::text("and stays"));
+    let events = session.run("go").await;
+    assert!(
+        matches!(events.last(), Some(AgentEvent::Idle { .. })),
+        "{events:?}"
+    );
+    assert_eq!(session.mock.requests_for("b").len(), 1);
+    // The agent is on the other models from here on: the next prompt does not ask the one
+    // that ran out.
+    assert_eq!(session.agent.status().chain, other);
+    session.run("more").await;
+    assert_eq!(session.mock.requests_for("a").len(), 1);
+    assert_eq!(session.mock.requests_for("b").len(), 2);
+    // Other failures are not asked about.
+    session
+        .mock
+        .push("b", MockStep::fail(AiError::Auth("no key".into())));
+    session.run("and more").await;
+    assert_eq!(hooks.asked.lock().unwrap().len(), 1);
 }
 
 #[tokio::test]

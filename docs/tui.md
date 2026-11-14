@@ -55,7 +55,10 @@ The input sits between two full-width rules, with `❯` in front of the first ro
 height (at least 5 rows) and scrolls beyond that; the rules then say how much is out of view (`↑ 3 more`).
 
 While the agent is working, the rule above the input carries the [working indicator](#working-indicator): a
-spinner, `working` / `thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. With
+spinner, `working` / `thinking` / `running <tool>`, the elapsed time and `esc to interrupt`. A run that
+waits for a usage window to reset says what it waits for and how long is left (`waiting for the 5-hour
+limit of anthropic · 2 h 10 min left`); see
+[when every account is out](models-and-logins.md#when-every-account-is-out). With
 [Vim keys](#vim-keys) on, the same rule shows `-- NORMAL --` in normal mode. While you dictate it shows
 `● rec`, the time and a level meter, then `transcribing`; see [voice](voice.md).
 
@@ -810,6 +813,7 @@ Session and display:
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | A box with what each signed-in subscription has left: per account every usage window with a bar, the share used, its reset time and what it counts, the plan, and the account in use; `r` asks the providers again. See [usage](models-and-logins.md#usage) |
+| `/reset-usage [provider]` | Spend a [banked reset](models-and-logins.md#banked-resets) of a Claude or ChatGPT subscription: shows what the account holds and what the reset gives back, and asks before it is spent |
 | `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
