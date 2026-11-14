@@ -122,6 +122,8 @@ GitHub are its section here.
 - After the window got narrower in a terminal that re-wraps its content, part of the old input box (a rule,
   a blank row) no longer stays behind in the transcript.
 - The transcript viewer lays its text out once after a drag instead of at every size on the way.
+- After requests moved to another account, the status line shows that account's usage window at once, not
+  the window of the account that ran out.
 
 ## [0.5.0] - 2026-11-13
 

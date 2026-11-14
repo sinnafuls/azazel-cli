@@ -349,6 +349,11 @@ impl Local {
         }
     }
 
+    /// Requests moved to another account: who pays is asked anew for the next status line.
+    pub(super) fn account_changed(&self) {
+        *self.payer.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// How the lead's model is paid for: a subscription with its fullest usage window, or by
     /// the token.
     fn billing(&self) -> Billing {

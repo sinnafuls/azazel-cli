@@ -1196,9 +1196,15 @@ impl Tui {
                 to,
                 until,
                 limit,
-            } => self.info(&crate::accounts::switch_line(
-                &provider, &from, &to, until, &limit,
-            )),
+            } => {
+                // The status line shows the windows of the account requests go to now.
+                if let Some(local) = self.backend.local() {
+                    local.account_changed();
+                }
+                self.info(&crate::accounts::switch_line(
+                    &provider, &from, &to, until, &limit,
+                ))
+            }
             AgentEvent::TierDropped { model, tier } => {
                 self.info(&crate::routing::tier_dropped_line(&model, tier))
             }
