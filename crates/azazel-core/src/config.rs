@@ -365,6 +365,8 @@ config_table!(TuiConfig {
     glyphs: GlyphSetting = GlyphSetting::Auto,
     /// Menus, pickers and questions open as a box in the middle of the window.
     popups: bool = true,
+    /// The mouse works in a popup: the terminal reports it to azazel while one is open.
+    mouse: bool = true,
     /// How the working indicator moves.
     indicator: Indicator = Indicator::Shimmer,
     /// Phrases the working indicator shows in turn; empty shows what the agent is doing.

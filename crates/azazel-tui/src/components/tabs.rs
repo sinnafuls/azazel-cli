@@ -1,5 +1,7 @@
 //! A row of tabs: the names of the pages of a screen, with the one in view set apart.
 
+use std::ops::Range;
+
 use crate::glyphs::Glyph;
 use crate::render::Line;
 use crate::text;
@@ -97,6 +99,33 @@ pub fn row(tabs: &[Tab], current: usize, width: usize, theme: &Theme) -> Line {
     text::truncate(&line, width, ellipsis)
 }
 
+/// Where the row [`row`] draws (with the same arguments) each tab it shows: the tab's index and
+/// its columns, gaps and marks excluded. What the mouse points at.
+pub fn spans(tabs: &[Tab], current: usize, width: usize, theme: &Theme) -> Vec<(usize, Range<usize>)> {
+    if tabs.is_empty() || width == 0 {
+        return Vec::new();
+    }
+    let current = current.min(tabs.len() - 1);
+    let more = text::width(theme.glyph(Glyph::Ellipsis));
+    let (first, end) = window(tabs, current, width, more);
+    let mut start = if first > 0 { more + 1 } else { 0 };
+    let mut spans = Vec::with_capacity(end - first);
+    for (at, tab) in tabs.iter().enumerate().take(end).skip(first) {
+        let span = text::width(&text::sanitize(&tab.label))
+            + match text::width(&text::sanitize(&tab.badge)) {
+                0 => 0,
+                badge => badge + 1,
+            };
+        // A tab the row is too narrow for is cut at its end.
+        let range = start.min(width)..(start + span).min(width);
+        if !range.is_empty() {
+            spans.push((at, range));
+        }
+        start += span + GAP;
+    }
+    spans
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,5 +194,49 @@ mod tests {
         let line = plain(&row(&pages, 2, 24, &theme));
         assert!(line.is_ascii(), "{line:?}");
         assert_eq!(line, "... Appearance ...");
+    }
+
+    #[test]
+    fn a_column_of_the_row_names_the_tab_drawn_there() {
+        let theme = Theme::dark();
+        let mut pages = tabs(&["Accounts", "Models", "Appearance", "Status line", "Input"]);
+        pages[1].badge = "3".to_string();
+        for width in [12, 30, 80] {
+            for current in 0..pages.len() {
+                let line: Vec<char> = plain(&row(&pages, current, width, &theme)).chars().collect();
+                let spans = spans(&pages, current, width, &theme);
+                let at = |column: usize| {
+                    spans
+                        .iter()
+                        .find(|(_, range)| range.contains(&column))
+                        .map(|(tab, _)| *tab)
+                };
+                for column in 0..width + 2 {
+                    let found = at(column);
+                    let drawn = line.get(column).copied().unwrap_or(' ');
+                    match found {
+                        // The column holds a letter of that tab's label or count, or the mark
+                        // of a tab cut at the end of the row.
+                        Some(tab) => {
+                            let label = format!("{} {}…", pages[tab].label, pages[tab].badge);
+                            assert!(
+                                label.contains(drawn),
+                                "{width}/{current}/{column}: {drawn:?} in {label}"
+                            );
+                        }
+                        None => assert!(
+                            drawn == ' ' || drawn == '…',
+                            "{width}/{current}/{column}: {drawn:?} is in no tab"
+                        ),
+                    }
+                }
+            }
+        }
+        let wide = spans(&pages, 0, 80, &theme);
+        assert_eq!(
+            wide[..2],
+            [(0, 0..8), (1, 10..18)],
+            "`Models 3` after a gap of two"
+        );
     }
 }

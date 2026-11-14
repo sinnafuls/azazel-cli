@@ -141,7 +141,8 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
     tui.leaving_main();
     // A popup may have the alternate screen already; then it stays when the viewer closes.
     let entered = tui.guard.enter_alt();
-    tui.guard.capture_mouse(true);
+    // The wheel scrolls the viewer, unless the mouse is left to the terminal.
+    tui.guard.capture_mouse(tui.env.config.tui.mouse);
     loop {
         // A window that is changing size is laid out again once, when it has come to rest.
         if tui.settle_resize() {

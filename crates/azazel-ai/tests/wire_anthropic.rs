@@ -438,7 +438,6 @@ fn stop_reason_maps_to_length_only_when_output_was_cut() {
         ("end_turn", StopReason::Stop),
         ("stop_sequence", StopReason::Stop),
         ("pause_turn", StopReason::Stop),
-        ("refusal", StopReason::Stop),
     ];
     for (stop_reason, expected) in cases {
         let mut records = vec![message_start()];

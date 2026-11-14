@@ -1000,6 +1000,7 @@ impl Tui {
             }
             ("tui.redact", toml::Value::Boolean(on)) => tui.redact = *on,
             ("tui.popups", toml::Value::Boolean(on)) => tui.popups = *on,
+            ("tui.mouse", toml::Value::Boolean(on)) => tui.mouse = *on,
             ("tui.queue_mode", toml::Value::String(mode)) => {
                 if let Ok(mode) = mode.parse() {
                     tui.queue_mode = mode;
