@@ -413,6 +413,9 @@ mod tests {
         Fixture { _tmp: tmp, paths }
     }
 
+    /// Git is given the longest time allowed: these tests are about what a snapshot holds, and a
+    /// hosted runner can take more than the default 10 s to add a thousand files. The test of the
+    /// limit sets its own.
     fn checkpoints(f: &Fixture, max_files: u64) -> Checkpoints {
         Checkpoints::new(
             &f.paths,
@@ -420,6 +423,7 @@ mod tests {
             &CheckpointsConfig {
                 enabled: true,
                 max_files,
+                timeout_ms: *TIMEOUT_MS.end(),
                 ..CheckpointsConfig::default()
             },
         )
