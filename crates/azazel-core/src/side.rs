@@ -222,6 +222,7 @@ impl Side {
             messages,
             tools,
             thinking: ThinkingLevel::Off,
+            thinking_explicit: false,
             max_output: None,
             temperature: None,
             // Side requests run at the standard tier whatever the session's tier is.

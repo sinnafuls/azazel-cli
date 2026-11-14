@@ -90,7 +90,9 @@ pub struct AgentConfig {
     pub system: Vec<SystemPart>,
     pub tools: Arc<dyn ToolSource>,
     pub chain: Vec<ModelSpec>,
-    pub thinking: ThinkingLevel,
+    /// The thinking level chosen for this agent (`--thinking`, its definition's own level);
+    /// `None` leaves it to the `:level` of its model, else off.
+    pub thinking: Option<ThinkingLevel>,
     pub router: Arc<Router>,
     pub gate: Arc<dyn Gate>,
     pub bus: Arc<dyn AgentHooks>,
@@ -113,7 +115,12 @@ pub struct AgentStatus {
     /// The virtual model that picked it for that request, when the chain names one.
     pub via: Option<ModelRef>,
     pub chain: Vec<ModelSpec>,
+    /// The level requests go out at now: `thinking_set`, else the `:level` of the model the
+    /// chain asks first, else off.
     pub thinking: ThinkingLevel,
+    /// The level chosen for the session (`/thinking`, `--thinking`, the agent's own); `None`
+    /// follows the model's.
+    pub thinking_set: Option<ThinkingLevel>,
     pub context_tokens: u64,
     pub context_window: u64,
     /// Totals over the agent's lifetime, including summarisation requests.
@@ -173,6 +180,8 @@ pub struct AgentHandle {
     commands: mpsc::UnboundedSender<AgentCmd>,
     hub: Arc<EventHub>,
     status: Arc<Mutex<AgentStatus>>,
+    /// Gives the level the status reports: a role may change under the agent.
+    router: Arc<Router>,
     last_request: Arc<Mutex<Option<Arc<RequestRecord>>>>,
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
@@ -221,7 +230,9 @@ impl AgentHandle {
     }
 
     pub fn status(&self) -> AgentStatus {
-        locked(&self.status).clone()
+        let mut status = locked(&self.status).clone();
+        status.thinking = self.router.thinking(&status.chain, status.thinking_set);
+        status
     }
 
     /// The request the agent sent last, exactly as it was sent; `None` before its first.
@@ -247,10 +258,11 @@ impl Agent {
         let hub = Arc::new(EventHub::default());
         let status = Arc::new(Mutex::new(AgentStatus {
             chain: config.chain.clone(),
-            thinking: config.thinking,
+            thinking_set: config.thinking,
             ..AgentStatus::default()
         }));
         let info = config.info.clone();
+        let router = config.router.clone();
         let last_request = Arc::new(Mutex::new(None));
         let actor = Actor {
             inbox: Inbox {
@@ -268,7 +280,7 @@ impl Agent {
                 info: config.info,
                 system: config.system,
                 tools: config.tools,
-                router: config.router,
+                router: router.clone(),
                 gate: config.gate,
                 hooks: config.bus,
                 services: config.services,
@@ -292,6 +304,7 @@ impl Agent {
             commands,
             hub,
             status,
+            router,
             last_request,
             task: Arc::new(Mutex::new(Some(task))),
         }
@@ -306,7 +319,7 @@ struct Inbox {
     steer: VecDeque<UserInput>,
     follow_up: VecDeque<UserInput>,
     chain: Vec<ModelSpec>,
-    thinking: ThinkingLevel,
+    thinking: Option<ThinkingLevel>,
     /// A compaction requested while busy; runs when the prompt ends.
     compact: Option<Option<String>>,
     shutdown: bool,
@@ -419,7 +432,7 @@ impl Actor {
             {
                 let mut status = locked(&self.core.status);
                 status.chain = self.inbox.chain.clone();
-                status.thinking = self.inbox.thinking;
+                status.thinking_set = self.inbox.thinking;
             }
             if let Some(instructions) = self.inbox.compact.take() {
                 self.manual_compact(instructions).await;
@@ -1145,7 +1158,7 @@ impl Core {
     async fn build_request(
         &mut self,
         chain: &[ModelSpec],
-        thinking: ThinkingLevel,
+        thinking: Option<ThinkingLevel>,
         with_tools: bool,
     ) -> (Request, Vec<Arc<dyn Tool>>) {
         let mut messages: Vec<Message> = self.entries.iter().map(|e| e.message.clone()).collect();
@@ -1162,7 +1175,8 @@ impl Core {
             system: self.system.clone(),
             messages,
             tools: tools.iter().map(|t| tool_spec(t.as_ref())).collect(),
-            thinking,
+            thinking: thinking.unwrap_or_default(),
+            thinking_explicit: thinking.is_some(),
             max_output: None,
             temperature: None,
             cache_key: Some(format!("{}:{}", self.info.session_id, self.info.id)),

@@ -54,7 +54,9 @@ impl ScheduleTool {
             for spec in &status.chain {
                 args.extend(["--model".to_string(), spec.to_string()]);
             }
-            args.extend(["--thinking".to_string(), status.thinking.to_string()]);
+            if let Some(level) = status.thinking_set {
+                args.extend(["--thinking".to_string(), level.to_string()]);
+            }
         }
         args
     }

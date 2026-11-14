@@ -16,7 +16,7 @@ use crate::limits::LimitStore;
 use crate::provider::Provider;
 use crate::providers::http::blocked_until;
 use crate::stream::EventStream;
-use crate::types::{ModelRef, ModelSpec, Request, Role, Tier};
+use crate::types::{ModelRef, ModelSpec, Request, Role, ThinkingLevel, Tier};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
@@ -347,6 +347,13 @@ impl Router {
         out
     }
 
+    /// The thinking level a request on `chain` goes out at: the level `set` for the session
+    /// when there is one, else the `:level` of the model the chain asks first, else off.
+    pub fn thinking(&self, chain: &[ModelSpec], set: Option<ThinkingLevel>) -> ThinkingLevel {
+        set.or_else(|| self.resolve(chain).first().and_then(|model| model.thinking))
+            .unwrap_or_default()
+    }
+
     pub async fn stream(
         &self,
         chain: &[ModelSpec],
@@ -469,7 +476,7 @@ impl Router {
                     let request = RouteRequest {
                         name: &model.model,
                         reason,
-                        thinking: model.thinking.unwrap_or(req.thinking),
+                        thinking: level_for(&model, req),
                         previous: previous.clone(),
                         failed: state.failed.as_ref().map(|(model, error)| (model, error)),
                         request: req,
@@ -533,7 +540,7 @@ impl Router {
             return Err(error);
         };
         let info = self.model_info_discovered(model).await;
-        let thinking = model.thinking.unwrap_or(req.thinking);
+        let thinking = level_for(model, req);
         let tier = req.tier.filter(|_| !self.is_tierless(model));
         let mut req: Cow<'_, Request> = match thinking != req.thinking || tier != req.tier {
             true => Cow::Owned(Request {
@@ -736,6 +743,15 @@ fn jitter(max: Duration) -> Duration {
         .map(|d| d.subsec_nanos() as u64)
         .unwrap_or(0);
     Duration::from_nanos(noise.wrapping_mul(0x9E37_79B9_7F4A_7C15) % max_nanos)
+}
+
+/// The level `model` is asked at for `req`: the request's own when the session chose it,
+/// else the model's `:level`, else the request's.
+fn level_for(model: &ModelRef, req: &Request) -> ThinkingLevel {
+    match (req.thinking_explicit, model.thinking) {
+        (false, Some(level)) => level,
+        _ => req.thinking,
+    }
 }
 
 fn expand<'a>(
@@ -979,20 +995,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn model_thinking_suffix_overrides_request_level() {
+    async fn a_level_set_for_the_session_beats_a_role_suffix_which_beats_the_default() {
         let mock = Arc::new(MockProvider::new());
-        mock.push("a", MockStep::text("x"));
-        let r = router(mock.clone(), &[]);
-        let req = Request {
-            thinking: ThinkingLevel::Low,
+        for _ in 0..3 {
+            mock.push("a", MockStep::text("x"));
+        }
+        let r = router(mock.clone(), &[("smol", &["mock/a:high"])]);
+        let smol = chain(&["@smol"]);
+        let ask = |thinking, thinking_explicit| Request {
+            thinking,
+            thinking_explicit,
             ..Request::default()
         };
-        let (model, _stream) = r
-            .stream(&chain(&["mock/a:high"]), &req, CancellationToken::new())
-            .await
-            .unwrap();
-        assert_eq!(model.thinking, Some(ThinkingLevel::High));
-        assert_eq!(mock.requests_for("a")[0].thinking, ThinkingLevel::High);
+        // Nothing chosen for the session: the role's suffix is the level. Chosen for the
+        // session: it wins, also when it is lower or off.
+        for (level, explicit) in [
+            (ThinkingLevel::Off, false),
+            (ThinkingLevel::Low, true),
+            (ThinkingLevel::Off, true),
+        ] {
+            let (_model, _stream) = r
+                .stream(&smol, &ask(level, explicit), CancellationToken::new())
+                .await
+                .unwrap();
+        }
+        let levels: Vec<ThinkingLevel> = mock.requests_for("a").iter().map(|r| r.thinking).collect();
+        assert_eq!(
+            levels,
+            [ThinkingLevel::High, ThinkingLevel::Low, ThinkingLevel::Off]
+        );
+        // What the status line shows is the same rule.
+        assert_eq!(r.thinking(&smol, None), ThinkingLevel::High);
+        assert_eq!(r.thinking(&smol, Some(ThinkingLevel::Low)), ThinkingLevel::Low);
+        assert_eq!(r.thinking(&chain(&["mock/b"]), None), ThinkingLevel::Off);
     }
 
     #[tokio::test]

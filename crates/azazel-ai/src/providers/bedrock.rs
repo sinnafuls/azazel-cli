@@ -1171,6 +1171,7 @@ mod tests {
                 schema: json!({ "type": "object", "properties": { "pattern": { "type": "string" } } }),
             }],
             thinking: ThinkingLevel::Off,
+            thinking_explicit: false,
             max_output: Some(2000),
             temperature: Some(0.5),
             cache_key: None,

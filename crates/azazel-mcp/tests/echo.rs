@@ -11,7 +11,7 @@ use azazel_agent::{
     Services, ToolSource, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
-use azazel_ai::{Block, Catalog, Credentials, Provider, Request, RetryPolicy, Role, Router, ThinkingLevel};
+use azazel_ai::{Block, Catalog, Credentials, Provider, Request, RetryPolicy, Role, Router};
 use azazel_core::process::Shell;
 use azazel_core::{CommandOutcome, Event, ExtCtx, Headless, Registry, StartSource, Ui};
 use azazel_mcp::{McpExt, McpManager, Options, State, config};
@@ -178,7 +178,7 @@ impl Bench {
             system: Vec::new(),
             tools: registry.tools.clone(),
             chain: vec!["mock/a".parse().unwrap()],
-            thinking: ThinkingLevel::Off,
+            thinking: None,
             router,
             gate: Arc::new(AllowAll),
             bus: registry.agent_hooks(),

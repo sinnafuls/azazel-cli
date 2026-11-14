@@ -935,7 +935,9 @@ impl BgCommand {
             for spec in &status.chain {
                 args.extend(["--model".into(), spec.to_string().into()]);
             }
-            args.extend(["--thinking".into(), status.thinking.to_string().into()]);
+            if let Some(level) = status.thinking_set {
+                args.extend(["--thinking".into(), level.to_string().into()]);
+            }
         }
         let id = new_id(&self.paths.home);
         args.extend(["host", "--id", &id, "--"].map(OsString::from));

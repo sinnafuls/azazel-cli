@@ -14,7 +14,7 @@ use azazel_agent::{
     ToolCtx, ToolOutput, ToolSource, UpdateSink,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
-use azazel_ai::{Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router, ThinkingLevel};
+use azazel_ai::{Catalog, Credentials, ModelSpec, Provider, RetryPolicy, Router};
 use azazel_core::agents::discover;
 use azazel_core::config::set_override;
 use azazel_core::permissions::plan::PermissionsExt;
@@ -445,7 +445,7 @@ async fn with_lead_on(bench: &Bench, mock: Arc<MockProvider>) -> azazel_agent::A
         system: Vec::new(),
         tools: bench.registry.tools.clone(),
         chain: vec!["mock/lead".parse().unwrap()],
-        thinking: ThinkingLevel::Off,
+        thinking: None,
         router,
         gate: Arc::new(azazel_agent::AllowAll),
         bus: bench.registry.agent_hooks(),

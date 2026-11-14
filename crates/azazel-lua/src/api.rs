@@ -968,7 +968,7 @@ fn session(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Table> {
         let level: ThinkingLevel = level.parse().map_err(|e| runtime(format!("{NAME}: {e}")))?;
         let store = open(&script, NAME)?;
         let (_, lead) = team(&script, NAME)?;
-        lead.send(AgentCmd::SetThinking(level));
+        lead.send(AgentCmd::SetThinking(Some(level)));
         store.append(EntryKind::ThinkingChange {
             level: level.to_string(),
         });
