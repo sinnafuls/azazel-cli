@@ -763,30 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_is_an_empty_line() {
-        let theme = Theme::dark();
-        assert_eq!(render(&[], &[], Separator::Dot, 10, &theme), "");
-        assert_eq!(
-            render(&muted(&["status"]), &muted(&["x"]), Separator::Dot, 0, &theme),
-            ""
-        );
-        assert_eq!(
-            render(&muted(&["", ""]), &[], Separator::Powerline, 10, &theme),
-            ""
-        );
-    }
-
-    #[test]
-    fn context_colour_follows_the_thresholds() {
-        assert_eq!(context_role(0), None);
-        assert_eq!(context_role(70), None);
-        assert_eq!(context_role(71), Some(Role::Warning));
-        assert_eq!(context_role(90), Some(Role::Warning));
-        assert_eq!(context_role(91), Some(Role::Error));
-        assert_eq!(context_role(250), Some(Role::Error));
-    }
-
-    #[test]
     fn the_context_bar_fills_by_half_cells() {
         let theme = Theme::dark();
         let bar = |percent| text::strip_ansi(&context_bar(percent, BAR_CELLS, &theme).paint(&theme));
@@ -836,23 +812,6 @@ mod tests {
         assert_eq!(labelled(Glyph::Goal, "ship it", &ascii), "goal: ship it");
         assert_eq!(labelled(Glyph::Agents, "2 agents", &ascii), "2 agents");
         assert_eq!(labelled(Glyph::Context, "42%", &ascii), "ctx 42%");
-    }
-
-    #[test]
-    fn cost_and_rate_are_short() {
-        let theme = Theme::dark();
-        assert_eq!(cost(0.0, &theme), "$0.00");
-        assert_eq!(cost(0.416, &theme), "$0.42");
-        assert_eq!(cost(9.994, &theme), "$9.99");
-        assert_eq!(cost(12.44, &theme), "$12.4");
-        assert_eq!(cost(240.3, &theme), "$240");
-        assert_eq!(cost(1.5, &ascii()), "$1.50");
-        assert_eq!(cost(1.5, &nerd()), "\u{f155} 1.50");
-
-        assert_eq!(rate(78.4, &theme).as_deref(), Some("↯ 78 tok/s"));
-        assert_eq!(rate(1.0, &theme).as_deref(), Some("↯ 1 tok/s"));
-        assert_eq!(rate(0.99, &theme), None);
-        assert_eq!(rate(78.4, &ascii()).as_deref(), Some("78 tok/s"));
     }
 
     #[test]

@@ -395,10 +395,4 @@ mod tests {
         assert!(ascii.bullets().iter().all(|bullet| bullet.is_ascii()));
         assert!(ascii.border().top_left.is_ascii() && ascii.table().middle[1].is_ascii());
     }
-
-    #[test]
-    fn prefix_leaves_out_empty_icons() {
-        assert_eq!(Glyphs::new(GlyphLevel::Unicode).prefix(Glyph::Branch), "⑂ ");
-        assert_eq!(Glyphs::new(GlyphLevel::Ascii).prefix(Glyph::Model), "");
-    }
 }

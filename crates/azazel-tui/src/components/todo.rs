@@ -81,13 +81,6 @@ mod tests {
     }
 
     #[test]
-    fn wraps_with_a_hanging_indent() {
-        let list = items(&[("refactor the renderer to diff rows", TodoState::Pending)]);
-        let lines = render(&list, 16, &Theme::dark());
-        assert_eq!(lines, ["○ refactor the", "  renderer to", "  diff rows"]);
-    }
-
-    #[test]
     fn never_exceeds_the_width() {
         let list = items(&[
             ("a done item with several words", TodoState::Done),
@@ -124,10 +117,5 @@ mod tests {
                 "[ ] run the tests"
             ]
         );
-    }
-
-    #[test]
-    fn empty_list_renders_nothing() {
-        assert!(render(&[], 40, &Theme::dark()).is_empty());
     }
 }

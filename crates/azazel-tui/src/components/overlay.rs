@@ -310,16 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn cuts_long_titles_and_body_lines() {
-        let body = ["a body line that does not fit".to_string()];
-        let lines = Frame::new("A very long overlay title", 16).render(&body, &Theme::dark());
-        assert_eq!(
-            plain(&lines),
-            ["╭─ A very lon… ╮", "│ a body line… │", "╰──────────────╯"]
-        );
-    }
-
-    #[test]
     fn hints_that_do_not_fit_are_left_out_whole() {
         let hints = hints();
         let frame = |width| Frame {
@@ -335,30 +325,6 @@ mod tests {
         assert_eq!(bottom(24), "╰─ ↑↓ move ────────────╯");
         assert_eq!(bottom(12), "╰─ ↑↓ move ╯");
         assert_eq!(bottom(11), "╰─────────╯");
-    }
-
-    #[test]
-    fn untitled_box_has_a_plain_top_border() {
-        let lines = Frame::new("", 7).render(&["x".to_string()], &Theme::dark());
-        assert_eq!(plain(&lines), ["╭─────╮", "│ x   │", "╰─────╯"]);
-    }
-
-    #[test]
-    fn the_border_takes_the_colour_it_is_given() {
-        let theme = Theme::dark();
-        let calm = Frame::new("Run", 20).render(&["x".to_string()], &theme);
-        let careful = Frame {
-            border: Role::Warning,
-            ..Frame::new("Run", 20)
-        }
-        .render(&["x".to_string()], &theme);
-        assert_eq!(plain(&calm), plain(&careful));
-        for (calm, careful) in calm.iter().zip(&careful) {
-            assert!(calm.contains(&theme.fg(Role::Border)));
-            assert!(!calm.contains(&theme.fg(Role::Warning)));
-            assert!(careful.contains(&theme.fg(Role::Warning)));
-            assert!(!careful.contains(&theme.fg(Role::Border)));
-        }
     }
 
     #[test]

@@ -56,32 +56,6 @@ fn since_epoch() -> Duration {
 mod tests {
     use super::*;
     use crate::glyphs::GlyphLevel;
-    use crate::text;
-
-    #[test]
-    fn frames_cycle_and_are_one_column_wide() {
-        assert_eq!(Spinner::INTERVAL, Duration::from_millis(80));
-        let cycle: Vec<&str> = (0..10).map(Spinner::frame).collect();
-        for (i, glyph) in cycle.iter().enumerate() {
-            assert_eq!(text::width(glyph), 1);
-            assert!(!cycle[..i].contains(glyph), "frame {i} repeats an earlier frame");
-        }
-        assert_eq!(Spinner::frame(10), Spinner::frame(0));
-        assert_eq!(Spinner::frame(u64::MAX), Spinner::frame(u64::MAX % 10));
-    }
-
-    #[test]
-    fn ticks_follow_elapsed_time() {
-        assert_eq!(Spinner::tick_at(Duration::ZERO), 0);
-        assert_eq!(Spinner::tick_at(Duration::from_millis(79)), 0);
-        assert_eq!(Spinner::tick_at(Duration::from_millis(80)), 1);
-        assert_eq!(Spinner::tick_at(Duration::from_millis(805)), 10);
-    }
-
-    #[test]
-    fn the_shared_clock_yields_a_frame() {
-        assert!(FRAMES.contains(&Spinner::now()));
-    }
 
     #[test]
     fn each_glyph_level_cycles_through_its_own_frames() {

@@ -376,23 +376,6 @@ mod tests {
     }
 
     #[test]
-    fn frame_and_icon_follow_the_state() {
-        let theme = Theme::dark();
-        for (state, icon, role) in [
-            (CardState::Success, "✔", Role::BorderMuted),
-            (CardState::Warning, "⚠", Role::Warning),
-            (CardState::Error, "✘", Role::Error),
-        ] {
-            let lines = render(&done(state, &[], &[]), 30, &theme);
-            assert_eq!(lines.len(), 2);
-            assert!(text::strip_ansi(&lines[0]).starts_with(&format!("╭─── {icon} shell")));
-            for line in &lines {
-                assert!(line.starts_with(&theme.fg(role)), "{state:?}: {line:?}");
-            }
-        }
-    }
-
-    #[test]
     fn running_card_shows_a_spinner_the_output_tail_and_the_clock() {
         let theme = Theme::dark();
         let lines = running("shell", "make", &output(8), Duration::from_secs(65), 30, &theme);

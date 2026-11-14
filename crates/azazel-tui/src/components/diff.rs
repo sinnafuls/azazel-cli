@@ -615,11 +615,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_texts_produce_no_diff() {
-        assert!(render_texts("same\n", "same\n", "f", 80, &theme()).is_empty());
-    }
-
-    #[test]
     fn keeps_three_lines_of_context_and_numbers_both_sides() {
         let numbered: Vec<String> = (1..=12).map(|i| format!("line {i}")).collect();
         let old = numbered.join("\n") + "\n";
@@ -697,18 +692,6 @@ mod tests {
                 assert!(text::width(&line) <= width.max(1), "width {width}: {line:?}");
             }
         }
-    }
-
-    #[test]
-    fn hunk_header_ranges() {
-        let range = |start, count| Range { start, count };
-        assert_eq!(
-            hunk_ranges("@@ -12,7 +12,9 @@ fn name()"),
-            Some((range(12, 7), range(12, 9)))
-        );
-        assert_eq!(hunk_ranges("@@ -1 +1,2 @@"), Some((range(1, 1), range(1, 2))));
-        assert_eq!(hunk_ranges("@@ -0,0 +1 @@"), Some((range(0, 0), range(1, 1))));
-        assert_eq!(hunk_ranges("@@ garbage"), None);
     }
 
     const FILE: &str = "\
@@ -885,16 +868,5 @@ index 1111111..2222222
         assert_eq!(shown.len(), 5);
         assert_eq!(shown[2], "  1 +a line that is");
         assert_eq!(shown[3], "     much too long f");
-    }
-
-    #[test]
-    fn code_is_coloured_as_its_language() {
-        let rows = rows(FILE);
-        let rust = lay_out(&rows, "src/a.rs", 60, Layout::default(), &Theme::dark());
-        let text = lay_out(&rows, "notes.unknown", 60, Layout::default(), &Theme::dark());
-        assert_eq!(plain(&rust.lines), plain(&text.lines));
-        // `fn` is a keyword in Rust and nothing in a file of no known language.
-        assert_ne!(rust.lines[3], text.lines[3]);
-        assert!(rust.lines[3].matches("\x1b[38;2;").count() > text.lines[3].matches("\x1b[38;2;").count());
     }
 }

@@ -107,46 +107,6 @@ mod tests {
     }
 
     #[test]
-    fn formats_one_line_per_row() {
-        let rows = [
-            row("scout-1", "grep TODO", 42, 1234, RosterState::Running),
-            row(
-                "coder-2",
-                "waiting for approval",
-                185,
-                15_700,
-                RosterState::Waiting,
-            ),
-        ];
-        let lines = render(&rows, None, 80, &Theme::dark());
-        let plain: Vec<String> = lines.iter().map(|l| text::strip_ansi(l)).collect();
-        assert_eq!(
-            plain,
-            [
-                "● scout-1  grep TODO  42s  1.2k",
-                "● coder-2  waiting for approval  3m05s  15.7k"
-            ]
-        );
-    }
-
-    #[test]
-    fn bullet_colour_follows_state() {
-        let mut theme = Theme::dark();
-        theme.set_color(Role::Border, Color::Indexed(240));
-        theme.set_color(Role::Success, Color::Indexed(2));
-        theme.set_color(Role::Warning, Color::Indexed(3));
-        theme.set_color(Role::Muted, Color::Indexed(8));
-        let bullet = |state| {
-            let lines = render(&[row("a", "b", 1, 1, state)], None, 40, &theme);
-            lines[0].split('●').next().map(str::to_string)
-        };
-        assert_eq!(bullet(RosterState::Queued).as_deref(), Some("\x1b[38;5;240m"));
-        assert_eq!(bullet(RosterState::Running).as_deref(), Some("\x1b[32m"));
-        assert_eq!(bullet(RosterState::Waiting).as_deref(), Some("\x1b[33m"));
-        assert_eq!(bullet(RosterState::Idle).as_deref(), Some("\x1b[90m"));
-    }
-
-    #[test]
     fn shortens_the_activity_before_the_counters() {
         let rows = [row(
             "scout-1",

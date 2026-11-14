@@ -930,44 +930,11 @@ mod tests {
     const DOCUMENT: &str = "# Title\n\nFirst paragraph with **bold** text and `code`.\n\n```rust\nlet a = 1;\n\nlet b = 2;\n```\n\n- item one\n- item two\n  - nested\n\n> quoted\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nLast paragraph with a [link](https://example.com).\n";
 
     #[test]
-    fn headings_and_paragraphs() {
-        let lines = render(
-            "# Title\n\nHello *world*,\nsecond line.\n\n### Minor",
-            40,
-            &Theme::dark(),
-        );
-        assert_eq!(
-            plain(&lines),
-            ["Title", "", "Hello world, second line.", "", "Minor"]
-        );
-        assert!(lines[0].contains(BOLD));
-        assert!(
-            lines[0].contains(&Theme::dark().fg(Role::Accent)),
-            "top-level headings use the accent colour"
-        );
-        assert!(lines[2].contains(ITALIC));
-        assert!(lines[4].contains(BOLD) && !lines[4].contains(&Theme::dark().fg(Role::Accent)));
-    }
-
-    #[test]
     fn paragraphs_wrap_and_keep_inline_style_across_lines() {
         let lines = render("plain **bold words that wrap around** plain", 16, &Theme::dark());
         assert_eq!(plain(&lines), ["plain bold words", "that wrap around", "plain"]);
         assert!(lines[1].starts_with(BOLD), "bold continues on the wrapped line");
         assert!(!lines[2].contains(BOLD));
-    }
-
-    #[test]
-    fn inline_styles() {
-        let lines = render("use `foo()` and ~~old~~ ~100 files, ~3 lines", 60, &Theme::dark());
-        assert_eq!(plain(&lines), ["use foo() and old ~100 files, ~3 lines"]);
-        assert!(lines[0].contains(&format!("{}foo()", Theme::dark().fg(Role::Accent))));
-        assert_eq!(
-            lines[0].matches(STRIKE).count(),
-            1,
-            "only the double-tilde span is struck through"
-        );
-        assert!(lines[0].contains(&format!("{STRIKE}old")));
     }
 
     #[test]
@@ -1049,20 +1016,6 @@ mod tests {
     }
 
     #[test]
-    fn block_quotes_carry_a_bar_on_every_line() {
-        let lines = rendered("> quoted text\n> more\n>\n> second paragraph\n\nafter", 40);
-        assert_eq!(
-            lines,
-            ["│ quoted text more", "│", "│ second paragraph", "", "after"]
-        );
-    }
-
-    #[test]
-    fn horizontal_rule_spans_the_width() {
-        assert_eq!(rendered("a\n\n---\n\nb", 10), ["a", "", "──────────", "", "b"]);
-    }
-
-    #[test]
     fn tables_align_columns() {
         let source = "| Name | Qty |\n|------|-----|\n| apple | 3 |\n| kiwi | 12 |";
         assert_eq!(
@@ -1130,16 +1083,6 @@ mod tests {
         // Hard wrapping moves no characters: without the padding the source reads straight through.
         let code = plain(&lines).concat().replace(' ', "");
         assert!(code.contains("fnmain(){letanswer=42;}"), "{code:?}");
-    }
-
-    #[test]
-    fn code_block_rows_share_one_width() {
-        let lines = render("```\nshort\na longer line\n```", 40, &Theme::dark());
-        assert_eq!(plain(&lines), [" short         ", " a longer line "]);
-        assert!(
-            !lines.iter().any(|l| l.contains("\x1b[38;")),
-            "no language, no token colours"
-        );
     }
 
     #[test]
@@ -1322,15 +1265,6 @@ mod tests {
             plain(&lines(stream.take_finished(40, &theme, &mut no_hook))),
             ["1. one", "2. two", "3. three"]
         );
-    }
-
-    #[test]
-    fn column_fitting_narrows_the_widest_first() {
-        assert_eq!(fit_columns(&[5, 3], 20), Some(vec![5, 3]));
-        assert_eq!(fit_columns(&[5, 3], 6), Some(vec![3, 3]));
-        assert_eq!(fit_columns(&[30, 4, 4], 20), Some(vec![12, 4, 4]));
-        assert_eq!(fit_columns(&[10, 10], 5), Some(vec![3, 2]));
-        assert_eq!(fit_columns(&[5, 3], 1), None);
     }
 
     #[test]

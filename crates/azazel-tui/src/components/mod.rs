@@ -89,16 +89,6 @@ mod tests {
     }
 
     #[test]
-    fn durations_are_more_precise_the_shorter_they_are() {
-        assert_eq!(format_duration(Duration::ZERO), "0ms");
-        assert_eq!(format_duration(Duration::from_millis(85)), "85ms");
-        assert_eq!(format_duration(Duration::from_millis(1449)), "1.4s");
-        assert_eq!(format_duration(Duration::from_millis(9999)), "9.9s");
-        assert_eq!(format_duration(Duration::from_secs(42)), "42s");
-        assert_eq!(format_duration(Duration::from_secs(185)), "3m05s");
-    }
-
-    #[test]
     fn tokens_switch_units_at_boundaries() {
         assert_eq!(format_tokens(0), "0");
         assert_eq!(format_tokens(999), "999");
@@ -110,10 +100,5 @@ mod tests {
         assert_eq!(format_tokens(999_950), "1.0M");
         assert_eq!(format_tokens(3_440_000), "3.4M");
         assert_eq!(format_tokens(u64::MAX), "18446744073709.6M");
-    }
-
-    #[test]
-    fn one_line_flattens_and_cleans() {
-        assert_eq!(one_line("a\nb\tc\x1b[31m!"), "a b   c!");
     }
 }

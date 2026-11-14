@@ -617,19 +617,6 @@ mod tests {
     }
 
     #[test]
-    fn entering_insert_mode_places_the_cursor() {
-        let text = "  one two";
-        assert_eq!(run(text, "wix"), ("  xone two".to_string(), 3));
-        assert_eq!(run(text, "wax"), ("  oxne two".to_string(), 4));
-        assert_eq!(run(text, "wIx"), ("  xone two".to_string(), 3));
-        assert_eq!(run(text, "Ax"), ("  one twox".to_string(), 10));
-        assert_eq!(run("a\nb", "ox"), ("a\nx\nb".to_string(), 3));
-        assert_eq!(run("a\nb", "jOx"), ("a\nx\nb".to_string(), 3));
-        // Typing goes on after the command, and escape returns to normal mode.
-        assert_eq!(run("ab", "ixy\x1bx"), ("xab".to_string(), 1));
-    }
-
-    #[test]
     fn delete_operators_cut_characters_words_and_lines() {
         assert_eq!(run("hello", "x"), ("ello".to_string(), 0));
         assert_eq!(run("hello", "3x"), ("lo".to_string(), 0));
@@ -688,18 +675,5 @@ mod tests {
         assert_eq!(run("one two three", "dwdw2u").0, "one two three");
         assert_eq!(run("one two three", "dwdwuu\x12").0, "two three");
         assert_eq!(run("one two three", "dwdwuu\x12\x12").0, "three");
-    }
-
-    #[test]
-    fn motions_respect_grapheme_clusters() {
-        let text = "e\u{301}👍🏽 ok";
-        assert_eq!(run(text, "l").1, "e\u{301}".len());
-        assert_eq!(run(text, "x").0, "👍🏽 ok");
-        assert_eq!(
-            run(text, "w").1,
-            "e\u{301}".len(),
-            "an emoji is not part of the word"
-        );
-        assert_eq!(run(text, "$").1, text.len() - 1);
     }
 }

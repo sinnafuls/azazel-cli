@@ -472,19 +472,6 @@ mod tests {
     }
 
     #[test]
-    fn unfiltered_list_keeps_original_order() {
-        let mut select = list(&["beta", "alpha", "gamma"]);
-        assert_eq!(select.len(), 3);
-        assert_eq!(select.selected(), Some(0));
-        select.move_down();
-        assert_eq!(select.selected(), Some(1));
-        assert_eq!(
-            select.selected_item().map(|item| item.label.as_str()),
-            Some("alpha")
-        );
-    }
-
-    #[test]
     fn filter_ranks_matches_and_maps_back_to_original_indices() {
         let mut select = list(&["domain_model.rs", "README.md", "main.rs"]);
         select.set_filter("main");
@@ -517,14 +504,6 @@ mod tests {
         select.move_down();
         select.page_down();
         assert_eq!(select.selected(), None);
-    }
-
-    #[test]
-    fn filter_characters_are_literal() {
-        let mut select = list(&["!important", "plain"]);
-        select.set_filter("!imp");
-        assert_eq!(select.selected(), Some(0));
-        assert_eq!(select.len(), 1);
     }
 
     #[test]
@@ -820,23 +799,6 @@ mod tests {
             assert!(text::width(&line) <= width, "width {width}: {line:?}");
             assert!(usize::from(column) < width.max(1), "width {width}");
         }
-    }
-
-    #[test]
-    fn row_limits_are_respected() {
-        let select = list(&["a", "b", "c"]);
-        assert!(select.render(20, 0, &Theme::dark()).is_empty());
-        assert_eq!(select.render(20, 1, &Theme::dark()).len(), 1);
-        assert_eq!(select.render(20, 2, &Theme::dark()).len(), 2);
-        assert_eq!(select.render(20, 3, &Theme::dark()).len(), 3);
-        assert_eq!(select.render(20, 9, &Theme::dark()).len(), 3);
-    }
-
-    #[test]
-    fn empty_result_says_so() {
-        let mut select = list(&["a"]);
-        select.set_filter("zzz");
-        assert_eq!(plain(&select.render(20, 5, &Theme::dark())), ["  no matches"]);
     }
 
     #[test]

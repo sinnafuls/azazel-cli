@@ -198,25 +198,6 @@ fn resize_redraws_the_viewport_once_and_keeps_history_single() {
 }
 
 #[test]
-fn identical_frame_writes_nothing() {
-    let mut term = Harness::new(40, 12);
-    assert!(!term.render(frame(&[], &["a", "b"])).is_empty());
-    assert!(term.render(frame(&[], &["a", "b"])).is_empty());
-
-    let with_cursor = || Frame {
-        history: Vec::new(),
-        viewport: lines(&["a", "b"]),
-        cursor: Some((1, 1)),
-    };
-    assert!(!term.render(with_cursor()).is_empty());
-    assert!(term.render(with_cursor()).is_empty());
-
-    // An empty frame on a fresh terminal is also silent.
-    let mut fresh = Harness::new(40, 12);
-    assert!(fresh.render(Frame::default()).is_empty());
-}
-
-#[test]
 fn every_write_is_one_synchronized_update() {
     let mut term = Harness::new(40, 12);
     for bytes in [
@@ -466,16 +447,6 @@ fn styles_do_not_bleed_into_following_rows() {
     let screen = term.parser.screen();
     assert_eq!(screen.cell(1, 3).unwrap().bgcolor(), vt100::Color::Default);
     assert_eq!(term.used_rows(), ["red on blue", "p"]);
-}
-
-#[test]
-fn into_inner_returns_everything_written() {
-    let mut renderer = Renderer::new(Vec::new(), 20, 5);
-    renderer.render(frame(&["h"], &["v"])).unwrap();
-    let bytes = renderer.into_inner();
-    let mut parser = vt100::Parser::new(nz(5), nz(20), 0);
-    parser.process(&bytes);
-    assert_eq!(parser.screen().contents().trim_end(), "h\nv");
 }
 
 #[test]

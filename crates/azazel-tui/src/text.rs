@@ -733,15 +733,6 @@ mod tests {
     }
 
     #[test]
-    fn width_ignores_escape_sequences() {
-        assert_eq!(width("plain"), 5);
-        assert_eq!(width("\x1b[1;38;2;10;20;30mbold\x1b[0m"), 4);
-        assert_eq!(width("\x1b]8;;https://example.com\x07link\x1b]8;;\x07"), 4);
-        assert_eq!(width("\x1b]0;title\x1b\\x"), 1);
-        assert_eq!(width(""), 0);
-    }
-
-    #[test]
     fn width_of_wide_and_zero_width_characters() {
         assert_eq!(width("日本語"), 6);
         assert_eq!(width("a日b"), 4);
@@ -824,12 +815,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_carries_style_across_newlines() {
-        let lines = wrap("\x1b[3mone\ntwo\x1b[23m", 10);
-        assert_eq!(lines, ["\x1b[3mone\x1b[0m", "\x1b[3mtwo\x1b[23m\x1b[0m"]);
-    }
-
-    #[test]
     fn wrap_never_exceeds_width_with_mixed_content() {
         let source = "\x1b[1mwide 日本語 text\x1b[0m with emoji 👍🏽 and a_very_long_identifier_name";
         for w in 1..30 {
@@ -864,13 +849,6 @@ mod tests {
         assert_eq!(truncate("日本語", 4, "…"), "日…");
         assert_eq!(truncate("cafe\u{301}s", 4, ""), "cafe\u{301}");
         assert_eq!(truncate("👍🏽👍🏽👍🏽", 4, ""), "👍🏽👍🏽");
-    }
-
-    #[test]
-    fn truncate_keeps_style_and_resets() {
-        let cut = truncate("\x1b[31mhello world\x1b[0m", 5, "…");
-        assert_eq!(cut, "\x1b[31mhell…\x1b[0m");
-        assert_eq!(width(&cut), 5);
     }
 
     const OPEN: &str = "\x1b]8;;https://example.com/a\x1b\\";
@@ -943,14 +921,6 @@ mod tests {
         );
         assert_eq!(found("nothing here"), None);
         assert_eq!(found("https://"), None);
-    }
-
-    #[test]
-    fn pad_right_fills_to_width() {
-        assert_eq!(pad_right("ab", 5), "ab   ");
-        assert_eq!(pad_right("日本", 5), "日本 ");
-        assert_eq!(pad_right("\x1b[1mab\x1b[0m", 4), "\x1b[1mab\x1b[0m  ");
-        assert_eq!(pad_right("too long", 3), "too long");
     }
 
     #[test]

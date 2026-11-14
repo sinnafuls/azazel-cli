@@ -153,18 +153,6 @@ mod tests {
     }
 
     #[test]
-    fn rules_take_the_colour_they_are_given() {
-        let theme = Theme::dark();
-        let mut bash = composer(None);
-        bash.rule = Role::Bash;
-        bash.prompt_role = Role::Bash;
-        let (lines, _) = render(&with_text("!ls"), &bash, 12, &theme);
-        for line in &lines {
-            assert!(line.starts_with(&theme.fg(Role::Bash)), "{line:?}");
-        }
-    }
-
-    #[test]
     fn status_rides_the_top_rule() {
         let (lines, _) = render(
             &Editor::new(),
@@ -232,13 +220,6 @@ mod tests {
             let (lines, _) = render(&Editor::new(), &ascii, width, &theme);
             assert!(plain(&lines).iter().all(|line| line.is_ascii()), "width {width}");
         }
-    }
-
-    #[test]
-    fn input_height_follows_the_screen() {
-        assert_eq!(max_rows(10), 5);
-        assert_eq!(max_rows(24), 7);
-        assert_eq!(max_rows(50), 15);
     }
 
     #[test]

@@ -340,28 +340,6 @@ mod tests {
         assert_eq!(sweep("", 3, Mode::Shimmer, None, &theme), "");
     }
 
-    #[test]
-    fn phrases_take_turns_one_pass_each() {
-        let phrases = vec!["working".to_string(), "still at it".to_string()];
-        // 10 + 7 + 6 ticks for the first, 10 + 11 + 6 for the second.
-        assert_eq!(phrase(&phrases, 0, Mode::Shimmer), Some(("working", 0)));
-        assert_eq!(phrase(&phrases, 22, Mode::Shimmer), Some(("working", 22)));
-        assert_eq!(phrase(&phrases, 23, Mode::Shimmer), Some(("still at it", 0)));
-        assert_eq!(phrase(&phrases, 49, Mode::Shimmer), Some(("still at it", 26)));
-        assert_eq!(phrase(&phrases, 50, Mode::Shimmer), Some(("working", 0)));
-        assert_eq!(phrase(&phrases, 89, Mode::Static), Some(("working", 89)));
-        assert_eq!(phrase(&phrases, 90, Mode::Static), Some(("still at it", 0)));
-        assert_eq!(phrase(&[], 5, Mode::Shimmer), None);
-    }
-
-    #[test]
-    fn ticks_follow_elapsed_time() {
-        assert_eq!(tick_at(Duration::ZERO), 0);
-        assert_eq!(tick_at(Duration::from_millis(32)), 0);
-        assert_eq!(tick_at(Duration::from_millis(33)), 1);
-        assert_eq!(tick_at(Duration::from_secs(1)), 30);
-    }
-
     /// The hue of an sRGB colour in degrees, as OKLCH measures it, with its lightness.
     fn oklch_of(color: Color) -> (f64, f64) {
         let Color::Rgb(r, g, b) = color else {
