@@ -782,6 +782,10 @@ pub struct Cli {
     #[arg(long = "no-session")]
     pub no_session: bool,
 
+    /// Start a new session, also when `[session] resume = "last"` would continue the latest
+    #[arg(long, conflicts_with_all = ["resume_latest", "session", "fork"])]
+    pub new: bool,
+
     /// Let agents work in this directory too; repeat for more
     #[arg(long = "add-dir", value_name = "DIR", global = true)]
     pub add_dir: Vec<PathBuf>,

@@ -1,7 +1,7 @@
 //! Assembles the process-wide pieces (config, providers, extensions, permissions) and opens
 //! sessions on top of them. Every mode starts here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
@@ -19,7 +19,7 @@ use azazel_core::agents::{self, AgentDef, LeadAgent};
 use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, expand_mentions};
-use azazel_core::config::set_override;
+use azazel_core::config::{SessionResume, set_override};
 use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
 use azazel_core::limits::{LimitsExt, Spend};
@@ -234,6 +234,22 @@ impl Switched {
         if let (Some(notice), Some(ui)) = (follow.notice, services.get::<Ui>()) {
             ui.0.notify(Level::Warn, &notice);
         }
+    }
+}
+
+/// The project's most recent session, for `-c`, or for the interactive UI when
+/// `[session] resume = "last"` and neither `--new` nor `--no-session` is given. `None` when
+/// neither asks for it, or the setting does and there is none: a new session starts then.
+fn latest_session(dir: &Path, cli: &Cli, resume: SessionResume) -> Result<Option<Open>> {
+    let by_default = resume == SessionResume::Last && cli.interactive() && !cli.new && !cli.no_session;
+    if !(cli.resume_latest || by_default) {
+        return Ok(None);
+    }
+    // An archived session (`-p --archived`) is not one to go on with.
+    match SessionStore::list(dir).into_iter().find(|s| !s.archived) {
+        Some(latest) => Ok(Some(Open::File(latest.path))),
+        None if cli.resume_latest => bail!("this project has no session to continue"),
+        None => Ok(None),
     }
 }
 
@@ -1234,7 +1250,9 @@ impl App {
         })
     }
 
-    /// The session the command line asks for: `--resume <id>`, `--continue`, or a new one.
+    /// The session the command line asks for: `--resume <id>`, `--continue`, or a new one; the
+    /// interactive UI continues the latest one when `[session] resume` says so and `--new` is
+    /// not given.
     pub fn requested_session(&self, cli: &Cli) -> Result<Open> {
         let dir = self.paths.sessions_dir();
         if let Some(wanted) = &cli.session {
@@ -1245,14 +1263,7 @@ impl App {
             // Read back from its file, like any session that was not open in this process.
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
-        if cli.resume_latest {
-            // An archived session (`-p --archived`) is not one to go on with.
-            return match SessionStore::list(&dir).into_iter().find(|s| !s.archived) {
-                Some(latest) => Ok(Open::File(latest.path)),
-                None => bail!("this project has no session to continue"),
-            };
-        }
-        Ok(Open::New)
+        Ok(latest_session(&dir, cli, self.config.session.resume)?.unwrap_or(Open::New))
     }
 
     /// Model names as typed (`fable`, `@smol`, `anthropic/claude-fable-5:high`) turned into a chain,
@@ -1753,5 +1764,50 @@ impl App {
 
     pub fn log_file(paths: &Paths) -> PathBuf {
         paths.logs_dir().join("azazel.log")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use clap::Parser;
+
+    use super::*;
+
+    /// What a start with `args` opens in a project whose sessions are in `dir`: the file of a
+    /// session, `None` for a new one.
+    fn opened(dir: &Path, args: &[&str], resume: SessionResume) -> Option<PathBuf> {
+        let cli = Cli::try_parse_from(std::iter::once("azazel").chain(args.iter().copied())).unwrap();
+        match latest_session(dir, &cli, resume).unwrap() {
+            Some(Open::File(path)) => Some(path),
+            Some(_) => panic!("not a session file"),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn the_interactive_ui_continues_the_latest_session_when_the_setting_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        // No session yet: a new one, without complaint; `-c` does complain.
+        assert_eq!(opened(&sessions, &[], SessionResume::Last), None);
+        let cli = Cli::try_parse_from(["azazel", "-c"]).unwrap();
+        assert!(latest_session(&sessions, &cli, SessionResume::Last).is_err());
+
+        let store = SessionStore::create(&sessions, dir.path(), None).unwrap();
+        store.append(EntryKind::SessionInfo {
+            name: "earlier".to_string(),
+        });
+        let latest = Some(store.path());
+        assert_eq!(opened(&sessions, &[], SessionResume::Last), latest);
+        assert_eq!(opened(&sessions, &[], SessionResume::New), None);
+        assert_eq!(opened(&sessions, &["--new"], SessionResume::Last), None);
+        assert_eq!(opened(&sessions, &["--no-session"], SessionResume::Last), None);
+        // Print mode keeps starting new sessions unless it is told otherwise.
+        assert_eq!(opened(&sessions, &["-p", "hi"], SessionResume::Last), None);
+        assert_eq!(opened(&sessions, &["-p", "-c", "hi"], SessionResume::New), latest);
+        // `--new` with a flag that names a session is a mistake.
+        assert!(Cli::try_parse_from(["azazel", "--new", "-c"]).is_err());
     }
 }

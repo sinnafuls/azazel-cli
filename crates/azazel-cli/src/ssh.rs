@@ -89,6 +89,7 @@ fn carried(cli: &Cli) -> Vec<String> {
     value("--max-cost", cli.max_cost.map(|cost| cost.to_string()).as_ref());
     let switches = [
         (cli.resume_latest, "--continue"),
+        (cli.new, "--new"),
         (cli.trust, "--trust"),
         (cli.coordinator, "--coordinator"),
         (cli.no_memory, "--no-memory"),
