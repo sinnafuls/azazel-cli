@@ -416,6 +416,6 @@ unknown tier or preset) exits with status 2.
 
 Subcommands: `init`, `doctor`, `login`, `logout`, `update`, `completions` ([getting started](getting-started.md)),
 `changelog` ([getting started](getting-started.md)), `models`, `auth status` ([models and logins](models-and-logins.md)),
-`sessions`, `export`, `stats` ([sessions](sessions-and-checkpoints.md)), `goal`
+`sessions`, `export`, `stats` ([sessions](sessions-and-checkpoints.md)), `migrate` ([migrating](migrating.md)), `goal`
 ([goals](goals.md)), `mcp` ([MCP](mcp.md)), `pkg`, `skills` ([packages](packages.md)), `memory`, `index`, `rag`
 ([memory](memory.md)), `ext types` ([extensions](extensions.md)) and `rpc` ([RPC mode](rpc.md)).
