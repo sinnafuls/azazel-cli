@@ -254,9 +254,15 @@ mod tests {
         assert_eq!(view::tool_summary("write", &tools[0].input), "src/big.rs");
         assert!(tools[0].tail.len() <= view::COLLAPSED_LINES);
         // The body grew as the content came, from its start towards its end.
-        let first = seen.iter().position(|line| line.starts_with("line ")).unwrap();
-        assert!(seen[first].starts_with("line 1"), "{}", seen[first]);
-        assert!(seen.last().unwrap().starts_with("line 19"), "{:?}", seen.last());
+        let numbers: Vec<u32> = seen
+            .iter()
+            // A line still arriving may be cut inside its number: only whole ones count.
+            .filter(|line| line.ends_with(" of the file"))
+            .filter_map(|line| line.strip_prefix("line ")?.split(' ').next()?.parse().ok())
+            .collect();
+        assert!(numbers.first().is_some_and(|n| *n < 40), "{numbers:?}");
+        assert!(numbers.windows(2).all(|pair| pair[0] <= pair[1]), "{numbers:?}");
+        assert!(numbers.last().is_some_and(|n| *n > 100), "{numbers:?}");
 
         let input: Value = serde_json::from_str(&args).unwrap();
         track(

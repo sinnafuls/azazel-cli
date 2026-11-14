@@ -146,7 +146,7 @@ impl Tui {
             self.flush_calls();
         }
         if !pictures.is_empty() {
-            self.keep(Said::Drawn, pictures);
+            self.keep_rows(pictures);
         }
     }
 
@@ -164,7 +164,7 @@ impl Tui {
         self.after_rows = after_rows;
         self.transcript.extend(rows);
         self.calls.last = Some(self.history.end());
-        self.history.push(Said::Calls(calls), width, Vec::new());
+        self.history.push(Said::Calls(calls));
     }
 
     /// Reads the waiting calls for `width` once, so that a frame only lays their rows out.

@@ -14,6 +14,7 @@ mod extras;
 mod fleet;
 mod form;
 mod gitcmd;
+mod history;
 mod input;
 mod loops;
 mod migrate;
@@ -62,7 +63,7 @@ use azazel_core::{
 };
 use azazel_tools::TodoStatus;
 use azazel_tui::components::{
-    composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo, tool_card,
+    composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo,
 };
 use azazel_tui::modal;
 use azazel_tui::mouse::Mouse;
@@ -78,7 +79,6 @@ use crossterm::event::{
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
-use serde_json::Value;
 use tokio::sync::mpsc;
 
 use crate::app::{Active, App};
@@ -361,9 +361,11 @@ pub struct Tui {
     /// The checked-out branch, for the status line.
     branch: Option<String>,
     stream: StreamView,
-    tools: Vec<RunningTool>,
+    tools: Vec<running::RunningTool>,
     /// Finished tool calls that are not in the transcript yet, and the last that are.
     calls: calls::Calls,
+    /// What was written to the transcript, to draw it again.
+    history: history::History,
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
@@ -419,7 +421,7 @@ pub struct Tui {
     /// The sub-agent whose work is shown in the transcript next to the lead's.
     follow: Option<String>,
     /// Tool calls in flight of the followed agent.
-    followed_tools: Vec<RunningTool>,
+    followed_tools: Vec<running::RunningTool>,
     /// What every sub-agent has done, and where the keyboard is in the roster.
     fleet: fleet::Fleet,
     #[cfg(feature = "voice")]
@@ -647,6 +649,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         stream: StreamView::default(),
         tools: Vec::new(),
         calls: calls::Calls::default(),
+        history: history::History::default(),
         overlay: None,
         deferred: VecDeque::new(),
         models_asked: Default::default(),
@@ -760,22 +763,6 @@ impl Tui {
 
     fn say(&mut self, lines: Vec<Line>) {
         self.say_items(lines.into_iter().map(HistoryItem::Line).collect());
-    }
-
-    /// Writes a tool card to the transcript, with a blank row above it.
-    fn say_card(&mut self, lines: Vec<Line>) {
-        self.transcript.push(String::new().into());
-        self.transcript.extend(lines.into_iter().map(HistoryItem::Line));
-        self.after_rows = false;
-    }
-
-    /// Writes a group of compact tool rows: a blank row above, unless it follows another group.
-    fn say_rows(&mut self, lines: Vec<Line>) {
-        if !self.after_rows {
-            self.transcript.push(String::new().into());
-        }
-        self.transcript.extend(lines.into_iter().map(HistoryItem::Line));
-        self.after_rows = true;
     }
 
     fn info(&mut self, message: &str) {
@@ -1850,22 +1837,7 @@ impl Tui {
                 // Bypass is not a step of the cycle: it is entered by name, and confirmed.
                 self.set_mode(self.backend.mode().next()).await;
             }
-            Some("toggle_tool_output") => {
-                self.expand_tools = !self.expand_tools;
-                if self.expand_tools {
-                    self.expand_calls();
-                } else {
-                    self.restyle_calls();
-                }
-                self.notice = Some(format!(
-                    "tool output: {}",
-                    if self.expand_tools {
-                        "expanded"
-                    } else {
-                        "collapsed"
-                    }
-                ));
-            }
+            Some("toggle_tool_output") => self.toggle_tool_output(),
             Some("toggle_thinking") => {
                 self.show_thinking = !self.show_thinking;
                 self.notice = Some(format!(
