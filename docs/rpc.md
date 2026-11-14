@@ -48,7 +48,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `approval_response` | `request_id`, `decision`, `feedback?` | Answers an `approval_request` | `null` |
 | `ui_response` | `request_id`, `value` | Answers a `ui_request`; `null` dismisses it | `null` |
 | `set_name` | `name` | Names the session | `null` |
-| `set_thinking` | `level` | Changes the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` | `null` |
+| `set_thinking` | `level` | Changes the lead's thinking level for the session: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. It wins over the `:level` of the lead's role | `null` |
 | `set_tier` | `tier` | Changes the service tier: `priority`, `standard`, `economy` | `null` |
 | `compact` | `instructions?` | Summarises the conversation so far to free context; a `compaction` event follows | `null` |
 | `shell` | `command`, `share?` | Runs a command in your shell, outside the permission rules. With `share` (the default) the lead is told what was run and what it printed | `{"output": "...", "status": "exit code: 0"}` |
@@ -96,7 +96,7 @@ The session commands report the saved sessions and the open one, change which se
 | `via` | The [virtual model](models-and-logins.md#virtual-models) (`virtual/<name>`) that picked `model` for that request; absent when the chain named the model itself |
 | `virtual_models` | The virtual models extensions define, as `virtual/<name>`; `set_model` takes them. Absent when there are none |
 | `chain` | The lead's model chain as given, e.g. `["@default"]` |
-| `thinking` | The thinking level |
+| `thinking` | The thinking level the lead's requests go out at: the one chosen for the session (`set_thinking`, `--thinking`, the primary agent's), else the `:level` of the model its chain asks first, else `off` |
 | `tier` | The service tier, or `null` at the standard tier |
 | `context_tokens`, `context_window` | Context in use and the model's window |
 | `usage`, `requests` | Token and cost totals of the lead, and how many model requests it has made |
@@ -117,6 +117,12 @@ The session commands report the saved sessions and the open one, change which se
 | `roles` | One `{"role", "chain", "source", "builtin?", "resolved", "thinking?"}` per role, the built-in roles first |
 | `presets` | The names of the saved presets |
 | `project` | Whether `set_role` may write the project's config (the project is trusted) |
+
+Where `set_role` keeps a change is its `save` member, one of three words (`SaveTo` in the schema): `session`
+changes the running session only, `home` writes `~/.azazel/config.toml` too, and `project` writes the project's
+`.azazel/config.toml`, which a project that is not trusted refuses. Taking a value away (no `chain`) removes it from
+the file `save` names. The other three commands do not take it: `save_preset` always writes the home config, and
+`apply_preset` changes the session only.
 
 In a role, `chain` is the value as configured, `resolved` the usable models it comes to in order, `builtin` the value it falls back to when nothing sets it, and `thinking` the level written with its first model (`provider/model:high`). `source` says where the chain comes from: `builtin`, `home`, `project`, `project_local`, `session` (changed in this session and not saved) or `unset` (nothing sets it, so it resolves to no model).
 

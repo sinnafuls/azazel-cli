@@ -82,6 +82,7 @@ binary), `AZAZEL_HOOKS_DISABLED` (load no hooks), `AZAZEL_NO_UPDATE_CHECK` (skip
 [roles]
 default = ["<provider>/<model-id>", "ollama/<model-id>"]   # an ordered fallback chain
 smol = ["ollama/<model-id>", "@default"]
+slow = ["<provider>/<model-id>:high", "@default"]         # the role thinks at high
 
 [providers.my-server]
 api = "openai-chat"
@@ -99,7 +100,7 @@ thinking = "low"
 
 | Table | Key | Default | Meaning |
 |---|---|---|---|
-| `[roles]` | `default` | unset | The lead agent's chain. Entries are `provider/model[:thinking]` or `@role` |
+| `[roles]` | `default` | unset | The lead agent's chain. Entries are `provider/model[:thinking]` or `@role`. A `:thinking` level is the role's own: its requests ask for it unless a level was chosen for the session (`--thinking`, `/thinking`, an agent's `thinking`); see [thinking levels](models-and-logins.md#thinking-levels). `azazel roles` lists and changes roles from the shell |
 | | `smol`, `slow`, `verify`, `vision` | `["@default"]` | Chains for cheap work, hard work, the checker and image input |
 | | `plan` | `["@slow"]` | Chain for planning |
 | | `memory` | `["@smol"]` | Chain for memory extraction |
@@ -156,6 +157,7 @@ thinking = "low"
 | | `timeout_ms` | `10000` | Longest one snapshot may take (1000 to 300000); past it checkpoints turn off for the session |
 | | `exclude` | `[".azazel/worktrees/"]` | Patterns, as in `.gitignore`, that checkpoints leave out |
 | `[session]` | `auto_name` | `true` | Have the `smol` role name a session after its first reply; see [sessions](sessions-and-checkpoints.md#names) |
+| | `resume` | `"new"` | What the interactive UI opens when no session is named: `new`, or `last` for this project's most recent session, as `-c` does (`--new` starts a new one anyway). Print mode starts a new session unless `-c` or `--session` is given; see [sessions](sessions-and-checkpoints.md#resuming) |
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
 | | `resume_runs` | `true` | A background session that is started again after its process died in the middle of a run goes on with the run by itself; with `false` it waits for `/continue`. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
@@ -383,11 +385,12 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `-p`, `--print` | Run the prompt without the UI and print the result |
 | `--model <SPEC>` | `provider/model[:thinking]`, `@role`, or part of a model's name (`fable`); repeat to add fallbacks. Concrete models become this run's `default` role |
 | `--models <SPECS>` | What `Ctrl+P` steps through in this run, in place of `tui.favourites`: models and `@roles` separated by commas, named as for `--model`; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
-| `--thinking <LEVEL>` | `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `--thinking <LEVEL>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; wins over the level of the lead's role. Without it the lead asks for its model's `:level`, else `off` |
 | `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--agent <NAME>` | The [primary agent](team.md#primary-agents) the lead is for this run: `build`, `plan` or one of your own; a name that is no primary agent exits with status 2 |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
+| `--new` | Start a new session, also when `[session] resume = "last"` would continue the latest; cannot go with `-c`, `--session` or `--fork` |
 | `--continue-run` | With `-c` or `--session`: go on with the run the session's last process did not finish, instead of sending a prompt; see [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
 | `-r`, `--session <PATH\|ID>` | Open a session by its file or its id (a unique prefix is enough); `--resume` is the old name |
 | `--fork <PATH\|ID>` | Continue in a copy of a session, leaving the original as it is |
@@ -474,7 +477,9 @@ unknown tier or preset) exits with status 2.
 | `azazel login` | | Sign in to a provider or store its API key; see [models and logins](models-and-logins.md) |
 | `azazel logout` | | Forget the stored key or login of a provider |
 | `azazel auth` | `status` | Where each provider's credential comes from |
-| `azazel models` | | List the models of the providers you have a credential for |
+| `azazel models` | | List the models of the providers you have a credential for, with the roles that use them; see [choosing the model](models-and-logins.md#choosing-the-model) |
+| `azazel roles` | `set`, `clear`, `preset` | List the model roles with their models, thinking levels and sources, and change them in the home or project config; see [`azazel roles`](models-and-logins.md#azazel-roles) |
+| `azazel roles preset` | `save`, `load` | Save every role as a preset, or write a preset's roles into a config file |
 | `azazel usage` | | What your subscriptions have left; see [usage](models-and-logins.md#usage) |
 | `azazel secrets` | `add`, `add-site`, `list`, `rm` | Credentials agents use without seeing them; see [stored credentials](web-and-browser.md#credentials-for-services) |
 | `azazel sessions` | `list`, `search`, `delete`, `prune`, `export`, `import` | Manage saved sessions, and bring one in from a file; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
