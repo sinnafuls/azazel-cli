@@ -54,7 +54,7 @@ impl Telemetry {
     /// Starts the export `config` asks for; `None` when it asks for none. Needs a runtime.
     pub fn start(config: &TelemetryConfig) -> Option<Arc<Telemetry>> {
         let wire = Wire::from_config(config, &|name| std::env::var(name).ok())?;
-        let client = reqwest::Client::builder()
+        let client = azazel_ai::tls::client_builder()
             .connect_timeout(CONNECT_LIMIT)
             .timeout(REQUEST_LIMIT)
             .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))

@@ -164,7 +164,7 @@ fn the_hosted_service_caps_the_output_and_extra_members_replace_built_ones() {
 
 #[test]
 fn the_request_goes_to_the_native_endpoint_whatever_suffix_the_address_has() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let req = Request {
         messages: vec![Message::user("hi")],
         ..Request::default()

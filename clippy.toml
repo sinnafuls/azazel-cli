@@ -1,1 +1,8 @@
 allow-unwrap-in-tests = true
+# reqwest has no TLS provider of its own in this workspace: a client built before one is installed
+# panics. `azazel_ai::tls` installs it and builds the client.
+disallowed-methods = [
+    { path = "reqwest::Client::new", replacement = "azazel_ai::tls::client" },
+    { path = "reqwest::Client::builder", replacement = "azazel_ai::tls::client_builder" },
+    { path = "reqwest::ClientBuilder::new", replacement = "azazel_ai::tls::client_builder" },
+]

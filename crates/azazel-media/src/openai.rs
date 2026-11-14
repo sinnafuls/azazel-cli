@@ -28,7 +28,7 @@ impl OpenAiImages {
         OpenAiImages {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             auth,
-            client: reqwest::Client::new(),
+            client: azazel_ai::tls::client(),
         }
     }
 

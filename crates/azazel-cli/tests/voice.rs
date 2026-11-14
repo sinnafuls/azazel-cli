@@ -119,7 +119,7 @@ async fn transcription_posts_the_recording_as_multipart() {
         .expect(2)
         .mount(&server)
         .await;
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let recording = wav::encode(&[0, 1000, -1000, 0], 16_000, 1);
 
     let text = stt::by_http(
@@ -216,7 +216,7 @@ async fn failed_requests_keep_neither_the_address_nor_the_key() {
         .respond_with(ResponseTemplate::new(503).set_body_string("upstream is down\nmore detail"))
         .mount(&server)
         .await;
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
 
     let error = stt::by_http(&client, &endpoint(&server, "whisper-1"), "", vec![0; 64])
         .await
@@ -266,7 +266,7 @@ async fn speech_is_requested_as_wav_and_played_by_the_player_program() {
         .respond_with(ResponseTemplate::new(200).set_body_raw(streamed_speech(), "audio/wav"))
         .mount(&server)
         .await;
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
 
     let audio = speak::synthesize(
         &client,

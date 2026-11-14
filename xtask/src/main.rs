@@ -321,7 +321,7 @@ fn catalog() -> Result<()> {
         .enable_all()
         .build()?;
     let source: Value = runtime.block_on(async {
-        let response = reqwest::Client::new()
+        let response = azazel_ai::tls::client()
             .get(CATALOG_SOURCE)
             .send()
             .await?

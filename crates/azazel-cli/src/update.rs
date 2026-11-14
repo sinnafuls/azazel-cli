@@ -102,7 +102,7 @@ fn now_secs() -> u64 {
 }
 
 fn client(timeout: Duration) -> reqwest::Client {
-    reqwest::Client::builder()
+    azazel_ai::tls::client_builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(timeout)
         .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))

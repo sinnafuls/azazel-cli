@@ -358,7 +358,7 @@ impl Fetcher {
 
     /// A fetcher that reaches GitHub and YouTube where `sites` says they are.
     pub fn with_sites(sites: Sites) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        let client = azazel_ai::tls::client_builder()
             .timeout(TIMEOUT)
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())

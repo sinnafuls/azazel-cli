@@ -55,8 +55,8 @@ notify = ["dep:notify-rust", "dep:keepawake"]
 # Images shown inline in terminals that can draw them.
 images = ["azazel-tui/images"]
 # Mermaid diagrams: drawn as inline images, and written as SVG by `/open diagram`. Not in the
-# default build: the diagram renderer adds 3.1 MB to the binary, and drawing its SVG (with the
-# font that ships for it) another 2.7 MB.
+# default build: the diagram renderer and what draws its SVG (with the font that ships for it)
+# add 4.9 MB to the binary.
 diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
 # Background sessions (`azazel bg`, `ps`, `logs`, `attach`, `kill`) on local sockets.
 detach = ["dep:interprocess", "dep:process-wrap", "dep:winsafe"]
@@ -84,6 +84,7 @@ base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
+flate2.workspace = true
 futures.workspace = true
 globset.workspace = true
 ignore.workspace = true
@@ -127,6 +128,9 @@ winsafe = { workspace = true, optional = true }
 # Starts a background session in a session of its own.
 [target.'cfg(unix)'.dependencies]
 process-wrap = { workspace = true, optional = true }
+
+[build-dependencies]
+flate2.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

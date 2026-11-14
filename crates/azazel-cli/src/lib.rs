@@ -98,6 +98,9 @@ impl Builder {
             .name("azazel".to_string())
             .stack_size(RUN_STACK)
             .spawn(move || {
+                // Before anything can build an HTTPS client: also those inside libraries, which do
+                // not go through `azazel_ai::tls`.
+                azazel_ai::tls::install();
                 let cli = Cli::parse();
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(runtime) => runtime,

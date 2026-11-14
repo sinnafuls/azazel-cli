@@ -61,7 +61,7 @@ impl Fal {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             key: key.into(),
             poll,
-            client: reqwest::Client::new(),
+            client: azazel_ai::tls::client(),
         }
     }
 

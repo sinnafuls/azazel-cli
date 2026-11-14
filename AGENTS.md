@@ -140,6 +140,16 @@ That prints `Wrote and verified hello.txt.` and leaves `tmp/live/project/hello.t
   why, not what.
 - **Dependencies.** A new crate needs a reason that outweighs its size; check with
   `cargo xtask bench-startup`. Optional subsystems are Cargo features of `azazel-cli`.
+- **HTTPS.** The binary has one TLS implementation, rustls on `ring`, and `reqwest` comes without a
+  provider of its own: a client built before the provider is installed panics. Build every client with
+  `azazel_ai::tls::client()` or `azazel_ai::tls::client_builder()`; clippy turns `reqwest::Client::new`
+  and `reqwest::Client::builder` away. Do not enable a crate's default TLS feature without checking
+  `cargo tree -i aws-lc-rs` stays empty.
+- **Release profile.** Everything is built for size (`opt-level = "s"`) except the packages listed under
+  `[profile.release.package]` in `Cargo.toml`, which keep `opt-level = 3` because time is spent there. A
+  package joins the list with a measurement of what it gains and what it costs in
+  `cargo xtask bench-startup`. `LIBSQLITE3_FLAGS` in `.cargo/config.toml` leaves unused parts out of the
+  bundled SQLite; FTS5 must stay.
 
 ## Docs
 

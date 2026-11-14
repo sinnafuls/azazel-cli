@@ -1,41 +1,54 @@
 //! The skills that ship inside the binary.
 
+use std::io::{Error, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
-use include_dir::{Dir, DirEntry, include_dir};
+use flate2::read::DeflateDecoder;
 
-static SKILLS: Dir<'static> = include_dir!("$CARGO_MANIFEST_DIR/../../skills");
+/// The files of `skills/` as the build script packed them (`build.rs` describes the layout).
+/// They are only read again when a new build first runs, so they stay deflated in the binary.
+static SKILLS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/skills.pack"));
 
 /// Marks a directory whose extraction finished.
 const COMPLETE: &str = ".complete";
 const PREFIX: &str = "skills-";
 
-fn hash_into(dir: &Dir<'_>, hasher: &mut blake3::Hasher) {
-    for entry in dir.entries() {
-        match entry {
-            DirEntry::Dir(dir) => hash_into(dir, hasher),
-            DirEntry::File(file) => {
-                hasher.update(file.path().to_string_lossy().as_bytes());
-                hasher.update(&[0]);
-                hasher.update(file.contents());
-            }
+/// Splits a length-prefixed field off the front of `pack`.
+fn field(pack: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (length, rest) = pack.split_first_chunk::<4>()?;
+    rest.split_at_checked(u32::from_le_bytes(*length) as usize)
+}
+
+/// Writes the packed skills below `root`.
+fn unpack(root: &Path) -> std::io::Result<()> {
+    let mut pack = Vec::new();
+    DeflateDecoder::new(SKILLS).read_to_end(&mut pack)?;
+    let mut rest = pack.as_slice();
+    while !rest.is_empty() {
+        let damaged = || Error::new(ErrorKind::InvalidData, "the built-in skills are damaged");
+        let (name, after) = field(rest).ok_or_else(damaged)?;
+        let (contents, after) = field(after).ok_or_else(damaged)?;
+        let file = root.join(std::str::from_utf8(name).map_err(|_| damaged())?);
+        if let Some(dir) = file.parent() {
+            std::fs::create_dir_all(dir)?;
         }
+        std::fs::write(file, contents)?;
+        rest = after;
     }
+    Ok(())
 }
 
 /// The directory holding the built-in skills as files, so that the references beside each
 /// `SKILL.md` resolve like those of any other skill. They are written below `cache_dir` the first
 /// time a build runs; the copies of earlier builds are removed then.
 pub fn skill_root(cache_dir: &Path) -> std::io::Result<PathBuf> {
-    let mut hasher = blake3::Hasher::new();
-    hash_into(&SKILLS, &mut hasher);
-    let name = format!("{PREFIX}{}", &hasher.finalize().to_hex()[..16]);
+    let name = format!("{PREFIX}{}", &blake3::hash(SKILLS).to_hex()[..16]);
     let root = cache_dir.join(&name);
     if root.join(COMPLETE).is_file() {
         return Ok(root);
     }
     std::fs::create_dir_all(&root)?;
-    SKILLS.extract(&root)?;
+    unpack(&root)?;
     std::fs::write(root.join(COMPLETE), "")?;
     for entry in std::fs::read_dir(cache_dir)?.flatten() {
         let other = entry.file_name();
@@ -111,6 +124,37 @@ mod tests {
                     assert!(target.is_file(), "{} links to missing {link}", document.display());
                 }
             }
+        }
+    }
+
+    /// The files below `dir`, as paths relative to it.
+    fn files(dir: &Path, below: &Path, found: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir.join(below)).unwrap().flatten() {
+            let path = below.join(entry.file_name());
+            if entry.path().is_dir() {
+                files(dir, &path, found);
+            } else {
+                found.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn the_unpacked_skills_are_the_files_of_the_skills_directory() {
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../skills");
+        let cache = tempfile::tempdir().unwrap();
+        let root = skill_root(cache.path()).unwrap();
+
+        let (mut shipped, mut unpacked) = (Vec::new(), Vec::new());
+        files(&source, Path::new(""), &mut shipped);
+        files(&root, Path::new(""), &mut unpacked);
+        shipped.sort();
+        unpacked.retain(|path| path != Path::new(COMPLETE));
+        unpacked.sort();
+        assert_eq!(unpacked, shipped);
+        for file in &shipped {
+            let same = std::fs::read(source.join(file)).unwrap() == std::fs::read(root.join(file)).unwrap();
+            assert!(same, "{} differs from the file in skills/", file.display());
         }
     }
 

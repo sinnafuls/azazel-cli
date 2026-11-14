@@ -89,6 +89,14 @@ GitHub are its section here.
 - `get_usage` (RPC): windows carry `scope`, accounts carry `blocks`.
 - A full usage window of an account with extra usage on and money left is no longer shown as refusing
   requests.
+- The binary is smaller with every feature kept (the Windows build by 8.8 MB, 16%). What changed
+  underneath: one TLS library instead of two (rustls on `ring` for every HTTPS connection, Bedrock
+  included; aws-lc is gone), dependencies built for size except where the time goes (drawing, Markdown and
+  highlighting, regular expressions, JSON, the async runtime, the allocator), the model catalogue, the
+  built-in skills and the changelog stored compressed and unpacked when first needed, and SQLite built
+  without the modules nothing uses. Start-up is unchanged.
+- HTTPS no longer offers the post-quantum hybrid key exchange (X25519MLKEM768), which only aws-lc
+  provided. TLS 1.2 and 1.3, the system's certificate store and proxy settings work as before.
 - `/settings`: signing in, adding an API key and signing out are on the Accounts page, the default model and
   the model of every role on the Models page. A value set back to its default is taken out of `config.toml`
   instead of being written. Where there is no screen (a session in another process, RPC clients) the same pages

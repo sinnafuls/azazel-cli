@@ -115,7 +115,7 @@ async fn a_pkce_login_ends_when_the_browser_reaches_the_loopback_address() {
         .await;
     let settings = settings(&server, OAuthFlow::Pkce);
     let (person, mut seen) = person(None);
-    let http = reqwest::Client::new();
+    let http = azazel_ai::tls::client();
 
     // The browser: asks for an icon first, then follows the redirect the server would send.
     let browser = tokio::spawn({
@@ -187,7 +187,7 @@ async fn a_redirect_from_another_login_or_a_refusal_ends_the_login_without_token
         .mount(&server)
         .await;
     let settings = settings(&server, OAuthFlow::Pkce);
-    let http = reqwest::Client::new();
+    let http = azazel_ai::tls::client();
 
     for (query, expected) in [
         ("code=x&state=someone-elses", OAuthError::State),
@@ -237,7 +237,7 @@ async fn when_the_redirect_port_is_taken_the_pasted_address_finishes_the_login()
     let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut settings = settings(&server, OAuthFlow::Pkce);
     settings.redirect_port = taken.local_addr().unwrap().port();
-    let http = reqwest::Client::new();
+    let http = azazel_ai::tls::client();
 
     let (pasting, _seen) = person(Some(|query| {
         format!("{}?code=pasted&state={}", query["redirect_uri"], query["state"])
@@ -295,7 +295,7 @@ async fn the_device_flow_waits_longer_after_slow_down_and_stops_when_told() {
         .mount(&server)
         .await;
     let settings = settings(&server, OAuthFlow::Device);
-    let http = reqwest::Client::new();
+    let http = azazel_ai::tls::client();
 
     let code = device::start(&http, &settings, &settings.device_url)
         .await

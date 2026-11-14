@@ -607,7 +607,7 @@ async fn copilot_is_told_who_started_the_turn_and_whether_it_carries_an_image() 
         .respond_with(ResponseTemplate::new(200).set_body_raw(CHAT_STREAM, "text/event-stream"))
         .mount(&server)
         .await;
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let copilot = presets_with(&|_| None)
         .into_iter()
         .find(|p| p.id == "github-copilot")

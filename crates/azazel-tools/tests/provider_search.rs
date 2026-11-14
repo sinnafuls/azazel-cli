@@ -96,7 +96,7 @@ fn bench() -> Bench {
 impl Bench {
     fn tool(&self, provider: ProviderSearch) -> WebSearchTool {
         let backend: Arc<dyn SearchBackend> = Arc::new(self.backend.clone());
-        WebSearchTool::new(Ok(backend), reqwest::Client::new()).with_provider(provider)
+        WebSearchTool::new(Ok(backend), azazel_ai::tls::client()).with_provider(provider)
     }
 
     async fn call(&self, tool: &WebSearchTool, input: Value) -> ToolOutput {
@@ -288,7 +288,7 @@ async fn search_set_to_provider_asks_nothing_else() {
     let tool = bench.tool(ProviderSearch::Only);
     // No permission subject: the request goes where the lead's own requests go.
     assert!(
-        WebSearchTool::new(Err("no backend".to_string()), reqwest::Client::new())
+        WebSearchTool::new(Err("no backend".to_string()), azazel_ai::tls::client())
             .with_provider(ProviderSearch::Only)
             .subjects(&json!({"query": "x"}))
             .is_empty()

@@ -116,7 +116,7 @@ pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
 /// response that goes silent is given up by the provider's stall watchdog ([`StallLimits`]); the
 /// read timeout is what is left when that is turned off.
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::tls::client_builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(300))
         .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
