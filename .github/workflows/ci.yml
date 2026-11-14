@@ -1,8 +1,7 @@
 name: ci
 
-# Windows runs on every push and pull request, on the self-hosted runner (the repository is
-# private, so GitHub's runners cost Actions minutes). Linux and macOS run on GitHub's runners for
-# release tags and when started by hand (Actions tab, or `gh workflow run ci`).
+# Every push to main and every pull request is checked on Linux. Release tags, and runs started
+# by hand (Actions tab, or `gh workflow run ci`), check Windows and macOS as well.
 on:
   push:
     branches: [main]
@@ -10,41 +9,26 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Pull requests from forks get a read-only token and no secrets.
+permissions:
+  contents: read
+
 # A newer push to the same branch replaces the run still going for an older one.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  windows:
-    runs-on: [self-hosted, azazel-windows]
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
       run:
         shell: bash
-    steps:
-      # The runner keeps its working copy: `target/` stays, so each run builds only what changed.
-      - uses: actions/checkout@v4
-        with:
-          clean: false
-      # Installs the toolchain and components pinned in rust-toolchain.toml.
-      - run: rustup show
-      - run: cargo fmt --check
-      - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --no-fail-fast
-      # The docs list what the code registers, name for name. The check is the same on every
-      # system and needs a build of its own, so it runs here only.
-      - run: cargo xtask docs-check
-      - run: cargo build --no-default-features -p azazel-cli
-
-  hosted:
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 120
     env:
       # Debug info for every test binary of the workspace does not fit on the Linux runner's
       # disk; failures still name the test and the line.
@@ -55,6 +39,7 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
+      # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
       - uses: Swatinem/rust-cache@v2
         with:
@@ -67,6 +52,10 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
+      # The docs list what the code registers, name for name. The check is the same on every
+      # system, so it runs on Linux only.
+      - if: runner.os == 'Linux'
+        run: cargo xtask docs-check
       # `azazel --ssh` through the real ssh: the runner logs in to itself with a key made for
       # this job. Everywhere else the same tests go through a stand-in for ssh only.
       - if: runner.os == 'Linux'

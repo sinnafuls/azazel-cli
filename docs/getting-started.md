@@ -19,12 +19,8 @@ irm https://raw.githubusercontent.com/sinnafuls/azazel-cli/main/install/install.
 ```
 
 Both scripts download the latest GitHub release for your platform and verify its SHA-256 before installing.
-Releases are built for Windows (x86_64), Linux (x86_64) and macOS (Apple silicon and Intel); on anything else,
-install [from source](#from-source).
-
-> While the GitHub repository is private, the one-line commands and release downloads need a GitHub login and
-> do not work anonymously. Install from source instead, and give `azazel update` a token through
-> `GITHUB_TOKEN` or `GH_TOKEN` (for example `GH_TOKEN=$(gh auth token) azazel update`).
+Releases are built for Windows (x86_64), Linux (x86_64 and ARM64) and macOS (Apple silicon and Intel); on
+anything else, install [from source](#from-source).
 
 | Platform | Installed to | PATH |
 |---|---|---|
@@ -67,8 +63,8 @@ With `[update] auto = true` the background check also downloads a newer release,
 published SHA-256 and keeps it in `~/.azazel/cache/update/<version>/`. When you leave the UI, azazel installs it
 the way `azazel update` does and prints one line (`azazel updated 0.2.0 -> 0.3.0; the next start runs it`). A
 download that does not match its checksum is thrown away. Print mode, RPC mode and the subcommands never
-install anything on their own, and nothing is downloaded when the release cannot be reached (a private
-repository without a token).
+install anything on their own, and nothing is downloaded when the release cannot be reached. A GitHub token in
+`GITHUB_TOKEN` or `GH_TOKEN` is used when set, which lifts GitHub's limit on anonymous requests.
 
 The first time the UI starts after an update it says so, with the number of changes. `azazel changelog` (or
 `/changelog`) shows what changed in each release; `azazel changelog --since 0.2.0` shows only what is newer.

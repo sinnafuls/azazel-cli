@@ -5,6 +5,13 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Changed
+
+- Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
+  ARM64 machines.
+- `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or
+  `GH_TOKEN` is still used when set, which lifts GitHub's limit on anonymous requests.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added
@@ -67,8 +74,7 @@ GitHub are its section here.
   events, keymap actions and their default keys, flags, subcommands and their actions, RPC commands and
   frames, the Luau API, slash commands and tools, in both directions. It also checks every `azazel …`
   command line the docs show, that every page is linked from `docs/README.md`, that relative links lead to
-  a file and a heading that exist, that `docs/rpc.schema.json` is current, and that `FEATURES.md` is
-  stamped with the newest release. CI runs it after the tests.
+  a file and a heading that exist, and that `docs/rpc.schema.json` is current. CI runs it after the tests.
 - `AGENTS.md` at the root of the repository, the guide for people and coding agents who change azazel: the
   layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
   scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a
@@ -174,9 +180,6 @@ GitHub are its section here.
   `replaces`).
 - `docs/tools.md` lists the `report` tool and `tools.redact_output`; `docs/extensions.md` lists
   `azazel.fs.data_dir` and `before_agent_start` in their tables.
-- `FEATURES.md`: the azazel column was checked row by row against 0.5.0. 77 rows changed, among them
-  `/queue`, which was marked as a command and is a key (`Alt+Enter`); features without a row are in a new
-  section; the list of biggest gaps is new.
 
 ### Fixed
 
@@ -780,7 +783,6 @@ GitHub are its section here.
 - About 80 built-in providers that speak a standard chat API, new wire formats (native Ollama, OpenRouter,
   Azure resources, Gemini CLI) and `~/.azazel/models.yml` for your own providers and models.
 - A model role for the lead and for each built-in agent, set in `/settings` or under `[roles]`.
-- A feature checklist, kept outside the repository.
 
 ### Fixed
 

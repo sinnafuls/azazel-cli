@@ -5,8 +5,8 @@
 //! actions, flags and subcommands, RPC commands and frames, the Luau API, slash commands, tools)
 //! and the pages that own each list are read for what they document. A name on one side only is
 //! a finding, and so are a default that differs, a page the index does not link, a link that
-//! leads nowhere, a stale `rpc.schema.json` and a feature comparison stamped for an older
-//! release. Nothing is asked of the network.
+//! leads nowhere, a stale `rpc.schema.json` and a changelog without the current version.
+//! Nothing is asked of the network.
 
 mod checks;
 mod code;

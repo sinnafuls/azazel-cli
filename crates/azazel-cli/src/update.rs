@@ -39,12 +39,13 @@ struct Release {
 struct Asset {
     name: String,
     browser_download_url: String,
-    /// The API address of the file, which a token can download from a private repository.
+    /// The API address of the file, which a token can download from.
     #[serde(default)]
     url: String,
 }
 
-/// A GitHub token from `GITHUB_TOKEN` or `GH_TOKEN`, needed while the repository is private.
+/// A GitHub token from `GITHUB_TOKEN` or `GH_TOKEN`: optional, it lifts GitHub's limit on anonymous
+/// requests.
 fn token() -> Option<String> {
     ["GITHUB_TOKEN", "GH_TOKEN"]
         .iter()
@@ -119,10 +120,7 @@ async fn latest_release(client: &reqwest::Client) -> Result<Release, String> {
         .map_err(|e| format!("could not reach {url}: {e}"))?;
     let status = response.status();
     if status == reqwest::StatusCode::NOT_FOUND {
-        return Err(
-            "no release found (none is published yet, or the repository is private: set GITHUB_TOKEN)"
-                .to_string(),
-        );
+        return Err("no release found (none is published yet)".to_string());
     }
     if !status.is_success() {
         return Err(format!("{url} answered HTTP {status}"));
@@ -133,8 +131,8 @@ async fn latest_release(client: &reqwest::Client) -> Result<Release, String> {
         .map_err(|e| format!("unreadable release information from {url}: {e}"))
 }
 
-/// Downloads a release file: through the API with the token when there is one (private
-/// repositories), else from its public address. The token is not sent on to the storage host the
+/// Downloads a release file: through the API with the token when there is one, else from its
+/// public address. The token is not sent on to the storage host the
 /// API redirects to.
 async fn download(client: &reqwest::Client, asset: &Asset) -> Result<Vec<u8>, String> {
     let request = match token() {

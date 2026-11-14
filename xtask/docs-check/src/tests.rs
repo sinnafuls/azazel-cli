@@ -395,35 +395,24 @@ fn pages_must_be_linked_and_links_must_lead_somewhere() {
 }
 
 #[test]
-fn the_schema_file_the_changelog_and_the_feature_stamp_follow_the_code() {
+fn the_schema_file_and_the_changelog_follow_the_code() {
     let copy = Copy::new();
     copy.edit("docs/rpc.schema.json", |text| {
         text.replacen("prompt", "prompted", 1)
-    });
-    copy.edit("FEATURES.md", |text| {
-        text.replace(
-            &format!("azazel column as of {}", code().version),
-            "azazel column as of 0.1.0",
-        )
     });
     copy.edit("CLAUDE.md", |_| {
         "# CLAUDE.md\n\nRead the guide first.\n".to_string()
     });
     copy.edit("AGENTS.md", |text| text + "\nRun `cargo xtask polish` first.\n");
     let findings = copy.findings();
-    assert_eq!(findings.len(), 4, "{findings:?}");
+    assert_eq!(findings.len(), 3, "{findings:?}");
     assert_eq!(
         findings[0],
         "docs/rpc.schema.json: the file is not what the protocol generates; run `cargo xtask rpc-schema`"
     );
-    assert!(findings[1].starts_with("FEATURES.md:"));
-    assert!(findings[1].contains(&format!(
-        "the azazel column is stamped 0.1.0 and the newest release in CHANGELOG.md is {}",
-        code().version
-    )));
-    assert_eq!(findings[2], "CLAUDE.md: the page must point to AGENTS.md");
-    assert!(findings[3].starts_with("AGENTS.md:"));
-    assert!(findings[3].ends_with("`cargo xtask polish` is not a task of xtask"));
+    assert_eq!(findings[1], "CLAUDE.md: the page must point to AGENTS.md");
+    assert!(findings[2].starts_with("AGENTS.md:"));
+    assert!(findings[2].ends_with("`cargo xtask polish` is not a task of xtask"));
 
     // A version in Cargo.toml that the changelog has no section for.
     let mut next = code().clone();

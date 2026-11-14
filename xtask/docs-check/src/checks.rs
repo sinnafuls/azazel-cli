@@ -16,7 +16,6 @@ pub const RPC_SCHEMA: &str = "docs/rpc.schema.json";
 pub const INDEX: &str = "docs/README.md";
 pub const SKILL: &str = "skills/azazel-extensions/SKILL.md";
 pub const CHANGELOG: &str = "CHANGELOG.md";
-pub const FEATURES: &str = "FEATURES.md";
 pub const AGENTS: &str = "AGENTS.md";
 pub const CLAUDE: &str = "CLAUDE.md";
 
@@ -1054,21 +1053,7 @@ fn resolve(dir: &str, file: &str) -> String {
     parts.join("/")
 }
 
-/// The version after `marker` on the first line that has it.
-fn version_after(page: &Page, marker: &str) -> Option<(usize, String)> {
-    page.lines.iter().enumerate().find_map(|(index, line)| {
-        let rest = &line[line.find(marker)? + marker.len()..];
-        let version: String = rest
-            .chars()
-            .take_while(|c| c.is_ascii_digit() || *c == '.')
-            .collect();
-        let version = version.trim_end_matches('.').to_string();
-        (!version.is_empty()).then_some((index + 1, version))
-    })
-}
-
-/// The changelog has `[Unreleased]` and a section for the version of the workspace; the feature
-/// comparison says which release its azazel column was checked against, and that is the newest.
+/// The changelog has `[Unreleased]` first and a section for the version of the workspace.
 pub fn releases(docs: &Docs, code: &Code, out: &mut Vec<Finding>) {
     let Some(changelog) = page(docs, out, CHANGELOG) else {
         return;
@@ -1093,26 +1078,6 @@ pub fn releases(docs: &Docs, code: &Code, out: &mut Vec<Finding>) {
                 code.version
             ),
         ));
-    }
-    let newest = sections.iter().find(|section| *section != "Unreleased");
-    let Some(features) = page(docs, out, FEATURES) else {
-        return;
-    };
-    let marker = "azazel column as of ";
-    match (version_after(features, marker), newest) {
-        (Some((line, stamped)), Some(newest)) if stamped != *newest => out.push(Finding::line(
-            FEATURES,
-            line,
-            format!(
-                "the azazel column is stamped {stamped} and the newest release in CHANGELOG.md is {newest}: \
-                 check every row against the code again, then change the stamp"
-            ),
-        )),
-        (None, _) => out.push(Finding::page(
-            FEATURES,
-            format!("there is no line saying `{marker}<version>, checked <date>`"),
-        )),
-        _ => {}
     }
 }
 

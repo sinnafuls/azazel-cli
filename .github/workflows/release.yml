@@ -4,10 +4,10 @@ name: release
 # azazel-<os>-<arch>.(zip|tar.gz) and a .sha256 beside each. The install scripts and
 # `azazel update` download from the latest release by these names.
 #
-# Windows builds on the self-hosted runner; Linux and macOS on GitHub's runners. The release is
-# published once the builds are over, with whatever archives were uploaded, so a platform whose
-# build could not run (no Actions minutes left) can be added later by re-running the failed jobs
-# (`gh run rerun <run id> --failed`): every step can run again on an existing release.
+# Every platform builds on GitHub's runners. The release is published once the builds are over,
+# with whatever archives were uploaded, so a platform whose build failed can be added later by
+# re-running the failed jobs (`gh run rerun <run id> --failed`): every step can run again on an
+# existing release.
 on:
   push:
     tags: ["v*"]
@@ -21,11 +21,9 @@ defaults:
 
 jobs:
   create:
-    runs-on: [self-hosted, azazel-windows]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          clean: false
       - name: Check the tag matches the crate version
         run: |
           version=$(grep -m1 '^version = ' Cargo.toml | cut -d '"' -f 2)
@@ -55,17 +53,17 @@ jobs:
           fi
 
   build:
-    # Linux on ARM (target aarch64-unknown-linux-gnu, runner ubuntu-24.04-arm) can be added to
-    # the matrix once the repository is public; those runners are not free for private ones.
     needs: create
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: [self-hosted, azazel-windows]
+          - runner: windows-latest
             target: x86_64-pc-windows-msvc
           - runner: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
           - runner: macos-latest
             target: aarch64-apple-darwin
           - runner: macos-latest
@@ -73,8 +71,6 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          clean: false
       - run: rustup show && rustup target add ${{ matrix.target }}
       # Screen capture (the `screen` feature) links against these on Linux.
       - if: runner.os == 'Linux'
@@ -92,7 +88,7 @@ jobs:
     needs: [create, build]
     # Also when a platform's build failed or never started: its archive is added by a re-run.
     if: ${{ !cancelled() && needs.create.result == 'success' }}
-    runs-on: [self-hosted, azazel-windows]
+    runs-on: ubuntu-latest
     steps:
       - name: Publish the release
         env:

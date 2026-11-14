@@ -25,7 +25,7 @@ Rust 1.99, edition 2024, tokio. It builds and is tested on Windows, Linux and ma
 | `xtask` | Maintenance tasks (`cargo xtask <task>`); `xtask/docs-check` is the docs check |
 | `tests/fixtures` | Stand-in programs the tests run (`fake-lsp`, `mcp-echo`, `fake-check`, `fake-sg`, `fake-gh`, `fake-ssh`, …), scripts for the scripted provider (`scripts/*.json`) and sample projects |
 | `skills/` | The skills built into the binary |
-| `docs/`, `README.md`, `CHANGELOG.md`, `FEATURES.md` | User documentation, the release notes, and the comparison with other harnesses |
+| `docs/`, `README.md`, `CHANGELOG.md` | User documentation and the release notes |
 | `ref/` | Other harnesses, when present: read them for behaviour, never copy from them and never change them |
 
 ## Build and test
@@ -174,8 +174,7 @@ line per difference, naming the page and the name:
 It also checks, the other way round, that every name those tables list exists; that every `azazel …`
 command line shown in a page uses subcommands and flags that exist; that every page under `docs/` is
 linked from `docs/README.md`; that every relative link leads to a file and a heading that exist; that
-`CHANGELOG.md` has a section for the version in `Cargo.toml`; and that `FEATURES.md` is stamped with the
-newest release. It needs no network. The check asks the program for its registries
+and that `CHANGELOG.md` has a section for the version in `Cargo.toml`. It needs no network. The check asks the program for its registries
 (`azazel_cli::inventory`, `azazel_core::config_keys`), so a name that is registered is seen without
 further work; a tool that is registered only under a condition is listed in
 `inventory::conditional_tools`.
@@ -187,9 +186,8 @@ further work; a tool that is registered only under a condition is listed in
 3. The page under `docs/` that owns the behaviour, in the table or section docs-check reads.
 4. A line under `## [Unreleased]` in `CHANGELOG.md` (`### Added`, `### Changed` or `### Fixed`), written
    for a user: what they can do now, and with which command, key or setting.
-5. The row of `FEATURES.md` the feature belongs to: its azazel column, and its note when the mark is `~`.
-6. The gates of [Build and test](#build-and-test), `cargo xtask docs-check` among them.
-7. When the change adds a dependency or much code: `cargo xtask bench-startup`, and the size it reports
+5. The gates of [Build and test](#build-and-test), `cargo xtask docs-check` among them.
+6. When the change adds a dependency or much code: `cargo xtask bench-startup`, and the size it reports
    in the description of the change.
 
 ## Releasing
@@ -199,9 +197,7 @@ further work; a tool that is registered only under a condition is listed in
    `## [Unreleased]` above it.
 3. Set `version` under `[workspace.package]` in `Cargo.toml` to `x.y.z` and build once, so that
    `Cargo.lock` follows.
-4. Check every row of `FEATURES.md` against the release and change its stamp (`azazel column as of x.y.z,
-   checked <date>`); `cargo xtask docs-check` fails until the stamp names the release.
-5. Commit, tag `vx.y.z` and push the tag. `.github/workflows/release.yml` checks that the tag matches the
+4. Commit, tag `vx.y.z` and push the tag. `.github/workflows/release.yml` checks that the tag matches the
    version, takes the release notes from the version's section of `CHANGELOG.md`, builds every platform
    with `cargo xtask dist` and publishes the archives with their checksums. The installers and
    `azazel update` download the latest release by those names.
