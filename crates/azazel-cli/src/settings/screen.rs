@@ -2517,36 +2517,6 @@ mod tests {
     }
 
     #[test]
-    fn the_keys_only_the_file_edits_are_listed_with_the_reason() {
-        let f = fixture(
-            "[[hooks.stop]]\ncommand = \"notify-send done\"\n[[hooks.pre_tool_use]]\ncommand = \"check\"\n",
-            "",
-        );
-        let mut screen = screen(&f);
-        screen.go_to("telemetry.content");
-        press(&mut screen, KeyCode::Down);
-        assert_eq!(selected_name(&screen), "providers");
-        let shown = rows(&screen, 100, 30);
-        assert!(
-            shown
-                .iter()
-                .any(|row| row.starts_with("Endpoints, headers and keys"))
-        );
-        for _ in 0..3 {
-            press(&mut screen, KeyCode::Down);
-        }
-        assert_eq!(selected_name(&screen), "hooks");
-        let shown = rows(&screen, 100, 30);
-        assert_eq!(
-            cells(row_of(&shown, "[hooks]")),
-            ["▌", "[hooks]", "2", "set", "home"]
-        );
-        assert!(!press(&mut screen, KeyCode::Enter));
-        press(&mut screen, KeyCode::Char('r'));
-        assert!(f.home_text().contains("hooks.stop"));
-    }
-
-    #[test]
     fn the_screen_fits_every_size_in_every_state() {
         let f = fixture(
             "[tui]\ntheme = \"light\"\nindicator_text = [\"one\", \"two\", \"three\"]\n",

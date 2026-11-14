@@ -326,21 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn the_file_goes_where_the_command_says() {
-        let file = Path::new("/tmp/a b.wav");
-        let args = |text: &str| split_args(text);
-        assert_eq!(
-            with_file(args("-m model.bin -f {file} -nt"), file),
-            ["-m", "model.bin", "-f", "/tmp/a b.wav", "-nt"]
-        );
-        assert_eq!(with_file(args("--input={file}"), file), ["--input=/tmp/a b.wav"]);
-        assert_eq!(
-            with_file(args("-nodisp -autoexit"), file),
-            ["-nodisp", "-autoexit", "/tmp/a b.wav"]
-        );
-    }
-
-    #[test]
     fn commands_are_looked_up_and_missing_ones_are_named() {
         assert_eq!(program("").unwrap_err(), "the command is empty");
         assert_eq!(

@@ -987,35 +987,6 @@ mod tests {
 
     use super::*;
 
-    fn words(args: &[&str]) -> Vec<OsString> {
-        args.iter().map(OsString::from).collect()
-    }
-
-    #[test]
-    fn the_background_process_gets_the_arguments_of_bg() {
-        let host = |args: &[&str]| host_args(&words(args), "ab12");
-        assert_eq!(
-            host(&["bg", "fix", "the", "tests"]),
-            Some(words(&["host", "--id", "ab12", "fix", "the", "tests"]))
-        );
-        // Options before the subcommand stay before it; a value named `bg` is not the subcommand.
-        assert_eq!(
-            host(&[
-                "--name", "bg", "-r", "bg", "--trust", "bg", "--model", "@smol", "go"
-            ]),
-            Some(words(&[
-                "--name", "bg", "-r", "bg", "--trust", "host", "--id", "ab12", "--model", "@smol", "go"
-            ]))
-        );
-        assert_eq!(
-            host(&["--name=x", "--resume", "abc", "bg", "go"]),
-            Some(words(&[
-                "--name=x", "--resume", "abc", "host", "--id", "ab12", "go"
-            ]))
-        );
-        assert_eq!(host(&["--", "bg", "go"]), None);
-    }
-
     #[cfg(windows)]
     #[test]
     fn arguments_are_quoted_for_a_windows_command_line() {

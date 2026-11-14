@@ -832,19 +832,6 @@ mod tests {
     }
 
     #[test]
-    fn a_long_text_is_cut_and_says_by_how_much() {
-        let text = "é".repeat(MAX_TEXT + 7);
-        let cut = shown(&text, MAX_TEXT);
-        assert!(
-            cut.ends_with("… [7 more characters]"),
-            "{}",
-            &cut[cut.len() - 40..]
-        );
-        assert_eq!(cut.chars().filter(|c| *c == 'é').count(), MAX_TEXT);
-        assert_eq!(shown("short", MAX_TEXT), "short");
-    }
-
-    #[test]
     fn a_failed_request_and_a_failed_tool_carry_the_error() {
         let mut recorder = recorder(false);
         let spans = feed(

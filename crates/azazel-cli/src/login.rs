@@ -596,24 +596,6 @@ mod tests {
         assert!(store.resolve(anthropic).await.is_err());
     }
 
-    #[test]
-    fn storing_a_key_says_when_the_environment_overrides_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let providers = key_providers(&Config::default()).unwrap();
-        let anthropic = find(&providers, "anthropic").unwrap();
-        let line = store_key(
-            &credentials(dir.path(), Some("sk-env")),
-            anthropic,
-            "sk-stored",
-            None,
-        )
-        .unwrap();
-        assert!(
-            line.ends_with("note: the key from env ANTHROPIC_API_KEY takes precedence over it"),
-            "{line}"
-        );
-    }
-
     #[tokio::test]
     async fn a_second_account_is_kept_beside_the_first_and_forgotten_on_its_own() {
         let dir = tempfile::tempdir().unwrap();

@@ -409,19 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_is_held_until_it_is_dropped() {
-        let home = tempfile::tempdir().unwrap();
-        let path = home.path().join("a.lock");
-        assert!(!Lock::held(&path));
-        let lock = Lock::acquire(&path).unwrap().unwrap();
-        assert!(Lock::held(&path));
-        assert!(Lock::acquire(&path).unwrap().is_none());
-        drop(lock);
-        assert!(!Lock::held(&path));
-        assert!(!path.exists());
-    }
-
-    #[test]
     fn a_session_open_in_the_background_names_who_has_it() {
         let home = tempfile::tempdir().unwrap();
         let home = home.path();

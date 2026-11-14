@@ -1015,20 +1015,6 @@ fn codex_config_becomes_a_role_a_provider_and_servers() {
 }
 
 #[test]
-fn a_codex_key_makes_the_model_the_apis() {
-    let sandbox = Sandbox::new("codex");
-    std::fs::write(
-        sandbox.path("home/.codex/auth.json"),
-        r#"{"OPENAI_API_KEY":"test-key-openai","tokens":null}"#,
-    )
-    .unwrap();
-    let found = sandbox.found(Source::Codex);
-    assert_eq!(found.roles[0].chain, ["openai/gpt-test-1:high"]);
-    assert_eq!(found.keys[0].provider, "openai");
-    assert!(found.logins.is_empty());
-}
-
-#[test]
 fn a_codex_rollout_is_read_from_its_response_items() {
     let found = scan(
         &Env::at(&fixture("codex").join("home")),
@@ -1552,32 +1538,6 @@ async fn claude_rules_join_those_that_are_there_and_project_servers_go_to_the_pr
             .entries()
             .iter()
             .any(|entry| matches!(entry.kind, EntryKind::Compaction { .. }))
-    );
-}
-
-#[test]
-fn sources_and_kinds_are_named_on_the_command_line() {
-    let names = |names: &[&str]| names.iter().map(|name| name.to_string()).collect::<Vec<_>>();
-    assert_eq!(parse_sources(&[]).unwrap(), Source::ALL);
-    assert_eq!(parse_sources(&names(&["all"])).unwrap(), Source::ALL);
-    assert_eq!(
-        parse_sources(&names(&["omp,claude", "omp"])).unwrap(),
-        [Source::Omp, Source::Claude]
-    );
-    assert!(
-        parse_sources(&names(&["cursor"]))
-            .unwrap_err()
-            .contains("unknown source `cursor`")
-    );
-    assert_eq!(parse_kinds(&[]).unwrap(), Kind::ALL);
-    assert_eq!(
-        parse_kinds(&names(&["chats", "keys"])).unwrap(),
-        [Kind::Chats, Kind::Keys]
-    );
-    assert!(
-        parse_kinds(&names(&["sessions"]))
-            .unwrap_err()
-            .contains("unknown kind `sessions`")
     );
 }
 

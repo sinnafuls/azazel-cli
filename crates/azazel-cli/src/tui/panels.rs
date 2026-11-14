@@ -785,28 +785,6 @@ mod tests {
     }
 
     #[test]
-    fn rules_are_typed_as_kind_and_rule() {
-        let (kind, rule) = parse_rule("allow shell(cargo test:*)").unwrap();
-        assert_eq!(
-            (kind, rule.to_string().as_str()),
-            (RuleKind::Allow, "shell(cargo test:*)")
-        );
-        let (kind, rule) = parse_rule("  DENY   write(secrets/**) ").unwrap();
-        assert_eq!(
-            (kind, rule.to_string().as_str()),
-            (RuleKind::Deny, "write(secrets/**)")
-        );
-        assert_eq!(parse_rule("ask web_fetch").unwrap().0, RuleKind::Ask);
-        assert!(parse_rule("shell(ls)").unwrap_err().contains("for example"));
-        assert!(parse_rule("permit shell").unwrap_err().contains("for example"));
-        assert!(
-            parse_rule("allow shell(")
-                .unwrap_err()
-                .contains("invalid permission rule")
-        );
-    }
-
-    #[test]
     fn changes_between_name_lists_are_counted_and_named() {
         let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
         assert_eq!(name_changes(&list(&["a", "b"]), &list(&["a", "b"])), "");

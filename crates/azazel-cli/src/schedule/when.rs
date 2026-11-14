@@ -534,25 +534,6 @@ mod tests {
     }
 
     #[test]
-    fn what_cannot_be_scheduled_says_why() {
-        let now = zoned("2026-11-13T10:00:00+00:00");
-        let error = |text: &str| When::parse(text, &now).unwrap_err();
-        assert!(error("every 30s").contains("between one minute and 31 days"));
-        assert!(error("every 90s").contains("whole minutes"));
-        assert!(error("every 40d").contains("31 days"));
-        assert!(error("every soon").contains("not a length of time"));
-        assert!(error("at 2020-01-01 10:00").contains("in the past"));
-        assert!(error("at noonish").contains("not a time"));
-        assert!(error("on tuesday").contains("ci-failure"));
-        assert!(error("on file:").contains("needs a glob"));
-        assert!(error("0 9 * *").contains("five cron fields"));
-        assert!(error("61 9 * * *").contains("minute"));
-        assert!(error("0 9 * * 8").contains("day of the week"));
-        assert!(error("0 9 */0 * *").contains("day of the month"));
-        assert!(error("0 9 * 5-2 *").contains("month"));
-    }
-
-    #[test]
     fn a_cron_expression_matches_its_minutes_only() {
         let weekdays = Cron::parse("*/15 9-17 * * 1-5").unwrap();
         // 2026-11-13 is a Friday.

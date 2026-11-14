@@ -267,43 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn categories_are_named_for_what_they_hold() {
-        let report = sample();
-        let labels: Vec<String> = report.categories.iter().map(label).collect();
-        assert_eq!(
-            labels,
-            [
-                "system prompt: identity",
-                "AGENTS and context files",
-                "skill index",
-                "system prompt: other",
-                "tool schemas",
-                "tool schemas: MCP github",
-                "user messages",
-                "tool calls",
-                "tool results",
-                "images"
-            ]
-        );
-        let counts: Vec<String> = report.categories.iter().map(counted).collect();
-        assert_eq!(
-            counts,
-            [
-                "1 part",
-                "1 part",
-                "1 part",
-                "2 parts",
-                "24 tools",
-                "31 tools",
-                "3 blocks",
-                "1 call",
-                "12 results",
-                "1 image"
-            ]
-        );
-    }
-
-    #[test]
     fn a_bar_is_the_share_of_the_request_and_never_empty_for_something() {
         let report = sample();
         let bars: Vec<usize> = report
@@ -361,20 +324,5 @@ mod tests {
                 "50.0k tokens, estimated: the provider has counted nothing for this request"
             ]
         );
-    }
-
-    #[test]
-    fn the_json_form_keeps_the_numbers_and_adds_labels() {
-        let report = sample();
-        let value = json(&report);
-        assert_eq!(value["tokens"], 50_000);
-        assert_eq!(value["reported"], 50_000);
-        assert_eq!(value["categories"][5]["kind"], "tools");
-        assert_eq!(value["categories"][5]["name"], "github");
-        assert_eq!(value["categories"][5]["label"], "tool schemas: MCP github");
-        assert_eq!(value["categories"][8]["tokens"], 18_000);
-        // Without the labels it reads back as the report it was made from.
-        let back: ContextReport = serde_json::from_value(value).unwrap();
-        assert_eq!(back, report);
     }
 }

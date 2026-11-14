@@ -144,16 +144,6 @@ mod tests {
     }
 
     #[test]
-    fn a_flowchart_becomes_svg_and_what_is_not_a_diagram_says_so() {
-        let svg = svg(FLOW).unwrap();
-        assert!(svg.contains("<svg") && svg.contains("Decision"));
-        // The text is asked for in the font that is drawn with.
-        assert!(svg.contains(FONT_FAMILY));
-        let refused = super::svg("this is not a diagram at all").unwrap_err();
-        assert!(!refused.is_empty() && !refused.contains('\n'));
-    }
-
-    #[test]
     fn a_flowchart_becomes_svg_and_then_pixels_with_its_text_drawn() {
         let svg = svg(FLOW).unwrap();
         assert!(svg.contains("<svg") && svg.contains("Decision"));

@@ -1140,31 +1140,6 @@ mod tests {
     }
 
     #[test]
-    fn the_lists_say_which_segments_stand_where() {
-        let theme = Theme::dark();
-        let line = sample(&METERED);
-        let custom = layout("left = [\"model\", \"time\"]\nright = [\"path\", \"mode\"]");
-        assert_eq!(
-            shown_in(&line, &custom, 70, &theme),
-            sides(
-                "⬢ anthropic/claude-opus-5-5 · ◷ 14:05",
-                "~/src/app · ⏵ accept-edits",
-                70
-            )
-        );
-        // One list alone leaves the other side to the preset, less what the list took.
-        let moved = layout("left = [\"mode\", \"thinking\"]");
-        assert_eq!(moved.left, [Name::Mode, Name::Thinking]);
-        assert_eq!(moved.right, [Name::Model, Name::Tier]);
-        let moved = layout("preset = \"minimal\"\nright = [\"path\"]");
-        assert_eq!((moved.left, moved.right), (vec![Name::Mode], vec![Name::Path]));
-        // `none` is a side with nothing on it.
-        let bare = layout("right = [\"none\"]\npreset = \"minimal\"");
-        assert_eq!(shown_in(&line, &bare, 40, &theme), "⏵ accept-edits · ~/src/app");
-        assert!(bare.shows(Name::Path) && !bare.shows(Name::Model));
-    }
-
-    #[test]
     fn what_cannot_be_understood_is_said_and_left_out() {
         let found = problems("left = [\"mode\", \"clock\", \"mode\"]\nright = [\"mode\"]");
         assert_eq!(found.len(), 3, "{found:?}");

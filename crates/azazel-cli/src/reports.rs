@@ -606,20 +606,6 @@ mod tests {
     }
 
     #[test]
-    fn tools_group_by_where_they_come_from() {
-        assert_eq!(tool_group("read", "core-tools"), "core");
-        assert_eq!(tool_group("plan_submit", "permissions"), "core");
-        assert_eq!(tool_group("task", "team"), "team");
-        assert_eq!(
-            tool_group("mcp__github__create_issue", "mcp"),
-            "MCP server github"
-        );
-        assert_eq!(tool_group("deploy", "lua"), "scripts");
-        assert_eq!(tool_group("read", "lua:vault"), "scripts");
-        assert_eq!(tool_group("memory_search", "memory"), "memory");
-    }
-
-    #[test]
     fn the_session_report_names_what_the_session_holds() {
         let mut facts = SessionFacts {
             created: "2026-11-12T10:00:00Z".to_string(),

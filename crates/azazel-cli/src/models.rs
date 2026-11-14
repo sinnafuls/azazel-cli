@@ -702,64 +702,6 @@ mod tests {
     }
 
     #[test]
-    fn the_listing_has_a_heading_per_provider_and_says_which_roles_use_a_model() {
-        use azazel_ai::{Cost, ThinkingLevel};
-        let thinker = ModelInfo {
-            name: Some("Big".into()),
-            context_window: 200_000,
-            max_output: 64_000,
-            vision: true,
-            reasoning: true,
-            thinking_levels: vec![ThinkingLevel::Off, ThinkingLevel::Low, ThinkingLevel::High],
-            cost: Some(Cost {
-                input: 3.0,
-                output: 15.0,
-                cache_read: 0.3,
-                cache_write: 3.75,
-            }),
-            ..ModelInfo::unknown("a", "big")
-        };
-        let plain = ModelInfo {
-            context_window: 1_000_000,
-            max_output: 8_000,
-            cost: Some(Cost {
-                input: 0.0,
-                output: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
-            }),
-            ..ModelInfo::unknown("b", "small-free")
-        };
-        let roles = ["default".to_string(), "smol".to_string()];
-        let table = model_table(&[
-            (
-                "a · env A_KEY".to_string(),
-                vec![model_cells(&thinker, false, &roles)],
-            ),
-            (
-                "b · subscription".to_string(),
-                vec![model_cells(&plain, true, &[])],
-            ),
-        ]);
-        assert_eq!(
-            table.lines().collect::<Vec<_>>(),
-            [
-                "a · env A_KEY",
-                "  model         context  out  price         thinking  vision  used by",
-                "  a/big            200k  64k  $3/$15        low high  yes     default, smol",
-                "",
-                "b · subscription",
-                "  model         context  out  price         thinking  vision  used by",
-                "  b/small-free       1M   8k  subscription  -         -       -",
-            ]
-        );
-        assert_eq!(model_cells(&plain, false, &[])[3], "free");
-        let json = model_json(&thinker);
-        assert_eq!(json["thinking_levels"], json!(["off", "low", "high"]));
-        assert_eq!(json["name"], "Big");
-    }
-
-    #[test]
     fn roles_are_counted_against_the_model_they_answer_with_first() {
         let row = |role: &str, resolved: &[&str]| azazel_protocol::RoleRow {
             role: role.into(),

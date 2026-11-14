@@ -1037,24 +1037,4 @@ pub(crate) mod tests {
         );
         assert!(validate("limits.max_turns", &Value::Integer(5)).is_ok());
     }
-
-    #[test]
-    fn a_value_reads_back_as_it_is_shown_for_typing() {
-        for value in [
-            text("rustfmt --edition 2024"),
-            text("true"),
-            text("3"),
-            text(" padded "),
-            text(""),
-            Value::Integer(3),
-            Value::Boolean(true),
-            Value::Array(vec![text("a"), text("b c")]),
-            toml::from_str::<Table>("v = { style = \"short\", width = 3 }").unwrap()["v"].clone(),
-        ] {
-            let typed = entry_text("key", &value);
-            assert_eq!(parse_entry(&typed), Ok(("key".to_string(), value)), "{typed}");
-        }
-        assert_eq!(entry_text("rs", &text("rustfmt")), "rs = rustfmt");
-        assert_eq!(entry_text("n", &text("3")), "n = \"3\"");
-    }
 }

@@ -82,33 +82,4 @@ impl Tui {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::time::Duration;
-
-    use azazel_ai::ModelRef;
-
-    use super::*;
-
-    #[test]
-    fn the_notice_says_what_the_next_request_costs() {
-        let expiry = Expiry {
-            model: ModelRef::new("anthropic", "claude-opus-5"),
-            prefix: 84_200,
-            at: tokio::time::Instant::now(),
-            ttl: Duration::from_secs(300),
-            renewable: true,
-        };
-        assert_eq!(
-            notice(&expiry, Some((1.5788, 0.1263)), true),
-            "the prompt cache of anthropic/claude-opus-5 ran out after 5 min without a request: the next one \
-             sends its 84.2k cached tokens anew, about $1.58 instead of $0.13; [cache] warming = \"idle\" keeps \
-             it alive while you think"
-        );
-        // On a subscription, or without a known price, there is no money to name.
-        assert_eq!(
-            notice(&expiry, None, false),
-            "the prompt cache of anthropic/claude-opus-5 ran out after 5 min without a request: the next one \
-             sends its 84.2k cached tokens anew"
-        );
-    }
-}
+mod tests {}

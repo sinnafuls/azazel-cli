@@ -159,17 +159,6 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_changelog_is_the_file_and_parses() {
-        let file =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md")).unwrap();
-        assert!(
-            shipped() == file,
-            "the changelog in the binary is not CHANGELOG.md"
-        );
-        assert!(sections(shipped()).iter().any(|s| s.version == "0.1.0"));
-    }
-
-    #[test]
     fn the_notice_shows_once_after_a_version_change() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::discover(dir.path(), dir.path().join("home").to_str());

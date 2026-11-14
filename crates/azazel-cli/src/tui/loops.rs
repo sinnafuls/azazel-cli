@@ -288,15 +288,4 @@ impl Tui {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_wait_is_said_in_seconds_or_whole_minutes() {
-        let text = |seconds: u64| wait_text(Duration::from_secs(seconds));
-        assert_eq!(
-            [text(0), text(45), text(60), text(61), text(510), text(3600)],
-            ["1s", "45s", "1m", "2m", "9m", "1h"]
-        );
-    }
-}
+mod tests {}

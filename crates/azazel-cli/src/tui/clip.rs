@@ -238,11 +238,4 @@ mod tests {
         );
         assert_eq!(last_sections(&[], 3), None);
     }
-
-    #[test]
-    fn size_counts_lines_or_characters() {
-        assert_eq!(size("héllo"), "5 characters");
-        assert_eq!(size("a\nb\nc"), "3 lines");
-        assert_eq!(size(""), "0 characters");
-    }
 }

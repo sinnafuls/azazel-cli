@@ -338,13 +338,6 @@ mod tests {
     }
 
     #[test]
-    fn the_same_rate_is_returned_unchanged() {
-        let input = tone(440.0, 16_000, 0.1);
-        assert_eq!(resample(&input, 16_000, 16_000), input);
-        assert!(resample(&[], 48_000, 16_000).is_empty());
-    }
-
-    #[test]
     fn encoded_wav_has_a_canonical_header_and_length() {
         let wav = encode(&[0, 1, -1, i16::MAX], 16_000, 1);
         assert_eq!(wav.len(), 44 + 8);

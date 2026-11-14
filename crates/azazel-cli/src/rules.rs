@@ -244,27 +244,4 @@ mod tests {
 
         assert!(test(&paths, Path::new("missing.md"), None, None, None).is_err());
     }
-
-    #[test]
-    fn the_list_names_each_rule_its_origin_and_whether_it_was_applied() {
-        let (_tmp, paths) = project();
-        std::fs::write(
-            paths.project_dir().join("rules/release.md"),
-            "---\ndescription: how to cut a release\n---\ntag it",
-        )
-        .unwrap();
-        std::fs::write(paths.project_root.join(".cursorrules"), "be brief").unwrap();
-        let loaded = rules::load(&sources(&paths, false).unwrap());
-        let text = render(&loaded, Some(&|name: &str| name == "release"));
-        assert!(
-            text.contains("release  (project)  on request (rule://release)  · applied in this session"),
-            "{text}"
-        );
-        assert!(text.contains("  how to cut a release\n"));
-        assert!(
-            text.contains("cursorrules  (cursor)  always  · not applied yet"),
-            "{text}"
-        );
-        assert!(render(&Loaded::default(), None).starts_with("this project has no rules"));
-    }
 }

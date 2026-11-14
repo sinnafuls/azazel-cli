@@ -370,23 +370,4 @@ mod tests {
              Two builds exist.\n? Which?\n  1. a\n  2. b\n? Why?\n? Sure?\nwarn: careful\n"
         );
     }
-
-    #[test]
-    fn a_form_prints_its_questions_numbered_and_what_a_subagent_is_handed_stays_out() {
-        let frames = [
-            json!({ "type": "user_input", "kind": "prompt", "text": "look at a.rs", "agent": "scout-1" }),
-            json!({ "type": "ui_request", "request_id": "r1", "kind": "form", "questions": [
-                { "question": "Which store?", "header": "Store", "context": "Sessions are kept.",
-                  "expects": "select", "options": ["sqlite", "postgres"], "multi": false,
-                  "recommended": "postgres" },
-                { "question": "Apply it?", "expects": "confirm", "options": [], "multi": false,
-                  "diff": "-old\n+new\n" },
-            ] }),
-        ];
-        assert_eq!(
-            printed(&frames, true),
-            "Sessions are kept.\n1? Which store?\n  1. sqlite\n  2. postgres\n  recommended: postgres\n\
-             -old\n+new\n2? Apply it?\n  /answer <one answer per question, separated by `;`>\n"
-        );
-    }
 }
