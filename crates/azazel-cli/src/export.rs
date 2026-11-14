@@ -314,10 +314,16 @@ fn scrubbed(kind: EntryKind, tools: &HashMap<String, String>) -> EntryKind {
             custom_type,
             data: hidden_json(data),
         },
-        EntryKind::ToolStarted { call_id, name, input } => EntryKind::ToolStarted {
+        EntryKind::ToolStarted {
+            call_id,
+            name,
+            input,
+            repairs,
+        } => EntryKind::ToolStarted {
             input: scrubbed_input(&name, input),
             call_id,
             name,
+            repairs,
         },
         other => other,
     }
