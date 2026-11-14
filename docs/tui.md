@@ -314,7 +314,7 @@ The file a `read`, `write` or `edit` card names is a link to that file in termin
 | `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 %. On a terminal at least 100 columns wide a bar follows it: `◫ 42% [━━━╸────]` |
 | `↯ N tok/s` | the lead has streamed a reply since your last prompt | How fast the lead writes, in output tokens per second; see below |
 | `$cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
-| `◔ 61% 5h` | the lead answers on a subscription you signed in to | The fullest usage window of the account and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
+| `◔ 61% 5h` | the lead answers on a subscription you signed in to | The fullest usage window of the account that counts the lead's model and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
 | `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
 | `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
 | `⬢ model · level` | always, against the right edge | The model answering and the thinking level. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
@@ -630,7 +630,7 @@ Session and display:
 | `/loop <count \| interval \| until "<condition>"> <prompt>` | Send a prompt again and again; see [loops](#loops) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
-| `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
+| `/usage` | A box with what each signed-in subscription has left: per account every usage window with a bar, the share used, its reset time and what it counts, the plan, and the account in use; `r` asks the providers again. See [usage](models-and-logins.md#usage) |
 | `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
@@ -659,7 +659,7 @@ Models, permissions and setup:
 | `/settings` | Sign in, add API keys, choose models and change every setting; see [settings](#settings) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
-| `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
+| `/account [provider]` | The provider's accounts, their usage and until when one is out of allowance: use one for this session, make it the default, sign it out, add another |
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
