@@ -528,7 +528,10 @@ impl Local {
     async fn open(&mut self, how: Open, source: StartSource) -> Result<Moved, String> {
         let status = self.active.lead.status();
         self.app.close(&self.active).await;
-        let opened = self.app.open(how, status.chain.clone(), status.thinking).await;
+        let opened = self
+            .app
+            .open(how, status.chain.clone(), status.thinking_set)
+            .await;
         let problem = match opened {
             Ok(active) => {
                 self.events = active.lead.subscribe();
@@ -544,7 +547,7 @@ impl Local {
         };
         // Keep working in the session we had.
         let previous = Open::Store(self.active.session.clone());
-        match self.app.open(previous, status.chain, status.thinking).await {
+        match self.app.open(previous, status.chain, status.thinking_set).await {
             Ok(active) => {
                 self.events = active.lead.subscribe();
                 self.active = active;
@@ -873,7 +876,7 @@ impl Backend for Local {
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {
-        self.active.lead.send(AgentCmd::SetThinking(level));
+        self.active.lead.send(AgentCmd::SetThinking(Some(level)));
         self.active.session.append(EntryKind::ThinkingChange {
             level: level.to_string(),
         });
@@ -1040,7 +1043,9 @@ impl Backend for Local {
         for spec in &status.chain {
             args.extend(["--model".into(), spec.to_string().into()]);
         }
-        args.extend(["--thinking".into(), status.thinking.to_string().into()]);
+        if let Some(level) = status.thinking_set {
+            args.extend(["--thinking".into(), level.to_string().into()]);
+        }
         args.extend(["--mode".into(), self.app.permissions.mode().to_string().into()]);
         args.extend(["-r".into(), file.into()]);
         Ok(args)

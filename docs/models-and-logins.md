@@ -48,6 +48,31 @@ The lead starts on `@lead`, and each built-in agent on the role named after it, 
 
 You may define further roles and use them anywhere a spec is accepted. When a chain is resolved, roles are expanded in order, a model that already appeared is dropped, and an unknown role or a role that refers back to itself is skipped.
 
+A role's value comes from the last of these that sets it: its built-in value, `~/.azazel/config.toml` (home), the project's `.azazel/config.toml` (project; a trusted project only), `.azazel/config.local.toml` (local), or a change made in the running session. `azazel roles`, the RPC `list_roles` command and `/settings` → Models name that source beside each role. Clearing a role in one file lets the next one down show through, and in the end the built-in value.
+
+A thinking level written on a role's model (`smol = ["openai/gpt-5-mini:low"]`) is that role's own [thinking level](#thinking-levels): the role's requests ask for it unless a level was chosen for the session.
+
+### `azazel roles`
+
+| Command | Does |
+|---|---|
+| `azazel roles` | Lists every role: its chain, the model it resolves to, that model's thinking level and where the value comes from (`built-in`, `home`, `project`, `local`, or `unset`) |
+| `azazel roles set <role> <model> [fallback…] [--thinking LEVEL] [--project]` | Points the role at the model, then the fallbacks in order, in the home config (or the project's with `--project`, which a project that is not trusted refuses). A model is named as `--model` takes it (`@role`, `provider/id`, or part of a name); `--thinking` writes the level on the first model (`provider/id:high`). Comments in the file are kept |
+| `azazel roles clear <role> [--project]` | Takes the role out of the home config (or the project's), so it falls back to the next file, or its built-in value; a role of your own goes away |
+| `azazel roles preset save <name>` | Saves every role as it is now as `[presets.<name>.roles]` in the home config |
+| `azazel roles preset load <name> [--project]` | Writes every role of the preset into the home config (or the project's) |
+
+Every form takes `--json`: the listing prints one JSON object per role (`role`, `chain`, `source`, `builtin`,
+`resolved`, `thinking`), a change prints the rows of the roles it changed, and `preset save` prints the preset's name,
+roles and file. A mistake in how the command is called (an unknown level, a name that cannot be a role, a project
+that is not trusted, a preset that does not exist) exits with status 2; a config file that cannot be written exits
+with status 1.
+
+```sh
+azazel roles set smol anthropic/claude-haiku-4-5 @default --thinking low
+azazel roles preset save cheap
+```
+
 ### Presets
 
 A preset is a saved set of role chains, for switching the whole team between, say, a cheap and a thorough set of models.
@@ -99,8 +124,13 @@ When several models match equally well, the run stops with status 2 and names up
 files stay strict: they need `provider/id` or `@role`.
 
 `azazel models [QUERY] [--provider ID] [--all] [--json]` lists the models of the providers you have a credential
-for, one per line with context window, output limit, vision, thinking and price per million tokens (`--all`
-lists the whole catalogue).
+for, under a heading per provider that says where its credential comes from (`subscription` for a sign-in). Each
+row has the model, its context window, output limit, price per million tokens in and out (`subscription` for a
+provider you signed in to, `free`), the thinking levels it takes (`yes` when the catalogue names none), whether it
+reads images, and the roles that answer with it first. `--all` lists every provider in the catalogue, those without
+a credential headed `no credential`. With `--json` each model is one object: `model`, `name`, `context_window`,
+`max_output`, `vision`, `reasoning`, `thinking_levels`, `cost`, `roles` (the roles that answer with it), `login`
+(used through a sign-in) and `usable` (its provider has a credential).
 
 ```sh
 azazel --model anthropic/claude-sonnet-4-5 --model ollama/<local-model> -p "summarise src/"
@@ -982,9 +1012,18 @@ Levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. The default i
 | Set with | Scope |
 |---|---|
 | `--thinking <level>` | The lead, this run |
-| `/thinking` (picker) or `/thinking <level>` | The lead, this session |
-| `:level` suffix on a model spec | That model, wherever the spec is used; wins over the above |
-| `thinking:` in an agent definition, `[agents.<name>] thinking` | One sub-agent |
+| `/thinking` (picker), `/thinking <level>`, `Alt+T`, RPC `set_thinking` | The lead, this session |
+| `thinking:` in an agent definition, `[agents.<name>] thinking` | That agent (a primary agent: the lead while it is that agent) |
+| `:level` suffix on a model spec (`[roles] smol = ["openai/gpt-5-mini:low"]`) | That model, wherever the spec is used, when none of the above chose a level |
+
+A level chosen in one of the first three ways wins over a model's `:level`, so `/thinking low` lowers the
+thinking of a lead whose role is written `:high`, and `/thinking off` turns it off. Until a level is chosen, each
+request asks for the `:level` of the model it goes to, else `off`. The status line and the RPC `get_state` command
+show the level the lead's requests go out at.
+
+`/thinking` offers `off` and the levels the lead's model takes, as `Alt+T` steps through them (every level for a
+model the catalogue names none for); `/thinking <level>` with a level the model does not take sets the nearest one
+it does, and says so.
 
 | Level | Anthropic, Google, Bedrock (token budget) | OpenAI formats, Azure (effort) | `openrouter` (effort) | `ollama-chat` (`think`) |
 |---|---|---|---|---|

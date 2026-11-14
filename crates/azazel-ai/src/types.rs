@@ -259,6 +259,22 @@ impl ThinkingLevel {
             ThinkingLevel::Max => "max",
         }
     }
+
+    /// The level a model that accepts `accepted` is asked at for `self`: `self` when it is one
+    /// of them, otherwise the nearest accepted level below it, otherwise the lowest one above.
+    /// `Off` stays `Off`: a model is never made to think by asking it not to. An empty list
+    /// accepts every level.
+    pub fn nearest(self, accepted: &[ThinkingLevel]) -> ThinkingLevel {
+        if accepted.is_empty() || self == ThinkingLevel::Off || accepted.contains(&self) {
+            return self;
+        }
+        let thinking = || accepted.iter().copied().filter(|l| *l != ThinkingLevel::Off);
+        thinking()
+            .filter(|level| *level < self)
+            .max()
+            .or_else(|| thinking().min())
+            .unwrap_or(ThinkingLevel::Off)
+    }
 }
 
 impl fmt::Display for ThinkingLevel {
@@ -419,6 +435,11 @@ pub struct Request {
     pub tools: Vec<ToolSpec>,
     #[serde(default)]
     pub thinking: ThinkingLevel,
+    /// Whether `thinking` was chosen for the session (`/thinking`, `--thinking`, an agent's own
+    /// level). It then wins over the `:level` a model of the chain is written with; unset, that
+    /// suffix is the level and `thinking` only applies to models without one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub thinking_explicit: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_output: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

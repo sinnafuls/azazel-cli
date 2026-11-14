@@ -12,8 +12,8 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView, EditorMode,
-    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, StatusPreset,
-    StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
+    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, SessionResume,
+    StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -408,6 +408,8 @@ settings! {
     }
     Sessions / "Sessions" {
         "session.auto_name": Switch, "Name sessions automatically", "Have a small model name a session after its first reply.";
+        "session.resume": Choice(SessionResume::NAMES), "Open at start",
+            "new starts a new session; last opens this project's most recent one, as -c does.";
         "session.restore_model": Switch, "Restore the model on resume",
             "A resumed session starts on the model and thinking level it last used.";
         "session.retention_days": Number, "Retention",

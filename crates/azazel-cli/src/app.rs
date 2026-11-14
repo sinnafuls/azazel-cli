@@ -1,7 +1,7 @@
 //! Assembles the process-wide pieces (config, providers, extensions, permissions) and opens
 //! sessions on top of them. Every mode starts here.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
 use std::time::Duration;
@@ -19,7 +19,7 @@ use azazel_core::agents::{self, AgentDef, LeadAgent};
 use azazel_core::cache::{CacheLedger, Warmer};
 use azazel_core::checkpoint::Checkpoints;
 use azazel_core::commands::{CustomCommandsExt, expand_mentions};
-use azazel_core::config::set_override;
+use azazel_core::config::{SessionResume, set_override};
 use azazel_core::context::ContextExt;
 use azazel_core::hooks::HooksExt;
 use azazel_core::limits::{LimitsExt, Spend};
@@ -66,7 +66,8 @@ pub struct App {
     pub shell: Shell,
     /// What a new session's lead starts with.
     pub chain: Vec<ModelSpec>,
-    pub thinking: ThinkingLevel,
+    /// The thinking level `--thinking` chose; `None` leaves it to the model's `:level`.
+    pub thinking: Option<ThinkingLevel>,
     /// How the configuration was loaded, for reading it again (`/reload`).
     pub load_options: LoadOptions,
     /// What the command line added for this run (`--extension`, `--skill`, `--mcp-config`).
@@ -91,9 +92,9 @@ pub struct App {
     before: Arc<Mutex<Before>>,
     /// A `--no-session` run: its transcripts are deleted when it ends.
     ephemeral: bool,
-    /// `--model` and `--thinking` were given: they win over what a reopened session last used.
+    /// `--model` was given: it wins over what a reopened session last used, as `--thinking`
+    /// (`thinking`) does.
     model_flag: bool,
-    thinking_flag: bool,
     /// The session mode changes are recorded in.
     current: Arc<RwLock<Option<Arc<SessionStore>>>>,
     /// This process is a background session (`azazel host`): it locks the session it has open.
@@ -132,7 +133,7 @@ pub enum Open {
 #[derive(Default)]
 struct Before {
     chain: Option<Vec<ModelSpec>>,
-    thinking: Option<ThinkingLevel>,
+    thinking: Option<Option<ThinkingLevel>>,
 }
 
 /// What the lead takes up as it becomes a primary agent: a model chain and a thinking level
@@ -140,7 +141,8 @@ struct Before {
 #[derive(Debug, Default, PartialEq)]
 struct Follow {
     chain: Option<Vec<ModelSpec>>,
-    thinking: Option<ThinkingLevel>,
+    /// The level to set, where it changes; `Some(None)` goes back to the model's own.
+    thinking: Option<Option<ThinkingLevel>>,
     notice: Option<String>,
 }
 
@@ -150,7 +152,7 @@ struct Follow {
 fn follow(
     def: &AgentDef,
     chain: &[ModelSpec],
-    thinking: ThinkingLevel,
+    thinking: Option<ThinkingLevel>,
     before: &mut Before,
     router: &Router,
     pinned: (bool, bool),
@@ -180,7 +182,7 @@ fn follow(
         _ if pinned.1 => None,
         Some(own) => {
             before.thinking.get_or_insert(thinking);
-            (own != thinking).then_some(own)
+            (Some(own) != thinking).then_some(Some(own))
         }
         None => before.thinking.take().filter(|back| *back != thinking),
     };
@@ -218,7 +220,7 @@ impl Switched {
         let follow = follow(
             def,
             &status.chain,
-            status.thinking,
+            status.thinking_set,
             &mut self.before.lock().unwrap_or_else(PoisonError::into_inner),
             &self.router,
             self.pinned,
@@ -232,6 +234,22 @@ impl Switched {
         if let (Some(notice), Some(ui)) = (follow.notice, services.get::<Ui>()) {
             ui.0.notify(Level::Warn, &notice);
         }
+    }
+}
+
+/// The project's most recent session, for `-c`, or for the interactive UI when
+/// `[session] resume = "last"` and neither `--new` nor `--no-session` is given. `None` when
+/// neither asks for it, or the setting does and there is none: a new session starts then.
+fn latest_session(dir: &Path, cli: &Cli, resume: SessionResume) -> Result<Option<Open>> {
+    let by_default = resume == SessionResume::Last && cli.interactive() && !cli.new && !cli.no_session;
+    if !(cli.resume_latest || by_default) {
+        return Ok(None);
+    }
+    // An archived session (`-p --archived`) is not one to go on with.
+    match SessionStore::list(dir).into_iter().find(|s| !s.archived) {
+        Some(latest) => Ok(Some(Open::File(latest.path))),
+        None if cli.resume_latest => bail!("this project has no session to continue"),
+        None => Ok(None),
     }
 }
 
@@ -599,10 +617,12 @@ impl App {
         // Accounts that ran out of allowance in an earlier run are still out in this one.
         credentials.limits().persist(crate::usage::cache_file(&paths));
         let thinking = match &cli.thinking {
-            Some(level) => level
-                .parse::<ThinkingLevel>()
-                .map_err(|e| anyhow!("--thinking: {e}"))?,
-            None => ThinkingLevel::Off,
+            Some(level) => Some(
+                level
+                    .parse::<ThinkingLevel>()
+                    .map_err(|e| anyhow!("--thinking: {e}"))?,
+            ),
+            None => None,
         };
 
         let services = Arc::new(Services::new());
@@ -1223,7 +1243,6 @@ impl App {
             before,
             ephemeral: cli.no_session,
             model_flag: chosen,
-            thinking_flag: cli.thinking.is_some(),
             current,
             background: cli.background(),
             session_lock: Mutex::default(),
@@ -1231,7 +1250,9 @@ impl App {
         })
     }
 
-    /// The session the command line asks for: `--resume <id>`, `--continue`, or a new one.
+    /// The session the command line asks for: `--resume <id>`, `--continue`, or a new one; the
+    /// interactive UI continues the latest one when `[session] resume` says so and `--new` is
+    /// not given.
     pub fn requested_session(&self, cli: &Cli) -> Result<Open> {
         let dir = self.paths.sessions_dir();
         if let Some(wanted) = &cli.session {
@@ -1242,14 +1263,7 @@ impl App {
             // Read back from its file, like any session that was not open in this process.
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
-        if cli.resume_latest {
-            // An archived session (`-p --archived`) is not one to go on with.
-            return match SessionStore::list(&dir).into_iter().find(|s| !s.archived) {
-                Some(latest) => Ok(Open::File(latest.path)),
-                None => bail!("this project has no session to continue"),
-            };
-        }
-        Ok(Open::New)
+        Ok(latest_session(&dir, cli, self.config.session.resume)?.unwrap_or(Open::New))
     }
 
     /// Model names as typed (`fable`, `@smol`, `anthropic/claude-fable-5:high`) turned into a chain,
@@ -1334,8 +1348,9 @@ impl App {
                 chain: self.chain.clone(),
             });
         }
-        let level = self.thinking.to_string();
-        if self.thinking_flag && session.last_thinking(None).as_ref() != Some(&level) {
+        if let Some(level) = self.thinking.map(|level| level.to_string())
+            && session.last_thinking(None).as_ref() != Some(&level)
+        {
             session.append(EntryKind::ThinkingChange { level });
         }
     }
@@ -1347,8 +1362,8 @@ impl App {
         &self,
         session: &SessionStore,
         chain: Vec<ModelSpec>,
-        thinking: ThinkingLevel,
-    ) -> (Vec<ModelSpec>, ThinkingLevel, Option<String>) {
+        thinking: Option<ThinkingLevel>,
+    ) -> (Vec<ModelSpec>, Option<ThinkingLevel>, Option<String>) {
         if !self.config.session.restore_model {
             return (chain, thinking, None);
         }
@@ -1374,9 +1389,9 @@ impl App {
         };
         let thinking = session
             .last_thinking(None)
-            .filter(|_| !self.thinking_flag)
+            .filter(|_| self.thinking.is_none())
             .and_then(|level| level.parse().ok())
-            .unwrap_or(thinking);
+            .or(thinking);
         (chain, thinking, notice)
     }
 
@@ -1388,9 +1403,9 @@ impl App {
         &self,
         session: &SessionStore,
         chain: Vec<ModelSpec>,
-        thinking: ThinkingLevel,
+        thinking: Option<ThinkingLevel>,
         mut notice: Option<String>,
-    ) -> (Vec<ModelSpec>, ThinkingLevel, Option<String>) {
+    ) -> (Vec<ModelSpec>, Option<ThinkingLevel>, Option<String>) {
         let lead = &self.lead_agent;
         let default = lead.default_name();
         let recorded = session.last_agent(None);
@@ -1428,7 +1443,7 @@ impl App {
             thinking,
             &mut before,
             &self.router,
-            (self.model_flag, self.thinking_flag),
+            (self.model_flag, self.thinking.is_some()),
         );
         if let Some(more) = follow.notice {
             notice = Some(notice.map_or(more.clone(), |first| format!("{first}; {more}")));
@@ -1449,7 +1464,12 @@ impl App {
 
     /// Opens a session and starts its lead agent on `chain`. A session read from its file comes
     /// back on the model and thinking level it last used instead (see [`App::as_left`]).
-    pub async fn open(&self, how: Open, chain: Vec<ModelSpec>, thinking: ThinkingLevel) -> Result<Active> {
+    pub async fn open(
+        &self,
+        how: Open,
+        chain: Vec<ModelSpec>,
+        thinking: Option<ThinkingLevel>,
+    ) -> Result<Active> {
         let from_file = matches!(how, Open::File(_));
         let (session, resumed) = match how {
             Open::New => (
@@ -1744,5 +1764,50 @@ impl App {
 
     pub fn log_file(paths: &Paths) -> PathBuf {
         paths.logs_dir().join("azazel.log")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use clap::Parser;
+
+    use super::*;
+
+    /// What a start with `args` opens in a project whose sessions are in `dir`: the file of a
+    /// session, `None` for a new one.
+    fn opened(dir: &Path, args: &[&str], resume: SessionResume) -> Option<PathBuf> {
+        let cli = Cli::try_parse_from(std::iter::once("azazel").chain(args.iter().copied())).unwrap();
+        match latest_session(dir, &cli, resume).unwrap() {
+            Some(Open::File(path)) => Some(path),
+            Some(_) => panic!("not a session file"),
+            None => None,
+        }
+    }
+
+    #[test]
+    fn the_interactive_ui_continues_the_latest_session_when_the_setting_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let sessions = dir.path().join("sessions");
+        // No session yet: a new one, without complaint; `-c` does complain.
+        assert_eq!(opened(&sessions, &[], SessionResume::Last), None);
+        let cli = Cli::try_parse_from(["azazel", "-c"]).unwrap();
+        assert!(latest_session(&sessions, &cli, SessionResume::Last).is_err());
+
+        let store = SessionStore::create(&sessions, dir.path(), None).unwrap();
+        store.append(EntryKind::SessionInfo {
+            name: "earlier".to_string(),
+        });
+        let latest = Some(store.path());
+        assert_eq!(opened(&sessions, &[], SessionResume::Last), latest);
+        assert_eq!(opened(&sessions, &[], SessionResume::New), None);
+        assert_eq!(opened(&sessions, &["--new"], SessionResume::Last), None);
+        assert_eq!(opened(&sessions, &["--no-session"], SessionResume::Last), None);
+        // Print mode keeps starting new sessions unless it is told otherwise.
+        assert_eq!(opened(&sessions, &["-p", "hi"], SessionResume::Last), None);
+        assert_eq!(opened(&sessions, &["-p", "-c", "hi"], SessionResume::New), latest);
+        // `--new` with a flag that names a session is a mistake.
+        assert!(Cli::try_parse_from(["azazel", "--new", "-c"]).is_err());
     }
 }

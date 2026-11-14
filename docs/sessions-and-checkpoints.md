@@ -83,6 +83,13 @@ azazel -c -p "now add tests"    # all of them work with print mode too
 | `--name <NAME>` | Names the session, as `/name` would |
 | `--session-dir <DIR>` | Keeps this run's sessions, and its sub-agents' transcripts, in `DIR` instead of the project's directory |
 | `--no-session` | Writes the transcript to a temporary directory that is deleted when azazel exits, and turns checkpoints off |
+| `--new` | Starts a new session, also when `[session] resume = "last"` would continue the newest one. Cannot go with `-c`, `--session` or `--fork` |
+
+To always come back to where you left off, set `[session] resume = "last"` (or `/settings` → Sessions → Open at
+start). Starting the UI in a project without `-c`, `--session`, `--fork`, `--new` or `--no-session` then opens the
+project's newest session as `-c` does, on the same model and thinking level rules; in a project with no session
+yet it starts a new one. Print mode (`-p`) is not affected: it starts a new session unless `-c` or `--session` is
+given.
 
 The session id is the part of the file name after the underscore; `/export` without a path also puts it in the
 name of the file it writes. A resumed session opens at its last entry and the UI shows the last two messages.
@@ -94,13 +101,16 @@ runs, and `azazel attach --take` brings it back here.
 ### Model and thinking level
 
 A session that is opened again comes back on the model chain and the thinking level it last switched to. This
-holds for `-c`, `--session`, `--fork` and `/resume`, in the UI, in print mode and over RPC.
+holds for `-c`, `--session`, `--fork`, `/resume` and `[session] resume = "last"`, in the UI, in print mode and over
+RPC.
 
 - What counts is the newest `model_change` and `thinking_change` entry on the branch the session ends on. `/model`,
   the model keys, `/thinking` and the thinking key write them, and so do `--model` and `--thinking` at launch.
 - A session that never switched starts on what the run is on: the `lead` role at launch, the model you are
   using when you `/resume` it.
 - `--model` and `--thinking` on the command line win over what the session last used.
+- A thinking level written by `/thinking` or `--thinking` wins over the `:level` of the model's role; a session
+  that never chose one asks for the role's level (see [thinking levels](models-and-logins.md#thinking-levels)).
 - A chain that can no longer be used (the model or its login is gone) gives way to the run's own model, with the
   notice `this session last used <chain>, which cannot be used now; it goes on with <chain>`.
 - `[session] restore_model = false` turns all of this off.

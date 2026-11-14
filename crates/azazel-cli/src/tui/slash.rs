@@ -322,15 +322,20 @@ impl Tui {
                 self.set_model(&specs).await;
             }
             "thinking" if args.is_empty() => {
-                let items = ThinkingLevel::ALL
-                    .iter()
-                    .map(|level| SelectItem::new(level.to_string(), ""))
-                    .collect();
-                let body = vec![format!("current: {}", self.backend.status().thinking)];
-                self.overlay = Some(Overlay::select("Thinking", body, items, false, Action::Thinking));
+                let picker = thinking_picker(&self.backend.thinking_levels(), self.backend.status().thinking);
+                self.overlay = Some(picker);
             }
             "thinking" => match args.parse::<ThinkingLevel>() {
-                Ok(level) => self.set_thinking(level).await,
+                Ok(wanted) => {
+                    let level = wanted.nearest(&self.backend.thinking_levels());
+                    if level != wanted {
+                        let model = self.backend.model_label();
+                        self.info(&format!(
+                            "{model} does not take thinking {wanted}; {level} is the nearest level it takes"
+                        ));
+                    }
+                    self.set_thinking(level).await;
+                }
                 Err(e) => self.fail(&e.to_string()),
             },
             "mode" if args.is_empty() => {
@@ -863,6 +868,18 @@ impl Tui {
     }
 }
 
+/// `/thinking`: the levels a model that takes `supported` is offered, on the one in use.
+fn thinking_picker(supported: &[ThinkingLevel], current: ThinkingLevel) -> Overlay {
+    let levels = super::input::offered_thinking(supported);
+    let at = levels.iter().position(|level| *level == current).unwrap_or(0);
+    let items = levels
+        .iter()
+        .map(|level| SelectItem::new(level.to_string(), ""))
+        .collect();
+    let body = vec![format!("current: {current}")];
+    Overlay::select("Thinking", body, items, false, Action::Thinking).starting_at(at)
+}
+
 /// What `/glyphs <name>` names: a level, or `None` for `auto`. `None` when it names neither.
 fn glyph_choice(name: &str) -> Option<Option<GlyphLevel>> {
     match name.trim().to_ascii_lowercase().as_str() {
@@ -996,6 +1013,34 @@ mod tests {
             .map(|(_, spec, _)| spec)
             .collect();
         assert_eq!(plain, rows.into_iter().map(|(spec, _)| spec).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn thinking_offers_the_levels_the_model_takes_and_a_typed_level_snaps_to_one() {
+        use ThinkingLevel::{High, Low, Max, Medium, Off, Xhigh};
+        let offered = |supported: &[ThinkingLevel], current| {
+            let picker = thinking_picker(supported, current);
+            let super::super::overlay::Kind::Select { list, .. } = &picker.kind else {
+                panic!("not a list");
+            };
+            let labels: Vec<String> = list.items().iter().map(|item| item.label.clone()).collect();
+            (labels, list.selected_item().map(|item| item.label.clone()))
+        };
+        // Off is always there; the list starts on the level in use.
+        assert_eq!(
+            offered(&[Low, Medium, High], High),
+            (
+                vec!["off".to_string(), "low".into(), "medium".into(), "high".into()],
+                Some("high".to_string())
+            )
+        );
+        // A model that names no levels is offered every one.
+        assert_eq!(offered(&[], Off).0.len(), ThinkingLevel::ALL.len());
+        // A typed level the model lacks becomes the nearest below it, else the lowest above.
+        assert_eq!(Xhigh.nearest(&[Low, Medium, High]), High);
+        assert_eq!(Max.nearest(&[Xhigh]), Xhigh);
+        assert_eq!(Low.nearest(&[High, Max]), High);
+        assert_eq!(Off.nearest(&[High]), Off);
     }
 
     #[test]

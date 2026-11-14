@@ -642,7 +642,7 @@ impl Session {
             }
             Command::SetThinking { level } => {
                 let level: ThinkingLevel = level.parse().map_err(|e| format!("{e}"))?;
-                self.active.lead.send(AgentCmd::SetThinking(level));
+                self.active.lead.send(AgentCmd::SetThinking(Some(level)));
                 // Recorded, so that a resumed session comes back on it.
                 self.active.session.append(EntryKind::ThinkingChange {
                     level: level.to_string(),

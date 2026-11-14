@@ -867,6 +867,8 @@ impl Backend for Remote {
                 .filter_map(|spec| spec.parse::<ModelSpec>().ok())
                 .collect(),
             thinking: state.thinking.parse().unwrap_or(ThinkingLevel::Off),
+            // What the attached session chose is its own to keep.
+            thinking_set: None,
             context_tokens: state.context_tokens,
             context_window: state.context_window,
             usage: Usage {

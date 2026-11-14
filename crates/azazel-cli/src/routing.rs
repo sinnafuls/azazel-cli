@@ -275,6 +275,16 @@ pub(crate) fn plain_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
+/// `Err` when `name` cannot name a preset.
+pub(crate) fn preset_name(name: &str) -> Result<(), String> {
+    match plain_name(name) && name != "save" {
+        true => Ok(()),
+        false => Err(format!(
+            "`{name}` cannot name a preset: use letters, digits, `-` and `_`, starting with a letter"
+        )),
+    }
+}
+
 /// Writes `roles` as preset `name` in the config file `home_config`, replacing a preset of
 /// that name.
 pub(crate) fn save_roles(
@@ -282,11 +292,7 @@ pub(crate) fn save_roles(
     name: &str,
     roles: &BTreeMap<String, Vec<ModelSpec>>,
 ) -> Result<(), String> {
-    if !plain_name(name) || name == "save" {
-        return Err(format!(
-            "`{name}` cannot name a preset: use letters, digits, `-` and `_`, starting with a letter"
-        ));
-    }
+    preset_name(name)?;
     let write = |path: &[&str], value| {
         crate::init::set_config_value(home_config, path, value).map_err(|e| format!("{e:#}"))
     };

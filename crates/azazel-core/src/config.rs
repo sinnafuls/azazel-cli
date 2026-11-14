@@ -421,6 +421,9 @@ config_table!(UpdateConfig {
 config_table!(SessionConfig {
     /// Ask a small model for a session title after the first reply.
     auto_name: bool = true,
+    /// What the interactive UI opens when no session is named: a new one, or the project's
+    /// most recent one, as `-c` does.
+    resume: SessionResume = SessionResume::New,
     /// Sessions not used for this many days are deleted at start; 0 keeps everything.
     retention_days: u32 = 0,
     /// A resumed session starts on the model and thinking level it last used.
@@ -558,6 +561,7 @@ config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "i
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
+config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
 config_enum!(QueueMode { One = "one", All = "all" } default One);
@@ -1310,12 +1314,34 @@ pub fn set_override(overrides: &mut Table, assignment: &str) -> Result<(), Strin
     let (key, raw) = assignment
         .split_once('=')
         .ok_or_else(|| format!("`{assignment}`: expected table.key=value"))?;
-    let path: Vec<String> = key.trim().split('.').map(str::to_string).collect();
+    let path = key_path(key.trim()).ok_or_else(|| format!("`{key}`: unbalanced quotes"))?;
     if path.len() < 2 || path.iter().any(String::is_empty) {
         return Err(format!("`{key}`: expected table.key"));
     }
     merge(overrides, nest(&path, parse_literal(raw.trim())), &mut Vec::new());
     Ok(())
+}
+
+/// The parts of a dotted key, as TOML writes them: a part in double or single quotes may hold
+/// dots and slashes (`models."openai/gpt-5.5".context_window`). `None` for an unclosed quote.
+fn key_path(key: &str) -> Option<Vec<String>> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut quote = None;
+    for c in key.chars() {
+        match (quote, c) {
+            (Some(open), c) if c == open => quote = None,
+            (Some(_), c) => part.push(c),
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '.') => parts.push(std::mem::take(&mut part).trim().to_string()),
+            (None, c) => part.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    parts.push(part.trim().to_string());
+    Some(parts)
 }
 
 /// A TOML literal when the text is one (`true`, `3`, `["a"]`), otherwise a string.
@@ -1584,6 +1610,19 @@ mod tests {
         assert_eq!(overrides["limits"]["max_cost_usd"].as_integer(), Some(5));
         assert_eq!(overrides["limits"]["max_turns"].as_integer(), Some(9));
         assert_eq!(overrides["tui"]["theme"].as_str(), Some("light"));
+        // Quoted parts keep their dots and slashes, as in a TOML key.
+        set_override(&mut overrides, r#"models."openai/gpt-5.5".context_window=400000"#).unwrap();
+        set_override(&mut overrides, "models.'mock/lead'.thinking_levels=[\"low\"]").unwrap();
+        assert_eq!(
+            overrides["models"]["openai/gpt-5.5"]["context_window"].as_integer(),
+            Some(400_000)
+        );
+        assert_eq!(
+            overrides["models"]["mock/lead"]["thinking_levels"][0].as_str(),
+            Some("low")
+        );
+        let unclosed = set_override(&mut overrides, r#"models."open.x=1"#).unwrap_err();
+        assert!(unclosed.contains("unbalanced"), "{unclosed}");
         assert_eq!(
             overrides["tools"]["format"]["rs"].as_str(),
             Some("rustfmt --edition 2024")

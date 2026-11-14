@@ -884,7 +884,7 @@ Models, permissions and setup:
 |---|---|
 | `/model [name [fallback …]]` | Set the lead's chain for this session; part of a name or `@role` works too. Alone it opens `/models` |
 | `/models` | [Choose the model of every role](#models), with fallbacks, thinking, the `Ctrl+P` cycle and presets |
-| `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
+| `/thinking [level]` | Pick or set the lead's thinking level for the session; it wins over the `:level` of the lead's role. The picker offers `off` and the levels the model takes, on the one in use; a typed level the model does not take becomes the nearest one it does, and the transcript says so. See [thinking levels](models-and-logins.md#thinking-levels) |
 | `/mode [mode]` | Pick or set the permission mode. `bypass` opens a warning box that starts on `No`; see [permissions](permissions.md#bypass) |
 | `/agent [name]` | Pick the [primary agent](team.md#primary-agents) the lead is, or switch to one: `/agent plan`. `Tab` in an empty input steps through them |
 | `/permissions` | The permission rules in effect and where they come from. `d` removes a rule added in this session or remembered with "always allow"; `a` adds one (`allow shell(cargo test:*)`), for the session or saved. Rules from config files are shown with the file to edit |
