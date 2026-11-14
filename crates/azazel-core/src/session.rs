@@ -389,6 +389,9 @@ fn unfinished(
 /// was made of.
 const CONTEXT_FILE: &str = "context.json";
 
+/// Directory in a session's own folder that holds its `local://` files.
+const LOCAL_FILES: &str = "local";
+
 /// File in a sessions directory that caches each session's summary, so listing does not read
 /// every session file again.
 const INDEX_FILE: &str = "index.json";
@@ -548,6 +551,19 @@ impl SessionStore {
 
     pub fn path(&self) -> PathBuf {
         self.lock().path.clone()
+    }
+
+    /// The session's scratch files, the directory `local://` addresses name: in the session's
+    /// folder beside its sub-agents' transcripts, shared by the lead and every sub-agent, and
+    /// deleted with the session.
+    pub fn local_dir(&self) -> PathBuf {
+        let inner = self.lock();
+        inner
+            .path
+            .parent()
+            .unwrap_or(Path::new(""))
+            .join(&inner.header.id)
+            .join(LOCAL_FILES)
     }
 
     pub fn header(&self) -> Header {

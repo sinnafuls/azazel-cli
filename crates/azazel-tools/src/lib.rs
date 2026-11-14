@@ -3,6 +3,7 @@
 
 pub mod ast_grep;
 pub mod check;
+pub mod eval;
 pub mod format;
 pub mod guards;
 #[cfg(feature = "lsp")]
@@ -39,6 +40,7 @@ use azazel_core::{
 };
 
 pub use ast_grep::AstGrepTool;
+pub use eval::EvalTool;
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
 pub use patch::PatchTool;
 pub use pty::{PtyTool, Terminal, TerminalEntry, TerminalState, Terminals};
@@ -141,6 +143,9 @@ impl Extension for CoreToolsExt {
         }
         r.tool(Arc::new(GlobTool));
         r.tool(Arc::new(GrepTool));
+        // The interpreter is looked for when the tool is called, so that one installed while the
+        // session runs is used, and a missing one is named in the result.
+        r.tool(Arc::new(EvalTool::new(self.shell_timeout, env.clone())));
         r.tool(Arc::new(ShellTool::new(
             self.shell.clone(),
             self.shell_timeout,

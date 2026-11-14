@@ -291,8 +291,19 @@ pub fn spawn(
     env: &[(String, String)],
     stdin: bool,
 ) -> io::Result<Box<dyn ChildWrapper>> {
-    let mut command = CommandWrap::with_new(&shell.program, |c| {
-        c.args(shell.args(script))
+    spawn_program(&shell.program, &shell.args(script), cwd, env, stdin)
+}
+
+/// [`spawn`] for a program started with `args` instead of a shell running a script.
+pub fn spawn_program(
+    program: &Path,
+    args: &[String],
+    cwd: &Path,
+    env: &[(String, String)],
+    stdin: bool,
+) -> io::Result<Box<dyn ChildWrapper>> {
+    let mut command = CommandWrap::with_new(program, |c| {
+        c.args(args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
@@ -337,7 +348,12 @@ const DRAIN_AFTER_EXIT: Duration = Duration::from_millis(300);
 /// Runs `script` to completion, or until the timeout or cancellation, killing the process tree in
 /// the latter cases.
 pub async fn run(shell: &Shell, script: &str, options: RunOptions) -> io::Result<RunOutput> {
-    let mut child = spawn(shell, script, &options.cwd, &options.env, options.stdin.is_some())?;
+    run_program(&shell.program, &shell.args(script), options).await
+}
+
+/// [`run`] for a program started with `args` instead of a shell running a script.
+pub async fn run_program(program: &Path, args: &[String], options: RunOptions) -> io::Result<RunOutput> {
+    let mut child = spawn_program(program, args, &options.cwd, &options.env, options.stdin.is_some())?;
     if let Some(bytes) = options.stdin
         && let Some(mut stdin) = child.stdin().take()
     {

@@ -15,7 +15,7 @@ use azazel_core::tracker::{LineRange, Splice};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::util::{display_path, parse_input, resolve_path, unified_diff};
+use crate::util::{parse_input, resolve_target, shown_path, unified_diff};
 use crate::write::{Change, Guarded, Written, commit, replace_ranges, reserved_name};
 
 const BEGIN: &str = "*** Begin Patch";
@@ -438,8 +438,8 @@ impl PatchTool {
         let mut ready = Vec::with_capacity(ops.len());
         let mut seen: Vec<PathBuf> = Vec::new();
         for op in ops {
-            let path = resolve_path(&ctx.cwd, op.path());
-            let shown = display_path(&ctx.cwd, &path);
+            let path = resolve_target(ctx, op.path(), "patch")?;
+            let shown = shown_path(ctx, &path);
             if let Some(refusal) = reserved_name(&path) {
                 return Err(refusal);
             }
@@ -477,10 +477,10 @@ impl PatchTool {
                     let old = read_text(&path, &shown)?;
                     let (new, targets, splices) =
                         apply(&old, &hunks).map_err(|why| format!("{shown}, {why}; nothing was changed"))?;
-                    let to = match move_to.map(|to| resolve_path(&ctx.cwd, &to)) {
+                    let to = match move_to.map(|to| resolve_target(ctx, &to, "patch")).transpose()? {
                         Some(to) if to == path => None,
                         Some(to) => {
-                            let shown_to = display_path(&ctx.cwd, &to);
+                            let shown_to = shown_path(ctx, &to);
                             if let Some(refusal) = reserved_name(&to) {
                                 return Err(refusal);
                             }
@@ -511,12 +511,12 @@ impl PatchTool {
         let ops = parse(text)?;
         let mut paths: Vec<PathBuf> = Vec::new();
         for op in &ops {
-            paths.push(resolve_path(&ctx.cwd, op.path()));
+            paths.push(resolve_target(ctx, op.path(), "patch")?);
             if let Op::Update {
                 move_to: Some(to), ..
             } = op
             {
-                paths.push(resolve_path(&ctx.cwd, to));
+                paths.push(resolve_target(ctx, to, "patch")?);
             }
         }
         let held: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
@@ -528,7 +528,7 @@ impl PatchTool {
         let mut refused = Vec::new();
         for one in &ready {
             let path = one.path();
-            let shown = display_path(&ctx.cwd, path);
+            let shown = shown_path(ctx, path);
             let mut guarded = Guarded::new(&self.tracker, self.guard, &ctx.agent_id, path);
             let passed = match one {
                 Ready::Add { old: None, .. } => Ok(()),
@@ -555,7 +555,7 @@ impl PatchTool {
                 "nothing".to_string()
             } else {
                 done.iter()
-                    .map(|(_, path, ..)| display_path(&ctx.cwd, path))
+                    .map(|(_, path, ..)| shown_path(ctx, path))
                     .collect::<Vec<_>>()
                     .join(", ")
             }
@@ -563,7 +563,7 @@ impl PatchTool {
         for (one, guarded) in ready.iter().zip(&mut guards) {
             match one {
                 Ready::Add { path, old, content } => {
-                    let shown = display_path(&ctx.cwd, path);
+                    let shown = shown_path(ctx, path);
                     let written = commit(
                         ctx,
                         &self.tracker,
@@ -588,7 +588,7 @@ impl PatchTool {
                     done.push((line, path.clone(), Some(written), shown));
                 }
                 Ready::Delete { path, old } => {
-                    let shown = display_path(&ctx.cwd, path);
+                    let shown = shown_path(ctx, path);
                     std::fs::remove_file(path)
                         .map_err(|e| format!("{shown}: {e}; already written: {}", already(&done)))?;
                     guarded.spend();
@@ -609,7 +609,7 @@ impl PatchTool {
                     if to.is_some() {
                         self.tracker.moved(path, target);
                     }
-                    let shown = display_path(&ctx.cwd, target);
+                    let shown = shown_path(ctx, target);
                     let written = commit(
                         ctx,
                         &self.tracker,
@@ -625,7 +625,7 @@ impl PatchTool {
                     guarded.spend();
                     let line = match to {
                         Some(_) => {
-                            let from = display_path(&ctx.cwd, path);
+                            let from = shown_path(ctx, path);
                             std::fs::remove_file(path).map_err(|e| {
                                 format!(
                                     "{from}: {e}; it was copied to {shown}, already written: {}",
