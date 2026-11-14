@@ -696,9 +696,15 @@ mod tests {
         assert_eq!(headers["X-Env"], "s3cret");
         let (name, problem) = &loaded.problems[0];
         assert_eq!(name, "gone");
-        assert!(problem.contains("mcp.json") && problem.contains("mcpServers.gone.env.K"), "{problem}");
+        assert!(
+            problem.contains("mcp.json") && problem.contains("mcpServers.gone.env.K"),
+            "{problem}"
+        );
         // Approval stays with what the file says, not what the references held.
         let written: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
-        assert_eq!(loaded.servers[0].fingerprint, fingerprint(&written["mcpServers"]["docs"]));
+        assert_eq!(
+            loaded.servers[0].fingerprint,
+            fingerprint(&written["mcpServers"]["docs"])
+        );
     }
 }

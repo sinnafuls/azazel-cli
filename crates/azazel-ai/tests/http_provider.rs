@@ -631,18 +631,21 @@ async fn opencode_requests_name_the_conversation_they_belong_to() {
         .await;
     Mock::given(method("GET"))
         .and(path("/models"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [{ "id": "m" }] })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [{ "id": "m" }] })),
+        )
         .mount(&server)
         .await;
     let settings = azazel_ai::ProviderSettings {
         base_url: Some(server.uri()),
         ..Default::default()
     };
-    let config = azazel_ai::providers::presets::resolve(&BTreeMap::from([("opencode-go".to_string(), settings)]))
-        .unwrap()
-        .into_iter()
-        .find(|p| p.id == "opencode-go")
-        .unwrap();
+    let config =
+        azazel_ai::providers::presets::resolve(&BTreeMap::from([("opencode-go".to_string(), settings)]))
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "opencode-go")
+            .unwrap();
     let dir = tempfile::tempdir().unwrap();
     let credentials = Credentials::with_env(
         dir.path().join("auth.json"),
@@ -659,12 +662,23 @@ async fn opencode_requests_name_the_conversation_they_belong_to() {
         .await
         .unwrap();
     let events: Vec<StreamEvent> = stream.collect().await;
-    assert!(matches!(events.last(), Some(StreamEvent::Done { .. })), "{events:?}");
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Done { .. })),
+        "{events:?}"
+    );
 
     // A request of no conversation (the model list) still names a session: the provider's own.
     provider.list_models().await.unwrap();
     let requests = server.received_requests().await.unwrap();
     let listing = requests.iter().find(|r| r.method.as_str() == "GET").unwrap();
-    let session = listing.headers.get("x-opencode-session").unwrap().to_str().unwrap();
-    assert!(session.len() == 32 && session.chars().all(|c| c.is_ascii_hexdigit()), "{session}");
+    let session = listing
+        .headers
+        .get("x-opencode-session")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        session.len() == 32 && session.chars().all(|c| c.is_ascii_hexdigit()),
+        "{session}"
+    );
 }

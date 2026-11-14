@@ -56,7 +56,10 @@ pub struct TlsSettings {
 impl TlsSettings {
     /// Each value that is a path made into what `path` makes of it; PEM text stays.
     pub fn anchor(&mut self, path: impl Fn(&str) -> std::path::PathBuf) {
-        for value in [&mut self.cert, &mut self.key, &mut self.ca].into_iter().flatten() {
+        for value in [&mut self.cert, &mut self.key, &mut self.ca]
+            .into_iter()
+            .flatten()
+        {
             if !is_pem(value) && !value.trim().is_empty() {
                 *value = path(value).to_string_lossy().into_owned();
             }

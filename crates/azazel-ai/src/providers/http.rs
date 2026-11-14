@@ -199,7 +199,9 @@ impl HttpProvider {
         if !session_headers.is_empty() {
             let own = format!("{:032x}", rand::random::<u128>());
             for (name, template) in &session_headers {
-                config.headers.insert(name.clone(), template.replace(SESSION_ID, &own));
+                config
+                    .headers
+                    .insert(name.clone(), template.replace(SESSION_ID, &own));
             }
         }
         let stall = config.timeouts.over(StallLimits::default());
@@ -224,13 +226,19 @@ impl HttpProvider {
     }
 
     /// `config` with the headers that carry [`SESSION_ID`] naming the conversation `key`.
-    fn for_conversation<'a>(&self, config: Cow<'a, ProviderConfig>, key: Option<&str>) -> Cow<'a, ProviderConfig> {
+    fn for_conversation<'a>(
+        &self,
+        config: Cow<'a, ProviderConfig>,
+        key: Option<&str>,
+    ) -> Cow<'a, ProviderConfig> {
         let Some(key) = key.filter(|_| !self.session_headers.is_empty()) else {
             return config;
         };
         let mut config = config.into_owned();
         for (name, template) in &self.session_headers {
-            config.headers.insert(name.clone(), template.replace(SESSION_ID, key));
+            config
+                .headers
+                .insert(name.clone(), template.replace(SESSION_ID, key));
         }
         Cow::Owned(config)
     }
@@ -854,7 +862,10 @@ mod tests {
             ca: Some(server.certificate.clone()),
         });
         let models = with.list_models().await.unwrap();
-        assert_eq!(models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["gateway-model"]);
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gateway-model"]
+        );
 
         // The same server, trusted but without the certificate: the handshake is refused.
         let without = provider(TlsSettings {

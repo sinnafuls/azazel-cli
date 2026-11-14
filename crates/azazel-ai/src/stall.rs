@@ -167,7 +167,10 @@ mod tests {
             watchdog.heard();
         }
         let error = watchdog.expired().await;
-        assert!(matches!(&error, AiError::Network(why) if why.contains("30 s")), "{error:?}");
+        assert!(
+            matches!(&error, AiError::Network(why) if why.contains("30 s")),
+            "{error:?}"
+        );
         assert_eq!(began.elapsed(), Duration::from_secs(30));
     }
 

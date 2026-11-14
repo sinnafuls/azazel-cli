@@ -63,7 +63,11 @@ pub fn read(text: &str, fill: &Substitute<'_>) -> Result<ModelsFile, String> {
     let mut root: Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
     fill.yaml(&mut root, "")?;
     let mut file = from_value(root)?;
-    for tls in file.providers.values_mut().filter_map(|settings| settings.tls.as_mut()) {
+    for tls in file
+        .providers
+        .values_mut()
+        .filter_map(|settings| settings.tls.as_mut())
+    {
         tls.anchor(|written| fill.path(written));
     }
     Ok(file)
@@ -346,9 +350,15 @@ providers:
         let cert = dir.path().join("certs/client.pem");
         assert_eq!(tls.cert.as_deref(), Some(cert.to_string_lossy().as_ref()));
         // Read without filling, the text is kept as written.
-        assert_eq!(parse(text).unwrap().providers["gw"].api_key.as_deref(), Some("{file:gateway.key}"));
+        assert_eq!(
+            parse(text).unwrap().providers["gw"].api_key.as_deref(),
+            Some("{file:gateway.key}")
+        );
 
         let error = read("providers:\n  gw:\n    api_key: '{env:NOT_SET}'\n", &fill).unwrap_err();
-        assert!(error.starts_with("providers.gw.api_key: {env:NOT_SET}"), "{error}");
+        assert!(
+            error.starts_with("providers.gw.api_key: {env:NOT_SET}"),
+            "{error}"
+        );
     }
 }

@@ -189,7 +189,10 @@ mod tests {
         assert_eq!(text("Bearer {env:TOKEN}").as_deref(), Some("Bearer s3cret"));
         assert_eq!(text("[{env:EMPTY}]").as_deref(), Some("[]"));
         assert_eq!(text("{file:keys/api.txt}").as_deref(), Some("from-file"));
-        assert_eq!(text("{file:~/h.txt}+{env:TOKEN}").as_deref(), Some("at-home+s3cret"));
+        assert_eq!(
+            text("{file:~/h.txt}+{env:TOKEN}").as_deref(),
+            Some("at-home+s3cret")
+        );
         // A file's own braces are its content, not references.
         assert_eq!(text("{file:braces.txt}").as_deref(), Some("{env:TOKEN}"));
         // An opening without its close is left as written.
@@ -201,11 +204,21 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fill = Substitute::new(&dir.path().join("config.toml"), &env);
 
-        let error = fill.text("{env:TOKEN} {env:MISSING}", "providers.gw.api_key").unwrap_err();
-        assert!(error.starts_with("providers.gw.api_key: {env:MISSING}"), "{error}");
+        let error = fill
+            .text("{env:TOKEN} {env:MISSING}", "providers.gw.api_key")
+            .unwrap_err();
+        assert!(
+            error.starts_with("providers.gw.api_key: {env:MISSING}"),
+            "{error}"
+        );
         assert!(!error.contains("s3cret"), "{error}");
-        let error = fill.text("{file:absent.pem}", "providers.gw.tls.cert").unwrap_err();
-        assert!(error.starts_with("providers.gw.tls.cert: {file:absent.pem}"), "{error}");
+        let error = fill
+            .text("{file:absent.pem}", "providers.gw.tls.cert")
+            .unwrap_err();
+        assert!(
+            error.starts_with("providers.gw.tls.cert: {file:absent.pem}"),
+            "{error}"
+        );
         assert!(fill.text("{env:}", "k").is_err());
     }
 
@@ -215,7 +228,10 @@ mod tests {
         let fill = Substitute::new(&dir.path().join("mcp.json"), &env);
         let mut json = serde_json::json!({ "a": { "list": ["x", "{env:TOKEN}"], "n": 3 } });
         fill.json(&mut json, "").unwrap();
-        assert_eq!(json, serde_json::json!({ "a": { "list": ["x", "s3cret"], "n": 3 } }));
+        assert_eq!(
+            json,
+            serde_json::json!({ "a": { "list": ["x", "s3cret"], "n": 3 } })
+        );
         let mut json = serde_json::json!({ "a": { "list": ["{env:NOPE}"] } });
         let error = fill.json(&mut json, "root").unwrap_err();
         assert!(error.starts_with("root.a.list[0]: "), "{error}");

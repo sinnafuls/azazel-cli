@@ -875,7 +875,11 @@ fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
 
 /// The providers and models of a `models.yml` as the `[providers]` and `[models]` tables of a
 /// config layer, and what the file held.
-fn parse_models_file(path: &Path, text: &str, fill: &Substitute<'_>) -> Result<(Table, ModelsLayer), ConfigError> {
+fn parse_models_file(
+    path: &Path,
+    text: &str,
+    fill: &Substitute<'_>,
+) -> Result<(Table, ModelsLayer), ConfigError> {
     let fail = |message: String| ConfigError::File {
         file: path.to_path_buf(),
         message,
@@ -965,7 +969,8 @@ impl Config {
                 if !trusted {
                     ignored.push(format!("{}: the whole file", models.display()));
                 } else {
-                    let (table, layer) = parse_models_file(&models, &text, &Substitute::new(&models, &lookup))?;
+                    let (table, layer) =
+                        parse_models_file(&models, &text, &Substitute::new(&models, &lookup))?;
                     note(&table, &models);
                     merge(&mut merged, table, &mut Vec::new());
                     models_files.push(layer);
@@ -1122,7 +1127,10 @@ fn drop_references(table: &mut Table, at: &str, file: &Path, ignored: &mut Vec<S
         };
         if referenced {
             table.remove(&key);
-            ignored.push(format!("{}: {path} (reads the environment or a file)", file.display()));
+            ignored.push(format!(
+                "{}: {path} (reads the environment or a file)",
+                file.display()
+            ));
         }
     }
 }
@@ -1483,19 +1491,28 @@ mod tests {
         assert_eq!(written.as_str(), Some("{file:keys/gw.key}"));
 
         // A variable that is not set is an error naming the file and the key, not an empty value.
-        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        let mut without_url = trusted();
+        without_url.env = vec![("TOOL".into(), "cargo".into())];
+        let error = Config::load(&f.paths, &without_url).unwrap_err().to_string();
         assert!(
             error.contains("config.toml") && error.contains("providers.gateway.base_url: {env:GW_URL}"),
             "{error}"
         );
         std::fs::remove_file(home.join("keys").join("gw.key")).unwrap();
         let error = Config::load(&f.paths, &options).unwrap_err().to_string();
-        assert!(error.contains("providers.gateway.api_key: {file:keys/gw.key}"), "{error}");
+        assert!(
+            error.contains("providers.gateway.api_key: {file:keys/gw.key}"),
+            "{error}"
+        );
     }
 
     #[test]
     fn an_untrusted_project_reads_no_variable_or_file() {
-        let f = fixture("", "[permissions]\nadditional_dirs = [\"{env:SECRET}\", \"/plain\"]\n", "");
+        let f = fixture(
+            "",
+            "[permissions]\nadditional_dirs = [\"{env:SECRET}\", \"/plain\"]\n",
+            "",
+        );
         let mut options = LoadOptions {
             env: vec![("SECRET".into(), "/from-env".into())],
             ..LoadOptions::default()
@@ -1503,7 +1520,10 @@ mod tests {
         let loaded = Config::load(&f.paths, &options).unwrap();
         assert!(loaded.config.permissions.additional_dirs.is_empty());
         assert!(
-            loaded.ignored.iter().any(|note| note.contains("permissions.additional_dirs")),
+            loaded
+                .ignored
+                .iter()
+                .any(|note| note.contains("permissions.additional_dirs")),
             "{:?}",
             loaded.ignored
         );

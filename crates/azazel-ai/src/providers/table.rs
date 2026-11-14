@@ -94,7 +94,10 @@ const COPILOT_HEADERS: &[(&str, &str)] = &[
 ];
 /// OpenCode's gateways refuse a request that names no session (`400 MissingSessionID`), and ask
 /// the client to say who it is.
-const OPENCODE_HEADERS: &[(&str, &str)] = &[("x-opencode-session", "{session_id}"), ("x-opencode-client", "azazel")];
+const OPENCODE_HEADERS: &[(&str, &str)] = &[
+    ("x-opencode-session", "{session_id}"),
+    ("x-opencode-client", "azazel"),
+];
 
 #[rustfmt::skip]
 pub(super) static PRESETS: &[Preset] = &[

@@ -12,8 +12,8 @@ use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets;
 use azazel_ai::{
     AiError, Catalog, Credentials, EventStream, Message, ModelInfo, ModelRef, Provider, ProviderConfig,
-    ProviderSettings,
-    Request, RetryPolicy, RouteEvent, RouteState, Router, StallLimits, StreamEvent, WireApi,
+    ProviderSettings, Request, RetryPolicy, RouteEvent, RouteState, Router, StallLimits, StreamEvent,
+    WireApi,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -405,7 +405,12 @@ async fn a_model_that_stalls_as_often_as_the_limit_allows_fails_the_request() {
 }
 
 /// A provider configured as `[providers.acme]` with `settings`, under the global `limits`.
-fn configured(address: String, dir: &std::path::Path, settings: ProviderSettings, limits: StallLimits) -> HttpProvider {
+fn configured(
+    address: String,
+    dir: &std::path::Path,
+    settings: ProviderSettings,
+    limits: StallLimits,
+) -> HttpProvider {
     let settings = ProviderSettings {
         api: Some(WireApi::OpenAiChat),
         base_url: Some(address),
@@ -437,7 +442,12 @@ async fn a_provider_s_own_limits_replace_the_global_ones() {
         first_event_secs: Some(1),
         ..ProviderSettings::default()
     };
-    let provider = configured(address.clone(), dir.path(), impatient, StallLimits::from_secs(0, 0));
+    let provider = configured(
+        address.clone(),
+        dir.path(),
+        impatient,
+        StallLimits::from_secs(0, 0),
+    );
     let began = Instant::now();
     let stream = provider
         .stream(&model(), &request(), CancellationToken::new())
@@ -445,7 +455,13 @@ async fn a_provider_s_own_limits_replace_the_global_ones() {
         .unwrap();
     let events = collect(stream).await;
     assert!(
-        matches!(events.last(), Some(StreamEvent::Error { error: AiError::Stalled { secs: 1 }, .. })),
+        matches!(
+            events.last(),
+            Some(StreamEvent::Error {
+                error: AiError::Stalled { secs: 1 },
+                ..
+            })
+        ),
         "{events:?}"
     );
     assert!(began.elapsed() >= Duration::from_secs(1) && began.elapsed() < SILENCE / 4);
@@ -470,5 +486,8 @@ async fn a_provider_s_own_limits_replace_the_global_ones() {
         }) => assert!(why.contains("timeout_secs"), "{why}"),
         other => panic!("{other:?}"),
     }
-    assert!(waited >= Duration::from_secs(1) && waited < Duration::from_millis(2900), "{waited:?}");
+    assert!(
+        waited >= Duration::from_secs(1) && waited < Duration::from_millis(2900),
+        "{waited:?}"
+    );
 }
