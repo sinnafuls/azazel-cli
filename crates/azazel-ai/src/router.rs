@@ -69,8 +69,8 @@ pub enum RouteEvent {
         from: String,
         to: String,
         until: u64,
-        /// What ran out, as a person calls it: `5-hour limit`, or `usage limit` when the
-        /// provider did not say.
+        /// What ran out, as a person calls it: `5-hour limit`, `7-day Fable limit`, or
+        /// `usage limit` when the provider did not say.
         limit: String,
     },
     /// `model` refused the service tier; it is asked again, and from now on, without one.
@@ -208,6 +208,7 @@ impl Router {
     /// runs out of allowance. The limit store becomes the one the credentials feed.
     pub fn with_accounts(mut self, credentials: Arc<Credentials>) -> Self {
         self.limits = credentials.limits().clone();
+        credentials.set_moved();
         self.accounts = Some(credentials);
         self
     }
@@ -565,7 +566,7 @@ impl Router {
                 Err(e) => e,
             };
             if let Some(account) = account
-                && self.next_account(&model.provider, &account, &error, state)
+                && self.next_account(model, &account, &error, state)
             {
                 continue;
             }
@@ -586,22 +587,38 @@ impl Router {
         }
     }
 
-    /// After `error` on stored account `account` of `provider`: when the error means the account
-    /// is out of allowance, marks it so and selects another account that is not. Returns whether
-    /// the same model should be asked again at once. An account is switched for no other reason.
-    fn next_account(&self, provider: &str, account: &str, error: &AiError, state: &RouteState) -> bool {
+    /// After `error` on stored account `account` of `model`'s provider: when the error means the
+    /// account is out of allowance, marks it so and selects the next account that is not: the
+    /// first in the order of [`Credentials::rotation`] that is neither blocked for the model nor
+    /// known to have a full window that counts it. Returns whether the same model should be
+    /// asked again at once. An account is switched for no other reason.
+    fn next_account(&self, model: &ModelRef, account: &str, error: &AiError, state: &RouteState) -> bool {
         let Some(accounts) = &self.accounts else {
             return false;
         };
         let Some(until) = blocked_until(error) else {
             return false;
         };
+        let provider = model.provider.as_str();
         // A key from the environment or the configuration answers the same whatever is selected.
         if !accounts.uses_store(provider) {
             return false;
         }
-        self.limits.block(provider, account, until);
-        let open = |label: &str| self.limits.blocked_until(provider, label).is_none();
+        // The provider that sent the request has usually marked the account already, with the
+        // window that ran out; a block that was known before the request stays as it is.
+        let block = match self.limits.blocked_for(provider, account, &model.model) {
+            Some(block) => block,
+            None => {
+                let full = self.limits.full_for(provider, account, &model.model);
+                self.limits.block_on(provider, account, until, full.as_ref());
+                match self.limits.blocked_for(provider, account, &model.model) {
+                    Some(block) => block,
+                    // A reset time that has already passed blocks nothing.
+                    None => return false,
+                }
+            }
+        };
+        let open = |label: &str| self.limits.open(provider, label, &model.model);
         // Another agent's request ran into the same limit first and already moved on.
         if accounts
             .selected(provider)
@@ -610,7 +627,7 @@ impl Router {
             return true;
         }
         let Some(next) = accounts
-            .accounts(provider)
+            .rotation(provider)
             .into_iter()
             .map(|other| other.label)
             .find(|label| label != account && open(label))
@@ -622,11 +639,8 @@ impl Router {
             provider: provider.to_string(),
             from: account.to_string(),
             to: next,
-            until,
-            limit: match self.limits.exhausted(provider, account) {
-                Some(window) => window.label(),
-                None => "usage limit".to_string(),
-            },
+            until: block.until,
+            limit: block.limit(),
         });
         true
     }
@@ -656,7 +670,7 @@ impl Router {
             .accounts
             .as_ref()
             .and_then(|accounts| accounts.selected(&model.provider))
-            && self.next_account(&model.provider, &account, error, state)
+            && self.next_account(model, &account, error, state)
         {
             return true;
         }

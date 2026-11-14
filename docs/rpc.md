@@ -57,7 +57,7 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `list_commands` | | What `run_command` takes | A list of `{"name", "description"}` |
 | `list_files` | | The files of the working directory, relative to it, for completing `@` mentions; ignored files are left out and the list is cut at 20,000 | A list of strings |
 | `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
-| `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status"}], "blocked_until?"}` |
+| `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status", "scope?"}], "blocked_until?", "blocks?": [{"until", "since", "window?", "scope?"}]}`. A window or block with a `scope` is about one model family only; `blocked_until` is about every model |
 
 The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
 

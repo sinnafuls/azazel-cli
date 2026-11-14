@@ -31,6 +31,7 @@ mod statusline;
 mod team;
 mod term;
 mod terminal;
+mod usage;
 pub(crate) mod view;
 #[cfg(feature = "voice")]
 mod voice;
@@ -267,6 +268,8 @@ enum Internal {
     Trigger(crate::schedule::triggers::Event),
     /// A session was shared, a bug report written or its issue opened; or not.
     Sent(share::Sent),
+    /// What the providers said about the usage of the stored logins, for the open `/usage` box.
+    Usage(Vec<crate::usage::Entry>),
     /// What the clipboard held when a paste key was pressed.
     Clipboard(paste::Clip),
     /// The clipboard's text, for the key that pastes text only.
@@ -387,13 +390,19 @@ pub struct Tui {
 }
 
 fn load_theme(env: &Env) -> (Theme, Option<String>) {
+    terminal_theme(&env.paths, &env.config)
+}
+
+/// The configured theme with the colours and symbols this terminal can show, and why the theme
+/// could not be read when it could not.
+pub(crate) fn terminal_theme(paths: &Paths, config: &azazel_core::Config) -> (Theme, Option<String>) {
     let depth = if std::env::var_os("WT_SESSION").is_some() {
         ColorDepth::TrueColor
     } else {
         ColorDepth::detect(std::env::var("COLORTERM").ok().as_deref())
     };
-    let (theme, problem) = named_theme(&env.paths, &env.config.tui.theme);
-    let glyphs = GlyphLevel::detect(env.config.tui.glyphs.as_str(), |name| std::env::var(name).ok());
+    let (theme, problem) = named_theme(paths, &config.tui.theme);
+    let glyphs = GlyphLevel::detect(config.tui.glyphs.as_str(), |name| std::env::var(name).ok());
     (theme.with_depth(depth).with_glyphs(glyphs), problem)
 }
 
@@ -1187,9 +1196,15 @@ impl Tui {
                 to,
                 until,
                 limit,
-            } => self.info(&crate::accounts::switch_line(
-                &provider, &from, &to, until, &limit,
-            )),
+            } => {
+                // The status line shows the windows of the account requests go to now.
+                if let Some(local) = self.backend.local() {
+                    local.account_changed();
+                }
+                self.info(&crate::accounts::switch_line(
+                    &provider, &from, &to, until, &limit,
+                ))
+            }
             AgentEvent::TierDropped { model, tier } => {
                 self.info(&crate::routing::tier_dropped_line(&model, tier))
             }
@@ -1336,6 +1351,7 @@ impl Tui {
             #[cfg(feature = "detach")]
             Internal::Trigger(event) => return self.on_trigger(event).await,
             Internal::Sent(sent) => return self.on_sent(sent),
+            Internal::Usage(entries) => return self.on_usage(entries),
             Internal::Clipboard(clip) => return self.on_clipboard(clip),
             Internal::ClipboardText(text) => return self.on_clipboard_text(text),
             Internal::Migrate(step) => return self.on_migrate(step).await,
@@ -1956,7 +1972,7 @@ impl Tui {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
             action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
             Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
-            Action::AgentPane => {}
+            Action::AgentPane | Action::Usage(_) => {}
             // The screen goes back to the command that showed it, which knows what it asked for.
             Action::Settings { reply } => {
                 if let overlay::Kind::Settings(screen) = kind {
