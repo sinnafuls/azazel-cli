@@ -547,6 +547,7 @@ async fn a_session_that_ends_is_extracted_by_the_next_one_storing_what_is_new() 
     let mut config = Config::default();
     config.memory.auto_index = false;
     let ext = open(&home, &config);
+    ext.set_catch_up_delay(Duration::ZERO);
     let store = ext.store();
     store
         .save(

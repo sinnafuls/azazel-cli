@@ -778,9 +778,21 @@ mod tests {
         }
         assert_eq!(calls_in(&written.path).0[0].1, "bash");
         // A session of azazel's own is never touched.
-        let own = SessionStore::create(dir.path(), "/work/app", None).unwrap();
+        let own = SessionStore::create(dir.path(), Path::new("/work/app"), None).unwrap();
         own.append(EntryKind::Message {
-            message: Message::assistant(vec![named("c9", "bash")], AssistantMeta::default()),
+            message: Message::assistant(
+                vec![named("c9", "bash")],
+                AssistantMeta {
+                    provider: "anthropic".to_string(),
+                    model: "claude-x".to_string(),
+                    api: WireApi::AnthropicMessages,
+                    usage: Usage::default(),
+                    stop: StopReason::ToolUse,
+                    response_id: None,
+                    duration_ms: 0,
+                    sources: Vec::new(),
+                },
+            ),
         });
         let own_text = std::fs::read_to_string(own.path()).unwrap();
 

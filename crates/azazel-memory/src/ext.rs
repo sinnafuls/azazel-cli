@@ -4,7 +4,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
@@ -30,6 +30,9 @@ const SCHEME_HITS: usize = 20;
 const REINDEX_DELAY: Duration = Duration::from_secs(2);
 /// The longest an extraction may take.
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
+/// How long a session runs before it extracts from the sessions that ended in line for it: a
+/// run of `azazel -p`, which ends sooner, leaves them to a session that lasts.
+const CATCH_UP_DELAY: Duration = Duration::from_secs(60);
 /// Tool calls remembered while waiting for their results; calls that were denied never get one.
 const MAX_TRACKED_CALLS: usize = 256;
 const WRITING_TOOLS: [&str; 2] = ["write", "edit"];
@@ -47,6 +50,8 @@ struct State {
     extracting: AtomicBool,
     /// Something was prompted since the conversation was last extracted.
     prompted: AtomicBool,
+    /// [`CATCH_UP_DELAY`], in milliseconds.
+    catch_up_delay: AtomicU64,
     /// Ids of the memories this session's prompts have already been given.
     shown: Mutex<HashSet<String>>,
     /// Paths of the `write` and `edit` calls in flight, by call id.
@@ -74,7 +79,11 @@ impl State {
             }
         });
         let (state, ctx) = (self.clone(), ctx.clone());
-        tokio::spawn(async move { state.catch_up(&ctx).await });
+        let delay = Duration::from_millis(self.catch_up_delay.load(Ordering::Relaxed));
+        tokio::spawn(async move {
+            tokio::time::sleep(delay).await;
+            state.catch_up(&ctx).await;
+        });
     }
 
     /// The `<memory>` block for a prompt: the best-matching memories it has not been given yet in
@@ -478,12 +487,22 @@ impl MemoryExt {
                 auto_index: config.memory.auto_index,
                 extracting: AtomicBool::new(config.memory.auto_extract),
                 prompted: AtomicBool::new(false),
+                catch_up_delay: AtomicU64::new(CATCH_UP_DELAY.as_millis() as u64),
                 shown: Mutex::default(),
                 calls: Mutex::default(),
                 scheduled: Mutex::default(),
                 extraction: tokio::sync::Mutex::new(()),
             }),
         })
+    }
+
+    /// How long a session runs before it extracts from the sessions that ended in line for it
+    /// (a minute unless set).
+    pub fn set_catch_up_delay(&self, delay: Duration) {
+        self.state.catch_up_delay.store(
+            u64::try_from(delay.as_millis()).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     /// The stores, for the command line.

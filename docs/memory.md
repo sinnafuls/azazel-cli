@@ -50,7 +50,7 @@ With `memory.auto_extract = true` (the default), one extra model call turns the 
 - after each full compaction of the lead's context, in the background, and
 - for a session that ends with something prompted since then: the end of the session does not wait for a
   model, so the session is put in line, and the next session of the same project extracts from it in the
-  background when it starts. A session that is resumed and left without a prompt asks nothing. An
+  background once it has run for a minute (a run of `azazel -p` that ends sooner leaves it to a later one). A session that is resumed and left without a prompt asks nothing. An
   extraction that fails, or that a process ending cuts short, is tried again by the next session, three
   times at most.
 
