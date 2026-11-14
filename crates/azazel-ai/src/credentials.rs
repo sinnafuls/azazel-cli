@@ -192,6 +192,10 @@ pub struct Credentials {
     pinned: Mutex<HashMap<String, String>>,
     /// The account `[providers.<id>] account` names, per provider.
     preferred: Mutex<HashMap<String, String>>,
+    /// The accounts `[accounts] order` puts first when one runs out, per provider.
+    order: Mutex<HashMap<String, Vec<String>>>,
+    /// A router moves work to another account when one runs out (see [`Credentials::moved`]).
+    moved: std::sync::atomic::AtomicBool,
     /// Providers whose last credential came from `auth.json`: only there can an account be
     /// switched.
     stored: Mutex<HashSet<String>>,
@@ -230,6 +234,8 @@ impl Credentials {
             http: OnceLock::new(),
             pinned: Mutex::default(),
             preferred: Mutex::default(),
+            order: Mutex::default(),
+            moved: Default::default(),
             stored: Mutex::default(),
             limits: Arc::default(),
         }
@@ -257,6 +263,43 @@ impl Credentials {
             self.prefer(provider, settings.account.as_deref());
         }
         self
+    }
+
+    /// Takes `[accounts] order`: per provider, the labels of the accounts work moves to first
+    /// when the one in use runs out.
+    pub fn ordered(self, order: &BTreeMap<String, Vec<String>>) -> Self {
+        *locked(&self.order) = order.clone().into_iter().collect();
+        self
+    }
+
+    /// A router answers a refusal for lack of allowance by moving to another account. Without
+    /// one, a provider has no reason to refuse a request on what it knows of the account.
+    pub(crate) fn set_moved(&self) {
+        self.moved.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether a router moves work between the accounts of these credentials.
+    pub(crate) fn moved(&self) -> bool {
+        self.moved.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The stored accounts of `provider` in the order work moves through them when one runs
+    /// out: the ones `[accounts] order` names, as it names them; then the account a new session
+    /// starts on; then the rest by label.
+    pub fn rotation(&self, provider: &str) -> Vec<Account> {
+        let entries = self.load();
+        let mut rest = accounts_in(&entries, provider);
+        let mut first: Vec<String> = locked(&self.order).get(provider).cloned().unwrap_or_default();
+        first.extend(self.default_in(&entries, provider));
+        let mut ordered = Vec::with_capacity(rest.len());
+        for label in first {
+            if let Some(at) = rest.iter().position(|account| account.label == label) {
+                ordered.push(rest.remove(at));
+            }
+        }
+        rest.sort_by(|a, b| a.label.cmp(&b.label));
+        ordered.extend(rest);
+        ordered
     }
 
     /// The account `[providers.<id>] account` names; `None` goes back to the default account.
@@ -816,6 +859,42 @@ mod tests {
                 ("org_id".to_string(), serde_json::json!(org)),
             ]),
         }
+    }
+
+    #[test]
+    fn work_moves_through_the_accounts_in_the_configured_order_then_the_default_then_by_label() {
+        let dir = tempfile::tempdir().unwrap();
+        let stored = |order: &[&str]| {
+            let order = BTreeMap::from([(
+                "acme".to_string(),
+                order.iter().map(|label| label.to_string()).collect::<Vec<_>>(),
+            )]);
+            let c =
+                Credentials::with_env(dir.path().join("auth.json"), Arc::new(|_: &str| None)).ordered(&order);
+            for label in ["zed", "default", "beta", "alpha"] {
+                c.store(
+                    &account_key("acme", label),
+                    Credential::ApiKey { key: "k".into() },
+                )
+                .unwrap();
+            }
+            c
+        };
+        let labels = |c: &Credentials| -> Vec<String> {
+            c.rotation("acme")
+                .into_iter()
+                .map(|account| account.label)
+                .collect()
+        };
+        // Nothing configured: the default account, then the others by label.
+        assert_eq!(labels(&stored(&[])), ["default", "alpha", "beta", "zed"]);
+        // The listed ones lead as listed; a label that names no account is passed over.
+        let ordered = stored(&["zed", "gone", "beta"]);
+        assert_eq!(labels(&ordered), ["zed", "beta", "default", "alpha"]);
+        // The account a new session starts on comes before the rest, whichever it is.
+        ordered.prefer("acme", Some("alpha"));
+        assert_eq!(labels(&ordered), ["zed", "beta", "alpha", "default"]);
+        assert!(ordered.rotation("other").is_empty());
     }
 
     #[tokio::test]

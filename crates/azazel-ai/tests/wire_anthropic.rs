@@ -1201,12 +1201,7 @@ fn unified(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
 }
 
 fn window(name: &str, used: f32, resets_at: Option<u64>, status: &str) -> Window {
-    Window {
-        name: name.to_string(),
-        used,
-        resets_at,
-        status: status.to_string(),
-    }
+    Window::new(name, used, resets_at, status)
 }
 
 #[test]
@@ -1259,7 +1254,7 @@ fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
     assert_eq!(
         anthropic::limits(&headers),
         [
-            window("7d-opus", 0.0, Some(1_790_600_000), "allowed_warning"),
+            window("7d-opus", 0.0, Some(1_790_600_000), "allowed_warning").scoped("Opus"),
             window("overage", 0.0, Some(1_791_000_000), "allowed"),
         ]
     );
@@ -1272,6 +1267,25 @@ fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
         anthropic::limits(&headers),
         [window("5h", 1.0, Some(1_790_000_000), "rejected")]
     );
+
+    // The weekly window of the Fable models has headers of its own; it counts those models.
+    let headers = unified(&[
+        ("status", "rejected"),
+        ("reset", "1790700000"),
+        ("representative-claim", "seven_day_overage_included"),
+        ("7d-utilization", "0.4"),
+        ("7d-reset", "1790500000"),
+        ("7d_oi-utilization", "1.0"),
+        ("7d_oi-reset", "1790700000"),
+    ]);
+    let windows = anthropic::limits(&headers);
+    assert_eq!(windows[0], window("7d", 0.4, Some(1_790_500_000), "allowed"));
+    assert_eq!(
+        windows[1],
+        window("7d-fable", 1.0, Some(1_790_700_000), "rejected").scoped("Fable")
+    );
+    assert_eq!(windows[1].label(), "7-day Fable limit");
+    assert!(windows[1].counts("claude-fable-5-2") && !windows[1].counts("claude-opus-5-5"));
 
     // An API key's responses carry none of these headers.
     assert!(anthropic::limits(&reqwest::header::HeaderMap::new()).is_empty());

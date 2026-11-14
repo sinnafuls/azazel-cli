@@ -196,7 +196,8 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
                 "resets_in_seconds": 7200
             }
         })))
-        .expect(2)
+        // Once in all: the second run knows the account is out until the reset.
+        .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("POST"))
@@ -239,7 +240,14 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
         "{said}"
     );
 
-    // As events, for a program that drives azazel.
+    // The account is marked as out of allowance for the runs that follow.
+    let kept = std::fs::read_to_string(sandbox.home().join("cache").join("limits.json")).unwrap();
+    let kept: Value = serde_json::from_str(&kept).unwrap();
+    assert!(kept["gateway"]["blocks"][0]["until"].as_u64().is_some(), "{kept}");
+    assert!(kept.get("gateway#work").is_none(), "{kept}");
+
+    // The next run does not ask the default account again: it starts on the one with room and
+    // says why. As events, for a program that drives azazel.
     let run = sandbox
         .azazel(&[
             "-p",

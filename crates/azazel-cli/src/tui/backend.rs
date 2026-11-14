@@ -353,13 +353,13 @@ impl Local {
     /// the token.
     fn billing(&self) -> Billing {
         let status = self.active.lead.status();
-        let Some(provider) = status
+        let Some(model) = status
             .model
             .or_else(|| self.app.router.resolve(&status.chain).into_iter().next())
-            .map(|model| model.provider)
         else {
             return Billing::Metered;
         };
+        let (provider, model) = (model.provider, model.model);
         let mut payer = self.payer.lock().unwrap_or_else(PoisonError::into_inner);
         let known = payer
             .as_ref()
@@ -384,7 +384,7 @@ impl Local {
         };
         match login {
             Some(account) => Billing::Subscription {
-                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, &account)),
+                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, &account), &model),
             },
             None => Billing::Metered,
         }

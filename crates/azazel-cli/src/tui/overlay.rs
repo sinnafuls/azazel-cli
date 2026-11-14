@@ -170,6 +170,8 @@ pub enum Action {
     Settings {
         reply: Reply<Box<crate::settings::Screen>>,
     },
+    /// `/usage`: what each subscription has left; its key asks the providers again.
+    Usage(std::sync::Arc<super::usage::Shown>),
 }
 
 impl Action {
@@ -226,6 +228,37 @@ pub enum Kind {
     Pane(Box<Pane>),
     /// The settings: pages behind tabs, with keys, rows and hints of their own.
     Settings(Box<crate::settings::Screen>),
+    /// Rows to read, not to choose from.
+    Report(Report),
+}
+
+/// What a [`Report`] draws: the rows for a box with this many columns of text.
+pub type ReportRows = Box<dyn Fn(usize, &Theme) -> Vec<Line> + Send>;
+
+/// Rows to read: they scroll when the box cannot hold them all.
+pub struct Report {
+    rows: ReportRows,
+    /// The first row in view.
+    top: Cell<usize>,
+    /// How many rows the box showed when it was last drawn, and how many there were.
+    shown: Cell<(usize, usize)>,
+}
+
+impl Report {
+    fn new(rows: ReportRows) -> Self {
+        Report {
+            rows,
+            top: Cell::new(0),
+            shown: Cell::new((1, 0)),
+        }
+    }
+
+    /// Moves the view by `rows`, as far as there is something to see.
+    fn scroll(&self, rows: isize) {
+        let (visible, total) = self.shown.get();
+        let last = total.saturating_sub(visible);
+        self.top.set(self.top.get().saturating_add_signed(rows).min(last));
+    }
 }
 
 /// What a form or the popup of an agent draws inside the box, under any text.
@@ -428,6 +461,11 @@ impl Overlay {
         )
     }
 
+    /// Rows to read in a box: `rows` draws them for the width the box has.
+    pub fn report(title: impl Into<String>, rows: ReportRows, action: Action) -> Self {
+        Overlay::new(title.into(), Vec::new(), Kind::Report(Report::new(rows)), action)
+    }
+
     /// The popup that shows an agent at work. Its title follows the agent.
     pub fn pane(pane: Pane, action: Action) -> Self {
         let title = pane.agent.clone();
@@ -449,7 +487,9 @@ impl Overlay {
             } => Some(editor),
             Kind::Form(form) => form.editor_mut(),
             Kind::Pane(pane) => Some(pane.editor_mut()),
-            Kind::Input { secret: true, .. } | Kind::Select { .. } | Kind::Settings(_) => None,
+            Kind::Input { secret: true, .. } | Kind::Select { .. } | Kind::Settings(_) | Kind::Report(_) => {
+                None
+            }
         }
     }
 
@@ -483,7 +523,7 @@ impl Overlay {
                     false => Outcome::Pending,
                 };
             }
-            Kind::Select { .. } | Kind::Input { .. } => {}
+            Kind::Select { .. } | Kind::Input { .. } | Kind::Report(_) => {}
         }
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
             return Outcome::Cancelled;
@@ -494,7 +534,7 @@ impl Overlay {
                 Kind::Select { list, .. } => list
                     .selected()
                     .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
-                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) => {
+                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) | Kind::Report(_) => {
                     Outcome::Hotkey { index: 0, key }
                 }
             };
@@ -548,6 +588,21 @@ impl Overlay {
                 Outcome::Pending
             }
             // Handled above.
+            Kind::Report(report) => {
+                let page = report.shown.get().0.max(1) as isize;
+                match key.code {
+                    KeyCode::Up => report.scroll(-1),
+                    KeyCode::Down | KeyCode::Tab => report.scroll(1),
+                    KeyCode::PageUp => report.scroll(-page),
+                    KeyCode::PageDown | KeyCode::Char(' ') => report.scroll(page),
+                    KeyCode::Home => report.scroll(isize::MIN),
+                    KeyCode::End => report.scroll(isize::MAX),
+                    // There is nothing to choose: enter closes it like esc.
+                    KeyCode::Enter => return Outcome::Cancelled,
+                    _ => {}
+                }
+                Outcome::Pending
+            }
             Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) => Outcome::Pending,
         }
     }
@@ -562,7 +617,7 @@ impl Overlay {
                 filter.push_str(pasted.lines().next().unwrap_or_default());
                 list.set_filter(filter);
             }
-            Kind::Select { .. } => {}
+            Kind::Select { .. } | Kind::Report(_) => {}
             Kind::Input { editor, .. } => editor.insert_str(pasted),
             Kind::Form(form) => form.on_paste(pasted),
             Kind::Pane(pane) => pane.on_paste(pasted),
@@ -605,6 +660,13 @@ impl Overlay {
             // Its own way out is named among them.
             Kind::Pane(pane) => return pane.hints(),
             Kind::Settings(screen) => return screen.hints(theme),
+            Kind::Report(report) => {
+                let (visible, total) = report.shown.get();
+                if total > visible {
+                    let arrows = format!("{}{}", theme.glyph(Glyph::MoreUp), theme.glyph(Glyph::MoreDown));
+                    hints.push(Hint::new(arrows, "scroll"));
+                }
+            }
         }
         for (combo, what) in self.keys.iter().filter(|(_, what)| !what.is_empty()) {
             hints.push(Hint::new(key_label(combo), *what));
@@ -612,7 +674,11 @@ impl Overlay {
         if self.cut.get() {
             hints.push(Hint::new("ctrl+o", "read all"));
         }
-        hints.push(Hint::new("esc", "cancel"));
+        let leave = match self.kind {
+            Kind::Report(_) => "close",
+            _ => "cancel",
+        };
+        hints.push(Hint::new("esc", leave));
         hints
     }
 
@@ -674,7 +740,7 @@ impl Overlay {
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
             Kind::Form(form) => form.kept(),
-            Kind::Pane(_) | Kind::Settings(_) => interior,
+            Kind::Pane(_) | Kind::Settings(_) | Kind::Report(_) => interior,
         };
         let has_body = !body.is_empty() || !warning.is_empty();
         let text_room = interior.saturating_sub(kept + usize::from(has_body));
@@ -762,6 +828,23 @@ impl Overlay {
                 cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
                 rows.extend(view.lines);
+            }
+            Kind::Report(report) => {
+                let lines = (report.rows)(inner, theme);
+                let visible = total.saturating_sub(rows.len()).max(1);
+                let count = lines.len();
+                let offset = report.top.get().min(count.saturating_sub(visible));
+                report.top.set(offset);
+                report.shown.set((visible, count));
+                if count > visible {
+                    let scroll = Scroll {
+                        offset,
+                        visible,
+                        total: count,
+                    };
+                    frame.scrollbar = Some((rows.len(), scroll));
+                }
+                rows.extend(lines.into_iter().skip(offset).take(visible));
             }
         }
 
