@@ -232,6 +232,27 @@ opt-level = 3
 [profile.release.package.azazel-tui]
 opt-level = 3
 
+# The C libraries are built for size too (`/O1`, `-Os`): SQLite, the Luau compiler and VM, the
+# shell grammar and its parser, the Oniguruma regex engine, and ring's C parts. None is on a path
+# where the difference shows. The allocator (libmimalloc-sys) keeps full optimisation.
+[profile.release.package.libsqlite3-sys]
+opt-level = "s"
+
+[profile.release.package.mlua-sys]
+opt-level = "s"
+
+[profile.release.package.tree-sitter]
+opt-level = "s"
+
+[profile.release.package.tree-sitter-bash]
+opt-level = "s"
+
+[profile.release.package.onig_sys]
+opt-level = "s"
+
+[profile.release.package.ring]
+opt-level = "s"
+
 [profile.dev]
 debug = "line-tables-only"
 
