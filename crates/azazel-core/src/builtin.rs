@@ -19,23 +19,48 @@ fn field(pack: &[u8]) -> Option<(&[u8], &[u8])> {
     rest.split_at_checked(u32::from_le_bytes(*length) as usize)
 }
 
-/// Writes the packed skills below `root`.
-fn unpack(root: &Path) -> std::io::Result<()> {
-    let mut pack = Vec::new();
-    DeflateDecoder::new(SKILLS).read_to_end(&mut pack)?;
-    let mut rest = pack.as_slice();
+/// Splits the packed skills into `(path relative to skills/, contents)`.
+fn entries(pack: &[u8]) -> std::io::Result<Vec<(&str, &[u8])>> {
+    let mut rest = pack;
+    let mut out = Vec::new();
     while !rest.is_empty() {
         let damaged = || Error::new(ErrorKind::InvalidData, "the built-in skills are damaged");
         let (name, after) = field(rest).ok_or_else(damaged)?;
         let (contents, after) = field(after).ok_or_else(damaged)?;
-        let file = root.join(std::str::from_utf8(name).map_err(|_| damaged())?);
+        out.push((std::str::from_utf8(name).map_err(|_| damaged())?, contents));
+        rest = after;
+    }
+    Ok(out)
+}
+
+fn unpacked() -> std::io::Result<Vec<u8>> {
+    let mut pack = Vec::new();
+    DeflateDecoder::new(SKILLS).read_to_end(&mut pack)?;
+    Ok(pack)
+}
+
+/// Writes the packed skills below `root`.
+fn unpack(root: &Path) -> std::io::Result<()> {
+    let pack = unpacked()?;
+    for (name, contents) in entries(&pack)? {
+        let file = root.join(name);
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(file, contents)?;
-        rest = after;
     }
     Ok(())
+}
+
+/// The names of the built-in skills: the directories that hold a `SKILL.md`.
+pub fn skill_names() -> std::io::Result<Vec<String>> {
+    let pack = unpacked()?;
+    Ok(entries(&pack)?
+        .into_iter()
+        .filter_map(|(name, _)| name.strip_suffix("/SKILL.md"))
+        .filter(|dir| !dir.contains('/'))
+        .map(str::to_string)
+        .collect())
 }
 
 /// The directory holding the built-in skills as files, so that the references beside each
@@ -137,6 +162,13 @@ mod tests {
                 found.push(path);
             }
         }
+    }
+
+    #[test]
+    fn the_names_of_the_built_in_skills_are_those_every_installation_has() {
+        let mut names = skill_names().unwrap();
+        names.sort();
+        assert_eq!(names, REQUIRED);
     }
 
     #[test]

@@ -420,7 +420,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             dry_run,
             overwrite,
             project,
+            fix_chats,
         }) => {
+            if *fix_chats {
+                return migrate::fix_chats(&paths);
+            }
             let args = migrate::Args {
                 from,
                 only,

@@ -91,6 +91,19 @@ GitHub are its section here.
 
 ### Fixed
 
+- `Ctrl+V` attaches a screenshot in Windows Terminal: with an image and no text on the clipboard the terminal
+  pastes nothing and lets only the key's release through, which azazel now takes for the key. An empty
+  paste from any terminal reads the clipboard for an image too. `Alt+V` works as before.
+- `Ctrl+C` twice exits at once in a long session: the end of a session no longer waits for memory
+  extraction, which asked a model about the whole conversation (38 s on a 5 MB imported session, even when
+  nothing was prompted). A session with something prompted in it is extracted by the next session of the
+  project in the background; one resumed and left asks nothing. A further `Ctrl+C` while the session closes
+  ends azazel at once.
+- Conversations brought over by `azazel migrate` call azazel's tools: their tool calls are renamed (`bash`
+  is `shell`, Claude Code's `Read` is `read`, Codex's `apply_patch` is `patch`, ...), so a resumed session
+  no longer calls `bash` and gets `unknown tool`. `azazel migrate --fix-chats` renames them in conversations
+  imported earlier, keeping a copy of each file it changes. Skills, agents and commands with the name of
+  one built into azazel are left out and reported as `skipped`.
 - In Windows Terminal the input, its rules and the status line follow the window again when it is resized,
   maximised or zoomed (`ctrl+-`, `ctrl+=`): they span the new width on the last rows instead of keeping the
   width and the row they had, and no rule or status line drawn at the old width is left above them. A
