@@ -1118,7 +1118,8 @@ terminal that does not answer, and output that is not a terminal, get `dark`. An
 still is read as typed text and shows in the input; on a line that slow, name a theme instead. The terminal is asked once, at
 the start: after changing the terminal's own colours, `/restart` asks again. `/theme` says which of the two
 `auto` is in this terminal; switched to in a running session that did not start on it, `auto` is `dark` until
-azazel starts again.
+azazel starts again. Commands that print in colour outside the UI (`azazel usage`) do not ask the terminal
+and draw `auto` as `dark`.
 
 `/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
 `/theme <name>` switches for the running session. `--theme <name>` on the command line sets the theme of one
