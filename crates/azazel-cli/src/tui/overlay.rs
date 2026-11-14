@@ -741,6 +741,11 @@ impl Overlay {
                 EditorStep::Cancelled => Outcome::Cancelled,
                 EditorStep::Save => Outcome::Chosen(0),
             },
+            Kind::Models(screen) => {
+                let outcome = models_outcome(screen.on_mouse(mouse));
+                self.title = screen.title();
+                outcome
+            }
             // One field to type into, which has the keyboard already; an agent at work.
             Kind::Input { .. } | Kind::Pane(_) => Outcome::Pending,
         }

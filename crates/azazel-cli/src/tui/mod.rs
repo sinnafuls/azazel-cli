@@ -1782,9 +1782,6 @@ impl Tui {
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
             }
-            if let Outcome::Models(request) = outcome {
-                return self.models_request(request).await;
-            }
             // The popup of an agent stays open while it is typed to or stopped.
             match outcome {
                 Outcome::Send(typed) => return self.pane_send(typed).await,
@@ -1809,6 +1806,10 @@ impl Tui {
     async fn overlay_outcome(&mut self, outcome: Outcome) {
         if matches!(outcome, Outcome::ReadBody) {
             return self.read_overlay_body().await;
+        }
+        // `/models` stays open while what it asked for is done.
+        if let Outcome::Models(request) = outcome {
+            return self.models_request(request).await;
         }
         if !matches!(outcome, Outcome::Pending)
             && let Some(overlay) = self.overlay.take()

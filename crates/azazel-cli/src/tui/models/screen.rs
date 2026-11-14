@@ -1258,7 +1258,7 @@ impl Models {
     fn ask_role_name(&mut self) -> Step {
         self.strip = Some(Strip::Name {
             purpose: Purpose::NewRole,
-            editor: Editor::new(),
+            editor: Box::new(Editor::new()),
             error: None,
         });
         Step::Pending
@@ -1267,7 +1267,7 @@ impl Models {
     fn ask_preset_name(&mut self) -> Step {
         self.strip = Some(Strip::Name {
             purpose: Purpose::Preset,
-            editor: Editor::new(),
+            editor: Box::new(Editor::new()),
             error: None,
         });
         Step::Pending
@@ -1335,13 +1335,6 @@ impl Models {
 
     /// The wheel moves the selection of the part under it; a click selects, and a click on
     /// what is selected does what enter does. A chip of the strip is picked with one click.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "`Overlay::on_mouse` calls it once the mouse lane is merged"
-        )
-    )]
     pub(crate) fn on_mouse(&mut self, mouse: Mouse) -> Step {
         // Row 0 is the top edge of the box and the text starts two columns in.
         let (Some(row), Some(column)) = (mouse.row.checked_sub(1), mouse.column.checked_sub(2)) else {

@@ -39,7 +39,7 @@ pub(super) enum Strip {
     /// A name being typed.
     Name {
         purpose: Purpose,
-        editor: Editor,
+        editor: Box<Editor>,
         error: Option<String>,
     },
 }
@@ -294,7 +294,7 @@ mod tests {
 
         let mut name = Strip::Name {
             purpose: Purpose::NewRole,
-            editor: Editor::new(),
+            editor: Box::new(Editor::new()),
             error: None,
         };
         for c in "critic ".chars() {

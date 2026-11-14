@@ -634,12 +634,45 @@
             "type": {
               "type": "string",
               "const": "list_models"
+            },
+            "all": {
+              "type": "boolean"
             }
           },
           "required": [
             "type"
           ],
-          "description": "The models that can be used. Answers with a list of [`ModelRow`]."
+          "description": "The models of the providers there is a credential for; with `all`, of every provider,\neach row saying whether it can be used. A provider whose list was asked for this\nsession (`refresh_models`) has its rows from that answer, the others from the\ncatalogue. Answers with a list of [`ModelRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "list_providers"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Every provider: whether it can be used, how, and how many models it has. Answers with a\nlist of [`ProviderRow`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "refresh_models"
+            },
+            "provider": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "provider"
+          ],
+          "description": "Asks `provider` for the models it serves now. The answer stands for the rest of the\nsession and is kept in the model cache for later ones. Answers with a list of\n[`ModelRow`] of that provider."
         },
         {
           "type": "object",
@@ -2441,6 +2474,19 @@
           "type": "string",
           "description": "`provider/id`."
         },
+        "provider": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the model is called in lists, when that is more than its id."
+        },
         "context_window": {
           "type": "integer",
           "format": "uint64",
@@ -2457,6 +2503,13 @@
         "reasoning": {
           "type": "boolean"
         },
+        "thinking_levels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The thinking levels the model takes; empty for every level when `reasoning` is set."
+        },
         "cost": {
           "anyOf": [
             {
@@ -2467,14 +2520,26 @@
             }
           ],
           "description": "USD per million tokens."
+        },
+        "usable": {
+          "type": "boolean",
+          "description": "Its provider has a credential, or needs none."
+        },
+        "login": {
+          "type": "boolean",
+          "description": "Its provider is used through a subscription sign-in: it is not paid by the token.",
+          "default": false
         }
       },
       "required": [
         "model",
+        "provider",
+        "id",
         "context_window",
         "max_output",
         "vision",
-        "reasoning"
+        "reasoning",
+        "usable"
       ],
       "description": "One model of `list_models`."
     },
@@ -2494,6 +2559,160 @@
         "input",
         "output"
       ]
+    },
+    "ProviderRow": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "usable": {
+          "type": "boolean",
+          "description": "It has a credential, or needs none."
+        },
+        "login": {
+          "type": "boolean",
+          "description": "The credential in use is a subscription sign-in."
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Where the credential comes from (`OPENAI_API_KEY`, `auth.json (login)`), when there is one."
+        },
+        "env": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The environment variables a key is read from."
+        },
+        "oauth": {
+          "type": "boolean",
+          "description": "It can be signed in to with an account."
+        },
+        "models": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "How many models it has: as it listed them this session, else as the catalogue knows them."
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "usable",
+        "login",
+        "oauth",
+        "models"
+      ],
+      "description": "One provider of `list_providers`."
+    },
+    "Roles": {
+      "type": "object",
+      "properties": {
+        "roles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RoleRow"
+          }
+        },
+        "presets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The names of the saved presets."
+        },
+        "project": {
+          "type": "boolean",
+          "description": "Whether `set_role` may write the project's config (the project is trusted)."
+        }
+      },
+      "required": [
+        "roles",
+        "presets",
+        "project"
+      ],
+      "description": "The data of `list_roles`, `set_role`, `save_preset` and `apply_preset`."
+    },
+    "RoleRow": {
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string"
+        },
+        "chain": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "As configured, e.g. `[\"anthropic/claude-opus-5-5:high\", \"@slow\"]`."
+        },
+        "source": {
+          "$ref": "#/$defs/RoleSource"
+        },
+        "builtin": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The built-in value the role falls back to when nothing sets it."
+        },
+        "resolved": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The usable models the chain resolves to, in order, as `provider/id[:level]`."
+        },
+        "thinking": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The thinking level of the first model, when the chain names one with the model."
+        }
+      },
+      "required": [
+        "role",
+        "chain",
+        "source",
+        "resolved"
+      ],
+      "description": "One model role."
+    },
+    "RoleSource": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "home",
+            "project",
+            "project_local"
+          ]
+        },
+        {
+          "type": "string",
+          "const": "builtin",
+          "description": "Azazel's own fallback (`smol` is `@default` until set)."
+        },
+        {
+          "type": "string",
+          "const": "session",
+          "description": "Changed in this session and not saved."
+        },
+        {
+          "type": "string",
+          "const": "unset",
+          "description": "Not set anywhere: the role resolves to nothing."
+        }
+      ],
+      "description": "Where a role's chain comes from."
     },
     "AccountUsage": {
       "type": "object",
