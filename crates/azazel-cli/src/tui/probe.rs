@@ -1,25 +1,26 @@
-//! Asking the terminal what it can do, once, before the UI starts reading keys: the size of a
-//! cell in pixels and whether it draws Sixel graphics (see [`azazel_tui::term::QUERIES`]).
+//! Asking the terminal about itself, once, before the UI starts reading keys: the size of a
+//! cell in pixels and whether it draws Sixel graphics, and the colour of its background (see
+//! [`azazel_tui::term::queries`]).
 //!
 //! The replies arrive on the same channel as the keys, so they are read here, with a limit: a
-//! terminal that does not answer costs the limit once and shows no images.
+//! terminal that does not answer costs the limit once, shows no images and counts as dark.
 
 use std::io::Write;
 use std::time::{Duration, Instant};
 
-use azazel_tui::term::{QUERIES, Replies};
+use azazel_tui::term::Replies;
 
 /// How long the terminal has to answer.
 pub(super) const LIMIT: Duration = Duration::from_millis(80);
 
-/// Sends the queries and reads the replies. Raw mode must be on, and nothing else may be
+/// Sends `queries` and reads the replies. Raw mode must be on, and nothing else may be
 /// reading the terminal.
-pub(super) async fn ask(limit: Duration) -> Replies {
+pub(super) async fn ask(queries: &str, limit: Duration) -> Replies {
     #[cfg(windows)]
     let _replies_arrive = TerminalInput::enable();
     let mut out = std::io::stdout();
     if out
-        .write_all(QUERIES.as_bytes())
+        .write_all(queries.as_bytes())
         .and_then(|()| out.flush())
         .is_err()
     {

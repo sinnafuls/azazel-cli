@@ -436,8 +436,11 @@ and the prompt goes to the lead.
 `Alt+Enter` while the agent works does not hand the message to the agent. The UI keeps it, shows it as a muted
 `⏵ queued:` line above the input, and sends it when the agent finishes, exactly like a prompt you type then:
 `@` files are attached, a checkpoint is taken and prompt hooks run. Several queued messages go one per run, in
-order. `Alt+Up` (or `Shift+Up`) takes the last one back into the input with its images. Interrupting with `Esc`
-keeps the queue; the next message goes after the next run that finishes on its own.
+order. With `[tui] queue_mode = "all"` they go together instead: when the agent finishes, everything that is
+queued is sent as one prompt, the messages in order with a blank line between them, and the images of the later
+ones numbered on from those of the earlier ones. `Alt+Up` (or `Shift+Up`) takes the last one back into the input
+with its images. Interrupting with `Esc` keeps the queue; the next message goes after the next run that
+finishes on its own.
 
 `Ctrl+S` parks a draft (with its attached images) and clears the input; a line above the input counts what is
 parked. `Ctrl+S` on an empty input brings the last parked draft back.
@@ -608,10 +611,11 @@ Session and display:
 | `/name [text]` | Name this session; without text, have a name suggested |
 | `/session` | What this session is: file, id, name, messages, branch points, tokens and cost, model, checkpoints, agents |
 | `/search <text>` | Find sessions of this project by what was said in them; choosing a line resumes its session |
-| `/tree` | Go back to an earlier point of this session; `Alt+L` labels an entry, `Ctrl+L` and `Ctrl+U` filter |
+| `/tree` | Go back to an earlier point of this session; `Alt+L` labels an entry, `Ctrl+L` and `Ctrl+U` filter. The agent is told in a few lines what happened on the branch you leave |
 | `/fork` | Continue from here in a copy of this session |
 | `/retry` | Send your last prompt again from where it was sent; the first attempt stays as a branch |
 | `/continue` | Go on with the run that was cut short when azazel was last killed in the middle of it |
+| `/fix` | Repair a conversation the provider refuses: tool calls left without a result get one, empty and invalid blocks go, and what changed is listed |
 | `/handoff [what matters]` | Continue in a new session that starts from a brief of this one |
 | `/consult [question]` | Ask a saved session a question without resuming it |
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
@@ -620,7 +624,7 @@ Session and display:
 | `/share` | Upload the conversation, secrets hidden, as a secret gist and print its link; asks first |
 | `/bug [what went wrong]` | Write a bug report to a zip and offer to open an issue |
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
-| `/copy [code \| n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last |
+| `/copy [code \| n \| last n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last, `/copy last 4` the last four messages, yours and the agent's, under `## You` and `## Assistant` headings |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
 | `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams) |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
@@ -637,10 +641,12 @@ Session and display:
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
 | `/keys` | List key bindings and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
 | `/terminal-setup` | Make `Shift+Enter` add a line in this terminal: says whether it already does, else adds the key binding to the terminal's file (after asking, with a backup) or shows it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
+| `/debug` | Where azazel keeps its files, the state of the UI and the session, the terminal's variables and the last 200 lines of the log, in the [viewer](#transcript-viewer) |
+| `/restart` | Start azazel again in this terminal on the session that is open, with the options it was started with: what picks up a new version after `azazel update` |
 | `/quit`, `/exit` | Exit |
 
-`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,
-`/rewind`, `/compact`, `/export`, `/share` and `/bug` are covered in
+`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/fix`, `/handoff`,
+`/consult`, `/rewind`, `/compact`, `/export`, `/share`, `/bug`, `/debug` and `/restart` are covered in
 [sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
@@ -1009,7 +1015,7 @@ With the feature:
 │   Desktop notifications            auto                                                         ││
 │   Session in the terminal title    on                                                           ││
 │                                                                                                  │
-│ The colours of the UI: a built-in theme or a file in ~/.azazel/themes.                           │
+│ The colours: a built-in theme, a file in ~/.azazel/themes, or auto (follows the terminal).       │
 │                                                                                                  │
 │ tui.theme · default dark · set in the home config                                                │
 ╰─ tab page · ↑↓ move · enter edit · / search · r reset · p to project · esc close ────────────────╯
@@ -1103,6 +1109,13 @@ Six themes are built in: `dark` (default), `light`, `catppuccin-mocha`, `tokyo-n
 [tui]
 theme = "light"
 ```
+
+`theme = "auto"` follows the terminal: `light` on a light background, `dark` on a dark one. When the UI starts
+it asks the terminal for its background colour (OSC 11) and waits up to 80 ms for the answer; a terminal that
+does not answer, and output that is not a terminal, get `dark`. The terminal is asked once, at the start:
+after changing the terminal's own colours, `/restart` asks again. `/theme` says which of the two `auto` is in
+this terminal; switched to in a running session that did not start on it, `auto` is `dark` until azazel starts
+again.
 
 `/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
 `/theme <name>` switches for the running session. `--theme <name>` on the command line sets the theme of one

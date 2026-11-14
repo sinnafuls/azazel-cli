@@ -80,6 +80,14 @@ pub(super) fn size(text: &str) -> String {
     }
 }
 
+/// The last `count` of `sections` as one text, a blank line between them; `None` when there is
+/// none.
+fn last_sections(sections: &[String], count: usize) -> Option<String> {
+    let from = sections.len().saturating_sub(count);
+    let text = sections[from..].join("\n");
+    (!text.is_empty()).then(|| text.trim_end().to_string())
+}
+
 impl Tui {
     pub(super) fn copy_text(&mut self, text: &str, what: &str) {
         let how = copy(text, self.renderer.get_mut());
@@ -101,9 +109,29 @@ impl Tui {
             .collect()
     }
 
+    /// `/copy last <n>`: the last `n` messages of the conversation, yours and the agent's, as
+    /// the Markdown `/export` writes.
+    fn copy_last(&mut self, count: &str) {
+        let Some(count) = count.trim().parse::<usize>().ok().filter(|count| *count >= 1) else {
+            return self.fail("usage: /copy last <n> for the last n messages, yours and the agent's");
+        };
+        let sections = crate::export::sections(&self.session);
+        let Some(text) = last_sections(&sections, count) else {
+            return self.info("there is no message to copy yet");
+        };
+        let what = match count.min(sections.len()) {
+            1 => "the last message".to_string(),
+            taken => format!("the last {taken} messages"),
+        };
+        self.copy_text(&text, &what);
+    }
+
     /// `/copy`: the last reply; `/copy <n>`: the n-th reply from the end; `/copy code`: one of
-    /// the last reply's code blocks.
+    /// the last reply's code blocks; `/copy last <n>`: the last n messages.
     pub(super) fn copy_command(&mut self, args: &str) {
+        if let Some(count) = args.strip_prefix("last") {
+            return self.copy_last(count);
+        }
         let replies = self.replies();
         let Some(last) = replies.first() else {
             return self.info("there is no reply to copy yet");
@@ -144,7 +172,10 @@ impl Tui {
                     }
                     None => self.fail(&format!("this conversation has {} replies", replies.len())),
                 },
-                _ => self.fail("usage: /copy, /copy code, or /copy <n> for the n-th reply from the end"),
+                _ => self.fail(
+                    "usage: /copy, /copy code, /copy <n> for the n-th reply from the end, or /copy last <n> for \
+                     the last n messages",
+                ),
             },
         }
     }
@@ -162,6 +193,50 @@ mod tests {
             "\x1bPtmux;\x1b\x1b]52;c;aGkgdGhlcmU=\x07\x1b\\"
         );
         assert_eq!(osc52("", false), "\x1b]52;c;\x07");
+    }
+
+    #[test]
+    fn the_last_messages_are_copied_as_the_export_writes_them() {
+        use azazel_ai::{Block, Message};
+        let dir = tempfile::tempdir().unwrap();
+        let store = azazel_core::SessionStore::create(dir.path(), dir.path(), None).unwrap();
+        let say = |message: Message| drop(store.append(EntryKind::Message { message }));
+        let assistant = |text: &str| Message {
+            role: MessageRole::Assistant,
+            content: vec![Block::text(text)],
+            meta: None,
+        };
+        say(Message::user("first question"));
+        let mut reply = assistant("Looking.");
+        reply.content.push(Block::ToolCall {
+            id: "c1".into(),
+            name: "read".into(),
+            input: serde_json::json!({ "path": "a.txt" }),
+            signature: None,
+        });
+        say(reply);
+        say(Message::tool(vec![Block::tool_result("c1", "contents", false)]));
+        say(assistant("It says hello."));
+        say(Message::user("thanks"));
+
+        let sections = crate::export::sections(&store);
+        // A tool result is no message of its own: the two before it and the two after count.
+        assert_eq!(sections.len(), 4);
+        assert_eq!(
+            last_sections(&sections, 2).unwrap(),
+            "## Assistant\n\nIt says hello.\n\n## You\n\nthanks"
+        );
+        assert_eq!(
+            last_sections(&sections, 3).unwrap(),
+            "## Assistant\n\nLooking.\n- `read` a.txt\n\n## Assistant\n\nIt says hello.\n\n## You\n\nthanks"
+        );
+        // Asking for more than there is gives everything.
+        assert!(
+            last_sections(&sections, 99)
+                .unwrap()
+                .starts_with("## You\n\nfirst question")
+        );
+        assert_eq!(last_sections(&[], 3), None);
     }
 
     #[test]

@@ -59,6 +59,27 @@ GitHub are its section here.
   layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
   scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a
   release. `CLAUDE.md` points to it.
+- `/restart` starts azazel again in the same terminal on the session that is open, with the options it was
+  started with and the model, thinking level and permission mode it is on now: a running session gets onto a
+  new version after `azazel update` without losing the conversation. Background sessions and sessions over SSH
+  are attached to again.
+- `/fix` repairs a conversation the provider refuses: tool calls left without a result are answered as
+  interrupted, tool results that answer no call and empty or invalid blocks and messages are dropped, and
+  what changed is listed. The repaired conversation is a new branch; the old one stays in the session.
+- `[tui] queue_mode = "all"` sends every message queued with `Alt+Enter` as one prompt when the agent
+  finishes, instead of one per run (`"one"`, the default). It is on the Input page of `/settings` and applies
+  at once.
+- Branch summaries: going back with `/tree` has the `smol` role write up in a few lines what happened on the
+  branch you left, and adds that to the conversation where it goes on, so the agent knows what was tried
+  there. `[session] branch_summary = false` turns it off.
+- A muted line says when the lead's prompt cache ran out while the session was idle, with what the next
+  request costs because of it (`about $1.58 instead of $0.13` where the model is paid for by the token).
+- `[tui] theme = "auto"` (also `/theme auto` and `--theme auto`) follows the terminal's background: `light`
+  on a light one, `dark` on a dark one or when the terminal does not say. The terminal is asked once, at the
+  start (OSC 11).
+- `/copy last <n>` copies the last `n` messages of the conversation, yours and the agent's, as Markdown.
+- `/debug` shows where azazel keeps its files, the state of the UI and the session, the terminal's variables
+  and the last 200 lines of the log, full screen.
 - `docs/configuration.md` documents `[limits]` (`max_cost_usd`, `warn_cost_usd`, `max_turns`), the role of
   each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
   actions.

@@ -640,7 +640,7 @@ impl Tui {
             }
         }
         let depth = self.theme.depth();
-        let (theme, problem) = super::named_theme(&app.paths, &self.theme_name);
+        let (theme, problem) = self.theme_named(&self.theme_name);
         match problem {
             Some(problem) => problems.push(problem),
             None => {

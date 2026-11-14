@@ -416,6 +416,9 @@ config_table!(SessionConfig {
     restore_model: bool = true,
     /// A run cut off by a crash or a closed terminal continues when the session is opened again.
     resume_runs: bool = true,
+    /// Going back in the session tree has a small model write up the branch that is left, for
+    /// the agent to know where the conversation goes on.
+    branch_summary: bool = true,
 });
 config_table!(LimitsConfig {
     /// Spend at which a run stops; 0 is no cap.

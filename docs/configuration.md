@@ -131,6 +131,7 @@ thinking = "low"
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
 | | `resume_runs` | `true` | A background session that is started again after its process died in the middle of a run goes on with the run by itself; with `false` it waits for `/continue`. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
+| | `branch_summary` | `true` | Going back with `/tree` has the `smol` role tell the agent in a few lines what happened on the branch you left; see [sessions](sessions-and-checkpoints.md#branch-summaries) |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |
@@ -226,7 +227,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
 | | `auto_send` | `false` | Send a transcript as a prompt at once |
 | | `max_secs` | `120` | Longest recording, in seconds |
-| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
+| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized`, a file in `~/.azazel/themes/`, or `auto`, which is `light` or `dark` as the terminal's background is; see [the terminal UI](tui.md#themes) |
 | | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
 | | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
@@ -238,7 +239,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
-| | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together |
+| | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together as one prompt; see [queued messages](tui.md#queued-messages-and-stashed-drafts) |
 | `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full` |
 | | `left`, `right` | `[]` | Segment names on each side, in order; empty takes the preset's |
 | | `separator` | `"dot"` | Between segments: `dot`, `bar`, `powerline` or `space` |

@@ -105,6 +105,17 @@ impl Place {
             }
         }
     }
+
+    /// The arguments that open the session again, after those that say where it runs: what
+    /// [`Place::farewell`] tells the user to type.
+    fn reopen(&self) -> Vec<&str> {
+        match self {
+            #[cfg(feature = "detach")]
+            Place::Background { id } => vec!["attach", id],
+            Place::SshBackground { id, .. } => vec!["--attach", id],
+            Place::Ssh { .. } => vec!["-c"],
+        }
+    }
 }
 
 pub(crate) struct Remote {
@@ -804,6 +815,10 @@ impl Backend for Remote {
 
     fn farewell(&self) -> Option<String> {
         Some(self.place.farewell())
+    }
+
+    fn reopen(&self) -> Result<Vec<std::ffi::OsString>, String> {
+        Ok(self.place.reopen().iter().map(Into::into).collect())
     }
 
     async fn next(&mut self) -> Incoming {

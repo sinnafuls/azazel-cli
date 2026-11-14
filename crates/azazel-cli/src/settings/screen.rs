@@ -1803,7 +1803,7 @@ mod tests {
 
         // Under the list: what the setting does, then its key, its default and who sets it.
         let foot = &shown[shown.len() - 3..];
-        assert!(foot[0].starts_with("The colours of the UI"), "{foot:#?}");
+        assert!(foot[0].starts_with("The colours"), "{foot:#?}");
         assert_eq!(foot[2], "tui.theme · default dark · set in the home config");
         screen.go_to("tui.redact");
         let shown = rows(&screen, 100, 30);
