@@ -21,13 +21,15 @@ pub enum RosterState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterRow {
     pub id: String,
+    /// The definition the agent was started from; left out when empty.
+    pub def: String,
     pub activity: String,
     pub elapsed: Duration,
     pub tokens: u64,
     pub state: RosterState,
 }
 
-/// One line per row: `● <id>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
+/// One line per row: `● <id>  <def>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
 /// `ascii` glyph level). The bullet is coloured by state and the activity is shortened first
 /// when the line is too long.
 ///
@@ -42,6 +44,22 @@ pub fn render(rows: &[RosterRow], selected: Option<usize>, width: usize, theme: 
             Some(chosen) => focused_row(row, at == chosen, width, theme),
         })
         .collect()
+}
+
+/// The first `limit` rows as [`render`] draws them without a selection, and under them a muted
+/// `… N more` for the rows left out.
+pub fn collapsed(rows: &[RosterRow], limit: usize, width: usize, theme: &Theme) -> Vec<Line> {
+    let shown = rows.len().min(limit);
+    let mut lines = render(&rows[..shown], None, width, theme);
+    if rows.len() > shown {
+        let more = format!("{} {} more", theme.glyph(Glyph::Ellipsis), rows.len() - shown);
+        lines.push(text::truncate(
+            &theme.paint(Role::Muted, &more),
+            width,
+            theme.glyph(Glyph::Ellipsis),
+        ));
+    }
+    lines
 }
 
 /// Columns the rail of a roster that has the keyboard takes.
@@ -74,16 +92,24 @@ fn render_row(row: &RosterRow, width: usize, theme: &Theme) -> Line {
         RosterState::Idle => Role::Muted,
     };
     let id = one_line(&row.id);
+    let def = one_line(&row.def);
     let elapsed = format_elapsed(row.elapsed);
     let tokens = format_tokens(row.tokens);
+    let def_width = if def.is_empty() { 0 } else { text::width(&def) + 2 };
 
-    // Everything except the activity: bullet, id and the two right-hand columns with separators.
-    let fixed = 2 + text::width(&id) + 2 + 2 + elapsed.len() + 2 + tokens.len();
+    // Everything except the activity: bullet, id, definition and the two right-hand columns with
+    // separators.
+    let fixed = 2 + text::width(&id) + def_width + 2 + 2 + elapsed.len() + 2 + tokens.len();
     let ellipsis = theme.glyph(Glyph::Ellipsis);
     let activity = text::truncate(&one_line(&row.activity), width.saturating_sub(fixed), ellipsis);
+    let def = if def.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", theme.paint(Role::Muted, &def))
+    };
 
     let line = format!(
-        "{} {id}  {activity}  {}  {}",
+        "{} {id}{def}  {activity}  {}  {}",
         theme.paint(role, theme.glyph(Glyph::Bullet)),
         theme.paint(Role::Muted, &elapsed),
         theme.paint(Role::Muted, &tokens),
@@ -99,6 +125,7 @@ mod tests {
     fn row(id: &str, activity: &str, secs: u64, tokens: u64, state: RosterState) -> RosterRow {
         RosterRow {
             id: id.to_string(),
+            def: String::new(),
             activity: activity.to_string(),
             elapsed: Duration::from_secs(secs),
             tokens,

@@ -1786,6 +1786,8 @@ impl Tui {
             match outcome {
                 Outcome::Send(typed) => return self.pane_send(typed).await,
                 Outcome::Stop => return self.pane_stop().await,
+                // A chat opened from the agent hub goes back to it.
+                Outcome::Cancelled if self.chat_back() => return,
                 outcome => return self.overlay_outcome(outcome).await,
             }
         }
@@ -1820,6 +1822,10 @@ impl Tui {
 
     /// A key for the input: completion, the keymap, the editor.
     async fn input_key(&mut self, key: KeyEvent) {
+        // `left` twice in an empty input opens the agent hub.
+        if self.hub_tap(&key) {
+            return;
+        }
         // `down` in an empty input goes to the roster, when agents are at work.
         if key.code == KeyCode::Down
             && key.modifiers.is_empty()
@@ -2330,7 +2336,7 @@ impl Tui {
             Action::RewindWhat(point) => self.rewind(point, choice != 2, choice != 1).await,
             Action::Agents(ids) => {
                 if let Some(id) = ids.get(choice) {
-                    self.follow_agent(id);
+                    self.open_agent_chat(id);
                 }
             }
             Action::AgentMessage(id) => self.message_agent(&id, &typed).await,

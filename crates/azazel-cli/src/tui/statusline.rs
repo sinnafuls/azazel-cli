@@ -194,7 +194,8 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
             ],
             &[Model, Tier, Thinking],
         ),
-        StatusPreset::Minimal => (&[Mode, Path], &[Model]),
+        // Sub-agents at work are counted even on the shortest line: they run unseen otherwise.
+        StatusPreset::Minimal => (&[Mode, Path, Agents], &[Model]),
         StatusPreset::Powerline => (
             &[Mode, Branch, GitDirty, Path, Context, Agents, Extensions],
             &[Cost, Usage, Thinking, Model],
@@ -1110,8 +1111,12 @@ mod tests {
 
         let minimal = layout("preset = \"minimal\"");
         assert_eq!(
-            shown_in(&sample(&METERED), &minimal, 60, &theme),
-            sides("⏵ accept-edits · ~/src/app", "⬢ anthropic/claude-opus-5-5", 60)
+            shown_in(&sample(&METERED), &minimal, 72, &theme),
+            sides(
+                "⏵ accept-edits · ~/src/app · ⇶ 2 agents",
+                "⬢ anthropic/claude-opus-5-5",
+                72
+            )
         );
     }
 

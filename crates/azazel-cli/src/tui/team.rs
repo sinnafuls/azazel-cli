@@ -4,13 +4,17 @@
 use std::time::{Duration, Instant};
 
 use azazel_agent::AgentEvent;
-use azazel_team::{LEAD, MemberState, TeamEvent};
+use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
 use azazel_tui::components::{format_elapsed, format_tokens, markdown, roster};
-use azazel_tui::{Line, Role, RosterRow, RosterState, SelectItem};
+use azazel_tui::{Glyph, Line, Role, RosterRow, RosterState, SelectItem, text};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use tokio::sync::broadcast;
 
-use super::overlay::{Action, Overlay};
+use super::overlay::{Action, Kind, Overlay};
 use super::{RunningTool, Tui, view};
+
+/// Rows of agents shown above the input before the rest are counted as `… N more`.
+const ROSTER_ROWS: usize = 3;
 
 /// The next team event; never resolves when there is no team. A reader that fell behind is told
 /// to look at the roster again.
@@ -42,12 +46,17 @@ impl Tui {
         self.active_agents() > 0
     }
 
-    /// One line per sub-agent that is queued, working or waiting for an approval. While the
-    /// keyboard is in the roster the selected row is marked, and a line under the rows says
-    /// what the keys do.
+    /// A header that counts the sub-agents at work, then one line for each of the first three
+    /// that are queued, working or waiting for an approval, and `… N more` for the others.
+    /// While the keyboard is in the roster every row is shown, the selected one marked, and a
+    /// line under the rows says what the keys do.
     pub(super) fn roster_lines(&mut self, width: usize) -> Vec<Line> {
         let members = self.fleet_rows();
+        if members.is_empty() {
+            return Vec::new();
+        }
         let focus = self.fleet_focus(members.len());
+        let header = self.roster_header(&members, width);
         let rows: Vec<RosterRow> = members
             .into_iter()
             .map(|member| {
@@ -61,6 +70,7 @@ impl Tui {
                 };
                 RosterRow {
                     id: member.id,
+                    def: member.def,
                     activity,
                     elapsed: member.elapsed,
                     tokens: member.tokens,
@@ -68,11 +78,43 @@ impl Tui {
                 }
             })
             .collect();
-        let mut lines = roster::render(&rows, focus, width, &self.theme);
+        let mut lines = vec![header];
         if focus.is_some() {
+            lines.extend(roster::render(&rows, focus, width, &self.theme));
             lines.push(self.fleet_hint(width));
+        } else {
+            lines.extend(roster::collapsed(&rows, ROSTER_ROWS, width, &self.theme));
         }
         lines
+    }
+
+    /// `Agents · 2 running · 1 queued`, with the key of the hub at the right end when there
+    /// is room for it.
+    fn roster_header(&self, members: &[MemberInfo], width: usize) -> Line {
+        let theme = &self.theme;
+        let separator = theme.glyph(Glyph::Separator);
+        let queued = members
+            .iter()
+            .filter(|member| member.state == MemberState::Queued)
+            .count();
+        let mut counts = format!("{separator}{} running", members.len() - queued);
+        if queued > 0 {
+            counts.push_str(&format!("{separator}{queued} queued"));
+        }
+        let left = format!(
+            "{}{}",
+            theme.paint(Role::Accent, "\x1b[1mAgents\x1b[22m"),
+            theme.paint(Role::Muted, &counts)
+        );
+        let right = match self.keymap.keys_for("agent_hub").first() {
+            Some(key) => theme.paint(Role::Muted, &format!("{key} hub")),
+            None => String::new(),
+        };
+        let gap = width.saturating_sub(text::width(&left) + text::width(&right));
+        if right.is_empty() || gap < 2 {
+            return text::truncate(&left, width, theme.glyph(Glyph::Ellipsis));
+        }
+        format!("{left}{}{right}", " ".repeat(gap))
     }
 
     pub(super) fn on_team(&mut self, event: TeamEvent) {
@@ -144,40 +186,149 @@ impl Tui {
         }
     }
 
-    /// Every agent of the session; choosing one shows its work in the transcript from then on.
-    pub(super) fn open_agent_hub(&mut self) {
-        let members = self.backend.roster();
-        if members.is_empty() {
-            return self.info("this session has no team");
+    /// `left` twice in an empty input opens the hub, when the session has sub-agents. Any other
+    /// key starts the count again. True when the key opened the hub.
+    pub(super) fn hub_tap(&mut self, key: &KeyEvent) -> bool {
+        let empty = self.editor.is_empty() && self.completion.is_none();
+        if key.code != KeyCode::Left || !key.modifiers.is_empty() || !empty {
+            self.fleet.taps.reset();
+            return false;
         }
-        let items = members
-            .iter()
-            .map(|member| {
-                let mut detail = format!("{} · {}", member.def, member.state);
-                if member.id != LEAD {
-                    detail.push_str(&format!(" · {}", format_elapsed(member.elapsed)));
-                }
-                detail.push_str(&format!(" · {} tokens", format_tokens(member.tokens)));
-                let followed = if self.follow.as_deref() == Some(member.id.as_str()) {
-                    " (following)"
-                } else {
-                    ""
-                };
-                SelectItem::new(format!("{}{followed}", member.id), detail)
-            })
-            .collect();
-        let body = vec!["enter shows the agent's work here; o opens it in a popup".to_string()];
-        let ids = members.into_iter().map(|member| member.id).collect();
+        if key.kind == KeyEventKind::Repeat || !self.fleet.taps.press(Instant::now()) {
+            return false;
+        }
+        self.read_recorded();
+        let any =
+            self.backend.roster().iter().any(|member| member.id != LEAD) || !self.fleet.recorded.is_empty();
+        if any {
+            self.open_hub_at(None);
+        }
+        any
+    }
+
+    /// The agents the session recorded as finished, earlier processes of it included.
+    fn read_recorded(&mut self) {
+        self.fleet.recorded = super::fleet::recorded_agents(&self.session.entries());
+    }
+
+    /// Every sub-agent of the session, running and finished; `enter` opens one's chat.
+    pub(super) fn open_agent_hub(&mut self) {
+        self.read_recorded();
+        self.open_hub_at(None);
+    }
+
+    /// Opens the hub with the selection on `at`, when it is there.
+    pub(super) fn open_hub_at(&mut self, at: Option<&str>) {
+        let (ids, items) = self.hub_rows();
+        if ids.is_empty() {
+            return self.info("this session has no sub-agents yet");
+        }
+        let index = at.and_then(|at| ids.iter().position(|id| id == at)).unwrap_or(0);
+        self.fleet.taps.reset();
         self.overlay = Some(
-            Overlay::select("Agents", body, items, false, Action::Agents(ids))
-                .with_keys(super::panels::hub_keys()),
+            Overlay::select("Agents", Vec::new(), items, false, Action::Agents(ids))
+                .with_keys(super::panels::hub_keys())
+                .with_enter("open")
+                .starting_at(index),
         );
     }
 
-    /// Acts on one of the agent hub's own keys. `id` is the agent the selection is on.
-    pub(super) async fn hub_key(&mut self, key: char, id: &str) {
-        match key {
-            'm' => {
+    /// The hub's rows as they stand now: the agents of the team in the order they started, then
+    /// those only the session's record knows, newest first.
+    fn hub_rows(&self) -> (Vec<String>, Vec<SelectItem>) {
+        let separator = self.theme.glyph(Glyph::Separator);
+        let mut ids = Vec::new();
+        let mut items = Vec::new();
+        let members = self.backend.roster();
+        for member in members.iter().filter(|member| member.id != LEAD) {
+            let doing = match &member.state {
+                MemberState::Running { activity } if !activity.is_empty() => Some(activity.clone()),
+                _ => self.fleet.task(&member.id),
+            };
+            let mut parts = vec![member.state.label().to_string(), member.def.clone()];
+            if let Some(parent) = &member.parent {
+                parts.push(format!("from {parent}"));
+            }
+            parts.push(format_elapsed(member.elapsed));
+            parts.push(format!("{} tokens", format_tokens(member.tokens)));
+            if let Some(cost) = member.cost_usd {
+                parts.push(format!("${cost:.2}"));
+            }
+            parts.extend(doing);
+            items.push(SelectItem::new(self.hub_label(&member.id), parts.join(separator)));
+            ids.push(member.id.clone());
+        }
+        for agent in &self.fleet.recorded {
+            if members.iter().any(|member| member.id == agent.id) {
+                continue;
+            }
+            let mut parts = vec![agent.status.clone(), agent.def.clone(), "earlier".to_string()];
+            parts.extend(self.fleet.task(&agent.id));
+            items.push(SelectItem::new(self.hub_label(&agent.id), parts.join(separator)));
+            ids.push(agent.id.clone());
+        }
+        (ids, items)
+    }
+
+    fn hub_label(&self, id: &str) -> String {
+        match self.follow.as_deref() == Some(id) {
+            true => format!("{id} (following)"),
+            false => id.to_string(),
+        }
+    }
+
+    /// Brings the open hub up to date before it is drawn; the selection stays on its agent.
+    pub(super) fn refresh_hub(&mut self) {
+        let Some(overlay) = &self.overlay else {
+            return;
+        };
+        let (Action::Agents(ids), Kind::Select { list, .. }) = (&overlay.action, &overlay.kind) else {
+            return;
+        };
+        let selected = list.selected().and_then(|index| ids.get(index)).cloned();
+        let (ids, items) = self.hub_rows();
+        let at = selected.and_then(|selected| ids.iter().position(|id| *id == selected));
+        if let Some(overlay) = &mut self.overlay
+            && let Kind::Select { list, .. } = &mut overlay.kind
+        {
+            list.set_items(items);
+            if let Some(at) = at {
+                list.set_cursor(at);
+            }
+            overlay.action = Action::Agents(ids);
+        }
+    }
+
+    /// Acts on one of the agent hub's own keys (see [`super::panels::HUB_ACTIONS`]). `id` is
+    /// the agent the selection is on.
+    pub(super) async fn hub_key(&mut self, action: &str, id: &str) {
+        if action != "back" {
+            self.fleet.taps.reset();
+        }
+        match action {
+            "down" | "up" => {
+                if let Some(overlay) = &mut self.overlay
+                    && let Kind::Select { list, .. } = &mut overlay.kind
+                {
+                    match action {
+                        "down" => list.move_down(),
+                        _ => list.move_up(),
+                    }
+                }
+            }
+            "back" => {
+                if self.fleet.taps.press(Instant::now()) {
+                    self.overlay = None;
+                }
+            }
+            "follow" => {
+                self.overlay = None;
+                match self.follow.as_deref() == Some(id) {
+                    true => self.follow_agent(LEAD),
+                    false => self.follow_agent(id),
+                }
+            }
+            "message" => {
                 let body = vec![format!("To {id}. It sees the message before its next step.")];
                 self.overlay = Some(Overlay::input(
                     "Message",
@@ -185,22 +336,16 @@ impl Tui {
                     Action::AgentMessage(id.to_string()),
                 ));
             }
-            'o' => self.open_agent_pane(id),
-            's' => {
-                self.overlay = None;
-                match self.backend.stop_agent(id).await {
-                    Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
-                    Err(why) => self.fail(&why),
-                }
-            }
-            'S' => {
-                self.overlay = None;
-                match self.backend.stop_agent("all").await {
-                    Ok(stopped) if stopped.is_empty() => self.info("no agent is running"),
-                    Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
-                    Err(why) => self.fail(&why),
-                }
-            }
+            "stop" => match self.backend.stop_agent(id).await {
+                Ok(stopped) if stopped.is_empty() => self.info(&format!("{id} is not running")),
+                Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
+                Err(why) => self.fail(&why),
+            },
+            "stop all" => match self.backend.stop_agent("all").await {
+                Ok(stopped) if stopped.is_empty() => self.info("no agent is running"),
+                Ok(stopped) => self.info(&format!("stopped: {}", stopped.join(", "))),
+                Err(why) => self.fail(&why),
+            },
             _ => {}
         }
     }
