@@ -197,6 +197,7 @@ pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder>
         blocks: Vec::new(),
         usage: Usage::default(),
         stop_reason: None,
+        refusal: None,
         response_id: None,
         sources: Sources::default(),
     })
@@ -728,6 +729,8 @@ struct MessagesDecoder {
     blocks: Vec<Option<Block>>,
     usage: Usage,
     stop_reason: Option<String>,
+    /// `stop_details` of a reply the safety system stopped: its category and explanation.
+    refusal: Option<(Option<String>, Option<String>)>,
     response_id: Option<String>,
     /// The pages of a hosted web search: what its result blocks list and what the text cites.
     sources: Sources,
@@ -1000,6 +1003,14 @@ impl MessagesDecoder {
     }
 
     fn done(&mut self) -> StreamEvent {
+        if let Some((category, explanation)) = self.refusal.take() {
+            let explanation =
+                explanation.unwrap_or_else(|| "the provider's safety system stopped the reply".to_string());
+            return self.fail(AiError::Refused {
+                category,
+                explanation,
+            });
+        }
         self.finished = true;
         let content: Vec<Block> = self.blocks.drain(..).flatten().collect();
         let stop = if content.iter().any(|b| matches!(b, Block::ToolCall { .. })) {
@@ -1073,6 +1084,16 @@ impl Decoder for MessagesDecoder {
                     .and_then(Value::as_str);
                 if let Some(stop_reason) = stop_reason {
                     self.stop_reason = Some(stop_reason.to_string());
+                }
+                if stop_reason == Some("refusal") {
+                    let details = payload.get("delta").and_then(|delta| delta.get("stop_details"));
+                    let field = |key: &str| {
+                        details
+                            .and_then(|details| details.get(key))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    };
+                    self.refusal = Some((field("category"), field("explanation")));
                 }
                 // Counts in this event are cumulative, so they replace earlier ones.
                 if let Some(usage) = payload.get("usage") {

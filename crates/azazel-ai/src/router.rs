@@ -408,7 +408,12 @@ impl Router {
                         .map(|(_, via)| via.clone());
                     return Ok((model.clone(), stream));
                 }
-                Err(e @ (AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Aborted)) => {
+                Err(
+                    e @ (AiError::ContextOverflow
+                    | AiError::InvalidRequest(_)
+                    | AiError::Refused { .. }
+                    | AiError::Aborted),
+                ) => {
                     return Err(e);
                 }
                 Err(e) => e,
@@ -568,7 +573,12 @@ impl Router {
                     }
                     continue;
                 }
-                Err(e @ (AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Aborted)) => {
+                Err(
+                    e @ (AiError::ContextOverflow
+                    | AiError::InvalidRequest(_)
+                    | AiError::Refused { .. }
+                    | AiError::Aborted),
+                ) => {
                     return Err(e);
                 }
                 Err(e) => e,
