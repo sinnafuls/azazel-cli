@@ -10,6 +10,7 @@ azazel migrate --dry-run             # what would be brought over; writes nothin
 azazel migrate                       # everything, from every harness that is installed
 azazel migrate --from omp --only models,keys,chats
 azazel migrate --from claude --project ~/code/site
+azazel migrate --overwrite           # replace what is already there
 ```
 
 In the terminal UI, `/migrate` does the same in a popup: it lists the harnesses it found with what each

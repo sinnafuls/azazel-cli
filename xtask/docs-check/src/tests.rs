@@ -175,7 +175,7 @@ fn the_keys_of_the_key_table_are_the_default_bindings() {
     copy.edit("docs/tui.md", |text| {
         text.replace("| `Ctrl+L` | `model_picker` |", "| `Ctrl+K` | `model_picker` |")
             .replace(
-                "| `Shift+Enter`, `Ctrl+J` | `newline` |",
+                "| `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` |",
                 "| `Shift+Enter` | `newline` |",
             )
             .replace("| `F5` | `retry` |", "| `F5`, `Hyper+Nope` | `retry` |")
@@ -184,8 +184,8 @@ fn the_keys_of_the_key_table_are_the_default_bindings() {
     assert_eq!(findings.len(), 3, "{findings:?}");
     assert!(findings.iter().all(|finding| finding.starts_with("docs/tui.md:")));
     assert!(findings[0].ends_with(
-        "keymap action `newline` is bound to `ctrl+j`, `shift+enter` by default and the key table says \
-         `shift+enter`"
+        "keymap action `newline` is bound to `ctrl+enter`, `ctrl+j`, `shift+enter` by default and the key \
+         table says `shift+enter`"
     ));
     assert!(findings[1].ends_with(
         "keymap action `model_picker` is bound to `ctrl+l` by default and the key table says `ctrl+k`"
