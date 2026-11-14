@@ -134,6 +134,56 @@ continued twice, and a run that was gone on with is the same run in the file: it
 A session copied with `/fork`, `--fork` or `/bg` holds the conversation and nothing of the journal, so a copy
 never has a run to continue; the original keeps its own.
 
+## Repairing a conversation
+
+A provider refuses a conversation that is not well formed, with an error such as `tool_use ids were found
+without tool_result blocks` or `text content blocks must be non-empty`. Conversations get that way rarely: a
+file edited by hand, a chat imported from another harness, a process that died at the wrong moment. `/fix`
+puts the conversation the lead would send right and says what it did:
+
+| What is wrong | What `/fix` does |
+|---|---|
+| A tool call without a result, anywhere in the conversation | The call gets the result `interrupted: this call has no result, so it may not have run or may have run in part; check its effects before retrying`, marked as an error, in the tool message after the reply (a new one when there is none) |
+| A tool result that answers no call of the reply before it, or a second result for the same call | The result is dropped |
+| A text block with nothing but white space, an empty thinking block that carries no signature | The block is dropped |
+| A tool call without an id or a name, a picture without data, a tool result outside a tool message | The block is dropped |
+| A message left with no block at all | The message is dropped |
+
+```text
+fixed the conversation:
+  answered 2 tool calls that had no result (read, shell): the agent is told they were interrupted
+  dropped 1 empty block
+the conversation as it was stays in the session as a branch; /tree shows it
+```
+
+A session file is only ever added to. When only the end is wrong (calls of the last reply without results), the
+results are added after it. Otherwise the conversation is written again, repaired, from the first entry that
+had to change, as a new branch that the session goes on from; labels, checkpoints and compactions follow to the
+new entries, and the branch as it was stays where it is. What a compaction summarised is no longer sent and is
+not looked at. A conversation with nothing wrong is left alone (`nothing to fix: 42 messages checked, ...`).
+
+`/fix` needs the agent to be idle and works in a session that runs in this process. Calls it answered are not
+run again by `/continue`; the request after them is.
+
+## Starting azazel again
+
+`/restart` ends the UI and starts the azazel binary again in the same terminal, on the session that was open:
+the conversation, the model, the thinking level and the permission mode are as they were. It is how a running
+session gets onto a new version after `azazel update` (or onto a staged release, which is put in place as the
+UI ends when `[update] auto = true`), and how changes to settings that are read at the start take effect.
+
+- The new process gets the options this one was started with (`--set`, `--cwd`, `--theme`, `--add-dir`, the
+  `--no-*` switches and so on), without the prompt and without what chose the session (`-c`, `-r`, `--fork`,
+  `--name`): it opens the session by its file, `-r <file>`. The model, thinking level and mode are passed as
+  they are now, not as they were given at the start.
+- A session elsewhere is opened again where it runs: `azazel attach <id>` for a background session,
+  `--ssh <host> --attach <id>` for one on another machine, `--ssh <host> -c` for a session over SSH.
+- A `--no-session` run cannot be restarted: it keeps no file to open.
+- The agent must be idle. Queued messages, stashed drafts and what is typed in the input are not carried over.
+- On Linux and macOS the new program takes the place of the old process. On Windows, where a process cannot be
+  replaced, the new one is started in the same console and the old one stays, idle, until the new one exits,
+  and ends with its exit code; the terminal and the shell see one program throughout.
+
 ## Names
 
 A session gets a name in one of these ways:
@@ -150,7 +200,8 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 
 ## Session commands
 
-`/new`, `/resume`, `/tree`, `/fork`, `/retry`, `/continue` and `/handoff` need the agent to be idle (press `Esc` first).
+`/new`, `/resume`, `/tree`, `/fork`, `/retry`, `/continue`, `/fix`, `/handoff` and `/restart` need the agent to be idle
+(press `Esc` first).
 
 | Command | What it does |
 |---|---|
@@ -163,6 +214,9 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/fork` | Copies the current branch into a new session file and switches to it. The original is unchanged |
 | `/retry` (`F5`) | Goes back to before your last prompt and sends it again, with its images; `@` mentions are read again. It is checkpointed and hooked like any prompt. The first attempt stays in the session as another branch, which `/tree` shows |
 | `/continue` | Goes on with the run that was cut short when the session's process was killed in the middle of it. See [interrupted runs](#interrupted-runs) |
+| `/fix` | Repairs a conversation the provider refuses and lists what it changed. See [repairing a conversation](#repairing-a-conversation) |
+| `/restart` | Starts azazel again in this terminal on this session. See [starting azazel again](#starting-azazel-again) |
+| `/debug` | Shows, full screen, where azazel keeps its files (and which of them are not there), the state of the UI and the session, the variables that describe the terminal, the names of the `AZAZEL_` variables that are set, and the last 200 lines of the log with secrets hidden |
 | `/handoff [what matters]` | Has the current model write a brief of this session (goal, state, decisions, files touched, next steps, open questions), then opens a new session whose first message is that brief and whose header names this session. Nothing runs until you send a message. Both ids are shown |
 | `/consult [question]` | Pick a saved session and ask it a question. The answer comes from that session's conversation in a single request, shows in a panel (`Enter` on a row closes it, copies it or opens it full screen) and is stored in neither session |
 | `/export [path]` | Writes the conversation to `path` (relative to the working directory), or to `azazel-session-<id>.md`. The extension picks the format: `.md`, `.html` or `.jsonl` |
@@ -171,6 +225,24 @@ Names are stored as `session_info` entries and show in the welcome line, `/sessi
 | `/compact [what to keep]` | Summarises the conversation now; the optional text is passed to the summariser as extra instructions |
 
 `/tree` moves within the conversation only; files on disk are not changed. Use `/rewind` to move files as well.
+
+### Branch summaries
+
+Going back with `/tree` leaves a branch: everything that was said after the point the conversation goes on
+from. The agent would know nothing of it. So the `smol` role is asked to write up what happened there in at
+most six lines (what was asked for, what was done, what was found out, what was left unfinished), and that is
+added to the conversation where it goes on, as a note of yours that starts with `I went back to an earlier
+point of this conversation. What happened on the branch I left, in short:`. The note asks for no reply: it is
+there when you send your next prompt, and the transcript shows `the agent was told what happened on the branch
+you left:` with the lines.
+
+- The request has no tools and 60 seconds; it gets the branch as text, tool results cut to 400 characters and
+  the middle of a long branch left out. What it costs is counted in the run's spend as `branch summary`.
+- Nothing is written when the agent did nothing on the branch (a prompt that was never answered), when the
+  summary fails, or when the conversation has moved elsewhere again before it arrives.
+- Moving forward along the same branch leaves nothing, and nothing is summarised.
+- `/retry`, `/rewind` and `/fork` do not summarise.
+- Turn it off with `[session] branch_summary = false`.
 
 `/handoff` and `/consult` are requests outside the conversation: the model gets the lead's system prompt and the
 conversation, may not use tools, and its reply is not added to any session. What they cost is counted in the

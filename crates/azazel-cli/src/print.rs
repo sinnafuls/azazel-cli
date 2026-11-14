@@ -149,7 +149,7 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                 });
                 if !pending {
                     #[cfg(feature = "test-support")]
-                    if let Some((text, images)) = queued.next() {
+                    if let Some((text, images)) = queued.next(app.config.tui.queue_mode) {
                         match app.submit(active, text, images).await {
                             Ok(()) => continue,
                             Err(reason) => {

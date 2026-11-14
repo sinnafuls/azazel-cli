@@ -69,6 +69,17 @@ pub fn render(session: &SessionStore, format: Format, redact: bool) -> String {
 
 fn markdown(session: &SessionStore) -> String {
     let mut out = format!("# {}\n", title(session));
+    for section in sections(session) {
+        out.push('\n');
+        out.push_str(&section);
+    }
+    out
+}
+
+/// The conversation on the current branch as Markdown sections, one per message that says
+/// something: a heading with who wrote it, then its text and the tools it called.
+pub(crate) fn sections(session: &SessionStore) -> Vec<String> {
+    let mut out = Vec::new();
     for entry in session.build_context(None) {
         let heading = match entry.message.role {
             _ if entry.summary => "Earlier (summarised)",
@@ -88,7 +99,7 @@ fn markdown(session: &SessionStore) -> String {
             }
         }
         if !body.trim().is_empty() {
-            out.push_str(&format!("\n## {heading}\n\n{}\n", body.trim()));
+            out.push(format!("## {heading}\n\n{}\n", body.trim()));
         }
     }
     out

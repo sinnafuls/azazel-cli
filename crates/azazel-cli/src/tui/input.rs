@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use azazel_ai::{Block, ThinkingLevel};
 use azazel_core::commands::split_args;
-use azazel_core::config::EditorMode;
+use azazel_core::config::{EditorMode, QueueMode};
 use azazel_tools::Foreground;
 use azazel_tui::components::chips;
 use azazel_tui::components::editor::atom_label;
@@ -66,10 +66,32 @@ impl Queue {
         self.waiting.iter().map(|(text, _)| text.as_str())
     }
 
-    /// Takes the oldest message, to be sent as a prompt of its own.
-    pub(crate) fn next(&mut self) -> Option<(String, Vec<Block>)> {
-        self.waiting.pop_front()
+    /// Takes what goes out as the next prompt: the oldest message, or with [`QueueMode::All`]
+    /// every message as one prompt, a blank line between them. The images of the later messages
+    /// are numbered on from those of the earlier ones, so that each label still names one image.
+    pub(crate) fn next(&mut self, mode: QueueMode) -> Option<(String, Vec<Block>)> {
+        let (mut text, mut images) = self.waiting.pop_front()?;
+        if mode == QueueMode::All {
+            for (more, pictures) in self.waiting.drain(..) {
+                text.push_str("\n\n");
+                text.push_str(&renumbered(&more, pictures.len(), images.len()));
+                images.extend(pictures);
+            }
+        }
+        Some((text, images))
     }
+}
+
+/// `text` with the labels of its `count` images (`[Image #1]`, ...) moved up by `by`.
+fn renumbered(text: &str, count: usize, by: usize) -> String {
+    let mut text = text.to_string();
+    if by > 0 {
+        // From the last label down: the number a label moves to has been left by then.
+        for number in (1..=count).rev() {
+            text = text.replace(&atom_label(IMAGE, number), &atom_label(IMAGE, number + by));
+        }
+    }
+    text
 }
 
 /// For tests, which have no terminal to type into: the messages of `AZAZEL_TEST_QUEUE`, one per
@@ -461,12 +483,13 @@ impl Tui {
         ));
     }
 
-    /// After the lead went idle: sends the next queued message as a prompt of its own.
+    /// After the lead went idle: sends the next queued message as a prompt of its own, or with
+    /// `tui.queue_mode = "all"` everything that is queued as one prompt.
     pub(super) async fn send_queued(&mut self) {
         if !std::mem::take(&mut self.run_ended) || self.busy {
             return;
         }
-        let Some((text, images)) = self.queued.next() else {
+        let Some((text, images)) = self.queued.next(self.env.config.tui.queue_mode) else {
             return;
         };
         let sent = self.backend.prompt(text.clone(), images).await;
@@ -950,6 +973,11 @@ impl Tui {
             }
             ("tui.redact", toml::Value::Boolean(on)) => tui.redact = *on,
             ("tui.popups", toml::Value::Boolean(on)) => tui.popups = *on,
+            ("tui.queue_mode", toml::Value::String(mode)) => {
+                if let Ok(mode) = mode.parse() {
+                    tui.queue_mode = mode;
+                }
+            }
             ("tui.show_thinking", toml::Value::Boolean(on)) => self.show_thinking = *on,
             ("tui.expand_tools", toml::Value::Boolean(on)) => self.expand_tools = *on,
             ("editor.mode", toml::Value::String(mode)) => self.set_vim(mode == "vim"),
@@ -1140,6 +1168,38 @@ mod tests {
         );
         editor.take();
         assert!(claim(&editor.atoms(), attached).is_empty());
+    }
+
+    #[test]
+    fn queued_messages_go_one_at_a_time_or_all_together() {
+        let queue = || {
+            let mut queue = Queue::default();
+            queue.push("look at [Image #1]".to_string(), vec![image("one")]);
+            queue.push("then run the tests".to_string(), Vec::new());
+            queue.push(
+                "compare [Image #2] with [Image #1]".to_string(),
+                vec![image("two"), image("three")],
+            );
+            queue
+        };
+        let mut one = queue();
+        assert_eq!(
+            one.next(QueueMode::One),
+            Some(("look at [Image #1]".to_string(), vec![image("one")]))
+        );
+        assert_eq!(one.len(), 2);
+
+        // Together they are one prompt, and each label still names one image.
+        let mut all = queue();
+        assert_eq!(
+            all.next(QueueMode::All),
+            Some((
+                "look at [Image #1]\n\nthen run the tests\n\ncompare [Image #3] with [Image #2]".to_string(),
+                vec![image("one"), image("two"), image("three")]
+            ))
+        );
+        assert!(all.is_empty());
+        assert_eq!(all.next(QueueMode::All), None);
     }
 
     #[test]

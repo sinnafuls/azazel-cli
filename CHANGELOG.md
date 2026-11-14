@@ -59,6 +59,27 @@ GitHub are its section here.
   layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
   scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a
   release. `CLAUDE.md` points to it.
+- `/restart` starts azazel again in the same terminal on the session that is open, with the options it was
+  started with and the model, thinking level and permission mode it is on now: a running session gets onto a
+  new version after `azazel update` without losing the conversation. Background sessions and sessions over SSH
+  are attached to again.
+- `/fix` repairs a conversation the provider refuses: tool calls left without a result are answered as
+  interrupted, tool results that answer no call and empty or invalid blocks and messages are dropped, and
+  what changed is listed. The repaired conversation is a new branch; the old one stays in the session.
+- `[tui] queue_mode = "all"` sends every message queued with `Alt+Enter` as one prompt when the agent
+  finishes, instead of one per run (`"one"`, the default). It is on the Input page of `/settings` and applies
+  at once.
+- Branch summaries: going back with `/tree` has the `smol` role write up in a few lines what happened on the
+  branch you left, and adds that to the conversation where it goes on, so the agent knows what was tried
+  there. `[session] branch_summary = false` turns it off.
+- A muted line says when the lead's prompt cache ran out while the session was idle, with what the next
+  request costs because of it (`about $1.58 instead of $0.13` where the model is paid for by the token).
+- `[tui] theme = "auto"` (also `/theme auto` and `--theme auto`) follows the terminal's background: `light`
+  on a light one, `dark` on a dark one or when the terminal does not say. The terminal is asked once, at the
+  start (OSC 11).
+- `/copy last <n>` copies the last `n` messages of the conversation, yours and the agent's, as Markdown.
+- `/debug` shows where azazel keeps its files, the state of the UI and the session, the terminal's variables
+  and the last 200 lines of the log, full screen.
 - `docs/configuration.md` documents `[limits]` (`max_cost_usd`, `warn_cost_usd`, `max_turns`), the role of
   each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
   actions.
@@ -154,6 +175,12 @@ GitHub are its section here.
 - After the window got narrower in a terminal that re-wraps its content, part of the old input box (a rule,
   a blank row) no longer stays behind in the transcript.
 - The transcript viewer lays its text out once after a drag instead of at every size on the way.
+- An answer of the terminal to what azazel asks it at the start (the size of a cell, what it can draw) that
+  was still arriving when the 80 ms were over no longer ends up in the input as typed text
+  (`6;7;21;22;23;24;28;32;42c`): an answer that has begun is read to its end.
+- On Windows `azazel update` no longer fails with `cannot move ... aside` when the binary an earlier update
+  retired is still in use by an azazel that keeps running (as after `/restart`): the binary is retired under
+  another name.
 - After requests moved to another account, the status line shows that account's usage window at once, not
   the window of the account that ran out.
 

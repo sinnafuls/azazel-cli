@@ -437,11 +437,14 @@ impl Session {
         let entry = session
             .entry(entry_id)
             .ok_or_else(|| format!("no entry `{entry_id}` in this session"))?;
+        let left = session.leaf();
         let target = if before { entry.parent_id } else { Some(entry.id) };
         if !session.set_leaf(target.as_deref()) {
             return Err(format!("no entry `{entry_id}` in this session"));
         }
         self.swap(Open::Store(session), StartSource::Resume).await?;
+        // What happened on the branch that was left is written up for the agent.
+        crate::branch::summarise_left(&self.app, &self.active, left.as_deref());
         data(self.state())
     }
 

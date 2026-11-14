@@ -131,6 +131,7 @@ thinking = "low"
 | | `restore_model` | `true` | A reopened session comes back on the model and thinking level it last used; see [sessions](sessions-and-checkpoints.md#model-and-thinking-level) |
 | | `retention_days` | `0` | Delete unpinned sessions not used for this many days when azazel starts; `0` keeps everything |
 | | `resume_runs` | `true` | A background session that is started again after its process died in the middle of a run goes on with the run by itself; with `false` it waits for `/continue`. See [interrupted runs](sessions-and-checkpoints.md#interrupted-runs) |
+| | `branch_summary` | `true` | Going back with `/tree` has the `smol` role tell the agent in a few lines what happened on the branch you left; see [sessions](sessions-and-checkpoints.md#branch-summaries) |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |
@@ -226,7 +227,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
 | | `auto_send` | `false` | Send a transcript as a prompt at once |
 | | `max_secs` | `120` | Longest recording, in seconds |
-| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized` or a file in `~/.azazel/themes/`; see [the terminal UI](tui.md#themes) |
+| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized`, a file in `~/.azazel/themes/`, or `auto`, which is `light` or `dark` as the terminal's background is; see [the terminal UI](tui.md#themes) |
 | | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
 | | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
@@ -238,7 +239,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
-| | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together |
+| | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together as one prompt; see [queued messages](tui.md#queued-messages-and-stashed-drafts) |
 | `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full`; see [the status line](tui.md#status-line). `/statusline` sets these keys up with the line in view |
 | | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`. Empty takes the preset's; `["none"]` is an empty side |
 | | `separator` | `"dot"` | Between segments: `dot`, `bar`, `space`, or `powerline` (each segment a block of colour, ended by an arrow with `tui.glyphs = "nerd"`). The `powerline` preset is drawn in blocks while this is `dot` |
@@ -372,7 +373,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `-e`, `--extension <PATH>` | Load a Luau script, or a directory laid out like a [package](packages.md), for this run; repeatable. See [resources for one run](#resources-for-one-run) |
 | `--skill <PATH>` | Add a skill (its directory or its `SKILL.md`) or a directory of skills for this run; repeatable |
 | `--mcp-config <FILE>` | Connect to the MCP servers of this `mcp.json` for this run; repeatable |
-| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, one from `~/.azazel/themes`, or a theme file |
+| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, `auto`, one from `~/.azazel/themes`, or a theme file |
 | `--provider <ID>` | Take this run's models from one provider only; see [choosing the model](models-and-logins.md#choosing-the-model) |
 | `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md). What `--extension`, `--skill` and `--mcp-config` name still loads |
 | `--bare` | All six `--no-*` switches |

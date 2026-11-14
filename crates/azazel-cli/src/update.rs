@@ -211,18 +211,38 @@ fn find_binary(dir: &Path) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Where the old binary is moved while the new one takes its place. Windows cannot replace a
-/// running program's file but can rename it.
-fn retired(exe: &Path) -> PathBuf {
+/// How many binaries can be retired and still in use at once: one for every azazel that waits
+/// for the one it started with `/restart` after an update.
+const RETIRED_SLOTS: u32 = 8;
+
+/// Where the old binary is moved while the new one takes its place: `<name>.old`, or
+/// `<name>.old1` and so on for `slot` above 0. Windows cannot replace a running program's
+/// file but can rename it.
+fn retired(exe: &Path, slot: u32) -> PathBuf {
     let mut name = exe.file_name().unwrap_or_default().to_os_string();
     name.push(".old");
+    if slot > 0 {
+        name.push(slot.to_string());
+    }
     exe.with_file_name(name)
 }
 
-/// Removes the binary a previous update retired, which the running program could not delete.
+/// A place to retire the binary to that nothing is in: one left by an earlier update is
+/// deleted, unless a program still runs from it.
+fn free_retired(exe: &Path) -> PathBuf {
+    (0..RETIRED_SLOTS)
+        .map(|slot| retired(exe, slot))
+        .find(|old| !old.exists() || std::fs::remove_file(old).is_ok())
+        .unwrap_or_else(|| retired(exe, 0))
+}
+
+/// Removes the binaries previous updates retired, which the programs running then could not
+/// delete.
 pub fn remove_retired() {
     if let Ok(exe) = std::env::current_exe() {
-        let _ = std::fs::remove_file(retired(&exe));
+        for slot in 0..RETIRED_SLOTS {
+            let _ = std::fs::remove_file(retired(&exe, slot));
+        }
     }
 }
 
@@ -237,8 +257,7 @@ fn replace(exe: &Path, new: &Path) -> Result<(), String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o755));
     }
-    let old = retired(exe);
-    let _ = std::fs::remove_file(&old);
+    let old = free_retired(exe);
     if let Err(e) = std::fs::rename(exe, &old) {
         let _ = std::fs::remove_file(&staged);
         return Err(format!("cannot move {} aside: {e}", exe.display()));
@@ -526,7 +545,33 @@ mod tests {
         std::fs::write(&new, b"new").unwrap();
         replace(&exe, &new).unwrap();
         assert_eq!(std::fs::read(&exe).unwrap(), b"new");
-        assert!(!retired(&exe).exists());
+        assert!(!retired(&exe, 0).exists());
+    }
+
+    /// An azazel that waits for the one it started with `/restart` still runs from the binary
+    /// the update before retired; the next update must not stop at it.
+    #[cfg(windows)]
+    #[test]
+    fn a_retired_binary_that_is_still_in_use_is_passed_over() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("tool.exe");
+        let new = dir.path().join("new");
+        std::fs::write(&exe, b"second").unwrap();
+        std::fs::write(&new, b"third").unwrap();
+        std::fs::write(retired(&exe, 0), b"first").unwrap();
+        // Open the way a running program holds its file: it cannot be deleted or replaced.
+        let in_use = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(retired(&exe, 0))
+            .unwrap();
+        replace(&exe, &new).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"third");
+        assert!(retired(&exe, 0).exists());
+        assert!(!retired(&exe, 1).exists());
+        drop(in_use);
+        assert_eq!(std::fs::read(retired(&exe, 0)).unwrap(), b"first");
     }
 
     /// A release archive for this platform holding a binary with `content`, made with the

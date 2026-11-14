@@ -254,7 +254,7 @@ settings! {
     }
     Appearance / "Interface" {
         "tui.theme": Theme, "Theme",
-            "The colours of the UI: a built-in theme or a file in ~/.azazel/themes.", live;
+            "The colours: a built-in theme, a file in ~/.azazel/themes, or auto (follows the terminal).", live;
         "tui.glyphs": Choice(GlyphSetting::NAMES), "Symbols",
             "The symbols the UI draws with: unicode, nerd (needs a Nerd Font) or ascii; auto is unicode unless the locale is not UTF-8.", live;
         "tui.indicator": Choice(Indicator::NAMES), "Working indicator", "How the working indicator moves.", live;
@@ -305,7 +305,7 @@ settings! {
         "editor.fold_paste_lines": Number, "Fold long pastes",
             "Pastes longer than this many lines fold into one token; 0 never folds.", live;
         "tui.queue_mode": Choice(QueueMode::NAMES), "Queued messages",
-            "How messages queued while the agent works are delivered: one per turn, or all at once.";
+            "How messages queued while the agent works are delivered: one per turn, or all at once.", live;
     }
     Input / "Voice" {
         "voice.stt": Text, "Transcription model", "The model that transcribes, as provider/model.";
@@ -405,6 +405,8 @@ settings! {
             "Sessions not used for this many days are deleted at start; 0 keeps everything.";
         "session.resume_runs": Switch, "Continue interrupted runs",
             "A run cut off by a crash or a closed terminal continues when the session is opened again.";
+        "session.branch_summary": Switch, "Summarise a branch you leave",
+            "Going back with /tree has a small model tell the agent what happened on the branch you left.";
     }
     Sessions / "Checkpoints" {
         "checkpoints.enabled": Switch, "Checkpoints", "Snapshot the project before each prompt, so /rewind can bring it back.";
