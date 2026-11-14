@@ -384,7 +384,7 @@ mod tests {
         let mut editor = editor("");
         press(&mut editor, KeyCode::Right);
         assert_eq!(editor.preset, StatusPreset::Minimal);
-        assert_eq!(names(&editor.left), ["mode", "path"]);
+        assert_eq!(names(&editor.left), ["mode", "path", "agents"]);
         assert_eq!(names(&editor.right), ["model"]);
         press(&mut editor, KeyCode::Char(' '));
         assert_eq!(editor.preset, StatusPreset::Powerline);
@@ -422,29 +422,29 @@ mod tests {
         let mut editor = editor("preset = \"minimal\"");
         go_to(&mut editor, "time");
         press(&mut editor, KeyCode::Char(' '));
-        assert_eq!(names(&editor.left), ["mode", "path", "time"]);
+        assert_eq!(names(&editor.left), ["mode", "path", "agents", "time"]);
         // The cursor follows the segment.
         assert_eq!(editor.list.selected_item().unwrap().label, "time");
         press(&mut editor, KeyCode::Right);
-        assert_eq!(names(&editor.left), ["mode", "path"]);
+        assert_eq!(names(&editor.left), ["mode", "path", "agents"]);
         assert_eq!(names(&editor.right), ["model", "time"]);
         press(&mut editor, KeyCode::Char('['));
         assert_eq!(names(&editor.right), ["time", "model"]);
         // Past the start of the right side is the end of the left side, and back.
         press(&mut editor, KeyCode::Char('['));
-        assert_eq!(names(&editor.left), ["mode", "path", "time"]);
+        assert_eq!(names(&editor.left), ["mode", "path", "agents", "time"]);
         assert_eq!(names(&editor.right), ["model"]);
         press(&mut editor, KeyCode::Char('['));
         press(&mut editor, KeyCode::Char('['));
         press(&mut editor, KeyCode::Char('['));
-        assert_eq!(names(&editor.left), ["time", "mode", "path"]);
+        assert_eq!(names(&editor.left), ["time", "mode", "path", "agents"]);
         let shifted = KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT);
         assert!(matches!(editor.on_key(&shifted), Step::Pending));
-        assert_eq!(names(&editor.left), ["mode", "time", "path"]);
+        assert_eq!(names(&editor.left), ["mode", "time", "path", "agents"]);
         assert_eq!(editor.list.selected_item().unwrap().label, "time");
 
         let config = editor.config();
-        assert_eq!(config.left, ["mode", "time", "path"]);
+        assert_eq!(config.left, ["mode", "time", "path", "agents"]);
         // The right side is the preset's again, and is left to it.
         assert!(config.right.is_empty());
         let (layout, problems) = Layout::new(&config);
@@ -464,7 +464,7 @@ mod tests {
         press(&mut editor, KeyCode::Char(']'));
         assert!(editor.right.is_empty());
         press(&mut editor, KeyCode::Left);
-        assert_eq!(names(&editor.left), ["mode", "time", "path", "model"]);
+        assert_eq!(names(&editor.left), ["mode", "time", "path", "agents", "model"]);
     }
 
     #[test]

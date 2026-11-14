@@ -1162,10 +1162,16 @@ mod tests {
         assert_eq!(moved.left, [Name::Mode, Name::Thinking]);
         assert_eq!(moved.right, [Name::Model, Name::Tier]);
         let moved = layout("preset = \"minimal\"\nright = [\"path\"]");
-        assert_eq!((moved.left, moved.right), (vec![Name::Mode], vec![Name::Path]));
+        assert_eq!(
+            (moved.left, moved.right),
+            (vec![Name::Mode, Name::Agents], vec![Name::Path])
+        );
         // `none` is a side with nothing on it.
         let bare = layout("right = [\"none\"]\npreset = \"minimal\"");
-        assert_eq!(shown_in(&line, &bare, 40, &theme), "⏵ accept-edits · ~/src/app");
+        assert_eq!(
+            shown_in(&line, &bare, 40, &theme),
+            "⏵ accept-edits · ~/src/app · ⇶ 2 agents"
+        );
         assert!(bare.shows(Name::Path) && !bare.shows(Name::Model));
     }
 

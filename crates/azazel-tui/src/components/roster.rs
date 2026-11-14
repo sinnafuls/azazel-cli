@@ -190,6 +190,31 @@ mod tests {
     }
 
     #[test]
+    fn a_collapsed_roster_shows_three_rows_and_counts_the_rest() {
+        let rows: Vec<RosterRow> = (1..=5)
+            .map(|n| RosterRow {
+                def: "scout".to_string(),
+                ..row(&format!("scout-{n}"), "grep", 1, 10, RosterState::Running)
+            })
+            .collect();
+        let theme = Theme::dark();
+        let plain: Vec<String> = collapsed(&rows, 3, 60, &theme)
+            .iter()
+            .map(|l| text::strip_ansi(l))
+            .collect();
+        assert_eq!(
+            plain,
+            [
+                "● scout-1  scout  grep  1s  10",
+                "● scout-2  scout  grep  1s  10",
+                "● scout-3  scout  grep  1s  10",
+                "… 2 more",
+            ]
+        );
+        assert_eq!(collapsed(&rows[..3], 3, 60, &theme).len(), 3);
+    }
+
+    #[test]
     fn never_exceeds_the_width() {
         let rows = [row(
             "an-agent-with-a-long-id",

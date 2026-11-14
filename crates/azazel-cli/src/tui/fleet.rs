@@ -1071,6 +1071,110 @@ mod tests {
     }
 
     #[test]
+    fn left_twice_is_a_double_tap_but_not_when_held_or_in_a_burst() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut taps = DoubleTap::default();
+        assert!(!taps.press(at(0)));
+        assert!(taps.press(at(150)), "two presses 150 ms apart");
+        // After a double tap the next press starts afresh.
+        assert!(!taps.press(at(300)));
+
+        let mut held = DoubleTap::default();
+        assert!(!held.press(at(0)));
+        assert!(!held.press(at(20)), "a key held down repeats faster than 40 ms");
+
+        let mut slow = DoubleTap::default();
+        assert!(!slow.press(at(0)));
+        assert!(!slow.press(at(700)), "too far apart");
+        assert!(
+            slow.press(at(900)),
+            "the second of two taps counts from the press before"
+        );
+
+        // Three quick presses are a burst: neither the third nor the fourth is a double tap.
+        let mut burst = DoubleTap::default();
+        assert!(!burst.press(at(0)));
+        assert!(!burst.press(at(10)));
+        assert!(!burst.press(at(100)));
+        assert!(!burst.press(at(200)));
+
+        let mut broken = DoubleTap::default();
+        assert!(!broken.press(at(0)));
+        broken.reset();
+        assert!(!broken.press(at(100)), "another key came between");
+    }
+
+    #[test]
+    fn an_agent_not_seen_from_its_start_is_read_from_its_transcript() {
+        let entry = |id: &str, parent: Option<&str>, message: Message| Entry {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            timestamp: String::new(),
+            kind: EntryKind::Message { message },
+        };
+        let asked = Message {
+            role: azazel_ai::Role::User,
+            content: vec![Block::text("Find the lexer.")],
+            meta: None,
+        };
+        let call = Message {
+            role: azazel_ai::Role::Assistant,
+            content: vec![
+                Block::text("Searching."),
+                Block::ToolCall {
+                    id: "c1".to_string(),
+                    name: "grep".to_string(),
+                    input: json!({"pattern": "lex"}),
+                    signature: None,
+                },
+            ],
+            meta: None,
+        };
+        let result = Message {
+            role: azazel_ai::Role::Tool,
+            content: vec![Block::ToolResult {
+                call_id: "c1".to_string(),
+                content: vec![Block::text("src/lex.rs:1")],
+                is_error: false,
+            }],
+            meta: None,
+        };
+        let entries = vec![
+            entry("a", None, asked),
+            entry("b", Some("a"), call),
+            entry("c", Some("b"), result),
+            entry("d", Some("c"), said("It is in src/lex.rs.")),
+        ];
+
+        // The UI opened while the agent was at work: only its last event was seen.
+        let theme = Theme::dark();
+        let mut log = Log::default();
+        log.event(&AgentEvent::MessageStart);
+        assert!(!log.whole);
+        log.load(items_of(entries));
+        assert!(log.whole);
+        assert_eq!(log.task().as_deref(), Some("Find the lexer."));
+        let shown = plain(&log.rows(60, look(&theme))).join("\n");
+        let order = [
+            "Find the lexer.",
+            "Searching.",
+            "src/lex.rs:1",
+            "It is in src/lex.rs.",
+        ];
+        let places: Vec<usize> = order
+            .iter()
+            .map(|text| shown.find(text).unwrap_or(usize::MAX))
+            .collect();
+        assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{shown}");
+
+        // An agent seen from its task on needs no file.
+        let mut seen = Log::default();
+        seen.input("Find the lexer.".to_string());
+        assert!(seen.whole);
+    }
+
+    #[test]
     fn a_mention_is_a_name_an_agent_can_have_at_the_start() {
         assert_eq!(mention("@scout-1 look again"), Some(("scout-1", "look again")));
         assert_eq!(
