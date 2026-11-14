@@ -76,6 +76,8 @@ GitHub are its section here.
 
 ### Fixed
 
+- Typing a whole command such as `/mode` and pressing Enter runs it, instead of completing to a longer
+  command that starts with it (`/model`).
 - After the window got taller (or the font smaller) the input and the status line no longer stay above the
   bottom of the window.
 - On Windows the size taken after a resize was one column and one row too large, so lines were cut one column

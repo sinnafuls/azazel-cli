@@ -1626,10 +1626,12 @@ impl Tui {
                     return;
                 }
                 KeyCode::Enter if completion.slash => {
-                    // Enter on a half-typed command completes it; a complete one runs.
+                    // Enter on a half-typed command completes it; a complete one runs, even when
+                    // a longer command that starts with it (`/mode`, `/model`) is highlighted.
                     let typed = self.editor.text().trim().to_string();
+                    let complete = completion.list.items().iter().any(|item| item.label == typed);
                     let chosen = completion.list.selected_item().map(|item| item.label.clone());
-                    if chosen.is_some_and(|label| label != typed) {
+                    if !complete && chosen.is_some_and(|label| label != typed) {
                         return self.accept_completion();
                     }
                 }
