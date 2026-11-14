@@ -43,6 +43,7 @@ pub mod resources;
 mod restart;
 pub mod retry;
 pub mod roles;
+mod roles_cli;
 pub mod routing;
 pub mod rpc;
 pub mod rules;
@@ -390,19 +391,33 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             all,
             json,
         }) => {
-            let Some((config, providers, credentials)) = provider_setup(&cli, &paths, trusted) else {
-                return print::EXIT_FAILED;
+            let setup = match roles_cli::Setup::new(&cli, paths.clone(), trusted) {
+                Ok(setup) => setup,
+                Err(e) => {
+                    eprintln!("azazel: {e}");
+                    return print::EXIT_FAILED;
+                }
             };
-            let catalog = azazel_ai::Catalog::load(Some(&paths.models_cache()), &config.models);
+            let catalog = azazel_ai::Catalog::load(Some(&paths.models_cache()), &setup.config.models);
             return models::run_models(
                 &catalog,
-                &providers,
-                &credentials,
+                &setup.providers,
+                &setup.credentials,
+                &setup.roles(),
                 query.as_deref(),
                 provider.as_deref(),
                 *all,
                 *json,
             );
+        }
+        Some(Sub::Roles { action, json }) => {
+            return match roles_cli::Setup::new(&cli, paths.clone(), trusted) {
+                Ok(setup) => roles_cli::run(&setup, action.as_ref(), *json),
+                Err(e) => {
+                    eprintln!("azazel: {e}");
+                    print::EXIT_FAILED
+                }
+            };
         }
         Some(Sub::Auth {
             action: cli::AuthAction::Status { json },

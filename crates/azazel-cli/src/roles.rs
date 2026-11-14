@@ -160,21 +160,15 @@ fn target(place: &Place<'_>, save: SaveTo) -> Result<Option<PathBuf>, String> {
     }
 }
 
-/// Points `role` at `chain`, or with `None` takes away the value `save` names: the role then
-/// falls back to the next file, or its built-in value. The running session follows at once,
-/// and the lead goes back to following its role when `default` or `lead` changes.
-pub fn set(
-    place: &Place<'_>,
-    role: &str,
-    chain: Option<Vec<ModelSpec>>,
-    save: SaveTo,
-) -> Result<Roles, String> {
+/// `Err` when [`set`] would refuse the change before writing anything: a name that cannot be a
+/// role, an empty chain, a role that falls back to itself, or a project that is not trusted.
+pub fn check(place: &Place<'_>, role: &str, chain: Option<&[ModelSpec]>, save: SaveTo) -> Result<(), String> {
     if !crate::routing::plain_name(role) {
         return Err(format!(
             "`{role}` cannot name a role: use letters, digits, `-` and `_`, starting with a letter"
         ));
     }
-    if let Some(chain) = &chain {
+    if let Some(chain) = chain {
         if chain.is_empty() {
             return Err("give at least one model, or clear the role".to_string());
         }
@@ -185,6 +179,19 @@ pub fn set(
             return Err(format!("`{role}` cannot fall back to itself"));
         }
     }
+    target(place, save).map(drop)
+}
+
+/// Points `role` at `chain`, or with `None` takes away the value `save` names: the role then
+/// falls back to the next file, or its built-in value. The running session follows at once,
+/// and the lead goes back to following its role when `default` or `lead` changes.
+pub fn set(
+    place: &Place<'_>,
+    role: &str,
+    chain: Option<Vec<ModelSpec>>,
+    save: SaveTo,
+) -> Result<Roles, String> {
+    check(place, role, chain.as_deref(), save)?;
     if let Some(file) = target(place, save)? {
         let value = chain
             .as_ref()

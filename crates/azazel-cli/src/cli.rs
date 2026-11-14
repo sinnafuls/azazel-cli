@@ -224,6 +224,48 @@ pub enum AuthAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum RolesAction {
+    /// Point a role at a model, with the models it falls back on after it; --thinking gives
+    /// the level the role asks its model for
+    Set {
+        role: String,
+        /// The model, then the fallbacks in order: provider/id[:level], a name as --model takes
+        /// it, or @role
+        #[arg(required = true, value_name = "MODEL")]
+        models: Vec<String>,
+        /// Write this project's config instead of the home config (a trusted project only)
+        #[arg(long)]
+        project: bool,
+    },
+    /// Take a role out of the home config (or the project's), so that it falls back to the
+    /// next config file, or its built-in value
+    Clear {
+        role: String,
+        /// Take it out of this project's config instead of the home config
+        #[arg(long)]
+        project: bool,
+    },
+    /// Every role at once, saved under a name
+    Preset {
+        #[command(subcommand)]
+        action: PresetAction,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PresetAction {
+    /// Save every role as it is now as a preset, in the home config
+    Save { name: String },
+    /// Write every role of a saved preset into the home config (or the project's)
+    Load {
+        name: String,
+        /// Write this project's config instead of the home config (a trusted project only)
+        #[arg(long)]
+        project: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SecretsAction {
     /// Store a credential that is added to the agents' requests to one host
     Add {
@@ -334,6 +376,15 @@ pub enum Sub {
         all: bool,
         /// One JSON object per model
         #[arg(long)]
+        json: bool,
+    },
+    /// The model roles: each one's models, what it resolves to, its thinking level and where it
+    /// is set; `set`, `clear` and `preset` change them
+    Roles {
+        #[command(subcommand)]
+        action: Option<RolesAction>,
+        /// JSON: one object per role
+        #[arg(long, global = true)]
         json: bool,
     },
     /// Print a completion script for a shell
