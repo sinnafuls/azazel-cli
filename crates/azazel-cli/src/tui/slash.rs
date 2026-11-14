@@ -217,7 +217,7 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     (
         "diff",
-        "Show the uncommitted changes; /diff turn or /diff session for changes since a checkpoint",
+        "Review what changed: /diff [turn|session|uncommitted|<commit, branch, tag or range>]",
     ),
     (
         "commit",
@@ -618,12 +618,12 @@ impl Tui {
             })
             .collect();
         let current = names.iter().position(|name| *name == self.theme_name);
-        let body = vec![match self.theme_name.as_str() {
-            super::AUTO_THEME => format!("current: auto ({})", self.auto_theme_note()),
-            name => format!("current: {name}"),
-        }];
+        let mut body = vec![format!("current: {}", self.theme_label(&self.theme_name))];
+        if Theme::follows_background(&self.theme_name) {
+            body.push(format!("follows the terminal: {}", self.background_note()));
+        }
         self.overlay = Some(
-            Overlay::select("Theme", body, items, false, Action::Theme(names))
+            Overlay::select("Theme", body, items, true, Action::Theme(names))
                 .starting_at(current.unwrap_or(0)),
         );
     }

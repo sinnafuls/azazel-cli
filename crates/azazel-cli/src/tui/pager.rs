@@ -12,9 +12,8 @@ use std::io::Write;
 use azazel_agent::ToolOutput;
 use azazel_ai::{Block, Role as MessageRole};
 use azazel_core::EntryKind;
-use azazel_tui::components::diff;
 use azazel_tui::components::pager::{self, Item, Outcome, Pager, WHEEL_ROWS};
-use azazel_tui::{Role, Theme};
+use azazel_tui::Theme;
 use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use serde_json::Value;
 
@@ -37,8 +36,6 @@ pub enum Source {
         /// Hide what looks like a secret in it (`tui.redact`).
         redact: bool,
     },
-    /// The unified diff of one file (`/diff`). `[` and `]` jump between these.
-    Diff { file: String, text: String },
     /// A line of muted text: something the UI says, not the conversation.
     Note(String),
     /// Plain text, as it is: the body of a box that was too long for it.
@@ -97,17 +94,6 @@ impl Source {
                     ..Item::default()
                 }
             }
-            Source::Diff { file, text } => {
-                let mut lines = vec![String::new()];
-                lines.extend(view::styled(file, Role::Accent, width, theme));
-                lines.extend(diff::render_unified(text, width, theme));
-                Item {
-                    lines,
-                    source: text.clone(),
-                    anchor: true,
-                    blocks: Vec::new(),
-                }
-            }
             Source::Note(text) => Item {
                 lines: view::notice(text, width, theme),
                 source: text.clone(),
@@ -143,7 +129,7 @@ fn items(sources: &[Source], width: usize, theme: &Theme) -> Vec<Item> {
 /// Shows `sources` full screen under `title` until the user leaves with `q` or `esc`.
 ///
 /// This is the entry point for anything that wants a scrollable, searchable view: `/transcript`,
-/// `/diff`, `/changelog`. The agent keeps working meanwhile; a request that needs the user
+/// `/changelog`. The agent keeps working meanwhile; a request that needs the user
 /// (an approval, a question) is announced in the viewer's last row and shown on return.
 pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start: Start) {
     let (mut width, mut height) = tui.renderer.size();
@@ -218,7 +204,15 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
 fn draw(tui: &mut Tui, view: &mut Pager, width: u16, height: u16) -> std::io::Result<()> {
     let (columns, rows) = (usize::from(width), usize::from(height));
     let lines = view.render(columns, rows, &tui.theme);
-    // One synchronized update from the top-left corner; each row is erased to its end first.
+    let frame = frame(&lines, view.typing_cursor(columns, rows));
+    let out = tui.renderer.get_mut();
+    out.write_all(frame.as_bytes())?;
+    out.flush()
+}
+
+/// A full screen of `lines` as one synchronized update from the top-left corner, each row erased
+/// to its end first; the terminal cursor at `cursor` (row, column), or hidden.
+pub(super) fn frame(lines: &[String], cursor: Option<(u16, u16)>) -> String {
     let mut frame = String::from("\x1b[?2026h\x1b[H");
     for (row, line) in lines.iter().enumerate() {
         if row > 0 {
@@ -229,14 +223,12 @@ fn draw(tui: &mut Tui, view: &mut Pager, width: u16, height: u16) -> std::io::Re
         frame.push_str("\x1b[0m");
     }
     frame.push_str("\x1b[J");
-    match view.typing_cursor(columns, rows) {
+    match cursor {
         Some((row, column)) => frame.push_str(&format!("\x1b[{};{}H\x1b[?25h", row + 1, column + 1)),
         None => frame.push_str("\x1b[?25l"),
     }
     frame.push_str("\x1b[?2026l");
-    let out = tui.renderer.get_mut();
-    out.write_all(frame.as_bytes())?;
-    out.flush()
+    frame
 }
 
 impl Tui {

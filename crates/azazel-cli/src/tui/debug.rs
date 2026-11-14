@@ -137,10 +137,7 @@ impl Tui {
         let yes_no = |on: bool| if on { "yes" } else { "no" }.to_string();
         let chain: Vec<String> = status.chain.iter().map(ToString::to_string).collect();
         let terminal = Terminal::detect(&|name| std::env::var(name).ok());
-        let theme = match self.theme_name.as_str() {
-            "auto" => format!("auto ({})", self.auto_theme()),
-            name => name.to_string(),
-        };
+        let theme = self.theme_label(&self.theme_name);
         let state = vec![
             ("process", std::process::id().to_string()),
             (

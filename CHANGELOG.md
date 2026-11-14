@@ -21,8 +21,21 @@ GitHub are its section here.
   variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
   `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
 - `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+- A diff viewer: `/diff` lists the changed files on the left (what happened to each, lines added and removed)
+  beside the selected file's diff with its code coloured, in one column or old beside new (`s`, and
+  `tui.diff_view = "auto" | "split" | "unified"`; auto is split from 140 columns). `n`/`p` step through the
+  files, `[`/`]` through the hunks, `w` wraps long lines, `/` searches every file, and `m` marks a file
+  reviewed, which the session keeps until the file's diff changes. `/diff uncommitted` names the default, and
+  `/diff <commit, branch, tag or range>` compares with any revision.
+- Ten more themes: `dracula`, `nord`, `rose-pine`, `kanagawa`, `one` (`one-dark`, `one-light`),
+  `solarized`, `everforest`, `github`, `ayu`, `monokai`, and light palettes for `catppuccin` (Latte),
+  `tokyo-night` (Day) and `gruvbox`. A theme with a dark and a light palette follows the terminal's background
+  like `auto`; `<name>-dark` and `<name>-light` pin one. `/theme` can be filtered by typing.
 
 ### Changed
+
+- `tokyo-night` now follows the terminal's background (Night on a dark one, Day on a light one); name
+  `tokyo-night-dark` to keep Night everywhere. `catppuccin-mocha` and `gruvbox-dark` are as before.
 
 - In an agent definition `mode` now says what the definition is (`subagent`, `primary` or `all`); keeping an
   agent in plan mode is `permission-mode: plan`. A definition that still says `mode: plan` is listed by

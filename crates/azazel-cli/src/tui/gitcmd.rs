@@ -12,9 +12,9 @@ use azazel_tui::SelectItem;
 use tokio_util::sync::CancellationToken;
 
 use super::overlay::{Action, Kind, Overlay};
-use super::pager::{self, Source, Start};
+use super::diff_view;
 use super::{Internal, SHELL_NOTE, Tui};
-use crate::git::{self, Changes, FileDiff};
+use crate::git::{self, Changes};
 
 /// The role that drafts commit messages.
 const DRAFT_ROLE: &str = "smol";
@@ -37,37 +37,24 @@ pub(super) struct Draft {
     message: Result<String, String>,
 }
 
-fn diff_sources(summary: String, files: Vec<FileDiff>) -> Vec<Source> {
-    let mut sources = vec![Source::Note(summary)];
-    sources.extend(files.into_iter().map(|file| Source::Diff {
-        file: file.file,
-        text: file.text,
-    }));
-    sources
-}
-
-fn files_changed(count: usize) -> String {
-    let files = if count == 1 {
-        "1 file".to_string()
-    } else {
-        format!("{count} files")
-    };
-    format!("{files} changed · [ and ] jump between files · y copies the file's diff")
-}
-
 impl Tui {
-    /// `/diff`: the working tree against `HEAD`; `/diff turn` and `/diff session`: what changed
-    /// since the last prompt, or since the session's first one, from its checkpoints.
+    /// `/diff [turn|session|uncommitted|<ref>]`: the viewer on the working tree against `HEAD`
+    /// (`uncommitted`, the default), on what changed since the last prompt or since the
+    /// session's first one (from its checkpoints), or on the working tree against a commit,
+    /// branch or tag, or between the ends of a range (`main..topic`).
     pub(super) async fn diff_command(&mut self, args: &str) {
         match args {
-            "" => self.working_tree_diff().await,
+            "" | "uncommitted" => self.working_tree_diff(None).await,
             "turn" => self.checkpoint_diff(false).await,
             "session" => self.checkpoint_diff(true).await,
-            _ => self.fail("usage: /diff, /diff turn or /diff session"),
+            reference if !reference.contains(char::is_whitespace) => {
+                self.working_tree_diff(Some(reference)).await
+            }
+            _ => self.fail("usage: /diff [turn|session|uncommitted|<commit, branch, tag or range>]"),
         }
     }
 
-    async fn working_tree_diff(&mut self) {
+    async fn working_tree_diff(&mut self, reference: Option<&str>) {
         let Some(cwd) = self.local_cwd() else {
             self.here_only("/diff");
             return;
@@ -78,15 +65,29 @@ impl Tui {
                  changed since a checkpoint",
             );
         };
-        let files = match git::working_tree(&top).await {
+        let files = match reference {
+            None => git::working_tree(&top).await,
+            Some(reference) => git::against(&top, reference).await,
+        };
+        let files = match files {
             Ok(files) => files,
             Err(why) => return self.fail(&format!("git: {why}")),
         };
+        let (title, nothing) = match reference {
+            None => (
+                "Diff · working tree against HEAD".to_string(),
+                "no changes: the working tree matches HEAD".to_string(),
+            ),
+            Some(range) if range.contains("..") => (format!("Diff · {range}"), format!("no changes in {range}")),
+            Some(commit) => (
+                format!("Diff · working tree against {commit}"),
+                format!("no changes: the working tree matches {commit}"),
+            ),
+        };
         if files.is_empty() {
-            return self.info("no changes: the working tree matches HEAD");
+            return self.info(&nothing);
         }
-        let sources = diff_sources(files_changed(files.len()), files);
-        pager::show(self, "Diff · working tree against HEAD", sources, Start::Top).await;
+        diff_view::show(self, &title, files).await;
     }
 
     /// The checkpoint to compare with: the session's first, or the one taken before the last
@@ -143,8 +144,7 @@ impl Tui {
         if files.is_empty() {
             return self.info(&format!("no file has changed since {since}"));
         }
-        let sources = diff_sources(files_changed(files.len()), files);
-        pager::show(self, &format!("Diff · since {since}"), sources, Start::Top).await;
+        diff_view::show(self, &format!("Diff · since {since}"), files).await;
     }
 
     /// `/commit [hint]`: drafts a message for what is staged (or, after asking, for everything),
@@ -301,31 +301,5 @@ impl Tui {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_viewer_gets_a_summary_and_one_item_per_file() {
-        let files = vec![
-            FileDiff {
-                file: "a.rs  +1".into(),
-                text: "--- a/a.rs\n+++ b/a.rs".into(),
-            },
-            FileDiff {
-                file: "b.rs (new)".into(),
-                text: "new file".into(),
-            },
-        ];
-        let sources = diff_sources(files_changed(files.len()), files);
-        assert!(matches!(&sources[0], Source::Note(note) if note.starts_with("2 files changed")));
-        assert!(matches!(&sources[1], Source::Diff { file, .. } if file == "a.rs  +1"));
-        assert!(
-            matches!(&sources[2], Source::Diff { file, text } if file == "b.rs (new)" && text == "new file")
-        );
-        assert!(files_changed(1).starts_with("1 file changed"));
     }
 }

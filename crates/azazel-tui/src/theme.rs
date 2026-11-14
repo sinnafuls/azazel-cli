@@ -5,6 +5,8 @@ use std::str::FromStr;
 
 use crate::glyphs::{Glyph, GlyphLevel, Glyphs};
 
+mod palettes;
+
 /// Resets every SGR attribute.
 pub const RESET: &str = "\x1b[0m";
 
@@ -369,110 +371,72 @@ impl Theme {
         }
     }
 
-    /// The names of the themes built into azazel, for pickers and error messages.
-    pub const BUILTINS: [&'static str; 6] = [
-        "dark",
-        "light",
-        "catppuccin-mocha",
-        "tokyo-night",
-        "gruvbox-dark",
-        "dark-daltonized",
-    ];
+    /// Success and additions in blue, failures and removals in orange: red and green carry no
+    /// meaning a colour-blind reader could miss.
+    pub fn dark_daltonized() -> Theme {
+        Theme::dark().with_colors(&[
+            (Role::Success, 0x6cb6ff),
+            (Role::Error, 0xf0a050),
+            (Role::DiffAdd, 0x6cb6ff),
+            (Role::DiffDel, 0xf0a050),
+            (Role::DiffAddBg, 0x1f3a5c),
+            (Role::DiffDelBg, 0x5c3a12),
+            (Role::ModeEdits, 0x6cb6ff),
+        ])
+    }
 
-    /// A theme built into azazel, by name.
+    /// The names of the themes built into azazel, for pickers and error messages: each theme,
+    /// followed by `<name>-dark` and `<name>-light` when it has both. Older names that still
+    /// work (`catppuccin-mocha`) are not listed.
+    pub fn builtin_names() -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for family in palettes::FAMILIES {
+            names.push(family.name);
+            if family.has_both() {
+                names.extend(family.variants().map(|(variant, _)| variant.name));
+            }
+        }
+        names
+    }
+
+    /// Whether `name` is a theme built into azazel, under any of its names.
+    pub fn is_builtin(name: &str) -> bool {
+        Theme::builtin(name).is_some()
+    }
+
+    /// Whether the built-in theme `name` changes with the terminal's background: it has a dark
+    /// and a light palette and `name` pins neither.
+    pub fn follows_background(name: &str) -> bool {
+        palettes::FAMILIES
+            .iter()
+            .any(|family| family.name == name && family.has_both())
+    }
+
+    /// A theme built into azazel, by name, as it is on a dark background.
     pub fn builtin(name: &str) -> Option<Theme> {
-        let theme = match name {
-            "dark" => Theme::dark(),
-            "light" => Theme::light(),
-            "catppuccin-mocha" => Theme::dark().with_colors(&[
-                (Role::Text, 0xcdd6f4),
-                (Role::Muted, 0xa6adc8),
-                (Role::Accent, 0xcba6f7),
-                (Role::Success, 0xa6e3a1),
-                (Role::Warning, 0xf9e2af),
-                (Role::Error, 0xf38ba8),
-                (Role::Border, 0x7f849c),
-                (Role::CodeBg, 0x181825),
-                (Role::DiffAdd, 0xa6e3a1),
-                (Role::DiffDel, 0xf38ba8),
-                (Role::UserBg, 0x313244),
-                (Role::UserText, 0xcdd6f4),
-                (Role::SelectedBg, 0x45475a),
-                (Role::BorderMuted, 0x585b70),
-                (Role::DiffAddBg, 0x2c4433),
-                (Role::DiffDelBg, 0x4d2a35),
-                (Role::Thinking, 0xb4befe),
-                (Role::Bash, 0xf5c2e7),
-                (Role::ModePlan, 0x89dceb),
-                (Role::ModeEdits, 0xa6e3a1),
-                (Role::ModeAuto, 0xfab387),
-                (Role::Surface, 0x1e1e2e),
-                (Role::Backdrop, 0x585b70),
-            ]),
-            "tokyo-night" => Theme::dark().with_colors(&[
-                (Role::Text, 0xc0caf5),
-                (Role::Muted, 0xa9b1d6),
-                (Role::Accent, 0xbb9af7),
-                (Role::Success, 0x9ece6a),
-                (Role::Warning, 0xe0af68),
-                (Role::Error, 0xf7768e),
-                (Role::Border, 0x565f89),
-                (Role::CodeBg, 0x16161e),
-                (Role::DiffAdd, 0x9ece6a),
-                (Role::DiffDel, 0xf7768e),
-                (Role::UserBg, 0x292e42),
-                (Role::UserText, 0xc0caf5),
-                (Role::SelectedBg, 0x283457),
-                (Role::BorderMuted, 0x3b4261),
-                (Role::DiffAddBg, 0x243e33),
-                (Role::DiffDelBg, 0x4b2a37),
-                (Role::Thinking, 0x7aa2f7),
-                (Role::Bash, 0x7dcfff),
-                (Role::ModePlan, 0x7dcfff),
-                (Role::ModeEdits, 0x9ece6a),
-                (Role::ModeAuto, 0xff9e64),
-                (Role::Surface, 0x1a1b26),
-                (Role::Backdrop, 0x545c7e),
-            ]),
-            "gruvbox-dark" => Theme::dark().with_colors(&[
-                (Role::Text, 0xebdbb2),
-                (Role::Muted, 0xa89984),
-                (Role::Accent, 0xfabd2f),
-                (Role::Success, 0xb8bb26),
-                (Role::Warning, 0xfe8019),
-                (Role::Error, 0xfb4934),
-                (Role::Border, 0x7c6f64),
-                (Role::CodeBg, 0x1d2021),
-                (Role::DiffAdd, 0xb8bb26),
-                (Role::DiffDel, 0xfb4934),
-                (Role::UserBg, 0x3c3836),
-                (Role::UserText, 0xebdbb2),
-                (Role::SelectedBg, 0x504945),
-                (Role::BorderMuted, 0x504945),
-                (Role::DiffAddBg, 0x32361a),
-                (Role::DiffDelBg, 0x4a2020),
-                (Role::Thinking, 0xd3869b),
-                (Role::Bash, 0x8ec07c),
-                (Role::ModePlan, 0x83a598),
-                (Role::ModeEdits, 0xb8bb26),
-                (Role::ModeAuto, 0xfe8019),
-                (Role::Surface, 0x282828),
-                (Role::Backdrop, 0x665c54),
-            ]),
-            // Red and green carry no meaning a colour-blind reader could miss: success and
-            // additions are blue, failures and removals orange.
-            "dark-daltonized" => Theme::dark().with_colors(&[
-                (Role::Success, 0x6cb6ff),
-                (Role::Error, 0xf0a050),
-                (Role::DiffAdd, 0x6cb6ff),
-                (Role::DiffDel, 0xf0a050),
-                (Role::DiffAddBg, 0x1f3a5c),
-                (Role::DiffDelBg, 0x5c3a12),
-                (Role::ModeEdits, 0x6cb6ff),
-            ]),
-            _ => return None,
-        };
-        Some(theme)
+        Theme::builtin_for(name, None)
+    }
+
+    /// A theme built into azazel, by name. A theme with a dark and a light palette takes the one
+    /// for the terminal's background: light when `light` is `Some(true)`, dark otherwise.
+    /// `<name>-dark` and `<name>-light` pin one.
+    pub fn builtin_for(name: &str, light: Option<bool>) -> Option<Theme> {
+        for family in palettes::FAMILIES {
+            if family.name == name {
+                let wanted = light == Some(true);
+                let variant = family
+                    .variants()
+                    .find(|(_, is_light)| *is_light == wanted)
+                    .or_else(|| family.variants().next())?;
+                return Some((variant.0.make)());
+            }
+            for (variant, _) in family.variants() {
+                if variant.name == name || variant.aliases.contains(&name) {
+                    return Some((variant.make)());
+                }
+            }
+        }
+        None
     }
 
     /// The theme with each listed role set to a `0xrrggbb` colour.
@@ -847,23 +811,108 @@ mod tests {
         assert!(matches!(Theme::from_toml("accent = "), Err(ThemeError::Parse(_))));
     }
 
+    /// A theme file listing every role of `theme`.
+    fn as_file(theme: &Theme) -> String {
+        Role::ALL
+            .iter()
+            .map(|role| match theme.color(*role) {
+                Color::Rgb(r, g, b) => format!("{} = \"#{r:02x}{g:02x}{b:02x}\"\n", role.name()),
+                Color::Indexed(n) => format!("{} = {n}\n", role.name()),
+                Color::Default => format!("{} = \"default\"\n", role.name()),
+            })
+            .collect()
+    }
+
     #[test]
-    fn every_builtin_loads_and_sets_every_role() {
-        for name in Theme::BUILTINS {
-            let theme = Theme::builtin(name).unwrap_or_else(|| panic!("{name}"));
-            assert_eq!(theme.is_light(), name == "light", "{name}");
-            // A file listing every role of a built-in reproduces it exactly.
-            let file: String = Role::ALL
-                .iter()
-                .map(|role| match theme.color(*role) {
-                    Color::Rgb(r, g, b) => format!("{} = \"#{r:02x}{g:02x}{b:02x}\"\n", role.name()),
-                    Color::Indexed(n) => format!("{} = {n}\n", role.name()),
-                    Color::Default => format!("{} = \"default\"\n", role.name()),
-                })
-                .collect();
-            assert_eq!(Theme::from_toml(&file).unwrap(), theme, "{name}");
+    fn every_builtin_palette_round_trips_every_role() {
+        let mut seen = 0;
+        for family in palettes::FAMILIES {
+            for (variant, light) in family.variants() {
+                let theme = (variant.make)();
+                for name in std::iter::once(variant.name).chain(variant.aliases.iter().copied()) {
+                    assert_eq!(Theme::builtin(name).as_ref(), Some(&theme), "{name}");
+                }
+                assert_eq!(theme.is_light(), light, "{}", variant.name);
+                // A file listing every role of a built-in reproduces it exactly.
+                assert_eq!(Theme::from_toml(&as_file(&theme)).unwrap(), theme, "{}", variant.name);
+                seen += 1;
+            }
         }
+        assert!(seen >= 25, "{seen} palettes");
         assert!(Theme::builtin("nope").is_none());
+    }
+
+    /// WCAG 2.1 relative luminance of an sRGB colour.
+    fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+        let channel = |v: u8| {
+            let v = f64::from(v) / 255.0;
+            if v <= 0.039_28 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    }
+
+    #[test]
+    fn text_on_a_popup_keeps_a_contrast_of_four_and_a_half_to_one() {
+        for family in palettes::FAMILIES {
+            for (variant, light) in family.variants() {
+                let theme = (variant.make)();
+                // Text in the terminal's own colour is taken as a common default foreground.
+                let text = theme.color(Role::Text).to_rgb().unwrap_or(match light {
+                    true => (0x1f, 0x1f, 0x1f),
+                    false => (0xd0, 0xd0, 0xd0),
+                });
+                let surface = theme.color(Role::Surface).to_rgb().expect("built-ins fill popups");
+                let (a, b) = (luminance(text), luminance(surface));
+                let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
+                assert!(ratio >= 4.5, "{}: text on surface is {ratio:.2}:1", variant.name);
+            }
+        }
+    }
+
+    #[test]
+    fn a_theme_with_both_palettes_follows_the_background_unless_pinned() {
+        let dark = Theme::builtin("catppuccin-dark").unwrap();
+        let light = Theme::builtin("catppuccin-light").unwrap();
+        assert_ne!(dark, light);
+        assert_eq!(Theme::builtin_for("catppuccin", Some(true)), Some(light.clone()));
+        assert_eq!(Theme::builtin_for("catppuccin", Some(false)), Some(dark.clone()));
+        assert_eq!(Theme::builtin_for("catppuccin", None), Some(dark.clone()));
+        assert_eq!(Theme::builtin_for("catppuccin-dark", Some(true)), Some(dark));
+        assert_eq!(Theme::builtin_for("catppuccin-latte", Some(false)), Some(light));
+        assert_eq!(Theme::builtin_for("auto", Some(true)), Some(Theme::light()));
+        // One palette is that palette on any background.
+        assert_eq!(Theme::builtin_for("nord", Some(true)), Theme::builtin("nord"));
+        assert!(Theme::follows_background("catppuccin"));
+        assert!(Theme::follows_background("auto"));
+        assert!(!Theme::follows_background("catppuccin-dark"));
+        assert!(!Theme::follows_background("nord"));
+        assert!(!Theme::follows_background("my-own"));
+    }
+
+    #[test]
+    fn listed_names_are_unique_and_names_from_before_still_work() {
+        let names = Theme::builtin_names();
+        assert_eq!(&names[..3], ["auto", "dark", "light"]);
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), names.len());
+        for name in &names {
+            assert!(Theme::is_builtin(name), "{name}");
+        }
+        for requested in [
+            "dracula", "nord", "rose-pine", "kanagawa", "one-dark", "solarized", "everforest", "github", "ayu",
+            "monokai",
+        ] {
+            assert!(Theme::is_builtin(requested), "{requested}");
+        }
+        for old in ["catppuccin-mocha", "tokyo-night", "gruvbox-dark", "dark-daltonized"] {
+            assert!(Theme::is_builtin(old), "{old}");
+        }
     }
 
     #[test]

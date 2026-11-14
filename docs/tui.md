@@ -830,7 +830,7 @@ Session and display:
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/bg <prompt>` | Run a prompt in the background, in a copy of this session; see [background sessions](background-and-remote.md) |
 | `/loop <count \| interval \| until "<condition>"> <prompt>` | Send a prompt again and again; see [loops](#loops) |
-| `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
+| `/diff [turn \| session \| uncommitted \| <ref>]` | What changed, in the [diff viewer](#diffs-and-commits): the uncommitted changes, the changes since your last prompt or since the session began, or the working tree against a commit, branch or tag (or a range such as `main..topic`) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | A box with what each signed-in subscription has left: per account every usage window with a bar, the share used, its reset time and what it counts, the plan, and the account in use; `r` asks the providers again. See [usage](models-and-logins.md#usage) |
 | `/reset-usage [provider]` | Spend a [banked reset](models-and-logins.md#banked-resets) of a Claude or ChatGPT subscription: shows what the account holds and what the reset gives back, and asks before it is spent |
@@ -1043,17 +1043,58 @@ over the panel and the panel returns afterwards.
 
 ## Diffs and commits
 
-`/diff` shows what changed in the [transcript viewer](#transcript-viewer), one item per file, so `[` and `]`
-jump between files and `y` copies the diff of the file under the cursor:
+`/diff` opens what changed full screen, on the terminal's alternate screen like the
+[transcript viewer](#transcript-viewer):
 
 | Command | Shows |
 |---|---|
-| `/diff` | The working tree against `HEAD`: staged and unstaged changes, and untracked files as additions |
+| `/diff`, `/diff uncommitted` | The working tree against `HEAD`: staged and unstaged changes, and untracked files as additions |
 | `/diff turn` | What changed since the checkpoint taken before your last prompt |
 | `/diff session` | What changed since the session's first prompt |
+| `/diff <ref>` | The working tree against a commit, branch or tag (`/diff main`, `/diff HEAD~3`), untracked files included; a range (`/diff main..topic`) shows what changed between its two ends |
 
 `/diff turn` and `/diff session` compare [checkpoints](sessions-and-checkpoints.md), so they also work outside a
-git repository and include what shell commands changed. Plain `/diff` needs a git repository.
+git repository and include what shell commands changed. The others need a git repository.
+
+```text
+Diff · working tree against HEAD                    file 1/3 · 0/3 reviewed · unified
+▌ M src/lib.rs  +3 -1 │   M src/lib.rs  +3 -1
+  A notes.md      +12 │ ▌ @@ -10,6 +10,8 @@ fn main()
+✓ ? draft.txt      +2 │    10 10  fn main() {
+                      │    11    -    let x = 1;
+                      │       11 +    let x = 10;
+j/k ↑↓ move · n/p file · [ ] hunk · m reviewed · s split · w wrap · / search · y copy · q back
+```
+
+The files are listed on the left: what happened to each (`M` changed, `A` added, `D` deleted, `R` renamed, `?` not
+tracked by git), the lines added and removed, and `✓` once you marked it reviewed. The list gives its room to the
+diff in a window narrower than 60 columns. On the right is the selected file's diff, its code coloured as its
+language like a file the agent [reads](#tool-cards), in one of two layouts:
+
+- **unified**: one column with the old and the new line number of each line;
+- **split**: the old file on the left and the new one on the right, each removed line beside the added line
+  that replaced it.
+
+`tui.diff_view` chooses: `auto` (the default) is split in a window of 140 columns or more and unified in a
+narrower one; `split` and `unified` always take that layout. `s` switches for as long as the viewer is open.
+
+| Key | Effect |
+|---|---|
+| arrows, `j` `k` | Move the cursor a row of the diff |
+| `PgUp` `PgDn`, `b` `Space` | Move a screen |
+| `g` `G`, `Home` `End` | First and last row of the file |
+| `n` `p`, `Tab` `Shift+Tab` | Next and previous file |
+| `[` `]` | Previous and next hunk |
+| `m` | Mark the file reviewed and go on to the next file that is not; on a reviewed file, take the mark away |
+| `s` | Split or unified |
+| `w` | Wrap long lines instead of cutting them |
+| `/` | Search (case does not matter): `Enter` goes to the next match, in this file and then in the files after it; `/` and `Enter` with nothing typed goes on to the next one |
+| `y` | Copy the file's diff |
+| `q`, `Esc` | Return |
+
+A reviewed mark is kept in the session: `/diff` shows it again later, and after `/resume`, as long as the
+file's diff is the same. A file that changed again since you reviewed it is unmarked. The agent keeps working
+while the viewer is open; if it needs you, the last row says so and the request is shown when you return.
 
 `/commit [what to say]` makes a commit as you:
 
@@ -1303,26 +1344,48 @@ An icon that would only repeat the word beside it is left out at the `ascii` lev
 
 ## Themes
 
-Six themes are built in: `dark` (default), `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark` and
-`dark-daltonized` (success and error in blue and orange instead of green and red). Set one for good in
-[configuration](configuration.md):
+These themes are built in:
+
+| Theme | Dark | Light | Colours from |
+|---|---|---|---|
+| `auto` | `dark` (default) | `light` | azazel; the text keeps the terminal's own colour |
+| `dark-daltonized` | `dark-daltonized` | | azazel: success and error in blue and orange instead of green and red |
+| `catppuccin` | `catppuccin-dark` (Mocha, also `catppuccin-mocha`) | `catppuccin-light` (Latte, also `catppuccin-latte`) | [catppuccin.com](https://catppuccin.com/palette) |
+| `tokyo-night` | `tokyo-night-dark` (Night) | `tokyo-night-light` (Day, also `tokyo-night-day`) | [tokyonight.nvim](https://github.com/folke/tokyonight.nvim) |
+| `gruvbox` | `gruvbox-dark` | `gruvbox-light` | [gruvbox](https://github.com/morhetz/gruvbox) |
+| `dracula` | `dracula-dark` (Dracula) | `dracula-light` (Alucard, also `alucard`) | [draculatheme.com](https://draculatheme.com/spec) |
+| `nord` | `nord` | | [nordtheme.com](https://www.nordtheme.com/docs/colors-and-palettes) |
+| `rose-pine` | `rose-pine-dark` (main, also `rose-pine-main`) | `rose-pine-light` (Dawn, also `rose-pine-dawn`) | [rosepinetheme.com](https://rosepinetheme.com/palette) |
+| `kanagawa` | `kanagawa-dark` (Wave, also `kanagawa-wave`) | `kanagawa-light` (Lotus, also `kanagawa-lotus`) | [kanagawa.nvim](https://github.com/rebelot/kanagawa.nvim) |
+| `one` | `one-dark` | `one-light` | Atom's One Dark and One Light |
+| `solarized` | `solarized-dark` | `solarized-light` | [Solarized](https://ethanschoonover.com/solarized/) |
+| `everforest` | `everforest-dark` | `everforest-light` | [Everforest](https://github.com/sainnhe/everforest) (medium) |
+| `github` | `github-dark` | `github-light` | GitHub's [Primer](https://primer.style/foundations/primitives/color) colours |
+| `ayu` | `ayu-dark` | `ayu-light` | [ayu-colors](https://github.com/ayu-theme/ayu-colors) |
+| `monokai` | `monokai` | | Monokai's original colours |
+
+Set one for good in [configuration](configuration.md):
 
 ```toml
 [tui]
-theme = "light"
+theme = "catppuccin"
 ```
 
-`theme = "auto"` follows the terminal: `light` on a light background, `dark` on a dark one. When the UI starts
+A theme with a dark and a light palette, named without `-dark` or `-light`, follows the terminal: the light
+palette on a light background, the dark one on a dark background. `auto` is that pair for `dark` and `light`.
+`catppuccin-dark` or `catppuccin-light` pins one palette whatever the background; a theme with one palette is
+that palette on any background. In every built-in theme, text on the background of a popup keeps a contrast of at
+least 4.5:1. When the UI starts
 it asks the terminal for its background colour (OSC 11) and waits up to 200 ms for the answer; a terminal
 that answers costs none of that time, and an answer that has begun to arrive by then is read to its end. A
 terminal that does not answer, and output that is not a terminal, get `dark`. An answer that comes later
 still is read as typed text and shows in the input; on a line that slow, name a theme instead. The terminal is asked once, at
-the start: after changing the terminal's own colours, `/restart` asks again. `/theme` says which of the two
-`auto` is in this terminal; switched to in a running session that did not start on it, `auto` is `dark` until
-azazel starts again. Commands that print in colour outside the UI (`azazel usage`) do not ask the terminal
-and draw `auto` as `dark`.
+the start: after changing the terminal's own colours, `/restart` asks again. `/theme` says which palette a theme
+that follows the terminal shows in this one; switched to in a running session that did not start on such a
+theme, it is dark until azazel starts again. Commands that print in colour outside the UI (`azazel usage`) do
+not ask the terminal and draw such a theme dark.
 
-`/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
+`/theme` opens a picker (type to filter it), in which each theme shows its accent, success, warning and error colours, and
 `/theme <name>` switches for the running session. `--theme <name>` on the command line sets the theme of one
 run, and `--theme <file>` takes a theme file from anywhere; a name or file that cannot be used ends the run
 with status 2.

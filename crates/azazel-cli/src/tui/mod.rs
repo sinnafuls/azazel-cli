@@ -9,6 +9,7 @@ mod cache;
 mod calls;
 mod clip;
 mod debug;
+mod diff_view;
 mod extras;
 mod fleet;
 mod form;
@@ -420,24 +421,12 @@ pub struct Tui {
     ended: bool,
 }
 
-/// The value of `tui.theme` that follows the terminal: `light` on a light background, else
-/// `dark`.
-pub(crate) const AUTO_THEME: &str = "auto";
-
-/// The theme `auto` stands for in a terminal whose background is light (`light`), dark, or
-/// not known (`None`).
-fn auto_theme(light: Option<bool>) -> &'static str {
+/// Which palette a theme that follows the background takes in a terminal whose background is
+/// light (`Some(true)`), dark, or not known (`None`).
+fn background_word(light: Option<bool>) -> &'static str {
     match light {
         Some(true) => "light",
         Some(false) | None => "dark",
-    }
-}
-
-/// `name` with `auto` resolved for a terminal whose background is `light`.
-fn theme_for(name: &str, light: Option<bool>) -> &str {
-    match name {
-        AUTO_THEME => auto_theme(light),
-        name => name,
     }
 }
 
@@ -458,16 +447,18 @@ pub(crate) fn terminal_theme(
     } else {
         ColorDepth::detect(std::env::var("COLORTERM").ok().as_deref())
     };
-    let (theme, problem) = named_theme(paths, theme_for(&config.tui.theme, light));
+    let (theme, problem) = named_theme(paths, &config.tui.theme, light);
     let glyphs = GlyphLevel::detect(config.tui.glyphs.as_str(), |name| std::env::var(name).ok());
     (theme.with_depth(depth).with_glyphs(glyphs), problem)
 }
 
-/// A built-in theme (`dark`, `light`, `catppuccin-mocha`, ...), `~/.azazel/themes/<name>.toml`,
-/// or the theme file whose full path `name` is (`--theme <file>`). Falls back to `dark` with a
-/// message. `auto` is `dark` here, where no terminal has been asked for its background.
-pub(crate) fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
-    match Theme::builtin(theme_for(name, None)) {
+/// A built-in theme (`dark`, `light`, `catppuccin`, `nord-dark`, ...),
+/// `~/.azazel/themes/<name>.toml`, or the theme file whose full path `name` is
+/// (`--theme <file>`). A built-in theme with a dark and a light palette takes the one for a
+/// terminal whose background is `light`; dark when that is not known. Falls back to `dark`
+/// with a message.
+pub(crate) fn named_theme(paths: &Paths, name: &str, light: Option<bool>) -> (Theme, Option<String>) {
+    match Theme::builtin_for(name, light) {
         Some(theme) => (theme, None),
         None => {
             let other = name;
@@ -576,8 +567,9 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     // Asked before anything reads keys: the answers come in on the same channel. The colour
     // of the background is asked for only when the theme is to follow it, and only of a
     // terminal: a pipe would keep the question as output.
-    let follow_background =
-        env.config.tui.theme == AUTO_THEME && io::stdout().is_terminal() && io::stdin().is_terminal();
+    let follow_background = Theme::follows_background(&env.config.tui.theme)
+        && io::stdout().is_terminal()
+        && io::stdin().is_terminal();
     let (caps, images_problem, light_terminal) =
         terminal::capabilities(env.config.tui.images, follow_background).await;
     let (theme, theme_problem) = load_theme(&env, light_terminal);
@@ -2391,34 +2383,37 @@ impl Tui {
 
     fn set_theme(&mut self, name: &str) {
         if self.apply_theme(name) {
-            self.info(&match name {
-                AUTO_THEME => format!("theme: auto ({})", self.auto_theme_note()),
-                name => format!("theme: {name}"),
-            });
+            self.info(&format!("theme: {}", self.theme_label(name)));
         }
     }
 
-    /// The theme `auto` is in this terminal: `light` or `dark`.
-    fn auto_theme(&self) -> &'static str {
-        auto_theme(self.light_terminal)
+    /// `name`, and for a theme that follows the background which of its palettes this terminal
+    /// shows: `catppuccin (light)`.
+    pub(super) fn theme_label(&self, name: &str) -> String {
+        match Theme::follows_background(name) {
+            true => format!("{name} ({})", background_word(self.light_terminal)),
+            false => name.to_string(),
+        }
     }
 
-    /// What `auto` is in this terminal and why, for the user.
-    fn auto_theme_note(&self) -> String {
+    /// Which palette a theme that follows the background takes in this terminal, and why, for
+    /// the user.
+    pub(super) fn background_note(&self) -> String {
         match self.light_terminal {
-            Some(true) => "light: this terminal's background is light".to_string(),
-            Some(false) => "dark: this terminal's background is dark".to_string(),
-            None if self.env.config.tui.theme == AUTO_THEME => {
-                "dark: this terminal did not say what its background is".to_string()
+            Some(true) => "this terminal's background is light".to_string(),
+            Some(false) => "this terminal's background is dark".to_string(),
+            None if Theme::follows_background(&self.env.config.tui.theme) => {
+                "this terminal did not say what its background is, so the dark palette is shown".to_string()
             }
-            None => "dark until azazel starts again: the terminal is asked for its background at the start"
+            None => "the dark palette until azazel starts again: the terminal is asked for its background \
+                     at the start"
                 .to_string(),
         }
     }
 
-    /// The theme `name`, with `auto` as this terminal's background makes it.
+    /// The theme `name`, with the palette this terminal's background asks for.
     fn theme_named(&self, name: &str) -> (Theme, Option<String>) {
-        named_theme(&self.env.paths, theme_for(name, self.light_terminal))
+        named_theme(&self.env.paths, name, self.light_terminal)
     }
 
     /// Draws with the theme `name` from now on, without a word about it: the settings screen

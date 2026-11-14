@@ -21,6 +21,13 @@ const CUT_NOTE: &str = "[diff cut here]";
 pub struct FileDiff {
     /// The path with what happened to it: `src/lib.rs  +3 −1`, `notes.md (new)  +12`.
     pub file: String,
+    /// The path alone, `old → new` for a renamed file.
+    pub path: String,
+    /// What happened to the file, as `git status` says it: `M`, `A`, `D`, `R`, or `?` for a
+    /// file git does not track.
+    pub status: char,
+    pub added: usize,
+    pub removed: usize,
     /// The file's unified diff, from its `---` and `+++` lines on.
     pub text: String,
 }
@@ -156,12 +163,17 @@ fn file_diff(header: &str, lines: &[&str]) -> FileDiff {
         unquote(name).to_string()
     };
     let mut file = new.or(old).unwrap_or_else(from_header);
+    let mut status = 'M';
     if let Some(from) = renamed_from.filter(|from| *from != file) {
         file = format!("{from} → {file}");
+        status = 'R';
     }
+    let path = file.clone();
     if created {
+        status = 'A';
         file.push_str(" (new)");
     } else if deleted {
+        status = 'D';
         file.push_str(" (deleted)");
     }
     if added > 0 {
@@ -177,7 +189,14 @@ fn file_diff(header: &str, lines: &[&str]) -> FileDiff {
         .collect::<Vec<_>>()
         .join("\n");
     cut(&mut text, MAX_FILE_DIFF_BYTES);
-    FileDiff { file, text }
+    FileDiff {
+        file,
+        path,
+        status,
+        added,
+        removed,
+        text,
+    }
 }
 
 /// An untracked file as the diff that adding it would be.
@@ -186,6 +205,10 @@ fn untracked_diff(top: &Path, relative: &str) -> FileDiff {
     let file = format!("{relative} (untracked)");
     let note = |text: String| FileDiff {
         file: file.clone(),
+        path: relative.to_string(),
+        status: '?',
+        added: 0,
+        removed: 0,
         text,
     };
     let size = match std::fs::metadata(&path) {
@@ -228,6 +251,10 @@ fn untracked_diff(top: &Path, relative: &str) -> FileDiff {
     }
     FileDiff {
         file: format!("{file}  +{count}"),
+        path: relative.to_string(),
+        status: '?',
+        added: count,
+        removed: 0,
         text: text.trim_end().to_string(),
     }
 }
@@ -246,7 +273,29 @@ async fn untracked(top: &Path) -> Result<Vec<String>, String> {
 /// then untracked files as additions.
 pub async fn working_tree(top: &Path) -> Result<Vec<FileDiff>, String> {
     let base = base(top).await?;
-    let tracked = run(top, &["diff", "--no-color", "--no-ext-diff", &base]).await?;
+    tree_against(top, &base).await
+}
+
+/// The working tree against `reference` (a commit, a branch, a tag), untracked files included as
+/// additions; or, for a range (`main..topic`, `main...topic`), what changed between its ends.
+pub async fn against(top: &Path, reference: &str) -> Result<Vec<FileDiff>, String> {
+    // Never an option to git, whatever was typed.
+    if reference.starts_with('-') || reference.trim().is_empty() {
+        return Err(format!("`{reference}` is not a commit"));
+    }
+    if reference.contains("..") {
+        let diff = run(top, &["diff", "--no-color", "--no-ext-diff", reference, "--"]).await?;
+        return Ok(split(&diff));
+    }
+    let commit = format!("{reference}^{{commit}}");
+    if run(top, &["rev-parse", "--verify", "--quiet", &commit]).await.is_err() {
+        return Err(format!("no commit, branch or tag is named `{reference}`"));
+    }
+    tree_against(top, reference).await
+}
+
+async fn tree_against(top: &Path, base: &str) -> Result<Vec<FileDiff>, String> {
+    let tracked = run(top, &["diff", "--no-color", "--no-ext-diff", base, "--"]).await?;
     let mut files = split(&tracked);
     let new = untracked(top).await?;
     let hidden = new.len().saturating_sub(MAX_UNTRACKED_FILES);
@@ -254,8 +303,13 @@ pub async fn working_tree(top: &Path) -> Result<Vec<FileDiff>, String> {
         files.push(untracked_diff(top, relative));
     }
     if hidden > 0 {
+        let file = format!("{hidden} more untracked files");
         files.push(FileDiff {
-            file: format!("{hidden} more untracked files"),
+            path: file.clone(),
+            file,
+            status: '?',
+            added: 0,
+            removed: 0,
             text: "not shown".to_string(),
         });
     }
@@ -516,6 +570,19 @@ new mode 100755
             "--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n keep\n-old\n+new"
         );
         assert!(files[3].text.contains("new mode 100755"));
+        let what: Vec<(&str, char, usize, usize)> = files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status, file.added, file.removed))
+            .collect();
+        assert_eq!(
+            what,
+            [
+                ("a.txt", 'M', 1, 1),
+                ("gone.txt", 'D', 0, 1),
+                ("old name.txt → new name.txt", 'R', 0, 0),
+                ("run.sh", 'M', 0, 0)
+            ]
+        );
         assert_eq!(split("nothing here"), []);
     }
 
@@ -564,6 +631,32 @@ new mode 100755
         if toplevel(outside.path()).await.is_none() {
             assert!(working_tree(outside.path()).await.is_err());
         }
+    }
+
+    #[tokio::test]
+    async fn the_working_tree_is_compared_with_any_commit_or_a_range_is_shown() {
+        let repo = Repo::new().await;
+        repo.write("a.txt", "one\n");
+        repo.commit_all("first").await;
+        run(repo.path(), &["branch", "start"]).await.unwrap();
+        repo.write("a.txt", "one\ntwo\n");
+        repo.commit_all("second").await;
+        repo.write("a.txt", "one\ntwo\nthree\n");
+        repo.write("fresh.txt", "new\n");
+        let top = toplevel(repo.path()).await.unwrap();
+
+        let files = against(&top, "start").await.unwrap();
+        let what: Vec<(&str, char, usize)> =
+            files.iter().map(|file| (file.path.as_str(), file.status, file.added)).collect();
+        assert_eq!(what, [("a.txt", 'M', 2), ("fresh.txt", '?', 1)]);
+        // A range is two commits: neither the working tree nor untracked files are in it.
+        let files = against(&top, "start..HEAD").await.unwrap();
+        let what: Vec<(&str, usize)> = files.iter().map(|file| (file.path.as_str(), file.added)).collect();
+        assert_eq!(what, [("a.txt", 1)]);
+        assert!(against(&top, "no-such-branch").await.unwrap_err().contains("no-such-branch"));
+        // What is typed never reaches git as an option.
+        assert!(against(&top, "--output=x").await.unwrap_err().contains("is not a commit"));
+        assert!(!top.join("x").exists());
     }
 
     #[tokio::test]

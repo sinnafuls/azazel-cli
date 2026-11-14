@@ -255,7 +255,7 @@ fn theme_flag(value: &str, paths: &Paths) -> Result<String, UsageError> {
         None if file.is_file() => azazel_core::paths::canonical(&file).display().to_string(),
         _ => value.to_string(),
     };
-    match crate::tui::named_theme(paths, &name).1 {
+    match crate::tui::named_theme(paths, &name, None).1 {
         Some(problem) => Err(UsageError(format!("--theme: {problem}"))),
         None => Ok(name),
     }
