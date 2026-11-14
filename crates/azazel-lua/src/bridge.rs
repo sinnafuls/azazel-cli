@@ -457,4 +457,9 @@ impl ShortcutHandler for LuaShortcut {
             }
         }
     }
+
+    /// Listings name the script, not the host all scripts are loaded by.
+    fn source(&self) -> Option<String> {
+        Some(format!("{}:{}", crate::script::OWNER, self.script.shared.id))
+    }
 }

@@ -26,6 +26,8 @@ const PATH_SHARE: usize = 3;
 const PATH_MIN: usize = 16;
 /// The widest a session's name is shown, unless `max` says otherwise.
 const SESSION_MAX: usize = 24;
+/// The widest one text of an extension is shown, unless `max` says otherwise.
+const EXTENSION_MAX: usize = 32;
 /// In a list of segments: the side is empty, where an empty list would take the preset's.
 pub(crate) const NONE: &str = "none";
 
@@ -52,10 +54,11 @@ pub(crate) enum Name {
     GitDirty,
     Account,
     Cache,
+    Extensions,
 }
 
 impl Name {
-    pub(crate) const ALL: [Name; 20] = [
+    pub(crate) const ALL: [Name; 21] = [
         Name::Mode,
         Name::Model,
         Name::Thinking,
@@ -76,6 +79,7 @@ impl Name {
         Name::GitDirty,
         Name::Account,
         Name::Cache,
+        Name::Extensions,
     ];
 
     /// The name `[statusline]` knows the segment by.
@@ -101,6 +105,7 @@ impl Name {
             Name::GitDirty => "git_dirty",
             Name::Account => "account",
             Name::Cache => "cache",
+            Name::Extensions => "extensions",
         }
     }
 
@@ -131,6 +136,7 @@ impl Name {
             Name::GitDirty => "files changed since the last commit",
             Name::Account => "the account the provider is used with",
             Name::Cache => "the share of the prompt read from the cache",
+            Name::Extensions => "what extensions show with azazel.status",
         }
     }
 
@@ -151,6 +157,7 @@ impl Name {
             Name::Tier => 40,
             Name::Queue => 38,
             Name::Todo => 35,
+            Name::Extensions => 32,
             Name::Cache => 30,
             Name::Session => 25,
             Name::Account => 20,
@@ -164,7 +171,7 @@ impl Name {
         match self {
             Name::Path | Name::Model | Name::Account => &["max", "style"],
             Name::Context => &["style"],
-            Name::Branch | Name::Goal | Name::Session => &["max"],
+            Name::Branch | Name::Goal | Name::Session | Name::Extensions => &["max"],
             Name::Time => &["format", "seconds"],
             Name::Bar => &["cells", "min_width"],
             _ => &[],
@@ -177,18 +184,20 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
     use Name::*;
     match preset {
         StatusPreset::Default => (
-            &[Mode, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal],
+            &[
+                Mode, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Extensions,
+            ],
             &[Model, Tier, Thinking],
         ),
         StatusPreset::Minimal => (&[Mode, Path], &[Model]),
         StatusPreset::Powerline => (
-            &[Mode, Branch, GitDirty, Path, Context, Agents],
+            &[Mode, Branch, GitDirty, Path, Context, Agents, Extensions],
             &[Cost, Usage, Thinking, Model],
         ),
         StatusPreset::Full => (
             &[
                 Mode, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal, Todo,
-                Queue,
+                Queue, Extensions,
             ],
             &[Session, Account, Model, Tier, Thinking, Time],
         ),
@@ -437,6 +446,8 @@ pub(super) struct StatusLine<'a> {
     pub session: &'a str,
     /// The time of day as hours, minutes and seconds.
     pub clock: Option<(u8, u8, u8)>,
+    /// What extensions show with `azazel.status`, in the order they first set it.
+    pub extensions: Vec<String>,
     /// The model the lead answers with; empty when there is none.
     pub model: &'a str,
     pub tier: Option<&'a str>,
@@ -664,6 +675,20 @@ impl StatusLine<'_> {
                 }
                 Segment::new(Role::Muted, labelled(Glyph::Clock, &time))
             }),
+            // Each text is a segment of its own, so the separator of the line stands between
+            // them. A script decides what the text is: one line of it is shown, without
+            // anything that would move the cursor or change colours.
+            Name::Extensions => {
+                for shown in &self.extensions {
+                    let shown = text::sanitize(shown);
+                    let shown = shown.lines().next().unwrap_or_default().trim();
+                    if !shown.is_empty() {
+                        let shown = cut(shown, Some(EXTENSION_MAX));
+                        out.push(Segment::new(Role::Muted, shown).priority(priority));
+                    }
+                }
+                None
+            }
         };
         out.extend(segment.map(|segment| segment.priority(priority)));
     }
@@ -692,6 +717,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
         queued: 1,
         session: "fix the build",
         clock: Some((14, 5, 9)),
+        extensions: vec!["ci ok".to_string()],
         model: "anthropic/claude-opus-5-5",
         tier: Some("priority"),
         thinking: "high",
@@ -737,6 +763,7 @@ mod tests {
             queued: 0,
             session: "",
             clock: None,
+            extensions: Vec::new(),
             model: "anthropic/claude-opus-5-5",
             tier: Some("priority"),
             thinking: "high",
@@ -1030,7 +1057,7 @@ mod tests {
             shown_in(&sample(&METERED), &full, 240, &theme),
             sides(
                 "⏵ accept-edits · ⑂ main · ± 3 · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · ≋ 87% · \
-                 ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⏵ 1 queued",
+                 ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⏵ 1 queued · ci ok",
                 "❖ fix the build · ♙ work · ⬢ anthropic/claude-opus-5-5 · priority · high · ◷ 14:05",
                 240
             )
@@ -1045,7 +1072,7 @@ mod tests {
             shown_in(&sample(&METERED), &full, 240, &ascii),
             sides(
                 "> accept-edits | git: main | +- 3 | ~/src/app | ctx 42% [===>----] | 78 tok/s | $0.42 | \
-                 cache 87% | 2 agents | goal active | todo 2/5 | > 1 queued",
+                 cache 87% | 2 agents | goal active | todo 2/5 | > 1 queued | ci ok",
                 "fix the build | as work | anthropic/claude-opus-5-5 | priority | high | 14:05",
                 240
             )
@@ -1115,7 +1142,7 @@ mod tests {
             [
                 "statusline.segments.clock: there is no segment `clock` (segments: mode, model, thinking, \
                  tier, path, branch, context, bar, rate, cost, usage, agents, goal, todo, queue, session, \
-                 time, git_dirty, account, cache)",
+                 time, git_dirty, account, cache, extensions)",
                 "statusline.segments.mode: there is no option `max` (options: icon, priority)",
                 "statusline.segments.mode: `priority` is a whole number from 0 to 100",
                 "statusline.segments.path: there is no option `colour` (options: icon, max, priority, style)",
@@ -1284,6 +1311,81 @@ mod tests {
             let row = line.render(&layout(""), Some("\x1b[32ma line of some length"), width, &theme);
             assert!(text::width(&row) <= width, "{width}: {row:?}");
         }
+    }
+
+    #[test]
+    fn what_extensions_show_is_on_the_line_and_leaves_it_before_the_model() {
+        let theme = Theme::dark();
+        let line = StatusLine {
+            rate: None,
+            cost: None,
+            agents: 0,
+            goal: None,
+            tier: None,
+            // A script decides what the text is: one line of it is shown, and nothing of it
+            // reaches the terminal as an escape sequence.
+            extensions: vec![
+                "ci passing".to_string(),
+                "\x1b[2J3 todos\nand a second line".to_string(),
+                "\x1b[31m\t".to_string(),
+            ],
+            ..full(&METERED)
+        };
+        assert_eq!(
+            shown(&line, 120, &theme),
+            sides(
+                "⏸ plan · ⑂ main · ~/src/app · ◫ 42% [━━━╸────] · ci passing · 3 todos",
+                "⬢ anthropic/claude-opus-5-5 · high",
+                120
+            )
+        );
+        assert!(!painted(&line, 120, &theme).contains("\x1b[2J"));
+        // The texts stand where the layout puts the segment, with its separator between them.
+        let right = layout("separator = \"bar\"\nleft = [\"mode\"]\nright = [\"extensions\", \"model\"]");
+        assert_eq!(
+            shown_in(&line, &right, 80, &theme),
+            sides("⏸ plan", "ci passing │ 3 todos │ ⬢ anthropic/claude-opus-5-5", 80)
+        );
+        assert!(!shown_in(&line, &layout("preset = \"minimal\""), 120, &theme).contains("ci passing"));
+        // A long text is cut, to `max` columns where that is set.
+        let cut = layout("[segments.extensions]\nmax = 6");
+        assert!(shown_in(&line, &cut, 120, &theme).contains(" · ci pa… · 3 tod…  "));
+        let long = StatusLine {
+            extensions: vec!["x".repeat(80)],
+            ..full(&METERED)
+        };
+        let row = shown(&long, 200, &theme);
+        assert!(row.contains(&format!(" · {}… ", "x".repeat(31))), "{row:?}");
+
+        // On a narrow line the texts go before the context, the path, the branch and the
+        // model do, the last of them first.
+        let mut gone = None;
+        for width in (20..=120).rev() {
+            let row = shown(&line, width, &theme);
+            assert!(text::width(&row) <= width, "width {width}: {row:?}");
+            if row.contains("ci passing") {
+                assert!(
+                    gone.is_none(),
+                    "width {width} shows more than a wider line: {row:?}"
+                );
+                assert!(
+                    row.contains("⑂ main · ~/src/app · ◫ 42%") && row.contains("⬢ anthropic/claude-opus-5-5"),
+                    "width {width}: {row:?}"
+                );
+            } else {
+                assert!(!row.contains("3 todos"), "width {width}: {row:?}");
+                gone.get_or_insert(width);
+            }
+        }
+        let gone = gone.unwrap();
+        assert_eq!(
+            shown(&line, gone, &theme),
+            sides(
+                "⏸ plan · ⑂ main · ~/src/app · ◫ 42%",
+                "⬢ anthropic/claude-opus-5-5 · high",
+                gone
+            )
+        );
     }
 
     #[test]

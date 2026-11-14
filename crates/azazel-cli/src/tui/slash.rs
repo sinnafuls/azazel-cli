@@ -8,7 +8,7 @@ use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, SelectItem, Theme};
 
 use super::backend::Go;
 use super::overlay::{Action, Overlay, RewindPoint};
-use super::{SHELL_NOTE, Tui, first_line, view};
+use super::{SHELL_NOTE, Tui, extras, first_line, view};
 
 /// Matching lines listed per session by `/search`.
 pub(super) const SEARCH_LINES: usize = 3;
@@ -770,6 +770,18 @@ impl Tui {
             "\nchange them in {}",
             self.env.paths.keybindings_file().display()
         ));
+        // Keys of extensions are bound by their scripts, not by the file.
+        let bound = self
+            .extras()
+            .map(|extras| extras::bindings(&extras, &self.keymap))
+            .unwrap_or_default();
+        if !bound.is_empty() {
+            out.push_str("\n\nkeys of extensions (azazel.shortcut):");
+            for line in bound {
+                out.push_str("\n  ");
+                out.push_str(&line);
+            }
+        }
         self.info(&out);
         // What stands in the way of a binding, apart from the file itself.
         let conflicts = self.key_conflicts();

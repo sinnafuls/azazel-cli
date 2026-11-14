@@ -9,6 +9,7 @@ mod cache;
 mod calls;
 mod clip;
 mod debug;
+mod extras;
 mod fleet;
 mod form;
 mod gitcmd;
@@ -362,6 +363,8 @@ pub struct Tui {
     terms: term::Known,
     /// Tells when something happens to a terminal.
     term_changes: Option<tokio::sync::watch::Receiver<u64>>,
+    /// Tells when an extension sets or removes a segment of the status line or a widget.
+    extras_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// The popup screen, while it is up.
     popup: Option<popup::Popup>,
     /// What was written to the transcript lately, to paint behind a popup.
@@ -626,6 +629,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         term: None,
         terms: term::Known::default(),
         term_changes: None,
+        extras_changes: None,
         popup: None,
         backdrop: popup::Backdrop::default(),
         pinned_rows: popup::PLAIN_PINNED_ROWS,
@@ -656,6 +660,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         ended: false,
     };
     tui.term_changes = tui.terminal_changes();
+    tui.extras_changes = tui.extras_changes();
     let opening = tui.attention.open();
     tui.write_out(opening);
     tui.seed_history();
@@ -899,6 +904,8 @@ impl Tui {
                 _ = wake_at(loop_deadline) => self.loop_tick().await,
                 // A program in a terminal drew something, or started, or ended.
                 _ = term::changed(&mut self.term_changes) => {}
+                // An extension set or removed a status segment or lines above the input.
+                _ = term::changed(&mut self.extras_changes) => {}
             }
         }
         // A popup that is still up gives the screen back, and what was said behind it reaches
@@ -1126,11 +1133,12 @@ impl Tui {
         if self.overlay.is_some() || self.btw.is_some() || self.term_open() {
             self.fleet.focus = None;
         }
-        // Agents at work and the todo list sit right above the input, under one blank row that
-        // sets everything pinned to the bottom apart from the transcript. They give way when
-        // the screen is too small for them.
+        // Agents at work, the todo list and the widgets of extensions sit right above the
+        // input, under one blank row that sets everything pinned to the bottom apart from the
+        // transcript. They give way when the screen is too small for them.
         let mut pinned = self.roster_lines(width);
         pinned.extend(self.todo_lines(width));
+        pinned.extend(self.widget_lines(width));
         let mut room = height.saturating_sub(bottom.len());
         if pinned.len() + 1 > room {
             pinned.drain(..(pinned.len() + 1 - room).min(pinned.len()));
@@ -1731,6 +1739,10 @@ impl Tui {
             && vim.handle_key(&mut self.editor, &key)
         {
             return self.refresh_completion();
+        }
+        // A key azazel has no action for may be an extension's.
+        if self.extension_key(&key) {
+            return;
         }
         let action = self.keymap.action_for(&key).map(str::to_string);
         match action.as_deref() {

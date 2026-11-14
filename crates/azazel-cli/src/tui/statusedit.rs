@@ -336,16 +336,20 @@ mod tests {
         );
         assert!(rows[0].ends_with("⬢ anthropic/claude-opus-5-5 · priority · high"));
         assert_eq!(rows[1], "");
-        assert_eq!(rows[2], "▌ Preset     default");
-        assert_eq!(rows[3], "  Separator  dot");
-        assert_eq!(rows[4], "  ▣ mode       left   the permission mode");
-        assert_eq!(rows[14], "  ▣ model      right  the model that answers");
-        assert_eq!(rows[17], "  □ todo              todo items done");
-        // Twenty segments and the two choices, whatever is on the line.
+        assert_eq!(rows[2], "▌ Preset      default");
+        assert_eq!(rows[3], "  Separator   dot");
+        assert_eq!(rows[4], "  ▣ mode        left   the permission mode");
+        assert_eq!(
+            rows[14],
+            "  ▣ extensions  left   what extensions show with azazel.status"
+        );
+        assert_eq!(rows[15], "  ▣ model       right  the model that answers");
+        assert_eq!(rows[18], "  □ todo               todo items done");
+        // Every segment and the two choices, whatever is on the line.
         assert_eq!(rows.len(), 2 + 2 + Name::ALL.len());
         // A small box keeps the list.
         assert_eq!(shown(&editor, 100, 5).len(), 5);
-        assert_eq!(shown(&editor, 100, 5)[0], "▌ Preset     default");
+        assert_eq!(shown(&editor, 100, 5)[0], "▌ Preset      default");
     }
 
     #[test]

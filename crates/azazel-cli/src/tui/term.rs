@@ -33,14 +33,15 @@ pub(super) struct TermView {
 #[derive(Default)]
 pub(super) struct Known(BTreeMap<String, bool>);
 
-/// Resolves when something happened to a terminal; never when there are none to hear of.
+/// Resolves when `changes` says that something happened (to a terminal, to what extensions show);
+/// never when there is nothing to hear of.
 pub(super) async fn changed(changes: &mut Option<watch::Receiver<u64>>) {
     let heard = match changes {
         Some(changes) => changes.changed().await.is_ok(),
         None => false,
     };
     if !heard {
-        // The terminals are gone with their session: nothing more will come.
+        // What told of the changes is gone with its session: nothing more will come.
         *changes = None;
         std::future::pending::<()>().await;
     }
