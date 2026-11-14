@@ -155,8 +155,9 @@ thinking = "low"
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
 | | `shell` | `""` | Shell program; empty means auto-detect (`bash`, else `sh`; on Windows Git's bash, `pwsh`, `powershell`) |
-| | `format_on_write` | `false` | Run the file's formatter after `write` and `edit`; see [tools](tools.md#format-on-write) |
-| | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"` |
+| | `format_on_write` | `true` | Run the file's formatter after `write`, `edit` and `patch`: the configured one, else one the file's project uses; see [tools](tools.md#format-on-write) |
+| | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"`; an empty command turns formatting off for the extension |
+| | `patch` | `"auto"` | Which models get the [`patch`](tools.md#patch) tool: `auto` (OpenAI GPT and Codex models, in place of `edit`), `on` (every model, beside `edit`) or `off` |
 | | `check_on_write` | `true` | Run the file's checkers (linters) after `write` and `edit`, when they are installed; see [tools](tools.md#checks-on-write) |
 | | `check` | `{}` | `[tools.check]`: file extension to checker command, replacing the built-in one; `{file}` is the file's path, and an empty command turns the check off |
 | | `check_report` | `"delta"` | What the lead is told about findings when it stops: `delta` (those on lines changed in the turn), `all` or `off`; see [tools](tools.md#the-report-when-the-lead-stops) |

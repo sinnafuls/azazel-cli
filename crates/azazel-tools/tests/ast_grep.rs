@@ -69,6 +69,7 @@ fn bench(read_guard: ReadGuard) -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: root.join(".artifacts"),
             read_guard,
+            patch: Default::default(),
         })
         .unwrap();
     let checker = format!(

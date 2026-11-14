@@ -96,6 +96,8 @@ impl Sandbox {
             .args(["--set", "session.auto_name=false"])
             // These runs end where the report of the checks ends them.
             .args(["--set", "guards.done_check=false"])
+            // What is checked is what the lead wrote, whatever formatter is installed.
+            .args(["--set", "tools.format_on_write=false"])
             .args(["--mode", "auto"])
             .args(args)
             .args(["-p", "go"])

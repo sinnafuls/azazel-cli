@@ -118,6 +118,10 @@ pub enum EntryKind {
         call_id: String,
         name: String,
         input: Value,
+        /// What was mended in the call as the model sent it before it ran: another name for
+        /// the tool, a number sent as a string.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        repairs: Vec<String>,
     },
     /// The run ended: `stop` is a stop reason, or `failed`. A run without this entry was cut
     /// short by the end of the process.
@@ -1283,11 +1287,12 @@ impl TranscriptSink for SessionStore {
         });
     }
 
-    fn tool_started(&self, call_id: &str, name: &str, input: &Value) {
+    fn tool_started(&self, call_id: &str, name: &str, input: &Value, repairs: &[String]) {
         self.append(EntryKind::ToolStarted {
             call_id: call_id.to_string(),
             name: name.to_string(),
             input: input.clone(),
+            repairs: repairs.to_vec(),
         });
     }
 
@@ -1418,9 +1423,20 @@ mod tests {
 
         // Then while tools run: the calls without a result, and which of them had started.
         store.message(&calling(&[("c1", "read"), ("c2", "shell"), ("c3", "write")]));
-        store.tool_started("c1", "read", &json!({}));
-        store.tool_started("c2", "shell", &json!({ "command": "make" }));
+        store.tool_started("c1", "read", &json!({}), &[]);
+        let mended = ["called as `bash`; the tool is `shell`".to_string()];
+        store.tool_started("c2", "shell", &json!({ "command": "make" }), &mended);
         let reopened = SessionStore::open(&store.path()).unwrap();
+        // What was mended in a call is kept with it.
+        let kept: Vec<Vec<String>> = reopened
+            .entries()
+            .into_iter()
+            .filter_map(|entry| match entry.kind {
+                EntryKind::ToolStarted { repairs, .. } => Some(repairs),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(kept, [Vec::new(), mended.to_vec()]);
         for session in [&store, &reopened] {
             let run = session.interrupted_run(None).unwrap();
             assert_eq!(
@@ -1464,7 +1480,7 @@ mod tests {
         let run_id = store.run_started(None);
         store.request_started("mock/lead", None);
         let middle = store.message(&calling(&[("c1", "shell")]));
-        store.tool_started("c1", "shell", &json!({}));
+        store.tool_started("c1", "shell", &json!({}), &[]);
         let result = store.message(&Message {
             role: Role::Tool,
             content: vec![Block::tool_result("c1", "ok", false)],
@@ -1526,7 +1542,7 @@ mod tests {
         let prompt = store.message(&Message::user("two"));
         let cut = store.run_started(None);
         store.message(&calling(&[("c1", "shell")]));
-        store.tool_started("c1", "shell", &json!({}));
+        store.tool_started("c1", "shell", &json!({}), &[]);
         let cut_leaf = store.leaf();
         assert_eq!(
             store.interrupted_run(None).map(|run| run.run_id),
@@ -1539,7 +1555,7 @@ mod tests {
         store.message(&Message::user("other"));
         let other = store.run_started(None);
         store.message(&calling(&[("c1", "write")]));
-        store.tool_started("c1", "write", &json!({}));
+        store.tool_started("c1", "write", &json!({}), &[]);
         store.message(&assistant("did the other thing"));
         store.run_ended(&other, "stop");
         assert_eq!(store.interrupted_run(None), None);

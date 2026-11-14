@@ -34,6 +34,7 @@ fn bench() -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: dir.path().join(".artifacts"),
             read_guard: ReadGuard::default(),
+            patch: Default::default(),
         })
         .unwrap();
     let session = Arc::new(SessionStore::create(&dir.path().join("sessions"), dir.path(), None).unwrap());
