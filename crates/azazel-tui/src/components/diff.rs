@@ -210,9 +210,19 @@ fn filled(
 pub enum Row {
     /// `@@ -12,7 +12,9 @@ fn name()`.
     Hunk(String),
-    Context { old: usize, new: usize, text: String },
-    Added { new: usize, text: String },
-    Removed { old: usize, text: String },
+    Context {
+        old: usize,
+        new: usize,
+        text: String,
+    },
+    Added {
+        new: usize,
+        text: String,
+    },
+    Removed {
+        old: usize,
+        text: String,
+    },
     /// Something said about the file rather than a line of it: a change of mode, a binary file,
     /// `\ No newline at end of file`.
     Note(String),
@@ -252,7 +262,9 @@ pub fn rows(diff_text: &str) -> Vec<Row> {
         if old_left == 0 && new_left == 0 {
             let header = !in_hunks && SAID_ELSEWHERE.iter().any(|said| line.starts_with(said));
             if !header && !line.is_empty() {
-                rows.push(Row::Note(line.strip_prefix('\\').unwrap_or(&line).trim().to_string()));
+                rows.push(Row::Note(
+                    line.strip_prefix('\\').unwrap_or(&line).trim().to_string(),
+                ));
             }
             continue;
         }
@@ -366,7 +378,11 @@ fn cell(side: Side, gutter: &str, code: &str, width: usize, wrap: bool, theme: &
     let room = width - lead;
     let pieces = match wrap {
         true => text::wrap_hard(code, room),
-        false => vec![text::truncate(code, room, theme.glyph(crate::glyphs::Glyph::Ellipsis))],
+        false => vec![text::truncate(
+            code,
+            room,
+            theme.glyph(crate::glyphs::Glyph::Ellipsis),
+        )],
     };
     let fill = background.map(|role| theme.bg(role)).unwrap_or_default();
     let blank = " ".repeat(text::width(gutter));
@@ -374,7 +390,11 @@ fn cell(side: Side, gutter: &str, code: &str, width: usize, wrap: bool, theme: &
         .iter()
         .enumerate()
         .map(|(i, piece)| {
-            let (gutter, mark) = if i == 0 { (gutter, mark) } else { (blank.as_str(), " ") };
+            let (gutter, mark) = if i == 0 {
+                (gutter, mark)
+            } else {
+                (blank.as_str(), " ")
+            };
             let mut line = fill.clone();
             line.push_str(&theme.fg(Role::Muted));
             line.push_str(gutter);
@@ -395,7 +415,11 @@ fn cell(side: Side, gutter: &str, code: &str, width: usize, wrap: bool, theme: &
 fn spanning(line: &str, role: Role, width: usize, wrap: bool, theme: &Theme) -> Vec<Line> {
     let pieces = match wrap {
         true => text::wrap_hard(line, width),
-        false => vec![text::truncate(line, width, theme.glyph(crate::glyphs::Glyph::Ellipsis))],
+        false => vec![text::truncate(
+            line,
+            width,
+            theme.glyph(crate::glyphs::Glyph::Ellipsis),
+        )],
     };
     pieces.iter().map(|piece| theme.paint(role, piece)).collect()
 }
@@ -423,42 +447,64 @@ pub fn lay_out(rows: &[Row], path: &str, width: usize, layout: Layout, theme: &T
         None => " ".repeat(digits + 1),
     };
     let mut laid = Laid::default();
-    let (left, right) = ((width.saturating_sub(1)) / 2, width.saturating_sub(1) - (width.saturating_sub(1)) / 2);
+    let (left, right) = (
+        (width.saturating_sub(1)) / 2,
+        width.saturating_sub(1) - (width.saturating_sub(1)) / 2,
+    );
     let bar = theme.paint(Role::Border, theme.glyph(crate::glyphs::Glyph::TreeLine));
     let mut index = 0;
     while index < rows.len() {
         match &rows[index] {
             Row::Hunk(header) => {
                 laid.hunks.push(laid.lines.len());
-                laid.lines.extend(spanning(header, Role::Accent, width, layout.wrap, theme));
+                laid.lines
+                    .extend(spanning(header, Role::Accent, width, layout.wrap, theme));
                 index += 1;
             }
             Row::Note(note) => {
-                laid.lines.extend(spanning(note, Role::Muted, width, layout.wrap, theme));
+                laid.lines
+                    .extend(spanning(note, Role::Muted, width, layout.wrap, theme));
                 index += 1;
             }
             Row::Context { old, new, text } if !layout.split => {
                 let gutter = format!("{}{}", number(Some(*old)), number(Some(*new)));
                 let code = shown(index, text);
-                laid.lines.extend(cell(Side::Context, &gutter, &code, width, layout.wrap, theme));
+                laid.lines
+                    .extend(cell(Side::Context, &gutter, &code, width, layout.wrap, theme));
                 index += 1;
             }
             Row::Added { new, text } if !layout.split => {
                 let gutter = format!("{}{}", number(None), number(Some(*new)));
                 let code = shown(index, text);
-                laid.lines.extend(cell(Side::Added, &gutter, &code, width, layout.wrap, theme));
+                laid.lines
+                    .extend(cell(Side::Added, &gutter, &code, width, layout.wrap, theme));
                 index += 1;
             }
             Row::Removed { old, text } if !layout.split => {
                 let gutter = format!("{}{}", number(Some(*old)), number(None));
                 let code = shown(index, text);
-                laid.lines.extend(cell(Side::Removed, &gutter, &code, width, layout.wrap, theme));
+                laid.lines
+                    .extend(cell(Side::Removed, &gutter, &code, width, layout.wrap, theme));
                 index += 1;
             }
             Row::Context { old, new, text } => {
                 let code = shown(index, text);
-                let l = cell(Side::Context, &number(Some(*old)), &code, left, layout.wrap, theme);
-                let r = cell(Side::Context, &number(Some(*new)), &code, right, layout.wrap, theme);
+                let l = cell(
+                    Side::Context,
+                    &number(Some(*old)),
+                    &code,
+                    left,
+                    layout.wrap,
+                    theme,
+                );
+                let r = cell(
+                    Side::Context,
+                    &number(Some(*new)),
+                    &code,
+                    right,
+                    layout.wrap,
+                    theme,
+                );
                 side_by_side(&mut laid.lines, l, r, left, right, &bar);
                 index += 1;
             }
@@ -476,11 +522,15 @@ pub fn lay_out(rows: &[Row], path: &str, width: usize, layout: Layout, theme: &T
                 }
                 for pair in 0..removed.len().max(added.len()) {
                     let l = match removed.get(pair) {
-                        Some((old, code)) => cell(Side::Removed, &number(Some(*old)), code, left, layout.wrap, theme),
+                        Some((old, code)) => {
+                            cell(Side::Removed, &number(Some(*old)), code, left, layout.wrap, theme)
+                        }
                         None => cell(Side::Empty, &number(None), "", left, false, theme),
                     };
                     let r = match added.get(pair) {
-                        Some((new, code)) => cell(Side::Added, &number(Some(*new)), code, right, layout.wrap, theme),
+                        Some((new, code)) => {
+                            cell(Side::Added, &number(Some(*new)), code, right, layout.wrap, theme)
+                        }
                         None => cell(Side::Empty, &number(None), "", right, false, theme),
                     };
                     side_by_side(&mut laid.lines, l, r, left, right, &bar);
@@ -688,13 +738,58 @@ index 1111111..2222222
         assert_eq!(rows[0], Row::Note(text("old mode 100644")));
         assert_eq!(rows[1], Row::Note(text("new mode 100755")));
         assert_eq!(rows[2], Row::Hunk(text("@@ -1,4 +1,4 @@ fn main()")));
-        assert_eq!(rows[3], Row::Context { old: 1, new: 1, text: text("fn main() {") });
-        assert_eq!(rows[4], Row::Removed { old: 2, text: text("    let x = 1;") });
-        assert_eq!(rows[5], Row::Removed { old: 3, text: text("    let y = 2;") });
-        assert_eq!(rows[6], Row::Added { new: 2, text: text("    let x = 10;") });
-        assert_eq!(rows[7], Row::Context { old: 4, new: 3, text: text("    run(x);") });
-        assert_eq!(rows[10], Row::Context { old: 40, new: 40, text: text("end") });
-        assert_eq!(rows[11], Row::Added { new: 41, text: text("more") });
+        assert_eq!(
+            rows[3],
+            Row::Context {
+                old: 1,
+                new: 1,
+                text: text("fn main() {")
+            }
+        );
+        assert_eq!(
+            rows[4],
+            Row::Removed {
+                old: 2,
+                text: text("    let x = 1;")
+            }
+        );
+        assert_eq!(
+            rows[5],
+            Row::Removed {
+                old: 3,
+                text: text("    let y = 2;")
+            }
+        );
+        assert_eq!(
+            rows[6],
+            Row::Added {
+                new: 2,
+                text: text("    let x = 10;")
+            }
+        );
+        assert_eq!(
+            rows[7],
+            Row::Context {
+                old: 4,
+                new: 3,
+                text: text("    run(x);")
+            }
+        );
+        assert_eq!(
+            rows[10],
+            Row::Context {
+                old: 40,
+                new: 40,
+                text: text("end")
+            }
+        );
+        assert_eq!(
+            rows[11],
+            Row::Added {
+                new: 41,
+                text: text("more")
+            }
+        );
         assert_eq!(rows.last(), Some(&Row::Note(text("No newline at end of file"))));
     }
 
@@ -711,9 +806,18 @@ index 1111111..2222222
         for width in 1..120 {
             for layout in [
                 Layout::default(),
-                Layout { split: true, wrap: false },
-                Layout { split: false, wrap: true },
-                Layout { split: true, wrap: true },
+                Layout {
+                    split: true,
+                    wrap: false,
+                },
+                Layout {
+                    split: false,
+                    wrap: true,
+                },
+                Layout {
+                    split: true,
+                    wrap: true,
+                },
             ] {
                 for line in lay_out(&rows, "src/a.rs", width, layout, &theme()).lines {
                     assert!(text::width(&line) <= width, "{width} {layout:?}: {line:?}");
@@ -725,18 +829,40 @@ index 1111111..2222222
     #[test]
     fn split_rows_put_a_removed_line_beside_the_line_that_replaced_it() {
         let rows = rows(FILE);
-        let laid = lay_out(&rows, "a.txt", 61, Layout { split: true, wrap: false }, &theme());
+        let laid = lay_out(
+            &rows,
+            "a.txt",
+            61,
+            Layout {
+                split: true,
+                wrap: false,
+            },
+            &theme(),
+        );
         let shown = plain(&laid.lines);
         let halves = |row: &str| {
             let (left, right) = row.split_once('│').unwrap();
             (left.trim_end().to_string(), right.trim_end().to_string())
         };
-        assert_eq!(halves(&shown[3]), (" 1  fn main() {".into(), " 1  fn main() {".into()));
-        assert_eq!(halves(&shown[4]), (" 2 -    let x = 1;".into(), " 2 +    let x = 10;".into()));
+        assert_eq!(
+            halves(&shown[3]),
+            (" 1  fn main() {".into(), " 1  fn main() {".into())
+        );
+        assert_eq!(
+            halves(&shown[4]),
+            (" 2 -    let x = 1;".into(), " 2 +    let x = 10;".into())
+        );
         // A removed line nothing replaced has an empty right side.
         assert_eq!(halves(&shown[5]), (" 3 -    let y = 2;".into(), String::new()));
-        assert_eq!(halves(&shown[6]), (" 4      run(x);".into(), " 3      run(x);".into()));
-        assert!(shown.iter().all(|row| text::width(row) == 61 || !row.contains('│')));
+        assert_eq!(
+            halves(&shown[6]),
+            (" 4      run(x);".into(), " 3      run(x);".into())
+        );
+        assert!(
+            shown
+                .iter()
+                .all(|row| text::width(row) == 61 || !row.contains('│'))
+        );
     }
 
     #[test]
@@ -745,7 +871,16 @@ index 1111111..2222222
         let rows = rows(diff);
         let cut = lay_out(&rows, "a.txt", 20, Layout::default(), &theme());
         assert_eq!(trimmed(&cut.lines)[2], "  1 +a line that is…");
-        let wrapped = lay_out(&rows, "a.txt", 20, Layout { split: false, wrap: true }, &theme());
+        let wrapped = lay_out(
+            &rows,
+            "a.txt",
+            20,
+            Layout {
+                split: false,
+                wrap: true,
+            },
+            &theme(),
+        );
         let shown = trimmed(&wrapped.lines);
         assert_eq!(shown.len(), 5);
         assert_eq!(shown[2], "  1 +a line that is");

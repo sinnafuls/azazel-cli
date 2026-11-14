@@ -12,8 +12,8 @@ use std::io::Write;
 use azazel_agent::ToolOutput;
 use azazel_ai::{Block, Role as MessageRole};
 use azazel_core::EntryKind;
-use azazel_tui::components::pager::{self, Item, Outcome, Pager, WHEEL_ROWS};
 use azazel_tui::Theme;
+use azazel_tui::components::pager::{self, Item, Outcome, Pager, WHEEL_ROWS};
 use crossterm::event::{Event, KeyEventKind, MouseEventKind};
 use serde_json::Value;
 

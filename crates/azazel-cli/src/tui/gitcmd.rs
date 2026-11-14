@@ -11,8 +11,8 @@ use azazel_core::side::{Side, SideQuestion};
 use azazel_tui::SelectItem;
 use tokio_util::sync::CancellationToken;
 
-use super::overlay::{Action, Kind, Overlay};
 use super::diff_view;
+use super::overlay::{Action, Kind, Overlay};
 use super::{Internal, SHELL_NOTE, Tui};
 use crate::git::{self, Changes};
 
@@ -78,7 +78,9 @@ impl Tui {
                 "Diff · working tree against HEAD".to_string(),
                 "no changes: the working tree matches HEAD".to_string(),
             ),
-            Some(range) if range.contains("..") => (format!("Diff · {range}"), format!("no changes in {range}")),
+            Some(range) if range.contains("..") => {
+                (format!("Diff · {range}"), format!("no changes in {range}"))
+            }
             Some(commit) => (
                 format!("Diff · working tree against {commit}"),
                 format!("no changes: the working tree matches {commit}"),

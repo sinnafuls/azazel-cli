@@ -834,7 +834,12 @@ mod tests {
                 }
                 assert_eq!(theme.is_light(), light, "{}", variant.name);
                 // A file listing every role of a built-in reproduces it exactly.
-                assert_eq!(Theme::from_toml(&as_file(&theme)).unwrap(), theme, "{}", variant.name);
+                assert_eq!(
+                    Theme::from_toml(&as_file(&theme)).unwrap(),
+                    theme,
+                    "{}",
+                    variant.name
+                );
                 seen += 1;
             }
         }
@@ -865,7 +870,10 @@ mod tests {
                     true => (0x1f, 0x1f, 0x1f),
                     false => (0xd0, 0xd0, 0xd0),
                 });
-                let surface = theme.color(Role::Surface).to_rgb().expect("built-ins fill popups");
+                let surface = theme
+                    .color(Role::Surface)
+                    .to_rgb()
+                    .expect("built-ins fill popups");
                 let (a, b) = (luminance(text), luminance(surface));
                 let ratio = (a.max(b) + 0.05) / (a.min(b) + 0.05);
                 assert!(ratio >= 4.5, "{}: text on surface is {ratio:.2}:1", variant.name);
@@ -905,12 +913,25 @@ mod tests {
             assert!(Theme::is_builtin(name), "{name}");
         }
         for requested in [
-            "dracula", "nord", "rose-pine", "kanagawa", "one-dark", "solarized", "everforest", "github", "ayu",
+            "dracula",
+            "nord",
+            "rose-pine",
+            "kanagawa",
+            "one-dark",
+            "solarized",
+            "everforest",
+            "github",
+            "ayu",
             "monokai",
         ] {
             assert!(Theme::is_builtin(requested), "{requested}");
         }
-        for old in ["catppuccin-mocha", "tokyo-night", "gruvbox-dark", "dark-daltonized"] {
+        for old in [
+            "catppuccin-mocha",
+            "tokyo-night",
+            "gruvbox-dark",
+            "dark-daltonized",
+        ] {
             assert!(Theme::is_builtin(old), "{old}");
         }
     }

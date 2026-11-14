@@ -288,7 +288,10 @@ pub async fn against(top: &Path, reference: &str) -> Result<Vec<FileDiff>, Strin
         return Ok(split(&diff));
     }
     let commit = format!("{reference}^{{commit}}");
-    if run(top, &["rev-parse", "--verify", "--quiet", &commit]).await.is_err() {
+    if run(top, &["rev-parse", "--verify", "--quiet", &commit])
+        .await
+        .is_err()
+    {
         return Err(format!("no commit, branch or tag is named `{reference}`"));
     }
     tree_against(top, reference).await
@@ -646,16 +649,31 @@ new mode 100755
         let top = toplevel(repo.path()).await.unwrap();
 
         let files = against(&top, "start").await.unwrap();
-        let what: Vec<(&str, char, usize)> =
-            files.iter().map(|file| (file.path.as_str(), file.status, file.added)).collect();
+        let what: Vec<(&str, char, usize)> = files
+            .iter()
+            .map(|file| (file.path.as_str(), file.status, file.added))
+            .collect();
         assert_eq!(what, [("a.txt", 'M', 2), ("fresh.txt", '?', 1)]);
         // A range is two commits: neither the working tree nor untracked files are in it.
         let files = against(&top, "start..HEAD").await.unwrap();
-        let what: Vec<(&str, usize)> = files.iter().map(|file| (file.path.as_str(), file.added)).collect();
+        let what: Vec<(&str, usize)> = files
+            .iter()
+            .map(|file| (file.path.as_str(), file.added))
+            .collect();
         assert_eq!(what, [("a.txt", 1)]);
-        assert!(against(&top, "no-such-branch").await.unwrap_err().contains("no-such-branch"));
+        assert!(
+            against(&top, "no-such-branch")
+                .await
+                .unwrap_err()
+                .contains("no-such-branch")
+        );
         // What is typed never reaches git as an option.
-        assert!(against(&top, "--output=x").await.unwrap_err().contains("is not a commit"));
+        assert!(
+            against(&top, "--output=x")
+                .await
+                .unwrap_err()
+                .contains("is not a commit")
+        );
         assert!(!top.join("x").exists());
     }
 

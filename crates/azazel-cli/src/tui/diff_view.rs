@@ -100,8 +100,13 @@ pub(super) enum Outcome {
     Pending,
     Close,
     /// A file was marked reviewed or unmarked: the mark is kept in the session.
-    Reviewed { key: String, reviewed: bool },
-    Copy { text: String },
+    Reviewed {
+        key: String,
+        reviewed: bool,
+    },
+    Copy {
+        text: String,
+    },
 }
 
 /// The columns of the screen: the file list (none when the window is narrow) and the diff.
@@ -221,9 +226,10 @@ impl DiffView {
 
     /// Lays the diff out again (another width, `s`, `w`) with the cursor on the hunk it was in.
     fn relay(&mut self, change: impl FnOnce(&mut DiffView)) {
-        let hunk = self.laid.as_ref().and_then(|(_, laid)| {
-            laid.hunks.iter().rposition(|start| *start <= self.cursor)
-        });
+        let hunk = self
+            .laid
+            .as_ref()
+            .and_then(|(_, laid)| laid.hunks.iter().rposition(|start| *start <= self.cursor));
         change(self);
         self.laid = None;
         let landing = hunk.and_then(|hunk| self.laid().hunks.get(hunk).copied());
@@ -242,7 +248,13 @@ impl DiffView {
             return self.set_notice("no search yet: / starts one");
         };
         let from = self.cursor + 1;
-        if let Some(row) = self.laid().lines.iter().skip(from).position(|line| found(&query, line)) {
+        if let Some(row) = self
+            .laid()
+            .lines
+            .iter()
+            .skip(from)
+            .position(|line| found(&query, line))
+        {
             self.cursor = from + row;
             return;
         }
@@ -334,7 +346,14 @@ impl DiffView {
             }
             KeyCode::Char('[') => {
                 let cursor = self.cursor;
-                match self.laid().hunks.iter().rev().find(|start| **start < cursor).copied() {
+                match self
+                    .laid()
+                    .hunks
+                    .iter()
+                    .rev()
+                    .find(|start| **start < cursor)
+                    .copied()
+                {
                     Some(start) => {
                         self.cursor = start;
                         self.top = start;
@@ -444,7 +463,9 @@ impl DiffView {
     }
 
     fn title_row(&self, width: usize, theme: &Theme) -> Line {
-        let reviewed = (0..self.files.len()).filter(|index| self.is_reviewed(*index)).count();
+        let reviewed = (0..self.files.len())
+            .filter(|index| self.is_reviewed(*index))
+            .count();
         let layout = self.layout();
         let mut place = format!(
             "file {}/{}{}{reviewed}/{} reviewed{}{}",
@@ -536,7 +557,10 @@ impl DiffView {
             theme.fg(Role::Text),
             " ".repeat(gap),
         );
-        format!("{}{RESET}", text::truncate(&row, width, "").trim_end_matches(RESET))
+        format!(
+            "{}{RESET}",
+            text::truncate(&row, width, "").trim_end_matches(RESET)
+        )
     }
 
     /// The first row of the diff: the file, what happened to it, and whether it is reviewed.
@@ -633,7 +657,13 @@ pub(super) async fn show(tui: &mut Tui, title: &str, files: Vec<FileDiff>) {
         azazel_core::config::DiffView::Unified => Some(false),
     };
     let files = files.into_iter().map(File::new).collect();
-    let mut view = DiffView::new(title, files, reviewed_marks(&session), configured, tui.theme.clone());
+    let mut view = DiffView::new(
+        title,
+        files,
+        reviewed_marks(&session),
+        configured,
+        tui.theme.clone(),
+    );
     let _ = tui.renderer.suspend();
     tui.leaving_main();
     // A popup may have the alternate screen already; then it stays when the viewer closes.
@@ -711,7 +741,10 @@ mod tests {
     fn file(path: &str, status: char, text: &str) -> File {
         let rows = diff::rows(text);
         let added = rows.iter().filter(|row| matches!(row, Row::Added { .. })).count();
-        let removed = rows.iter().filter(|row| matches!(row, Row::Removed { .. })).count();
+        let removed = rows
+            .iter()
+            .filter(|row| matches!(row, Row::Removed { .. }))
+            .count();
         File::new(FileDiff {
             file: path.to_string(),
             path: path.to_string(),
@@ -732,8 +765,16 @@ mod tests {
                     "--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1,3 +1,3 @@\n fn main() {{\n-    old();\n+    new();\n }}\n@@ -50,41 +50,42 @@\n{long}+added at the end\n"
                 ),
             ),
-            file("notes.md", 'A', "new file\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,2 @@\n+# Notes\n+needle here"),
-            file("old.txt", 'D', "--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone"),
+            file(
+                "notes.md",
+                'A',
+                "new file\n--- /dev/null\n+++ b/notes.md\n@@ -0,0 +1,2 @@\n+# Notes\n+needle here",
+            ),
+            file(
+                "old.txt",
+                'D',
+                "--- a/old.txt\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone",
+            ),
         ]
     }
 
@@ -759,7 +800,9 @@ mod tests {
     /// The text of the row of the diff the cursor is on.
     fn at_cursor(view: &mut DiffView) -> String {
         let cursor = view.cursor;
-        text::strip_ansi(&view.laid().lines[cursor]).trim_end().to_string()
+        text::strip_ansi(&view.laid().lines[cursor])
+            .trim_end()
+            .to_string()
     }
 
     fn plain(lines: &[Line]) -> Vec<String> {
@@ -785,12 +828,17 @@ mod tests {
     fn eighty_columns_show_one_column_and_a_hundred_and_forty_old_beside_new() {
         let mut narrow = view(80);
         let shown = plain(&narrow.render(80, 24));
-        assert!(shown[0].starts_with("Diff · test") && shown[0].ends_with("file 1/3 · 0/3 reviewed · unified"));
+        assert!(
+            shown[0].starts_with("Diff · test") && shown[0].ends_with("file 1/3 · 0/3 reviewed · unified")
+        );
         // The list is 22 columns at 80: the rail, the mark, the letter, the path and the counts.
         assert_eq!(shown[1].split('│').next().unwrap(), "▌ M src/lib.rs   +2 -1");
         assert_eq!(shown[2].split('│').next().unwrap(), "  A notes.md        +2");
         assert_eq!(shown[3].split('│').next().unwrap(), "  D old.txt         -1");
-        let diff: Vec<&str> = shown[1..23].iter().map(|row| row.split_once('│').unwrap().1).collect();
+        let diff: Vec<&str> = shown[1..23]
+            .iter()
+            .map(|row| row.split_once('│').unwrap().1)
+            .collect();
         assert!(diff[0].contains("M src/lib.rs  +2 -1"), "{diff:?}");
         assert_eq!(diff[1].trim_end(), "▌ @@ -1,3 +1,3 @@");
         assert_eq!(diff[3].trim_end(), "   2    -    old();");
@@ -806,7 +854,11 @@ mod tests {
         let mut widest = view(200);
         let shown = plain(&widest.render(200, 24));
         assert!(shown[0].ends_with("split"));
-        assert_eq!(shown[1].chars().position(|c| c == '│'), Some(40), "the list stops growing at 40 columns");
+        assert_eq!(
+            shown[1].chars().position(|c| c == '│'),
+            Some(40),
+            "the list stops growing at 40 columns"
+        );
     }
 
     #[test]
@@ -852,7 +904,12 @@ mod tests {
         assert_eq!(view.selected, 0);
         assert!(at_cursor(&mut view).ends_with(" line 1"));
         // The other matches on screen (`line 10`, ...) are marked.
-        assert!(shown.iter().any(|row| row.contains("• ") && row.contains("line 10")), "{shown:?}");
+        assert!(
+            shown
+                .iter()
+                .any(|row| row.contains("• ") && row.contains("line 10")),
+            "{shown:?}"
+        );
         // Enter on an empty query looks again.
         press(&mut view, "/\n");
         assert!(at_cursor(&mut view).ends_with(" line 10"));
