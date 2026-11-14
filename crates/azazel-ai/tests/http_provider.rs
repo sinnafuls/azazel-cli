@@ -611,3 +611,74 @@ async fn the_service_tier_is_sent_and_dropped_once_the_model_refuses_it() {
         .collect();
     assert_eq!(sent, [Some("priority".to_string()), None, None]);
 }
+
+#[tokio::test]
+async fn opencode_requests_name_the_conversation_they_belong_to() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .and(header("x-opencode-session", "session-7:lead"))
+        .and(header("x-opencode-client", "azazel"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(CHAT_STREAM, "text/event-stream"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    // Without the header the gateway refuses, as OpenCode Go does.
+    Mock::given(method("POST"))
+        .and(path("/chat/completions"))
+        .respond_with(ResponseTemplate::new(400).set_body_string("MissingSessionID"))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/models"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "data": [{ "id": "m" }] })),
+        )
+        .mount(&server)
+        .await;
+    let settings = azazel_ai::ProviderSettings {
+        base_url: Some(server.uri()),
+        ..Default::default()
+    };
+    let config =
+        azazel_ai::providers::presets::resolve(&BTreeMap::from([("opencode-go".to_string(), settings)]))
+            .unwrap()
+            .into_iter()
+            .find(|p| p.id == "opencode-go")
+            .unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let credentials = Credentials::with_env(
+        dir.path().join("auth.json"),
+        Arc::new(|name| (name == "OPENCODE_API_KEY").then(|| "oc-key".to_string())),
+    );
+    let provider = HttpProvider::new(config, http_client(), Arc::new(credentials));
+
+    let asked = Request {
+        cache_key: Some("session-7:lead".to_string()),
+        ..request()
+    };
+    let stream = provider
+        .stream(&model(), &asked, CancellationToken::new())
+        .await
+        .unwrap();
+    let events: Vec<StreamEvent> = stream.collect().await;
+    assert!(
+        matches!(events.last(), Some(StreamEvent::Done { .. })),
+        "{events:?}"
+    );
+
+    // A request of no conversation (the model list) still names a session: the provider's own.
+    provider.list_models().await.unwrap();
+    let requests = server.received_requests().await.unwrap();
+    let listing = requests.iter().find(|r| r.method.as_str() == "GET").unwrap();
+    let session = listing
+        .headers
+        .get("x-opencode-session")
+        .unwrap()
+        .to_str()
+        .unwrap();
+    assert!(
+        session.len() == 32 && session.chars().all(|c| c.is_ascii_hexdigit()),
+        "{session}"
+    );
+}

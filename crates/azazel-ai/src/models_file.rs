@@ -32,6 +32,7 @@ use serde_yaml_ng::{Mapping, Value};
 
 use crate::catalog::ModelOverride;
 use crate::providers::presets::ProviderSettings;
+use crate::substitute::Substitute;
 
 /// The name of the file in `~/.azazel` and in a project's `.azazel`.
 pub const FILE_NAME: &str = "models.yml";
@@ -53,7 +54,26 @@ impl ModelsFile {
 /// Reads the text of a `models.yml`. An error names the key it is about
 /// (`providers.gateway.models[0].cost`), or the line for text that is not YAML.
 pub fn parse(text: &str) -> Result<ModelsFile, String> {
-    let root: Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
+    from_value(serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?)
+}
+
+/// [`parse`] for a file that is being used: `{env:}` and `{file:}` references are filled by
+/// `fill`, and a `tls` path is taken relative to the file.
+pub fn read(text: &str, fill: &Substitute<'_>) -> Result<ModelsFile, String> {
+    let mut root: Value = serde_yaml_ng::from_str(text).map_err(|e| e.to_string())?;
+    fill.yaml(&mut root, "")?;
+    let mut file = from_value(root)?;
+    for tls in file
+        .providers
+        .values_mut()
+        .filter_map(|settings| settings.tls.as_mut())
+    {
+        tls.anchor(|written| fill.path(written));
+    }
+    Ok(file)
+}
+
+fn from_value(root: Value) -> Result<ModelsFile, String> {
     let mut file = ModelsFile::default();
     let root = match root {
         Value::Null => return Ok(file),
@@ -310,5 +330,35 @@ providers:
         );
         // Text that is not YAML at all is reported with where it breaks.
         assert!(error("providers: [unclosed\n").contains("line"));
+    }
+
+    #[test]
+    fn a_file_in_use_fills_references_and_anchors_tls_paths_beside_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("gateway.key"), "from-a-file\n").unwrap();
+        let env = |name: &str| (name == "TEAM").then(|| "platform".to_string());
+        let fill = Substitute::new(&dir.path().join(FILE_NAME), &env);
+        let text = "providers:\n  gw:\n    api: openai-chat\n    base_url: https://gw.example/v1\n    \
+                    api_key: '{file:gateway.key}'\n    headers: { X-Team: '{env:TEAM}' }\n    \
+                    tls: { cert: certs/client.pem, ca: /etc/ca.pem }\n";
+
+        let file = read(text, &fill).unwrap();
+        let gw = &file.providers["gw"];
+        assert_eq!(gw.api_key.as_deref(), Some("from-a-file"));
+        assert_eq!(gw.headers["X-Team"], "platform");
+        let tls = gw.tls.as_ref().unwrap();
+        let cert = dir.path().join("certs/client.pem");
+        assert_eq!(tls.cert.as_deref(), Some(cert.to_string_lossy().as_ref()));
+        // Read without filling, the text is kept as written.
+        assert_eq!(
+            parse(text).unwrap().providers["gw"].api_key.as_deref(),
+            Some("{file:gateway.key}")
+        );
+
+        let error = read("providers:\n  gw:\n    api_key: '{env:NOT_SET}'\n", &fill).unwrap_err();
+        assert!(
+            error.starts_with("providers.gw.api_key: {env:NOT_SET}"),
+            "{error}"
+        );
     }
 }

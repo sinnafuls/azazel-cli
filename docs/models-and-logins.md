@@ -197,8 +197,18 @@ max_stalls = 3          # stalls of one model within a request before moving dow
 - Stalls have their own count: they do not use up `max_attempts`. When a model has stalled `max_stalls` times within one request it goes into cooldown and the chain moves on as after any other failure; with one model in the chain the request fails with `no answer for 20 s`.
 - `0` turns a limit off: `first_event_secs = 0` and `stall_secs = 0` wait for as long as the connection lives (the HTTP client gives up a connection that is silent for 5 minutes), and `max_stalls = 0` asks the stalled model again without end.
 - The limits apply to every HTTP provider, Amazon Bedrock, Vertex AI and providers added by extensions. A provider's model list, asked for once when the catalogue does not know a model, is given up after `first_event_secs` too.
+- One provider can have its own limits: `first_event_secs` and `stall_secs` in `[providers.<id>]` replace the `[retry]` ones for it, and `timeout_secs` limits the whole request, from sending it to the end of the reply, however lively the reply is. A request that takes longer fails with `no complete answer within <n> s (the provider's timeout_secs)` and is retried like a network error. `0` turns a limit off; `timeout_secs` is off unless set.
 
-A local server that loads a model on the first request can take longer than 20 seconds to begin; raise `first_event_secs` for it, or set it to `0`.
+A local server that loads a model on the first request can take longer than 20 seconds to begin; raise `first_event_secs` for it, or set it to `0`:
+
+```toml
+[providers.ollama]
+first_event_secs = 300   # loading a model takes a while
+stall_secs = 0
+
+[providers.gateway]
+timeout_secs = 600       # the gateway closes requests after ten minutes anyway
+```
 
 ## Service tiers
 
@@ -595,16 +605,44 @@ headers = { "X-Team" = "platform" }
 | `api_key_env` | Environment variable holding the key |
 | `api_key_command` | Shell command whose stdout is the key; run once and cached until the provider answers 401 |
 | `api_key` | The key itself. Prefer one of the two above for anything you share |
-| `headers` | Extra headers on every request; a value may contain `${VAR}`, and a header whose variable is unset is not sent |
+| `headers` | Extra headers on every request; a value may contain `${VAR}`, and a header whose variable is unset is not sent. `{session_id}` in a value becomes the id of the conversation the request belongs to (the session and the agent), or an id of the provider's own for a request of none (the model list) |
 | `auth` | How a key is presented: `auto` (default: what the wire API prescribes, a bearer token for the OpenAI formats and Ollama, `x-api-key` for Anthropic, `x-goog-api-key` for Google), `bearer` (`Authorization: Bearer`, whatever the API) or `api-key` (an `api-key` header) |
 | `discovery` | How models are listed: `auto` (default: the wire API's own list), `ollama` (`/api/tags` then `/api/show` per model), `lm-studio` (`/api/v0/models`, falling back to the OpenAI list) or `off`. `true` and `false` mean `auto` and `off` |
 | `extra_body` | Members written into every request body, replacing what azazel wrote under the same name: routing (`provider = { order = ["anthropic"] }` on OpenRouter, `providerOptions = { gateway = { only = ["bedrock"] } }` on Vercel) and vendor switches (`chat_template_kwargs = { enable_thinking = true }`) |
+| `tls` | `{ cert, key, ca }`: a client certificate for a gateway that asks for one, and the authority the server's certificate must come from; see [client certificates](#client-certificates) |
+| `timeout_secs`, `first_event_secs`, `stall_secs` | This provider's own limits; see [stalls](#stalls) |
 | `region`, `profile` | `bedrock` only |
 | `project`, `location` | `vertex` only |
 | `oauth`, `oauth_headers` | `[providers.<id>.oauth]`: an OAuth sign-in (`flow = "pkce"` or `"device"`, `client_id`, `token_url`, `authorize_url` or `device_url`, `scopes`, …) that `azazel login <id>` then uses, and headers sent only with that sign-in |
 | `account` | The label of the stored account to use when a session chooses none (see [several accounts](#several-accounts)); the default account when unset |
 
 A new provider needs a key only when it names a key source. Providers in a project's files are ignored until the project is trusted.
+
+Any string value may hold `{env:VAR}` and `{file:path}`, filled once when the file is read; see [references to the environment and to files](configuration.md#references-to-the-environment-and-to-files):
+
+```toml
+[providers.gateway]
+api_key = "{file:~/.secrets/gateway.key}"
+headers = { "X-Team" = "{env:TEAM}" }
+```
+
+`opencode-go` and `opencode-zen` send `x-opencode-session: {session_id}` and `x-opencode-client: azazel`: OpenCode's gateways refuse a request that names no session (`400 MissingSessionID`).
+
+### Client certificates
+
+A company gateway that requires mutual TLS gets the certificate in the provider's `tls` table. Each value is the path of a PEM file (relative to the file that names it, or under `~/`) or the PEM itself, which is what a `{file:}` reference fills in:
+
+```toml
+[providers.gateway.tls]
+cert = "~/.certs/gateway-client.pem"   # the client certificate (its chain); may hold the key too
+key = "~/.certs/gateway-client.key"    # its private key, unless it is in `cert`
+ca = "{file:~/.certs/company-ca.pem}"  # the server's certificate must come from this authority
+```
+
+- The client is that provider's only: other providers keep the shared one.
+- `ca` replaces the system's certificate store for this provider; without it the system's is used.
+- A file that cannot be read, or text that is no certificate or key, stops azazel at start with the provider and the key named.
+- `bedrock` and `vertex` connect with their own clients and refuse `tls`.
 
 ## models.yml
 

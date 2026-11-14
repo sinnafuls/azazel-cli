@@ -342,6 +342,7 @@ mod tests {
         let limits = StallLimits {
             first_event: Some(std::time::Duration::from_millis(300)),
             stall: None,
+            total: None,
         };
         let provider = provider(&server, "europe-west1").with_stall(limits);
         let model = ModelInfo::unknown(VERTEX, "gemini-pro");

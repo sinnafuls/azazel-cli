@@ -36,6 +36,30 @@ Merge rules:
 
 `azazel doctor` shows which files were loaded.
 
+## References to the environment and to files
+
+Any string value of `config.toml`, `models.yml` and `mcp.json` may hold `{env:VAR}` and `{file:path}`. They are
+filled once, when the file is read:
+
+```toml
+[providers.gateway]
+api_key = "{file:~/.secrets/gateway.key}"
+base_url = "https://{env:GATEWAY_HOST}/v1"
+```
+
+- `{env:VAR}` is the value of the environment variable; an empty value counts as set.
+- `{file:path}` is the content of the file, without the line breaks at its end. A relative path is relative to the
+  directory of the file that names it, and `~/` is your home directory.
+- A variable that is not set, or a file that cannot be read, stops azazel with the file and the key named
+  (`providers.gateway.api_key: {env:GATEWAY_KEY} is not set`); it never becomes an empty value. What is filled in is
+  not logged or shown in errors.
+- What is filled in is not read again: a file that holds `{env:X}` gives that text.
+- The file keeps the reference: `/settings` changes other keys around it.
+- A project's files read no variable or file until the project is trusted: such a value is left out and listed
+  like the other [held-back settings](#trust).
+- `${VAR}` and `${VAR:-default}` keep working where they did: in a provider's `base_url` and `headers` and in
+  `mcp.json` entries.
+
 ## Environment overrides
 
 `AZAZEL_<TABLE>__<KEY>` sets one key; a double underscore separates nesting levels and names are lower-cased.
@@ -92,10 +116,13 @@ thinking = "low"
 | | `api_key_env` | preset | Environment variable holding the key |
 | | `api_key_command` | unset | Shell command whose output is the key |
 | | `api_key` | unset | The key itself |
-| | `headers` | preset | Extra headers on every request; values may contain `${VAR}` |
+| | `headers` | preset | Extra headers on every request; values may contain `${VAR}`, and `{session_id}` becomes the id of the conversation |
 | | `auth` | `auto` | `auto` (what the wire API prescribes), `bearer`, or `api-key` for an `api-key:` header (Azure resource keys) |
 | | `discovery` | preset, else `auto` | How models are listed: `auto`, `ollama`, `lm-studio` or `off` |
 | | `extra_body` | `{}` | Members written into every request body (routing preferences, vendor switches) |
+| | `tls` | unset | `{ cert, key, ca }`: a client certificate and the server's authority, as PEM paths or PEM; see [client certificates](models-and-logins.md#client-certificates) |
+| | `timeout_secs` | unset | Longest a whole request to this provider may take; `0` or unset has no limit. See [stalls](models-and-logins.md#stalls) |
+| | `first_event_secs`, `stall_secs` | `[retry]` | This provider's own `retry.first_event_secs` and `retry.stall_secs` |
 | | `region`, `profile` | unset | AWS settings, for `bedrock` |
 | | `project`, `location` | unset | Google Cloud settings, for `vertex` |
 | | `oauth`, `oauth_headers` | preset | A sign-in instead of a key; see [models and logins](models-and-logins.md) |

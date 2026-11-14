@@ -9,9 +9,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use azazel_ai::providers::http::{HttpProvider, http_client};
+use azazel_ai::providers::presets;
 use azazel_ai::{
     AiError, Catalog, Credentials, EventStream, Message, ModelInfo, ModelRef, Provider, ProviderConfig,
-    Request, RetryPolicy, RouteEvent, RouteState, Router, StallLimits, StreamEvent, WireApi,
+    ProviderSettings, Request, RetryPolicy, RouteEvent, RouteState, Router, StallLimits, StreamEvent,
+    WireApi,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -36,6 +38,7 @@ fn limits() -> StallLimits {
     StallLimits {
         first_event: Some(LIMIT),
         stall: Some(LIMIT),
+        total: None,
     }
 }
 
@@ -184,6 +187,7 @@ async fn a_server_that_never_begins_its_answer_is_given_up_after_the_first_event
     let short = StallLimits {
         first_event: Some(Duration::from_millis(300)),
         stall: None,
+        total: None,
     };
     let provider = provider(server.uri(), dir.path(), short);
 
@@ -398,4 +402,92 @@ async fn a_model_that_stalls_as_often_as_the_limit_allows_fails_the_request() {
     // Two stalls are the limit: the only model of the chain is out, the third script unused.
     assert_eq!(ask(&router, &mut state).await, Err(AiError::Stalled { secs: 1 }));
     assert_eq!(served.load(Ordering::SeqCst), 2);
+}
+
+/// A provider configured as `[providers.acme]` with `settings`, under the global `limits`.
+fn configured(
+    address: String,
+    dir: &std::path::Path,
+    settings: ProviderSettings,
+    limits: StallLimits,
+) -> HttpProvider {
+    let settings = ProviderSettings {
+        api: Some(WireApi::OpenAiChat),
+        base_url: Some(address),
+        ..settings
+    };
+    let config = presets::resolve_with(&BTreeMap::from([("acme".to_string(), settings)]), &|_| None)
+        .unwrap()
+        .into_iter()
+        .find(|p| p.id == "acme")
+        .unwrap();
+    let credentials = Credentials::with_env(dir.join("auth.json"), Arc::new(|_| None));
+    HttpProvider::new(config, http_client(), Arc::new(credentials)).with_stall(limits)
+}
+
+#[tokio::test]
+async fn a_provider_s_own_limits_replace_the_global_ones() {
+    // Headers, then nothing; then a reply that keeps the connection alive for 3 s before it ends.
+    let mut lively = vec![Step::Send(FIRST)];
+    for _ in 0..15 {
+        lively.push(Step::Wait(Duration::from_millis(200)));
+        lively.push(Step::Send(": keep-alive\n\n"));
+    }
+    lively.push(Step::Send(REST));
+    let (address, _) = scripted(vec![vec![Step::Wait(SILENCE)], lively], Listing::NotFound).await;
+    let dir = tempfile::tempdir().unwrap();
+
+    // The global limits wait forever; this provider gives up a silent start after a second.
+    let impatient = ProviderSettings {
+        first_event_secs: Some(1),
+        ..ProviderSettings::default()
+    };
+    let provider = configured(
+        address.clone(),
+        dir.path(),
+        impatient,
+        StallLimits::from_secs(0, 0),
+    );
+    let began = Instant::now();
+    let stream = provider
+        .stream(&model(), &request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let events = collect(stream).await;
+    assert!(
+        matches!(
+            events.last(),
+            Some(StreamEvent::Error {
+                error: AiError::Stalled { secs: 1 },
+                ..
+            })
+        ),
+        "{events:?}"
+    );
+    assert!(began.elapsed() >= Duration::from_secs(1) && began.elapsed() < SILENCE / 4);
+
+    // Never silent for long, but slower in all than this provider allows.
+    let hurried = ProviderSettings {
+        timeout_secs: Some(1),
+        ..ProviderSettings::default()
+    };
+    let provider = configured(address, dir.path(), hurried, limits());
+    let began = Instant::now();
+    let stream = provider
+        .stream(&model(), &request(), CancellationToken::new())
+        .await
+        .unwrap();
+    let events = collect(stream).await;
+    let waited = began.elapsed();
+    match events.last() {
+        Some(StreamEvent::Error {
+            error: AiError::Network(why),
+            ..
+        }) => assert!(why.contains("timeout_secs"), "{why}"),
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        waited >= Duration::from_secs(1) && waited < Duration::from_millis(2900),
+        "{waited:?}"
+    );
 }

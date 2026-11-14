@@ -116,13 +116,20 @@ pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
 /// response that goes silent is given up by the provider's stall watchdog ([`StallLimits`]); the
 /// read timeout is what is left when that is turned off.
 pub fn http_client() -> reqwest::Client {
+    client_builder().build().unwrap_or_default()
+}
+
+/// What every provider's client is built with; a provider with its own TLS settings adds them.
+pub(crate) fn client_builder() -> reqwest::ClientBuilder {
     crate::tls::client_builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(300))
         .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .unwrap_or_default()
 }
+
+/// What a configured header value holds where the conversation's id goes: OpenCode's gateways
+/// refuse a request that names no session.
+pub const SESSION_ID: &str = "{session_id}";
 
 pub struct HttpProvider {
     config: ProviderConfig,
@@ -132,8 +139,11 @@ pub struct HttpProvider {
     declared: Vec<ModelInfo>,
     /// The Cloud project of each Cloud Code Assist login, looked up once per account.
     projects: tokio::sync::Mutex<HashMap<String, String>>,
-    /// How long a response may stay silent.
+    /// How long a response may stay silent, or take.
     stall: StallLimits,
+    /// The configured headers that carry [`SESSION_ID`], as written. `config.headers` has them
+    /// filled with an id of this provider's own, for requests that belong to no conversation.
+    session_headers: Vec<(String, String)>,
 }
 
 /// A request to an account that answers 429 with a wait this long is out of allowance, not
@@ -176,23 +186,61 @@ fn name_full_window(error: AiError, full: Option<Window>) -> AiError {
 }
 
 impl HttpProvider {
-    pub fn new(config: ProviderConfig, client: reqwest::Client, credentials: Arc<Credentials>) -> Self {
+    /// A provider with `config`. Its requests go out through `client` unless the configuration
+    /// gives it a client of its own (`tls`).
+    pub fn new(mut config: ProviderConfig, client: reqwest::Client, credentials: Arc<Credentials>) -> Self {
+        let client = config.tls.as_ref().map_or(client, |tls| tls.client().clone());
+        let session_headers: Vec<(String, String)> = config
+            .headers
+            .iter()
+            .filter(|(_, value)| value.contains(SESSION_ID))
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect();
+        if !session_headers.is_empty() {
+            let own = format!("{:032x}", rand::random::<u128>());
+            for (name, template) in &session_headers {
+                config
+                    .headers
+                    .insert(name.clone(), template.replace(SESSION_ID, &own));
+            }
+        }
+        let stall = config.timeouts.over(StallLimits::default());
         HttpProvider {
             config,
             client,
             credentials,
             declared: Vec::new(),
             projects: tokio::sync::Mutex::default(),
-            stall: StallLimits::default(),
+            stall,
+            session_headers,
         }
     }
 
     /// Gives up a response that stays silent for longer than `limits` allow, with
     /// [`AiError::Stalled`]. Without this a response is waited for as long as the connection
-    /// lives.
+    /// lives. The provider's own `timeout_secs`, `first_event_secs` and `stall_secs` replace
+    /// the ones of `limits`.
     pub fn with_stall(mut self, limits: StallLimits) -> Self {
-        self.stall = limits;
+        self.stall = self.config.timeouts.over(limits);
         self
+    }
+
+    /// `config` with the headers that carry [`SESSION_ID`] naming the conversation `key`.
+    fn for_conversation<'a>(
+        &self,
+        config: Cow<'a, ProviderConfig>,
+        key: Option<&str>,
+    ) -> Cow<'a, ProviderConfig> {
+        let Some(key) = key.filter(|_| !self.session_headers.is_empty()) else {
+            return config;
+        };
+        let mut config = config.into_owned();
+        for (name, template) in &self.session_headers {
+            config
+                .headers
+                .insert(name.clone(), template.replace(SESSION_ID, key));
+        }
+        Cow::Owned(config)
     }
 
     /// Adds the models the configuration names for this provider to what it lists, for the ones
@@ -514,6 +562,7 @@ impl Provider for HttpProvider {
             },
         };
         let wire = wire_for(config.api)?;
+        let config = self.for_conversation(config, req.cache_key.as_deref());
         let (auth, account) = self.authorise().await?;
         if let Some(refusal) = account
             .as_deref()
@@ -738,6 +787,8 @@ fn http_error(classify: Classify, status: u16, headers: &HeaderMap, body: &str) 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -774,5 +825,54 @@ mod tests {
             name_full_window(AiError::Overloaded, Some(full)),
             AiError::Overloaded
         );
+    }
+
+    const MODELS: &str = "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 33\r\n\
+                          connection: close\r\n\r\n{\"data\":[{\"id\":\"gateway-model\"}]}";
+
+    #[tokio::test]
+    async fn a_provider_with_a_client_certificate_reaches_a_server_that_requires_one() {
+        use crate::providers::presets::{ProviderSettings, resolve_with};
+        use crate::tls::TlsSettings;
+
+        let (server, identity) = crate::tls::local::serve_mutual(MODELS).await;
+        let dir = tempfile::tempdir().unwrap();
+        let (cert, key) = (dir.path().join("client.pem"), dir.path().join("client.key"));
+        std::fs::write(&cert, &identity.cert).unwrap();
+        std::fs::write(&key, &identity.key).unwrap();
+        let provider = |tls: TlsSettings| {
+            let settings = ProviderSettings {
+                api: Some(WireApi::OpenAiChat),
+                base_url: Some(server.url()),
+                tls: Some(tls),
+                ..ProviderSettings::default()
+            };
+            let config = resolve_with(&BTreeMap::from([("gateway".to_string(), settings)]), &|_| None)
+                .unwrap()
+                .into_iter()
+                .find(|p| p.id == "gateway")
+                .unwrap();
+            let credentials = Credentials::with_env(dir.path().join("auth.json"), Arc::new(|_| None));
+            HttpProvider::new(config, http_client(), Arc::new(credentials))
+        };
+
+        let with = provider(TlsSettings {
+            cert: Some(cert.to_string_lossy().into_owned()),
+            key: Some(key.to_string_lossy().into_owned()),
+            ca: Some(server.certificate.clone()),
+        });
+        let models = with.list_models().await.unwrap();
+        assert_eq!(
+            models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
+            ["gateway-model"]
+        );
+
+        // The same server, trusted but without the certificate: the handshake is refused.
+        let without = provider(TlsSettings {
+            ca: Some(server.certificate.clone()),
+            ..TlsSettings::default()
+        });
+        let error = without.list_models().await.unwrap_err();
+        assert!(matches!(error, AiError::Network(_)), "{error:?}");
     }
 }
