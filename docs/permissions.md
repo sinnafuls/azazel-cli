@@ -58,7 +58,7 @@ Entering it always takes a deliberate step:
 
 The mode belongs to the session and each change is recorded in the transcript. A change takes effect at once for everyone in the session: a sub-agent that is in the middle of its work is judged by the new mode from its next tool call on, and so is every agent started later. A background session started with `/bg` begins in the mode the session has at that moment; attached to one (`azazel attach`), `/mode` and `Shift+Tab` change the mode of the background session itself.
 
-No agent has a mode of its own that lets it do more than the session. A definition can only narrow: an agent whose definition says `mode: plan` stays in plan mode whatever the session mode is (see [team](team.md)), `bypass` included.
+No agent has a mode of its own that lets it do more than the session. A definition can only narrow: an agent whose definition says `permission-mode: plan` stays in plan mode whatever the session mode is (see [team](team.md)), `bypass` included.
 
 ## Rules
 

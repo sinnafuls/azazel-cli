@@ -558,6 +558,10 @@ impl Session {
                 self.app.permissions.set_mode(mode);
                 done(json!({ "mode": mode.to_string() }))
             }
+            Command::SetAgent { agent } => {
+                self.app.set_agent(&agent)?;
+                done(json!({ "agent": agent }))
+            }
             Command::AgentSend { to, message } => {
                 let reached = team(&self.team)?.send_from_user(&to, &message)?;
                 done(json!({ "agents": reached }))

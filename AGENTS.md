@@ -55,6 +55,17 @@ Other tasks:
 | `cargo xtask rpc-schema` | Writes `docs/rpc.schema.json` from `azazel-protocol`; run it after changing the protocol |
 | `cargo xtask catalog` | Regenerates `crates/azazel-ai/catalog/models.json` from models.dev (needs the network) |
 | `cargo xtask dist [--target <triple>]` | Builds the release archive and its checksum into `dist/`; the release workflow runs it |
+| `cargo xtask prune [--dry-run]` | Deletes the build output of earlier builds from `target/`: for every crate it keeps the version built last and any built in the last hour |
+
+### Keeping `target/` small
+
+Cargo keeps every version of a crate it ever built, so `target/` grows by gigabytes a day while you change
+code, features and flags (each test file is its own binary with its own debug info). After a session of
+building and testing, and before you hand a change over, run `cargo xtask prune`. It only deletes what a
+newer build replaced, so the next build stays incremental. A worktree made for one change has its own
+`target/`: remove the worktree (`git worktree remove --force <dir>`) once the change is merged, and delete
+the directory by hand if a running program kept a file open. `cargo clean` frees everything, at the cost
+of a full build.
 
 ## Trying a change by hand
 
