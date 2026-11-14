@@ -48,7 +48,10 @@ pub fn redirect_uri(host: &str, port: u16, path: &str) -> String {
 fn params_in(query: &str) -> Result<Params, OAuthError> {
     let url = reqwest::Url::parse(&format!("http://127.0.0.1/?{query}"))
         .map_err(|e| OAuthError::Protocol(format!("unreadable redirect: {e}")))?;
-    Ok(url.query_pairs().map(|(k, v)| (k.into_owned(), v.into_owned())).collect())
+    Ok(url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect())
 }
 
 /// The parameters of a redirect, after checking that it answers the login that sent `state` and
@@ -225,10 +228,7 @@ mod tests {
         let params = parse_pasted(pasted, Some("s1"), true).unwrap();
         assert_eq!(params["access_token"], "t+1");
         assert_eq!(params["expires_in"], "60");
-        assert_eq!(
-            parse_pasted(pasted, Some("s2"), true),
-            Err(OAuthError::State)
-        );
+        assert_eq!(parse_pasted(pasted, Some("s2"), true), Err(OAuthError::State));
         // Without a fragment the query is read, as for a code.
         assert_eq!(
             parse_pasted("access_token=t&state=s1", Some("s1"), true).unwrap()["access_token"],

@@ -191,7 +191,17 @@ async fn a_sign_in_asks_its_inputs_and_its_login_keeps_the_address_requests_go_t
     assert_eq!(stored["tenant"]["tenant"], "acme");
     assert_eq!(stored["tenant"]["base_url"], format!("{uri}/acme/v1"));
 
-    let answered = sandbox.azazel(&["-p", "hi", "--model", "tenant/small"]).await;
+    let answered = sandbox
+        .azazel(&[
+            "-p",
+            "hi",
+            "--model",
+            "tenant/small",
+            "--no-memory",
+            "--set",
+            "session.auto_name=false",
+        ])
+        .await;
     assert_eq!(answered.status.code(), Some(0), "{}", text(&answered.stderr));
     assert_eq!(text(&answered.stdout), "hello from the gateway");
 }
@@ -202,7 +212,9 @@ async fn the_device_and_enterprise_flags_name_the_providers_they_work_with() {
         dir: tempfile::tempdir().unwrap(),
     };
     std::fs::create_dir_all(sandbox.home()).unwrap();
-    let both = sandbox.azazel(&["login", "openai-codex", "--key", "--device"]).await;
+    let both = sandbox
+        .azazel(&["login", "openai-codex", "--key", "--device"])
+        .await;
     assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
     let wrong = sandbox.azazel(&["login", "groq", "--device"]).await;
     assert_eq!(wrong.status.code(), Some(1));
@@ -211,7 +223,9 @@ async fn the_device_and_enterprise_flags_name_the_providers_they_work_with() {
         "{}",
         text(&wrong.stderr)
     );
-    let enterprise = sandbox.azazel(&["login", "anthropic", "--enterprise", "ghe.example.com"]).await;
+    let enterprise = sandbox
+        .azazel(&["login", "anthropic", "--enterprise", "ghe.example.com"])
+        .await;
     assert!(
         text(&enterprise.stderr).contains("--enterprise works with github-copilot"),
         "{}",

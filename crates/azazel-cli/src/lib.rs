@@ -346,7 +346,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             };
             return bug::run(&paths, trusted, args).await;
         }
-        Some(Sub::Login { provider, key, device, enterprise, label }) => {
+        Some(Sub::Login {
+            provider,
+            key,
+            device,
+            enterprise,
+            label,
+        }) => {
             let flags = login::LoginFlags {
                 key: *key,
                 device: *device,

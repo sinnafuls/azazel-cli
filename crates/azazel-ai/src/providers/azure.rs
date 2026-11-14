@@ -37,7 +37,11 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// The most pages of deployments that are read.
 const MAX_PAGES: usize = 25;
 /// The host names an Azure OpenAI or AI Services resource answers at; the first label is its name.
-const RESOURCE_HOSTS: [&str; 3] = [".openai.azure.com", ".cognitiveservices.azure.com", ".services.ai.azure.com"];
+const RESOURCE_HOSTS: [&str; 3] = [
+    ".openai.azure.com",
+    ".cognitiveservices.azure.com",
+    ".services.ai.azure.com",
+];
 
 /// Entra tokens from the Azure CLI, one per resource, used until shortly before they run out.
 #[derive(Debug, Default)]
@@ -92,7 +96,14 @@ impl AzureCli {
             })?,
         };
         let run = tokio::process::Command::new(program)
-            .args(["account", "get-access-token", "--resource", resource, "--output", "json"])
+            .args([
+                "account",
+                "get-access-token",
+                "--resource",
+                resource,
+                "--output",
+                "json",
+            ])
             .stdin(std::process::Stdio::null())
             .kill_on_drop(true)
             .output();
@@ -122,7 +133,10 @@ fn token_answer(stdout: &[u8]) -> Result<(String, u64), AiError> {
     let expires = answer
         .get("expires_on")
         .and_then(|value| value.as_u64().or_else(|| value.as_str()?.trim().parse().ok()))
-        .map_or_else(|| now_ms() + UNKNOWN_LIFETIME_MS, |seconds| seconds.saturating_mul(1000));
+        .map_or_else(
+            || now_ms() + UNKNOWN_LIFETIME_MS,
+            |seconds| seconds.saturating_mul(1000),
+        );
     Ok((token.to_string(), expires))
 }
 
@@ -281,9 +295,10 @@ mod tests {
 
     #[test]
     fn the_cli_answer_gives_the_token_and_when_it_runs_out() {
-        let (token, expires) =
-            token_answer(br#"{"accessToken":"t-1","expiresOn":"2030-01-01 00:00:00.000000","expires_on":1893456000}"#)
-                .unwrap();
+        let (token, expires) = token_answer(
+            br#"{"accessToken":"t-1","expiresOn":"2030-01-01 00:00:00.000000","expires_on":1893456000}"#,
+        )
+        .unwrap();
         assert_eq!((token.as_str(), expires), ("t-1", 1_893_456_000_000));
         // Older versions print only a local time; the token is then used for a short while.
         let (_, assumed) = token_answer(br#"{"accessToken":"t-2","expiresOn":"2030-01-01"}"#).unwrap();
@@ -299,7 +314,10 @@ mod tests {
             resource_name("https://res2.cognitiveservices.azure.com/openai/v1"),
             Some("res2")
         );
-        assert_eq!(resource_name("https://hub.services.ai.azure.com/models"), Some("hub"));
+        assert_eq!(
+            resource_name("https://hub.services.ai.azure.com/models"),
+            Some("hub")
+        );
         assert_eq!(resource_name("https://gw.example/azure"), None);
         assert_eq!(resource_name("http://127.0.0.1:9/openai"), None);
         assert_eq!(resource_name("https://a'b.openai.azure.com"), None);

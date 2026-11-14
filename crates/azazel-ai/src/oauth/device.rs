@@ -8,7 +8,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    BodyKind, Call, LoginUi, OAuthError, OAuthSettings, Tokens, code_params, fill, post, read_answer, token_request,
+    BodyKind, Call, LoginUi, OAuthError, OAuthSettings, Tokens, code_params, fill, post, read_answer,
+    token_request,
 };
 
 /// How much longer to wait between requests each time the server says `slow_down`.

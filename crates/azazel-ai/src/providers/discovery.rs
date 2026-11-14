@@ -56,8 +56,7 @@ async fn google_pages(provider: &HttpProvider, wire: &Wire, auth: &Auth) -> Resu
     let mut models = Vec::new();
     let mut page: Option<String> = None;
     for _ in 0..MAX_PAGES {
-        let request =
-            wire::google::models_page_request(provider.client(), &config, auth, page.as_deref());
+        let request = wire::google::models_page_request(provider.client(), &config, auth, page.as_deref());
         let body = provider.fetch_json(wire, request).await?;
         models.extend(wire::google::parse_models(&config, &body));
         let next = wire::google::next_page_token(&body).map(str::to_string);

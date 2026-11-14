@@ -589,10 +589,7 @@ impl Provider for HttpProvider {
         let api = match req.hosted.is_empty() {
             true => self.config.api_for(&model.id),
             false => wire::hosted_api(&self.config).ok_or_else(|| {
-                AiError::InvalidRequest(format!(
-                    "provider {} runs no tools of its own",
-                    self.config.id
-                ))
+                AiError::InvalidRequest(format!("provider {} runs no tools of its own", self.config.id))
             })?,
         };
         let config = match api == self.config.api {

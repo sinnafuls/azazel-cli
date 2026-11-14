@@ -88,7 +88,12 @@ pub(crate) fn chosen_sign_in(
             .map(|settings| Some((settings, Given::new())))
             .ok_or_else(|| format!("{id} has no device sign-in; --device works with openai-codex")),
         (false, Some(domain)) => presets::enterprise_login(id)
-            .map(|settings| Some((settings, Given::from([("domain".to_string(), domain.to_string())]))))
+            .map(|settings| {
+                Some((
+                    settings,
+                    Given::from([("domain".to_string(), domain.to_string())]),
+                ))
+            })
             .ok_or_else(|| format!("{id} has no enterprise sign-in; --enterprise works with github-copilot")),
         (false, None) => Ok(provider.oauth.clone().map(|settings| (settings, Given::new()))),
     }
@@ -387,7 +392,16 @@ pub async fn login(provider: Option<&str>, flags: LoginFlags<'_>, label: Option<
                         interrupted.cancel();
                     }
                 });
-                sign_in(&credentials, &provider, &settings, &given, &Terminal, &cancel, label).await
+                sign_in(
+                    &credentials,
+                    &provider,
+                    &settings,
+                    &given,
+                    &Terminal,
+                    &cancel,
+                    label,
+                )
+                .await
             }
             None => read_secret(&format!("API key for {}: ", provider.id))
                 .map_err(|e| e.to_string())
@@ -670,10 +684,17 @@ mod tests {
         assert!(enterprise.device_url.contains("{domain}"));
         assert_eq!(given["domain"], "ghe.example.com");
         // Without a flag, the provider's own sign-in; none for a provider that takes keys only.
-        assert_eq!(chosen_sign_in(copilot, false, None).unwrap().unwrap().0, copilot.oauth.clone().unwrap());
+        assert_eq!(
+            chosen_sign_in(copilot, false, None).unwrap().unwrap().0,
+            copilot.oauth.clone().unwrap()
+        );
         assert!(chosen_sign_in(groq, false, None).unwrap().is_none());
 
-        assert!(chosen_sign_in(copilot, true, None).unwrap_err().contains("--device works with openai-codex"));
+        assert!(
+            chosen_sign_in(copilot, true, None)
+                .unwrap_err()
+                .contains("--device works with openai-codex")
+        );
         assert!(
             chosen_sign_in(codex, false, Some("x"))
                 .unwrap_err()

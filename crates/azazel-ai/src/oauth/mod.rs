@@ -286,7 +286,9 @@ impl OAuthSettings {
         }
         self.client().map_err(|e| e.to_string())?;
         match self.flow {
-            OAuthFlow::Pkce | OAuthFlow::Implicit if blank(&self.authorize_url) => Err(missing("authorize_url")),
+            OAuthFlow::Pkce | OAuthFlow::Implicit if blank(&self.authorize_url) => {
+                Err(missing("authorize_url"))
+            }
             OAuthFlow::Device if blank(&self.device_url) && self.discovery_url.is_none() => {
                 Err(missing("device_url"))
             }
@@ -861,7 +863,10 @@ async fn answers(
                 input.name
             )));
         }
-        if !value.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c))
+        {
             return Err(OAuthError::Config(format!(
                 "`{value}` is not a valid {}: use letters, digits, `-`, `_` and `.`",
                 input.name
@@ -899,7 +904,9 @@ pub async fn login_with(
         OAuthFlow::Pkce => login_with_code(http, settings, &endpoints.0, ui, cancel).await?,
         OAuthFlow::Device => login_with_device(http, settings, &endpoints, ui, cancel).await?,
         OAuthFlow::Implicit => login_implicit(settings, ui, cancel).await?,
-        OAuthFlow::DeviceAuthCode => device::login_auth_code(http, settings, &endpoints.0, ui, cancel).await?,
+        OAuthFlow::DeviceAuthCode => {
+            device::login_auth_code(http, settings, &endpoints.0, ui, cancel).await?
+        }
     };
     if let Some(userinfo) = &settings.userinfo {
         ask_userinfo(http, userinfo, &mut tokens).await?;
@@ -908,9 +915,10 @@ pub async fn login_with(
         tokens.extra.insert(name, Value::String(value));
     }
     if let Some(base) = &settings.api_base_url {
-        tokens
-            .extra
-            .insert(BASE_URL_FIELD.to_string(), Value::String(base.trim_end_matches('/').to_string()));
+        tokens.extra.insert(
+            BASE_URL_FIELD.to_string(),
+            Value::String(base.trim_end_matches('/').to_string()),
+        );
     }
     Ok(tokens.into_credential(None))
 }

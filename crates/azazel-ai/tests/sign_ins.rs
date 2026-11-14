@@ -15,7 +15,9 @@ use azazel_ai::oauth::map::NEVER;
 use azazel_ai::providers::azure::{self, AzureCli};
 use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets::{self, AuthStyle, ProviderConfig};
-use azazel_ai::{Auth, Credential, Credentials, LoginUi, Message, ModelInfo, OAuthSettings, Provider, Request, WireApi};
+use azazel_ai::{
+    Auth, Credential, Credentials, LoginUi, Message, ModelInfo, OAuthSettings, Provider, Request, WireApi,
+};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::StreamExt;
@@ -129,7 +131,9 @@ async fn chatgpt_without_a_browser_exchanges_the_code_the_device_page_approves()
     let issuer = server.uri();
     Mock::given(method("POST"))
         .and(path("/api/accounts/deviceauth/usercode"))
-        .and(body_partial_json(json!({"client_id": "app_EMoamEEZ73f0CkXaXp7hrann"})))
+        .and(body_partial_json(
+            json!({"client_id": "app_EMoamEEZ73f0CkXaXp7hrann"}),
+        ))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "device_auth_id": "da-1", "user_code": "ABCD-1234", "interval": "0"
         })))
@@ -177,7 +181,10 @@ async fn chatgpt_without_a_browser_exchanges_the_code_the_device_page_approves()
     .await
     .unwrap();
 
-    let Credential::OAuth { refresh, ref extra, .. } = credential else {
+    let Credential::OAuth {
+        refresh, ref extra, ..
+    } = credential
+    else {
         panic!("{credential:?}");
     };
     assert_eq!(refresh, "rt-1");
@@ -187,19 +194,26 @@ async fn chatgpt_without_a_browser_exchanges_the_code_the_device_page_approves()
         lines.push(line);
     }
     assert!(
-        lines.contains(&format!("Open {issuer}/codex/device and enter the code ABCD-1234")),
+        lines.contains(&format!(
+            "Open {issuer}/codex/device and enter the code ABCD-1234"
+        )),
         "{lines:?}"
     );
     let polls = received(&server, "/api/accounts/deviceauth/token").await;
     assert_eq!(polls.len(), 2);
     let poll: Value = serde_json::from_slice(&polls[1].body).unwrap();
     assert_eq!(poll, json!({"device_auth_id": "da-1", "user_code": "ABCD-1234"}));
-    let exchange = pairs(&String::from_utf8_lossy(&received(&server, "/oauth/token").await[0].body));
+    let exchange = pairs(&String::from_utf8_lossy(
+        &received(&server, "/oauth/token").await[0].body,
+    ));
     assert_eq!(exchange["grant_type"], "authorization_code");
     assert_eq!(exchange["code"], "ac-1");
     assert_eq!(exchange["code_verifier"], "cv-1");
     // The exchange names OpenAI's own device callback, whatever server the test stands in for.
-    assert_eq!(exchange["redirect_uri"], "https://auth.openai.com/deviceauth/callback");
+    assert_eq!(
+        exchange["redirect_uri"],
+        "https://auth.openai.com/deviceauth/callback"
+    );
     // The login renews the way the browser sign-in's does.
     let codex = builtin("openai-codex").oauth.unwrap();
     assert_eq!(codex.token_url, "https://auth.openai.com/oauth/token");
@@ -232,18 +246,33 @@ async fn copilot_enterprise_signs_in_at_the_company_host_and_keeps_its_api_addre
     let (person, _seen) = person(&[]);
     // The domain is given as a user would paste it.
     let given = BTreeMap::from([("domain".to_string(), "https://ghe.example.com/".to_string())]);
-    let credential = login_with(&http_client(), &settings, &given, &person, &CancellationToken::new())
-        .await
-        .unwrap();
+    let credential = login_with(
+        &http_client(),
+        &settings,
+        &given,
+        &person,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     let extra = fields(&credential);
     assert_eq!(extra["domain"], "ghe.example.com");
     assert_eq!(extra["base_url"], "https://copilot-api.ghe.example.com");
-    let Credential::OAuth { expires, .. } = credential else { unreachable!() };
+    let Credential::OAuth { expires, .. } = credential else {
+        unreachable!()
+    };
     assert_eq!(expires, NEVER);
 
     // A domain that is not a host name never reaches an address.
     let bad = BTreeMap::from([("domain".to_string(), "evil.example/x?y".to_string())]);
-    let refused = login_with(&http_client(), &settings, &bad, &person, &CancellationToken::new()).await;
+    let refused = login_with(
+        &http_client(),
+        &settings,
+        &bad,
+        &person,
+        &CancellationToken::new(),
+    )
+    .await;
     assert!(refused.unwrap_err().to_string().contains("not a valid domain"));
 }
 
@@ -335,9 +364,15 @@ async fn digitalocean_reads_the_token_from_the_address_the_browser_returns_to() 
         }
     });
     let before = now_ms();
-    let credential = login_with(&http, &settings, &BTreeMap::new(), &person, &CancellationToken::new())
-        .await
-        .unwrap();
+    let credential = login_with(
+        &http,
+        &settings,
+        &BTreeMap::new(),
+        &person,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     let query = browser.await.unwrap();
     assert_eq!(query["response_type"], "token");
     assert_eq!(query["scope"], "genai:read inference:query");
@@ -393,9 +428,15 @@ async fn poe_exchanges_the_code_for_a_key_that_lasts_as_long_as_it_says() {
                 query
             }
         });
-        let credential = login_with(&http, &settings, &BTreeMap::new(), &person, &CancellationToken::new())
-            .await
-            .unwrap();
+        let credential = login_with(
+            &http,
+            &settings,
+            &BTreeMap::new(),
+            &person,
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
         let query = browser.await.unwrap();
         assert_eq!(query["scope"], "apikey:create");
         assert_eq!(query["code_challenge_method"], "S256");
@@ -408,7 +449,9 @@ async fn poe_exchanges_the_code_for_a_key_that_lasts_as_long_as_it_says() {
     assert_eq!(keys[0], ("poe-key-1".to_string(), NEVER));
     assert_eq!(keys[1].0, "poe-key-2");
     assert!(keys[1].1 <= now_ms() + 60_000);
-    let form = pairs(&String::from_utf8_lossy(&received(&server, "/token").await[0].body));
+    let form = pairs(&String::from_utf8_lossy(
+        &received(&server, "/token").await[0].body,
+    ));
     assert_eq!(form["code"], "pc-1");
     assert_eq!(form["client_id"], "client_728290227fc048cc9262091a1ea197ea");
     assert!(form.contains_key("code_verifier"));
@@ -455,9 +498,15 @@ async fn snowflake_signs_in_at_the_account_it_is_given_and_renews_there() {
             query
         }
     });
-    let credential = login_with(&http, &settings, &BTreeMap::new(), &person, &CancellationToken::new())
-        .await
-        .unwrap();
+    let credential = login_with(
+        &http,
+        &settings,
+        &BTreeMap::new(),
+        &person,
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
     let query = browser.await.unwrap();
     assert_eq!(person.asked.lock().unwrap().len(), 2);
     assert_eq!(query["client_id"], "LOCAL_APPLICATION");
@@ -475,7 +524,9 @@ async fn snowflake_signs_in_at_the_account_it_is_given_and_renews_there() {
     // The login, now nearly out of time, is renewed at the account it belongs to.
     let dir = tempfile::tempdir().unwrap();
     let credentials = Credentials::with_env(dir.path().join("auth.json"), Arc::new(|_| None));
-    let Credential::OAuth { refresh, extra, .. } = credential else { unreachable!() };
+    let Credential::OAuth { refresh, extra, .. } = credential else {
+        unreachable!()
+    };
     credentials
         .store(
             "snowflake",
@@ -528,7 +579,10 @@ static FAKE_AZ: LazyLock<PathBuf> = LazyLock::new(|| {
         build.arg("--release");
     }
     build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(build.status().unwrap().success(), "could not build the fake-az fixture");
+    assert!(
+        build.status().unwrap().success(),
+        "could not build the fake-az fixture"
+    );
     let binary = profile_dir.join(format!("fake-az{}", std::env::consts::EXE_SUFFIX));
     assert!(binary.is_file(), "{} is missing", binary.display());
     binary
@@ -543,7 +597,9 @@ fn fake_az(dir: &Path) -> PathBuf {
     let expires = now_ms() / 1000 + 3600;
     std::fs::write(
         dir.join("az-data").join("token.json"),
-        format!(r#"{{"accessToken": "entra-for-{{resource}}", "expires_on": {expires}, "tokenType": "Bearer"}}"#),
+        format!(
+            r#"{{"accessToken": "entra-for-{{resource}}", "expires_on": {expires}, "tokenType": "Bearer"}}"#
+        ),
     )
     .unwrap();
     program
@@ -574,7 +630,10 @@ fn deployments_answer() -> ResponseTemplate {
 }
 
 fn listed(models: &[ModelInfo]) -> Vec<(&str, Option<&str>)> {
-    models.iter().map(|m| (m.id.as_str(), m.name.as_deref())).collect()
+    models
+        .iter()
+        .map(|m| (m.id.as_str(), m.name.as_deref()))
+        .collect()
 }
 
 #[tokio::test]
@@ -663,9 +722,7 @@ async fn resource_manager_finds_the_resource_and_reads_every_page_of_deployments
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": [{"id": id}]})))
         .mount(&server)
         .await;
-    let deployment = |name: &str, model: &str, state: &str| {
-        json!({"name": name, "properties": {"model": {"name": model}, "provisioningState": state}})
-    };
+    let deployment = |name: &str, model: &str, state: &str| json!({"name": name, "properties": {"model": {"name": model}, "provisioningState": state}});
     Mock::given(method("GET"))
         .and(path(format!("{id}/deployments")))
         .and(query_param("api-version", "2024-10-01"))
