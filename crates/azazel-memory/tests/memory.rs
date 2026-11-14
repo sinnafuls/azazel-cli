@@ -542,7 +542,7 @@ async fn the_memory_part_keeps_the_newest_within_its_budget() {
 }
 
 #[tokio::test]
-async fn extraction_stores_what_is_new_and_supersedes_what_it_replaces() {
+async fn a_session_that_ends_is_extracted_by_the_next_one_storing_what_is_new() {
     let home = home();
     let mut config = Config::default();
     config.memory.auto_index = false;
@@ -586,7 +586,30 @@ async fn extraction_stores_what_is_new_and_supersedes_what_it_replaces() {
         { "kind": "fact", "text": "Deploys go through GitHub Actions", "tags": ["ci"], "replaces": jenkins },
     ]);
     mock.push("m", MockStep::text(format!("```json\n{reply}\n```")));
+    let start = || Event::SessionStart {
+        source: StartSource::Startup,
+    };
+
+    // A session that ends with nothing prompted in it puts nothing in line: had it, the model
+    // would be asked about it first.
+    let idle = Arc::new(SessionStore::create(&home.paths.sessions_dir(), &home.paths.cwd, None).unwrap());
+    idle.append(EntryKind::Message {
+        message: Message::user("An old question nobody asked again."),
+    });
+    registry.services.insert(idle);
     registry.bus.emit(&mut Event::SessionEnd).await;
+    registry.services.insert(session.clone());
+    // One with a prompt asks no model as it ends: the next session of the project does, in
+    // the background.
+    prompt(&registry, "Where do the deploys run now?").await;
+    registry.bus.emit(&mut Event::SessionEnd).await;
+    assert_eq!(mock.requests_for("m").len(), 0);
+    registry.bus.emit(&mut start()).await;
+    eventually("the session that ended is extracted", || async {
+        store.list(Scope::Project).await.unwrap().len() == 2
+            && store.list(Scope::Project).await.unwrap()[0].text.contains("GitHub")
+    })
+    .await;
 
     let listed = store.list(Scope::Project).await.unwrap();
     assert_eq!(
@@ -629,18 +652,30 @@ async fn extraction_stores_what_is_new_and_supersedes_what_it_replaces() {
         "{asked}"
     );
 
-    // Switched off for the session, nothing is asked.
+    // Switched off for the session, nothing is put in line.
     let off = slash(&registry, "auto off").await.unwrap();
     assert_eq!(off, "automatic extraction is off for this session");
+    prompt(&registry, "Anything else?").await;
     registry.bus.emit(&mut Event::SessionEnd).await;
-    assert_eq!(mock.requests_for("m").len(), 1);
 
-    // A reply that is not the JSON asked for changes nothing.
+    // A reply that is not the JSON asked for changes nothing, and the session stays in line
+    // for another try.
     slash(&registry, "auto on").await.unwrap();
-    mock.push("m", MockStep::text("Nothing here is worth keeping."));
+    prompt(&registry, "One more thing.").await;
     registry.bus.emit(&mut Event::SessionEnd).await;
-    assert_eq!(mock.requests_for("m").len(), 2);
+    mock.push("m", MockStep::text("Nothing here is worth keeping."));
+    registry.bus.emit(&mut start()).await;
+    eventually("the session is asked about again", || async {
+        mock.requests_for("m").len() == 2
+    })
+    .await;
     assert_eq!(store.list(Scope::Project).await.unwrap(), listed);
+    mock.push("m", MockStep::text("[]"));
+    registry.bus.emit(&mut start()).await;
+    eventually("the session is tried once more", || async {
+        mock.requests_for("m").len() == 3
+    })
+    .await;
 }
 
 const CONFIG_RS: &str = "/// Reads the settings file.

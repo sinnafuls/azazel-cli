@@ -174,6 +174,25 @@ pub(super) fn key_for(c: char) -> KeyEvent {
     }
 }
 
+/// After this long without typed keys, a lone release of the paste key is not the end of a
+/// paste of text.
+const PASTE_RELEASE_GAP: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// `ctrl+v`, with or without `shift`: the keys Windows Terminal pastes with.
+pub(super) fn is_paste_key(key: &KeyEvent) -> bool {
+    matches!(key.code, KeyCode::Char('v' | 'V'))
+        && key.modifiers.contains(KeyModifiers::CONTROL)
+        && !key.modifiers.contains(KeyModifiers::ALT)
+}
+
+/// Whether the release of the paste key stands for a press the terminal kept: none reached
+/// azazel (`pressed` is false), and no typed keys came just before it. Windows Terminal pastes
+/// the clipboard's text as typed keys followed by that release; with nothing but an image on
+/// the clipboard it sends the release alone. `since_typed` is how long ago keys were last typed.
+pub(super) fn press_was_kept(pressed: bool, since_typed: Option<std::time::Duration>) -> bool {
+    !pressed && since_typed.is_none_or(|since| since >= PASTE_RELEASE_GAP)
+}
+
 /// The program and arguments that open a file for editing: `[editor] command`, else `$VISUAL`,
 /// else `$EDITOR`, else Notepad on Windows and `vi` elsewhere.
 pub(super) fn editor_command(
@@ -623,8 +642,15 @@ impl Tui {
     }
 
     /// Pasted text: dropped files become attachments and mentions, a long paste folds into a
-    /// token, anything else goes in as typed.
+    /// token, anything else goes in as typed. A paste with nothing in it is what a terminal
+    /// sends for a clipboard that holds an image and no text: the clipboard is read for it.
     pub(super) fn on_paste(&mut self, pasted: &str) {
+        if pasted.is_empty() {
+            if self.overlay.is_none() && self.btw.is_none() {
+                self.paste_image();
+            }
+            return;
+        }
         if let Some(overlay) = &mut self.overlay {
             return overlay.on_paste(pasted);
         }
@@ -1350,6 +1376,25 @@ mod tests {
         assert_eq!(typed_char(&release), None);
         assert_eq!(key_for('\n').code, KeyCode::Enter);
         assert_eq!(key_for('x').code, KeyCode::Char('x'));
+    }
+
+    #[test]
+    fn a_lone_release_of_ctrl_v_is_the_paste_windows_terminal_kept() {
+        use std::time::Duration;
+        let ctrl_v = |modifiers| KeyEvent::new_with_kind(KeyCode::Char('v'), modifiers, KeyEventKind::Release);
+        assert!(is_paste_key(&ctrl_v(KeyModifiers::CONTROL)));
+        assert!(is_paste_key(&ctrl_v(KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
+        assert!(!is_paste_key(&ctrl_v(KeyModifiers::ALT)));
+        assert!(!is_paste_key(&ctrl_v(KeyModifiers::CONTROL | KeyModifiers::ALT)));
+        assert!(!is_paste_key(&ctrl_v(KeyModifiers::NONE)));
+
+        // With only an image on the clipboard the terminal sends the release and nothing else.
+        assert!(press_was_kept(false, None));
+        assert!(press_was_kept(false, Some(Duration::from_secs(3))));
+        // The release that ends a paste of text follows the pasted keys at once.
+        assert!(!press_was_kept(false, Some(Duration::from_millis(5))));
+        // A terminal that lets the key through sends its press first: that was the paste.
+        assert!(!press_was_kept(true, None));
     }
 
     #[test]

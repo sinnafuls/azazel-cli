@@ -529,7 +529,61 @@ fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn file(run: &mut Run<'_>, item: &FileItem, root: &Path) {
+/// The names of what azazel has built in, which a skill, agent or command brought over would
+/// only shadow or be shadowed by.
+pub(super) struct Builtins {
+    skills: Vec<String>,
+    agents: Vec<String>,
+    commands: Vec<&'static str>,
+}
+
+impl Builtins {
+    pub(super) fn new() -> Builtins {
+        Builtins {
+            skills: azazel_core::builtin::skill_names().unwrap_or_default(),
+            agents: azazel_team::BUILTIN_AGENTS
+                .iter()
+                .filter_map(|(file, _)| file.strip_suffix(".md"))
+                .map(str::to_string)
+                .collect(),
+            commands: crate::inventory::builtin_command_names(),
+        }
+    }
+
+    /// Whether `item` has the name of a built-in skill, agent or slash command.
+    fn has(&self, item: &FileItem) -> bool {
+        // `skills/<name>`, `agents/<name>.md`, `commands/<name>.md`; a command in a folder has
+        // a name of its own (`git:sync`).
+        let mut parts = item.to.iter().skip(1);
+        let (Some(file), None) = (parts.next(), parts.next()) else {
+            return false;
+        };
+        let file = file.to_string_lossy();
+        let stem = file.strip_suffix(".md").unwrap_or(&file);
+        // A skill or an agent is called by the name its front matter gives, else by its file.
+        let name = declared_name(item).unwrap_or_else(|| stem.to_string());
+        match item.kind {
+            Kind::Skills => self.skills.contains(&name),
+            Kind::Agents => self.agents.contains(&name),
+            Kind::Commands => self.commands.contains(&stem),
+            _ => false,
+        }
+    }
+}
+
+/// The `name` the front matter of a skill or an agent definition gives.
+fn declared_name(item: &FileItem) -> Option<String> {
+    let text = match &item.body {
+        Body::Text(text) => text.clone(),
+        Body::Copy if item.from.is_dir() => std::fs::read_to_string(item.from.join("SKILL.md")).ok()?,
+        Body::Copy => std::fs::read_to_string(&item.from).ok()?,
+    };
+    let (yaml, _) = azazel_core::frontmatter::split(&text)?;
+    let meta = azazel_core::frontmatter::parse(yaml).ok()?;
+    meta.get("name")?.as_str().map(|name| name.trim().to_string())
+}
+
+fn file(run: &mut Run<'_>, item: &FileItem, root: &Path, builtins: &Builtins) {
     let to = base(run.paths, &item.scope).join(&item.to);
     // Where it comes from is said from the source's own directory, or from the project's.
     let from = match (&item.scope, item.from.strip_prefix(root)) {
@@ -538,6 +592,13 @@ fn file(run: &mut Run<'_>, item: &FileItem, root: &Path) {
         (Scope::Home, Err(_)) => item.from.as_path(),
     };
     let what = format!("{} -> {}", from.display(), to.display());
+    if builtins.has(item) {
+        return run.say(
+            item.kind,
+            Status::Skipped,
+            format!("{}: built-in, azazel has its own", from.display()),
+        );
+    }
     if (to.exists() || run.planned.files.contains(&to)) && !run.options.overwrite {
         return run.say(
             item.kind,
@@ -896,10 +957,11 @@ pub async fn apply(run: &mut Run<'_>, found: &Found) {
     if wanted(Kind::Keys) {
         keys(run, found);
     }
+    let builtins = Builtins::new();
     for kind in [Kind::Skills, Kind::Commands, Kind::Agents, Kind::Rules] {
         if wanted(kind) {
             for item in found.files.iter().filter(|item| item.kind == kind) {
-                file(run, item, &found.root);
+                file(run, item, &found.root, &builtins);
             }
         }
     }

@@ -28,7 +28,7 @@ const RECALL_LIMIT: usize = 5;
 const SCHEME_HITS: usize = 20;
 /// How long after an agent's write the file is re-indexed.
 const REINDEX_DELAY: Duration = Duration::from_secs(2);
-/// The longest an extraction may take; a session's end waits for it.
+/// The longest an extraction may take.
 const EXTRACT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Tool calls remembered while waiting for their results; calls that were denied never get one.
 const MAX_TRACKED_CALLS: usize = 256;
@@ -45,6 +45,8 @@ struct State {
     auto_index: bool,
     /// Whether this session extracts; `/memory auto` flips it.
     extracting: AtomicBool,
+    /// Something was prompted since the conversation was last extracted.
+    prompted: AtomicBool,
     /// Ids of the memories this session's prompts have already been given.
     shown: Mutex<HashSet<String>>,
     /// Paths of the `write` and `edit` calls in flight, by call id.
@@ -56,9 +58,10 @@ struct State {
 }
 
 impl State {
-    fn session_started(self: &Arc<Self>) {
+    fn session_started(self: &Arc<Self>, ctx: &ExtCtx) {
         locked(&self.shown).clear();
         self.extracting.store(self.extract_by_default, Ordering::Relaxed);
+        self.prompted.store(false, Ordering::Relaxed);
         let state = self.clone();
         tokio::spawn(async move {
             if let Err(why) = state.store.embed_memories().await {
@@ -70,6 +73,8 @@ impl State {
                 tracing::warn!("the project index could not be refreshed: {why}");
             }
         });
+        let (state, ctx) = (self.clone(), ctx.clone());
+        tokio::spawn(async move { state.catch_up(&ctx).await });
     }
 
     /// The `<memory>` block for a prompt: the best-matching memories it has not been given yet in
@@ -154,24 +159,79 @@ impl State {
 
     /// Runs one extraction over the open session. Failures are logged, never surfaced.
     async fn extract(&self, ctx: &ExtCtx) {
-        if !self.extracting.load(Ordering::Relaxed) {
+        let Some(session) = ctx.services.get::<SessionStore>() else {
             return;
+        };
+        self.prompted.store(false, Ordering::Relaxed);
+        self.extract_from(ctx, &session).await;
+    }
+
+    /// Extracts from `session`; true when that is done with, whatever it found.
+    async fn extract_from(&self, ctx: &ExtCtx, session: &SessionStore) -> bool {
+        if !self.extracting.load(Ordering::Relaxed) {
+            return false;
         }
         if azazel_core::limits::reached(&ctx.services) {
             tracing::info!("memory extraction skipped: the run's cost limit is reached");
-            return;
+            return false;
         }
-        let (Some(router), Some(session)) =
-            (ctx.services.get::<Router>(), ctx.services.get::<SessionStore>())
-        else {
-            return;
+        let Some(router) = ctx.services.get::<Router>() else {
+            return false;
         };
         let _one_at_a_time = self.extraction.lock().await;
-        let run = extract(&self.store, &router, &session);
+        let run = extract(&self.store, &router, session);
         match tokio::time::timeout(EXTRACT_TIMEOUT, run).await {
-            Ok(Ok(stored)) => tracing::debug!("extracted {stored} memories"),
-            Ok(Err(why)) => tracing::warn!("memory extraction failed: {why}"),
-            Err(_) => tracing::warn!("memory extraction timed out"),
+            Ok(Ok(stored)) => {
+                tracing::debug!("extracted {stored} memories");
+                true
+            }
+            Ok(Err(why)) => {
+                tracing::warn!("memory extraction failed: {why}");
+                false
+            }
+            Err(_) => {
+                tracing::warn!("memory extraction timed out");
+                false
+            }
+        }
+    }
+
+    /// At the end of a session: when something was prompted since the last extraction, the
+    /// session is put in line for the next session of this project to extract. Extraction asks
+    /// a model about the whole conversation, which the end of a session must not wait for.
+    async fn session_ended(&self, ctx: &ExtCtx) {
+        if !self.extracting.load(Ordering::Relaxed) || !self.prompted.swap(false, Ordering::Relaxed) {
+            return;
+        }
+        let Some(session) = ctx.services.get::<SessionStore>() else {
+            return;
+        };
+        if let Err(why) = self.store.queue_extraction(&session.path()).await {
+            tracing::warn!("the session could not be put in line for memory extraction: {why}");
+        }
+    }
+
+    /// Extracts, in the background of a new session, from the sessions that ended in line for it.
+    async fn catch_up(&self, ctx: &ExtCtx) {
+        if !self.extracting.load(Ordering::Relaxed) {
+            return;
+        }
+        let pending = match self.store.take_extractions().await {
+            Ok(pending) => pending,
+            Err(why) => {
+                tracing::warn!("the sessions in line for memory extraction could not be read: {why}");
+                return;
+            }
+        };
+        for path in pending {
+            let done = match SessionStore::open(&path) {
+                Ok(session) => self.extract_from(ctx, &session).await,
+                // A session that was deleted leaves nothing to extract.
+                Err(_) => !path.exists(),
+            };
+            if done && let Err(why) = self.store.extracted(&path).await {
+                tracing::warn!("{} could not be taken out of the line: {why}", path.display());
+            }
         }
     }
 }
@@ -183,8 +243,9 @@ impl EventHandler for Handler {
     async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
         let state = &self.0;
         match event {
-            Event::SessionStart { .. } => state.session_started(),
+            Event::SessionStart { .. } => state.session_started(ctx),
             Event::UserPrompt { text, .. } => {
+                state.prompted.store(true, Ordering::Relaxed);
                 if let Some(block) = state.recall(text).await {
                     text.push_str(&block);
                 }
@@ -198,8 +259,7 @@ impl EventHandler for Handler {
                 output,
                 ..
             } if WRITING_TOOLS.contains(&tool.as_str()) => state.call_finished(call_id, output.is_error),
-            // The process may end right after the session does, so this one is waited for.
-            Event::SessionEnd => state.extract(ctx).await,
+            Event::SessionEnd => state.session_ended(ctx).await,
             Event::PostCompact { agent } if agent.depth == 0 => {
                 let (state, ctx) = (state.clone(), ctx.clone());
                 tokio::spawn(async move { state.extract(&ctx).await });
@@ -417,6 +477,7 @@ impl MemoryExt {
                 extract_by_default: config.memory.auto_extract,
                 auto_index: config.memory.auto_index,
                 extracting: AtomicBool::new(config.memory.auto_extract),
+                prompted: AtomicBool::new(false),
                 shown: Mutex::default(),
                 calls: Mutex::default(),
                 scheduled: Mutex::default(),

@@ -25,6 +25,7 @@ CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF text, tags ON memories 
   INSERT INTO memories_fts(memories_fts, rowid, text, tags) VALUES ('delete', old.rowid, old.text, old.tags);
   INSERT INTO memories_fts(rowid, text, tags) VALUES (new.rowid, new.text, new.tags);
 END;
+CREATE TABLE IF NOT EXISTS pending_extractions (session TEXT PRIMARY KEY, attempts INTEGER NOT NULL DEFAULT 0);
 ";
 
 /// Tables of the search index.

@@ -356,6 +356,9 @@ pub enum Sub {
         /// The project whose own files (skills, commands, MCP servers) are brought over; this one when left out
         #[arg(long, value_name = "DIR")]
         project: Option<PathBuf>,
+        /// Rename the tool calls of conversations imported earlier to azazel's tools, keeping a copy of each file it changes
+        #[arg(long, conflicts_with_all = ["from", "only", "dry_run", "overwrite", "project"])]
+        fix_chats: bool,
     },
     /// Install and manage packages of skills, agents, commands and extensions
     Pkg {

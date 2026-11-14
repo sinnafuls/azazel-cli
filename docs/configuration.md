@@ -195,7 +195,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | Table | Key | Default | Meaning |
 |---|---|---|---|
 | `[memory]` | `enabled` | `true` | Project memory and its tools; see [memory](memory.md) |
-| | `auto_extract` | `true` | Extract memories at session end and after compaction |
+| | `auto_extract` | `true` | Extract memories after compaction, and from a session that ended in the next session of the project |
 | | `auto_index` | `true` | Refresh the code index in the background |
 | `[embeddings]` | `provider`, `model` | absent | Embedding endpoint; both keys are required. Absent means word search only |
 | `[web]` | `search` | `"auto"` | `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |

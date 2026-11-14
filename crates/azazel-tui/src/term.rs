@@ -285,8 +285,9 @@ impl Terminal {
     }
 }
 
+// `ctrl+v` is not among them: Windows Terminal pastes text with it, and with nothing but an image
+// on the clipboard it lets the key's release through, which azazel takes for the key.
 const WINDOWS_TERMINAL_KEYS: &[(&str, &str)] = &[
-    ("ctrl+v", "pastes"),
     ("ctrl+shift+v", "pastes"),
     ("shift+insert", "pastes"),
     ("ctrl+shift+c", "copies"),
@@ -820,7 +821,8 @@ mod tests {
         }
         let wt = Terminal::WindowsTerminal;
         assert_eq!(wt.takes(&key("alt+enter")), Some("toggles full screen"));
-        assert_eq!(wt.takes(&key("ctrl+v")), Some("pastes"));
+        assert_eq!(wt.takes(&key("ctrl+v")), None);
+        assert_eq!(wt.takes(&key("ctrl+shift+v")), Some("pastes"));
         assert_eq!(wt.takes(&key("alt+v")), None);
         assert_eq!(wt.takes(&key("shift+enter")), None);
         assert_eq!(Terminal::VsCode.takes(&key("ctrl+j")), Some("toggles the panel"));

@@ -1120,6 +1120,63 @@ pub fn add_rules(found: &mut Found, dir: &Path, scope: &Scope, prefix: &str) {
     }
 }
 
+// ---------------------------------------------------------------- tool names
+
+/// The azazel tool a tool of `source` stands for, by the name the source's conversations call it;
+/// `None` for a name that is azazel's already or that has no counterpart, which is kept. A model
+/// that reads its earlier calls under azazel's names calls azazel's tools.
+pub fn tool_name(source: Source, name: &str) -> Option<&'static str> {
+    let azazel = match source {
+        Source::Pi | Source::Omp => match name {
+            "bash" | "powershell" => "shell",
+            "ls" => "read",
+            "find" => "glob",
+            // omp's name for `grep` before it had that one.
+            "search" => "grep",
+            "ask" => "ask_user",
+            "fetch" => "web_fetch",
+            "todo_write" => "todo",
+            "apply_patch" => "patch",
+            _ => return None,
+        },
+        Source::Jcode => match name {
+            "bash" => "shell",
+            "ls" => "read",
+            "multiedit" => "edit",
+            "apply_patch" => "patch",
+            "webfetch" => "web_fetch",
+            "websearch" => "web_search",
+            "todowrite" | "todo_write" => "todo",
+            _ => return None,
+        },
+        Source::Claude => match name {
+            "Bash" => "shell",
+            "BashOutput" | "KillShell" | "KillBash" => "job",
+            "Read" | "LS" | "NotebookRead" => "read",
+            "Write" => "write",
+            "Edit" | "MultiEdit" => "edit",
+            "Glob" => "glob",
+            "Grep" => "grep",
+            "WebFetch" => "web_fetch",
+            "WebSearch" => "web_search",
+            "Task" | "Agent" => "task",
+            "TodoWrite" => "todo",
+            "AskUserQuestion" => "ask_user",
+            _ => return None,
+        },
+        Source::Codex => match name {
+            "local_shell" | "exec_command" | "container.exec" => "shell",
+            "write_stdin" => "pty",
+            "apply_patch" => "patch",
+            "update_plan" => "todo",
+            "view_image" | "read_file" | "list_dir" => "read",
+            "grep_files" => "grep",
+            _ => return None,
+        },
+    };
+    Some(azazel)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

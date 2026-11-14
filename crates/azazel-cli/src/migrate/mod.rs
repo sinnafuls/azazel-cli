@@ -184,6 +184,45 @@ pub fn counts(found: &Found) -> String {
     }
 }
 
+/// `azazel migrate --fix-chats`: renames the tool calls in the sessions imported earlier, in
+/// every project, to azazel's tool names, as an import does now.
+pub fn fix_chats(paths: &Paths) -> u8 {
+    let projects = paths.home.join("projects");
+    let mut dirs: Vec<PathBuf> = std::fs::read_dir(&projects)
+        .map(|entries| entries.flatten().map(|entry| entry.path().join("sessions")).collect())
+        .unwrap_or_default();
+    dirs.sort();
+    let (mut files, mut calls, mut failed) = (0, 0, false);
+    for dir in dirs.iter().filter(|dir| dir.is_dir()) {
+        match chat::fix_chats(dir) {
+            Ok(fixed) => {
+                for one in fixed {
+                    println!(
+                        "fixed     {}: {} tool calls renamed (the old file is kept as {})",
+                        one.path.display(),
+                        one.calls,
+                        one.path.with_extension(chat::BACKUP_EXTENSION).display()
+                    );
+                    files += 1;
+                    calls += one.calls;
+                }
+            }
+            Err(e) => {
+                println!("failed    {}: {e}", dir.display());
+                failed = true;
+            }
+        }
+    }
+    match files {
+        0 => println!("no imported conversation calls a tool by another harness's name"),
+        _ => println!("{calls} tool calls renamed in {files} imported conversations"),
+    }
+    match failed {
+        true => EXIT_FAILED,
+        false => EXIT_OK,
+    }
+}
+
 /// The arguments of `azazel migrate`.
 pub struct Args<'a> {
     pub from: &'a [String],

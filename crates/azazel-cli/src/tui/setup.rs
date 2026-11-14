@@ -1098,7 +1098,6 @@ mod tests {
             found,
             [
                 "alt+enter (follow_up) does not reach azazel: Windows Terminal toggles full screen",
-                "ctrl+v (paste_image) does not reach azazel: Windows Terminal pastes (alt+v works)",
                 "ctrl+shift+v (paste_text) does not reach azazel: Windows Terminal pastes (alt+shift+v works)",
                 "ctrl+shift+p (cycle_model_back) does not reach azazel: Windows Terminal opens its command \
                  palette (alt+shift+p, alt+shift+m works)",

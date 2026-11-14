@@ -1484,16 +1484,27 @@ impl App {
 
     /// Ends the last session: tells extensions, stops the lead and background jobs.
     pub async fn finish(&self, active: &Active) {
+        let ended = std::time::Instant::now();
+        let mut at = ended;
+        let mut took = |step: &str| {
+            tracing::debug!("session end: {step} took {} ms", at.elapsed().as_millis());
+            at = std::time::Instant::now();
+        };
         // A name being chosen in the background is written before the session closes.
         if let Some(namer) = self.registry.services.get::<Namer>() {
             namer.settle().await;
         }
+        took("naming");
         self.registry.bus.emit(&mut Event::SessionEnd).await;
+        took("session_end handlers");
         self.close(active).await;
+        took("closing the lead");
         if let Some(telemetry) = &self.telemetry {
             telemetry.flush().await;
         }
+        took("telemetry");
         active.checkpoints.tidy().await;
+        took("checkpoints");
         if let Some(jobs) = self.registry.services.get::<azazel_tools::Jobs>() {
             jobs.kill_all();
         }
@@ -1504,6 +1515,8 @@ impl App {
         if self.ephemeral {
             let _ = std::fs::remove_dir_all(ephemeral_dir(&self.paths));
         }
+        took("jobs and servers");
+        tracing::debug!("session end: {} ms in all", ended.elapsed().as_millis());
     }
 
     pub fn log_file(paths: &Paths) -> PathBuf {

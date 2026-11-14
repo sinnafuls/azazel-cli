@@ -504,7 +504,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Alt+Enter` | `follow_up` | While the agent is working: queue the message until it finishes; see [queued messages](#queued-messages-and-stashed-drafts) |
 | `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` | Insert a line break. Where the terminal sends `Shift+Enter` and `Ctrl+Enter` as plain `Enter`, `Ctrl+J` does it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `Esc` | `abort` | Interrupt the lead agent. Twice within a second on an empty, idle input: open `/rewind` |
-| `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits |
+| `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits: the terminal is yours again at once, and nothing at the end of the session waits for a model (memories are extracted by the next session; see [memory](memory.md#automatic-extraction)). Another `Ctrl+C` while the session is still closing ends azazel there and then |
 | `Ctrl+D` | `exit` | Exit when the input is empty |
 | `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `manual`, `accept-edits`, `auto`. `bypass` is not a step: it is entered with `/mode bypass` and confirmed |
 | `Alt+A` | `agent_hub` | Open the agent hub |
@@ -512,7 +512,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L`, `Alt+P` | `model_picker` | Open the [model picker](#models-and-roles-at-a-key): roles, favourites, recent models, then every model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
-| `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). Windows Terminal and VS Code paste with `Ctrl+V` themselves, so there the key for an image is `Alt+V` |
+| `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). In Windows Terminal `Ctrl+V` pastes text itself, and attaches an image when the clipboard holds one and no text. VS Code on Windows pastes with `Ctrl+V` itself, so there the key for an image is `Alt+V` |
 | `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
 | `Tab` | `complete` | Open or accept completion |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
@@ -674,6 +674,10 @@ is none (WSL has no way to an image on the Windows clipboard), azazel runs the p
 
 These programs run only when you press the key, with fixed arguments: nothing from the clipboard becomes part
 of a command. When the program is missing the answer is that the clipboard holds nothing.
+
+Most terminals keep `Ctrl+V` (or `Cmd+V`) for their own paste. With an image and no text on the clipboard
+they paste nothing: an empty paste, or in Windows Terminal only the release of the key. azazel takes either
+for `Ctrl+V` and reads the clipboard, so a screenshot is attached however the terminal pastes.
 
 `Ctrl+Shift+V` (or `Alt+Shift+V`) pastes the clipboard's text and nothing else: a path stays a path. Most
 terminals keep `Ctrl+Shift+V` for their own paste, which arrives as pasted text and is treated as described

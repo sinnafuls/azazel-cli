@@ -47,8 +47,12 @@ Everything else is found on demand with `memory_search`.
 
 With `memory.auto_extract = true` (the default), one extra model call turns the conversation into memories:
 
-- when the session ends, and
-- after each full compaction of the lead's context.
+- after each full compaction of the lead's context, in the background, and
+- for a session that ends with something prompted since then: the end of the session does not wait for a
+  model, so the session is put in line, and the next session of the same project extracts from it in the
+  background when it starts. A session that is resumed and left without a prompt asks nothing. An
+  extraction that fails, or that a process ending cuts short, is tried again by the next session, three
+  times at most.
 
 The call uses the `@memory` role (which falls back to `@smol`, then `@default`; see [models and logins](models-and-logins.md)). It receives the most recent part of the conversation (about 30k tokens) and the 20 most related existing memories, and may return at most 8 items. An item is dropped when its text equals an existing memory (ignoring case and spacing) or, with embeddings configured, when its cosine similarity to an existing memory is 0.92 or higher. An item can replace an older memory; the old one is marked superseded and no longer appears in searches or recall. Extracted memories always go to the project store.
 
@@ -128,7 +132,7 @@ The rest of the line is saved as a `preference` of this project, and its id is s
 ```toml
 [memory]
 enabled = true        # false: no memory tools, no recall, no index upkeep
-auto_extract = true   # extract memories at session end and after compaction
+auto_extract = true   # extract memories after compaction and from sessions that ended
 auto_index = true     # refresh the code index at session start
 ```
 

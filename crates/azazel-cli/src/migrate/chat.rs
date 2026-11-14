@@ -8,7 +8,7 @@ use azazel_ai::{AssistantMeta, Block, Message, StopReason, WireApi};
 use azazel_core::{EntryKind, SessionStore};
 use serde_json::{Value, json};
 
-use super::convert::api_of_provider;
+use super::convert::{api_of_provider, tool_name};
 use super::model::{Chat, Source, Turn, TurnKind};
 
 /// The `customType` of the entry an imported session starts with. Its data names the source
@@ -182,6 +182,7 @@ fn replay(
                         _ => true,
                     })
                     .cloned()
+                    .map(|block| renamed(source, block))
                     .collect();
                 if blocks.is_empty() {
                     tally.empty += 1;
@@ -268,6 +269,145 @@ fn notes_of(tally: &Tally, notes: &mut Vec<String>) {
         "tool results belonged to no call and were left out",
     );
     note(tally.empty, "empty messages were left out");
+}
+
+/// A tool call under the name azazel gives the tool it was made to; anything else as it is.
+fn renamed(source: Source, block: Block) -> Block {
+    match block {
+        Block::ToolCall {
+            id,
+            name,
+            input,
+            signature,
+        } => Block::ToolCall {
+            id,
+            name: tool_name(source, &name).map_or(name, str::to_string),
+            input,
+            signature,
+        },
+        other => other,
+    }
+}
+
+/// What `--fix-chats` did to one file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fixed {
+    pub path: PathBuf,
+    /// Tool calls renamed in the file and the transcripts of its sub-agents.
+    pub calls: usize,
+    /// The copy of each file as it was, next to it.
+    pub backups: Vec<PathBuf>,
+}
+
+/// The extension the copy of a file that `--fix-chats` changed is given: not `.jsonl`, so no
+/// listing takes it for a session.
+pub const BACKUP_EXTENSION: &str = "jsonl.bak";
+
+/// Renames the tool calls in the sessions of `dir` that were imported from another harness to
+/// azazel's names, as an import does now, keeping a copy of each file it changes. Sessions made by
+/// azazel, and imported ones that hold no such call, are left as they are.
+pub fn fix_chats(dir: &Path) -> io::Result<Vec<Fixed>> {
+    let mut fixed = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(fixed);
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "jsonl"))
+        .collect();
+    files.sort();
+    for path in files {
+        let text = std::fs::read_to_string(&path)?;
+        let mut lines = text.lines();
+        let header = lines.next().and_then(|line| serde_json::from_str::<Value>(line).ok());
+        let source = lines
+            .next()
+            .and_then(|line| serde_json::from_str::<Value>(line).ok())
+            .filter(|entry| entry["type"] == "custom" && entry["customType"] == IMPORTED)
+            .and_then(|mark| mark["data"]["source"].as_str().and_then(Source::parse));
+        let (Some(header), Some(source)) = (header, source) else {
+            continue;
+        };
+        let mut calls = 0;
+        let mut backups = Vec::new();
+        // The transcripts of its sub-agents are kept in a directory named by the session's id.
+        let mut targets = vec![path.clone()];
+        if let Some(id) = header["id"].as_str() {
+            targets.extend(jsonl_below(&dir.join(id)));
+        }
+        for target in targets {
+            let text = match target == path {
+                true => text.clone(),
+                false => std::fs::read_to_string(&target)?,
+            };
+            let (rewritten, count) = rename_calls(&text, source);
+            if count == 0 {
+                continue;
+            }
+            let backup = target.with_extension(BACKUP_EXTENSION);
+            std::fs::copy(&target, &backup)?;
+            std::fs::write(&target, rewritten)?;
+            calls += count;
+            backups.push(backup);
+        }
+        if calls > 0 {
+            fixed.push(Fixed { path, calls, backups });
+        }
+    }
+    Ok(fixed)
+}
+
+/// The `.jsonl` files below `dir`, at any depth.
+fn jsonl_below(dir: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return found;
+    };
+    for path in entries.flatten().map(|entry| entry.path()) {
+        if path.is_dir() {
+            found.extend(jsonl_below(&path));
+        } else if path.extension().is_some_and(|ext| ext == "jsonl") {
+            found.push(path);
+        }
+    }
+    found.sort();
+    found
+}
+
+/// `text`, a session file, with the tool calls of its assistant messages renamed, and how many
+/// were. Lines that hold none are kept byte for byte.
+fn rename_calls(text: &str, source: Source) -> (String, usize) {
+    let mut out = String::with_capacity(text.len());
+    let mut count = 0;
+    for line in text.split_inclusive('\n') {
+        let body = line.trim_end_matches(['\n', '\r']);
+        let mut entry = match body.contains("\"tool_call\"") {
+            true => serde_json::from_str::<Value>(body).ok(),
+            false => None,
+        };
+        let mut renamed_here = 0;
+        if let Some(entry) = &mut entry
+            && entry["type"] == "message"
+            && let Some(blocks) = entry["message"]["content"].as_array_mut()
+        {
+            for block in blocks.iter_mut().filter(|block| block["type"] == "tool_call") {
+                if let Some(name) = block["name"].as_str().and_then(|name| tool_name(source, name)) {
+                    block["name"] = Value::from(name);
+                    renamed_here += 1;
+                }
+            }
+        }
+        match (entry, renamed_here) {
+            (Some(entry), 1..) => {
+                out.push_str(&entry.to_string());
+                out.push_str(&line[body.len()..]);
+                count += renamed_here;
+            }
+            _ => out.push_str(line),
+        }
+    }
+    (out, count)
 }
 
 /// A name a file can have, from what a source calls a sub-agent.
@@ -565,5 +705,94 @@ mod tests {
         assert_eq!(branch.len(), 2);
         // Only the session itself is a session of the project.
         assert_eq!(SessionStore::list(dir.path()).len(), 1);
+    }
+
+    fn named(id: &str, name: &str) -> Block {
+        Block::ToolCall {
+            id: id.to_string(),
+            name: name.to_string(),
+            input: json!({ "command": "ls" }),
+            signature: None,
+        }
+    }
+
+    /// `(call id, tool name)` of every call in a session file, and the ids of the results.
+    fn calls_in(path: &Path) -> (Vec<(String, String)>, Vec<String>) {
+        let store = SessionStore::open(path).unwrap();
+        let (mut calls, mut results) = (Vec::new(), Vec::new());
+        for entry in store.build_context(None) {
+            for block in &entry.message.content {
+                match block {
+                    Block::ToolCall { id, name, .. } => calls.push((id.clone(), name.clone())),
+                    Block::ToolResult { call_id, .. } => results.push(call_id.clone()),
+                    _ => {}
+                }
+            }
+        }
+        (calls, results)
+    }
+
+    fn pairs(list: &[(&str, &str)]) -> Vec<(String, String)> {
+        list.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect()
+    }
+
+    #[test]
+    fn imported_calls_take_the_names_of_azazels_tools_and_earlier_imports_are_fixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let turns = |call: &str| {
+            vec![
+                TurnKind::User(vec![Block::text("list the files")]),
+                assistant(vec![named("c1", call), named("c2", "mcp__files_list")]),
+                result("c1", "a.txt"),
+                result("c2", "b.txt"),
+                assistant(vec![Block::text("Two files.")]),
+            ]
+        };
+        let mut omp = chat(turns("bash"));
+        omp.agents = vec![("scout".to_string(), chat(turns("bash")))];
+        let written = write_chat(dir.path(), Source::Omp, &omp, Path::new("/src/a.jsonl")).unwrap();
+        // A tool another harness named is called by azazel's name, and keeps its id and result;
+        // a name azazel has no counterpart for is kept.
+        let (calls, results) = calls_in(&written.path);
+        assert_eq!(calls, pairs(&[("c1", "shell"), ("c2", "mcp__files_list")]));
+        assert_eq!(results, ["c1", "c2"]);
+        let claude = chat(turns("Bash"));
+        let other = tempfile::tempdir().unwrap();
+        let written_claude = write_chat(other.path(), Source::Claude, &claude, Path::new("/src/b.jsonl")).unwrap();
+        assert_eq!(calls_in(&written_claude.path).0[0].1, "shell");
+
+        // A session imported before names were mapped is fixed in place, its sub-agents' too,
+        // with a copy of each file as it was.
+        let transcript = PathBuf::from(&SessionStore::open(&written.path).unwrap().facts().agents[0].transcript);
+        let mut old = Vec::new();
+        for file in [&written.path, &transcript] {
+            let text = std::fs::read_to_string(file).unwrap().replace(r#""name":"shell""#, r#""name":"bash""#);
+            std::fs::write(file, &text).unwrap();
+            old.push(text);
+        }
+        assert_eq!(calls_in(&written.path).0[0].1, "bash");
+        // A session of azazel's own is never touched.
+        let own = SessionStore::create(dir.path(), "/work/app", None).unwrap();
+        own.append(EntryKind::Message {
+            message: Message::assistant(vec![named("c9", "bash")], AssistantMeta::default()),
+        });
+        let own_text = std::fs::read_to_string(own.path()).unwrap();
+
+        let fixed = fix_chats(dir.path()).unwrap();
+        assert_eq!(fixed.len(), 1);
+        assert_eq!(fixed[0].path, written.path);
+        assert_eq!(fixed[0].calls, 2);
+        assert_eq!(calls_in(&written.path).0, pairs(&[("c1", "shell"), ("c2", "mcp__files_list")]));
+        assert_eq!(calls_in(&transcript).0[0].1, "shell");
+        let backups: Vec<String> = fixed[0]
+            .backups
+            .iter()
+            .map(|backup| std::fs::read_to_string(backup).unwrap())
+            .collect();
+        assert_eq!(backups, old);
+        assert_eq!(std::fs::read_to_string(own.path()).unwrap(), own_text);
+        // The copies are not sessions, and a second run has nothing to do.
+        assert_eq!(SessionStore::list(dir.path()).len(), 2);
+        assert!(fix_chats(dir.path()).unwrap().is_empty());
     }
 }
