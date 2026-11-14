@@ -252,6 +252,20 @@ cause, the first thing in the request that was not what it had been:
 
 `[cache] report_misses = true` also prints the miss in the transcript when it happens.
 
+When the lead's cache runs out while the session waits for you, the UI says so as it happens, in a muted line:
+
+```text
+the prompt cache of anthropic/claude-opus-5-5 ran out after 5 min without a request: the next one sends its
+84.2k cached tokens anew, about $1.58 instead of $0.13; [cache] warming = "idle" keeps it alive while you think
+```
+
+The two amounts are what the cached part of the conversation costs to write to the cache again and what reading
+it would have cost; they are left out on a subscription and for a model without a known price. The line is said
+once per idle spell, only for a cached prefix of at least 4096 tokens, only while the agent is idle, and only in
+a session that runs in this process. With [warming](#keeping-the-cache-warm) on it comes when the warming has
+ended and the cache has run out after it; the hint about warming is left out then, and for models whose cache a
+request cannot renew.
+
 ### Keeping the cache warm
 
 A cache that nothing reads for 5 minutes is gone, and the next prompt pays full price for the whole

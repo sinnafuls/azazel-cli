@@ -347,6 +347,117 @@ fn the_tree_is_read_moved_in_and_the_last_prompt_sent_again() {
     assert_eq!(client.finish(), Some(0));
 }
 
+/// The texts of the messages of `request` a user wrote, in order.
+fn user_texts(request: &Value) -> Vec<String> {
+    request["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|message| message["role"] == "user")
+        .map(|message| message["content"][0]["text"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// The model each request went to, in order.
+fn models_asked(client: &Client) -> Vec<String> {
+    std::fs::read_to_string(client.dir.path().join("requests.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["model"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_agent_is_told_what_happened_on_a_branch_that_is_left() {
+    let script = json!({
+        "lead": [
+            { "reply": { "text": "one" } },
+            { "reply": { "text": "two" } },
+            { "reply": { "text": "three" } },
+        ],
+        "smol": [{ "reply": { "text": "A second thing was asked for.\nThe agent answered two." } }],
+    });
+    let mut client = Client::start(&script, &["--set", "roles.smol=[\"mock/smol\"]"]);
+    client.prompt("first");
+    client.prompt("second");
+    let tree = client.tree();
+    let entry = |text: &str| {
+        tree.iter()
+            .find(|row| row.text.as_deref() == Some(text))
+            .unwrap()
+            .id
+            .clone()
+    };
+
+    // Back to the first reply: the second exchange is written up, and the user is told.
+    client.state(json!({ "type": "set_leaf", "entry_id": entry("one") }));
+    let (_, told) = client.until(|line| line["type"] == "ui_request" && line["kind"] == "notify");
+    assert_eq!(
+        told["text"],
+        "the agent was told what happened on the branch you left:\nA second thing was asked for.\nThe agent \
+         answered two."
+    );
+    // The small model read the branch that was left, and nothing of what the conversation
+    // goes on from.
+    let asked = client.requests().pop().unwrap();
+    assert_eq!(models_asked(&client), ["lead", "lead", "smol"]);
+    let read = user_texts(&asked).join("\n");
+    assert!(read.contains("User: second\nAgent: two"), "{read}");
+    assert!(!read.contains("first"), "{read}");
+
+    // The note asked for no reply; it is in front of the next prompt.
+    client.prompt("third");
+    let sent = user_texts(&client.requests().pop().unwrap());
+    assert_eq!(sent.len(), 3, "{sent:?}");
+    assert_eq!(sent[0], "first");
+    assert!(
+        sent[1].starts_with("I went back to an earlier point of this conversation.")
+            && sent[1].ends_with("A second thing was asked for.\nThe agent answered two."),
+        "{sent:?}"
+    );
+    assert_eq!(sent[2], "third");
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn a_branch_is_not_summarised_when_that_is_switched_off() {
+    let script = json!({
+        "lead": [
+            { "reply": { "text": "one" } },
+            { "reply": { "text": "two" } },
+            { "reply": { "text": "three" } },
+        ],
+        "smol": [{ "reply": { "text": "never asked for" } }],
+    });
+    let mut client = Client::start(
+        &script,
+        &[
+            "--set",
+            "roles.smol=[\"mock/smol\"]",
+            "--set",
+            "session.branch_summary=false",
+        ],
+    );
+    client.prompt("first");
+    client.prompt("second");
+    let one = client
+        .tree()
+        .into_iter()
+        .find(|row| row.text.as_deref() == Some("one"))
+        .unwrap();
+    client.state(json!({ "type": "set_leaf", "entry_id": one.id }));
+    client.prompt("third");
+    assert_eq!(models_asked(&client), ["lead", "lead", "lead"]);
+    assert_eq!(user_texts(&client.requests().pop().unwrap()), ["first", "third"]);
+    assert_eq!(client.finish(), Some(0));
+}
+
 #[test]
 fn thinking_name_and_tier_are_set_and_the_context_is_compacted() {
     let mut client = Client::start(&replies(&["one", "## Goal\nsummarised"]), &[]);

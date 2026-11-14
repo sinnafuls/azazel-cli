@@ -120,3 +120,92 @@ fn a_queued_message_is_checkpointed_and_expanded_like_a_typed_prompt() {
         assert_eq!(kinds[at - 1], "checkpoint", "{kinds:?}");
     }
 }
+
+/// The texts of the user messages of each request the scripted provider was sent.
+fn prompts_sent(requests: &std::path::Path) -> Vec<Vec<String>> {
+    std::fs::read_to_string(requests)
+        .unwrap()
+        .lines()
+        .map(|line| {
+            let request = serde_json::from_str::<Value>(line).unwrap()["request"].clone();
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "user")
+                .map(|message| {
+                    message["content"][0]["text"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string()
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// Runs a prompt with two messages queued behind it and returns what each request held.
+fn run_with_queue(mode: &str, replies: usize) -> Vec<Vec<String>> {
+    let dir = tempfile::tempdir().unwrap();
+    let project = dir.path().join("project");
+    std::fs::create_dir_all(project.join(".azazel")).unwrap();
+    std::fs::create_dir_all(dir.path().join("home")).unwrap();
+    let script = dir.path().join("script.json");
+    let lead: Vec<Value> = (1..=replies)
+        .map(|n| json!({ "reply": { "text": format!("answer {n}") } }))
+        .collect();
+    std::fs::write(&script, json!({ "lead": lead }).to_string()).unwrap();
+    let requests = dir.path().join("requests.jsonl");
+    let output = Command::cargo_bin("azazel")
+        .unwrap()
+        .env("AZAZEL_HOME", dir.path().join("home"))
+        .env("AZAZEL_MOCK_SCRIPT", &script)
+        .env("AZAZEL_MOCK_REQUESTS", &requests)
+        .env("AZAZEL_TEST_QUEUE", "then the second thing\nand the third thing")
+        .env_remove("ANTHROPIC_API_KEY")
+        .env_remove("OPENAI_API_KEY")
+        .arg("--cwd")
+        .arg(&project)
+        .args(["--no-memory", "--set", "session.auto_name=false", "--set"])
+        .arg(format!("tui.queue_mode={mode}"))
+        .args(["-p", "do the first thing"])
+        .write_stdin("")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        format!("answer {replies}")
+    );
+    prompts_sent(&requests)
+}
+
+#[test]
+fn queued_messages_go_one_per_run_or_all_in_one_prompt() {
+    // One at a time: three runs, each with one prompt more than the one before.
+    let one = run_with_queue("one", 3);
+    assert_eq!(one.len(), 3);
+    assert_eq!(
+        one[2],
+        [
+            "do the first thing",
+            "then the second thing",
+            "and the third thing"
+        ]
+    );
+
+    // All together: the two queued messages are the second run's one prompt.
+    let all = run_with_queue("all", 2);
+    assert_eq!(all.len(), 2);
+    assert_eq!(
+        all[1],
+        [
+            "do the first thing",
+            "then the second thing\n\nand the third thing"
+        ]
+    );
+}

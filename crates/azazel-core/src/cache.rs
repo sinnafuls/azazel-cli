@@ -299,6 +299,34 @@ struct WarmTarget {
     touched: Instant,
 }
 
+/// The lead's cached prefix as its last answered request left it.
+#[derive(Debug, Clone)]
+struct LeadPrefix {
+    model: ModelRef,
+    prefix: u64,
+    /// The model's API has a cache that a request keeps alive.
+    renewable: bool,
+    /// Counts the lead's answered requests, so a warming request for an older one is told apart.
+    seq: u64,
+    /// When the cache was last read: by the request, or by a warming request since.
+    touched: Instant,
+}
+
+/// The lead's prompt cache at the moment the provider drops it for want of a request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Expiry {
+    pub model: ModelRef,
+    /// The cached prefix, which the next request sends anew, in tokens.
+    pub prefix: u64,
+    /// When the provider drops it, unless something reads it before.
+    pub at: Instant,
+    /// How long the provider keeps a cache that nothing reads.
+    pub ttl: Duration,
+    /// Whether `cache.warming` can keep this cache alive: the model's API has a cache that a
+    /// request renews.
+    pub renewable: bool,
+}
+
 /// What warming has done in this session and what it will do next.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Warming {
@@ -320,6 +348,9 @@ struct State {
     seq: u64,
     target: Option<WarmTarget>,
     warming: Warming,
+    /// The lead's cached prefix while no request of the lead is on its way; gone once its
+    /// expiry has been told.
+    lead: Option<LeadPrefix>,
 }
 
 impl State {
@@ -452,6 +483,7 @@ impl CacheLedger {
         }
         let mut state = locked(&self.state);
         state.enter(&agent.session_id);
+        state.lead = None;
         if state.target.take().is_some() {
             state.warming.next = None;
             drop(state);
@@ -498,9 +530,20 @@ impl CacheLedger {
         }
         state.last.insert(agent.id.clone(), print);
 
-        if self.warm && agent.depth == 0 {
+        if agent.depth == 0 {
             let prefix = meta.usage.cache_read + meta.usage.cache_write;
             state.seq += 1;
+            // A short prefix costs little to send again: its expiry is not worth a word.
+            state.lead = (prefix >= MIN_WARM_PREFIX).then(|| LeadPrefix {
+                model: ModelRef::new(meta.provider.clone(), meta.model.clone()),
+                prefix,
+                renewable: meta.api == WireApi::AnthropicMessages,
+                seq: state.seq,
+                touched: now,
+            });
+        }
+        if self.warm && agent.depth == 0 {
+            let prefix = meta.usage.cache_read + meta.usage.cache_write;
             state.warming.next = None;
             state.warming.idle_reason = None;
             state.target = None;
@@ -578,9 +621,38 @@ impl CacheLedger {
         let mut state = locked(&self.state);
         state.warming.requests += 1;
         state.warming.usage.add(usage);
+        let now = Instant::now();
         if let Some(target) = state.target.as_mut().filter(|target| target.seq == seq) {
-            target.touched = Instant::now();
+            target.touched = now;
         }
+        if let Some(lead) = state.lead.as_mut().filter(|lead| lead.seq == seq) {
+            lead.touched = now;
+        }
+    }
+
+    /// When the provider drops the lead's cached prefix in the session `session`, unless a
+    /// request reads it first. `None` while a request of the lead is on its way, when the
+    /// prefix is too short to matter, and once [`CacheLedger::expired`] has told of it.
+    pub fn expiry(&self, session: &str) -> Option<Expiry> {
+        let state = locked(&self.state);
+        let lead = state.lead.as_ref().filter(|_| state.session == session)?;
+        Some(Expiry {
+            model: lead.model.clone(),
+            prefix: lead.prefix,
+            at: lead.touched + self.ttl,
+            ttl: self.ttl,
+            renewable: lead.renewable,
+        })
+    }
+
+    /// The lead's cached prefix, once, when the provider has dropped it: nothing read it for
+    /// as long as a cache is kept.
+    pub fn expired(&self, session: &str) -> Option<Expiry> {
+        let expiry = self
+            .expiry(session)
+            .filter(|expiry| expiry.at <= Instant::now())?;
+        locked(&self.state).lead = None;
+        Some(expiry)
     }
 }
 
@@ -1039,6 +1111,83 @@ mod tests {
             text.ends_with("cache warming: 3 requests · 36.0k read · stopped 12 min after the last request"),
             "{text}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_leads_cache_expires_once_after_five_minutes_without_a_request() {
+        let ledger = ledger(CacheWarming::Off);
+        assert_eq!(ledger.expiry("s1"), None);
+        let asked = Instant::now();
+        assert_eq!(answer(&ledger, request(1), 20_000, 4_000), None);
+        let expiry = ledger.expiry("s1").unwrap();
+        assert_eq!(
+            (
+                expiry.model.to_string(),
+                expiry.prefix,
+                expiry.at,
+                expiry.renewable
+            ),
+            ("mock/lead".to_string(), 24_000, asked + CACHE_TTL, true)
+        );
+        // Another session has no cache here, and a sub-agent's requests do not count.
+        assert_eq!(ledger.expiry("s2"), None);
+        tokio::time::sleep(Duration::from_secs(4 * 60)).await;
+        let sub = reply(WireApi::AnthropicMessages, "lead", 10, 50_000, 0);
+        ledger.answered(&agent("helper", 1), &Arc::new(request(1)), &[], &sub);
+        assert_eq!(ledger.expiry("s1").unwrap().at, asked + CACHE_TTL);
+        assert_eq!(ledger.expired("s1"), None);
+
+        // Five minutes after the answer it is gone, which is told once.
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(ledger.expired("s1"), Some(expiry));
+        assert_eq!((ledger.expired("s1"), ledger.expiry("s1")), (None, None));
+
+        // A request on its way reads the cache itself: nothing expires meanwhile, and the
+        // five minutes start again from its answer.
+        assert_eq!(answer(&ledger, request(3), 24_000, 500), None);
+        ledger.sent(&agent("lead", 0));
+        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+        assert_eq!(ledger.expired("s1"), None);
+        assert_eq!(answer(&ledger, request(5), 24_500, 500), None);
+        assert_eq!(ledger.expiry("s1").unwrap().prefix, 25_000);
+
+        // A short prefix is not worth a word.
+        answer(&ledger, request(6), 3_000, 1_000);
+        assert_eq!(ledger.expiry("s1"), None);
+        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+        assert_eq!(ledger.expired("s1"), None);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_cache_kept_warm_expires_when_the_warming_ends() {
+        let mock = Arc::new(MockProvider::new());
+        for _ in 0..4 {
+            mock.push("lead", warm_reply(12_000));
+        }
+        let ledger = Arc::new(CacheLedger::new(&CacheConfig {
+            warming: CacheWarming::Idle,
+            warm_minutes: 12,
+            report_misses: false,
+        }));
+        tokio::spawn(warmer(mock.clone(), ledger.clone()).run());
+        let asked = Instant::now();
+        assert_eq!(answer(&ledger, request(3), 11_000, 1_000), None);
+
+        // Warming requests go out at 4:30 and 9:00, and each renews the cache.
+        tokio::time::sleep(Duration::from_secs(10 * 60)).await;
+        assert_eq!(mock.requests_for("lead").len(), 2);
+        assert_eq!(ledger.expired("s1"), None);
+        let renewed = ledger.expiry("s1").unwrap().at;
+        assert!(
+            renewed > asked + Duration::from_secs(13 * 60),
+            "{:?}",
+            renewed - asked
+        );
+
+        // The warming ends twelve minutes after the request; five minutes after its last
+        // request the cache is gone.
+        tokio::time::sleep(Duration::from_secs(5 * 60)).await;
+        assert_eq!(ledger.expired("s1").map(|expiry| expiry.at), Some(renewed));
     }
 
     #[tokio::test(start_paused = true)]

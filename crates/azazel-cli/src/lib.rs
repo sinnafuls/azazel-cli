@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod acp;
 pub mod app;
 mod attention;
+mod branch;
 pub mod bug;
 pub mod changelog;
 pub mod cli;
@@ -15,6 +16,7 @@ pub mod detach;
 mod diagram;
 pub mod doctor;
 pub mod export;
+mod fix;
 pub mod git;
 #[cfg(any(feature = "mcp", feature = "acp"))]
 pub mod headless;
@@ -38,6 +40,7 @@ pub mod print;
 pub mod reports;
 pub mod resets;
 pub mod resources;
+mod restart;
 pub mod retry;
 pub mod routing;
 pub mod rpc;
@@ -92,6 +95,7 @@ impl Builder {
     /// Parses the process arguments and runs the selected mode to completion.
     pub fn run(self) -> ExitCode {
         let extensions = self.extensions;
+        restart::remember_binary();
         // The run gets a thread of its own, with the stack a main thread has on Linux. The main
         // thread of a Windows process has one megabyte, which a debug build does not fit in:
         // not the run, and not reading a command line with this many subcommands.
@@ -116,7 +120,11 @@ impl Builder {
                 ExitCode::from(code)
             });
         match running.map(|run| run.join()) {
-            Ok(Ok(code)) => code,
+            // `/restart`: the run is over and everything it held is closed.
+            Ok(Ok(code)) => match restart::take() {
+                Some(args) => restart::exec(args),
+                None => code,
+            },
             // The run panicked; the panic has been reported.
             Ok(Err(_)) => ExitCode::FAILURE,
             Err(e) => {

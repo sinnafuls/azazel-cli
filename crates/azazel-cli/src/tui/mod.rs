@@ -5,8 +5,10 @@
 mod backend;
 mod bridge;
 mod btw;
+mod cache;
 mod calls;
 mod clip;
+mod debug;
 mod fleet;
 mod form;
 mod gitcmd;
@@ -43,7 +45,7 @@ mod voice;
 mod voice;
 
 use std::collections::VecDeque;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -308,6 +310,9 @@ pub struct Tui {
     theme: Theme,
     /// The name the theme was loaded by, for reading it again.
     theme_name: String,
+    /// Whether the terminal's background is a light one, as it said when the UI opened; `None`
+    /// when it was not asked or did not say. It decides what the theme `auto` is.
+    light_terminal: Option<bool>,
     keymap: Keymap,
     editor: Editor,
     /// Vim keys in front of the editor, when they are on.
@@ -396,32 +401,60 @@ pub struct Tui {
     #[cfg(feature = "voice")]
     voice: voice::Voice,
     quit: bool,
+    /// The UI ends for azazel to start again on this session (`/restart`).
+    restarting: bool,
     /// The session went away under the UI.
     ended: bool,
 }
 
-fn load_theme(env: &Env) -> (Theme, Option<String>) {
-    terminal_theme(&env.paths, &env.config)
+/// The value of `tui.theme` that follows the terminal: `light` on a light background, else
+/// `dark`.
+pub(crate) const AUTO_THEME: &str = "auto";
+
+/// The theme `auto` stands for in a terminal whose background is light (`light`), dark, or
+/// not known (`None`).
+fn auto_theme(light: Option<bool>) -> &'static str {
+    match light {
+        Some(true) => "light",
+        Some(false) | None => "dark",
+    }
+}
+
+/// `name` with `auto` resolved for a terminal whose background is `light`.
+fn theme_for(name: &str, light: Option<bool>) -> &str {
+    match name {
+        AUTO_THEME => auto_theme(light),
+        name => name,
+    }
+}
+
+fn load_theme(env: &Env, light: Option<bool>) -> (Theme, Option<String>) {
+    terminal_theme(&env.paths, &env.config, light)
 }
 
 /// The configured theme with the colours and symbols this terminal can show, and why the theme
-/// could not be read when it could not.
-pub(crate) fn terminal_theme(paths: &Paths, config: &azazel_core::Config) -> (Theme, Option<String>) {
+/// could not be read when it could not. `light` is whether the terminal's background is a
+/// light one, for the theme `auto`; `None` when the terminal was not asked or did not say.
+pub(crate) fn terminal_theme(
+    paths: &Paths,
+    config: &azazel_core::Config,
+    light: Option<bool>,
+) -> (Theme, Option<String>) {
     let depth = if std::env::var_os("WT_SESSION").is_some() {
         ColorDepth::TrueColor
     } else {
         ColorDepth::detect(std::env::var("COLORTERM").ok().as_deref())
     };
-    let (theme, problem) = named_theme(paths, &config.tui.theme);
+    let (theme, problem) = named_theme(paths, theme_for(&config.tui.theme, light));
     let glyphs = GlyphLevel::detect(config.tui.glyphs.as_str(), |name| std::env::var(name).ok());
     (theme.with_depth(depth).with_glyphs(glyphs), problem)
 }
 
 /// A built-in theme (`dark`, `light`, `catppuccin-mocha`, ...), `~/.azazel/themes/<name>.toml`,
 /// or the theme file whose full path `name` is (`--theme <file>`). Falls back to `dark` with a
-/// message.
+/// message. `auto` is `dark` here, where no terminal has been asked for its background.
 pub(crate) fn named_theme(paths: &Paths, name: &str) -> (Theme, Option<String>) {
-    match Theme::builtin(name) {
+    match Theme::builtin(theme_for(name, None)) {
         Some(theme) => (theme, None),
         None => {
             let other = name;
@@ -527,9 +560,14 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
             }))));
     }
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
-    // Asked before anything reads keys: the answers come in on the same channel.
-    let (caps, images_problem) = terminal::capabilities(env.config.tui.images).await;
-    let (theme, theme_problem) = load_theme(&env);
+    // Asked before anything reads keys: the answers come in on the same channel. The colour
+    // of the background is asked for only when the theme is to follow it, and only of a
+    // terminal: a pipe would keep the question as output.
+    let follow_background =
+        env.config.tui.theme == AUTO_THEME && io::stdout().is_terminal() && io::stdin().is_terminal();
+    let (caps, images_problem, light_terminal) =
+        terminal::capabilities(env.config.tui.images, follow_background).await;
+    let (theme, theme_problem) = load_theme(&env, light_terminal);
     let theme = theme.with_links(caps.links);
     let attention = Attention::new(caps.clone(), env.config.notify.clone());
     let mut keymap = Keymap::defaults();
@@ -561,6 +599,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         run_failed: false,
         theme,
         theme_name: tui_config.theme.clone(),
+        light_terminal,
         keymap,
         editor: Editor::new(),
         vim: (editor_config.mode == azazel_core::config::EditorMode::Vim).then(Vim::new),
@@ -613,6 +652,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         #[cfg(feature = "voice")]
         voice: voice::Voice::default(),
         quit: false,
+        restarting: false,
         ended: false,
     };
     tui.term_changes = tui.terminal_changes();
@@ -659,7 +699,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     tui.write_out(&closing);
     tui.guard.suspend();
     tui.backend.finish().await;
-    if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended) {
+    // Starting again returns to the session by itself: nobody has to be told how.
+    if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended && !tui.restarting) {
         println!("{farewell}");
     }
     // A release the background check downloaded takes the place of this binary now.
@@ -807,6 +848,7 @@ impl Tui {
             let popup_deadline = self.popup_deadline();
             let loop_deadline = self.loop_deadline();
             let resize_deadline = self.resize.deadline();
+            let cache_deadline = self.cache_deadline();
             let status_deadline = self.status_deadline();
             let strip_deadline = self.strip_deadline();
             tokio::select! {
@@ -847,6 +889,8 @@ impl Tui {
                 _ = wake_at(popup_deadline) => {}
                 // The window has stopped changing size: the frame at its new size is due.
                 _ = wake_at(resize_deadline) => {}
+                // The lead's prompt cache has gone unread for as long as it is kept.
+                _ = wake_at(cache_deadline) => self.cache_tick(),
                 // The clock of the status line moved on, or its program may run again.
                 _ = wake_at(status_deadline) => {}
                 // The models the cycling keys step through have been shown long enough.
@@ -2264,8 +2308,34 @@ impl Tui {
 
     fn set_theme(&mut self, name: &str) {
         if self.apply_theme(name) {
-            self.info(&format!("theme: {name}"));
+            self.info(&match name {
+                AUTO_THEME => format!("theme: auto ({})", self.auto_theme_note()),
+                name => format!("theme: {name}"),
+            });
         }
+    }
+
+    /// The theme `auto` is in this terminal: `light` or `dark`.
+    fn auto_theme(&self) -> &'static str {
+        auto_theme(self.light_terminal)
+    }
+
+    /// What `auto` is in this terminal and why, for the user.
+    fn auto_theme_note(&self) -> String {
+        match self.light_terminal {
+            Some(true) => "light: this terminal's background is light".to_string(),
+            Some(false) => "dark: this terminal's background is dark".to_string(),
+            None if self.env.config.tui.theme == AUTO_THEME => {
+                "dark: this terminal did not say what its background is".to_string()
+            }
+            None => "dark until azazel starts again: the terminal is asked for its background at the start"
+                .to_string(),
+        }
+    }
+
+    /// The theme `name`, with `auto` as this terminal's background makes it.
+    fn theme_named(&self, name: &str) -> (Theme, Option<String>) {
+        named_theme(&self.env.paths, theme_for(name, self.light_terminal))
     }
 
     /// Draws with the theme `name` from now on, without a word about it: the settings screen
@@ -2273,7 +2343,7 @@ impl Tui {
     /// said.
     fn apply_theme(&mut self, name: &str) -> bool {
         let depth = self.theme.depth();
-        let (theme, problem) = named_theme(&self.env.paths, name);
+        let (theme, problem) = self.theme_named(name);
         if let Some(problem) = problem {
             self.fail(&problem);
             return false;

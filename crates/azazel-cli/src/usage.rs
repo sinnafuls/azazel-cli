@@ -604,7 +604,7 @@ pub async fn run(
     if as_json {
         println!("{}", json_of(&entries, &view));
     } else if coloured {
-        let (theme, _) = crate::tui::terminal_theme(paths, config);
+        let (theme, _) = crate::tui::terminal_theme(paths, config, None);
         let columns = crossterm::terminal::size().map_or(80, |(columns, _)| usize::from(columns));
         // The last column stays free: a line that fills it wraps in some terminals.
         for line in boxed(&entries, &view, columns.saturating_sub(1), &theme) {

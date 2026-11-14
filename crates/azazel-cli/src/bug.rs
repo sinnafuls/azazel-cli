@@ -80,7 +80,7 @@ pub fn config_without_secrets(config: &Config) -> String {
 }
 
 /// The last lines of the log, secrets hidden; empty when there is no log.
-fn log_tail(file: &Path) -> String {
+pub(crate) fn log_tail(file: &Path) -> String {
     let Ok(mut log) = std::fs::File::open(file) else {
         return String::new();
     };

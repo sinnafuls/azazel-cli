@@ -25,15 +25,25 @@ const DIAGRAM_COLS: u16 = 100;
 const DIAGRAM_ROWS: u16 = 30;
 
 /// What the terminal can do: recognised from the environment, then asked (cell size, Sixel),
-/// then overridden by `tui.images`.
-pub(super) async fn capabilities(images: azazel_core::config::ImageMode) -> (Caps, Option<String>) {
+/// then overridden by `tui.images`. With `background` the terminal is also asked for its
+/// background colour: the last value is whether that is a light one, `None` when the terminal
+/// did not say.
+pub(super) async fn capabilities(
+    images: azazel_core::config::ImageMode,
+    background: bool,
+) -> (Caps, Option<String>, Option<bool>) {
     use azazel_core::config::ImageMode;
     let mut caps = Caps::detect(&|name| std::env::var(name).ok());
-    // Under tmux a picture needs a protocol chosen by hand, and the queries would be answered
-    // by tmux; without pictures there is nothing to ask about.
-    let ask = cfg!(feature = "images") && images != ImageMode::Off && !caps.tmux;
-    if ask {
-        caps = caps.with_replies(&super::probe::ask(super::probe::LIMIT).await);
+    // Under tmux a picture needs a protocol chosen by hand, and the question about the cells
+    // would be answered by tmux; without pictures there is nothing to ask about them.
+    let cells = cfg!(feature = "images") && images != ImageMode::Off && !caps.tmux;
+    let mut light = None;
+    if cells || background {
+        let replies = super::probe::ask(cells, background).await;
+        light = replies.light_background();
+        if cells {
+            caps = caps.with_replies(&replies);
+        }
     }
     let detected = if cfg!(feature = "images") {
         caps.images
@@ -46,7 +56,7 @@ pub(super) async fn capabilities(images: azazel_core::config::ImageMode) -> (Cap
         Err(problem) => (Images::None, Some(problem)),
     };
     caps.images = images;
-    (caps, problem)
+    (caps, problem, light)
 }
 
 /// `path` as a `file://` address a terminal can open.

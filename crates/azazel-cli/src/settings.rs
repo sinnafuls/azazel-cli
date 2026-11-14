@@ -104,7 +104,9 @@ pub(crate) type ShowScreen = dyn Fn(Box<Screen>) -> oneshot::Receiver<Box<Screen
 /// The themes there are to choose from: the built-in ones, then the files in `themes` under
 /// `home` (`~/.azazel`) by name.
 pub(crate) fn theme_names(home: &Path) -> Vec<String> {
-    let mut names: Vec<String> = Theme::BUILTINS.iter().map(ToString::to_string).collect();
+    // `auto` first: it is one of the built-in two, whichever suits the terminal.
+    let mut names = vec![crate::tui::AUTO_THEME.to_string()];
+    names.extend(Theme::BUILTINS.iter().map(ToString::to_string));
     let mut custom: Vec<String> = std::fs::read_dir(home.join("themes"))
         .into_iter()
         .flatten()
@@ -112,7 +114,7 @@ pub(crate) fn theme_names(home: &Path) -> Vec<String> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "toml"))
         .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
-        .filter(|name| !Theme::BUILTINS.contains(&name.as_str()))
+        .filter(|name| !Theme::BUILTINS.contains(&name.as_str()) && name != crate::tui::AUTO_THEME)
         .collect();
     custom.sort();
     names.extend(custom);
@@ -767,19 +769,23 @@ mod tests {
     }
 
     #[test]
-    fn themes_to_choose_from_are_the_built_in_ones_then_the_files() {
+    fn themes_to_choose_from_are_auto_the_built_in_ones_then_the_files() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(theme_names(dir.path()), Theme::BUILTINS);
+        let names = theme_names(dir.path());
+        assert_eq!(names[0], "auto");
+        assert_eq!(&names[1..], Theme::BUILTINS);
         let themes = dir.path().join("themes");
         std::fs::create_dir_all(&themes).unwrap();
         std::fs::write(themes.join("zenburn.toml"), "accent = \"#dcdccc\"\n").unwrap();
         std::fs::write(themes.join("amber.toml"), "accent = \"#ffb000\"\n").unwrap();
-        // A file named like a built-in theme is not a second entry; other files are not themes.
+        // A file named like a built-in theme, or like `auto`, is not a second entry; other
+        // files are not themes.
         std::fs::write(themes.join("dark.toml"), "accent = \"#ffffff\"\n").unwrap();
+        std::fs::write(themes.join("auto.toml"), "accent = \"#ffffff\"\n").unwrap();
         std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
         let names = theme_names(dir.path());
-        assert_eq!(&names[..Theme::BUILTINS.len()], Theme::BUILTINS);
-        assert_eq!(&names[Theme::BUILTINS.len()..], ["amber", "zenburn"]);
+        assert_eq!(&names[1..=Theme::BUILTINS.len()], Theme::BUILTINS);
+        assert_eq!(&names[Theme::BUILTINS.len() + 1..], ["amber", "zenburn"]);
     }
 
     #[test]
@@ -811,6 +817,7 @@ mod tests {
                 "editor.mode",
                 "editor.command",
                 "editor.fold_paste_lines",
+                "tui.queue_mode",
             ]
         );
     }

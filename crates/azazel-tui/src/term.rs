@@ -165,7 +165,7 @@ impl Caps {
         hyperlink(url, text)
     }
 
-    /// The capabilities after the terminal answered [`QUERIES`]: the size of a cell when it
+    /// The capabilities after the terminal answered [`queries`]: the size of a cell when it
     /// said one, and Sixel when it listed it and nothing better was recognised.
     pub fn with_replies(mut self, replies: &Replies) -> Caps {
         if let Some(cell) = replies.cell_px {
@@ -436,18 +436,38 @@ fn tmux_has_links(version: &str) -> bool {
     (major, minor) >= (3, 4)
 }
 
-/// Asks the terminal for the size of a cell in pixels (`CSI 16 t`), then for its device
-/// attributes (`CSI c`). Nearly every terminal answers the second, so its reply also tells that
-/// no answer to the first is coming.
-pub const QUERIES: &str = "\x1b[16t\x1b[c";
+/// Asks the terminal for the size of a cell in pixels (`CSI 16 t`).
+const CELL_QUERY: &str = "\x1b[16t";
+/// Asks the terminal for its background colour (`OSC 11 ; ?`).
+const BACKGROUND_QUERY: &str = "\x1b]11;?\x1b\\";
+/// Asks the terminal for its device attributes (`CSI c`). Nearly every terminal answers this
+/// one, so its reply also tells that no answer to an earlier question is coming.
+const ATTRIBUTES_QUERY: &str = "\x1b[c";
 
-/// What a terminal answered to [`QUERIES`].
+/// What to send a terminal to learn the size of a cell (`cell`) and its background colour
+/// (`background`): those questions, then the one for its device attributes, which ends the
+/// replies.
+pub fn queries(cell: bool, background: bool) -> String {
+    let mut out = String::new();
+    if background {
+        out.push_str(BACKGROUND_QUERY);
+    }
+    if cell {
+        out.push_str(CELL_QUERY);
+    }
+    out.push_str(ATTRIBUTES_QUERY);
+    out
+}
+
+/// What a terminal answered to [`queries`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Replies {
     /// `(width, height)` of one cell in pixels.
     pub cell_px: Option<(u16, u16)>,
     /// The device attributes list Sixel graphics (attribute 4).
     pub sixel: bool,
+    /// The background colour, as red, green and blue.
+    pub background: Option<(u8, u8, u8)>,
     /// The device attributes arrived: nothing more is coming.
     pub complete: bool,
 }
@@ -455,7 +475,10 @@ pub struct Replies {
 impl Replies {
     /// Reads the replies out of what the terminal sent; anything else in `input` is skipped.
     pub fn parse(input: &[u8]) -> Replies {
-        let mut replies = Replies::default();
+        let mut replies = Replies {
+            background: background_reply(input),
+            ..Replies::default()
+        };
         let mut rest = input;
         while let Some(start) = rest.windows(2).position(|pair| pair == b"\x1b[") {
             rest = &rest[start + 2..];
@@ -489,6 +512,37 @@ impl Replies {
         }
         replies
     }
+
+    /// Whether the terminal's background is a light one; `None` when it did not say.
+    pub fn light_background(&self) -> Option<bool> {
+        let (red, green, blue) = self.background?;
+        // How bright the colour looks: green counts most, blue least.
+        let luminance = 0.2126 * f64::from(red) + 0.7152 * f64::from(green) + 0.0722 * f64::from(blue);
+        Some(luminance > 127.5)
+    }
+}
+
+/// The colour in a reply to [`BACKGROUND_QUERY`], `OSC 11 ; rgb:RRRR/GGGG/BBBB`, each part one
+/// to four hexadecimal digits. The escape character in front of the reply is not looked for: a
+/// Windows console delivers the reply without it.
+fn background_reply(input: &[u8]) -> Option<(u8, u8, u8)> {
+    const START: &[u8] = b"]11;rgb:";
+    let at = input.windows(START.len()).position(|window| window == START)?;
+    let rest = &input[at + START.len()..];
+    let end = rest
+        .iter()
+        .position(|byte| !byte.is_ascii_hexdigit() && *byte != b'/')
+        .unwrap_or(rest.len());
+    let mut parts = std::str::from_utf8(&rest[..end]).ok()?.split('/');
+    let mut part = || -> Option<u8> {
+        let digits = parts.next().filter(|digits| (1..=4).contains(&digits.len()))?;
+        let value = u32::from_str_radix(digits, 16).ok()?;
+        // `f` is full, as `ff` and `ffff` are.
+        let full = (1u32 << (4 * digits.len())) - 1;
+        u8::try_from((value * 255 + full / 2) / full).ok()
+    };
+    let colour = (part()?, part()?, part()?);
+    parts.next().is_none().then_some(colour)
 }
 
 /// The terminal bell: never wrapped, so tmux can flag the window.
@@ -624,7 +678,10 @@ mod tests {
             (BELL, PUSH_TITLE, POP_TITLE, FOCUS_ON, FOCUS_OFF),
             ("\x07", "\x1b[22;0t", "\x1b[23;0t", "\x1b[?1004h", "\x1b[?1004l")
         );
-        assert_eq!(QUERIES, "\x1b[16t\x1b[c");
+        assert_eq!(queries(true, false), "\x1b[16t\x1b[c");
+        assert_eq!(queries(false, true), "\x1b]11;?\x1b\\\x1b[c");
+        assert_eq!(queries(true, true), "\x1b]11;?\x1b\\\x1b[16t\x1b[c");
+        assert_eq!(queries(false, false), "\x1b[c");
     }
 
     #[test]
@@ -636,6 +693,7 @@ mod tests {
             Replies {
                 cell_px: Some((9, 20)),
                 sixel: true,
+                background: None,
                 complete: true
             }
         );
@@ -660,6 +718,56 @@ mod tests {
         assert_eq!(kitty.images, Images::Kitty);
         let tmux = Caps::detect(&env(&[("WT_SESSION", "x"), ("TMUX", "1")])).with_replies(&both);
         assert_eq!(tmux.images, Images::None);
+    }
+
+    #[test]
+    fn the_background_colour_tells_a_light_terminal_from_a_dark_one() {
+        // xterm: sixteen bits a part, ended by the string terminator, then the device attributes.
+        let white = Replies::parse(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;4c");
+        assert_eq!(white.background, Some((255, 255, 255)));
+        assert_eq!(
+            (white.light_background(), white.complete, white.sixel),
+            (Some(true), true, true)
+        );
+        // Eight bits a part, ended by a bell.
+        let dark = Replies::parse(b"\x1b]11;rgb:1e/1e/2e\x07\x1b[6;20;9t\x1b[?61c");
+        assert_eq!(dark.background, Some((0x1e, 0x1e, 0x2e)));
+        assert_eq!(
+            (dark.light_background(), dark.cell_px),
+            (Some(false), Some((9, 20)))
+        );
+        // A Windows console hands the reply over without its escape character and terminator.
+        let console = Replies::parse(b"]11;rgb:f0f0/f0f0/f0f0\x1b[?61c");
+        assert_eq!(console.light_background(), Some(true));
+        // One digit a part scales like the others; a saturated blue is dark, a yellow light.
+        assert_eq!(
+            Replies::parse(b"]11;rgb:f/0/8\x07").background,
+            Some((255, 0, 136))
+        );
+        assert_eq!(
+            Replies::parse(b"]11;rgb:0000/0000/ffff\x07").light_background(),
+            Some(false)
+        );
+        assert_eq!(
+            Replies::parse(b"]11;rgb:ffff/ffff/0000\x07").light_background(),
+            Some(true)
+        );
+        // No answer, half an answer and something else are no colour.
+        for other in [
+            &b"\x1b[?62;4c"[..],
+            b"]11;rgb:ffff/ffff",
+            b"]11;rgb:ffff/ffff/ffff/ffff\x07",
+            b"]11;rgb:fffff/00/00\x07",
+            b"]11;rgb:zz/00/00\x07",
+            b"]10;rgb:ffff/ffff/ffff\x07",
+        ] {
+            let replies = Replies::parse(other);
+            assert_eq!(
+                (replies.background, replies.light_background()),
+                (None, None),
+                "{other:?}"
+            );
+        }
     }
 
     #[test]

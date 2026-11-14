@@ -92,6 +92,10 @@ const BUILTIN: &[(&str, &str)] = &[
         "Go on with the run that was cut short when azazel last ended in the middle of it",
     ),
     (
+        "fix",
+        "Repair a conversation the provider refuses: answer tool calls left without a result, drop empty blocks",
+    ),
+    (
         "handoff",
         "Continue in a new session that starts from a brief of this one: /handoff [what matters]",
     ),
@@ -161,7 +165,8 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     (
         "copy",
-        "Copy the last reply: /copy, /copy code for a code block, /copy <n> for an earlier reply",
+        "Copy the last reply: /copy, /copy code for a code block, /copy <n> for an earlier reply, /copy last <n> \
+         for the last n messages",
     ),
     ("vim", "Switch Vim keys in the input on or off"),
     (
@@ -226,6 +231,10 @@ const BUILTIN: &[(&str, &str)] = &[
          and Codex CLI",
     ),
     ("doctor", "Check the installation and this project's setup"),
+    (
+        "debug",
+        "Where azazel keeps its files, the state of the UI and the session, and the end of the log",
+    ),
     #[cfg(feature = "voice")]
     (
         "voice",
@@ -233,6 +242,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     #[cfg(feature = "voice")]
     ("speak", "Read replies aloud: /speak on|off|stop"),
+    (
+        "restart",
+        "Start azazel again on this session, in this terminal: what picks up a new version after an update",
+    ),
     ("quit", "Exit"),
 ];
 
@@ -331,6 +344,7 @@ impl Tui {
             "fork" => self.fork().await,
             "retry" => self.retry().await,
             "continue" => self.continue_run().await,
+            "fix" => self.fix_command().await,
             "handoff" => self.handoff(args),
             "consult" => self.open_consult(args).await,
             "compact" => {
@@ -365,6 +379,7 @@ impl Tui {
             },
             "transcript" => self.open_transcript().await,
             "copy" => self.copy_command(args),
+            "debug" => self.debug_command().await,
             "vim" => self.toggle_vim(),
             "jobs" => self.open_jobs(),
             "terminals" => self.open_terminals(),
@@ -386,6 +401,7 @@ impl Tui {
             "migrate" => self.migrate_command(),
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
+            "restart" => self.restart_command(),
             "quit" => self.quit = true,
             #[cfg(feature = "mcp")]
             "mcp" if args.is_empty() && self.backend.local().is_some() => self.open_mcp(),
@@ -433,6 +449,43 @@ impl Tui {
         match self.backend.continue_run().await {
             Ok(()) => self.info("going on with the interrupted run"),
             Err(why) => self.fail(&why),
+        }
+    }
+
+    /// `/restart`: ends this azazel and starts the binary again on the open session, with the
+    /// options this one was started with.
+    fn restart_command(&mut self) {
+        if !self.idle_to("restart") {
+            return;
+        }
+        match self.backend.reopen() {
+            Ok(reopen) => {
+                let original: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+                let live = self.backend.local().is_some();
+                crate::restart::request(crate::restart::arguments(&original, &reopen, live));
+                self.restarting = true;
+                self.quit = true;
+            }
+            Err(why) => self.fail(&why),
+        }
+    }
+
+    /// `/fix`: repairs a conversation a provider refuses, and says what it changed.
+    async fn fix_command(&mut self) {
+        if !self.idle_to("repair the conversation") {
+            return;
+        }
+        match self.backend.fix().await {
+            Ok((report, moved)) => {
+                if let Some(moved) = moved {
+                    self.moved(moved, false).await;
+                }
+                self.info(&report);
+            }
+            Err(why) => {
+                self.sync().await;
+                self.fail(&why);
+            }
         }
     }
 
@@ -534,7 +587,7 @@ impl Tui {
         let items = names
             .iter()
             .map(|name| {
-                let (theme, problem) = super::named_theme(&self.env.paths, name);
+                let (theme, problem) = self.theme_named(name);
                 match problem {
                     Some(_) => SelectItem::new(name.as_str(), "cannot be read"),
                     None => SelectItem::with_preview(
@@ -545,7 +598,10 @@ impl Tui {
             })
             .collect();
         let current = names.iter().position(|name| *name == self.theme_name);
-        let body = vec![format!("current: {}", self.theme_name)];
+        let body = vec![match self.theme_name.as_str() {
+            super::AUTO_THEME => format!("current: auto ({})", self.auto_theme_note()),
+            name => format!("current: {name}"),
+        }];
         self.overlay = Some(
             Overlay::select("Theme", body, items, false, Action::Theme(names))
                 .starting_at(current.unwrap_or(0)),
@@ -795,7 +851,9 @@ pub(super) fn rewind_points(session: &SessionStore) -> Vec<RewindPoint> {
 
 /// Whether a user message in the transcript was written by the UI rather than typed as a prompt.
 pub(crate) fn is_note(message: &str) -> bool {
-    message.starts_with(SHELL_NOTE) || message.starts_with(REWIND_NOTE)
+    message.starts_with(SHELL_NOTE)
+        || message.starts_with(REWIND_NOTE)
+        || message.starts_with(crate::branch::BRANCH_NOTE)
 }
 
 #[cfg(test)]

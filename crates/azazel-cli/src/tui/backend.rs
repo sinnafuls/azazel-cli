@@ -314,7 +314,17 @@ pub(crate) trait Backend: Send {
     /// Goes back to before the last prompt and sends it again.
     async fn retry(&mut self, again: Again) -> Result<Moved, String>;
 
-    /// Writes the conversation to a file named as typed; returns the file.
+    /// How an azazel that starts in this one's place opens this session again: the arguments
+    /// that name it, and for a session of this process the model, the thinking level and the
+    /// permission mode it is on now. `Err` says why it could not be opened again.
+    fn reopen(&self) -> Result<Vec<std::ffi::OsString>, String>;
+
+    /// Repairs the conversation so that a provider accepts it again (see [`crate::fix`]).
+    /// Returns what was found, and how the session was opened again when something changed.
+    async fn fix(&mut self) -> Result<(String, Option<Moved>), String> {
+        Err("/fix works only in a session that runs in this process; this one runs elsewhere".to_string())
+    }
+
     /// Writes the conversation to `path`; `redact` hides what looks like a secret in it.
     async fn export(&mut self, path: &str, redact: bool) -> Result<String, String>;
 
@@ -798,6 +808,7 @@ impl Backend for Local {
             }
             Go::Leaf { entry, before } => {
                 let session = self.active.session.clone();
+                let left = session.leaf();
                 let target = if before {
                     session.entry(&entry).and_then(|entry| entry.parent_id)
                 } else {
@@ -806,7 +817,10 @@ impl Backend for Local {
                 if !session.set_leaf(target.as_deref()) {
                     return Err("that entry is no longer part of the session".to_string());
                 }
-                self.open(Open::Store(session), StartSource::Resume).await
+                let moved = self.open(Open::Store(session), StartSource::Resume).await?;
+                // What happened on the branch that was left is written up for the agent.
+                crate::branch::summarise_left(&self.app, &self.active, left.as_deref());
+                Ok(moved)
             }
         }
     }
@@ -888,6 +902,37 @@ impl Backend for Local {
             .await
             .map_err(|reason| format!("prompt rejected: {reason}"))?;
         Ok(moved)
+    }
+
+    fn reopen(&self) -> Result<Vec<std::ffi::OsString>, String> {
+        use std::ffi::OsString;
+        let file = self.active.session.path();
+        if !file.is_file() {
+            return Err(
+                "this session keeps no file (--no-session), so an azazel that starts again could not open it"
+                    .to_string(),
+            );
+        }
+        let status = self.active.lead.status();
+        let mut args: Vec<OsString> = Vec::new();
+        for spec in &status.chain {
+            args.extend(["--model".into(), spec.to_string().into()]);
+        }
+        args.extend(["--thinking".into(), status.thinking.to_string().into()]);
+        args.extend(["--mode".into(), self.app.permissions.mode().to_string().into()]);
+        args.extend(["-r".into(), file.into()]);
+        Ok(args)
+    }
+
+    async fn fix(&mut self) -> Result<(String, Option<Moved>), String> {
+        let session = self.active.session.clone();
+        let fixed = crate::fix::fix(&session);
+        if !fixed.changed() {
+            return Ok((fixed.report(), None));
+        }
+        // The lead is started again on the conversation as it is now.
+        let moved = self.open(Open::Store(session), StartSource::Resume).await?;
+        Ok((fixed.report(), Some(moved)))
     }
 
     async fn export(&mut self, path: &str, redact: bool) -> Result<String, String> {
