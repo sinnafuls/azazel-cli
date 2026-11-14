@@ -1127,7 +1127,8 @@ impl Tui {
                 (item.text, state)
             })
             .collect();
-        todo::render(&rows, width, &self.theme)
+        let max = usize::try_from(self.env.config.tui.todo_max).unwrap_or(usize::MAX);
+        todo::render_at_most(&rows, max, width, &self.theme)
     }
 
     /// The live region in two parts: what is in flight, which follows the transcript, and what

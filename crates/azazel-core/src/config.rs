@@ -373,6 +373,8 @@ config_table!(TuiConfig {
     indicator_text: Vec<String> = Vec::new(),
     /// Tint the working indicator with a colour derived from the session's name.
     session_accent: bool = false,
+    /// Rows the todo list above the input takes at most; 0 hides it.
+    todo_max: u32 = 8,
     tool_style: ToolStyle = ToolStyle::Card,
     /// How `/diff` shows a file: old beside new (`split`), in one column (`unified`), or split
     /// from 140 columns on (`auto`).

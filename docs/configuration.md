@@ -265,6 +265,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
 | | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing. A running tool is always named |
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
+| | `todo_max` | `8` | Rows the todo list above the input takes at most. A longer list folds the finished items into one row (`✓ 11 done`), shows the item in progress and the next ones, and counts the rest (`… 3 more`); `0` hides the list |
 | | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row and calls that follow one another as a tree; see [compact style](tui.md#compact-style) |
 | | `diff_view` | `"auto"` | How `/diff` shows a file: `split` (old beside new), `unified` (one column), or `auto`, split in a window of 140 columns or more; see [diffs and commits](tui.md#diffs-and-commits) |
 | | `redact` | `true` | Hide what looks like a secret in tool cards, the transcript viewer and Markdown and HTML exports; the model and the session file keep it. See [hiding secrets](tui.md#hiding-secrets) |

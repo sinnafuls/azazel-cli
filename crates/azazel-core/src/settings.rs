@@ -264,6 +264,8 @@ settings! {
             "Phrases the working indicator shows in turn; empty shows what the agent is doing.";
         "tui.session_accent": Switch, "Session colour in the indicator",
             "Tint the working indicator with a colour derived from the session's name.", live;
+        "tui.todo_max": Number, "Todo rows above the input",
+            "Rows the todo list above the input takes at most; 0 hides it.";
         "tui.tool_style": Choice(ToolStyle::NAMES), "Tool calls",
             "card frames each tool call; compact shows a finished call on one row.", live;
         "tui.diff_view": Choice(DiffView::NAMES), "Diff layout",
