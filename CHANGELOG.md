@@ -119,6 +119,12 @@ GitHub are its section here.
 - After the window got narrower in a terminal that re-wraps its content, part of the old input box (a rule,
   a blank row) no longer stays behind in the transcript.
 - The transcript viewer lays its text out once after a drag instead of at every size on the way.
+- An answer of the terminal to what azazel asks it at the start (the size of a cell, what it can draw) that
+  was still arriving when the 80 ms were over no longer ends up in the input as typed text
+  (`6;7;21;22;23;24;28;32;42c`): an answer that has begun is read to its end.
+- On Windows `azazel update` no longer fails with `cannot move ... aside` when the binary an earlier update
+  retired is still in use by an azazel that keeps running (as after `/restart`): the binary is retired under
+  another name.
 
 ## [0.5.0] - 2026-11-13
 

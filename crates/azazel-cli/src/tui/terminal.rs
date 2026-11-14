@@ -39,8 +39,7 @@ pub(super) async fn capabilities(
     let cells = cfg!(feature = "images") && images != ImageMode::Off && !caps.tmux;
     let mut light = None;
     if cells || background {
-        let queries = azazel_tui::term::queries(cells, background);
-        let replies = super::probe::ask(&queries, super::probe::LIMIT).await;
+        let replies = super::probe::ask(cells, background).await;
         light = replies.light_background();
         if cells {
             caps = caps.with_replies(&replies);

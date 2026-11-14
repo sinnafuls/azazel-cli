@@ -372,7 +372,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `-e`, `--extension <PATH>` | Load a Luau script, or a directory laid out like a [package](packages.md), for this run; repeatable. See [resources for one run](#resources-for-one-run) |
 | `--skill <PATH>` | Add a skill (its directory or its `SKILL.md`) or a directory of skills for this run; repeatable |
 | `--mcp-config <FILE>` | Connect to the MCP servers of this `mcp.json` for this run; repeatable |
-| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, one from `~/.azazel/themes`, or a theme file |
+| `--theme <NAME\|FILE>` | Show this run in a theme: a built-in one, `auto`, one from `~/.azazel/themes`, or a theme file |
 | `--provider <ID>` | Take this run's models from one provider only; see [choosing the model](models-and-logins.md#choosing-the-model) |
 | `--no-extensions`, `--no-skills`, `--no-hooks`, `--no-context-files`, `--no-mcp`, `--no-memory` | Leave that kind of addition out of this run. `--no-context-files` also leaves out [rule files](rules.md). What `--extension`, `--skill` and `--mcp-config` name still loads |
 | `--bare` | All six `--no-*` switches |

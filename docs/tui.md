@@ -955,7 +955,8 @@ generated image) is shown under the tool's card, at most 60 columns by 20 rows; 
 
 kitty, Ghostty, iTerm2 and WezTerm are recognised from their environment variables. Sixel is used only when the
 terminal lists it in its answer to a device query at start; azazel asks for the size of a cell in pixels at the
-same time, and assumes 10 by 20 when it is not told. A terminal that does not answer within 80 ms gets no Sixel.
+same time, and assumes 10 by 20 when it is not told. A terminal that does not answer within 80 ms gets no Sixel; an
+answer that has begun to arrive by then is read to its end, for up to half a second.
 Inside tmux images are off unless a protocol is forced.
 
 ```toml
@@ -1111,11 +1112,13 @@ theme = "light"
 ```
 
 `theme = "auto"` follows the terminal: `light` on a light background, `dark` on a dark one. When the UI starts
-it asks the terminal for its background colour (OSC 11) and waits up to 80 ms for the answer; a terminal that
-does not answer, and output that is not a terminal, get `dark`. The terminal is asked once, at the start:
-after changing the terminal's own colours, `/restart` asks again. `/theme` says which of the two `auto` is in
-this terminal; switched to in a running session that did not start on it, `auto` is `dark` until azazel starts
-again.
+it asks the terminal for its background colour (OSC 11) and waits up to 200 ms for the answer; a terminal
+that answers costs none of that time, and an answer that has begun to arrive by then is read to its end. A
+terminal that does not answer, and output that is not a terminal, get `dark`. An answer that comes later
+still is read as typed text and shows in the input; on a line that slow, name a theme instead. The terminal is asked once, at
+the start: after changing the terminal's own colours, `/restart` asks again. `/theme` says which of the two
+`auto` is in this terminal; switched to in a running session that did not start on it, `auto` is `dark` until
+azazel starts again.
 
 `/theme` opens a picker, in which each theme shows its accent, success, warning and error colours, and
 `/theme <name>` switches for the running session. `--theme <name>` on the command line sets the theme of one
