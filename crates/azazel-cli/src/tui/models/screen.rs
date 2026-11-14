@@ -713,8 +713,17 @@ impl Models {
             KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => self.query.push(c),
             _ => return false,
         }
-        self.refilter();
+        self.searched();
         true
+    }
+
+    /// The search changed: the best place to be is the first match.
+    fn searched(&mut self) {
+        self.refilter();
+        self.cursor = 0;
+        self.role_cursor = 0;
+        self.top.set(0);
+        self.settle_cursor();
     }
 
     fn side_key(&mut self, key: &KeyEvent) -> Step {
@@ -1319,7 +1328,7 @@ impl Models {
             return strip.on_paste(pasted);
         }
         self.query.push_str(pasted.lines().next().unwrap_or_default());
-        self.refilter();
+        self.searched();
     }
 
     // ------------------------------------------------------------ mouse
@@ -1666,12 +1675,16 @@ impl Models {
                     };
                     list::row(model, &marks, &columns, width, theme)
                 }
-                Item::Rule => theme.paint(
-                    Role::BorderMuted,
-                    &theme
+                Item::Rule => {
+                    let rule = theme
                         .glyph(Glyph::ProgressEmpty)
-                        .repeat(width.saturating_sub(list::RAIL)),
-                ),
+                        .repeat(width.saturating_sub(list::RAIL));
+                    format!(
+                        "{}{}",
+                        " ".repeat(list::RAIL),
+                        theme.paint(Role::BorderMuted, &rule)
+                    )
+                }
             })
             .collect();
         lines.resize(list_rows, String::new());

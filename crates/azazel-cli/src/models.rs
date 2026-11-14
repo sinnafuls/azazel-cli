@@ -365,6 +365,11 @@ pub async fn refresh(
         }
     };
     let catalog = router.catalog();
+    // A list with nothing in it says nothing (discovery is off, or the endpoint lists no
+    // models): the catalogue's entries stand.
+    if models.is_empty() {
+        return Ok(listed.of(catalog, provider));
+    }
     let mut models: Vec<ModelInfo> = models
         .into_iter()
         .map(|model| match catalog.contains(&model.provider, &model.id) {
@@ -374,9 +379,7 @@ pub async fn refresh(
         .collect();
     models.sort_by(|a, b| a.id.cmp(&b.id));
     models.dedup_by(|a, b| a.id == b.id);
-    if !models.is_empty()
-        && let Err(e) = Catalog::refresh_cache(cache, provider, &models)
-    {
+    if let Err(e) = Catalog::refresh_cache(cache, provider, &models) {
         tracing::warn!("could not record the models of {provider}: {e}");
     }
     listed
