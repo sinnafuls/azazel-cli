@@ -196,7 +196,13 @@ aws-smithy-types = "1.9"
 # Binary plumbing
 mimalloc = "0.1"
 tracing = "0.1"
-tracing-subscriber = "0.3"
+# The log file is plain text: without `ansi`, which brings a colour library for nothing.
+tracing-subscriber = { version = "0.3", default-features = false, features = [
+    "fmt",
+    "smallvec",
+    "std",
+    "tracing-log",
+] }
 tracing-appender = "0.2"
 
 # Test (and the screen of a program in a terminal)
