@@ -18,6 +18,7 @@ use super::bridge::Reply;
 use super::fleet::{Pane, PaneKey};
 use super::form::{Form, Step};
 use super::sessions::{PickFor, SideRun, TreeFilter};
+use super::statusedit::{StatusEditor, Step as EditorStep};
 
 /// A point the session can be rewound to.
 #[derive(Debug, Clone)]
@@ -170,6 +171,8 @@ pub enum Action {
     Settings {
         reply: Reply<Box<crate::settings::Screen>>,
     },
+    /// `/statusline`: the line is kept as the popup has it.
+    Statusline,
     /// `/usage`: what each subscription has left; its key asks the providers again.
     Usage(std::sync::Arc<super::usage::Shown>),
 }
@@ -228,6 +231,8 @@ pub enum Kind {
     Pane(Box<Pane>),
     /// The settings: pages behind tabs, with keys, rows and hints of their own.
     Settings(Box<crate::settings::Screen>),
+    /// `/statusline`: the segments of the status line, with the line they make.
+    Status(Box<StatusEditor>),
     /// Rows to read, not to choose from.
     Report(Report),
 }
@@ -477,6 +482,16 @@ impl Overlay {
         Overlay::new("Settings".to_string(), Vec::new(), Kind::Settings(screen), action)
     }
 
+    /// `/statusline`: the status line being set up.
+    pub fn status(editor: StatusEditor, action: Action) -> Self {
+        Overlay::new(
+            "Status line".to_string(),
+            Vec::new(),
+            Kind::Status(Box::new(editor)),
+            action,
+        )
+    }
+
     /// The editor of an overlay that takes text which may also be written in the user's own
     /// editor: an input that is not a secret, a typed answer, the line to an agent.
     pub fn editor_mut(&mut self) -> Option<&mut Editor> {
@@ -487,9 +502,11 @@ impl Overlay {
             } => Some(editor),
             Kind::Form(form) => form.editor_mut(),
             Kind::Pane(pane) => Some(pane.editor_mut()),
-            Kind::Input { secret: true, .. } | Kind::Select { .. } | Kind::Settings(_) | Kind::Report(_) => {
-                None
-            }
+            Kind::Input { secret: true, .. }
+            | Kind::Select { .. }
+            | Kind::Settings(_)
+            | Kind::Status(_)
+            | Kind::Report(_) => None,
         }
     }
 
@@ -523,6 +540,13 @@ impl Overlay {
                     false => Outcome::Pending,
                 };
             }
+            Kind::Status(editor) => {
+                return match editor.on_key(key) {
+                    EditorStep::Pending => Outcome::Pending,
+                    EditorStep::Cancelled => Outcome::Cancelled,
+                    EditorStep::Save => Outcome::Chosen(0),
+                };
+            }
             Kind::Select { .. } | Kind::Input { .. } | Kind::Report(_) => {}
         }
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
@@ -534,9 +558,12 @@ impl Overlay {
                 Kind::Select { list, .. } => list
                     .selected()
                     .map_or(Outcome::Pending, |index| Outcome::Hotkey { index, key }),
-                Kind::Input { .. } | Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) | Kind::Report(_) => {
-                    Outcome::Hotkey { index: 0, key }
-                }
+                Kind::Input { .. }
+                | Kind::Form(_)
+                | Kind::Pane(_)
+                | Kind::Settings(_)
+                | Kind::Status(_)
+                | Kind::Report(_) => Outcome::Hotkey { index: 0, key },
             };
         }
         if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
@@ -603,7 +630,7 @@ impl Overlay {
                 }
                 Outcome::Pending
             }
-            Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) => Outcome::Pending,
+            Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) => Outcome::Pending,
         }
     }
 
@@ -622,6 +649,7 @@ impl Overlay {
             Kind::Form(form) => form.on_paste(pasted),
             Kind::Pane(pane) => pane.on_paste(pasted),
             Kind::Settings(screen) => screen.on_paste(pasted),
+            Kind::Status(_) => {}
         }
     }
 
@@ -660,6 +688,7 @@ impl Overlay {
             // Its own way out is named among them.
             Kind::Pane(pane) => return pane.hints(),
             Kind::Settings(screen) => return screen.hints(theme),
+            Kind::Status(editor) => return editor.hints(theme),
             Kind::Report(report) => {
                 let (visible, total) = report.shown.get();
                 if total > visible {
@@ -740,7 +769,7 @@ impl Overlay {
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
             Kind::Form(form) => form.kept(),
-            Kind::Pane(_) | Kind::Settings(_) | Kind::Report(_) => interior,
+            Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) => interior,
         };
         let has_body = !body.is_empty() || !warning.is_empty();
         let text_room = interior.saturating_sub(kept + usize::from(has_body));
@@ -828,6 +857,12 @@ impl Overlay {
                 cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
                 rows.extend(view.lines);
+            }
+            Kind::Status(editor) => {
+                let room = total.saturating_sub(rows.len()).max(1);
+                let widget = editor.widget(inner, room, theme);
+                frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                rows.extend(widget.lines);
             }
             Kind::Report(report) => {
                 let lines = (report.rows)(inner, theme);

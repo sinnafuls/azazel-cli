@@ -173,12 +173,15 @@ fn the_keys_of_the_key_table_are_the_default_bindings() {
     let copy = Copy::new();
     // A key that is not the action's, one of two keys left out, and a key nothing can bind.
     copy.edit("docs/tui.md", |text| {
-        text.replace("| `Ctrl+L` | `model_picker` |", "| `Ctrl+K` | `model_picker` |")
-            .replace(
-                "| `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` |",
-                "| `Shift+Enter` | `newline` |",
-            )
-            .replace("| `F5` | `retry` |", "| `F5`, `Hyper+Nope` | `retry` |")
+        text.replace(
+            "| `Ctrl+L`, `Alt+P` | `model_picker` |",
+            "| `Ctrl+K`, `Alt+P` | `model_picker` |",
+        )
+        .replace(
+            "| `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` |",
+            "| `Shift+Enter` | `newline` |",
+        )
+        .replace("| `F5` | `retry` |", "| `F5`, `Hyper+Nope` | `retry` |")
     });
     let findings = copy.findings();
     assert_eq!(findings.len(), 3, "{findings:?}");
@@ -188,7 +191,8 @@ fn the_keys_of_the_key_table_are_the_default_bindings() {
          table says `shift+enter`"
     ));
     assert!(findings[1].ends_with(
-        "keymap action `model_picker` is bound to `ctrl+l` by default and the key table says `ctrl+k`"
+        "keymap action `model_picker` is bound to `alt+p`, `ctrl+l` by default and the key table says `alt+p`, \
+         `ctrl+k`"
     ));
     assert!(findings[2].ends_with("`Hyper+Nope` in the key table is not a key the keymap can bind"));
 }

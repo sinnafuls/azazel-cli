@@ -216,10 +216,15 @@ impl Tui {
 
     /// The favourites as the model picker's body shows them.
     pub(super) fn favourites_line(&self) -> String {
-        if self.favourites.is_empty() {
-            "No favourites yet: alt+m steps through @default, @smol and @slow.".to_string()
-        } else {
-            format!("alt+m steps through: {}", self.favourites.join(", "))
+        let key = self.key_of("cycle_model");
+        let cycle = self.model_cycle();
+        match (self.favourites.is_empty(), cycle.is_empty()) {
+            (_, true) => format!("{key} has nothing to step through: ctrl+f makes a model a favourite."),
+            (true, false) => format!(
+                "No favourites yet: {key} steps through the roles ({}).",
+                cycle.join(", ")
+            ),
+            (false, false) => format!("{key} steps through: {}", cycle.join(", ")),
         }
     }
 
@@ -680,7 +685,7 @@ pub(super) fn is_text_input(overlay: &Overlay) -> bool {
         Kind::Input { secret, .. } => !secret,
         Kind::Form(form) => form.is_typing(),
         Kind::Pane(_) => true,
-        Kind::Select { .. } | Kind::Settings(_) | Kind::Report(_) => false,
+        Kind::Select { .. } | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) => false,
     }
 }
 

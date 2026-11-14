@@ -924,6 +924,8 @@ impl Backend for Remote {
             // How the other process pays is not part of its state: what it reports as cost
             // is shown, and nothing when it reports none.
             billing: Billing::Metered,
+            account: None,
+            account_email: None,
         }
     }
 
@@ -944,6 +946,13 @@ impl Backend for Remote {
     fn resolves(&self, _spec: &str) -> bool {
         // The session says so when it is asked to use it.
         true
+    }
+
+    fn cycle_roles(&self) -> Vec<String> {
+        let roles = self.state().roles.into_iter();
+        // A role is known here by the model it answers with first.
+        let models = |model: String| Vec::from_iter((!model.is_empty()).then_some(model));
+        super::backend::cycle_of(roles.map(|(role, model)| (role, models(model))).collect())
     }
 
     async fn session(&mut self) -> Arc<SessionStore> {

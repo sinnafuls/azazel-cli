@@ -154,6 +154,24 @@ glyphs! {
     Thinking => "\u{f0eb}", "✻", "";
     /// Separates the parts of the status line.
     Separator => " · ", " · ", " | ";
+    /// The `bar` separator of the status line.
+    SeparatorBar => " │ ", " │ ", " | ";
+    /// Ends a colour block on the left side of a `powerline` status line. Only a Nerd Font has
+    /// it: at the other levels the blocks stand side by side.
+    PowerRight => "\u{e0b0}", "", "";
+    /// Starts a colour block on the right side of a `powerline` status line.
+    PowerLeft => "\u{e0b2}", "", "";
+    /// Before the count of todo items done.
+    Tasks => "\u{f0ae}", "☑", "todo";
+    /// Before the session's name.
+    Session => "\u{f086}", "❖", "";
+    Clock => "\u{f017}", "◷", "";
+    /// Before the count of files changed since the last commit.
+    Dirty => "\u{f040}", "±", "+-";
+    /// Before the account a provider is used with.
+    Account => "\u{f007}", "♙", "as";
+    /// Before the share of the prompt that was read from the provider's cache.
+    Cache => "\u{f1c0}", "≋", "cache";
     TreeMid => "├─", "├─", "|-";
     TreeLast => "└─", "└─", "`-";
     TreeLine => "│", "│", "|";
