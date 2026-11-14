@@ -81,10 +81,12 @@ pub fn build_request(
     req: &Request,
     auth: &Auth,
 ) -> reqwest::RequestBuilder {
+    let mut headers = request_headers(provider, auth);
+    crate::wire::openai_chat::copilot_turn(provider, req, &mut headers);
     client
         .post(format!("{}/responses", provider.base_url))
         .json(&build_body(provider, model, req))
-        .headers(request_headers(provider, auth))
+        .headers(headers)
 }
 
 pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder> {

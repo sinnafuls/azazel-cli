@@ -60,7 +60,7 @@ pub(crate) fn add_headers(
         Auth::OAuth { access, .. } => Some((AUTHORIZATION, format!("Bearer {access}"))),
         Auth::ApiKey(key) => Some(match (provider.auth_style, native) {
             (AuthStyle::ApiKey, _) => (HeaderName::from_static("api-key"), key.clone()),
-            (AuthStyle::Bearer, _) | (AuthStyle::Auto, KeyHeader::Bearer) => {
+            (AuthStyle::Bearer | AuthStyle::AzureCli, _) | (AuthStyle::Auto, KeyHeader::Bearer) => {
                 (AUTHORIZATION, format!("Bearer {key}"))
             }
             (AuthStyle::Auto, KeyHeader::XApiKey) => (HeaderName::from_static("x-api-key"), key.clone()),

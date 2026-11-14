@@ -58,6 +58,10 @@ pub struct ProviderConfig {
     pub tls: Option<ClientTls>,
     /// The provider's own limits over those of `[retry]`.
     pub timeouts: Timeouts,
+    /// Models served on another wire API than the provider's: the first model id prefix that
+    /// matches names the API. GitHub Copilot serves Claude on Anthropic Messages and recent GPT
+    /// models on Responses only.
+    pub routes: Vec<(String, WireApi)>,
 }
 
 impl ProviderConfig {
@@ -82,6 +86,7 @@ impl ProviderConfig {
             extra_body: Map::new(),
             tls: None,
             timeouts: Timeouts::default(),
+            routes: Vec::new(),
         }
     }
 
@@ -93,6 +98,14 @@ impl ProviderConfig {
         let rest = &self.base_url[start..];
         let end = rest.find([':', '}']).unwrap_or(rest.len());
         Some(&rest[..end])
+    }
+
+    /// The wire API `model` is asked on: the route its id matches, else the provider's.
+    pub fn api_for(&self, model: &str) -> WireApi {
+        self.routes
+            .iter()
+            .find(|(prefix, _)| model.starts_with(prefix.as_str()))
+            .map_or(self.api, |(_, api)| *api)
     }
 }
 
@@ -108,6 +121,9 @@ pub enum AuthStyle {
     Bearer,
     /// An `api-key: <key>` header, as Azure OpenAI takes resource keys.
     ApiKey,
+    /// A Microsoft Entra token from the Azure CLI (`az account get-access-token`), as a bearer
+    /// token; the CLI is asked again before the token runs out.
+    AzureCli,
 }
 
 /// How a provider's models are found for the pickers.
@@ -122,15 +138,19 @@ pub enum Discovery {
     /// LM Studio's own `/api/v0/models`, which knows the loaded context window, falling back to
     /// the OpenAI list.
     LmStudio,
+    /// The deployments of an Azure OpenAI resource: Azure Resource Manager with an Azure CLI
+    /// sign-in, else the resource's own `/openai/deployments`.
+    Azure,
     /// Never asked: only models from the catalogue and the configuration are listed.
     Off,
 }
 
 impl Discovery {
-    const NAMES: [(&'static str, Discovery); 4] = [
+    const NAMES: [(&'static str, Discovery); 5] = [
         ("auto", Discovery::Auto),
         ("ollama", Discovery::Ollama),
         ("lm-studio", Discovery::LmStudio),
+        ("azure", Discovery::Azure),
         ("off", Discovery::Off),
     ];
 
@@ -166,7 +186,7 @@ impl<'de> Deserialize<'de> for Discovery {
                 .map(|(_, kind)| *kind)
                 .ok_or_else(|| {
                     serde::de::Error::custom(format!(
-                        "unknown discovery `{name}`, expected auto, ollama, lm-studio or off"
+                        "unknown discovery `{name}`, expected auto, ollama, lm-studio, azure or off"
                     ))
                 }),
         }
@@ -337,6 +357,11 @@ fn from_row(row: &Preset, env: Env<'_>) -> ProviderConfig {
         auth_style: row.auth,
         oauth,
         discovery: row.discovery,
+        routes: row
+            .routes
+            .iter()
+            .map(|(prefix, api)| (prefix.to_string(), *api))
+            .collect(),
         ..ProviderConfig::new(row.id, row.api, trim_url(&expand(row.base_url, env)))
     }
 }
@@ -376,6 +401,8 @@ pub fn presets_with(env: Env<'_>) -> Vec<ProviderConfig> {
 pub fn hand_written() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
     PRESETS.iter().map(|row| (row.id, row.catalog, row.env)).collect()
 }
+
+pub use crate::providers::logins::{device_login, enterprise_login};
 
 /// The provider id under which an Azure OpenAI resource is configured.
 pub const AZURE: &str = "azure";
@@ -778,10 +805,11 @@ mod tests {
         assert!(entra.api_key_command.is_some());
 
         // Other providers present the key the way their wire API prescribes, and can be switched.
+        // Copilot sends its token as a bearer token on every API it serves, Anthropic's included.
         let all = resolve_with(&BTreeMap::new(), &no_env).unwrap();
         assert!(
             all.iter()
-                .all(|p| p.id == AZURE || p.auth_style == AuthStyle::Auto)
+                .all(|p| p.id == AZURE || p.id == "github-copilot" || p.auth_style == AuthStyle::Auto)
         );
         let switched = with(
             ProviderSettings {

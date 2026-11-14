@@ -12,6 +12,7 @@ members = [
     "tests/fixtures/fake-audio",
     "tests/fixtures/fake-ssh",
     "tests/fixtures/fake-sched",
+    "tests/fixtures/fake-az",
     "examples/custom-distro",
     "examples/client-demo",
 ]

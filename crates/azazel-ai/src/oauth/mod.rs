@@ -39,7 +39,38 @@ pub enum OAuthFlow {
     Pkce,
     /// The user enters a code on another page.
     Device,
+    /// The token comes back in the redirect itself (`response_type=token`); there is no code to
+    /// exchange and nothing to refresh it with.
+    Implicit,
+    /// The user enters a code on another page, after which the server hands over an
+    /// authorisation code and its PKCE verifier, exchanged as a browser login's would be:
+    /// OpenAI's device sign-in.
+    DeviceAuthCode,
 }
+
+/// One value a sign-in needs before it starts, such as the account or the server it signs in
+/// to. `{name}` in the addresses, the scopes and `api_base_url` is replaced by the answer, which
+/// is kept with the login.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoginInput {
+    pub name: String,
+    /// What the person is asked when neither the command line nor `env` answers.
+    pub prompt: String,
+    /// An environment variable that answers instead.
+    #[serde(default)]
+    pub env: Option<String>,
+    /// May be left empty; a scope that needs it is then left out.
+    #[serde(default)]
+    pub optional: bool,
+    /// Removed from the end of an answer that repeats it (`.snowflakecomputing.com`).
+    #[serde(default)]
+    pub suffix: Option<String>,
+}
+
+/// The login field that holds the API address requests made with the login go to, when it is
+/// not the provider's own (a GitHub Enterprise host, a Snowflake account).
+pub const BASE_URL_FIELD: &str = "base_url";
 
 /// How a token request carries its parameters.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,9 +159,21 @@ pub struct OAuthSettings {
     /// `token_endpoint` and `device_authorization_endpoint` replace the two above.
     #[serde(default)]
     pub discovery_url: Option<String>,
-    /// The device authorisation endpoint; needed for `device`.
+    /// The device authorisation endpoint; needed for `device` and `device-auth-code`.
     #[serde(default)]
     pub device_url: String,
+    /// Where a `device-auth-code` login asks whether the user has entered the code.
+    #[serde(default)]
+    pub device_poll_url: String,
+    /// The page the code is entered on, for a device endpoint that does not name one.
+    #[serde(default)]
+    pub verification_url: Option<String>,
+    /// Values asked before the sign-in starts.
+    #[serde(default)]
+    pub inputs: Vec<LoginInput>,
+    /// Kept with the login as the address its requests go to; `{input}` holes are filled.
+    #[serde(default)]
+    pub api_base_url: Option<String>,
     #[serde(default)]
     pub scopes: Vec<String>,
     /// Proof Key for Code Exchange. A server that never registered this client relies on it; a
@@ -204,6 +247,10 @@ impl Default for OAuthSettings {
             token_url: String::new(),
             discovery_url: None,
             device_url: String::new(),
+            device_poll_url: String::new(),
+            verification_url: None,
+            inputs: Vec::new(),
+            api_base_url: None,
             scopes: Vec::new(),
             pkce: true,
             check_state: true,
@@ -233,17 +280,56 @@ impl OAuthSettings {
         if self.client_id.trim().is_empty() && !self.anonymous_client {
             return Err(missing("client_id"));
         }
-        if self.token_url.trim().is_empty() && self.discovery_url.is_none() {
+        let blank = |value: &str| value.trim().is_empty();
+        if blank(&self.token_url) && self.discovery_url.is_none() && self.flow != OAuthFlow::Implicit {
             return Err(missing("token_url"));
         }
         self.client().map_err(|e| e.to_string())?;
         match self.flow {
-            OAuthFlow::Pkce if self.authorize_url.trim().is_empty() => Err(missing("authorize_url")),
-            OAuthFlow::Device if self.device_url.trim().is_empty() && self.discovery_url.is_none() => {
+            OAuthFlow::Pkce | OAuthFlow::Implicit if blank(&self.authorize_url) => Err(missing("authorize_url")),
+            OAuthFlow::Device if blank(&self.device_url) && self.discovery_url.is_none() => {
                 Err(missing("device_url"))
             }
+            OAuthFlow::DeviceAuthCode if blank(&self.device_url) => Err(missing("device_url")),
+            OAuthFlow::DeviceAuthCode if blank(&self.device_poll_url) => Err(missing("device_poll_url")),
+            OAuthFlow::DeviceAuthCode if self.verification_url.is_none() => Err(missing("verification_url")),
+            OAuthFlow::DeviceAuthCode if self.redirect_uri.is_none() => Err(missing("redirect_uri")),
             _ => Ok(()),
         }
+    }
+
+    /// These settings with the answers to their inputs filled in. A scope that needs an answer
+    /// that was left empty is left out.
+    pub fn filled(&self, answers: &[(String, String)]) -> OAuthSettings {
+        if answers.is_empty() {
+            return self.clone();
+        }
+        let vars: Vec<(&str, &str)> = answers.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+        let put = |text: &str| fill(text, &vars);
+        let put_some = |text: &Option<String>| text.as_deref().map(put);
+        let empty_hole = |scope: &str| {
+            answers
+                .iter()
+                .any(|(name, value)| value.is_empty() && scope.contains(&format!("{{{name}}}")))
+        };
+        let mut out = self.clone();
+        out.authorize_url = put(&self.authorize_url);
+        out.token_url = put(&self.token_url);
+        out.device_url = put(&self.device_url);
+        out.device_poll_url = put(&self.device_poll_url);
+        out.discovery_url = put_some(&self.discovery_url);
+        out.verification_url = put_some(&self.verification_url);
+        out.api_base_url = put_some(&self.api_base_url);
+        out.scopes = self
+            .scopes
+            .iter()
+            .filter(|scope| !empty_hole(scope))
+            .map(|scope| put(scope))
+            .collect();
+        if let Some(userinfo) = &mut out.userinfo {
+            userinfo.url = put(&userinfo.url);
+        }
+        out
     }
 
     /// The client id and secret as they go on the wire.
@@ -514,8 +600,12 @@ fn authorize_url(
     {
         let mut query = url.query_pairs_mut();
         if settings.authorize_standard {
+            let response_type = match settings.flow {
+                OAuthFlow::Implicit => "token",
+                _ => "code",
+            };
             query
-                .append_pair("response_type", "code")
+                .append_pair("response_type", response_type)
                 .append_pair("client_id", client_id)
                 .append_pair("redirect_uri", redirect);
             if let Some(challenge) = challenge {
@@ -581,17 +671,18 @@ fn code_params(
     params
 }
 
-async fn login_with_code(
-    http: &reqwest::Client,
+/// Sends the person to the sign-in page and returns the parameters the browser was redirected
+/// back with, and the redirect address the server was given.
+async fn redirected(
     settings: &OAuthSettings,
-    token_url: &str,
+    client_id: &str,
+    challenge: Option<&str>,
+    state: &str,
     ui: &dyn LoginUi,
     cancel: &CancellationToken,
-) -> Result<Tokens, OAuthError> {
-    let client = settings.client()?;
-    let pkce = settings.pkce.then(pkce::Pkce::new);
-    let state = pkce::random_token();
-    let expected = settings.check_state.then_some(state.as_str());
+) -> Result<(loopback::Params, String), OAuthError> {
+    let expected = settings.check_state.then_some(state);
+    let implicit = settings.flow == OAuthFlow::Implicit;
     // A redirect the server insists on that is not a loopback address cannot be listened for.
     let fixed = settings.redirect_uri.as_deref();
     let listen =
@@ -616,21 +707,15 @@ async fn login_with_code(
             settings.redirect_path(),
         ),
     };
-    let url = authorize_url(
-        settings,
-        &client.0,
-        pkce.as_ref().map(|p| p.challenge.as_str()),
-        &state,
-        &redirect,
-    )?;
+    let url = authorize_url(settings, client_id, challenge, state, &redirect)?;
     if let Some(instructions) = &settings.instructions {
         ui.show(instructions);
     }
     ui.show(&format!("Sign in on this page:\n{url}"));
     ui.open(&url);
-    let code = match listener {
+    let params = match listener {
         Some(Ok(listener)) => tokio::select! {
-            code = listener.wait(expected) => code?,
+            params = listener.wait_params(expected, implicit) => params?,
             _ = tokio::time::sleep(LOGIN_TIMEOUT) => return Err(OAuthError::TimedOut),
             _ = cancel.cancelled() => return Err(OAuthError::Cancelled),
         },
@@ -653,9 +738,25 @@ async fn login_with_code(
                 ),
             };
             let pasted = ui.ask(&prompt).await.ok_or(OAuthError::Config(blocked))?;
-            loopback::parse_redirect(&pasted, expected)?
+            loopback::parse_pasted(&pasted, expected, implicit)?
         }
     };
+    Ok((params, redirect))
+}
+
+async fn login_with_code(
+    http: &reqwest::Client,
+    settings: &OAuthSettings,
+    token_url: &str,
+    ui: &dyn LoginUi,
+    cancel: &CancellationToken,
+) -> Result<Tokens, OAuthError> {
+    let client = settings.client()?;
+    let pkce = settings.pkce.then(pkce::Pkce::new);
+    let state = pkce::random_token();
+    let challenge = pkce.as_ref().map(|p| p.challenge.as_str());
+    let (redirect_params, redirect) = redirected(settings, &client.0, challenge, &state, ui, cancel).await?;
+    let code = loopback::code_of(&redirect_params)?;
     let params = code_params(
         settings,
         &client,
@@ -671,6 +772,26 @@ async fn login_with_code(
         headers: &settings.token_headers,
     };
     token_request(http, &call, &settings.credential).await
+}
+
+/// An implicit grant: the redirect carries the token, read through the credential map as a
+/// token answer would be.
+async fn login_implicit(
+    settings: &OAuthSettings,
+    ui: &dyn LoginUi,
+    cancel: &CancellationToken,
+) -> Result<Tokens, OAuthError> {
+    let client = settings.client()?;
+    let state = pkce::random_token();
+    let (params, _) = redirected(settings, &client.0, None, &state, ui, cancel).await?;
+    let answer: serde_json::Map<String, Value> = params
+        .into_iter()
+        .map(|(name, value)| (name, Value::String(value)))
+        .collect();
+    settings
+        .credential
+        .read(&Value::Object(answer))
+        .ok_or_else(|| OAuthError::Protocol("the redirect carries no access token".to_string()))
 }
 
 async fn login_with_device(
@@ -704,6 +825,53 @@ async fn login_with_device(
     .await
 }
 
+/// What answers each of `settings.inputs`: `given` (the command line), else its environment
+/// variable, else the person. An answer is trimmed of a scheme, slashes and the input's suffix,
+/// and must be a host name or a name made of letters, digits, `-`, `_` and `.`, since it goes into
+/// addresses.
+async fn answers(
+    settings: &OAuthSettings,
+    given: &BTreeMap<String, String>,
+    ui: &dyn LoginUi,
+) -> Result<Vec<(String, String)>, OAuthError> {
+    let mut out = Vec::new();
+    for input in &settings.inputs {
+        let from_env = || {
+            input
+                .env
+                .as_deref()
+                .and_then(|name| std::env::var(name).ok())
+                .filter(|value| !value.trim().is_empty())
+        };
+        let raw = match given.get(&input.name).cloned().or_else(from_env) {
+            Some(value) => value,
+            None => ui.ask(&input.prompt).await.unwrap_or_default(),
+        };
+        let mut value = raw.trim();
+        for scheme in ["https://", "http://"] {
+            value = value.strip_prefix(scheme).unwrap_or(value);
+        }
+        value = value.trim_end_matches('/');
+        if let Some(suffix) = &input.suffix {
+            value = value.strip_suffix(suffix.as_str()).unwrap_or(value);
+        }
+        if value.is_empty() && !input.optional {
+            return Err(OAuthError::Config(format!(
+                "the sign-in needs the {}, and none was given",
+                input.name
+            )));
+        }
+        if !value.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) {
+            return Err(OAuthError::Config(format!(
+                "`{value}` is not a valid {}: use letters, digits, `-`, `_` and `.`",
+                input.name
+            )));
+        }
+        out.push((input.name.clone(), value.to_string()));
+    }
+    Ok(out)
+}
+
 /// Signs in with the server `settings` describes and returns the entry to keep in `auth.json`.
 pub async fn login(
     http: &reqwest::Client,
@@ -711,14 +879,38 @@ pub async fn login(
     ui: &dyn LoginUi,
     cancel: &CancellationToken,
 ) -> Result<Credential, OAuthError> {
+    login_with(http, settings, &BTreeMap::new(), ui, cancel).await
+}
+
+/// [`login`], with `given` answering the settings' inputs by name. The answers and the API
+/// address the settings name are kept with the login.
+pub async fn login_with(
+    http: &reqwest::Client,
+    settings: &OAuthSettings,
+    given: &BTreeMap<String, String>,
+    ui: &dyn LoginUi,
+    cancel: &CancellationToken,
+) -> Result<Credential, OAuthError> {
     settings.check().map_err(OAuthError::Config)?;
+    let answers = answers(settings, given, ui).await?;
+    let settings = &settings.filled(&answers);
     let endpoints = discover(http, settings).await?;
     let mut tokens = match settings.flow {
         OAuthFlow::Pkce => login_with_code(http, settings, &endpoints.0, ui, cancel).await?,
         OAuthFlow::Device => login_with_device(http, settings, &endpoints, ui, cancel).await?,
+        OAuthFlow::Implicit => login_implicit(settings, ui, cancel).await?,
+        OAuthFlow::DeviceAuthCode => device::login_auth_code(http, settings, &endpoints.0, ui, cancel).await?,
     };
     if let Some(userinfo) = &settings.userinfo {
         ask_userinfo(http, userinfo, &mut tokens).await?;
+    }
+    for (name, value) in answers.into_iter().filter(|(_, value)| !value.is_empty()) {
+        tokens.extra.insert(name, Value::String(value));
+    }
+    if let Some(base) = &settings.api_base_url {
+        tokens
+            .extra
+            .insert(BASE_URL_FIELD.to_string(), Value::String(base.trim_end_matches('/').to_string()));
     }
     Ok(tokens.into_credential(None))
 }
@@ -833,6 +1025,47 @@ mod tests {
             no_client.check(),
             Err("`client_id` is needed for this flow".to_string())
         );
+    }
+
+    #[test]
+    fn the_newer_flows_name_what_they_lack() {
+        let implicit = OAuthSettings {
+            token_url: String::new(),
+            ..settings(OAuthFlow::Implicit)
+        };
+        assert_eq!(implicit.check(), Ok(()));
+        let device = OAuthSettings {
+            device_url: "https://id.example/usercode".into(),
+            ..settings(OAuthFlow::DeviceAuthCode)
+        };
+        assert_eq!(
+            device.check(),
+            Err("`device_poll_url` is needed for this flow".to_string())
+        );
+        let complete = OAuthSettings {
+            device_poll_url: "https://id.example/poll".into(),
+            verification_url: Some("https://id.example/device".into()),
+            redirect_uri: Some("https://id.example/callback".into()),
+            ..device
+        };
+        assert_eq!(complete.check(), Ok(()));
+    }
+
+    #[test]
+    fn answers_fill_the_addresses_and_drop_scopes_left_empty() {
+        let settings = OAuthSettings {
+            token_url: "https://{account}.example/token".into(),
+            scopes: vec!["base".into(), "role:{role}".into()],
+            api_base_url: Some("https://api.{account}.example".into()),
+            ..settings(OAuthFlow::Pkce)
+        };
+        let filled = settings.filled(&[
+            ("account".to_string(), "acme".to_string()),
+            ("role".to_string(), String::new()),
+        ]);
+        assert_eq!(filled.token_url, "https://acme.example/token");
+        assert_eq!(filled.scopes, ["base"]);
+        assert_eq!(filled.api_base_url.as_deref(), Some("https://api.acme.example"));
     }
 
     #[test]

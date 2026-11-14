@@ -406,7 +406,7 @@ Notes:
 - `ollama` chats through Ollama's OpenAI-compatible endpoint and reads the model list from its native one. Set `api = "ollama-chat"` on it to chat through the native API too.
 - A provider with two surfaces has one preset here. To use the other, define a second provider, for example `api: anthropic-messages` with `base_url: https://api.z.ai/api/anthropic`, `https://zenmux.ai/api/anthropic`, `https://api.synthetic.new/anthropic` or `https://opencode.ai/inference/anthropic`.
 - `kimi-code` may refuse clients it does not recognise; azazel sends its own identity.
-- `github-copilot` also accepts a GitHub token with Copilot access in `COPILOT_GITHUB_TOKEN`.
+- `github-copilot` also accepts a GitHub token with Copilot access in `COPILOT_GITHUB_TOKEN`. It asks each model on the API Copilot serves it on: Claude models (`claude-*`) on `anthropic-messages` (`/v1/messages`), GPT-5 and later (but `gpt-5-mini`), Grok and MAI Code models on `openai-responses` (`/responses`), the rest on `openai-chat`. Every route is told whether you or the agent started the turn, which decides how Copilot bills it.
 - `cloudflare-ai-gateway` uses the gateway's `/compat` endpoint, which keeps the provider keys stored in the gateway and its dynamic routes. Cloudflare's newer REST endpoint, billed to the Cloudflare account, is the address of `cloudflare-workers-ai`, which serves third-party models too.
 
 ### Providers from models.dev
@@ -606,14 +606,14 @@ headers = { "X-Team" = "platform" }
 | `api_key_command` | Shell command whose stdout is the key; run once and cached until the provider answers 401 |
 | `api_key` | The key itself. Prefer one of the two above for anything you share |
 | `headers` | Extra headers on every request; a value may contain `${VAR}`, and a header whose variable is unset is not sent. `{session_id}` in a value becomes the id of the conversation the request belongs to (the session and the agent), or an id of the provider's own for a request of none (the model list) |
-| `auth` | How a key is presented: `auto` (default: what the wire API prescribes, a bearer token for the OpenAI formats and Ollama, `x-api-key` for Anthropic, `x-goog-api-key` for Google), `bearer` (`Authorization: Bearer`, whatever the API) or `api-key` (an `api-key` header) |
-| `discovery` | How models are listed: `auto` (default: the wire API's own list), `ollama` (`/api/tags` then `/api/show` per model), `lm-studio` (`/api/v0/models`, falling back to the OpenAI list) or `off`. `true` and `false` mean `auto` and `off` |
+| `auth` | How a key is presented: `auto` (default: what the wire API prescribes, a bearer token for the OpenAI formats and Ollama, `x-api-key` for Anthropic, `x-goog-api-key` for Google), `bearer` (`Authorization: Bearer`, whatever the API), `api-key` (an `api-key` header) or `azure-cli` (a Microsoft Entra token from the Azure CLI as a bearer token, instead of any key; see [Azure](#bedrock-vertex-and-azure)) |
+| `discovery` | How models are listed: `auto` (default: the wire API's own list), `ollama` (`/api/tags` then `/api/show` per model), `lm-studio` (`/api/v0/models`, falling back to the OpenAI list), `azure` (the deployments of an Azure OpenAI resource) or `off`. `true` and `false` mean `auto` and `off` |
 | `extra_body` | Members written into every request body, replacing what azazel wrote under the same name: routing (`provider = { order = ["anthropic"] }` on OpenRouter, `providerOptions = { gateway = { only = ["bedrock"] } }` on Vercel) and vendor switches (`chat_template_kwargs = { enable_thinking = true }`) |
 | `tls` | `{ cert, key, ca }`: a client certificate for a gateway that asks for one, and the authority the server's certificate must come from; see [client certificates](#client-certificates) |
 | `timeout_secs`, `first_event_secs`, `stall_secs` | This provider's own limits; see [stalls](#stalls) |
 | `region`, `profile` | `bedrock` only |
 | `project`, `location` | `vertex` only |
-| `oauth`, `oauth_headers` | `[providers.<id>.oauth]`: an OAuth sign-in (`flow = "pkce"` or `"device"`, `client_id`, `token_url`, `authorize_url` or `device_url`, `scopes`, …) that `azazel login <id>` then uses, and headers sent only with that sign-in |
+| `oauth`, `oauth_headers` | `[providers.<id>.oauth]`: an OAuth sign-in that `azazel login <id>` then uses, and headers sent only with that sign-in. `flow` is `pkce` (a browser and a code, with `authorize_url` and `token_url`), `device` (a code entered on another page, with `device_url`), `implicit` (the token comes back in the address the browser returns to; `authorize_url` only) or `device-auth-code` (OpenAI's device sign-in: `device_url`, `device_poll_url`, `verification_url`, then a code exchange at `token_url` with `redirect_uri`); then `client_id`, `scopes` and the rest. `inputs = [{ name, prompt, env, optional, suffix }]` are asked before the sign-in starts (from the environment variable `env` when it is set): `{name}` in the addresses, the scopes and `api_base_url` becomes the answer, which must be a host name or a name of letters, digits, `-`, `_` and `.`, and is kept with the login. `api_base_url` is kept with the login as the address its requests go to |
 | `account` | The label of the stored account to use when a session chooses none (see [several accounts](#several-accounts)); the default account when unset |
 
 A new provider needs a key only when it names a key source. Providers in a project's files are ignored until the project is trusted.
@@ -915,6 +915,11 @@ azazel login anthropic        # browser sign-in with a Claude Pro or Max subscri
 azazel login anthropic --key  # store an API key instead of signing in
 azazel login openai-codex     # browser sign-in with a ChatGPT subscription
 azazel login github-copilot   # enter a code on github.com
+azazel login github-copilot --enterprise company.ghe.com   # through a GitHub Enterprise
+azazel login openai-codex --device   # ChatGPT on a machine without a browser: enter a code on any device
+azazel login digitalocean     # browser sign-in to DigitalOcean's inference API
+azazel login poe              # creates a Poe API key in the browser (--key to paste one)
+azazel login snowflake        # Snowflake's browser sign-in, beside SNOWFLAKE_PAT
 azazel login openrouter       # creates an OpenRouter key in the browser (--key to paste one)
 azazel logout anthropic       # forget the stored key or sign-in
 azazel login anthropic --as work         # keep it as a second account (see "Several accounts")
@@ -925,7 +930,12 @@ azazel logout anthropic --account work   # forget that account only
 |---|---|---|
 | `anthropic` | Claude Pro or Max | Browser redirects to `localhost:54545`; if it cannot reach this machine, paste the address it ends up at |
 | `openai-codex` | ChatGPT Plus or Pro | The redirect address is fixed: port 1455 must be free while the login runs |
+| `openai-codex --device` | ChatGPT Plus or Pro, without a browser here | Open `auth.openai.com/codex/device` on any device, sign in and enter the code shown. The login is the same as the browser one's and renews the same way |
 | `github-copilot` | GitHub Copilot | Device flow: enter the code shown on `github.com/login/device`. The token does not expire; revoke the app on GitHub to end it |
+| `github-copilot --enterprise <domain>` | GitHub Copilot through a GitHub Enterprise | The same device flow at `https://<domain>/login/device`; requests go to `https://copilot-api.<domain>`, which the login keeps |
+| `digitalocean` | A DigitalOcean account | The browser returns to `localhost:1456`, which must be free, with a token for the inference API. It cannot be renewed: sign in again when it runs out |
+| `poe` | Poe's key flow for applications | Any free local port. What is stored is a Poe API key, valid as long as Poe says (or until revoked) |
+| `snowflake` | A Snowflake user, through the browser | Asks for the account (`SNOWFLAKE_ACCOUNT` when set; `myorg-myaccount`) and a role (`SNOWFLAKE_ROLE`, or empty for the default role). The account is kept with the login, so `SNOWFLAKE_ACCOUNT` is not needed afterwards. `SNOWFLAKE_PAT` still wins when it is set |
 | `google-gemini-cli` | A Google account, as the Gemini CLI signs in | Port 8085 must be free. The Cloud project requests are made in is looked up on first use and kept with the login; accounts on a paid tier set `GOOGLE_CLOUD_PROJECT` |
 | `openrouter` | OpenRouter's key flow for applications | Port 54549. What is stored is a lasting API key |
 | `xai-oauth` | SuperGrok or X Premium+ | Device flow at `auth.x.ai` |
@@ -936,7 +946,7 @@ A sign-in must be finished within ten minutes; `Ctrl+C` cancels it. Providers ma
 
 In the TUI:
 
-- `/login [provider] [account]` signs in, or asks for the key of a provider without a sign-in; with an account label it is kept as another account. `/logout <provider> [account]` forgets it.
+- `/login [provider] [account]` signs in, or asks for the key of a provider without a sign-in; with an account label it is kept as another account. `--device` and `--enterprise <domain>` work as on the command line. `/logout <provider> [account]` forgets it.
 - `/account [provider]` lists a provider's accounts with their usage and switches between them.
 - `/settings` has an Accounts page (sign in with a subscription, add an API key, sign out or forget a key, the credentials in use) and a Models page (the default model and the model of every role). After the first credential it goes straight on to choosing a default model. See [settings](tui.md#settings).
 
@@ -954,11 +964,12 @@ location = "us-east5"
 [providers.azure]            # optional: the address can also come from the environment
 base_url = "https://<resource>.openai.azure.com"
 api = "azure-openai-chat"    # default: azure-openai-responses
+auth = "azure-cli"           # optional: a Microsoft Entra token from `az` instead of a key
 ```
 
 - **Bedrock** uses the AWS default credential chain and region unless `region` or `profile` is set. Models are `bedrock/<model id>`, for example `bedrock/anthropic.claude-haiku-4-5-20251001-v1:0`. Thinking is requested for Claude models only.
 - **Vertex** uses Google application default credentials (`gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`). `project` falls back to `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, then the project of the credentials; `location` defaults to `global`. Model ids containing `claude` are sent to the Anthropic publisher (`vertex/claude-sonnet-4-5@20250929`), all others to the Google publisher.
-- **Azure OpenAI** is the provider id `azure`. Its address is `AZURE_OPENAI_BASE_URL`, else `https://$AZURE_OPENAI_RESOURCE_NAME.openai.azure.com`, else `base_url`; a trailing `/openai` or `/openai/v1` is accepted. Its key comes from `AZURE_OPENAI_API_KEY` and is sent as an `api-key` header; for Entra tokens set `auth = "bearer"` and an `api_key_command` that prints the token. A model is a deployment: `azure/<deployment>`. When deployments are not named after their models, `AZURE_OPENAI_DEPLOYMENT_NAME_MAP="gpt-x=prod-x,gpt-y=prod-y"` maps them. `AZURE_OPENAI_API_VERSION` sets `api-version` (the chat API needs one and defaults to `2024-10-21`; the Responses API sends none unless it is set). Azure does not say which models are deployed, so the model picker offers the catalogue's list; add your deployments under `models:` in `models.yml` if they are named differently. The older form `api = "openai-responses"` with `base_url = "https://<resource>.openai.azure.com/openai/v1"` keeps working.
+- **Azure OpenAI** is the provider id `azure`. Its address is `AZURE_OPENAI_BASE_URL`, else `https://$AZURE_OPENAI_RESOURCE_NAME.openai.azure.com`, else `base_url`; a trailing `/openai` or `/openai/v1` is accepted. Its key comes from `AZURE_OPENAI_API_KEY` and is sent as an `api-key` header; for Microsoft Entra set `auth = "azure-cli"`: every request then carries a token from `az account get-access-token --resource https://cognitiveservices.azure.com` (run `az login` first), asked for again five minutes before it runs out and after the resource refuses one, and keys are not used. A model is a deployment: `azure/<deployment>`. When deployments are not named after their models, `AZURE_OPENAI_DEPLOYMENT_NAME_MAP="gpt-x=prod-x,gpt-y=prod-y"` maps them. `AZURE_OPENAI_API_VERSION` sets `api-version` (the chat API needs one and defaults to `2024-10-21`; the Responses API sends none unless it is set). The model list is the resource's deployments: with `azure-cli` and an address at `*.openai.azure.com`, `*.cognitiveservices.azure.com` or `*.services.ai.azure.com`, Azure Resource Manager (the resource found by name through Resource Graph in every subscription your account can read, then its deployments; a token for `https://management.azure.com` comes from `az` too); otherwise, or when that fails, the resource's own `GET /openai/deployments?api-version=2022-12-01` with the key or the token. A deployment is listed under its own name, with the model it serves as its display name when that differs. Deployments that are not finished are left out. The older form `api = "openai-responses"` with `base_url = "https://<resource>.openai.azure.com/openai/v1"` keeps working.
 - **Amazon Bedrock through its OpenAI-compatible endpoint** is the provider `bedrock-mantle`: a Bedrock API key in `AWS_BEARER_TOKEN_BEDROCK`, region from `AWS_REGION` (default `us-east-1`). It needs no Cargo feature.
 
 Bedrock and Vertex are Cargo features (`bedrock`, `vertex`), on by default.
@@ -1020,6 +1031,7 @@ Every key is optional. A model the catalogue does not know is looked up once in 
 | `auto`, `ollama-chat` | `GET {root}/api/tags` | Names only |
 | `ollama` | `GET {root}/api/tags`, then `POST {root}/api/show` per model | Context from the model's `num_ctx` parameter, else `OLLAMA_CONTEXT_LENGTH`, else its `*.context_length`; vision and reasoning from `capabilities`; embedding models are left out |
 | `lm-studio` | `GET {root}/api/v0/models`, else the OpenAI list | The context a loaded model runs with, else its maximum; vision; embedding models are left out |
+| `azure` (the `azure` provider) | With `auth = "azure-cli"`, Azure Resource Graph and `GET https://management.azure.com/<resource>/deployments`, every page; else `GET {resource}/openai/deployments?api-version=2022-12-01` | Deployments whose provisioning succeeded: the deployment name, and the model it serves |
 | `off` | none | Only the models named in the configuration, else the catalogue's |
 
 Models named for a provider in `models.yml` or `[models]` are always listed, whatever its endpoint reports.

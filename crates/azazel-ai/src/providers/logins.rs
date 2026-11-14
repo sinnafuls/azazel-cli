@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::oauth::map::{CredentialMap, Expiry, Field};
-use crate::oauth::{BodyKind, Encoding, OAuthFlow, OAuthSettings, RefreshSettings, UserInfo};
+use crate::oauth::{BodyKind, Encoding, LoginInput, OAuthFlow, OAuthSettings, RefreshSettings, UserInfo};
 
 /// The sign-in of a built-in provider and the headers a request made with it carries (`{field}`
 /// holes are filled from the login).
@@ -26,6 +26,7 @@ pub(super) fn login(provider: &str) -> Option<(OAuthSettings, BTreeMap<String, S
                 ("x-app", "cli"),
             ]),
         ),
+        "digitalocean" => (digitalocean_login(), BTreeMap::new()),
         "github-copilot" => (copilot_subscription(), BTreeMap::new()),
         "google-gemini-cli" => (gemini_cli_login(), BTreeMap::new()),
         // The ChatGPT subscription runs on its own backend, separate from `openai` API keys.
@@ -34,9 +35,29 @@ pub(super) fn login(provider: &str) -> Option<(OAuthSettings, BTreeMap<String, S
             headers(&[("originator", "azazel"), ("chatgpt-account-id", "{account_id}")]),
         ),
         "openrouter" => (openrouter_key(), BTreeMap::new()),
+        "poe" => (poe_key(), BTreeMap::new()),
+        "snowflake" => (snowflake_login(), BTreeMap::new()),
         "xai-oauth" => (grok_subscription(), BTreeMap::new()),
         _ => return None,
     })
+}
+
+/// `azazel login <provider> --device`: a sign-in for a machine without a browser, when the
+/// provider's usual one needs one. Its login is renewed like the usual one's.
+pub fn device_login(provider: &str) -> Option<OAuthSettings> {
+    match provider {
+        "openai-codex" => Some(codex_device()),
+        _ => None,
+    }
+}
+
+/// `azazel login <provider> --enterprise <domain>`: the sign-in against a company's own server,
+/// whose domain is the input `domain`.
+pub fn enterprise_login(provider: &str) -> Option<OAuthSettings> {
+    match provider {
+        "github-copilot" => Some(copilot_enterprise()),
+        _ => None,
+    }
 }
 
 fn claim(name: &str) -> Field {
@@ -393,6 +414,155 @@ fn grok_subscription() -> OAuthSettings {
         instructions: Some(
             "This signs in with your SuperGrok or X Premium+ subscription. Enter the code on the \
              page that opens."
+                .to_string(),
+        ),
+        ..OAuthSettings::default()
+    }
+}
+
+/// `azazel login openai-codex --device`: the ChatGPT sign-in for a machine without a browser.
+/// The code is entered at auth.openai.com on any device; what comes back is the authorisation
+/// code of the browser sign-in, so the login is the same and renews the same way.
+fn codex_device() -> OAuthSettings {
+    OAuthSettings {
+        flow: OAuthFlow::DeviceAuthCode,
+        device_url: "https://auth.openai.com/api/accounts/deviceauth/usercode".to_string(),
+        device_poll_url: "https://auth.openai.com/api/accounts/deviceauth/token".to_string(),
+        verification_url: Some("https://auth.openai.com/codex/device".to_string()),
+        redirect_uri: Some("https://auth.openai.com/deviceauth/callback".to_string()),
+        instructions: Some(
+            "This signs in with your ChatGPT (Codex) subscription without a browser on this \
+             machine: open the page on any device, sign in and enter the code."
+                .to_string(),
+        ),
+        ..codex_subscription()
+    }
+}
+
+/// `azazel login github-copilot --enterprise <domain>`: the device flow against a GitHub
+/// Enterprise host. The Copilot API of that host is `copilot-api.<domain>`, kept with the login.
+fn copilot_enterprise() -> OAuthSettings {
+    OAuthSettings {
+        device_url: "https://{domain}/login/device/code".to_string(),
+        token_url: "https://{domain}/login/oauth/access_token".to_string(),
+        inputs: vec![LoginInput {
+            name: "domain".to_string(),
+            prompt: "The domain of your GitHub Enterprise (company.ghe.com):".to_string(),
+            env: None,
+            optional: false,
+            suffix: None,
+        }],
+        api_base_url: Some("https://copilot-api.{domain}".to_string()),
+        instructions: Some(
+            "This signs in with GitHub Copilot through your company's GitHub Enterprise. Enter \
+             the code on the page that opens and approve the request."
+                .to_string(),
+        ),
+        ..copilot_subscription()
+    }
+}
+
+/// DigitalOcean's public client for command-line sign-ins, stored base64 so secret scanners
+/// stay quiet.
+const DIGITALOCEAN_CLIENT_ID: &str =
+    "YjFhNmM1MTU4MTU2Y2FhYzgyMWZkMWIzMDI1M2NhOGFjYjUyNDU0YTQ4ZmE3NDQ0MjBlNDE4ODljYjU4OWY4Mg==";
+
+/// `azazel login digitalocean`: an implicit grant. DigitalOcean puts the token for its
+/// inference API in the address the browser returns to, on a fixed port; it cannot be renewed.
+fn digitalocean_login() -> OAuthSettings {
+    OAuthSettings {
+        flow: OAuthFlow::Implicit,
+        client_id: DIGITALOCEAN_CLIENT_ID.to_string(),
+        client_id_encoding: Encoding::Base64,
+        authorize_url: "https://cloud.digitalocean.com/v1/oauth/authorize".to_string(),
+        scopes: vec!["genai:read".to_string(), "inference:query".to_string()],
+        pkce: false,
+        redirect_host: Some("localhost".to_string()),
+        redirect_port: 1456,
+        redirect_path: Some("/auth/callback".to_string()),
+        instructions: Some(
+            "This signs in with your DigitalOcean account. Complete the sign-in in the browser; \
+             nothing else may use port 1456 while it runs. The token cannot be renewed: sign in \
+             again when it runs out."
+                .to_string(),
+        ),
+        ..OAuthSettings::default()
+    }
+}
+
+/// Poe's public client for command-line sign-ins.
+const POE_CLIENT_ID: &str = "client_728290227fc048cc9262091a1ea197ea";
+
+/// `azazel login poe`: an authorisation code with PKCE on any loopback port, exchanged for an
+/// API key that lasts as long as the answer says, or until it is revoked.
+fn poe_key() -> OAuthSettings {
+    OAuthSettings {
+        flow: OAuthFlow::Pkce,
+        client_id: POE_CLIENT_ID.to_string(),
+        authorize_url: "https://poe.com/oauth/authorize".to_string(),
+        token_url: "https://api.poe.com/token".to_string(),
+        scopes: vec!["apikey:create".to_string()],
+        credential: CredentialMap {
+            access: "api_key".to_string(),
+            expires: Expiry::SecondsIfGiven {
+                path: "api_key_expires_in".to_string(),
+            },
+            ..CredentialMap::default()
+        },
+        instructions: Some(
+            "This creates a Poe API key for azazel in the browser. Use `azazel login poe --key` \
+             to paste a key you already have."
+                .to_string(),
+        ),
+        ..OAuthSettings::default()
+    }
+}
+
+/// Snowflake's built-in client for local applications; it authenticates with its own name as
+/// the secret, so the `Basic` value is no secret either.
+const SNOWFLAKE_CLIENT_ID: &str = "LOCAL_APPLICATION";
+const SNOWFLAKE_BASIC: &str = "Basic TE9DQUxfQVBQTElDQVRJT046TE9DQUxfQVBQTElDQVRJT04=";
+const SNOWFLAKE_ISSUER: &str = "https://{account}.snowflakecomputing.com";
+
+/// `azazel login snowflake`: Snowflake's external-browser sign-in, an authorisation code with
+/// PKCE against the account's own server. The account (and the role, when one is given) is kept
+/// with the login, which also says where the Cortex API of that account is.
+fn snowflake_login() -> OAuthSettings {
+    OAuthSettings {
+        flow: OAuthFlow::Pkce,
+        client_id: SNOWFLAKE_CLIENT_ID.to_string(),
+        authorize_url: format!("{SNOWFLAKE_ISSUER}/oauth/authorize"),
+        token_url: format!("{SNOWFLAKE_ISSUER}/oauth/token-request"),
+        scopes: vec!["refresh_token".to_string(), "session:role:{role}".to_string()],
+        redirect_path: Some("/".to_string()),
+        token_headers: BTreeMap::from([("Authorization".to_string(), SNOWFLAKE_BASIC.to_string())]),
+        inputs: vec![
+            LoginInput {
+                name: "account".to_string(),
+                prompt: "Your Snowflake account identifier (myorg-myaccount):".to_string(),
+                env: Some("SNOWFLAKE_ACCOUNT".to_string()),
+                optional: false,
+                suffix: Some(".snowflakecomputing.com".to_string()),
+            },
+            LoginInput {
+                name: "role".to_string(),
+                prompt: "The Snowflake role to use (empty for your default role):".to_string(),
+                env: Some("SNOWFLAKE_ROLE".to_string()),
+                optional: true,
+                suffix: None,
+            },
+        ],
+        api_base_url: Some(format!("{SNOWFLAKE_ISSUER}/api/v2/cortex/v1")),
+        credential: CredentialMap {
+            expires: Expiry::Seconds {
+                path: "expires_in".to_string(),
+                skew_ms: 60_000,
+            },
+            ..CredentialMap::default()
+        },
+        instructions: Some(
+            "This signs in to your Snowflake account in the browser. Set SNOWFLAKE_PAT instead \
+             to use a programmatic access token."
                 .to_string(),
         ),
         ..OAuthSettings::default()

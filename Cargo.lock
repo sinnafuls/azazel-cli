@@ -923,6 +923,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-util",
  "tracing",
+ "which",
  "wiremock",
 ]
 
@@ -2646,6 +2647,10 @@ dependencies = [
 
 [[package]]
 name = "fake-audio"
+version = "0.6.0"
+
+[[package]]
+name = "fake-az"
 version = "0.6.0"
 
 [[package]]

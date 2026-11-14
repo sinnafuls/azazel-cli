@@ -21,6 +21,16 @@ GitHub are its section here.
   variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
   `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
 - `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+- More sign-ins: `azazel login openai-codex --device` signs in to ChatGPT on a machine without a browser
+  (enter a code on any device); `azazel login github-copilot --enterprise <domain>` signs in through a
+  GitHub Enterprise and sends requests to its `copilot-api.<domain>`; `azazel login digitalocean`,
+  `azazel login poe` and `azazel login snowflake` sign in in the browser (Snowflake beside
+  `SNOWFLAKE_PAT`, keeping the account with the login). `/login` takes `--device` and `--enterprise` too.
+- Azure through the Azure CLI: `[providers.azure] auth = "azure-cli"` sends a Microsoft Entra token from
+  `az account get-access-token` instead of a key, and the model list of `azure` is now the resource's
+  deployments (Azure Resource Manager with the Azure CLI, the resource's `/openai/deployments` with a key).
+- GitHub Copilot asks Claude models on its Anthropic Messages API and GPT-5 and later, Grok and MAI Code
+  models on its Responses API, where Copilot serves them.
 - Tool calls are mended before they run: a tool called by another harness's name (`bash`, `str_replace`,
   `apply_edit`, `grep_search`, `list_dir`, `ls`, `todowrite`) or in another case runs as the real tool, and
   an object or array sent as a JSON string, a number or boolean sent as a string, `null` for an optional

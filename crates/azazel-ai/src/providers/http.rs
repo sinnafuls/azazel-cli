@@ -354,16 +354,21 @@ impl HttpProvider {
     }
 
     /// The credential requests are made with, and the stored account it belongs to. Fails before
-    /// anything is sent when the provider's address still waits for a variable, and finds the
-    /// Cloud project a Cloud Code Assist login works in.
+    /// anything is sent when the provider's address still waits for a variable the login does
+    /// not answer, and finds the Cloud project a Cloud Code Assist login works in.
     async fn authorise(&self) -> Result<(Auth, Option<String>), AiError> {
-        if let Some(variable) = self.config.unset_variable() {
+        let resolved = self.credentials.resolve_account(&self.config).await;
+        if let Some(variable) = self.config.unset_variable()
+            && !resolved
+                .as_ref()
+                .is_ok_and(|(auth, _)| login_base_url(auth).is_some())
+        {
             return Err(AiError::Auth(format!(
                 "provider {} is not set up: set {variable} (its address is {})",
                 self.config.id, self.config.base_url
             )));
         }
-        let (auth, account) = self.credentials.resolve_account(&self.config).await?;
+        let (auth, account) = resolved?;
         if self.config.api != WireApi::GoogleGeminiCli {
             return Ok((auth, account));
         }
@@ -413,11 +418,46 @@ impl HttpProvider {
         Ok((Auth::OAuth { access, fields }, account))
     }
 
+    /// The configuration requests made with `auth` go out with: the provider's, at the address
+    /// the login keeps when it keeps one.
+    pub(super) fn config_for(&self, auth: &Auth) -> Cow<'_, ProviderConfig> {
+        for_login(Cow::Borrowed(&self.config), auth)
+    }
+
     /// The wire API's own model list.
     pub(super) async fn wire_models(&self, wire: &Wire, auth: &Auth) -> Result<Vec<ModelInfo>, AiError> {
-        let request = (wire.models_request)(&self.client, &self.config, auth);
+        let config = self.config_for(auth);
+        let request = (wire.models_request)(&self.client, &config, auth);
         let body = self.fetch_json(wire, request).await?;
-        Ok((wire.parse_models)(&self.config, &body))
+        Ok((wire.parse_models)(&config, &body))
+    }
+
+    pub(super) fn credentials(&self) -> &Credentials {
+        &self.credentials
+    }
+}
+
+/// The API address a login keeps (a GitHub Enterprise host, a Snowflake account), when it keeps
+/// one.
+pub(crate) fn login_base_url(auth: &Auth) -> Option<&str> {
+    match auth {
+        Auth::OAuth { fields, .. } => fields
+            .get(crate::oauth::BASE_URL_FIELD)
+            .map(String::as_str)
+            .filter(|url| !url.is_empty()),
+        _ => None,
+    }
+}
+
+/// `config` at the address the login of `auth` keeps, when it keeps one.
+fn for_login<'a>(config: Cow<'a, ProviderConfig>, auth: &Auth) -> Cow<'a, ProviderConfig> {
+    match login_base_url(auth) {
+        Some(url) if url != config.base_url => {
+            let mut config = config.into_owned();
+            config.base_url = url.trim_end_matches('/').to_string();
+            Cow::Owned(config)
+        }
+        _ => config,
     }
 }
 
@@ -544,26 +584,28 @@ impl Provider for HttpProvider {
         req: &Request,
         cancel: CancellationToken,
     ) -> Result<EventStream, AiError> {
-        // A request with hosted tools goes out in the format the provider serves them in.
-        let config = match req.hosted.is_empty() {
+        // A request with hosted tools goes out in the format the provider serves them in; any
+        // other in the format the model is served on.
+        let api = match req.hosted.is_empty() {
+            true => self.config.api_for(&model.id),
+            false => wire::hosted_api(&self.config).ok_or_else(|| {
+                AiError::InvalidRequest(format!(
+                    "provider {} runs no tools of its own",
+                    self.config.id
+                ))
+            })?,
+        };
+        let config = match api == self.config.api {
             true => Cow::Borrowed(&self.config),
-            false => match wire::hosted_api(&self.config) {
-                Some(api) if api == self.config.api => Cow::Borrowed(&self.config),
-                Some(api) => Cow::Owned(ProviderConfig {
-                    api,
-                    ..self.config.clone()
-                }),
-                None => {
-                    return Err(AiError::InvalidRequest(format!(
-                        "provider {} runs no tools of its own",
-                        self.config.id
-                    )));
-                }
-            },
+            false => Cow::Owned(ProviderConfig {
+                api,
+                ..self.config.clone()
+            }),
         };
         let wire = wire_for(config.api)?;
         let config = self.for_conversation(config, req.cache_key.as_deref());
         let (auth, account) = self.authorise().await?;
+        let config = for_login(config, &auth);
         if let Some(refusal) = account
             .as_deref()
             .and_then(|account| self.known_refusal(account, &model.id))

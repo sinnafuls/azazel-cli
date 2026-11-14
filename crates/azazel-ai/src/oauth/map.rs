@@ -127,6 +127,12 @@ pub enum Expiry {
         #[serde(default = "day_ms")]
         fallback_ms: u64,
     },
+    /// Seconds from now when the answer gives a lifetime; never when it gives none (`null` or
+    /// absent), as a key that is valid until revoked is answered.
+    SecondsIfGiven {
+        #[serde(default = "expires_in")]
+        path: String,
+    },
     /// The server ends the session itself; the token is used until it is refused.
     Never,
 }
@@ -153,6 +159,10 @@ impl Expiry {
     fn at(&self, body: &Value, access: &str) -> u64 {
         match self {
             Expiry::Never => NEVER,
+            Expiry::SecondsIfGiven { path } => match at(body, path).and_then(seconds_of) {
+                Some(seconds) => now_ms() + seconds.saturating_mul(1000),
+                None => NEVER,
+            },
             Expiry::Seconds { path, skew_ms } => {
                 let seconds = at(body, path)
                     .and_then(seconds_of)

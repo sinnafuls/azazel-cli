@@ -56,7 +56,7 @@ impl AzureSettings {
 }
 
 /// The resource's address without the `/openai` or `/openai/v1` of either API.
-fn resource(base_url: &str) -> &str {
+pub(crate) fn resource(base_url: &str) -> &str {
     let trimmed = base_url.trim_end_matches('/');
     let trimmed = trimmed.strip_suffix("/v1").unwrap_or(trimmed);
     trimmed.strip_suffix("/openai").unwrap_or(trimmed)

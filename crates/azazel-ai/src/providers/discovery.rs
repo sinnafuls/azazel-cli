@@ -9,6 +9,7 @@ use serde_json::{Value, json};
 use crate::catalog::ModelInfo;
 use crate::credentials::Auth;
 use crate::error::AiError;
+use crate::providers::azure;
 use crate::providers::http::{HttpProvider, Wire};
 use crate::providers::presets::Discovery;
 use crate::types::WireApi;
@@ -41,6 +42,7 @@ pub(super) async fn list(
             // An older server has no native list; its OpenAI one still names the models.
             None => provider.wire_models(wire, auth).await,
         },
+        Discovery::Azure => azure::deployments(provider, wire, auth).await,
         Discovery::Auto if provider.config().api == WireApi::GoogleGenerative => {
             google_pages(provider, wire, auth).await
         }
@@ -50,13 +52,14 @@ pub(super) async fn list(
 
 /// Every page of the Generative Language model list.
 async fn google_pages(provider: &HttpProvider, wire: &Wire, auth: &Auth) -> Result<Vec<ModelInfo>, AiError> {
+    let config = provider.config_for(auth);
     let mut models = Vec::new();
     let mut page: Option<String> = None;
     for _ in 0..MAX_PAGES {
         let request =
-            wire::google::models_page_request(provider.client(), provider.config(), auth, page.as_deref());
+            wire::google::models_page_request(provider.client(), &config, auth, page.as_deref());
         let body = provider.fetch_json(wire, request).await?;
-        models.extend(wire::google::parse_models(provider.config(), &body));
+        models.extend(wire::google::parse_models(&config, &body));
         let next = wire::google::next_page_token(&body).map(str::to_string);
         // A token that repeats would be read for ever.
         if next.is_none() || next == page {
@@ -70,9 +73,9 @@ async fn google_pages(provider: &HttpProvider, wire: &Wire, auth: &Auth) -> Resu
 /// `/api/tags` for the installed models, then `/api/show` for what each can do. A model that
 /// cannot be asked about is still listed, with defaults.
 async fn ollama(provider: &HttpProvider, wire: &Wire, auth: &Auth) -> Result<Vec<ModelInfo>, AiError> {
-    let config = provider.config();
+    let config = provider.config_for(auth);
     let root = wire::ollama::root(&config.base_url);
-    let headers = wire::ollama::headers(config, auth);
+    let headers = wire::ollama::headers(&config, auth);
     let tags = provider
         .client()
         .get(format!("{root}/api/tags"))
@@ -176,10 +179,10 @@ async fn lm_studio(
     wire: &Wire,
     auth: &Auth,
 ) -> Result<Option<Vec<ModelInfo>>, AiError> {
-    let config = provider.config();
+    let config = provider.config_for(auth);
     let root = wire::ollama::root(&config.base_url);
     let mut headers = reqwest::header::HeaderMap::new();
-    wire::add_headers(&mut headers, config, auth, wire::KeyHeader::Bearer);
+    wire::add_headers(&mut headers, &config, auth, wire::KeyHeader::Bearer);
     let request = provider
         .client()
         .get(format!("{root}/api/v0/models"))

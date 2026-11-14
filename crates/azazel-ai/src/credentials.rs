@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AiError;
 use crate::limits::LimitStore;
-use crate::providers::presets::{ProviderConfig, ProviderSettings};
+use crate::providers::azure::{self, AzureCli};
+use crate::providers::presets::{AuthStyle, ProviderConfig, ProviderSettings};
 
 /// The label of the account kept under the plain provider key of `auth.json`.
 pub const DEFAULT_ACCOUNT: &str = "default";
@@ -200,6 +201,8 @@ pub struct Credentials {
     /// switched.
     stored: Mutex<HashSet<String>>,
     limits: Arc<LimitStore>,
+    /// Entra tokens for providers with `auth = "azure-cli"`.
+    azure_cli: AzureCli,
 }
 
 fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -238,7 +241,19 @@ impl Credentials {
             moved: Default::default(),
             stored: Mutex::default(),
             limits: Arc::default(),
+            azure_cli: AzureCli::default(),
         }
+    }
+
+    /// Takes Entra tokens from `cli` instead of the Azure CLI on `PATH` (tests).
+    pub fn with_azure_cli(mut self, cli: AzureCli) -> Self {
+        self.azure_cli = cli;
+        self
+    }
+
+    /// Where providers with `auth = "azure-cli"` get their tokens.
+    pub fn azure_cli(&self) -> &AzureCli {
+        &self.azure_cli
     }
 
     /// What the providers reported about each account's usage windows.
@@ -440,6 +455,11 @@ impl Credentials {
 
     /// The credential that does not depend on a stored account, when there is one.
     async fn outside_store(&self, provider: &ProviderConfig) -> Result<Option<Auth>, AiError> {
+        // The configuration asked for the Azure CLI's sign-in, whatever keys are around.
+        if provider.auth_style == AuthStyle::AzureCli {
+            let token = self.azure_cli.token(azure::COGNITIVE_SERVICES).await?;
+            return Ok(Some(Auth::ApiKey(token)));
+        }
         if let Some(key) = locked(&self.flag_keys).get(&provider.id) {
             return Ok(Some(Auth::ApiKey(key.clone())));
         }
@@ -467,10 +487,14 @@ impl Credentials {
     /// Forget the cached `api_key_command` result; call after the provider answers 401.
     pub fn invalidate(&self, provider: &str) {
         locked(&self.command_keys).remove(provider);
+        self.azure_cli.forget();
     }
 
     /// Where the credential would come from, without revealing it.
     pub fn source(&self, provider: &ProviderConfig) -> Option<String> {
+        if provider.auth_style == AuthStyle::AzureCli {
+            return Some("azure-cli".to_string());
+        }
         if locked(&self.flag_keys).contains_key(&provider.id) {
             return Some("--api-key".to_string());
         }

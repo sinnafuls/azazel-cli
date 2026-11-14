@@ -346,8 +346,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             };
             return bug::run(&paths, trusted, args).await;
         }
-        Some(Sub::Login { provider, key, label }) => {
-            return login::login(provider.as_deref(), *key, label.as_deref(), &paths).await;
+        Some(Sub::Login { provider, key, device, enterprise, label }) => {
+            let flags = login::LoginFlags {
+                key: *key,
+                device: *device,
+                enterprise: enterprise.as_deref(),
+            };
+            return login::login(provider.as_deref(), flags, label.as_deref(), &paths).await;
         }
         Some(Sub::Logout { provider, account }) => {
             return login::logout(provider, account.as_deref(), &paths);

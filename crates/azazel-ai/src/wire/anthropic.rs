@@ -139,7 +139,9 @@ pub fn build_request(
     auth: &Auth,
 ) -> reqwest::RequestBuilder {
     let mut body = build_body(provider, model, req);
+    // Copilot's Messages route takes a GitHub login, which is no Claude subscription.
     if matches!(auth, Auth::OAuth { .. })
+        && !crate::wire::openai_chat::is_copilot(provider)
         && let Some(system) = body.get_mut("system").and_then(Value::as_array_mut)
     {
         // A subscription login must say which client is asking; the API rate limits a login that
@@ -147,6 +149,7 @@ pub fn build_request(
         system.insert(0, json!({"type": "text", "text": CLIENT_IDENTITY}));
     }
     let mut headers = headers(provider, auth, true);
+    crate::wire::openai_chat::copilot_turn(provider, req, &mut headers);
     if fast_mode(model, req) && fast_mode_is_beta(&model.id) {
         let betas = match headers.get(BETA_HEADER).and_then(|value| value.to_str().ok()) {
             Some(others) if !others.trim().is_empty() => format!("{others},{FAST_MODE_BETA}"),
