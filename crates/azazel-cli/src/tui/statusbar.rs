@@ -176,6 +176,7 @@ impl Tui {
             warn_cost: self.env.config.limits.warn_cost_usd,
             billing: &facts.billing,
             account: facts.account.as_deref(),
+            account_email: facts.account_email.as_deref(),
             cache: (usage.cache_read * 100).checked_div(prompt_tokens),
             agents: self.active_agents(),
             goal: facts.goal.as_deref(),

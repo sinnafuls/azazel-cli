@@ -109,7 +109,7 @@ impl HttpTool {
     /// `redact` is applied, beside the removal of the credential itself, to what a request that
     /// carried a stored credential returns.
     pub fn new(stored: Arc<ServiceStore>, redact: Redact) -> Result<Self, String> {
-        let client = reqwest::Client::builder()
+        let client = azazel_ai::tls::client_builder()
             .timeout(TIMEOUT)
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())

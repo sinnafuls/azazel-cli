@@ -937,7 +937,7 @@ fn effort_parameter_maps_to_dynamic_budget_or_level() {
 
 #[test]
 fn build_request_targets_the_stream_endpoint_with_the_api_key_header() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let req = request(vec![Message::user("hi")]);
     let built = google::build_request(
         &client,
@@ -963,7 +963,7 @@ fn build_request_targets_the_stream_endpoint_with_the_api_key_header() {
 
 #[test]
 fn oauth_uses_bearer_and_provider_headers_override() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let req = request(vec![Message::user("hi")]);
     let mut provider = provider();
     provider.headers.insert("x-extra".into(), "1".into());
@@ -997,7 +997,7 @@ fn oauth_uses_bearer_and_provider_headers_override() {
 
 #[test]
 fn models_request_asks_for_the_largest_page() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let built = google::models_request(&client, &provider(), &Auth::ApiKey("k-123".into()))
         .build()
         .unwrap();
@@ -1153,7 +1153,7 @@ fn parse_models_keeps_generative_models_and_fills_reported_limits() {
     // The list is paged: the token of one page asks for the next.
     assert_eq!(google::next_page_token(&listing), Some("next"));
     assert_eq!(google::next_page_token(&json!({"models": []})), None);
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let next = google::models_page_request(&client, &provider(), &Auth::None, Some("a b/c"))
         .build()
         .unwrap();

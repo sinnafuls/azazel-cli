@@ -320,14 +320,14 @@ branch outside a repository, no cost on a subscription) is left out.
 | `bar` | the context window is known and the terminal is at least 100 columns wide | `[━━━╸────]`: the context window as a bar. Right behind `context` it stands with it as one piece |
 | `rate` | the lead has streamed a reply since your last prompt | `↯ 78 tok/s`: how fast the lead writes, in output tokens per second; see below |
 | `cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
-| `usage` | the lead answers on a subscription you signed in to | `◔ 61% 5h`: the fullest usage window of the account and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
+| `usage` | the lead answers on a subscription you signed in to | `◔ 61% 5h`: the fullest usage window of the account in use that counts the lead's model (`7d-fable` for a window of one model family) and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
 | `cache` | the provider has counted prompt tokens | `≋ 87%`: the share of this session's prompt tokens that were read from the provider's cache |
 | `agents` | sub-agents are active | `⇶ 2 agents`: how many are queued, working or waiting for approval |
 | `goal` | a goal is open | `⚑ goal …`: the goal's state and the attempt number; see [goals](goals.md) |
 | `todo` | the lead has a todo list | `☑ 2/5`: items done and items in all; in the colour of success once all are done |
 | `queue` | messages wait for the agent to finish | `⏵ 1 queued`; see [queued messages](#queued-messages-and-stashed-drafts) |
 | `session` | the session has a name | `❖ fix the build`, cut to 24 columns |
-| `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with; see [several accounts](models-and-logins.md#several-accounts) |
+| `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with. It follows the account when work [moves to another one](models-and-logins.md#several-accounts) |
 | `model` | always | `⬢ provider/model`: the model answering. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
 | `tier` | a [service tier](models-and-logins.md#service-tiers) is on | `fast` or `slow` |
 | `thinking` | always | The thinking level |
@@ -365,6 +365,7 @@ The `powerline` preset is drawn in blocks unless you choose `bar` or `space` for
 | `style` | `path` | `short` (the default: `~` and the end of a long path), `full`, `basename` (the directory's own name) |
 | `style` | `model` | `full` (the default), `short` (without the provider) |
 | `style` | `context` | `percent` (the default), `tokens` (`◫ 84.0k/200.0k`) |
+| `style` | `account` | `label` (the default), `email` (the address the account signed in with, hidden as `j***@example.com` unless `usage.redact_email` is off; the label for a stored key) |
 | `format`, `seconds` | `time` | `24h` (the default) or `12h`; `seconds = true` adds them |
 | `cells`, `min_width` | `bar` | Cells of the bar (`4` to `40`, default `8`); the narrowest terminal it is drawn on (default `100`, `0` for any) |
 
@@ -804,7 +805,7 @@ Session and display:
 | `/loop <count \| interval \| until "<condition>"> <prompt>` | Send a prompt again and again; see [loops](#loops) |
 | `/diff [turn \| session]` | The uncommitted changes, or the changes since your last prompt or since the session began; see [diffs and commits](#diffs-and-commits) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
-| `/usage` | What each signed-in subscription has left of its usage windows; see [usage](models-and-logins.md#usage) |
+| `/usage` | A box with what each signed-in subscription has left: per account every usage window with a bar, the share used, its reset time and what it counts, the plan, and the account in use; `r` asks the providers again. See [usage](models-and-logins.md#usage) |
 | `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
@@ -834,7 +835,7 @@ Models, permissions and setup:
 | `/settings` | Sign in, add API keys, choose models and change every setting; see [settings](#settings) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
-| `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
+| `/account [provider]` | The provider's accounts, their usage and until when one is out of allowance: use one for this session, make it the default, sign it out, add another |
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
 | `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
@@ -1144,7 +1145,7 @@ pie charts, Gantt charts, timelines, mind maps and git graphs.
 cargo install --path crates/azazel-cli --features diagrams
 ```
 
-The feature is not part of the default build: the diagram renderer and what draws its output add 5.8 MB to
+The feature is not part of the default build: the diagram renderer and what draws its output add 4.9 MB to
 the binary. Without it a `mermaid` block is shown as its source, like any other code block.
 
 With the feature:

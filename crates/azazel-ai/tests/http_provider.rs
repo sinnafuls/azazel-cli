@@ -362,6 +362,185 @@ async fn usage_windows_are_kept_per_account_and_a_full_one_moves_work_to_the_nex
     }
 }
 
+/// What an account answers to `POST /v1/messages`: a reply, or a refusal for a full 5-hour
+/// window that resets at `reset`.
+fn answers(key: &str, reset: Option<&str>) -> Mock {
+    let template = match reset {
+        Some(reset) => ResponseTemplate::new(429)
+            .insert_header("anthropic-ratelimit-unified-status", "rejected")
+            .insert_header("anthropic-ratelimit-unified-reset", reset)
+            .insert_header("anthropic-ratelimit-unified-representative-claim", "five_hour")
+            .insert_header("anthropic-ratelimit-unified-5h-utilization", "1.0")
+            .insert_header("anthropic-ratelimit-unified-5h-reset", reset)
+            .set_body_string(
+                r#"{"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit."}}"#,
+            ),
+        None => ResponseTemplate::new(200)
+            .insert_header("anthropic-ratelimit-unified-status", "allowed")
+            .set_body_raw(MESSAGES_STREAM, "text/event-stream"),
+    };
+    Mock::given(method("POST"))
+        .and(path("/v1/messages"))
+        .and(header("x-api-key", key))
+        .respond_with(template)
+}
+
+/// A router over an Anthropic-format provider whose stored accounts are `accounts` (label and
+/// key), as a run that has just started: blocks are kept in `dir/limits.json`, and `order` is
+/// `[accounts] order` for the provider.
+fn run_with(
+    server: &MockServer,
+    dir: &std::path::Path,
+    accounts: &[(&str, &str)],
+    order: &[&str],
+) -> (azazel_ai::Router, Arc<Credentials>) {
+    let config = ProviderConfig {
+        requires_key: true,
+        ..ProviderConfig::new("acme", WireApi::AnthropicMessages, server.uri())
+    };
+    let order = BTreeMap::from([(
+        "acme".to_string(),
+        order.iter().map(|label| label.to_string()).collect::<Vec<_>>(),
+    )]);
+    let credentials =
+        Arc::new(Credentials::with_env(dir.join("auth.json"), Arc::new(|_: &str| None)).ordered(&order));
+    for (label, secret) in accounts {
+        let key = azazel_ai::Credential::ApiKey {
+            key: secret.to_string(),
+        };
+        credentials
+            .store(&azazel_ai::credentials::account_key("acme", label), key)
+            .unwrap();
+    }
+    credentials.limits().persist(dir.join("limits.json"));
+    let provider = Arc::new(HttpProvider::new(config, http_client(), credentials.clone()));
+    let router = azazel_ai::Router::new(
+        vec![provider],
+        azazel_ai::Catalog::default(),
+        BTreeMap::new(),
+        azazel_ai::RetryPolicy::default(),
+    )
+    .with_accounts(credentials.clone());
+    (router, credentials)
+}
+
+/// Asks `model` once and returns the account switches the router announced on the way.
+async fn ask(router: &azazel_ai::Router, model: &str) -> Vec<(String, String, String)> {
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let (_, stream) = router
+        .stream_with(
+            &[format!("acme/{model}").parse().unwrap()],
+            &request(),
+            CancellationToken::new(),
+            &mut azazel_ai::RouteState::with_events(tx),
+        )
+        .await
+        .unwrap();
+    let events: Vec<StreamEvent> = stream.collect().await;
+    assert!(matches!(events.last(), Some(StreamEvent::Done { message }) if message.text() == "hi"));
+    std::iter::from_fn(|| rx.try_recv().ok())
+        .map(|event| match event {
+            azazel_ai::RouteEvent::Account { from, to, limit, .. } => (from, to, limit),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn an_account_that_ran_out_is_not_started_on_again_by_the_next_run() {
+    let server = MockServer::start().await;
+    let reset = (azazel_ai::credentials::now_ms() / 1000 + 7200).to_string();
+    // The default account is asked once in all: by the run that finds it out of allowance.
+    answers("k-default", Some(&reset)).expect(1).mount(&server).await;
+    answers("k-work", None).expect(3).mount(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = [("default", "k-default"), ("work", "k-work")];
+
+    let (first, _) = run_with(&server, dir.path(), &accounts, &[]);
+    assert_eq!(
+        ask(&first, "claude-mock").await,
+        [(
+            "default".to_string(),
+            "work".to_string(),
+            "5-hour limit".to_string()
+        )]
+    );
+    drop(first);
+
+    // A new run starts on the default account again, knows from the file that it is out
+    // until the reset, and moves on without asking it. It says which window ran out.
+    let (second, credentials) = run_with(&server, dir.path(), &accounts, &[]);
+    assert_eq!(credentials.selected("acme").as_deref(), Some("default"));
+    let block = second
+        .limits()
+        .blocked_for("acme", "default", "claude-mock")
+        .unwrap();
+    assert_eq!(Some(block.until), reset.parse().ok());
+    assert_eq!(
+        ask(&second, "claude-mock").await,
+        [(
+            "default".to_string(),
+            "work".to_string(),
+            "5-hour limit".to_string()
+        )]
+    );
+    assert_eq!(credentials.selected("acme").as_deref(), Some("work"));
+    // Work stays there, quietly.
+    assert_eq!(ask(&second, "claude-mock").await, []);
+}
+
+#[tokio::test]
+async fn a_request_starts_on_the_first_account_in_order_that_has_room_for_its_model() {
+    let server = MockServer::start().await;
+    answers("k-default", None).expect(2).mount(&server).await;
+    answers("k-work", None).expect(0).mount(&server).await;
+    answers("k-zed", None).expect(1).mount(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let accounts = [("default", "k-default"), ("work", "k-work"), ("zed", "k-zed")];
+    let (router, credentials) = run_with(&server, dir.path(), &accounts, &["zed"]);
+    let limits = router.limits();
+    let later = azazel_ai::credentials::now_ms() / 1000 + 86_400;
+
+    // A usage report said the weekly allowance of the Fable models is used up on the default
+    // account. Other models are still asked there.
+    let fable = azazel_ai::Window::new("7d-fable", 1.0, Some(later), "rejected").scoped("Fable");
+    limits.record_report(
+        "acme",
+        "default",
+        &[azazel_ai::Window::new("7d", 0.5, Some(later), "allowed"), fable],
+        later - 86_400,
+    );
+    assert_eq!(ask(&router, "claude-opus-mock").await, []);
+    // A Fable model is not: the request goes to the account `[accounts] order` names first,
+    // not to the next one by label, and the default account is never asked.
+    assert_eq!(
+        ask(&router, "claude-fable-mock").await,
+        [(
+            "default".to_string(),
+            "zed".to_string(),
+            "7-day Fable limit".to_string()
+        )]
+    );
+    assert_eq!(credentials.selected("acme").as_deref(), Some("zed"));
+    // The block holds for the Fable models alone.
+    assert_eq!(limits.blocked_until("acme", "default"), None);
+    assert!(
+        limits
+            .blocked_for("acme", "default", "claude-fable-mock")
+            .is_some()
+    );
+
+    // With every account out of allowance there is nowhere to move to: the provider is asked
+    // on the account in use, and its answer counts, not what was known.
+    credentials.select("acme", "default");
+    for label in ["default", "work", "zed"] {
+        limits.block("acme", label, later);
+    }
+    assert_eq!(ask(&router, "claude-opus-mock").await, []);
+    assert_eq!(limits.blocked_until("acme", "default"), None);
+    assert!(limits.blocked_until("acme", "work").is_some());
+}
+
 #[tokio::test]
 async fn the_service_tier_is_sent_and_dropped_once_the_model_refuses_it() {
     let server = MockServer::start().await;

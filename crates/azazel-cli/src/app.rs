@@ -477,7 +477,13 @@ impl App {
             None => None,
         };
 
-        let credentials = Arc::new(credentials(&paths, trusted).configured(&config.providers));
+        let credentials = Arc::new(
+            credentials(&paths, trusted)
+                .configured(&config.providers)
+                .ordered(&config.accounts.order),
+        );
+        // Accounts that ran out of allowance in an earlier run are still out in this one.
+        credentials.limits().persist(crate::usage::cache_file(&paths));
         let thinking = match &cli.thinking {
             Some(level) => level
                 .parse::<ThinkingLevel>()
@@ -566,10 +572,11 @@ impl App {
             providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
             credentials: credentials.clone(),
             home_config: paths.home_config(),
+            redact_email: config.usage.redact_email,
         })?;
         registry.load(&crate::usage::UsageExt {
-            providers: crate::login::key_providers(&config).map_err(|e| anyhow!(e))?,
-            credentials: credentials.clone(),
+            source: crate::usage::Source::of(&config, credentials.clone(), &paths).map_err(|e| anyhow!(e))?,
+            redact_email: config.usage.redact_email,
             paths: paths.clone(),
         })?;
         registry.load(&crate::routing::RoutingExt {
@@ -1231,6 +1238,15 @@ impl App {
         };
         if resumed {
             crate::accounts::restore(&session, &self.credentials);
+        }
+        // From the first session on, the usage of every subscription is asked for in the
+        // background, so that a request does not start on an account that has nothing left.
+        let services = &self.registry.services;
+        if self.config.usage.poll_secs > 0
+            && services.get::<crate::usage::Poller>().is_none()
+            && let Ok(source) = crate::usage::Source::of(&self.config, self.credentials.clone(), &self.paths)
+        {
+            services.insert(Arc::new(crate::usage::poll(source, self.config.usage.poll_secs)));
         }
         let session_id = session.id();
         crate::orchestration::open_session(

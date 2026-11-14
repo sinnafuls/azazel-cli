@@ -20,7 +20,6 @@ dunce.workspace = true
 flate2.workspace = true
 globset.workspace = true
 image.workspace = true
-include_dir.workspace = true
 jiff.workspace = true
 process-wrap.workspace = true
 regex.workspace = true
@@ -39,6 +38,9 @@ tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 uuid.workspace = true
 which.workspace = true
+
+[build-dependencies]
+flate2.workspace = true
 
 [dev-dependencies]
 azazel-ai = { workspace = true, features = ["test-support"] }

@@ -162,9 +162,9 @@ impl Name {
     /// The options `[statusline.segments.<name>]` takes beside `priority` and `icon`.
     fn own_options(self) -> &'static [&'static str] {
         match self {
-            Name::Path | Name::Model => &["max", "style"],
+            Name::Path | Name::Model | Name::Account => &["max", "style"],
             Name::Context => &["style"],
-            Name::Branch | Name::Goal | Name::Session | Name::Account => &["max"],
+            Name::Branch | Name::Goal | Name::Session => &["max"],
             Name::Time => &["format", "seconds"],
             Name::Bar => &["cells", "min_width"],
             _ => &[],
@@ -226,6 +226,8 @@ struct Options {
     short_model: bool,
     /// The context as tokens, `84.0k/200.0k`, instead of a percentage.
     context_tokens: bool,
+    /// The account by the e-mail address it signed in with, where it has one.
+    account_email: bool,
     hour12: bool,
     seconds: bool,
     bar_cells: u64,
@@ -239,6 +241,7 @@ impl Default for Options {
             path: PathStyle::Short,
             short_model: false,
             context_tokens: false,
+            account_email: false,
             hour12: false,
             seconds: false,
             bar_cells: status::BAR_CELLS,
@@ -293,6 +296,7 @@ impl Options {
             }
             "style" if name == Name::Model => self.short_model = word(&["full", "short"])? == 1,
             "style" if name == Name::Context => self.context_tokens = word(&["percent", "tokens"])? == 1,
+            "style" if name == Name::Account => self.account_email = word(&["label", "email"])? == 1,
             "format" if name == Name::Time => self.hour12 = word(&["24h", "12h"])? == 1,
             "seconds" if name == Name::Time => self.seconds = switch()?,
             "cells" if name == Name::Bar => self.bar_cells = whole(4, 40)? as u64,
@@ -418,6 +422,8 @@ pub(super) struct StatusLine<'a> {
     pub billing: &'a Billing,
     /// The account of the lead's provider that requests go out with.
     pub account: Option<&'a str>,
+    /// The e-mail address that account signed in with, as it may be shown.
+    pub account_email: Option<&'a str>,
     /// The share of the prompt tokens so far that the provider read from its cache, in percent.
     pub cache: Option<u64>,
     /// Agents at work beside the lead.
@@ -613,9 +619,14 @@ impl StatusLine<'_> {
                     labelled(Glyph::Session, &cut(self.session, Some(SESSION_MAX))),
                 )
             }),
-            Name::Account => self
-                .account
-                .map(|account| Segment::new(Role::Muted, labelled(Glyph::Account, &cut(account, None)))),
+            Name::Account => self.account.map(|account| {
+                // A stored key has no address: its label stands for it.
+                let account = match (options.account_email, self.account_email) {
+                    (true, Some(email)) => email,
+                    _ => account,
+                };
+                Segment::new(Role::Muted, labelled(Glyph::Account, &cut(account, None)))
+            }),
             Name::Model => {
                 let model = match (self.model.is_empty(), options.short_model) {
                     (true, _) => "no model".to_string(),
@@ -673,6 +684,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
         warn_cost: 0.0,
         billing,
         account: Some("work"),
+        account_email: Some("j***@example.com"),
         cache: Some(87),
         agents: 2,
         goal: Some("goal active"),
@@ -717,6 +729,7 @@ mod tests {
             warn_cost: 0.0,
             billing,
             account: None,
+            account_email: None,
             cache: None,
             agents: 2,
             goal: Some("goal active, attempt 1"),
@@ -1161,6 +1174,16 @@ mod tests {
             right("right = [\"session\"]\n[segments.session]\nmax = 8"),
             "❖ fix the…"
         );
+        // The account by its label, or by the address it signed in with.
+        assert_eq!(right("right = [\"account\"]"), "♙ work");
+        assert_eq!(
+            right("right = [\"account\"]\n[segments.account]\nstyle = \"email\""),
+            "♙ j***@example.com"
+        );
+        assert_eq!(
+            right("right = [\"account\"]\n[segments.account]\nstyle = \"email\"\nmax = 9"),
+            "♙ j***@exa…"
+        );
         // A bar of another length, on a terminal of any width, wherever it stands.
         assert_eq!(
             right("right = [\"bar\", \"context\"]\n[segments.bar]\ncells = 4\nmin_width = 0"),
@@ -1176,6 +1199,17 @@ mod tests {
             )
             .trim_start(),
             "⬢ auto -> claude-opus-5-5"
+        );
+        // A stored key signed in with no address: its label stands for it.
+        line.account_email = None;
+        assert_eq!(
+            shown_in(
+                &line,
+                &layout("left = [\"account\"]\nright = [\"none\"]\n[segments.account]\nstyle = \"email\""),
+                60,
+                &theme
+            ),
+            "♙ work"
         );
         line.clock = Some((0, 7, 0));
         assert_eq!(

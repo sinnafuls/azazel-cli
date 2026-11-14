@@ -206,9 +206,9 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `api_key_env` | `""` | Environment variable holding the backend's key |
 | | `content` | `false` | Send prompt and reply text, tool input and tool output, not only the shape of each step |
 | `[usage]` | `auto_reset` | `false` | Spend a banked usage reset without asking when nobody is there to ask (print mode, background sessions, schedules) |
-| | `poll_secs` | `300` | How often the usage of subscription accounts is fetched while a session is open; `0` never |
-| | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` |
-| `[accounts]` | `order` | `{}` | Provider id to account labels in the order they are tried, such as `{ anthropic = ["work", "default"] }` |
+| | `poll_secs` | `300` | How often, in seconds, the usage of every stored subscription login is fetched in the background while a session is open, so that a request does not start on an account with nothing left. Never more often than every 60; `0` never. A login is not renewed for this; see [several accounts](models-and-logins.md#several-accounts) |
+| | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` in `/usage`, `azazel usage` (`--json` included) and `/account` |
+| `[accounts]` | `order` | `{}` | Provider id to account labels in the order work moves through them when the account in use runs out, such as `{ anthropic = ["work", "default"] }`. Accounts that are not listed follow: the default one, then the rest by label; see [several accounts](models-and-logins.md#several-accounts) |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
 | `[mcp]` | `startup_wait_ms` | `250` | How long the first request waits for MCP servers; see [MCP](mcp.md) |
@@ -242,7 +242,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full`; see [the status line](tui.md#status-line). `/statusline` sets these keys up with the line in view |
 | | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`. Empty takes the preset's; `["none"]` is an empty side |
 | | `separator` | `"dot"` | Between segments: `dot`, `bar`, `space`, or `powerline` (each segment a block of colour, ended by an arrow with `tui.glyphs = "nerd"`). The `powerline` preset is drawn in blocks while this is `dot` |
-| | `segments.<name>` | `{}` | Options of one segment: `priority` (`0` to `100`; the lowest leaves a narrow line first) and `icon` (`false` leaves the symbol out) for all; `max` columns for `path`, `model`, `branch`, `goal`, `session`, `account`; `style` for `path` (`short`, `full`, `basename`), `model` (`full`, `short`) and `context` (`percent`, `tokens`); `format` (`24h`, `12h`) and `seconds` for `time`; `cells` and `min_width` for `bar`. For example `[statusline.segments.path] style = "basename"` |
+| | `segments.<name>` | `{}` | Options of one segment: `priority` (`0` to `100`; the lowest leaves a narrow line first) and `icon` (`false` leaves the symbol out) for all; `max` columns for `path`, `model`, `branch`, `goal`, `session`, `account`; `style` for `path` (`short`, `full`, `basename`), `model` (`full`, `short`), `context` (`percent`, `tokens`) and `account` (`label`, `email`); `format` (`24h`, `12h`) and `seconds` for `time`; `cells` and `min_width` for `bar`. For example `[statusline.segments.path] style = "basename"` |
 | | `command` | `""` | A program whose first line of output replaces the left side of the status line; it is given the session as JSON on its standard input, runs at most once a second and is ended after two seconds. Empty runs nothing. See [your own command](tui.md#your-own-command) |
 | `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
 | | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |

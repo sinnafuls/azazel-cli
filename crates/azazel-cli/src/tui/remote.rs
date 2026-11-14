@@ -910,6 +910,7 @@ impl Backend for Remote {
             // is shown, and nothing when it reports none.
             billing: Billing::Metered,
             account: None,
+            account_email: None,
         }
     }
 

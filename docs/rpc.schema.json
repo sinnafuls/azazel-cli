@@ -2367,7 +2367,14 @@
           ],
           "format": "uint64",
           "minimum": 0,
-          "description": "Unix seconds until which the account is out of allowance."
+          "description": "Unix seconds until which the account is out of allowance for every model."
+        },
+        "blocks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/UsageBlock"
+          },
+          "description": "Every block of the account, those for the models of one scope included."
         }
       },
       "required": [
@@ -2382,7 +2389,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "description": "`5h`, `7d`, `7d-opus`, `overage`."
+          "description": "`5h`, `7d`, `7d-fable`, `overage`."
         },
         "used": {
           "type": "number",
@@ -2401,6 +2408,13 @@
         "status": {
           "type": "string",
           "description": "`allowed`, `allowed_warning`, `rejected`, or whatever else the provider said."
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the window counts when that is not every request: a model family such as `Fable`."
         }
       },
       "required": [
@@ -2409,6 +2423,42 @@
         "status"
       ],
       "description": "One usage window of an account, as the provider last reported it."
+    },
+    "UsageBlock": {
+      "type": "object",
+      "properties": {
+        "until": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Unix seconds until which the account is left alone."
+        },
+        "since": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Unix seconds at which the provider last refused.",
+          "default": 0
+        },
+        "window": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The window that ran out, by name, when the provider named one."
+        },
+        "scope": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The models it holds for, as the scope of that window; absent for every model."
+        }
+      },
+      "required": [
+        "until"
+      ],
+      "description": "An account that takes no requests until a time."
     },
     "ShellResult": {
       "type": "object",

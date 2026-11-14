@@ -101,6 +101,8 @@ pub(crate) struct Facts {
     /// The stored account of the lead's provider that requests go out with: a sign-in or a
     /// stored key. None for a key from elsewhere.
     pub account: Option<String>,
+    /// The e-mail address that account signed in with, as `usage.redact_email` shows it.
+    pub account_email: Option<String>,
 }
 
 /// How the lead's model is paid for, which decides what the status line says about money.
@@ -154,12 +156,22 @@ pub(crate) fn cycle_of(mut roles: Vec<(String, Vec<String>)>) -> Vec<String> {
     cycle
 }
 
+/// The stored account requests go out with.
+#[derive(Clone)]
+struct InUse {
+    label: String,
+    /// A sign-in: a subscription.
+    login: bool,
+    /// Its e-mail address, as it is shown.
+    email: Option<String>,
+}
+
 /// Who pays for a provider, as it was last looked up.
 struct Payer {
     provider: String,
     asked: Instant,
-    /// The stored account in use, and whether it is a sign-in: a subscription.
-    account: Option<(String, bool)>,
+    /// The stored account in use.
+    account: Option<InUse>,
 }
 
 /// The answer is read from files: often enough to follow a sign-in, not on every frame.
@@ -389,17 +401,22 @@ impl Local {
         }
     }
 
+    /// Requests moved to another account: who pays is asked anew for the next status line.
+    pub(super) fn account_changed(&self) {
+        *self.payer.lock().unwrap_or_else(PoisonError::into_inner) = None;
+    }
+
     /// How the lead's model is paid for (a subscription with its fullest usage window, or by
-    /// the token), and the stored account that pays.
-    fn billing(&self) -> (Billing, Option<String>) {
+    /// the token), and the stored account that pays: its label and its e-mail address.
+    fn billing(&self) -> (Billing, Option<String>, Option<String>) {
         let status = self.active.lead.status();
-        let Some(provider) = status
+        let Some(model) = status
             .model
             .or_else(|| self.app.router.resolve(&status.chain).into_iter().next())
-            .map(|model| model.provider)
         else {
-            return (Billing::Metered, None);
+            return (Billing::Metered, None, None);
         };
+        let (provider, model) = (model.provider, model.model);
         let mut payer = self.payer.lock().unwrap_or_else(PoisonError::into_inner);
         let known = payer
             .as_ref()
@@ -414,7 +431,11 @@ impl Local {
                     .iter()
                     .find(|config| config.id == provider)
                     .and_then(|config| account_in_use(&self.app.credentials, config))
-                    .map(|account| (account.label, account.login));
+                    .map(|account| InUse {
+                        email: crate::usage::shown_email(&account, self.app.config.usage.redact_email),
+                        label: account.label,
+                        login: account.login,
+                    });
                 *payer = Some(Payer {
                     provider: provider.clone(),
                     asked: Instant::now(),
@@ -424,12 +445,17 @@ impl Local {
             }
         };
         let billing = match &account {
-            Some((label, true)) => Billing::Subscription {
-                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, label)),
+            Some(InUse {
+                label, login: true, ..
+            }) => Billing::Subscription {
+                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, label), &model),
             },
             _ => Billing::Metered,
         };
-        (billing, account.map(|(label, _)| label))
+        match account {
+            Some(account) => (billing, Some(account.label), account.email),
+            None => (billing, None, None),
+        }
     }
 
     /// Where the open session's last run stopped, when the end of a process cut it short.
@@ -544,7 +570,7 @@ impl Backend for Local {
 
     fn facts(&self) -> Facts {
         let services = &self.app.registry.services;
-        let (billing, account) = self.billing();
+        let (billing, account, account_email) = self.billing();
         Facts {
             coordinator: self.app.coordinator.is_on(),
             tier: self.app.router.tier(),
@@ -559,6 +585,7 @@ impl Backend for Local {
                 .unwrap_or_default(),
             billing,
             account,
+            account_email,
         }
     }
 

@@ -25,6 +25,24 @@ fn fields(extra: &BTreeMap<String, Value>) -> BTreeMap<String, String> {
         .collect()
 }
 
+/// The access token of the login stored under `key` and the account fields kept with it, as
+/// they are: `None` when there is no login there or its token has run out (or does within
+/// half a minute). Nothing is renewed.
+pub(crate) fn stored_login(
+    credentials: &Credentials,
+    key: &str,
+) -> Option<(String, BTreeMap<String, String>)> {
+    match credentials.load().get(key) {
+        Some(Credential::OAuth {
+            access,
+            expires,
+            extra,
+            ..
+        }) if *expires > now_ms() + 30_000 => Some((access.clone(), fields(extra))),
+        _ => None,
+    }
+}
+
 /// The access token of the login stored under `key` (an account of `provider`) and the account
 /// fields kept with it, refreshed first when the token is about to expire.
 pub(crate) async fn fresh_login(

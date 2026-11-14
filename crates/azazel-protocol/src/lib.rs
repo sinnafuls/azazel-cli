@@ -891,7 +891,7 @@ pub struct ModelCost {
 /// One usage window of an account, as the provider last reported it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Window {
-    /// `5h`, `7d`, `7d-opus`, `overage`.
+    /// `5h`, `7d`, `7d-fable`, `overage`.
     pub name: String,
     /// The share that is used, 0.0 to 1.0.
     pub used: f32,
@@ -900,6 +900,25 @@ pub struct Window {
     pub resets_at: Option<u64>,
     /// `allowed`, `allowed_warning`, `rejected`, or whatever else the provider said.
     pub status: String,
+    /// What the window counts when that is not every request: a model family such as `Fable`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// An account that takes no requests until a time.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UsageBlock {
+    /// Unix seconds until which the account is left alone.
+    pub until: u64,
+    /// Unix seconds at which the provider last refused.
+    #[serde(default)]
+    pub since: u64,
+    /// The window that ran out, by name, when the provider named one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// The models it holds for, as the scope of that window; absent for every model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// The usage windows of one provider account.
@@ -908,9 +927,12 @@ pub struct AccountUsage {
     pub provider: String,
     pub account: String,
     pub windows: Vec<Window>,
-    /// Unix seconds until which the account is out of allowance.
+    /// Unix seconds until which the account is out of allowance for every model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_until: Option<u64>,
+    /// Every block of the account, those for the models of one scope included.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<UsageBlock>,
 }
 
 /// The data of `shell`.

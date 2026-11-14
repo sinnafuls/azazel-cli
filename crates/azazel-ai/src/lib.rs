@@ -17,6 +17,7 @@ pub mod stall;
 pub mod stream;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod tls;
 pub mod types;
 pub mod wire;
 
@@ -24,7 +25,7 @@ pub use catalog::{Catalog, Cost, ModelInfo, ModelOverride};
 pub use credentials::{Account, Auth, Credential, Credentials, DEFAULT_ACCOUNT};
 pub use dispatch::{Route, RouteReason, RouteRequest, VIRTUAL, VirtualModel, VirtualModels, is_virtual};
 pub use error::AiError;
-pub use limits::{AccountLimits, LimitStore, Window};
+pub use limits::{AccountLimits, LimitBlock, LimitStore, Window};
 pub use models_file::ModelsFile;
 pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;

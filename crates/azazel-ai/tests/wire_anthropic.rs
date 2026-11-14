@@ -1044,7 +1044,7 @@ fn header(request: &reqwest::Request, name: &str) -> Option<String> {
 
 #[test]
 fn build_request_posts_the_body_with_version_and_auth_headers() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let (provider, model) = (provider(), model(MANUAL_MODEL));
     let req = request(vec![Message::user("hi")]);
     let send = |auth: Auth| {
@@ -1077,7 +1077,7 @@ fn build_request_posts_the_body_with_version_and_auth_headers() {
 
 #[test]
 fn provider_headers_replace_defaults() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let mut provider = provider();
     for (name, value) in [
         ("Anthropic-Version", "2023-06-01"),
@@ -1109,7 +1109,7 @@ fn provider_headers_replace_defaults() {
 
 #[test]
 fn models_request_asks_for_the_largest_page() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let auth = Auth::ApiKey("sk-mock".to_string());
     let sent = anthropic::models_request(&client, &provider(), &auth)
         .build()
@@ -1201,12 +1201,7 @@ fn unified(pairs: &[(&str, &str)]) -> reqwest::header::HeaderMap {
 }
 
 fn window(name: &str, used: f32, resets_at: Option<u64>, status: &str) -> Window {
-    Window {
-        name: name.to_string(),
-        used,
-        resets_at,
-        status: status.to_string(),
-    }
+    Window::new(name, used, resets_at, status)
 }
 
 #[test]
@@ -1259,7 +1254,7 @@ fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
     assert_eq!(
         anthropic::limits(&headers),
         [
-            window("7d-opus", 0.0, Some(1_790_600_000), "allowed_warning"),
+            window("7d-opus", 0.0, Some(1_790_600_000), "allowed_warning").scoped("Opus"),
             window("overage", 0.0, Some(1_791_000_000), "allowed"),
         ]
     );
@@ -1272,6 +1267,25 @@ fn limits_reads_the_usage_windows_of_a_subscription_from_the_headers() {
         anthropic::limits(&headers),
         [window("5h", 1.0, Some(1_790_000_000), "rejected")]
     );
+
+    // The weekly window of the Fable models has headers of its own; it counts those models.
+    let headers = unified(&[
+        ("status", "rejected"),
+        ("reset", "1790700000"),
+        ("representative-claim", "seven_day_overage_included"),
+        ("7d-utilization", "0.4"),
+        ("7d-reset", "1790500000"),
+        ("7d_oi-utilization", "1.0"),
+        ("7d_oi-reset", "1790700000"),
+    ]);
+    let windows = anthropic::limits(&headers);
+    assert_eq!(windows[0], window("7d", 0.4, Some(1_790_500_000), "allowed"));
+    assert_eq!(
+        windows[1],
+        window("7d-fable", 1.0, Some(1_790_700_000), "rejected").scoped("Fable")
+    );
+    assert_eq!(windows[1].label(), "7-day Fable limit");
+    assert!(windows[1].counts("claude-fable-5-2") && !windows[1].counts("claude-opus-5-5"));
 
     // An API key's responses carry none of these headers.
     assert!(anthropic::limits(&reqwest::header::HeaderMap::new()).is_empty());
@@ -1341,7 +1355,7 @@ fn a_full_usage_window_is_a_quota_error_with_its_reset_time() {
 
 #[test]
 fn the_priority_tier_is_fast_mode_and_only_claude_models_are_asked_for_it() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let auth = Auth::ApiKey("sk-mock".to_string());
     let sent = |provider: &ProviderConfig, model_id: &str, tier: Option<Tier>| {
         let mut req = request(vec![Message::user("hi")]);

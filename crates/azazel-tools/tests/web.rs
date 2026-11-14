@@ -84,7 +84,7 @@ impl Bench {
 
     async fn search(&self, backend: impl SearchBackend + 'static, input: Value) -> ToolOutput {
         let backend: Arc<dyn SearchBackend> = Arc::new(backend);
-        WebSearchTool::new(Ok(backend), reqwest::Client::new())
+        WebSearchTool::new(Ok(backend), azazel_ai::tls::client())
             .call(input, &self.ctx())
             .await
     }
@@ -554,7 +554,10 @@ async fn an_explicit_backend_without_its_key_or_url_errors_naming_what_to_set() 
 
     // The tool reports the same reason on every call, and names no host to permission rules.
     let bench = bench();
-    let tool = WebSearchTool::new(backend_from_config("brave", "", &no_env), reqwest::Client::new());
+    let tool = WebSearchTool::new(
+        backend_from_config("brave", "", &no_env),
+        azazel_ai::tls::client(),
+    );
     assert!(tool.subjects(&json!({"query": "x"})).is_empty());
     let refused = tool.call(json!({"query": "x"}), &bench.ctx()).await;
     assert!(failed(&refused).contains("BRAVE_API_KEY"));
@@ -563,7 +566,7 @@ async fn an_explicit_backend_without_its_key_or_url_errors_naming_what_to_set() 
 #[test]
 fn web_tools_are_network_access_on_the_host_they_contact() {
     let backend: Arc<dyn SearchBackend> = Arc::new(Brave::new("https://api.search.brave.com", "k"));
-    let search = WebSearchTool::new(Ok(backend), reqwest::Client::new());
+    let search = WebSearchTool::new(Ok(backend), azazel_ai::tls::client());
     let input = json!({"query": "x"});
     assert_eq!(search.access(&input), Access::Net);
     assert_eq!(search.subjects(&input), ["domain:api.search.brave.com"]);
