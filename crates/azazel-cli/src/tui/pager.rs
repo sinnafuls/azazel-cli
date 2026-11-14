@@ -156,9 +156,17 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
     let entered = tui.guard.enter_alt();
     tui.guard.capture_mouse(true);
     loop {
-        if draw(tui, &mut view, width, height).is_err() {
-            break;
+        // A window that is changing size is laid out again once, when it has come to rest.
+        if tui.settle_resize() {
+            if tui.renderer.size() != (width, height) {
+                (width, height) = tui.renderer.size();
+                view.set_items(items(&sources, usize::from(width), &tui.theme));
+            }
+            if draw(tui, &mut view, width, height).is_err() {
+                break;
+            }
         }
+        let resize_deadline = tui.resize.deadline();
         tokio::select! {
             event = super::next_terminal(&mut tui.terminal) => match event {
                 Some(Ok(Event::Key(key))) if key.kind != KeyEventKind::Release => match view.on_key(&key) {
@@ -182,10 +190,7 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
                 Some(Ok(Event::FocusGained)) => tui.attention.focus(true),
                 Some(Ok(Event::FocusLost)) => tui.attention.focus(false),
                 Some(Ok(Event::Resize(columns, rows))) => {
-                    (width, height) = (columns, rows);
-                    tui.renderer.resize(columns, rows);
-                    tui.floor.resize(rows);
-                    view.set_items(items(&sources, usize::from(width), &tui.theme));
+                    tui.resize.note((columns, rows), std::time::Instant::now());
                 }
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
@@ -198,11 +203,13 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
                 // What the agents do meanwhile is shown once the viewer is closed.
                 other => tui.held.push_back(other),
             },
+            _ = super::wake_at(resize_deadline) => {}
         }
     }
     tui.guard.capture_mouse(false);
     if entered {
         tui.guard.leave_alt();
+        tui.anchor_floor();
     } else {
         tui.popup_painted_over();
     }

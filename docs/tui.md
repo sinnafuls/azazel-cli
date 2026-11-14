@@ -70,6 +70,38 @@ The colour of the rules tells you what `Enter` will do:
 | `error` colour | Permission mode `bypass`: nothing is asked and no guard applies |
 | `bash` colour (pink) | The input starts with `!`: it runs as a shell command |
 
+### Window size
+
+When the window changes size, or the font is zoomed (which changes how many rows and columns fit), the input
+and the status line stay on the last rows and everything azazel is still drawing is laid out again for the new
+width.
+
+- A drag reports dozens of sizes. azazel waits until the size has been still for 60 ms and then draws once, at
+  the size the window has by then. Nothing is drawn in between.
+- Laid out again at the new width: the reply that is being written, tool cards that are still running (and in
+  the [compact style](#compact-style) the group that is still growing), the agents at work, the todo list, the
+  input and the status line. A [popup](#popups) is centred again, and the
+  [transcript viewer](#transcript-viewer) wraps its text again.
+- Left as they are: transcript lines that were already written. They belong to the terminal's scrollback; the
+  terminal re-wraps or cuts them when the window gets narrower, and azazel does not write them again. Lines
+  said while a popup is open are written when it closes, cut to the width the window has then.
+- A window that gets taller: the live region takes the rows the window gained, so the input is on the last row
+  again. In a terminal that fills new rows from its scrollback instead of adding them below, blank rows stand
+  between the transcript and the input until the transcript grows into them.
+- A window that gets shorter: the terminal keeps its last rows, where the input is, and moves the rows at the
+  top into its scrollback. Nothing is written again, so after a large change the rows above the input can be
+  blank until the transcript grows into them; what was said is in the scrollback.
+- A window that gets narrower: most terminals re-wrap what is on screen, which puts the rules and the status
+  line on two rows each. azazel works out how many rows the old live region takes now and erases all of it.
+  Where it cannot be sure it counts too few rows rather than too many: a row of the old input box can then
+  stay behind in the transcript, and no transcript line is erased. xterm, rxvt, st, GNU screen and the Linux
+  console cut rows instead, and are treated that way.
+- On Windows azazel also reads where the console has its cursor after the size settled and after a popup or
+  the viewer closes, so the live region gets exactly the rows down to the bottom of the window whatever the
+  terminal did with the transcript.
+- A popup that is open when the window gets smaller than 44 columns by 12 rows becomes a box in place of the
+  input, and a popup again when the window is large enough.
+
 ### Popups
 
 Questions from agents, approval prompts, plan reviews, pickers and the `/settings` screen open as a box in
@@ -312,7 +344,7 @@ always stays. Only then is the model shortened, and after that left out.
 |---|---|---|
 | `Enter` | `submit` | Send the prompt. While the agent is working: steer it (the message is delivered before its next step) |
 | `Alt+Enter` | `follow_up` | While the agent is working: queue the message until it finishes; see [queued messages](#queued-messages-and-stashed-drafts) |
-| `Shift+Enter`, `Ctrl+J` | `newline` | Insert a line break |
+| `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` | Insert a line break. Where the terminal sends `Shift+Enter` and `Ctrl+Enter` as plain `Enter`, `Ctrl+J` does it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `Esc` | `abort` | Interrupt the lead agent. Twice within a second on an empty, idle input: open `/rewind` |
 | `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits |
 | `Ctrl+D` | `exit` | Exit when the input is empty |
@@ -322,7 +354,8 @@ always stays. Only then is the model shortened, and after that left out.
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L` | `model_picker` | Pick the model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
-| `Ctrl+V` | `paste_image` | Attach the clipboard image to the next prompt |
+| `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). Windows Terminal and VS Code paste with `Ctrl+V` themselves, so there the key for an image is `Alt+V` |
+| `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
 | `Tab` | `complete` | Open or accept completion |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
 | `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
@@ -409,7 +442,44 @@ keeps the queue; the next message goes after the next run that finishes on its o
 `Ctrl+S` parks a draft (with its attached images) and clears the input; a line above the input counts what is
 parked. `Ctrl+S` on an empty input brings the last parked draft back.
 
-### Pastes and dropped files
+### Pastes, images and dropped files
+
+`Ctrl+V` (or `Alt+V`) reads the clipboard:
+
+| The clipboard holds | What happens |
+|---|---|
+| An image (a screenshot, a copied picture) | It is attached to the draft |
+| Files (copied in Explorer, Finder or a file manager) | Images among them are attached; the others become `@path` mentions |
+| Text that is nothing but paths of existing image files | Those images are attached |
+| Other text | It is pasted, as the terminal's own paste would |
+| Nothing of these | `the clipboard holds no image, file or text` |
+
+An attached image shows in the draft as a chip, `[Image #1]`, where the cursor was. The chip is one character
+to the keys: the cursor steps over it, and `Backspace` or `Delete` removes it and with it the image. The
+numbers always run from 1 without gaps in the order the chips stand in the draft, so deleting `[Image #1]`
+turns `[Image #2]` into `[Image #1]`, and `Ctrl+Z` brings a deleted image back. Text can go before, between and
+after the chips ("compare [Image #1] with [Image #2]"). When the prompt is sent, the agent gets the text with
+the labels in it and the images in the same order; the transcript shows the labels. A chip that is in the draft
+when you run a slash command goes along if the command turns into a prompt, and is dropped otherwise.
+
+Images are sent as PNG, JPEG, WebP or GIF. Anything else that can be decoded (BMP, which is what Windows hands
+to WSL) is converted to PNG, and an image whose longer side is over 1568 pixels is scaled down to that.
+
+The clipboard is read through the system's own interface. Where that finds nothing it understands, or there
+is none (WSL has no way to an image on the Windows clipboard), azazel runs the platform's program instead:
+
+| System | Program | Notes |
+|---|---|---|
+| Windows, WSL | `powershell.exe` | Reads the image as PNG, else the copied files, else the text; allowed 8 seconds. Under WSL, `C:\...` paths are read as `/mnt/c/...` |
+| macOS | `osascript`, `pbpaste` | The image as PNG, else the files copied in Finder, else the text |
+| Linux | `wl-paste` under Wayland, else `xclip` | The image in the best type offered, else the copied files (`text/uri-list`), else the text |
+
+These programs run only when you press the key, with fixed arguments: nothing from the clipboard becomes part
+of a command. When the program is missing the answer is that the clipboard holds nothing.
+
+`Ctrl+Shift+V` (or `Alt+Shift+V`) pastes the clipboard's text and nothing else: a path stays a path. Most
+terminals keep `Ctrl+Shift+V` for their own paste, which arrives as pasted text and is treated as described
+next.
 
 A paste of more than 10 lines (`editor.fold_paste_lines`) or 800 characters goes into the input as one token,
 `[paste #2 +41 lines]`. The cursor steps over the token as over one character, `Backspace` after it removes it
@@ -419,14 +489,19 @@ Windows consoles do not mark pasted text, so there azazel treats keys that arriv
 paste: line breaks inside it do not send the prompt. One short line that ends with a line break is taken as
 typed and sent, as in a shell.
 
-Files dropped on the terminal arrive as pasted paths. When a paste is nothing but absolute paths of existing
-files (quoted, backslash-escaped or `file://` forms included), images are attached to the next prompt and other
-files are inserted as `@path` mentions; a path with spaces is written `@"my notes/a file.md"`.
+Files dropped on the terminal arrive as pasted paths, and so does a path you paste yourself. When a paste is
+nothing but absolute paths of existing files, images are attached as chips and other files are inserted as
+`@path` mentions; a path with spaces is written `@"my notes/a file.md"`. The paths may be one on a line or
+separated by spaces, bare, in single or double quotes, backslash-escaped (outside Windows), `~/...`,
+`file://` addresses, or Windows paths (`C:\Users\me\shot.png`; under WSL they are read as `/mnt/c/...`).
+At most 32 files are taken from one paste and an image file may be 20 MB; a paste with anything else in it is
+text.
 
 ### External editor
 
-`Ctrl+G` writes the draft (folded pastes written out) to a file, opens it in your editor and puts what you
-saved back into the input. The editor is `[editor] command`, else `$VISUAL`, else `$EDITOR`, else `notepad` on
+`Ctrl+G` writes the draft (folded pastes written out, attached images as their labels) to a file, opens it in
+your editor and puts what you saved back into the input. An image whose label is still in the text stays
+attached; deleting the label takes the image off. The editor is `[editor] command`, else `$VISUAL`, else `$EDITOR`, else `notepad` on
 Windows and `vi` elsewhere; a command may carry arguments (`code --wait`). If the program cannot be started you
 get `no editor found: set $VISUAL or $EDITOR, or [editor] command`.
 
@@ -465,10 +540,44 @@ exit = []                      # an empty list unbinds the action
   `enter`, `esc`, `tab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`,
   `down`, `left`, `right`, `f1` to `f24`.
 - An unknown action or an invalid key makes azazel ignore the whole file and show a warning at startup.
-- `/keys` lists the bindings in effect.
+- `/keys` lists the bindings in effect and, under them, the key conflicts it finds.
+
+`/keys` reports three kinds of conflict, each with the key, the action and, where the action has another key
+that is fine, that key:
+
+| Conflict | Example line |
+|---|---|
+| A key the file gives to two actions. The action that comes first in the table above gets it | `ctrl+o is bound to toggle_thinking and stash: toggle_thinking gets it` |
+| A key the terminal azazel runs in keeps for itself in its default setup. Known for Windows Terminal, VS Code, kitty, WezTerm, Alacritty, Ghostty, iTerm2, Terminal and, inside tmux, its prefix key | `alt+enter (follow_up) does not reach azazel: Windows Terminal toggles full screen` |
+| A key the terminal cannot tell from another because it does not report keys the enhanced way: `Shift+Enter` and `Ctrl+Enter` (plain `Enter`), `Ctrl+Shift+letter` (`Ctrl+letter`), `Ctrl+I` (`Tab`), `Ctrl+M` (`Enter`), `Ctrl+[` (`Esc`), `Ctrl+Tab` (`Tab`). Not reported on Windows, where the console tells every key apart | `shift+enter (newline) arrives as plain enter in this terminal; /terminal-setup can change that (ctrl+j works)` |
+
+The terminal is recognised from its environment variables (`TERM_PROGRAM`, `WT_SESSION`, `KITTY_WINDOW_ID`,
+`WEZTERM_EXECUTABLE`, `ALACRITTY_WINDOW_ID`, `GHOSTTY_RESOURCES_DIR`, `TERM`); what it keeps for itself is its
+default key bindings, so keys you have changed in the terminal are not known.
+
+### Shift+Enter and `/terminal-setup`
 
 When the terminal supports the kitty keyboard protocol, azazel enables it so chords such as `Shift+Enter` are
-reported reliably. Where `Shift+Enter` does not arrive, use `Ctrl+J`.
+reported reliably; Windows Terminal and WezTerm report them to a Windows program without it. Where `Shift+Enter` arrives
+as plain `Enter`, `Ctrl+J` adds a line, and `/terminal-setup` makes `Shift+Enter` do it: it adds a key binding
+to the terminal that types a line feed for `Shift+Enter`. A line feed is `Ctrl+J`; a Windows console hands it
+to azazel as `Ctrl+Enter`. `/terminal-setup` therefore needs `ctrl+j` (on Windows `ctrl+enter`) to be a key of
+`newline`, as both are unless you changed them.
+
+| Terminal | What `/terminal-setup` does |
+|---|---|
+| Any terminal that reports keys the enhanced way; on Windows also Windows Terminal and WezTerm | Says that `Shift+Enter` works; changes nothing |
+| VS Code, Cursor, Windsurf, VSCodium | Adds the binding to the editor's `keybindings.json` (`workbench.action.terminal.sendSequence` with `\n`, when the terminal has the focus). When the window is on another machine (SSH, WSL, a container) the binding is shown instead, because the file is there |
+| Windows Terminal from WSL | Adds a `sendInput` action for `shift+enter` to `settings.json`, when exactly one is found under `/mnt/c/Users`; else shows it |
+| Alacritty | Adds a `[[keyboard.bindings]]` entry to `alacritty.toml` (or to the list, when the bindings are written as one); a new file when there is none, unless Alacritty is still set up with `alacritty.yml` |
+| kitty, WezTerm, Ghostty, iTerm2 (when they do not report keys the enhanced way, as inside tmux) | Shows the line or the steps to put in: `kitty.conf`, `wezterm.lua`, Ghostty's config file, iTerm2's key mappings |
+| Others | Says that there is no fix and that `Ctrl+J` adds a line |
+
+Before a file is changed you are shown the binding and the file and asked: `Add the key binding` or
+`Show it and change nothing`. The file as it was is copied to `<name>.azazel-backup` beside it first. Comments
+and everything else in the file stay as they are, a file that already has a `Shift+Enter` binding for the
+terminal is left alone, and a file azazel cannot make sense of is not touched: the binding is shown instead.
+The terminals named above read their file again by themselves.
 
 ## Input prefixes
 
@@ -526,7 +635,8 @@ Session and display:
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
-| `/keys` | List key bindings |
+| `/keys` | List key bindings and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
+| `/terminal-setup` | Make `Shift+Enter` add a line in this terminal: says whether it already does, else adds the key binding to the terminal's file (after asking, with a backup) or shows it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `/quit`, `/exit` | Exit |
 
 `/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,

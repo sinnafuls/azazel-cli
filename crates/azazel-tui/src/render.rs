@@ -60,25 +60,29 @@ pub struct Frame {
     pub cursor: Option<(u16, u16)>,
 }
 
-/// Keeps the bottom of the live region on the last row of the screen without asking the terminal
-/// where the cursor is.
+/// Keeps the bottom of the live region on the last row of the screen.
 ///
 /// The floor is the number of rows the region must occupy. It starts at the height of the screen,
 /// so the first frame fills the screen and whatever the terminal showed before scrolls away. A
 /// frame with fewer rows of its own is padded with blank rows (the caller decides where they go);
 /// each history row written above the region takes one row from the floor, so the transcript
 /// grows into the padding while the rows at the bottom stay where they are.
+///
+/// When the screen changes size the floor follows it without asking the terminal anything
+/// ([`Floor::resize`]); a caller that can learn where the cursor is says so afterwards
+/// ([`Floor::anchor`]), which is exact whatever the terminal did with its content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Floor {
     rows: usize,
+    /// Rows of the screen, as last heard.
+    height: usize,
 }
 
 impl Floor {
     /// A floor for a region that has not been drawn yet on a screen `height` rows tall.
     pub fn new(height: u16) -> Floor {
-        Floor {
-            rows: usize::from(height.max(1)),
-        }
+        let height = usize::from(height.max(1));
+        Floor { rows: height, height }
     }
 
     /// Rows the region occupies after the last [`Floor::pad`].
@@ -91,15 +95,32 @@ impl Floor {
         *self = Floor::new(height);
     }
 
-    /// The screen is `height` rows tall from now on.
-    pub fn resize(&mut self, height: u16) {
-        self.rows = self.rows.min(usize::from(height.max(1)));
+    /// The screen is `height` rows tall from now on, and the region as it was last drawn takes
+    /// `occupied` rows of it ([`Renderer::rows_on_screen`]: more than it had when the terminal
+    /// re-wrapped rows that no longer fit; 0 while the region is not on the screen).
+    ///
+    /// A shorter screen caps the region. A taller one grows it by the rows the screen gained,
+    /// which is where a terminal that adds them below its content has left the region; one
+    /// that brings rows back from its scrollback instead has blank rows in the region for a
+    /// while, and the rows at the bottom are on the bottom either way.
+    pub fn resize(&mut self, height: u16, occupied: usize) {
+        let height = usize::from(height.max(1));
+        let gained = height.saturating_sub(self.height);
+        self.rows = (self.rows.max(occupied) + gained).min(height);
+        self.height = height;
+    }
+
+    /// The region begins `rows` rows above the bottom of the screen: the terminal said where
+    /// the cursor is, so nothing has to be assumed about what a change of size did.
+    pub fn anchor(&mut self, rows: usize) {
+        self.rows = rows.clamp(1, self.height);
     }
 
     /// Accounts for a frame that writes `history` rows above a region with `content` rows of
     /// its own, and returns how many blank rows the region needs besides them.
     pub fn pad(&mut self, history: usize, content: usize, height: u16) -> usize {
         let height = usize::from(height.max(1));
+        self.height = height;
         self.rows = self.rows.saturating_sub(history).max(content).min(height);
         self.rows.saturating_sub(content)
     }
@@ -125,11 +146,15 @@ pub struct Renderer<W: io::Write> {
     /// Row of the terminal cursor counted from the first row of the live region. Always below
     /// `max(drawn.len(), 1)`: an empty region still owns the row the cursor is on.
     cursor_row: usize,
+    /// Column the terminal cursor was left in.
+    cursor_col: usize,
     /// Cursor placement requested by the last frame, after clipping.
     cursor: Option<(usize, usize)>,
     cursor_visible: bool,
     /// Set by `resize`: the next frame repaints the whole region.
     redraw: bool,
+    /// The terminal re-wraps what is on screen when it gets narrower.
+    rewraps: bool,
 }
 
 impl<W: io::Write> Renderer<W> {
@@ -140,9 +165,11 @@ impl<W: io::Write> Renderer<W> {
             height: height.max(1),
             drawn: Vec::new(),
             cursor_row: 0,
+            cursor_col: 0,
             cursor: None,
             cursor_visible: true,
             redraw: false,
+            rewraps: true,
         }
     }
 
@@ -187,10 +214,15 @@ impl<W: io::Write> Renderer<W> {
         self.write(&buf)
     }
 
-    /// Records a new terminal size. The next frame erases and repaints the live region; history
-    /// already written is left to the terminal. A terminal that re-wraps its content when it gets
-    /// narrower moves rows the renderer cannot see, so part of the old region may stay behind
-    /// above the repainted one.
+    /// Records a new terminal size. The next frame erases and repaints the live region at the
+    /// new width; history already written is left to the terminal.
+    ///
+    /// A terminal that re-wraps its content when it gets narrower has put the rows of the
+    /// region that no longer fit on more rows than they were drawn on. The renderer works out
+    /// how many from what it drew, so that all of the old region is erased; see
+    /// [`Renderer::set_rewraps`] for terminals that cut rows instead. Where it cannot be sure
+    /// it errs towards too few rows: something of the old region may stay behind above the
+    /// new one, and nothing of the transcript is erased.
     pub fn resize(&mut self, width: u16, height: u16) {
         let (width, height) = (width.max(1), height.max(1));
         if (width, height) != (self.width, self.height) {
@@ -200,14 +232,60 @@ impl<W: io::Write> Renderer<W> {
         }
     }
 
+    /// Whether the terminal re-wraps rows that no longer fit when it gets narrower, as nearly
+    /// all do (the default). One that cuts them instead (xterm) keeps every row of the region
+    /// on the row it was drawn on.
+    pub fn set_rewraps(&mut self, rewraps: bool) {
+        self.rewraps = rewraps;
+    }
+
+    /// Rows of the screen the region takes as it was last drawn: its own rows, and after the
+    /// terminal got narrower the rows its long lines were continued on.
+    pub fn rows_on_screen(&self) -> usize {
+        self.drawn.iter().map(|row| self.wrapped(row)).sum()
+    }
+
+    /// Rows of the screen between the first row of the region and the row the terminal cursor
+    /// is on.
+    pub fn rows_above_cursor(&self) -> usize {
+        let above: usize = self
+            .drawn
+            .iter()
+            .take(self.cursor_row)
+            .map(|row| self.wrapped(row))
+            .sum();
+        // The cursor stays on its character: on a continuation row when its column is past
+        // the new width.
+        let within = match self.drawn.get(self.cursor_row) {
+            Some(row) if self.rewraps => {
+                (self.cursor_col / usize::from(self.width)).min(self.wrapped(row) - 1)
+            }
+            _ => 0,
+        };
+        above + within
+    }
+
+    /// Rows of the screen a row drawn earlier takes at the width the terminal has now. A
+    /// terminal re-wraps a row up to its last character that is not a space, whatever colour
+    /// the spaces after it have; where one counts those too, a row of the old region is left
+    /// behind, which is the lesser harm: counting too many would erase transcript rows.
+    fn wrapped(&self, row: &str) -> usize {
+        if !self.rewraps {
+            return 1;
+        }
+        let written = text::width(text::strip_ansi(row).trim_end());
+        written.div_ceil(usize::from(self.width)).max(1)
+    }
+
     /// Erases the live region, shows the cursor and leaves it where the region began. Call before
     /// exiting or handing the terminal to a child process; the next frame draws the region again
     /// from wherever the cursor is then.
     pub fn suspend(&mut self) -> io::Result<()> {
         let mut buf = String::new();
         if !self.drawn.is_empty() || self.cursor.is_some() {
-            if self.cursor_row > 0 {
-                csi(&mut buf, self.cursor_row, 'A');
+            let above = self.rows_above_cursor();
+            if above > 0 {
+                csi(&mut buf, above, 'A');
             }
             buf.push('\r');
             buf.push_str(ERASE_BELOW);
@@ -217,6 +295,7 @@ impl<W: io::Write> Renderer<W> {
         }
         self.drawn.clear();
         self.cursor_row = 0;
+        self.cursor_col = 0;
         self.cursor = None;
         self.cursor_visible = true;
         self.redraw = false;
@@ -273,6 +352,7 @@ impl<W: io::Write> Renderer<W> {
                 buf.push_str(ERASE_LINE);
                 push_line(buf, line);
             }
+            self.cursor_col = end_column(&rows[end - 1], usize::from(self.width));
         }
 
         if rows.len() < old_len {
@@ -280,6 +360,7 @@ impl<W: io::Write> Renderer<W> {
             buf.push('\r');
             buf.push_str(ERASE_BELOW);
             self.move_to_row(buf, rows.len().saturating_sub(1));
+            self.cursor_col = 0;
         }
     }
 
@@ -292,8 +373,10 @@ impl<W: io::Write> Renderer<W> {
         width: usize,
         height: usize,
     ) {
-        if self.cursor_row > 0 {
-            csi(buf, self.cursor_row, 'A');
+        // After a change of size the rows above the cursor may have been re-wrapped.
+        let above = self.rows_above_cursor();
+        if above > 0 {
+            csi(buf, above, 'A');
         }
         buf.push('\r');
         buf.push_str(ERASE_BELOW);
@@ -327,6 +410,7 @@ impl<W: io::Write> Renderer<W> {
             push_line(buf, line);
         }
         self.cursor_row = rows.len().saturating_sub(1);
+        self.cursor_col = rows.last().map_or(0, |row| end_column(row, width));
     }
 
     /// Moves between rows that already exist on screen.
@@ -344,6 +428,7 @@ impl<W: io::Write> Renderer<W> {
             Some((row, col)) => {
                 self.move_to_row(buf, row);
                 csi(buf, col + 1, 'G');
+                self.cursor_col = col;
                 if !self.cursor_visible {
                     buf.push_str(SHOW_CURSOR);
                     self.cursor_visible = true;
@@ -372,6 +457,11 @@ fn csi(buf: &mut String, n: usize, command: char) {
     buf.push_str("\x1b[");
     buf.push_str(&n.to_string());
     buf.push(command);
+}
+
+/// The column the cursor is in after `line` was written from the start of a row.
+fn end_column(line: &str, width: usize) -> usize {
+    text::width(line).min(width.saturating_sub(1))
 }
 
 fn push_line(buf: &mut String, line: &str) {

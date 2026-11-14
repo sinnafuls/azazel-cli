@@ -159,6 +159,9 @@ pub enum Action {
     },
     /// Whether to open an issue with the summary of this report; the second row says yes.
     BugIssue(Box<crate::bug::Report>),
+    /// `/terminal-setup`: whether to add the key binding to the terminal's file; the first
+    /// row says yes.
+    TerminalSetup(Box<super::setup::Change>),
     /// `/settings`: the screen goes back to the command once it has given up the keyboard.
     Settings {
         reply: Reply<Box<crate::settings::Screen>>,

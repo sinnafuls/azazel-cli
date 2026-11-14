@@ -200,6 +200,8 @@ impl Tui {
     pub(super) fn close_popup(&mut self) {
         if self.popup.take().is_some() {
             self.guard.leave_alt();
+            // The window may have changed size behind the popup.
+            self.anchor_floor();
         }
     }
 
