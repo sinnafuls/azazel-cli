@@ -85,7 +85,10 @@ pub fn run(setup: &Setup, action: Option<&RolesAction>, json: bool) -> u8 {
         return EXIT_USAGE;
     }
     let done = match action {
-        None => Ok(print_roles(&roles::list(&place).roles, json)),
+        None => {
+            print_roles(&roles::list(&place).roles, json);
+            Ok(())
+        }
         Some(RolesAction::Set {
             role,
             models,
@@ -194,14 +197,17 @@ fn report(roles: &Roles, role: &str, json: bool, line: impl Fn(&RoleRow) -> Stri
         }
         // A custom role that was cleared is gone altogether.
         (None, true) => println!("{}", serde_json::json!({ "role": role, "source": "unset" })),
-        (None, false) => println!("{}", line(&RoleRow {
-            role: role.to_string(),
-            chain: Vec::new(),
-            source: RoleSource::Unset,
-            builtin: Vec::new(),
-            resolved: Vec::new(),
-            thinking: None,
-        })),
+        (None, false) => println!(
+            "{}",
+            line(&RoleRow {
+                role: role.to_string(),
+                chain: Vec::new(),
+                source: RoleSource::Unset,
+                builtin: Vec::new(),
+                resolved: Vec::new(),
+                thinking: None,
+            })
+        ),
     }
 }
 
@@ -272,7 +278,11 @@ fn load_preset(place: &Place<'_>, name: &str, save: SaveTo, json: bool) -> Resul
             }
         }
         false => {
-            println!("preset {name}: {} roles written to {}", rows.len(), file_name(save));
+            println!(
+                "preset {name}: {} roles written to {}",
+                rows.len(),
+                file_name(save)
+            );
             print_roles(&rows.into_iter().cloned().collect::<Vec<_>>(), false);
         }
     }
@@ -293,10 +303,16 @@ fn source_name(source: RoleSource) -> &'static str {
 
 /// The model a role answers with first, without its level, and that level.
 fn first_model(row: &RoleRow) -> (String, String) {
-    match row.resolved.first().and_then(|text| text.parse::<ModelSpec>().ok()) {
+    match row
+        .resolved
+        .first()
+        .and_then(|text| text.parse::<ModelSpec>().ok())
+    {
         Some(ModelSpec::Model(model)) => (
             model.key(),
-            model.thinking.map_or_else(|| "-".to_string(), |level| level.to_string()),
+            model
+                .thinking
+                .map_or_else(|| "-".to_string(), |level| level.to_string()),
         ),
         _ => ("-".to_string(), "-".to_string()),
     }
@@ -323,7 +339,13 @@ fn table(rows: &[RoleRow]) -> String {
                 true => "-".to_string(),
                 false => row.chain.join(", "),
             };
-            [row.role.clone(), chain, model, thinking, source_name(row.source).to_string()]
+            [
+                row.role.clone(),
+                chain,
+                model,
+                thinking,
+                source_name(row.source).to_string(),
+            ]
         })
         .collect();
     let head = ["role", "chain", "model", "thinking", "source"].map(str::to_string);

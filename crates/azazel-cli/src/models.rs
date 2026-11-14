@@ -138,7 +138,9 @@ pub fn login(credentials: &Credentials, provider: &ProviderConfig) -> bool {
     let Some(label) = credentials.selected(&provider.id) else {
         return false;
     };
-    let keyed_elsewhere = credentials.source(provider).is_none_or(|source| !source.starts_with("auth.json"));
+    let keyed_elsewhere = credentials
+        .source(provider)
+        .is_none_or(|source| !source.starts_with("auth.json"));
     !keyed_elsewhere
         && credentials
             .accounts(&provider.id)
@@ -181,7 +183,9 @@ fn model_cells(m: &ModelInfo, login: bool, roles: &[String]) -> [String; 7] {
 /// The rows of `azazel models` under one heading per provider, the columns lined up across
 /// all of them.
 fn model_table(groups: &[(String, Vec<[String; 7]>)]) -> String {
-    const HEAD: [&str; 7] = ["model", "context", "out", "price", "thinking", "vision", "used by"];
+    const HEAD: [&str; 7] = [
+        "model", "context", "out", "price", "thinking", "vision", "used by",
+    ];
     // Numbers are right-aligned, words left.
     const RIGHT: [bool; 7] = [false, true, true, false, false, false, false];
     let mut widths = HEAD.map(|head| head.chars().count());
@@ -547,8 +551,14 @@ mod tests {
         };
         let roles = ["default".to_string(), "smol".to_string()];
         let table = model_table(&[
-            ("a · env A_KEY".to_string(), vec![model_cells(&thinker, false, &roles)]),
-            ("b · subscription".to_string(), vec![model_cells(&plain, true, &[])]),
+            (
+                "a · env A_KEY".to_string(),
+                vec![model_cells(&thinker, false, &roles)],
+            ),
+            (
+                "b · subscription".to_string(),
+                vec![model_cells(&plain, true, &[])],
+            ),
         ]);
         assert_eq!(
             table.lines().collect::<Vec<_>>(),

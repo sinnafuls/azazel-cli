@@ -313,7 +313,11 @@ impl Session {
         self.app.close(&self.active).await;
         self.working = false;
         self.restore_chain = None;
-        let (opened, problem) = match self.app.open(how, status.chain.clone(), status.thinking_set).await {
+        let (opened, problem) = match self
+            .app
+            .open(how, status.chain.clone(), status.thinking_set)
+            .await
+        {
             Ok(active) => (Ok(active), None),
             Err(e) => {
                 let previous = Open::Store(self.active.session.clone());

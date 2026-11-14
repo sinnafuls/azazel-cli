@@ -95,7 +95,10 @@ fn roles_are_listed_with_their_model_level_and_source() {
     let text = stdout(&sandbox.azazel(&["roles"]));
     let row = text.lines().find(|line| line.starts_with("smol ")).unwrap();
     let cells: Vec<&str> = row.split_whitespace().collect();
-    assert_eq!(cells, ["smol", "@default", "anthropic/claude-fable-5", "high", "built-in"]);
+    assert_eq!(
+        cells,
+        ["smol", "@default", "anthropic/claude-fable-5", "high", "built-in"]
+    );
 }
 
 #[test]
@@ -120,7 +123,10 @@ fn a_role_is_set_with_fallbacks_and_a_level_then_cleared() {
     );
     assert!(sandbox.home_config().contains("# mine"));
     let smol = sandbox.role("smol");
-    assert_eq!((smol["source"].clone(), smol["thinking"].clone()), (json!("home"), json!("low")));
+    assert_eq!(
+        (smol["source"].clone(), smol["thinking"].clone()),
+        (json!("home"), json!("low"))
+    );
 
     let output = sandbox.azazel(&["roles", "clear", "smol", "--json"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -145,7 +151,11 @@ fn the_project_config_is_written_only_in_a_trusted_project() {
         "--project",
     ]);
     assert!(trusted.status.success(), "{}", stderr(&trusted));
-    assert!(sandbox.project_config().contains("slow = [\"anthropic/claude-fable-5\"]"));
+    assert!(
+        sandbox
+            .project_config()
+            .contains("slow = [\"anthropic/claude-fable-5\"]")
+    );
     assert!(!sandbox.home_config().contains("slow"));
 }
 
@@ -154,7 +164,12 @@ fn a_preset_is_saved_and_loaded_back() {
     let sandbox = Sandbox::new("[roles]\ndefault = [\"anthropic/claude-fable-5\"]\n");
     let saved = sandbox.azazel(&["roles", "preset", "save", "deep", "--json"]);
     assert!(saved.status.success(), "{}", stderr(&saved));
-    assert!(lines(&saved)[0]["roles"].as_array().unwrap().contains(&json!("default")));
+    assert!(
+        lines(&saved)[0]["roles"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("default"))
+    );
 
     let output = sandbox.azazel(&["roles", "set", "default", "anthropic/claude-haiku-4-5"]);
     assert!(output.status.success(), "{}", stderr(&output));
@@ -176,7 +191,14 @@ fn mistakes_exit_2_and_a_failed_write_exits_1() {
     for args in [
         &["roles", "set", "bad name", "anthropic/claude-fable-5"][..],
         &["roles", "set", "smol", "@smol"],
-        &["roles", "set", "smol", "anthropic/claude-fable-5", "--thinking", "loud"],
+        &[
+            "roles",
+            "set",
+            "smol",
+            "anthropic/claude-fable-5",
+            "--thinking",
+            "loud",
+        ],
         &["roles", "set", "smol", "@default", "--thinking", "high"],
         &["roles", "preset", "load", "nothing"],
         &["roles", "preset", "save", "bad name"],
@@ -193,7 +215,10 @@ fn mistakes_exit_2_and_a_failed_write_exits_1() {
     permissions.set_readonly(true);
     std::fs::set_permissions(&file, permissions.clone()).unwrap();
     let output = sandbox.azazel(&["roles", "set", "smol", "anthropic/claude-fable-5"]);
-    #[expect(clippy::permissions_set_readonly_false, reason = "the temporary directory is removed")]
+    #[expect(
+        clippy::permissions_set_readonly_false,
+        reason = "the temporary directory is removed"
+    )]
     permissions.set_readonly(false);
     std::fs::set_permissions(&file, permissions).unwrap();
     assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
@@ -210,7 +235,9 @@ fn models_are_listed_per_provider_with_the_roles_that_use_them() {
     let head: Vec<&str> = rows.next().unwrap().split_whitespace().collect();
     assert_eq!(
         head,
-        ["model", "context", "out", "price", "thinking", "vision", "used", "by"]
+        [
+            "model", "context", "out", "price", "thinking", "vision", "used", "by"
+        ]
     );
     let fable = text
         .lines()
@@ -228,8 +255,14 @@ fn models_are_listed_per_provider_with_the_roles_that_use_them() {
     assert_eq!(fable["roles"][0], "default");
     assert_eq!(fable["login"], false);
     assert_eq!(fable["usable"], false);
-    assert!(fable["name"].is_string() && fable["thinking_levels"].is_array(), "{fable}");
-    assert!(json.iter().all(|row| row["model"] == fable["model"] || row["roles"] == json!([])));
+    assert!(
+        fable["name"].is_string() && fable["thinking_levels"].is_array(),
+        "{fable}"
+    );
+    assert!(
+        json.iter()
+            .all(|row| row["model"] == fable["model"] || row["roles"] == json!([]))
+    );
 
     // Without --all, a provider with no credential is not listed.
     let none = sandbox.azazel(&["models", "--provider", "anthropic", "--json"]);
@@ -242,7 +275,11 @@ fn a_level_chosen_for_the_run_beats_the_level_of_the_role() {
     let sandbox = Sandbox::new("");
     let script = sandbox.dir.path().join("script.json");
     let requests = sandbox.dir.path().join("requests.jsonl");
-    std::fs::write(&script, json!({ "lead": [{ "reply": { "text": "ok" } }] }).to_string()).unwrap();
+    std::fs::write(
+        &script,
+        json!({ "lead": [{ "reply": { "text": "ok" } }] }).to_string(),
+    )
+    .unwrap();
     let level = |extra: &[&str]| {
         let _ = std::fs::remove_file(&requests);
         let output = sandbox

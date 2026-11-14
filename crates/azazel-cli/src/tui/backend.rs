@@ -527,7 +527,10 @@ impl Local {
     async fn open(&mut self, how: Open, source: StartSource) -> Result<Moved, String> {
         let status = self.active.lead.status();
         self.app.close(&self.active).await;
-        let opened = self.app.open(how, status.chain.clone(), status.thinking_set).await;
+        let opened = self
+            .app
+            .open(how, status.chain.clone(), status.thinking_set)
+            .await;
         let problem = match opened {
             Ok(active) => {
                 self.events = active.lead.subscribe();
