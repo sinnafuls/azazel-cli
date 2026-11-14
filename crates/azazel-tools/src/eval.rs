@@ -16,6 +16,10 @@ use crate::util::parse_input;
 /// The environment variable that names the session's `local://` directory to a script.
 pub const LOCAL_ENV: &str = "AZAZEL_LOCAL";
 
+/// Loaded before a Node program: gives an ES module the `require` of CommonJS.
+const NODE_REQUIRE: &str = "data:text/javascript,import{createRequire}from'node:module';\
+globalThis.require=createRequire(process.cwd()+'/');";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Language {
@@ -43,7 +47,9 @@ impl Language {
                 ("py", &["-3", "-u", "-"]),
             ],
             Language::Javascript => &[
-                ("node", &["-"]),
+                // Node reads standard input as CommonJS, where top-level `await` fails: it runs
+                // the code as a module, with `require` put back for scripts that use it.
+                ("node", &["--input-type=module", "--import", NODE_REQUIRE, "-"]),
                 ("bun", &["run", "-"]),
                 ("deno", &["run", "-A", "-"]),
             ],
@@ -273,16 +279,17 @@ mod tests {
 
     #[tokio::test]
     async fn javascript_runs_with_top_level_await_and_reports_failure() {
-        let Some((out, ..)) = run(
-            Language::Javascript,
-            "const x = await Promise.resolve(42); console.log(x)",
-        )
-        .await
-        else {
+        let code = "const fs = await import('node:fs'); const os = require('os');\n\
+                    console.log(typeof fs.readFileSync, typeof os.platform, await Promise.resolve(42))";
+        let Some((out, ..)) = run(Language::Javascript, code).await else {
             return;
         };
         assert!(!out.is_error, "{}", out.text_content());
-        assert!(out.text_content().contains("42"));
+        assert!(
+            out.text_content().contains("function function 42"),
+            "{}",
+            out.text_content()
+        );
         let Some((failed, ..)) = run(Language::Javascript, "throw new Error('boom')").await else {
             return;
         };
