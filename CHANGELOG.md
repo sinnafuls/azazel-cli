@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-14
+
 ### Added
 
 - The mouse works in popups: move over a row to highlight it, click to select, click the selected row (or
@@ -978,7 +980,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.4.0...v0.5.0
