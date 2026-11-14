@@ -17,6 +17,7 @@ pub mod stall;
 pub mod stream;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
+pub mod tls;
 pub mod types;
 pub mod wire;
 

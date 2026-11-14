@@ -986,7 +986,7 @@ fn temperature_is_sent_only_to_models_that_do_not_reason() {
 
 #[test]
 fn request_targets_responses_with_bearer_auth_and_the_json_body() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let req = Request {
         messages: vec![Message::user("hi")],
         ..Request::default()
@@ -1023,7 +1023,7 @@ fn provider_headers_are_applied_last_and_override() {
     provider
         .headers
         .insert("OpenAI-Organization".into(), "org-mock".into());
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let request = openai_responses::build_request(
         &client,
         &provider,
@@ -1040,7 +1040,7 @@ fn provider_headers_are_applied_last_and_override() {
 
 #[test]
 fn models_request_is_an_authenticated_get() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let request = openai_responses::models_request(&client, &provider(), &Auth::ApiKey("sk-test".into()))
         .build()
         .unwrap();

@@ -173,7 +173,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
         let uri = server.uri();
         assert_eq!(
             lookup(&client, &uri, None).project().await.unwrap(),
@@ -209,7 +209,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
         let uri = server.uri();
         assert_eq!(lookup(&client, &uri, None).project().await.unwrap(), "fresh-9");
     }
@@ -224,7 +224,7 @@ mod tests {
             )
             .mount(&server)
             .await;
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
         let uri = server.uri();
         assert_eq!(
             lookup(&client, &uri, Some("mine")).project().await.unwrap(),
@@ -244,7 +244,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(401).set_body_string("expired"))
             .mount(&server)
             .await;
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
         let uri = server.uri();
         let error = lookup(&client, &uri, None).project().await.unwrap_err();
         assert!(matches!(error, AiError::Auth(_)), "{error:?}");

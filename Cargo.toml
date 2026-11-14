@@ -57,15 +57,18 @@ tokio-util = { version = "0.7", features = ["rt", "compat"] }
 futures = "0.3"
 async-trait = "0.1"
 
-# Network
+# Network. One TLS implementation, rustls on `ring`: reqwest comes without a provider of its own
+# (its default, aws-lc, is a second cryptography library) and takes the one `azazel_ai::tls`
+# installs, which is why clients are built there.
 reqwest = { version = "0.13", default-features = false, features = [
     "json",
     "stream",
-    "rustls",
+    "rustls-no-provider",
     "http2",
     "gzip",
     "system-proxy",
 ] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-tungstenite = { version = "0.30", features = ["connect"] }
 
 # Serialisation
@@ -139,7 +142,7 @@ rmcp = { version = "3.9", default-features = false, features = [
     "client",
     "transport-child-process",
     "transport-streamable-http-client-reqwest",
-    "reqwest",
+    "reqwest-tls-no-provider",
     "auth",
     "elicitation",
 ] }
@@ -175,10 +178,16 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
-# Cloud
-aws-config = "1.13"
-# Without the default `rustls` feature, which adds a second (legacy hyper 0.14) HTTP stack.
-aws-sdk-bedrockruntime = { version = "1.155", default-features = false, features = ["default-https-client", "rt-tokio"] }
+# Cloud. The AWS crates come without their default HTTPS client, which links aws-lc (and, with
+# the `rustls` feature, a legacy hyper 0.14 stack): the Bedrock provider hands them the same
+# client on `ring`. `aws-config` keeps the rest of its defaults.
+aws-config = { version = "1.13", default-features = false, features = [
+    "rt-tokio",
+    "credentials-process",
+    "sso",
+] }
+aws-sdk-bedrockruntime = { version = "1.155", default-features = false, features = ["rt-tokio"] }
+aws-smithy-http-client = { version = "1.5", default-features = false, features = ["rustls-ring"] }
 # The TLS stack of the rest of the binary, instead of a second one.
 gcp_auth = { version = "0.12", default-features = false, features = ["ring"] }
 aws-smithy-types = "1.9"
@@ -196,6 +205,9 @@ insta = "1.49"
 assert_cmd = "2"
 tempfile = "3"
 vt100 = "0.18"
+# A certificate and a TLS server for the handshake tests of `azazel_ai::tls`.
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

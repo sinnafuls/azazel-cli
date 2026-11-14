@@ -433,7 +433,7 @@ mod tests {
                 login("c@example.com", &[("account_id", "acct-7")]),
             )
             .unwrap();
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
 
         let claude = preset("anthropic", server.uri());
         assert!(supported(&claude));

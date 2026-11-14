@@ -258,7 +258,7 @@ mod tests {
             project: Some("proj-1".into()),
             location: location.into(),
             host: Some(server.uri()),
-            client: reqwest::Client::new(),
+            client: crate::tls::client(),
             identity: Identity::Fixed("gcp-token"),
             stall: StallLimits::default(),
         }
@@ -383,7 +383,7 @@ mod tests {
             VertexProvider::new(
                 Some(" p ".into()),
                 location.map(str::to_string),
-                reqwest::Client::new(),
+                crate::tls::client(),
             )
             .publisher_url("p", "google")
         };

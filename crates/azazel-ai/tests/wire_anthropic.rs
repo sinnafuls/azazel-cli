@@ -1044,7 +1044,7 @@ fn header(request: &reqwest::Request, name: &str) -> Option<String> {
 
 #[test]
 fn build_request_posts_the_body_with_version_and_auth_headers() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let (provider, model) = (provider(), model(MANUAL_MODEL));
     let req = request(vec![Message::user("hi")]);
     let send = |auth: Auth| {
@@ -1077,7 +1077,7 @@ fn build_request_posts_the_body_with_version_and_auth_headers() {
 
 #[test]
 fn provider_headers_replace_defaults() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let mut provider = provider();
     for (name, value) in [
         ("Anthropic-Version", "2023-06-01"),
@@ -1109,7 +1109,7 @@ fn provider_headers_replace_defaults() {
 
 #[test]
 fn models_request_asks_for_the_largest_page() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let auth = Auth::ApiKey("sk-mock".to_string());
     let sent = anthropic::models_request(&client, &provider(), &auth)
         .build()
@@ -1341,7 +1341,7 @@ fn a_full_usage_window_is_a_quota_error_with_its_reset_time() {
 
 #[test]
 fn the_priority_tier_is_fast_mode_and_only_claude_models_are_asked_for_it() {
-    let client = reqwest::Client::new();
+    let client = azazel_ai::tls::client();
     let auth = Auth::ApiKey("sk-mock".to_string());
     let sent = |provider: &ProviderConfig, model_id: &str, tier: Option<Tier>| {
         let mut req = request(vec![Message::user("hi")]);
