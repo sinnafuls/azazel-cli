@@ -231,13 +231,18 @@ impl UiBridge for Headless {
 #[async_trait]
 pub trait ShortcutHandler: Send + Sync {
     async fn run(&self, ctx: &crate::ext::ExtCtx);
+
+    /// Who bound the key, as a list of key bindings names it, when that says more than the
+    /// extension the binding was registered by (a script of a host of scripts).
+    fn source(&self) -> Option<String> {
+        None
+    }
 }
 
 type Keyed<T> = Vec<(String, String, T)>;
 
 /// What extensions add to the interactive UI: status-line segments, lines above the input, and
 /// key bindings. Registered as a service; a UI that has no place for them ignores it.
-#[derive(Default)]
 pub struct UiExtras {
     /// `(owner, key, text)`.
     status: std::sync::RwLock<Keyed<String>>,
@@ -245,6 +250,19 @@ pub struct UiExtras {
     widgets: std::sync::RwLock<Keyed<Vec<String>>>,
     /// `(owner, key combination, handler)`.
     shortcuts: std::sync::RwLock<Keyed<Arc<dyn ShortcutHandler>>>,
+    /// Counts the changes of what is shown, for a UI that draws when one happens.
+    shown: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for UiExtras {
+    fn default() -> Self {
+        UiExtras {
+            status: std::sync::RwLock::default(),
+            widgets: std::sync::RwLock::default(),
+            shortcuts: std::sync::RwLock::default(),
+            shown: tokio::sync::watch::Sender::new(0),
+        }
+    }
 }
 
 fn put<T>(list: &std::sync::RwLock<Keyed<T>>, owner: &str, key: &str, value: Option<T>) {
@@ -264,6 +282,16 @@ impl UiExtras {
     /// Sets the status-line segment `key` of `owner`; `None` removes it.
     pub fn set_status(&self, owner: &str, key: &str, text: Option<String>) {
         put(&self.status, owner, key, text);
+        self.changed();
+    }
+
+    /// Notices of every change of the segments and the widgets: a UI draws again when one comes.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.shown.subscribe()
+    }
+
+    fn changed(&self) {
+        self.shown.send_modify(|revision| *revision += 1);
     }
 
     /// The segments to show, in the order they were first set.
@@ -278,6 +306,7 @@ impl UiExtras {
     /// Sets the widget `key` of `owner`, shown as lines above the input; `None` removes it.
     pub fn set_widget(&self, owner: &str, key: &str, lines: Option<Vec<String>>) {
         put(&self.widgets, owner, key, lines);
+        self.changed();
     }
 
     /// The lines of every widget, in the order the widgets were first set.
@@ -315,6 +344,18 @@ impl UiExtras {
             .map(|(_, _, handler)| handler.clone())
     }
 
+    /// The keys that are bound and who bound each, in the order they were first bound.
+    pub fn shortcuts(&self) -> Vec<(String, String)> {
+        let shortcuts = self
+            .shortcuts
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        shortcuts
+            .iter()
+            .map(|(owner, key, handler)| (key.clone(), handler.source().unwrap_or_else(|| owner.clone())))
+            .collect()
+    }
+
     /// Drops everything `owner` added.
     pub fn remove_owner(&self, owner: &str) {
         self.status
@@ -329,6 +370,7 @@ impl UiExtras {
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .retain(|(o, _, _)| o != owner);
+        self.changed();
     }
 }
 
@@ -361,6 +403,7 @@ mod tests {
         extras.bind("a", " Ctrl+K ", Arc::new(Nothing));
         assert!(extras.shortcut("ctrl+k").is_some());
         assert!(extras.shortcut("ctrl+j").is_none());
+        assert_eq!(extras.shortcuts(), [("ctrl+k".to_string(), "a".to_string())]);
 
         extras.remove_owner("a");
         assert_eq!(extras.status(), Vec::<String>::new());

@@ -156,6 +156,10 @@ impl Tui {
             let now = jiff::Zoned::now();
             (now.hour() as u8, now.minute() as u8, now.second() as u8)
         });
+        let extensions = match layout.shows(Name::Extensions) {
+            true => self.extras().map(|extras| extras.status()).unwrap_or_default(),
+            false => Vec::new(),
+        };
         let usage = &status.usage;
         let prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
         let done = facts
@@ -184,6 +188,7 @@ impl Tui {
             queued: self.queued.len(),
             session: &session,
             clock,
+            extensions,
             model: &model,
             tier: facts.tier.map(crate::routing::tier_word),
             thinking: &status.thinking.to_string(),

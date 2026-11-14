@@ -195,6 +195,12 @@ GitHub are its section here.
   another name.
 - After requests moved to another account, the status line shows that account's usage window at once, not
   the window of the account that ran out.
+- What Luau extensions add to the terminal UI is shown and runs; until now it was stored and never used.
+  `azazel.status` texts are the new status-line segment `extensions` (in the presets `default`, `powerline`
+  and `full`; `/statusline`, `statusline.left` and `statusline.right` place it like any segment),
+  `azazel.widget` lines stand above the input, and a key bound with `azazel.shortcut` runs its handler when
+  azazel has no action for the key. `/keys` lists these keys with their scripts. See "In the terminal UI"
+  in `docs/extensions.md`.
 
 ## [0.5.0] - 2026-11-13
 

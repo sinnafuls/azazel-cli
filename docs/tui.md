@@ -43,6 +43,7 @@ The live region, top to bottom:
 | Tool cards | a tool is running | One framed card per running tool: spinner, tool name, a one-line summary of its input, the last 5 output lines, elapsed time. In the [compact style](#compact-style), the group of calls that is still growing instead |
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
+| Widgets | an extension shows some | The lines [extensions](extensions.md#in-the-terminal-ui) set with `azazel.widget`: one row a line, at most 10 rows |
 | Input | always | The editor between two rules, with its completion list, notices, queued messages, stashed drafts and an attached-image count above it |
 | Status line | always | Session facts on the left, the model on the right, or the [segments you choose](#status-line) |
 
@@ -331,6 +332,7 @@ branch outside a repository, no cost on a subscription) is left out.
 | `queue` | messages wait for the agent to finish | `⏵ 1 queued`; see [queued messages](#queued-messages-and-stashed-drafts) |
 | `session` | the session has a name | `❖ fix the build`, cut to 24 columns |
 | `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with. It follows the account when work [moves to another one](models-and-logins.md#several-accounts) |
+| `extensions` | a [Luau extension](extensions.md#in-the-terminal-ui) has set a text with `azazel.status` | The texts of all scripts in the order they were first set, each a piece of its own with the separator of the line between them; one line of each, cut to 32 columns |
 | `model` | always | `⬢ provider/model`: the model answering. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
 | `tier` | a [service tier](models-and-logins.md#service-tiers) is on | `fast` or `slow` |
 | `thinking` | always | The thinking level |
@@ -343,10 +345,10 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 
 | Preset | Left | Right |
 |---|---|---|
-| `default` | `mode`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal` | `model`, `tier`, `thinking` |
+| `default` | `mode`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
 | `minimal` | `mode`, `path` | `model` |
-| `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents` | `cost`, `usage`, `thinking`, `model` |
-| `full` | `mode`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
+| `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
+| `full` | `mode`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
 
 `statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
 preset's, less what the other list took, and `["none"]` is a side with nothing on it. A segment stands once: named
@@ -364,7 +366,7 @@ The `powerline` preset is drawn in blocks unless you choose `bar` or `space` for
 |---|---|---|
 | `priority` | all | `0` to `100`: how long the segment stays on a narrow line; see below |
 | `icon` | all | `false` leaves out the symbol before the text |
-| `max` | `path`, `model`, `branch`, `goal`, `session`, `account` | The most columns of its text, `4` to `200` |
+| `max` | `path`, `model`, `branch`, `goal`, `session`, `account`, `extensions` | The most columns of its text (for `extensions`, of each text), `4` to `200` |
 | `style` | `path` | `short` (the default: `~` and the end of a long path), `full`, `basename` (the directory's own name) |
 | `style` | `model` | `full` (the default), `short` (without the provider) |
 | `style` | `context` | `percent` (the default), `tokens` (`◫ 84.0k/200.0k`) |
@@ -389,10 +391,11 @@ An option a segment does not take, or a value it cannot be, is named in a warnin
 at its default.
 
 **A narrow terminal.** When the line does not fit, whole segments leave it, the one with the lowest priority
-first: `bar` (5), `time` (15), `account` (20), `session` (25), `cache` (30), `todo` (35), `queue` (38), `tier`
-(40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70), `context` (75), `path`
-(80), `git_dirty` (84), `branch` (85), `model` (95), `mode` (100). The segment with the highest priority of each
-side stays; only then is the right side shortened, and after that left out.
+first: `bar` (5), `time` (15), `account` (20), `session` (25), `cache` (30), `extensions` (32), `todo` (35),
+`queue` (38), `tier` (40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70),
+`context` (75), `path` (80), `git_dirty` (84), `branch` (85), `model` (95), `mode` (100). The segment with the
+highest priority of each side stays; only then is the right side shortened, and after that left out. The texts
+of `extensions` leave one by one, the last first.
 
 #### Setting it up
 
@@ -405,15 +408,16 @@ that are off (the sample shows some of them).
 ╭─ Status line ────────────────────────────────────────────────────────────────────────────────────╮
 │ ⏵ accept-edits · ⑂ main · ~/src/app · ◫ 42% · ↯ 78 tok/s      ⬢ anthropic/claude-opus-5-5 · high │
 │                                                                                                  │
-│ ▌ Preset     default                                                                             │
-│   Separator  dot                                                                                 │
-│   ▣ mode       left   the permission mode                                                        │
-│   ▣ branch     left   the git branch                                                             │
-│   ▣ path       left   the working directory                                                      │
-│   ▣ model      right  the model that answers                                                     │
-│   ▣ thinking   right  the thinking level                                                         │
-│   □ time              the time of day                                                            │
-│   □ git_dirty         files changed since the last commit                                        │
+│ ▌ Preset      default                                                                            │
+│   Separator   dot                                                                                │
+│   ▣ mode        left   the permission mode                                                       │
+│   ▣ branch      left   the git branch                                                            │
+│   ▣ path        left   the working directory                                                     │
+│   ▣ extensions  left   what extensions show with azazel.status                                   │
+│   ▣ model       right  the model that answers                                                    │
+│   ▣ thinking    right  the thinking level                                                        │
+│   □ time               the time of day                                                           │
+│   □ git_dirty          files changed since the last commit                                       │
 ╰─ ↑↓ move · space on or off · left right side or value · [ ] reorder · enter save · esc cancel ───╯
 ```
 
@@ -481,7 +485,7 @@ the usage window is shown instead, as soon as the provider has reported one. Wit
 `--api-key`, the environment, `api_key_command`, the configuration or `auth.json`) the cost is shown. A key in
 the environment wins over a stored sign-in, as it does for the requests themselves. A session that runs in
 another process (`azazel attach`, `--ssh`) shows the cost that process reports, and nothing when it reports
-none; `git_dirty` and `account` are not shown for it.
+none; `git_dirty`, `account` and `extensions` are not shown for it.
 
 ## Keys
 
@@ -527,6 +531,10 @@ goes to the roster while sub-agents are at work; see [the fleet view](#the-fleet
 
 What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
 one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
+
+A [Luau extension](extensions.md#in-the-terminal-ui) can bind keys of its own with `azazel.shortcut`. A key of
+the table above keeps its action, and a key that types a character still types it; any other key runs the
+script's handler, the editing keys of the input included. `/keys` lists these keys with the script of each.
 
 `Alt+T` steps through the thinking levels the current model supports, `off` included.
 
@@ -721,7 +729,9 @@ exit = []                      # an empty list unbinds the action
   `enter`, `esc`, `tab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`,
   `down`, `left`, `right`, `f1` to `f24`.
 - An unknown action or an invalid key makes azazel ignore the whole file and show a warning at startup.
-- `/keys` lists the bindings in effect and, under them, the key conflicts it finds.
+- `/keys` lists the bindings in effect, then the keys extensions bound with `azazel.shortcut` (and which of
+  them never run, because the key is bound to an action here or types a character), then the key conflicts
+  it finds.
 
 `/keys` reports three kinds of conflict, each with the key, the action and, where the action has another key
 that is fine, that key:
@@ -819,7 +829,7 @@ Session and display:
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
 | `/statusline [preset]` | Set up the [status line](#status-line): pick a preset and a separator, put segments on the line, take them off and order them, with the line they make in view. `/statusline minimal` takes a preset at once |
-| `/keys` | List key bindings and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
+| `/keys` | List key bindings, the keys [extensions](extensions.md#in-the-terminal-ui) bound, and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
 | `/terminal-setup` | Make `Shift+Enter` add a line in this terminal: says whether it already does, else adds the key binding to the terminal's file (after asking, with a backup) or shows it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `/debug` | Where azazel keeps its files, the state of the UI and the session, the terminal's variables and the last 200 lines of the log, in the [viewer](#transcript-viewer) |
 | `/restart` | Start azazel again in this terminal on the session that is open, with the options it was started with: what picks up a new version after `azazel update` |

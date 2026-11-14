@@ -92,7 +92,7 @@ Registering (load only):
 | `azazel.on(event, handler)` | `handler(ev, ctx)` returns `nil`, `{ block = true, reason = string }`, or a table of replacement fields. Events are listed below |
 | `azazel.command{ name, description?, argument_hint?, run }` | Adds `/name`. `run(args, ctx)` gets the text after the command; a returned string is shown to you |
 | `azazel.prompt(name, render)` | Adds a part to the system prompt of every agent. `render(ctx)` runs each time a prompt is put together (the lead's when a session opens, a sub-agent's when it starts) and returns the part's text, or `nil` to leave it out; `ctx.agent_id` says whose prompt it is. The part comes after the project's context files. It is part of what the provider caches, so text that changes from request to request (a clock, a counter) makes every request pay for the whole conversation again; `/cost` names the part when that happens. `name` is one word of your own; the names of the built-in parts (`identity`, `rules`, `team`, `skills`, `environment`, `context_files`, `memory`, `mode`, `now`, `plan`) are refused. A part that raises an error disables its script |
-| `azazel.shortcut(key, handler)` | Binds a key such as `"ctrl+k"` or `"alt+shift+p"` in the terminal UI. `handler(ctx)` |
+| `azazel.shortcut(key, handler)` | Binds a key such as `"ctrl+k"` or `"alt+shift+p"` in the terminal UI, written as in the [key bindings file](tui.md#changing-keys). `handler(ctx)` runs when the key is pressed in the input. A key azazel binds keeps its action; see [in the terminal UI](#in-the-terminal-ui) |
 | `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Makes an HTTP endpoint's models available as `<id>/<model>`. `api` is `"anthropic-messages"`, `"openai-responses"`, `"openai-chat"` or `"google-generative"`. Without `api_key_env` the endpoint needs no key. A provider stays registered across `/reload`. See [models and logins](models-and-logins.md) |
 | `azazel.router(name, route)` | Makes `virtual/<name>` a model that can be chosen like any other; `route(request)` runs before every request made with it and returns the model it goes to. `name`: up to 64 letters, digits, `_`, `-`, `.`. See [virtual models](models-and-logins.md#virtual-models) |
 | `azazel.mcp{ name, ... }` | Adds an MCP server; the other fields are those of an `mcp.json` entry. See [mcp](mcp.md) |
@@ -101,8 +101,8 @@ Usable any time:
 
 | Function | Contract |
 |---|---|
-| `azazel.status(key, text)` | Sets a segment of the status line; `nil` removes it |
-| `azazel.widget(key, lines)` | Sets lines shown above the input: a list of strings or one string; `nil` removes them |
+| `azazel.status(key, text)` | Sets a text of the `extensions` segment of the status line; `nil` removes it. See [in the terminal UI](#in-the-terminal-ui) |
+| `azazel.widget(key, lines)` | Sets lines shown above the input: a list of strings or one string; `nil` removes them. See [in the terminal UI](#in-the-terminal-ui) |
 | `azazel.notify(text, level?)` | Shows a message. `level` is `"info"` (default), `"warn"` or `"error"` |
 | `azazel.json.encode(value, pretty?)`, `azazel.json.decode(text)` | A table with a sequence part encodes as an array; `null` decodes to `nil` |
 | `azazel.state.get(key)`, `azazel.state.set(key, value)` | Per-script store kept in `~/.azazel/extensions/.state/<id>.json`; survives restarts and `/reload`. `nil` removes the key |
@@ -143,6 +143,61 @@ The second argument of every tool, handler and command (the only argument of a s
 | `ctx.ui.input(prompt)` | Returns the text typed. The first line of `prompt` is the title of the box, as for `select` |
 
 The `ctx.ui` functions error with `no interactive user` in headless runs.
+
+### In the terminal UI
+
+`azazel.status`, `azazel.widget` and `azazel.shortcut` are for the interactive UI; print mode, `azazel rpc` and
+`azazel acp` have no place for them and ignore them. They show in the UI of the process the session runs in:
+a UI attached to a session elsewhere (`azazel attach`, `--ssh`) shows none of them.
+
+```lua
+-- tests.luau: run the tests at a key, and keep the outcome in view
+azazel.status("tests", "tests: not run")
+
+azazel.shortcut("f6", function(ctx)
+	azazel.status("tests", "tests: running")
+	local out = azazel.exec("cargo", { "test", "--quiet" }, { timeout = 600 })
+	if out.code == 0 then
+		azazel.status("tests", "tests: ok")
+		azazel.widget("tests", nil)
+	else
+		azazel.status("tests", "tests: failed")
+		azazel.widget("tests", { "the tests fail; f6 runs them again", "session " .. ctx.session_id })
+	end
+end)
+```
+
+- **Status.** Every text set with `azazel.status` is a piece of the `extensions` segment of the
+  [status line](tui.md#status-line). The texts of all scripts stand in the order they were first set, with the
+  separator of the line between them; one line of each is shown, cut to 32 columns (`max` under
+  `[statusline.segments.extensions]` changes that). The segment is in the presets `default`, `powerline` and
+  `full`, at the end of the left side, and not in `minimal`; `/statusline` or `statusline.left` and
+  `statusline.right` put it elsewhere or take it off. On a narrow terminal it leaves the line before the model,
+  the mode, the branch, the path and the context do. While `statusline.command` stands in for the left side,
+  the segment shows only when it is on the right.
+- **Widgets.** The lines set with `azazel.widget` stand right above the input, under the agents at work and
+  the todo list, in the muted colour: the widgets in the order they were first set, one row a line, cut to
+  the width of the terminal and never wrapped. All widgets together take at most 10 rows; the tenth then says
+  how many lines are left out. In a window too short for everything they stay longer than the roster and the
+  todo list.
+- **Shortcuts.** The key is written as in the [key bindings file](tui.md#changing-keys) (`"f6"`, `"ctrl+k"`,
+  `"alt+shift+p"`; case and the order of the modifiers do not matter). The handler runs when the key is
+  pressed while the input has the keyboard, not in a popup, the roster or a terminal. It runs beside the UI, so
+  it may wait (`azazel.exec`, `azazel.http`, `ctx.ui`) while you go on typing.
+  - A key azazel binds keeps its action: `azazel.shortcut("ctrl+o", …)` never runs while `Ctrl+O` is
+    `toggle_tool_output`. Take the key from the action in `~/.azazel/keybindings.toml`
+    (`toggle_tool_output = []`) and it is the script's.
+  - A key that types a character (a letter, digit or symbol alone or with `Shift`; with `Ctrl+Alt`, which is
+    AltGr on many keyboards) always types it.
+  - Any other key is the script's, also one the input edits with (`Ctrl+K`, `Ctrl+U`, `Home`). With
+    [Vim keys](tui.md#vim-keys) on, a key Vim handles stays Vim's.
+  - When two scripts bind the same key, the one that loaded first has it.
+  - `/keys` lists the keys scripts bound, each with its script (`lua:tests`), and says which of them never run
+    and why.
+- Escape sequences and control characters in a text or a line are removed before it is drawn. The screen is
+  drawn again as soon as a script sets or removes something, also while nothing else happens.
+- `/reload` takes all of it off with the rest of the scripts' state and loads the scripts again. What a
+  script that was disabled showed is taken off the screen.
 
 ### Replacing and wrapping tools
 

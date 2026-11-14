@@ -189,11 +189,11 @@ end)
 | `azazel.on(event, handler)` | `handler(ev, ctx)` returns `nil`, `{ block = true, reason }`, or replacement fields |
 | `azazel.command{ name, description?, argument_hint?, run }` | Slash command; `run(args, ctx)` may return text to show |
 | `azazel.prompt(name, render)` | Adds a part to every agent's system prompt; `render(ctx)` returns its text or `nil`. Keep it stable: text that changes per request defeats the prompt cache |
-| `azazel.shortcut(key, handler)` | Key binding in the terminal UI |
+| `azazel.shortcut(key, handler)` | Runs `handler(ctx)` when the key (`"f6"`, `"ctrl+k"`, `"alt+shift+p"`) is pressed in the input of the terminal UI. A key azazel binds keeps its action, and a key that types a character types it; `/keys` lists the keys and says which never run |
 | `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Adds a model provider |
 | `azazel.router(name, route)` | Makes `virtual/<name>` a model; `route(request)` returns where each request goes: `"provider/model[:thinking]"`, `"@role"`, a list, or `{ model, thinking }` |
 | `azazel.mcp{ name, … }` | Adds an MCP server (fields as in `mcp.json`) |
-| `azazel.status(key, text)`, `azazel.widget(key, lines)` | Status-line segment; lines above the editor (`nil` removes) |
+| `azazel.status(key, text)`, `azazel.widget(key, lines)` | A text of the status-line segment `extensions` (one line, cut to 32 columns); lines above the input (at most 10 rows for all widgets). `nil` removes. Terminal UI only |
 | `azazel.notify(text, level?)` | `"info"`, `"warn"`, `"error"` |
 | `azazel.send(text, { deliver? })` | Message the lead as the user: `"follow_up"` (default) or `"steer"` |
 | `azazel.exec(program, args?, { cwd?, timeout? })` | Runs a program without a shell; returns `{ code, stdout, stderr }` |
