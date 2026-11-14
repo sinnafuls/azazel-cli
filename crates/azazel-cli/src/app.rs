@@ -741,7 +741,7 @@ impl App {
         })?;
         #[cfg(feature = "detach")]
         registry.load(&crate::schedule::tool::ScheduleExt {
-            scheduler: crate::schedule::Scheduler::new(cli, &paths, config.schedule.clone()),
+            scheduler: crate::schedule::Scheduler::new(cli, &paths, &config),
             permissions: permissions.clone(),
             carried: crate::host_carried(cli),
             ephemeral: cli.no_session,

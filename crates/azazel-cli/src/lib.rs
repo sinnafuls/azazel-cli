@@ -478,7 +478,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             let Some(config) = load_config(&cli, &paths, trusted) else {
                 return print::EXIT_FAILED;
             };
-            return schedule::run(&cli, &paths, config.schedule, action).await;
+            return schedule::run(&cli, &paths, &config, action).await;
         }
         #[cfg(feature = "detach")]
         Some(Sub::Host { .. }) => None,

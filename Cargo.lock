@@ -994,6 +994,7 @@ dependencies = [
  "mimalloc",
  "notify-rust",
  "process-wrap",
+ "regex",
  "reqwest",
  "resvg",
  "rmcp",

@@ -65,6 +65,16 @@ GitHub are its section here.
 - Per-provider limits: `timeout_secs` (the whole request), `first_event_secs` and `stall_secs` in
   `[providers.<id>]` replace the `[retry]` ones for that provider.
 - `{session_id}` in a provider's `headers` becomes the id of the conversation a request belongs to.
+- Schedules can check before they run: `azazel schedule add --if "<command>"` runs the prompt only when the
+  command holds at its due time (exit 0, or `--if-is <code>`; `--if-matches <regex>` on what it prints;
+  `--if-changes` when it prints something new), and `--until "<command>"` ends the schedule once its command
+  holds. Checks run before any model is asked. `--ends-after 7d`, `--ends-at <time>` and `--times <n>` end a
+  schedule by itself, and `--tz <zone>` reads a cron expression or `at` time in another time zone. The
+  `schedule` tool takes the same as `if`, `until`, `ends` and `tz`; the commands of its checks are asked
+  about like `shell` commands.
+- `azazel schedule pause <id>` and `resume <id>` (and the `schedule` tool's `pause` and `resume`) stop a
+  schedule and start it again. `azazel schedule list` shows each schedule's state (active, paused, ended)
+  and what its checks said the last time.
 
 ### Changed
 

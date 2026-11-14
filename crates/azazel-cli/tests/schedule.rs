@@ -759,3 +759,276 @@ fn doctor_says_who_starts_the_schedules() {
         "{off}"
     );
 }
+
+#[test]
+fn a_schedule_runs_its_prompt_only_when_its_check_holds_and_ends_once_until_holds() {
+    let sandbox = Sandbox::new(&json!({ "lead": [said("Deployed.")] }));
+    let id = sandbox.add(&[
+        "--mode",
+        "auto",
+        "--if",
+        "cat flag.txt",
+        "--if-matches",
+        "^go$",
+        "--until",
+        "cat stop.txt",
+        "every",
+        "10m",
+        "deploy",
+    ]);
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        (&row["if"], &row["until"], &row["state"]),
+        (
+            &json!({ "run": "cat flag.txt", "matches": "^go$" }),
+            &json!({ "run": "cat stop.txt" }),
+            &json!("active")
+        ),
+        "{row}"
+    );
+
+    // The check does not hold: nothing is started, and the list says why.
+    let skipped = sandbox.run(&["schedule", "run", &id]);
+    let (out, err) = text(&skipped);
+    assert!(skipped.status.success() && out.is_empty(), "{out}\n{err}");
+    assert!(
+        err.contains("skipped: `if` did not hold (exit 1, not 0)"),
+        "{err}"
+    );
+    assert!(sandbox.ps().is_empty());
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        row["last_gate"],
+        json!("until did not hold (exit 1, not 0); if did not hold (exit 1, not 0)"),
+        "{row}"
+    );
+    assert_eq!(row["runs"], json!(0), "{row}");
+    std::fs::write(sandbox.path("project/flag.txt"), "wait\n").unwrap();
+    let (_, err) = text(&sandbox.run(&["schedule", "run", &id]));
+    assert!(err.contains("printed nothing that matches `^go$`"), "{err}");
+
+    // It holds: the prompt runs.
+    std::fs::write(sandbox.path("project/flag.txt"), "go\n").unwrap();
+    let host = sandbox.ok(&["schedule", "run", &id]).trim().to_string();
+    sandbox.wait_for_state(&host, "idle");
+    assert_eq!(sandbox.prompts(), ["deploy"]);
+    let table = sandbox.ok(&["schedule", "list"]);
+    assert!(
+        table.contains("CHECKS")
+            && table.contains("until did not hold (exit 1, not 0); if held (exit 0, matched)"),
+        "{table}"
+    );
+
+    // `until` holds: the schedule ends without running its prompt, and stays in the list.
+    std::fs::write(sandbox.path("project/stop.txt"), "merged\n").unwrap();
+    let ended = sandbox.run(&["schedule", "run", &id]);
+    let (out, err) = text(&ended);
+    assert!(ended.status.success() && out.is_empty(), "{out}\n{err}");
+    assert!(err.contains("ended: `until` held (exit 0)"), "{err}");
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        (&row["state"], &row["last_result"], &row["runs"], &row["next"]),
+        (
+            &json!("ended"),
+            &json!("ended: `until` held (exit 0)"),
+            &json!(1),
+            &Value::Null
+        ),
+        "{row}"
+    );
+    assert_eq!(sandbox.ok(&["schedule", "run", "--due"]), "");
+    let resumed = sandbox.run(&["schedule", "resume", &id]);
+    assert_eq!(resumed.status.code(), Some(1));
+    assert!(text(&resumed).1.contains("has ended"), "{}", text(&resumed).1);
+    assert_eq!(sandbox.prompts(), ["deploy"]);
+    assert_eq!(sandbox.ps().len(), 1);
+}
+
+#[test]
+fn a_schedule_is_paused_out_of_the_systems_scheduler_and_resumed_into_it() {
+    let sandbox = Sandbox::new(&json!({ "lead": [] }));
+    let added = sandbox.run(&[
+        "schedule",
+        "add",
+        "--tz",
+        "UTC",
+        "30 6 * * *",
+        "--times",
+        "3",
+        "report",
+    ]);
+    assert!(added.status.success(), "{:?}", text(&added));
+    let id = text(&added).0.trim().to_string();
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        (&row["when"], &row["tz"], &row["ends"], &row["registered"]),
+        (
+            &json!("30 6 * * *"),
+            &json!("UTC"),
+            &json!({ "times": 3 }),
+            &json!(true)
+        ),
+        "{row}"
+    );
+    let created = sandbox.scheduler_calls().len();
+
+    assert_eq!(
+        sandbox.ok(&["schedule", "pause", &id[..4]]).trim(),
+        format!("paused {id}")
+    );
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        (&row["state"], &row["registered"], &row["next"]),
+        (&json!("paused"), &json!(false), &Value::Null),
+        "{row}"
+    );
+    let entry_gone = if cfg!(windows) {
+        sandbox.scheduler_calls().last().unwrap()["args"]
+            == json!(["/Delete", "/TN", format!(r"azazel\{id}"), "/F"])
+    } else if cfg!(target_os = "macos") {
+        !sandbox
+            .path("home/Library/LaunchAgents")
+            .join(format!("dev.azazel.schedule.{id}.plist"))
+            .exists()
+    } else {
+        std::fs::read_to_string(sandbox.path("sched/crontab"))
+            .unwrap()
+            .is_empty()
+    };
+    assert!(entry_gone, "{:?}", sandbox.scheduler_calls());
+    assert!(sandbox.ok(&["schedule", "list"]).contains(" paused "));
+    let woken = sandbox.run(&["schedule", "run", &id, "--scheduled"]);
+    assert!(woken.status.success());
+    let (_, err) = text(&sandbox.run(&["schedule", "run", &id]));
+    assert!(err.contains("skipped: it is paused"), "{err}");
+    assert!(sandbox.ps().is_empty());
+
+    let resumed = sandbox.run(&["schedule", "resume", &id]);
+    let (out, err) = text(&resumed);
+    assert!(resumed.status.success(), "{err}");
+    assert_eq!(out.trim(), format!("resumed {id}"));
+    assert!(err.contains("next run "), "{err}");
+    let row = &sandbox.schedules()[0];
+    assert_eq!(
+        (&row["state"], &row["registered"]),
+        (&json!("active"), &json!(true)),
+        "{row}"
+    );
+    assert!(row["next"].is_string(), "{row}");
+    assert!(sandbox.scheduler_calls().len() > created + 1);
+    if cfg!(windows) {
+        assert_eq!(sandbox.scheduler_calls().last().unwrap()["args"][0], "/Create");
+    }
+}
+
+#[test]
+fn checks_ends_and_zones_that_make_no_sense_are_refused() {
+    let sandbox = Sandbox::new(&json!({ "lead": [] }));
+    let refused = |args: &[&str]| {
+        let mut all = vec!["--set", "schedule.register=false", "schedule", "add"];
+        all.extend(args);
+        let output = sandbox.run(&all);
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {:?}", text(&output));
+        text(&output).1
+    };
+    assert!(refused(&["--tz", "Mars/Base", "0 9 * * *", "go"]).contains("no time zone"));
+    assert!(refused(&["--tz", "UTC", "every", "10m", "go"]).contains("cron expression or `at`"));
+    assert!(
+        refused(&["--if", "true", "--if-matches", "(", "every", "10m", "go"])
+            .contains("not a regular expression")
+    );
+    assert!(refused(&["--if-is", "1", "every", "10m", "go"]).contains("--if"));
+    assert!(refused(&["--times", "0", "every", "10m", "go"]).contains("1 at least"));
+    assert!(refused(&["--ends-at", "2020-01-01 00:00", "every", "10m", "go"]).contains("in the past"));
+    assert!(sandbox.schedules().is_empty());
+}
+
+#[test]
+fn the_agent_schedules_checks_as_it_may_run_their_commands_and_pauses_and_resumes() {
+    let add = json!({
+        "action": "add", "when": "every 2h", "prompt": "look at the release",
+        "if": { "run": "curl -s https://example.com/version", "changes": true },
+        "ends": { "after": "7d", "times": 4 },
+    });
+    let script = |calls: &[Value]| {
+        let mut lead: Vec<Value> = calls
+            .iter()
+            .enumerate()
+            .map(|(n, input)| {
+                json!({ "reply": { "tool_calls": [{ "id": format!("c{n}"), "name": "schedule", "input": input }] } })
+            })
+            .collect();
+        lead.push(said("Done."));
+        json!({ "lead": lead })
+    };
+    let sandbox = Sandbox::new(&script(&[add]));
+    let run = |extra: &[&str]| -> Vec<String> {
+        let _ = std::fs::remove_file(sandbox.path("requests.jsonl"));
+        let mut args = vec!["--set", "schedule.register=false", "--mode", "auto"];
+        args.extend(extra);
+        args.extend(["-p", "watch the release"]);
+        let output = sandbox.run(&args);
+        assert!(output.status.success(), "{:?}", text(&output));
+        std::fs::read_to_string(sandbox.path("requests.jsonl"))
+            .unwrap()
+            .lines()
+            .skip(1)
+            .map(|line| {
+                let request = serde_json::from_str::<Value>(line).unwrap()["request"].clone();
+                let last = request["messages"].as_array().unwrap().last().unwrap().clone();
+                last["content"][0]["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect()
+    };
+
+    // A deny rule for `shell` refuses a check that runs what it denies, in any mode.
+    let results = run(&["--set", "permissions.deny=[\"shell(curl:*)\"]"]);
+    assert!(
+        results[0].contains("denied by rule `shell(curl:*)`"),
+        "{results:?}"
+    );
+    assert!(sandbox.schedules().is_empty());
+
+    // Without it the mode lets it through.
+    let results = run(&[]);
+    assert!(results[0].starts_with("schedule "), "{results:?}");
+    let row = &sandbox.schedules()[0];
+    let id = row["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        row["if"],
+        json!({ "run": "curl -s https://example.com/version", "changes": true }),
+        "{row}"
+    );
+    assert_eq!(row["ends"]["times"], json!(4), "{row}");
+    assert!(row["ends"]["at"].is_string(), "{row}");
+
+    // Paused and resumed by the agent.
+    std::fs::write(
+        sandbox.path("script.json"),
+        script(&[
+            json!({ "action": "pause", "id": id }),
+            json!({ "action": "list" }),
+            json!({ "action": "resume", "id": id }),
+        ])
+        .to_string(),
+    )
+    .unwrap();
+    let results = run(&[]);
+    assert_eq!(
+        results[0],
+        format!("paused schedule {id} (every 2h)"),
+        "{results:?}"
+    );
+    assert!(
+        results[1].contains(" paused ") && results[1].contains("not run yet"),
+        "{results:?}"
+    );
+    assert!(
+        results[2].starts_with(&format!("resumed {id} (every 2h)")),
+        "{results:?}"
+    );
+    assert_eq!(sandbox.schedules()[0]["state"], json!("active"));
+}

@@ -5,8 +5,11 @@
 //! by the clock is handed to the scheduler of the operating system ([`os`]), which starts
 //! `azazel schedule run <id> --scheduled` when it may be due; that run starts a background
 //! session with the prompt, or sends the prompt to the session the schedule names ([`fire`]).
-//! A trigger is watched by a session that is open in the project ([`triggers`]).
+//! A trigger is watched by a session that is open in the project ([`triggers`]). At each due
+//! time the schedule's checks decide, before any model is asked, whether its prompt runs, and its
+//! end whether it stops ([`check`]).
 
+pub mod check;
 pub mod fire;
 pub mod os;
 pub mod tool;
@@ -19,16 +22,18 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use azazel_core::config::ScheduleConfig;
+use azazel_core::config::{Config, ScheduleConfig};
+use azazel_core::process::Shell;
 use azazel_core::{Paths, SessionStore};
 use jiff::{Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-use crate::cli::{Cli, ScheduleAction};
+use crate::cli::{Cli, ScheduleAction, ScheduleLimits};
 use crate::print::{EXIT_FAILED, EXIT_OK, EXIT_USAGE};
 use crate::running::Lock;
+use check::{Check, Ends};
 use when::When;
 
 /// How long a change to the schedules waits for another process to finish its own.
@@ -123,6 +128,48 @@ mod stamp {
     }
 }
 
+/// Whether a schedule runs.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum State {
+    #[default]
+    Active,
+    /// Paused by hand: it does not run until it is resumed.
+    Paused,
+    /// Stopped by itself: its `until` check held, its end time passed, or it ran as many times as
+    /// it was to. It stays in the list, with why, until it is removed.
+    Ended,
+}
+
+impl fmt::Display for State {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            State::Active => "active",
+            State::Paused => "paused",
+            State::Ended => "ended",
+        })
+    }
+}
+
+/// What a schedule has besides its time and prompt: its checks, its end and its time zone.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Options {
+    pub if_check: Option<Check>,
+    pub until: Option<Check>,
+    pub ends: Option<Ends>,
+    /// The zone `when` was read in and a cron expression goes by.
+    pub tz: Option<String>,
+}
+
+/// The time now in the zone `tz` names, or in the local one.
+pub fn now_in(tz: Option<&str>) -> Result<Zoned, String> {
+    let now = Zoned::now();
+    match tz.map(str::trim).filter(|name| !name.is_empty()) {
+        Some(name) => Ok(now.with_time_zone(when::zone(name)?)),
+        None => Ok(now),
+    }
+}
+
 /// One schedule of a project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Schedule {
@@ -150,6 +197,22 @@ pub struct Schedule {
     /// The scheduler of the operating system has it.
     #[serde(default)]
     pub registered: bool,
+    /// Its prompt runs only when this check holds.
+    #[serde(default, rename = "if", skip_serializing_if = "Option::is_none")]
+    pub if_check: Option<Check>,
+    /// It stops once this check holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<Check>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ends: Option<Ends>,
+    /// The zone its cron expression goes by; the local one when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tz: Option<String>,
+    #[serde(default)]
+    pub state: State,
+    /// What its checks said the last time they ran.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_gate: Option<String>,
 }
 
 impl Schedule {
@@ -163,8 +226,36 @@ impl Schedule {
         }
     }
 
+    /// `now` in the zone the schedule goes by.
+    fn zoned(&self, now: &Zoned) -> Zoned {
+        match self.tz.as_deref().map(when::zone) {
+            Some(Ok(zone)) => now.with_time_zone(zone),
+            _ => now.clone(),
+        }
+    }
+
+    /// Whether a run the scheduler wakes at `now` is to go ahead, as far as the time goes.
+    pub fn due(&self, now: &Zoned) -> when::Due {
+        self.when.due(&self.zoned(now), self.last_run, self.created)
+    }
+
+    /// When it runs next, in the zone of `now`: never while it is paused or has ended, nor past
+    /// its end.
     fn next(&self, now: &Zoned) -> Option<Zoned> {
-        self.when.next(now, self.last_run, self.created)
+        if self.state != State::Active {
+            return None;
+        }
+        let next = self.when.next(&self.zoned(now), self.last_run, self.created)?;
+        let end = self.ends.as_ref().and_then(|ends| ends.at);
+        if end.is_some_and(|end| next.timestamp() > end) {
+            return None;
+        }
+        Some(next.with_time_zone(now.time_zone().clone()))
+    }
+
+    /// Whether it has checks that run before its prompt.
+    fn gated(&self) -> bool {
+        self.if_check.is_some() || self.until.is_some()
     }
 
     /// The schedule as one line of JSON, with its next run.
@@ -317,14 +408,17 @@ pub struct Scheduler {
     pub config: ScheduleConfig,
     /// See [`home_args`].
     pub home_args: Vec<String>,
+    /// What runs the checks: the shell the agents' commands run in.
+    pub shell: Shell,
 }
 
 impl Scheduler {
-    pub fn new(cli: &Cli, paths: &Paths, config: ScheduleConfig) -> Scheduler {
+    pub fn new(cli: &Cli, paths: &Paths, config: &Config) -> Scheduler {
         Scheduler {
             paths: paths.clone(),
-            config,
+            config: config.schedule.clone(),
             home_args: home_args(cli, paths),
+            shell: Shell::resolve(&config.tools.shell),
         }
     }
 
@@ -334,12 +428,26 @@ impl Scheduler {
 
     fn job(&self, schedule: &Schedule) -> Result<os::Job, String> {
         let zone = jiff::tz::TimeZone::system();
+        // The scheduler keeps local time: a cron expression of another zone wakes the run at its
+        // times as they are here, and the run decides in the expression's own zone.
+        let wake = match (&schedule.when, schedule.tz.as_deref()) {
+            (When::Cron(cron), Some(name)) => {
+                let theirs = when::zone(name)?;
+                let now = Timestamp::now();
+                let apart = zone.to_offset(now).seconds() - theirs.to_offset(now).seconds();
+                match theirs.iana_name().is_some() && theirs.iana_name() == zone.iana_name() {
+                    true => schedule.when.clone(),
+                    false => When::Cron(cron.shifted(apart / 60)),
+                }
+            }
+            (when, _) => when.clone(),
+        };
         let mut args = self.home_args.clone();
         args.extend(["--cwd".to_string(), schedule.cwd.to_string_lossy().into_owned()]);
         args.extend(["schedule", "run", &schedule.id, "--scheduled"].map(String::from));
         Ok(os::Job {
             id: schedule.id.clone(),
-            when: schedule.when.clone(),
+            when: wake,
             anchor: schedule.created.to_zoned(zone.clone()).datetime(),
             zone,
             program: std::env::current_exe().map_err(|e| format!("cannot find this program: {e}"))?,
@@ -363,10 +471,14 @@ impl Scheduler {
         prompt: &str,
         target: Target,
         args: Vec<String>,
+        options: Options,
     ) -> Result<Schedule, String> {
         let prompt = prompt.trim();
         if prompt.is_empty() {
             return Err("a schedule needs a prompt: what to do when it runs".to_string());
+        }
+        if options.tz.is_some() && !matches!(when, When::Cron(_) | When::At(_)) {
+            return Err("a time zone is for a cron expression or `at`".to_string());
         }
         if target == Target::Open && !when.is_trigger() {
             return Err(
@@ -388,6 +500,12 @@ impl Scheduler {
             last_host: None,
             runs: 0,
             registered: false,
+            if_check: options.if_check,
+            until: options.until,
+            ends: options.ends,
+            tz: options.tz,
+            state: State::Active,
+            last_gate: None,
         };
         if !schedule.when.is_trigger() && self.config.register {
             os::register(&self.job(&schedule)?).map_err(|e| {
@@ -425,6 +543,78 @@ impl Scheduler {
         Ok(schedule)
     }
 
+    /// Pauses the schedule `wanted` names: it does not run, and is out of the system's scheduler,
+    /// until it is resumed.
+    pub fn pause(&self, wanted: &str) -> Result<Schedule, String> {
+        let store = self.store();
+        let schedule = store.find(wanted)?;
+        match schedule.state {
+            State::Active => {}
+            State::Paused => return Err(format!("schedule {} is paused already", schedule.id)),
+            State::Ended => return Err(ended_already(&schedule)),
+        }
+        if schedule.registered {
+            os::unregister(&schedule.id)?;
+        }
+        self.set(&schedule.id, |kept| {
+            kept.state = State::Paused;
+            kept.registered = false;
+        })
+    }
+
+    /// Lets a paused schedule run again, handing it back to the system's scheduler.
+    pub fn resume(&self, wanted: &str) -> Result<Schedule, String> {
+        let store = self.store();
+        let schedule = store.find(wanted)?;
+        match schedule.state {
+            State::Paused => {}
+            State::Active => return Err(format!("schedule {} is not paused", schedule.id)),
+            State::Ended => return Err(ended_already(&schedule)),
+        }
+        let register = !schedule.when.is_trigger() && self.config.register;
+        if register {
+            os::register(&self.job(&schedule)?)?;
+        }
+        self.set(&schedule.id, |kept| {
+            kept.state = State::Active;
+            kept.registered = register;
+        })
+    }
+
+    /// Stops the schedule for good, saying why; it stays in the list until it is removed.
+    pub fn end(&self, schedule: &Schedule, why: &str, at: Timestamp) {
+        if schedule.registered
+            && let Err(e) = os::unregister(&schedule.id)
+        {
+            tracing::warn!(
+                "could not take schedule {} out of the system's scheduler: {e}",
+                schedule.id
+            );
+        }
+        let ended = self.set(&schedule.id, |kept| {
+            kept.state = State::Ended;
+            kept.registered = false;
+            kept.last_run = Some(at);
+            kept.last_result = Some(why.to_string());
+        });
+        if let Err(e) = ended {
+            tracing::warn!("could not note the end of schedule {}: {e}", schedule.id);
+        }
+    }
+
+    /// Changes the schedule `id` and returns it as it is then.
+    fn set(&self, id: &str, change: impl FnOnce(&mut Schedule)) -> Result<Schedule, String> {
+        let store = self.store();
+        store
+            .update(|all| {
+                let kept = all.iter_mut().find(|kept| kept.id == id)?;
+                change(kept);
+                Some(kept.clone())
+            })
+            .map_err(|e| format!("cannot write {}: {e}", store.file().display()))?
+            .ok_or_else(|| format!("there is no schedule `{id}` in this project"))
+    }
+
     /// One line about a schedule that was just added.
     pub fn added_line(&self, schedule: &Schedule) -> String {
         let now = Zoned::now();
@@ -452,23 +642,35 @@ impl Scheduler {
     }
 }
 
+fn ended_already(schedule: &Schedule) -> String {
+    format!(
+        "schedule {} has ended ({}); add it again to run it again",
+        schedule.id,
+        schedule.last_result.as_deref().unwrap_or("ended")
+    )
+}
+
 /// The schedules as a table, for `azazel schedule list` and the `schedule` tool.
 pub fn table(schedules: &[Schedule], now: &Zoned) -> String {
     if schedules.is_empty() {
         return "this project has no schedule".to_string();
     }
     let shown = |at: Option<Zoned>| at.map_or_else(|| "-".to_string(), |at| when::shown(&at));
-    let rows: Vec<[String; 7]> = schedules
+    let rows: Vec<[String; 9]> = schedules
         .iter()
         .map(|schedule| {
             [
                 schedule.id.clone(),
-                match &schedule.when {
-                    When::At(at) => format!("at {}", when::shown(&at.to_zoned(now.time_zone().clone()))),
-                    when => when.to_string(),
+                match (&schedule.when, &schedule.tz) {
+                    (When::At(at), _) => format!("at {}", when::shown(&at.to_zoned(now.time_zone().clone()))),
+                    (when, Some(tz)) => format!("{when} ({tz})"),
+                    (when, None) => when.to_string(),
                 },
+                schedule.state.to_string(),
                 match (&schedule.when, schedule.next(now)) {
-                    (when, _) if when.is_trigger() => "when it happens".to_string(),
+                    (when, _) if when.is_trigger() && schedule.state == State::Active => {
+                        "when it happens".to_string()
+                    }
                     (_, next) => shown(next),
                 },
                 match (&schedule.last_run, &schedule.last_result) {
@@ -478,13 +680,22 @@ pub fn table(schedules: &[Schedule], now: &Zoned) -> String {
                     (None, Some(result)) => result.clone(),
                     _ => "-".to_string(),
                 },
+                schedule
+                    .last_gate
+                    .clone()
+                    .unwrap_or_else(|| match schedule.gated() {
+                        true => "not run yet".to_string(),
+                        false => "-".to_string(),
+                    }),
                 schedule.runs.to_string(),
                 schedule.target.to_string(),
                 schedule.prompt_shown(),
             ]
         })
         .collect();
-    let heads = ["ID", "WHEN", "NEXT", "LAST", "RUNS", "TARGET", "PROMPT"];
+    let heads = [
+        "ID", "WHEN", "STATE", "NEXT", "LAST", "CHECKS", "RUNS", "TARGET", "PROMPT",
+    ];
     let widths: Vec<usize> = (0..heads.len())
         .map(|column| {
             rows.iter()
@@ -506,7 +717,9 @@ pub fn table(schedules: &[Schedule], now: &Zoned) -> String {
     out.extend(rows.iter().map(|row| line(row)));
     let unregistered: Vec<&str> = schedules
         .iter()
-        .filter(|schedule| !schedule.when.is_trigger() && !schedule.registered)
+        .filter(|schedule| {
+            !schedule.when.is_trigger() && !schedule.registered && schedule.state == State::Active
+        })
         .map(|schedule| schedule.id.as_str())
         .collect();
     if !unregistered.is_empty() {
@@ -536,7 +749,7 @@ pub fn session_id(paths: &Paths, wanted: &str) -> Result<String, String> {
 }
 
 /// `azazel schedule …`.
-pub async fn run(cli: &Cli, paths: &Paths, config: ScheduleConfig, action: &ScheduleAction) -> u8 {
+pub async fn run(cli: &Cli, paths: &Paths, config: &Config, action: &ScheduleAction) -> u8 {
     let scheduler = Scheduler::new(cli, paths, config);
     let outcome = match action {
         ScheduleAction::Add {
@@ -544,7 +757,16 @@ pub async fn run(cli: &Cli, paths: &Paths, config: ScheduleConfig, action: &Sche
             session,
             new,
             spec,
-        } => add(cli, &scheduler, on.as_deref(), session.as_deref(), *new, spec),
+            limits,
+        } => add(
+            cli,
+            &scheduler,
+            on.as_deref(),
+            session.as_deref(),
+            *new,
+            spec,
+            limits,
+        ),
         ScheduleAction::List { json } => {
             let now = Zoned::now();
             let schedules = scheduler.store().list();
@@ -559,6 +781,17 @@ pub async fn run(cli: &Cli, paths: &Paths, config: ScheduleConfig, action: &Sche
         ScheduleAction::Rm { id } => scheduler
             .remove(id)
             .map(|schedule| println!("removed {}", schedule.id))
+            .map_err(Problem::Failed),
+        ScheduleAction::Pause { id } => scheduler
+            .pause(id)
+            .map(|schedule| println!("paused {}", schedule.id))
+            .map_err(Problem::Failed),
+        ScheduleAction::Resume { id } => scheduler
+            .resume(id)
+            .map(|schedule| {
+                println!("resumed {}", schedule.id);
+                eprintln!("{}", scheduler.added_line(&schedule));
+            })
             .map_err(Problem::Failed),
         ScheduleAction::Run { id, due, scheduled } => {
             return fire::command(&scheduler, id.as_deref(), *due, *scheduled).await;
@@ -588,6 +821,37 @@ impl From<String> for Problem {
     }
 }
 
+/// The checks, end and zone `azazel schedule add` was given.
+fn options(limits: &ScheduleLimits) -> Result<Options, String> {
+    let check = |run: &Option<String>, is, matches: &Option<String>, changes| {
+        run.as_deref()
+            .map(|run| Check::new(run, is, matches.as_deref(), changes))
+            .transpose()
+    };
+    let now = now_in(limits.tz.as_deref())?;
+    Ok(Options {
+        if_check: check(
+            &limits.if_run,
+            limits.if_is,
+            &limits.if_matches,
+            limits.if_changes,
+        )?,
+        until: check(
+            &limits.until_run,
+            limits.until_is,
+            &limits.until_matches,
+            limits.until_changes,
+        )?,
+        ends: Ends::parse(
+            limits.ends_after.as_deref(),
+            limits.ends_at.as_deref(),
+            limits.times,
+            &now,
+        )?,
+        tz: limits.tz.as_deref().map(str::trim).map(str::to_string),
+    })
+}
+
 fn add(
     cli: &Cli,
     scheduler: &Scheduler,
@@ -595,13 +859,15 @@ fn add(
     session: Option<&str>,
     new: bool,
     spec: &[String],
+    limits: &ScheduleLimits,
 ) -> Result<(), Problem> {
     let usage = "azazel schedule add \"0 9 * * 1-5\" \"<prompt>\", add every 10m \"<prompt>\", add at +2h \
                  \"<prompt>\", or add --on ci-failure|file:<glob> \"<prompt>\"";
     let Some((prompt, time)) = spec.split_last() else {
         return Err(Problem::Usage(usage.to_string()));
     };
-    let now = Zoned::now();
+    let options = options(limits).map_err(Problem::Usage)?;
+    let now = now_in(options.tz.as_deref()).map_err(Problem::Usage)?;
     let when = match (on, time.is_empty()) {
         (Some(event), true) => When::parse(&format!("on {event}"), &now),
         (Some(_), false) => Err(format!("a schedule runs at a time or on --on, not both; {usage}")),
@@ -609,6 +875,11 @@ fn add(
         (None, false) => When::parse(&time.join(" "), &now),
     }
     .map_err(Problem::Usage)?;
+    if options.tz.is_some() && !matches!(when, When::Cron(_) | When::At(_)) {
+        return Err(Problem::Usage(
+            "--tz is for a cron expression or `at`".to_string(),
+        ));
+    }
     let target = match (session, new, when.is_trigger()) {
         (Some(wanted), _, _) => {
             Target::Session(session_id(&scheduler.paths, wanted).map_err(Problem::Usage)?)
@@ -616,7 +887,7 @@ fn add(
         (None, false, true) => Target::Open,
         (None, _, _) => Target::New,
     };
-    let schedule = scheduler.add(when, prompt, target, run_args(cli))?;
+    let schedule = scheduler.add(when, prompt, target, run_args(cli), options)?;
     println!("{}", schedule.id);
     eprintln!("{}", scheduler.added_line(&schedule));
     Ok(())
@@ -628,7 +899,7 @@ mod tests {
 
     use super::*;
 
-    fn scheduler(dir: &Path) -> Scheduler {
+    pub(super) fn scheduler(dir: &Path) -> Scheduler {
         let home = dir.join("home");
         let project = dir.join("project");
         std::fs::create_dir_all(project.join(".git")).unwrap();
@@ -640,6 +911,7 @@ mod tests {
                 ..ScheduleConfig::default()
             },
             home_args: Vec::new(),
+            shell: Shell::resolve(""),
         }
     }
 
@@ -654,10 +926,17 @@ mod tests {
                 "  check the deps\n",
                 Target::New,
                 vec!["--mode".into(), "auto".into()],
+                Options::default(),
             )
             .unwrap();
         let trigger = scheduler
-            .add(When::CiFailure, "fix the build", Target::Open, Vec::new())
+            .add(
+                When::CiFailure,
+                "fix the build",
+                Target::Open,
+                Vec::new(),
+                Options::default(),
+            )
             .unwrap();
         assert_eq!(every.prompt, "check the deps");
         assert!(!every.registered && every.id.len() == 8 && every.id != trigger.id);
@@ -704,6 +983,7 @@ mod tests {
             "go",
             Target::New,
             Vec::new(),
+            Options::default(),
         );
         assert!(refused.unwrap_err().starts_with("cannot write "));
         assert_eq!(
@@ -719,15 +999,25 @@ mod tests {
         let every = When::Every(Duration::from_secs(600));
         assert!(
             scheduler
-                .add(every.clone(), "  ", Target::New, Vec::new())
+                .add(every.clone(), "  ", Target::New, Vec::new(), Options::default())
                 .unwrap_err()
                 .contains("needs a prompt")
         );
         assert!(
             scheduler
-                .add(every, "go", Target::Open, Vec::new())
+                .add(every.clone(), "go", Target::Open, Vec::new(), Options::default())
                 .unwrap_err()
                 .contains("goes by the clock")
+        );
+        let zoned = Options {
+            tz: Some("Europe/Berlin".into()),
+            ..Options::default()
+        };
+        assert!(
+            scheduler
+                .add(every, "go", Target::New, Vec::new(), zoned)
+                .unwrap_err()
+                .contains("a time zone is for a cron expression")
         );
         assert_eq!(scheduler.store().list(), []);
     }
@@ -748,6 +1038,12 @@ mod tests {
             last_host: None,
             runs: 0,
             registered: true,
+            if_check: None,
+            until: None,
+            ends: None,
+            tz: None,
+            state: State::Active,
+            last_gate: None,
         };
         let mut daily = schedule("aa11aa11", "0 9 * * *", Target::New, "check the deps\nand report");
         daily.last_run = Some("2026-11-13T09:00:02Z".parse().unwrap());
@@ -761,12 +1057,21 @@ mod tests {
         );
         every.registered = false;
         let trigger = schedule("cc33cc33", "on file:src/**/*.rs", Target::Open, "run the tests");
+        let mut gated = schedule("dd44dd44", "0 9 * * *", Target::New, "read the release notes");
+        gated.tz = Some("America/New_York".into());
+        gated.if_check = Some(Check::new("curl -s example.com/v", None, None, true).unwrap());
+        gated.last_gate = Some("if did not hold (printed the same as the time before)".into());
+        let mut paused = schedule("ee55ee55", "every 1h", Target::New, "tidy up");
+        paused.state = State::Paused;
+        paused.registered = false;
         assert_eq!(
-            table(&[daily, every, trigger], &now),
-            "ID        WHEN                 NEXT              LAST                               RUNS  TARGET            PROMPT\n\
-             aa11aa11  0 9 * * *            2026-11-14 09:00  2026-11-13 09:00 started 1a2b3c4d  3     new               check the deps…\n\
-             bb22bb22  every 45m            2026-11-13 10:15  -                                  0     session:0190aaaa  look at the queue\n\
-             cc33cc33  on file:src/**/*.rs  when it happens   -                                  0     open              run the tests\n\
+            table(&[daily, every, trigger, gated, paused], &now),
+            "ID        WHEN                          STATE   NEXT              LAST                               CHECKS                                                 RUNS  TARGET            PROMPT\n\
+             aa11aa11  0 9 * * *                     active  2026-11-14 09:00  2026-11-13 09:00 started 1a2b3c4d  -                                                      3     new               check the deps…\n\
+             bb22bb22  every 45m                     active  2026-11-13 10:15  -                                  -                                                      0     session:0190aaaa  look at the queue\n\
+             cc33cc33  on file:src/**/*.rs           active  when it happens   -                                  -                                                      0     open              run the tests\n\
+             dd44dd44  0 9 * * * (America/New_York)  active  2026-11-13 14:00  -                                  if did not hold (printed the same as the time before)  0     new               read the release notes\n\
+             ee55ee55  every 1h                      paused  -                 -                                  -                                                      0     new               tidy up\n\
              not handed to the system's scheduler: bb22bb22; `azazel schedule run --due` runs what is due"
         );
         assert_eq!(table(&[], &now), "this project has no schedule");

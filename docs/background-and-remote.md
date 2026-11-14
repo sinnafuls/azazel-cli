@@ -184,15 +184,19 @@ azazel schedule add every 10m "look at the deploy and say what changed"
 azazel schedule add at +2h "run the test suite again and summarise what still fails"
 azazel schedule list
 azazel schedule run 1a2b        # now, whatever the time is
+azazel schedule pause 1a2b
+azazel schedule resume 1a2b
 azazel schedule rm 1a2b
 ```
 
 | Command | What it does |
 |---|---|
 | `azazel [flags] schedule add <when> "<prompt>" [--session <id> \| --new]` | Adds a schedule and prints its id. The flags of an ordinary run that say how to work (`--model`, `--thinking`, `--mode`, `--set`, `--add-dir`, `--tools`, ...) are kept with it: every run works that way |
-| `azazel schedule list [--json]` | The schedules of this project: id, when, the next run, what the last run came to, how often it ran, where the prompt goes, the prompt |
+| `azazel schedule list [--json]` | The schedules of this project: id, when, state (`active`, `paused`, `ended`), the next run, what the last run came to, what its [checks](#checks-and-ends) said the last time, how often it ran, where the prompt goes, the prompt |
+| `azazel schedule pause <id>` | Stops a schedule from running, and takes it out of the system's scheduler, until it is resumed |
+| `azazel schedule resume <id>` | Lets a paused schedule run again and hands it back to the system's scheduler. An ended schedule is not resumed: add it again |
 | `azazel schedule rm <id>` | Removes a schedule, from the system's scheduler too |
-| `azazel schedule run <id>` | Runs it now. `--due` runs it only when it is due; `azazel schedule run --due` runs every schedule of the project that is due at this moment |
+| `azazel schedule run <id>` | Runs it now, its checks first. `--due` runs it only when it is due; `azazel schedule run --due` runs every schedule of the project that is due at this moment. A paused or ended schedule does not run |
 
 `<when>` is one of:
 
@@ -201,6 +205,11 @@ azazel schedule rm 1a2b
 | `"<minute> <hour> <day> <month> <weekday>"` | A cron expression, in local time: lists (`1,15`), ranges (`9-17`), steps (`*/15`, `5/20`), month and weekday names (`jan`, `mon-fri`), `7` or `0` for Sunday; when both days are given, either one counts. `@hourly`, `@daily`, `@weekly`, `@monthly` and `@yearly` work too. Quote it: a shell expands `*` |
 | `every <length>` | Again and again, counted from when the schedule was added: `every 10m`, `every 2h`, `every 1d`, `every 1h30m`. Whole minutes, from one minute to 31 days |
 | `at <time>` | Once: `at +2h`, `at 17:30` (the next time the clock shows it), `at 2026-12-01 09:00`, or a full timestamp. The schedule is removed after its run |
+
+A cron expression and an `at` time are in local time unless `--tz <zone>` names another zone
+(`azazel schedule add --tz America/New_York "0 9 * * 1-5" "<prompt>"`), as the IANA database names it.
+The system's scheduler keeps local time: it wakes a run of a cron expression of another zone at its times
+as they are here and an hour either side (for summer time), and azazel decides in the expression's zone.
 
 Where the prompt goes:
 
@@ -215,6 +224,43 @@ Where the prompt goes:
 
 Schedules are kept per project, in `~/.azazel/projects/<project>/schedules.json`, not in the repository:
 a checkout never brings schedules with it.
+
+### Checks and ends
+
+A schedule can run a shell command at each due time, before any model is asked, and go by its result:
+
+```sh
+azazel schedule add every 10m --if "git fetch -q && git status -sb | grep -q behind" "pull, rebuild and run the tests"
+azazel schedule add every 5m --until "gh pr view 42 --json state -q .state | grep -q MERGED" "look at the review comments on PR 42"
+azazel schedule add every 30m --if "curl -s https://example.com/version" --if-changes "a new version is out: read its notes"
+azazel schedule add "0 9 * * *" --times 5 --ends-after 7d "summarise yesterday's issues"
+```
+
+| Flag | Effect |
+|---|---|
+| `azazel schedule add --if <command>` | The prompt runs only when the command holds; otherwise the run is skipped, and the list says why |
+| `azazel schedule add --until <command>` | Runs first; once it holds, the schedule ends and its prompt does not run |
+| `azazel schedule add --if-is <code>`, `--until-is <code>` | The exit code the command holds with: 0 unless given |
+| `azazel schedule add --if-matches <regex>`, `--until-matches <regex>` | It holds only when what it prints matches; `^` and `$` are the ends of a line |
+| `azazel schedule add --if-changes`, `--until-changes` | It holds only when it prints something else than the time before; never on its first run, which is what the next is compared with |
+| `azazel schedule add --ends-after <length>` | The schedule ends this long after it is added: `2h`, `7d` |
+| `azazel schedule add --ends-at <time>` | The schedule ends at this time, written as for `at`; with `--ends-after` too, the earlier counts |
+| `azazel schedule add --times <n>` | The schedule ends once its prompt has run this many times |
+| `azazel schedule add --tz <zone>` | The zone of a cron expression or `at` time |
+
+A check holds when every condition given holds. It runs in the schedule's directory with the shell the
+agents' commands run in (`[tools] shell`), for at most 60 seconds; one that cannot run or takes longer
+does not hold. A trigger's checks run when it happens, in the session that saw it.
+
+An ended schedule (its `until` held, its end time passed, or it ran its number of times) leaves the
+system's scheduler and stays in the list, marked `ended` with the reason, until you remove it. An `at`
+whose `if` does not hold at its time ends the same way.
+
+A check runs later with nobody watching, as you: `azazel schedule add` is you typing it. When an agent adds
+a schedule with the [`schedule` tool](tools.md#schedules), each check's command is asked about as a
+`shell` command would be: the rules for `shell` and the mode decide, deny rules refuse it, and a
+destructive command is asked about in every mode. A project that is not trusted cannot allow it with
+rules of its own: its `permissions.allow` counts only once the project is trusted.
 
 ### Who starts a run
 
@@ -275,8 +321,8 @@ a `file:` trigger: they are the lead's own doing.
 
 ### The `schedule` tool and `/loop`
 
-An agent can add, list and remove schedules with the [`schedule` tool](tools.md#schedules); adding and
-removing ask for permission like a command. Inside a session, [`/loop`](tui.md#loops) sends a prompt
+An agent can add, list, pause, resume and remove schedules with the [`schedule` tool](tools.md#schedules);
+all but listing ask for permission like a command, and the commands of the checks like `shell` commands. Inside a session, [`/loop`](tui.md#loops) sends a prompt
 again and again without a schedule.
 
 ## Remote work over SSH

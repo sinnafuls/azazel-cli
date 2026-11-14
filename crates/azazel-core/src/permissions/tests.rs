@@ -1129,6 +1129,90 @@ async fn bypass_keeps_deny_rules_and_the_push_guard_for_what_is_typed() {
     );
 }
 
+/// A tool whose calls have `run` run later with nobody there, like the checks of a schedule.
+struct Later;
+
+#[async_trait]
+impl Tool for Later {
+    fn name(&self) -> &str {
+        "schedule"
+    }
+    fn description(&self) -> &str {
+        "fake"
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Exec
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        vec!["every 1h".to_string()]
+    }
+    fn commands(&self, input: &Value) -> Vec<String> {
+        input
+            .get("run")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text("ran")
+    }
+}
+
+#[tokio::test]
+async fn what_a_call_runs_later_is_decided_as_the_shell_command_it_is() {
+    async fn later(rig: &Rig, run: &[&str]) -> Result<(), String> {
+        match rig
+            .gate
+            .before(&agent(), &Later, "c1", &json!({ "run": run }))
+            .await
+        {
+            GateDecision::Allow { .. } => Ok(()),
+            GateDecision::Deny { reason } => Err(reason),
+        }
+    }
+    // The tool is allowed; what it runs later needs what `shell` would.
+    let allowed = rig("[permissions]\nallow = [\"schedule\", \"shell(git status:*)\"]\n");
+    assert_eq!(later(&allowed, &[]).await, Ok(()));
+    assert_eq!(later(&allowed, &["git status -sb"]).await, Ok(()));
+    assert_eq!(
+        later(&allowed, &["git status", "make deploy"]).await.unwrap_err(),
+        "permission required for schedule: re-run with --mode auto or add an allow rule"
+    );
+    // A deny rule for `shell` refuses it, and a destructive command is asked about, in any mode.
+    let rig = rig("[permissions]\nmode = \"auto\"\ndeny = [\"shell(curl:*)\"]\n");
+    assert_eq!(later(&rig, &["test -f done"]).await, Ok(()));
+    assert!(
+        later(&rig, &["curl -s example.com"])
+            .await
+            .unwrap_err()
+            .starts_with("denied by rule `shell(curl:*)`")
+    );
+    assert!(
+        later(&rig, &["git reset --hard"])
+            .await
+            .unwrap_err()
+            .starts_with("this command discards uncommitted changes")
+    );
+    let answers = Arc::new(Answers(
+        std::sync::Mutex::new(vec![ApprovalDecision::AllowOnce]),
+        std::sync::Mutex::default(),
+    ));
+    rig.services.insert(Arc::new(Ui(answers.clone())));
+    assert_eq!(later(&rig, &["git reset --hard"]).await, Ok(()));
+    let requests = answers.1.lock().unwrap();
+    assert!(requests[0].destructive && requests[0].rule.is_none());
+    assert_eq!(
+        (requests[0].tool.as_str(), &requests[0].subjects),
+        ("schedule", &vec!["every 1h".to_string()])
+    );
+}
+
 // ---------------------------------------------------------------- destructive commands
 
 const DESTRUCTIVE: [&str; 17] = [
