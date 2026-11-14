@@ -945,12 +945,17 @@ impl Team {
 
         let (lead, session) = inner.lead().ok_or("no session is open")?;
         let session_id = lead.info().session_id.clone();
+        // An earlier process of this session (or the chat it was imported from) may have left an
+        // agent's transcript under a name: a new agent takes the next free name instead.
+        let transcripts = deps.paths.agent_transcripts_dir(&session.id());
+        let on_disk = |id: &str| transcripts.join(format!("{id}.jsonl")).exists();
         let reservation = {
             let members = inner.members();
             let mut reserved = inner.reserved.lock().unwrap_or_else(PoisonError::into_inner);
             let taken = |id: &str| {
                 id == LEAD || reserved.contains(id) || members.iter().any(|member| member.info.id == id)
             };
+            let free = |id: &str| !taken(id) && !on_disk(id);
             let id = match &request.name {
                 Some(name) if !valid_id(name) => {
                     return Err(format!(
@@ -958,10 +963,14 @@ impl Team {
                     ));
                 }
                 Some(name) if taken(name) => return Err(format!("an agent named `{name}` already exists")),
+                Some(name) if on_disk(name) => (2..)
+                    .map(|n| format!("{name}-{n}"))
+                    .find(|candidate| free(candidate))
+                    .unwrap_or_default(),
                 Some(name) => name.clone(),
                 None => (1..)
                     .map(|n| format!("{}-{n}", def.name))
-                    .find(|candidate| !taken(candidate))
+                    .find(|candidate| free(candidate))
                     .unwrap_or_default(),
             };
             reserved.insert(id.clone());
