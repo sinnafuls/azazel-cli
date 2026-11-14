@@ -9,6 +9,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
+use crate::common::call;
 use serde_json::{Value, json};
 
 /// An `azazel rpc` process answering from a script, and the lines it writes.
@@ -134,10 +135,6 @@ impl Drop for Client {
 
 fn reply(text: &str, usage: Value) -> Value {
     json!({ "reply": { "text": text, "usage": usage } })
-}
-
-fn call(id: &str, name: &str, input: Value) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": name, "input": input }] } })
 }
 
 /// The parts of `list` (a request's `system` or `tail`) as `(name, text)`.

@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+use crate::common::{call, stderr, stdout, system, text};
 use assert_cmd::Command;
 use azazel_core::TrustStore;
 use serde_json::{Value, json};
@@ -100,22 +101,6 @@ impl Sandbox {
     }
 }
 
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn text(reply: &str) -> Value {
-    json!({ "reply": { "text": reply } })
-}
-
-fn call(id: &str, tool: &str, input: Value) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": tool, "input": input }] } })
-}
-
 /// The text of every block of every message of a request, tool results included.
 fn message_texts(request: &Value) -> Vec<String> {
     fn collect(value: &Value, out: &mut Vec<String>) {
@@ -133,16 +118,6 @@ fn message_texts(request: &Value) -> Vec<String> {
     let mut out = Vec::new();
     collect(&request["messages"], &mut out);
     out
-}
-
-fn system(request: &Value) -> String {
-    request["system"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|part| part["text"].as_str().unwrap())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 #[test]

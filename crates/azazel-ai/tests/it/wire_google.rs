@@ -293,7 +293,9 @@ fn thinking_tool_fixture_keeps_block_order_signature_and_usage() {
 
 #[test]
 fn midstream_error_fixture_reports_overloaded_with_partial_text() {
-    let events = decode(include_bytes!("../fixtures/google-generative/midstream_error.sse"));
+    let events = decode(include_bytes!(
+        "../fixtures/google-generative/midstream_error.sse"
+    ));
     insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
 
     assert_eq!(events[0], StreamEvent::Start);

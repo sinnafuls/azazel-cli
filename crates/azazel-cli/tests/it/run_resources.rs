@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use crate::common::{fixture_program, stderr, stdout};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -119,14 +120,6 @@ impl Sandbox {
     fn told(&self, text: &str) -> bool {
         self.requests()[0]["system"].to_string().contains(text)
     }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 fn succeeded(output: &Output) {
@@ -251,26 +244,7 @@ fn a_skill_named_on_the_command_line_is_offered_even_with_skills_off() {
 fn the_servers_of_an_mcp_file_named_on_the_command_line_are_used_for_that_run() {
     use std::sync::LazyLock;
 
-    /// The `mcp-echo` fixture server, built on first use into the directory this test runs from.
-    static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-        // <target>/<profile>/deps/<this test>
-        let test = std::env::current_exe().unwrap();
-        let profile_dir = test.parent().unwrap().parent().unwrap();
-        let mut build = std::process::Command::new(env!("CARGO"));
-        build.args(["build", "--quiet", "--package", "mcp-echo", "--target-dir"]);
-        build.arg(profile_dir.parent().unwrap());
-        if profile_dir.file_name().unwrap() == "release" {
-            build.arg("--release");
-        }
-        build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-        assert!(
-            build.status().unwrap().success(),
-            "could not build the mcp-echo fixture"
-        );
-        let binary = profile_dir.join(format!("mcp-echo{}", std::env::consts::EXE_SUFFIX));
-        assert!(binary.is_file(), "{} is missing", binary.display());
-        binary
-    });
+    static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("mcp-echo"));
 
     let sandbox = Sandbox::new();
     let servers = json!({ "mcpServers": { "echo": { "command": FIXTURE.as_path() } } });

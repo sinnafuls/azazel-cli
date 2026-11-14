@@ -8,6 +8,7 @@ use std::process::{Child, ChildStdin, Output, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
+use crate::common::{call, stderr, text};
 use assert_cmd::Command;
 use azazel_core::TrustStore;
 use serde_json::{Value, json};
@@ -109,18 +110,6 @@ fn collect(value: &Value, out: &mut Vec<String>) {
         Value::Array(items) => items.iter().for_each(|inner| collect(inner, out)),
         _ => {}
     }
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn text(reply: &str) -> Value {
-    json!({ "reply": { "text": reply } })
-}
-
-fn call(id: &str, tool: &str, input: Value) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": tool, "input": input }] } })
 }
 
 #[test]

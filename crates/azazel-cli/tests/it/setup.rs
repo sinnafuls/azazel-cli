@@ -1,6 +1,6 @@
 use std::path::PathBuf;
-use std::process::Output;
 
+use crate::common::stdout;
 use assert_cmd::Command;
 use azazel_ai::providers::presets::presets;
 
@@ -44,10 +44,6 @@ impl Sandbox {
         }
         command
     }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 #[test]

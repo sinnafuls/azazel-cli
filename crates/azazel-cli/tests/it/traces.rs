@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::common::stdout;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -125,10 +126,6 @@ async fn run(sandbox: Sandbox, think_ms: u64) -> (Sandbox, Output) {
     })
     .await
     .unwrap()
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
 fn attribute<'a>(span: &'a Value, key: &str) -> &'a Value {

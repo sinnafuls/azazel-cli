@@ -8,6 +8,7 @@ mod background;
 mod cache;
 mod checks;
 mod client;
+mod common;
 mod context;
 mod durable;
 mod goal;

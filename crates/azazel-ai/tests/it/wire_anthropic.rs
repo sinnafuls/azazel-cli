@@ -311,7 +311,9 @@ fn thinking_tool_fixture_keeps_signature_and_block_order() {
 
 #[test]
 fn midstream_error_fixture_ends_with_overloaded_and_completed_blocks() {
-    let events = decode(include_bytes!("../fixtures/anthropic-messages/midstream_error.sse"));
+    let events = decode(include_bytes!(
+        "../fixtures/anthropic-messages/midstream_error.sse"
+    ));
     insta::assert_snapshot!(
         "anthropic_midstream_error",
         serde_json::to_string_pretty(&events).unwrap()

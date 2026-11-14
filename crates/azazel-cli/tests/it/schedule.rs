@@ -9,29 +9,12 @@ use std::process::{Command, Output, Stdio};
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
+use crate::common::fixture_program;
 use serde_json::{Value, json};
 
 const LIMIT: Duration = Duration::from_secs(60);
 
-/// The `fake-sched` fixture program, built on first use into the directory this test runs from.
-static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-sched", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-sched fixture"
-    );
-    let binary = profile_dir.join(format!("fake-sched{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-sched"));
 
 /// A home and a project of its own, and a directory of programs put first on `PATH`: the
 /// fixture under the names of the system's scheduler and of `gh`. Background sessions still

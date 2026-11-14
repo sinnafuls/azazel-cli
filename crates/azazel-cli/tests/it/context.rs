@@ -8,6 +8,7 @@ use std::process::{Child, ChildStdin, Output, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
+use crate::common::{call, stderr, stdout, text};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -115,22 +116,6 @@ impl Sandbox {
         body.push_str(&format!("the {marker} lives in {name}\n"));
         std::fs::write(self.project().join(name), body).unwrap();
     }
-}
-
-fn text(text: &str) -> Value {
-    json!({ "reply": { "text": text } })
-}
-
-fn call(id: &str, name: &str, input: Value) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": name, "input": input }] } })
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// The text of every tool result of a request, in order.

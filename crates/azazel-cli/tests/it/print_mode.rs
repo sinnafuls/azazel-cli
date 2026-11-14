@@ -1,13 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
+use crate::common::{json_lines, script_fixture as fixture};
 use assert_cmd::Command;
-use serde_json::Value;
-
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/scripts")
-        .join(name)
-}
 
 struct Sandbox {
     dir: tempfile::TempDir,
@@ -57,13 +51,6 @@ impl Sandbox {
         }
         files
     }
-}
-
-fn json_lines(bytes: &[u8]) -> Vec<Value> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
 }
 
 #[test]

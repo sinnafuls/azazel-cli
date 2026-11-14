@@ -2,33 +2,15 @@
 //! edits, and with ast-grep on `PATH` it can search and rewrite by syntax tree, its writes
 //! passing the permission rules like any other.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Output;
 use std::sync::LazyLock;
 
+use crate::common::fixture_program;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
-/// The `fake-sg` fixture program, built on first use into the directory this test runs from.
-static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = std::process::Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-sg", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-sg fixture"
-    );
-    let binary = profile_dir.join(format!("fake-sg{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-sg"));
 
 struct Sandbox {
     dir: tempfile::TempDir,

@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+use crate::common::{call, stderr, stdout, system, text, tool_names};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -82,41 +83,6 @@ impl Sandbox {
         assert_eq!(files.len(), 1, "{files:?}");
         std::fs::read_to_string(&files[0]).unwrap()
     }
-}
-
-fn text(text: &str) -> Value {
-    json!({ "reply": { "text": text } })
-}
-
-fn call(id: &str, name: &str, input: Value) -> Value {
-    json!({ "reply": { "tool_calls": [{ "id": id, "name": name, "input": input }] } })
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
-fn tool_names(request: &Value) -> Vec<String> {
-    request["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_string())
-        .collect()
-}
-
-fn system(request: &Value) -> String {
-    request["system"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|part| part["text"].as_str().unwrap())
-        .collect::<Vec<_>>()
-        .join("\n\n")
 }
 
 /// The text of every message of the user's side, in order.

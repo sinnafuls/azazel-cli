@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::common::trimmed;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
@@ -192,10 +193,6 @@ impl Sandbox {
     }
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim().to_string()
-}
-
 const PRINT: [&str; 5] = ["-p", "hi", "--model", "anthropic/claude-test", "--no-memory"];
 
 #[tokio::test(flavor = "multi_thread")]
@@ -205,8 +202,8 @@ async fn a_run_with_nobody_there_spends_a_reset_only_when_the_settings_say_so() 
 
     // As before: the run fails with what ran out, and the reset stays where it is.
     let run = sandbox.azazel(&PRINT).await;
-    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stdout));
-    let said = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(1), "{}", trimmed(&run.stdout));
+    let said = trimmed(&run.stderr);
     assert!(said.contains("usage limit reached"), "{said}");
     assert!(claude.redemptions().await.is_empty());
     assert_eq!(sandbox.journal(), None);
@@ -222,8 +219,8 @@ async fn a_run_with_nobody_there_spends_a_reset_only_when_the_settings_say_so() 
     let mut args = PRINT.to_vec();
     args.extend(["--set", "usage.auto_reset=true"]);
     let run = sandbox.azazel(&args).await;
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(text(&run.stdout), "back at work");
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    assert_eq!(trimmed(&run.stdout), "back at work");
     assert_eq!(claude.redemptions().await, [json!({ "program": "juniper_tide" })]);
     // Written down, and settled by the usage report that showed the room afterwards.
     let entry = sandbox.journal().unwrap();
@@ -279,7 +276,7 @@ async fn a_reset_that_does_not_cover_what_is_full_is_not_spent_unattended() {
     args.extend(["--set", "usage.auto_reset=true"]);
 
     let run = sandbox.azazel(&args).await;
-    assert_eq!(run.status.code(), Some(1), "{}", text(&run.stdout));
+    assert_eq!(run.status.code(), Some(1), "{}", trimmed(&run.stdout));
     assert!(claude.redemptions().await.is_empty());
     assert_eq!(sandbox.journal(), None);
 }

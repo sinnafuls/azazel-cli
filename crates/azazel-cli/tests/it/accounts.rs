@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+use crate::common::trimmed;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use wiremock::matchers::{body_partial_json, header, method, path};
@@ -85,10 +86,6 @@ impl Sandbox {
     }
 }
 
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim().to_string()
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
     let server = MockServer::start().await;
@@ -127,11 +124,11 @@ async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
 
     // A label that cannot name an account is a usage error before anything is asked.
     let bad = sandbox.azazel(&["login", "gateway", "--as", "a b"]).await;
-    assert_eq!(bad.status.code(), Some(2), "{}", text(&bad.stderr));
+    assert_eq!(bad.status.code(), Some(2), "{}", trimmed(&bad.stderr));
     assert!(
-        text(&bad.stderr).contains("cannot name an account"),
+        trimmed(&bad.stderr).contains("cannot name an account"),
         "{}",
-        text(&bad.stderr)
+        trimmed(&bad.stderr)
     );
 
     for (args, said) in [
@@ -145,15 +142,19 @@ async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
         ),
     ] {
         let login = sandbox.azazel(&args).await;
-        assert_eq!(login.status.code(), Some(0), "{}", text(&login.stderr));
-        assert!(text(&login.stdout).starts_with(&said), "{}", text(&login.stdout));
+        assert_eq!(login.status.code(), Some(0), "{}", trimmed(&login.stderr));
+        assert!(
+            trimmed(&login.stdout).starts_with(&said),
+            "{}",
+            trimmed(&login.stdout)
+        );
     }
     let stored: Value = serde_json::from_slice(&std::fs::read(&auth_file).unwrap()).unwrap();
     assert_eq!(stored["gateway"]["type"], "oauth");
     assert_eq!(stored["gateway#work"]["refresh"], "rt-1");
 
     let status = sandbox.azazel(&["auth", "status", "--json"]).await;
-    let row: Value = serde_json::from_str(text(&status.stdout).lines().next().unwrap()).unwrap();
+    let row: Value = serde_json::from_str(trimmed(&status.stdout).lines().next().unwrap()).unwrap();
     assert_eq!(row["provider"], "gateway");
     assert_eq!(row["source"], "auth.json (login)");
     assert_eq!(row["accounts"], json!(["default", "work"]));
@@ -165,13 +166,13 @@ async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
         "api = \"openai-chat\"\naccount = \"work\"",
     );
     std::fs::write(sandbox.home().join("config.toml"), config).unwrap();
-    let status = text(&sandbox.azazel(&["auth", "status"]).await.stdout);
+    let status = trimmed(&sandbox.azazel(&["auth", "status"]).await.stdout);
     assert!(status.contains("auth.json (login, account work)"), "{status}");
     assert!(status.contains("accounts: default, work"), "{status}");
 
     let logout = sandbox.azazel(&["logout", "gateway", "--account", "work"]).await;
     assert_eq!(
-        text(&logout.stdout),
+        trimmed(&logout.stdout),
         "forgot the stored gateway login of account `work`"
     );
     let stored: Value = serde_json::from_slice(&std::fs::read(&auth_file).unwrap()).unwrap();
@@ -229,9 +230,9 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
     let run = sandbox
         .azazel(&["-p", "hi", "--model", "gateway/small", "--no-memory"])
         .await;
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(text(&run.stdout), "hello from work");
-    let said = text(&run.stderr);
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    assert_eq!(trimmed(&run.stdout), "hello from work");
+    let said = trimmed(&run.stderr);
     assert!(
         said.contains("gateway: account default reached its usage limit (resets ")
             && said.contains("); now using work"),
@@ -257,8 +258,8 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
             "json",
         ])
         .await;
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    let events: Vec<Value> = text(&run.stdout)
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    let events: Vec<Value> = trimmed(&run.stdout)
         .lines()
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
@@ -327,12 +328,12 @@ async fn the_tier_goes_out_with_the_request_and_is_dropped_when_the_model_refuse
             "priority",
         ])
         .await;
-    assert_eq!(run.status.code(), Some(0), "{}", text(&run.stderr));
-    assert_eq!(text(&run.stdout), "hello from work");
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    assert_eq!(trimmed(&run.stdout), "hello from work");
     assert!(
-        text(&run.stderr).contains("gateway/small does not take the priority tier"),
+        trimmed(&run.stderr).contains("gateway/small does not take the priority tier"),
         "{}",
-        text(&run.stderr)
+        trimmed(&run.stderr)
     );
 }
 
@@ -350,7 +351,7 @@ fn tier_and_preset_flags_shape_the_requests_of_a_scripted_run() {
     });
 
     let fast = sandbox.scripted(&script, &["-p", "hi", "--tier", "priority"]);
-    assert_eq!(fast.status.code(), Some(0), "{}", text(&fast.stderr));
+    assert_eq!(fast.status.code(), Some(0), "{}", trimmed(&fast.stderr));
     let requests = sandbox.requests();
     assert_eq!(requests[0].1["tier"], "priority");
 
@@ -361,22 +362,22 @@ fn tier_and_preset_flags_shape_the_requests_of_a_scripted_run() {
     let unknown = sandbox.scripted(&script, &["-p", "hi", "--tier", "turbo"]);
     assert_eq!(unknown.status.code(), Some(2));
     assert!(
-        text(&unknown.stderr).contains("--tier: unknown tier `turbo`"),
+        trimmed(&unknown.stderr).contains("--tier: unknown tier `turbo`"),
         "{}",
-        text(&unknown.stderr)
+        trimmed(&unknown.stderr)
     );
 
     // A preset's roles replace the configured ones for the run.
     let cheap = sandbox.scripted(&script, &["-p", "hi", "--preset", "cheap"]);
-    assert_eq!(cheap.status.code(), Some(0), "{}", text(&cheap.stderr));
-    assert_eq!(text(&cheap.stdout), "from small");
+    assert_eq!(cheap.status.code(), Some(0), "{}", trimmed(&cheap.stderr));
+    assert_eq!(trimmed(&cheap.stdout), "from small");
     assert_eq!(sandbox.requests()[0].0, "small");
 
     let missing = sandbox.scripted(&script, &["-p", "hi", "--preset", "dear"]);
     assert_eq!(missing.status.code(), Some(2));
     assert!(
-        text(&missing.stderr).contains("--preset: no preset `dear`; there are: cheap"),
+        trimmed(&missing.stderr).contains("--preset: no preset `dear`; there are: cheap"),
         "{}",
-        text(&missing.stderr)
+        trimmed(&missing.stderr)
     );
 }

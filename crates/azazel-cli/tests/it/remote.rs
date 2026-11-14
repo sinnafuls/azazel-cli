@@ -5,37 +5,19 @@
 //! it to a shell there. With `AZAZEL_TEST_SSH=1` the same runs go through the real `ssh` to
 //! `localhost` as well (CI does that on Linux, where it sets a key up for it).
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::LazyLock;
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use crate::common::{fixture_program, lines_of};
 use serde_json::{Value, json};
 
 const LIMIT: Duration = Duration::from_secs(60);
 
-/// The `fake-ssh` fixture, built on first use into the directory this test runs from.
-static FAKE_SSH: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-ssh", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-ssh fixture"
-    );
-    let binary = profile_dir.join(format!("fake-ssh{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FAKE_SSH: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-ssh"));
 
 /// How the other machine is reached.
 #[derive(Clone, Copy, PartialEq)]
@@ -185,30 +167,8 @@ impl Drop for Sandbox {
     }
 }
 
-fn lines_of(reader: impl std::io::Read + Send + 'static) -> Receiver<String> {
-    let (sender, lines) = channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    lines
-}
-
 fn read_until(lines: &Receiver<String>, wanted: &str) -> Vec<String> {
-    let mut read = Vec::new();
-    loop {
-        let line = lines
-            .recv_timeout(LIMIT)
-            .unwrap_or_else(|_| panic!("no line with `{wanted}` after {read:?}"));
-        let found = line.contains(wanted);
-        read.push(line);
-        if found {
-            return read;
-        }
-    }
+    crate::common::read_until(lines, wanted, LIMIT)
 }
 
 /// The ways to reach the other machine that this run of the tests has.

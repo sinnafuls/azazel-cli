@@ -1,33 +1,15 @@
 //! Checks on write as a session meets them: a checker found on `PATH` runs on what the lead
 //! writes, the lead is told the rest when it stops, and `doctor` says what is installed.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Output;
 use std::sync::LazyLock;
 
+use crate::common::{fixture_program, stderr, stdout};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
-/// The `fake-check` fixture program, built on first use into the directory this test runs from.
-static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = std::process::Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-check", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-check fixture"
-    );
-    let binary = profile_dir.join(format!("fake-check{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-check"));
 
 /// What the stand-in `shellcheck` says about the file it is given: a warning and an error.
 const FOUND: &str = "--line\n{file}:2:6: warning: Double quote to prevent globbing. [SC2086]\n\
@@ -140,14 +122,6 @@ fn sent(request: &Value, kind: &str) -> Vec<String> {
         }
     }
     texts
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// The lead writes a shell script to `path`, says it is done, and answers whatever it is told

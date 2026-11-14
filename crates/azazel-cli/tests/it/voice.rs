@@ -3,10 +3,11 @@
 //! Voice: the transcription and speech requests, recorder and player programs, dictation into
 //! the editor, and what `doctor` reports.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use crate::common::fixture_program;
 use assert_cmd::Command;
 use azazel_ai::types::WireApi;
 use azazel_ai::{Auth, Credentials, ProviderConfig, ProviderSettings};
@@ -19,26 +20,7 @@ use tokio_util::sync::CancellationToken;
 use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// The `fake-audio` fixture, built on first use into the directory this test runs from.
-static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = std::process::Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-audio", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-audio fixture"
-    );
-    let binary = profile_dir.join(format!("fake-audio{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-audio"));
 
 /// A command line that runs the fixture with `args`.
 fn fake(args: &str) -> String {

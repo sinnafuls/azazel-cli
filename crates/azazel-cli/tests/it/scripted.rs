@@ -6,6 +6,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::process::{Output, Stdio};
 
+use crate::common::{stderr, stdout, text};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -105,20 +106,8 @@ impl Sandbox {
     }
 }
 
-fn text(text: &str) -> Value {
-    json!({ "reply": { "text": text } })
-}
-
 fn run_code(id: &str, code: &str) -> Value {
     json!({ "reply": { "tool_calls": [{ "id": id, "name": "run_code", "input": { "code": code } }] } })
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// What the tool call `id` returned, from the events of `--output json`.

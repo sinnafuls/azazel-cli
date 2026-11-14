@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+use crate::common::{stderr, stdout};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -110,14 +111,6 @@ impl Sandbox {
             .find(|p| p.extension().is_some_and(|e| e == "jsonl"))
             .unwrap()
     }
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 fn entries(path: &PathBuf) -> Vec<Value> {

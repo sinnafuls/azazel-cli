@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::process::Output;
 
+use crate::common::trimmed;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path};
@@ -36,10 +37,6 @@ impl Sandbox {
             .await
             .unwrap()
     }
-}
-
-fn text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim().to_string()
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -92,20 +89,20 @@ async fn a_provider_with_an_authorisation_server_is_signed_in_to_and_gets_the_to
     let before = sandbox.azazel(&prompt).await;
     assert_eq!(before.status.code(), Some(1));
     assert!(
-        text(&before.stderr).contains("no credentials for gateway: run `azazel login gateway`"),
+        trimmed(&before.stderr).contains("no credentials for gateway: run `azazel login gateway`"),
         "{}",
-        text(&before.stderr)
+        trimmed(&before.stderr)
     );
 
     let login = sandbox.azazel(&["login", "gateway"]).await;
-    assert_eq!(login.status.code(), Some(0), "{}", text(&login.stderr));
+    assert_eq!(login.status.code(), Some(0), "{}", trimmed(&login.stderr));
     assert_eq!(
-        text(&login.stderr),
+        trimmed(&login.stderr),
         "Open https://id.example/device and enter the code WDJB-MJHT"
     );
     let auth_file = sandbox.home().join("auth.json");
     assert_eq!(
-        text(&login.stdout),
+        trimmed(&login.stdout),
         format!(
             "signed in to gateway; the login is kept in {}",
             auth_file.display()
@@ -116,17 +113,17 @@ async fn a_provider_with_an_authorisation_server_is_signed_in_to_and_gets_the_to
     assert_eq!(stored["gateway"]["refresh"], "rt-1");
 
     let answered = sandbox.azazel(&prompt).await;
-    assert_eq!(answered.status.code(), Some(0), "{}", text(&answered.stderr));
-    assert_eq!(text(&answered.stdout), "hello from the gateway");
+    assert_eq!(answered.status.code(), Some(0), "{}", trimmed(&answered.stderr));
+    assert_eq!(trimmed(&answered.stdout), "hello from the gateway");
 
-    let doctor = text(&sandbox.azazel(&["doctor"]).await.stdout);
+    let doctor = trimmed(&sandbox.azazel(&["doctor"]).await.stdout);
     assert!(
         doctor.contains("provider gateway: credential from auth.json (login)"),
         "{doctor}"
     );
 
     let logout = sandbox.azazel(&["logout", "gateway"]).await;
-    assert_eq!(text(&logout.stdout), "forgot the stored gateway login");
+    assert_eq!(trimmed(&logout.stdout), "forgot the stored gateway login");
     assert_eq!(sandbox.azazel(&prompt).await.status.code(), Some(1));
 }
 
@@ -183,7 +180,7 @@ async fn a_sign_in_asks_its_inputs_and_its_login_keeps_the_address_requests_go_t
     let login = tokio::task::spawn_blocking(move || login.output().unwrap())
         .await
         .unwrap();
-    assert_eq!(login.status.code(), Some(0), "{}", text(&login.stderr));
+    assert_eq!(login.status.code(), Some(0), "{}", trimmed(&login.stderr));
     let stored: Value =
         serde_json::from_slice(&std::fs::read(sandbox.home().join("auth.json")).unwrap()).unwrap();
     assert_eq!(stored["tenant"]["tenant"], "acme");
@@ -200,8 +197,8 @@ async fn a_sign_in_asks_its_inputs_and_its_login_keeps_the_address_requests_go_t
             "session.auto_name=false",
         ])
         .await;
-    assert_eq!(answered.status.code(), Some(0), "{}", text(&answered.stderr));
-    assert_eq!(text(&answered.stdout), "hello from the gateway");
+    assert_eq!(answered.status.code(), Some(0), "{}", trimmed(&answered.stderr));
+    assert_eq!(trimmed(&answered.stdout), "hello from the gateway");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -213,20 +210,20 @@ async fn the_device_and_enterprise_flags_name_the_providers_they_work_with() {
     let both = sandbox
         .azazel(&["login", "openai-codex", "--key", "--device"])
         .await;
-    assert_eq!(both.status.code(), Some(2), "{}", text(&both.stderr));
+    assert_eq!(both.status.code(), Some(2), "{}", trimmed(&both.stderr));
     let wrong = sandbox.azazel(&["login", "groq", "--device"]).await;
     assert_eq!(wrong.status.code(), Some(1));
     assert!(
-        text(&wrong.stderr).contains("groq has no device sign-in; --device works with openai-codex"),
+        trimmed(&wrong.stderr).contains("groq has no device sign-in; --device works with openai-codex"),
         "{}",
-        text(&wrong.stderr)
+        trimmed(&wrong.stderr)
     );
     let enterprise = sandbox
         .azazel(&["login", "anthropic", "--enterprise", "ghe.example.com"])
         .await;
     assert!(
-        text(&enterprise.stderr).contains("--enterprise works with github-copilot"),
+        trimmed(&enterprise.stderr).contains("--enterprise works with github-copilot"),
         "{}",
-        text(&enterprise.stderr)
+        trimmed(&enterprise.stderr)
     );
 }

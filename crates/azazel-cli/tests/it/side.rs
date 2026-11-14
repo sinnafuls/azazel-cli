@@ -4,6 +4,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use crate::common::json_lines;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -62,13 +63,6 @@ impl Sandbox {
         assert_eq!(files.len(), 1, "{files:?}");
         files.remove(0)
     }
-}
-
-fn json_lines(bytes: &[u8]) -> Vec<Value> {
-    String::from_utf8_lossy(bytes)
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect()
 }
 
 fn texts(message: &Value) -> String {

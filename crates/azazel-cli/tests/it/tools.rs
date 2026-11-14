@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use crate::common::stderr;
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -84,10 +85,6 @@ impl Sandbox {
         }
         results
     }
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// A script in which the lead makes `calls` one after another and then says `done`.

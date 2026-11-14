@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::common::git;
 use azazel_core::process::Shell;
 use azazel_tools::pty::{Key, Mods};
 use azazel_tools::{Terminal, Terminals};
@@ -79,22 +80,6 @@ fn ask(terminal: &Terminal, prompt: &str, asked: &Path, count: usize) {
 
 fn quoted(text: &str) -> String {
     format!("'{}'", text.replace('\'', "''"))
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 /// The session files of every project, by the project directory's name under `projects`.

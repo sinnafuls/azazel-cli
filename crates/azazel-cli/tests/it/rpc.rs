@@ -1,16 +1,12 @@
 use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
-fn fixture(name: &str) -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../tests/fixtures/scripts")
-        .join(name)
-}
+use crate::common::script_fixture as fixture;
 
 /// An `azazel rpc` process and the lines it writes.
 struct Client {

@@ -3,12 +3,13 @@
 //! Background sessions: `azazel bg`, `ps`, `logs`, `attach`, `kill`, the lock on their session
 //! and `/bg`, against the real binary and the scripted provider.
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use crate::common::lines_of;
 use azazel_protocol::Frame;
 use serde_json::{Value, json};
 
@@ -157,32 +158,9 @@ impl Drop for Sandbox {
     }
 }
 
-/// The lines a process writes, as they come.
-fn lines_of(reader: impl std::io::Read + Send + 'static) -> Receiver<String> {
-    let (sender, lines) = channel();
-    std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
-            if sender.send(line).is_err() {
-                break;
-            }
-        }
-    });
-    lines
-}
-
 /// Reads lines up to the first that contains `wanted`; returns all of them.
 fn read_until(lines: &Receiver<String>, wanted: &str) -> Vec<String> {
-    let mut read = Vec::new();
-    loop {
-        let line = lines
-            .recv_timeout(LIMIT)
-            .unwrap_or_else(|_| panic!("no line with `{wanted}` after {read:?}"));
-        let found = line.contains(wanted);
-        read.push(line);
-        if found {
-            return read;
-        }
-    }
+    crate::common::read_until(lines, wanted, LIMIT)
 }
 
 fn text(output: &Output) -> (String, String) {

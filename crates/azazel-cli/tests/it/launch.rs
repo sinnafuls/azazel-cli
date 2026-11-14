@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use crate::common::{stderr, tool_names};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 
@@ -78,10 +79,6 @@ fn ok(text: &str) -> Value {
     json!({ "lead": [{ "reply": { "text": text } }] })
 }
 
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
-
 fn first_user_text(request: &Value) -> String {
     request["messages"]
         .as_array()
@@ -103,15 +100,6 @@ fn system(request: &Value) -> Vec<String> {
         .unwrap()
         .iter()
         .map(|part| part["text"].as_str().unwrap().to_string())
-        .collect()
-}
-
-fn tool_names(request: &Value) -> Vec<String> {
-    request["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|tool| tool["name"].as_str().unwrap().to_string())
         .collect()
 }
 

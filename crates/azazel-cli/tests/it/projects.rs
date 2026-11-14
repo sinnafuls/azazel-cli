@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use crate::common::{git, stderr, stdout};
 use assert_cmd::Command;
 use serde_json::{Value, json};
 use wiremock::matchers::{method, path};
@@ -80,14 +81,6 @@ impl Sandbox {
 
 fn ok(text: &str) -> Value {
     json!({ "lead": [{ "reply": { "text": text } }] })
-}
-
-fn stdout(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 /// The content blocks of the first user message of a request.
@@ -307,22 +300,6 @@ async fn sessions_are_imported_from_a_file_or_an_address_and_exported_sanitized(
     }
     let lines = std::fs::read_to_string(sandbox.path("shared.jsonl")).unwrap();
     assert!(lines.contains("[file content removed]"), "{lines}");
-}
-
-fn git(dir: &Path, args: &[&str]) -> String {
-    let output = std::process::Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(args)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 #[test]
