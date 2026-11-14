@@ -5,6 +5,14 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- RPC: `list_roles`, `set_role`, `save_preset` and `apply_preset` list the model roles with where each value comes from (built-in, home, project, session) and change them for the session or in a config file.
+
+### Changed
+
+- Model lists write a context window of 1.5 million tokens as `1.5M`, not `1500k`.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

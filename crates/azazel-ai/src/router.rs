@@ -276,6 +276,14 @@ impl Router {
             .insert(role.to_string(), chain);
     }
 
+    /// Forgets `role` for the rest of the process: it resolves to nothing from now on.
+    pub fn remove_role(&self, role: &str) {
+        self.roles
+            .write()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(role);
+    }
+
     pub fn provider(&self, id: &str) -> Option<&Arc<dyn Provider>> {
         self.providers.get(id)
     }

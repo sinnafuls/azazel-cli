@@ -22,7 +22,7 @@ use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
 use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
-use azazel_protocol::PrimaryAgent;
+use azazel_protocol::{PrimaryAgent, Roles, SaveTo};
 use azazel_team::{Goals, MemberInfo, Mentioned, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
 use tokio::sync::{broadcast, mpsc};
@@ -288,6 +288,25 @@ pub(crate) trait Backend: Send {
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String>;
 
+    /// The model roles, where each one's value comes from, and the saved presets.
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    async fn roles(&mut self) -> Result<Roles, String>;
+
+    /// Points `role` at `chain`, or takes away the value `save` names; see `crate::roles::set`.
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    async fn set_role(
+        &mut self,
+        role: &str,
+        chain: Option<Vec<String>>,
+        save: SaveTo,
+    ) -> Result<Roles, String>;
+
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    async fn save_preset(&mut self, name: &str) -> Result<Roles, String>;
+
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    async fn apply_preset(&mut self, name: &str) -> Result<Roles, String>;
+
     async fn set_mode(&mut self, mode: PermissionMode) -> Result<(), String>;
 
     /// The primary agents the lead can be, in the order `tab` steps through them, and the name
@@ -402,6 +421,12 @@ pub(crate) struct Local {
 }
 
 impl Local {
+    /// Where role changes from the UI land: this session, whose lead follows `default`.
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    fn roles_place(&self) -> crate::roles::Place<'_> {
+        crate::roles::Place::of(&self.app, Some((&self.active.lead, Some(&*self.active.session))))
+    }
+
     /// Takes the session over for the UI: agents reach the user through it from now on.
     pub(crate) fn new(app: Arc<App>, active: Active) -> Local {
         let (request_tx, requests) = mpsc::unbounded_channel();
@@ -774,6 +799,28 @@ impl Backend for Local {
             .session
             .append(EntryKind::ModelChange { chain: chain.clone() });
         Ok(chain)
+    }
+
+    async fn roles(&mut self) -> Result<Roles, String> {
+        Ok(crate::roles::list(&self.roles_place()))
+    }
+
+    async fn set_role(
+        &mut self,
+        role: &str,
+        chain: Option<Vec<String>>,
+        save: SaveTo,
+    ) -> Result<Roles, String> {
+        let chain = chain.as_deref().map(crate::roles::parse_chain).transpose()?;
+        crate::roles::set(&self.roles_place(), role, chain, save)
+    }
+
+    async fn save_preset(&mut self, name: &str) -> Result<Roles, String> {
+        crate::roles::save_preset(&self.roles_place(), name)
+    }
+
+    async fn apply_preset(&mut self, name: &str) -> Result<Roles, String> {
+        crate::roles::apply_preset(&self.roles_place(), name)
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {

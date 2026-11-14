@@ -12,6 +12,7 @@ pub mod glyphs;
 pub mod image;
 pub mod keys;
 pub mod modal;
+pub mod mouse;
 pub mod render;
 pub mod term;
 pub mod text;

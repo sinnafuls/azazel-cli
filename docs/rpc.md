@@ -58,6 +58,10 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `list_commands` | | What `run_command` takes | A list of `{"name", "description"}` |
 | `list_files` | | The files of the working directory, relative to it, for completing `@` mentions; ignored files are left out and the list is cut at 20,000 | A list of strings |
 | `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
+| `list_roles` | | Every [model role](models-and-logins.md#roles): its chain, where that comes from, what it resolves to, and the saved presets | [Roles](#roles) |
+| `set_role` | `role`, `chain?`, `save?` | Points `role` at `chain` (`["provider/model:high", "@slow"]`), or without `chain` takes away the value `save` names so the role falls back to the next config file or its built-in value. `save` is `session` (the default: this session only), `home` (also writes `~/.azazel/config.toml`) or `project` (the project's `.azazel/config.toml`, refused when the project is not trusted). Setting `default` or `lead` puts the lead back on its role | [Roles](#roles) |
+| `save_preset` | `name` | Writes every role as it is now under `[presets.<name>.roles]` in the home config | [Roles](#roles) |
+| `apply_preset` | `name` | Points every role of a saved preset at its models for this session | [Roles](#roles) |
 | `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status", "scope?"}], "blocked_until?", "blocks?": [{"until", "since", "window?", "scope?"}]}`. A window or block with a `scope` is about one model family only; `blocked_until` is about every model |
 
 The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
@@ -103,6 +107,18 @@ The session commands report the saved sessions and the open one, change which se
 | `todo` | The lead's task list: `{"text", "status"}` with `pending`, `in_progress` or `done` |
 | `roles` | The model each role (`default`, `smol`, ...) resolves to first |
 | `interrupted` | Present when the session's last run was cut short by the end of a process and `continue_run` can go on with it: where it stopped, in a few words (`stopped while shell ran`) |
+
+### Roles
+
+`list_roles`, `set_role`, `save_preset` and `apply_preset` answer with the roles as they are after the command:
+
+| Member | Meaning |
+|---|---|
+| `roles` | One `{"role", "chain", "source", "builtin?", "resolved", "thinking?"}` per role, the built-in roles first |
+| `presets` | The names of the saved presets |
+| `project` | Whether `set_role` may write the project's config (the project is trusted) |
+
+In a role, `chain` is the value as configured, `resolved` the usable models it comes to in order, `builtin` the value it falls back to when nothing sets it, and `thinking` the level written with its first model (`provider/model:high`). `source` says where the chain comes from: `builtin`, `home`, `project`, `project_local`, `session` (changed in this session and not saved) or `unset` (nothing sets it, so it resolves to no model).
 
 ### Named prompts
 

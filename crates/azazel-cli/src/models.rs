@@ -132,10 +132,7 @@ pub fn listed<'a>(
 }
 
 fn model_line(m: &ModelInfo) -> String {
-    let price = m
-        .cost
-        .map(|c| format!("${}/${}", trim(c.input), trim(c.output)))
-        .unwrap_or_else(|| "-".to_string());
+    let price = m.cost.as_ref().map(price).unwrap_or_else(|| "-".to_string());
     format!(
         "{:<44} {:>9} {:>9}  {:<6} {:<8} {price}",
         format!("{}/{}", m.provider, m.id),
@@ -157,16 +154,23 @@ pub(crate) fn model_json(m: &ModelInfo) -> Value {
     })
 }
 
-fn compact(n: u64) -> String {
+/// A token count the way every model list shows it: `200k`, `1M`, `1.5M`.
+pub fn compact(n: u64) -> String {
     match n {
-        n if n >= 1_000_000 && n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
+        n if n >= 1_000_000 && n % 100_000 == 0 => format!("{}M", trim(n as f64 / 1e6)),
         n if n >= 1_000 => format!("{}k", n / 1_000),
         n => n.to_string(),
     }
 }
 
-fn trim(price: f64) -> String {
-    let text = format!("{price:.3}");
+/// What a million tokens in and out cost, the way every model list shows it: `$3/$15`.
+pub fn price(cost: &azazel_ai::Cost) -> String {
+    format!("${}/${}", trim(cost.input), trim(cost.output))
+}
+
+/// A number without the zeros a fixed precision would leave: `3`, `1.25`, `0.075`.
+pub fn trim(number: f64) -> String {
+    let text = format!("{number:.3}");
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 

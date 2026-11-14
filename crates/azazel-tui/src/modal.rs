@@ -76,6 +76,8 @@ pub struct Modal {
     cursor: Option<(usize, usize)>,
     /// Nothing on the screen can be relied on: the next frame paints every row.
     repaint: bool,
+    /// Where the last frame put the box, as `(top, left, rows, width)` in the window.
+    placed: Option<(usize, usize, usize, usize)>,
 }
 
 impl Modal {
@@ -87,7 +89,14 @@ impl Modal {
             drawn: Vec::new(),
             cursor: None,
             repaint: true,
+            placed: None,
         }
+    }
+
+    /// Where the last frame put the box, as `(top, left, rows, width)` in the window: for
+    /// placing the mouse with [`crate::mouse::Mouse::within`].
+    pub fn placed(&self) -> Option<(usize, usize, usize, usize)> {
+        self.placed
     }
 
     pub fn size(&self) -> (u16, u16) {
@@ -119,6 +128,7 @@ impl Modal {
     /// synchronized update that addresses only the rows that differ.
     pub fn render(&mut self, out: &mut impl io::Write, screen: &Screen<'_>, theme: &Theme) -> io::Result<()> {
         let (rows, place) = self.compose(screen, theme);
+        self.placed = Some(place);
         let cursor = screen.cursor.and_then(|(row, column)| {
             let (top, left, box_rows, box_width) = place;
             let (row, column) = (usize::from(row), usize::from(column));
@@ -261,6 +271,24 @@ mod tests {
         assert!(!fits(43, 12));
         assert!(!fits(44, 11));
         assert!(!fits(20, 40));
+    }
+
+    #[test]
+    fn the_box_is_placed_where_the_last_frame_put_it() {
+        let theme = Theme::dark();
+        let mut modal = Modal::new(40, 12);
+        assert_eq!(modal.placed(), None);
+        let popup = vec!["+--------+".to_string(); 4];
+        let screen = Screen {
+            backdrop: &[],
+            popup: &popup,
+            cursor: None,
+            working: "",
+            status: "",
+        };
+        modal.render(&mut Vec::new(), &screen, &theme).unwrap();
+        // Ten rows above the two bottom ones: the four-row box starts on row 3, column 15.
+        assert_eq!(modal.placed(), Some((3, 15, 4, 10)));
     }
 
     #[test]

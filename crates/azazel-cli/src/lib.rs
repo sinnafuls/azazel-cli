@@ -42,6 +42,7 @@ pub mod resets;
 pub mod resources;
 mod restart;
 pub mod retry;
+pub mod roles;
 pub mod routing;
 pub mod rpc;
 pub mod rules;

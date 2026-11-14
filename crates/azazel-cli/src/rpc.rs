@@ -667,6 +667,17 @@ impl Session {
                 Ok(None)
             }
             Command::ListModels => self.models().map(Some),
+            Command::ListRoles => data(crate::roles::list(&self.roles_place())).map(Some),
+            Command::SetRole { role, chain, save } => {
+                let chain = chain.as_deref().map(crate::roles::parse_chain).transpose()?;
+                data(crate::roles::set(&self.roles_place(), &role, chain, save)?).map(Some)
+            }
+            Command::SavePreset { name } => {
+                data(crate::roles::save_preset(&self.roles_place(), &name)?).map(Some)
+            }
+            Command::ApplyPreset { name } => {
+                data(crate::roles::apply_preset(&self.roles_place(), &name)?).map(Some)
+            }
             Command::ListCommands => data(self.commands()).map(Some),
             Command::ListFiles => {
                 let root = self.app.paths.cwd.clone();

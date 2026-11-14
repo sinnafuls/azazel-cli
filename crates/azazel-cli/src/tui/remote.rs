@@ -23,7 +23,8 @@ use azazel_core::{
 };
 use azazel_protocol::{
     self as protocol, Attached, BtwAnswer, Command, CommandResult, CommandRow, Decision, Exported, Frame,
-    Member, ModelRow, Replay, RewindWhat, SessionCopy, SessionRow, ShellResult, Snapshot, State,
+    Member, ModelRow, Replay, RewindWhat, Roles, SaveTo, SessionCopy, SessionRow, ShellResult, Snapshot,
+    State,
 };
 use azazel_team::{LEAD, MemberInfo, MemberState, Mentioned, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
@@ -809,6 +810,17 @@ impl Remote {
     }
 }
 
+impl Remote {
+    /// Reads the session's state again, after a change that may have moved the lead.
+    #[expect(dead_code, reason = "the /models screen is being built on these")]
+    async fn refresh_state(&mut self) {
+        if let Ok(state) = ask::<State>(&self.client, Command::GetState).await {
+            *locked(&self.shared.state) = state;
+            self.shared.stale.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 #[async_trait]
 impl Backend for Remote {
     fn place(&self) -> Option<String> {
@@ -1057,6 +1069,49 @@ impl Backend for Remote {
         *locked(&self.shared.state) = state;
         self.shared.stale.store(true, Ordering::SeqCst);
         Ok(chain)
+    }
+
+    async fn roles(&mut self) -> Result<Roles, String> {
+        ask(&self.client, Command::ListRoles).await
+    }
+
+    async fn set_role(
+        &mut self,
+        role: &str,
+        chain: Option<Vec<String>>,
+        save: SaveTo,
+    ) -> Result<Roles, String> {
+        let command = Command::SetRole {
+            role: role.to_string(),
+            chain,
+            save,
+        };
+        let roles = ask(&self.client, command).await?;
+        // The lead may have gone back to following its role.
+        self.refresh_state().await;
+        Ok(roles)
+    }
+
+    async fn save_preset(&mut self, name: &str) -> Result<Roles, String> {
+        ask(
+            &self.client,
+            Command::SavePreset {
+                name: name.to_string(),
+            },
+        )
+        .await
+    }
+
+    async fn apply_preset(&mut self, name: &str) -> Result<Roles, String> {
+        let roles = ask(
+            &self.client,
+            Command::ApplyPreset {
+                name: name.to_string(),
+            },
+        )
+        .await?;
+        self.refresh_state().await;
+        Ok(roles)
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {

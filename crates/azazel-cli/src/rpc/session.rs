@@ -547,6 +547,11 @@ impl Session {
     }
 
     /// The models of the providers there is a credential for, as `azazel models` lists them.
+    /// Where role changes over RPC land: this session, whose lead follows `default`.
+    pub(super) fn roles_place(&self) -> crate::roles::Place<'_> {
+        crate::roles::Place::of(&self.app, Some((&self.active.lead, Some(&*self.active.session))))
+    }
+
     pub(super) fn models(&self) -> Result<Value, String> {
         let providers = presets::resolve(&self.app.config.providers)?;
         let listed = crate::models::listed(

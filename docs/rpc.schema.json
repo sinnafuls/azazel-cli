@@ -646,6 +646,83 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "list_roles"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Every model role: its chain, where that comes from and what it resolves to, plus the\nsaved presets. Answers with [`Roles`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_role"
+            },
+            "role": {
+              "type": "string"
+            },
+            "chain": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "type": "string"
+              }
+            },
+            "save": {
+              "$ref": "#/$defs/SaveTo",
+              "default": "session"
+            }
+          },
+          "required": [
+            "type",
+            "role"
+          ],
+          "description": "Points `role` at `chain` (`[\"provider/model:high\", \"@slow\"]`), or with no chain takes the\nvalue `save` names away so the role falls back to the next layer or its built-in value.\n`session` changes it for this session only; `home` and `project` also write the config\nfile (`project` only in a trusted project). Setting `default` or `lead` puts the lead on\nits role again. Answers with [`Roles`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "save_preset"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Writes every role as it is now under `[presets.<name>.roles]` in the home config.\nAnswers with [`Roles`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "apply_preset"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Points every role of a saved preset at its models for this session. Answers with\n[`Roles`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "list_commands"
             }
           },
@@ -817,6 +894,26 @@
         "jsonl"
       ],
       "description": "The file format of `export`."
+    },
+    "SaveTo": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "session",
+          "description": "This session only."
+        },
+        {
+          "type": "string",
+          "const": "home",
+          "description": "The home config, `~/.azazel/config.toml`."
+        },
+        {
+          "type": "string",
+          "const": "project",
+          "description": "The project's `.azazel/config.toml`; refused in a project that is not trusted."
+        }
+      ],
+      "description": "Where `set_role` keeps a change."
     },
     "Replay": {
       "oneOf": [

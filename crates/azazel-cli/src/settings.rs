@@ -57,26 +57,12 @@ fn key_providers(providers: &[ProviderConfig]) -> Vec<&ProviderConfig> {
 /// What a model picker says beside a model: its context window and what a million tokens in
 /// and out cost, or `subscription` when the provider is used through a login.
 pub(crate) fn model_detail(context_window: u64, cost: Option<&Cost>, login: bool) -> String {
-    let window = match context_window {
-        n if n >= 1_000_000 && n % 100_000 == 0 => format!("{}M", trim_number(n as f64 / 1e6)),
-        n if n >= 1000 => format!("{}k", n / 1000),
-        n => n.to_string(),
-    };
+    let window = crate::models::compact(context_window);
     match (login, cost) {
         (true, _) => format!("ctx {window} · subscription"),
-        (false, Some(cost)) => format!(
-            "ctx {window} · ${}/${}",
-            trim_number(cost.input),
-            trim_number(cost.output)
-        ),
+        (false, Some(cost)) => format!("ctx {window} · {}", crate::models::price(cost)),
         (false, None) => format!("ctx {window}"),
     }
-}
-
-/// A number without the zeros a fixed precision would leave: `3`, `1.25`, `0.075`.
-fn trim_number(number: f64) -> String {
-    let fixed = format!("{number:.3}");
-    fixed.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
 struct Settings {

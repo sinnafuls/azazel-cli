@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use azazel_agent::AgentCmd;
+use azazel_agent::{AgentCmd, AgentHandle};
 use azazel_ai::{ModelRef, ModelSpec, Router, Tier};
 use azazel_core::config::PresetConfig;
 use azazel_core::{
@@ -184,55 +184,20 @@ impl PresetCommand {
             return Err("no model router in this session".to_string());
         };
         let roles = preset(&self.presets(), name)?.roles.clone();
-        for (role, chain) in &roles {
-            router.set_role(role, chain.clone());
-        }
-        let mut line = format!(
-            "preset {name}: {}",
-            match roles.len() {
-                1 => "1 role set".to_string(),
-                count => format!("{count} roles set"),
-            }
-        );
-        if roles.contains_key("lead") || roles.contains_key("default") {
-            let chain = vec![ModelSpec::Role("lead".to_string())];
-            if let Some(lead) = ctx.services.get::<Team>().and_then(|team| team.lead()) {
-                lead.send(AgentCmd::SetModel(chain.clone()));
-                if let Some(session) = ctx.services.get::<SessionStore>() {
-                    session.append(EntryKind::ModelChange { chain: chain.clone() });
-                }
-            }
-            if let Some(model) = router.resolve(&chain).first() {
-                line.push_str(&format!("; the lead now runs on {model}"));
-            }
-        }
-        Ok(line)
+        let lead = ctx.services.get::<Team>().and_then(|team| team.lead());
+        let session = ctx.services.get::<SessionStore>();
+        let lead = lead.as_ref().map(|lead| (lead, session.as_deref()));
+        Ok(format!("preset {name}: {}", apply_roles(&router, &roles, lead)))
     }
 
     /// Writes the roles as they are now under `[presets.<name>.roles]`, replacing a preset of
     /// that name.
     fn save(&self, name: &str, ctx: &ExtCtx) -> Result<String, String> {
-        let plain = !name.is_empty()
-            && name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'));
-        if !plain || name == "save" {
-            return Err(format!(
-                "`{name}` cannot name a preset: use letters, digits, `-` and `_`"
-            ));
-        }
         let Some(router) = ctx.services.get::<Router>() else {
             return Err("no model router in this session".to_string());
         };
         let roles = router.roles();
-        let write = |path: &[&str], value| {
-            crate::init::set_config_value(&self.home_config, path, value).map_err(|e| format!("{e:#}"))
-        };
-        write(&["presets", name], None)?;
-        for (role, chain) in &roles {
-            let models = toml_edit::Array::from_iter(chain.iter().map(ToString::to_string));
-            write(&["presets", name, "roles", role], Some(toml_edit::value(models)))?;
-        }
+        save_roles(&self.home_config, name, &roles)?;
         let count = roles.len();
         self.presets().insert(name.to_string(), PresetConfig { roles });
         Ok(format!(
@@ -258,6 +223,79 @@ impl CommandHandler for PresetCommand {
             Err(why) => CommandOutcome::Error(why),
         }
     }
+}
+
+/// Points every role in `roles` at its chain for the rest of the process. When the roles say
+/// what the lead or the default model is, the lead goes back to following its role, so a model
+/// picked by hand does not outlive them; the change is recorded in `session` when given.
+/// Returns what was done, e.g. `3 roles set; the lead now runs on provider/model`.
+pub(crate) fn apply_roles(
+    router: &Router,
+    roles: &BTreeMap<String, Vec<ModelSpec>>,
+    lead: Option<(&AgentHandle, Option<&SessionStore>)>,
+) -> String {
+    for (role, chain) in roles {
+        router.set_role(role, chain.clone());
+    }
+    let mut line = match roles.len() {
+        1 => "1 role set".to_string(),
+        count => format!("{count} roles set"),
+    };
+    if roles.contains_key("lead") || roles.contains_key("default") {
+        let chain = vec![ModelSpec::Role("lead".to_string())];
+        if let Some((lead, session)) = lead {
+            follow_role(lead, session);
+        }
+        if let Some(model) = router.resolve(&chain).first() {
+            line.push_str(&format!("; the lead now runs on {model}"));
+        }
+    }
+    line
+}
+
+/// Puts the lead on `@lead` (unless it is there already), recorded in `session` so a resumed
+/// session comes back on it.
+pub(crate) fn follow_role(lead: &AgentHandle, session: Option<&SessionStore>) {
+    let chain = vec![ModelSpec::Role("lead".to_string())];
+    if lead.status().chain == chain {
+        return;
+    }
+    lead.send(AgentCmd::SetModel(chain.clone()));
+    if let Some(session) = session {
+        session.append(EntryKind::ModelChange { chain });
+    }
+}
+
+/// Whether `name` can name a preset or a role: letters, digits, `-` and `_`, starting with a
+/// letter.
+pub(crate) fn plain_name(name: &str) -> bool {
+    name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+/// Writes `roles` as preset `name` in the config file `home_config`, replacing a preset of
+/// that name.
+pub(crate) fn save_roles(
+    home_config: &std::path::Path,
+    name: &str,
+    roles: &BTreeMap<String, Vec<ModelSpec>>,
+) -> Result<(), String> {
+    if !plain_name(name) || name == "save" {
+        return Err(format!(
+            "`{name}` cannot name a preset: use letters, digits, `-` and `_`, starting with a letter"
+        ));
+    }
+    let write = |path: &[&str], value| {
+        crate::init::set_config_value(home_config, path, value).map_err(|e| format!("{e:#}"))
+    };
+    write(&["presets", name], None)?;
+    for (role, chain) in roles {
+        let models = toml_edit::Array::from_iter(chain.iter().map(ToString::to_string));
+        write(&["presets", name, "roles", role], Some(toml_edit::value(models)))?;
+    }
+    Ok(())
 }
 
 /// Registers `/fast`, `/slow` and `/preset`.

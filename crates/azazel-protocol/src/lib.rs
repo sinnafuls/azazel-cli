@@ -242,6 +242,27 @@ pub enum Command {
     Btw { question: String },
     /// The models that can be used. Answers with a list of [`ModelRow`].
     ListModels,
+    /// Every model role: its chain, where that comes from and what it resolves to, plus the
+    /// saved presets. Answers with [`Roles`].
+    ListRoles,
+    /// Points `role` at `chain` (`["provider/model:high", "@slow"]`), or with no chain takes the
+    /// value `save` names away so the role falls back to the next layer or its built-in value.
+    /// `session` changes it for this session only; `home` and `project` also write the config
+    /// file (`project` only in a trusted project). Setting `default` or `lead` puts the lead on
+    /// its role again. Answers with [`Roles`].
+    SetRole {
+        role: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        chain: Option<Vec<String>>,
+        #[serde(default)]
+        save: SaveTo,
+    },
+    /// Writes every role as it is now under `[presets.<name>.roles]` in the home config.
+    /// Answers with [`Roles`].
+    SavePreset { name: String },
+    /// Points every role of a saved preset at its models for this session. Answers with
+    /// [`Roles`].
+    ApplyPreset { name: String },
     /// The commands `run_command` takes: those of extensions, the built-in reports, and the
     /// skills as `skill:<name>`. Answers with a list of [`CommandRow`].
     ListCommands,
@@ -834,6 +855,61 @@ pub struct Todo {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Models {
     pub models: Vec<String>,
+}
+
+/// Where `set_role` keeps a change.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveTo {
+    /// This session only.
+    #[default]
+    Session,
+    /// The home config, `~/.azazel/config.toml`.
+    Home,
+    /// The project's `.azazel/config.toml`; refused in a project that is not trusted.
+    Project,
+}
+
+/// Where a role's chain comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleSource {
+    /// Azazel's own fallback (`smol` is `@default` until set).
+    Builtin,
+    Home,
+    Project,
+    ProjectLocal,
+    /// Changed in this session and not saved.
+    Session,
+    /// Not set anywhere: the role resolves to nothing.
+    Unset,
+}
+
+/// One model role.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct RoleRow {
+    pub role: String,
+    /// As configured, e.g. `["anthropic/claude-opus-5-5:high", "@slow"]`.
+    pub chain: Vec<String>,
+    pub source: RoleSource,
+    /// The built-in value the role falls back to when nothing sets it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builtin: Vec<String>,
+    /// The usable models the chain resolves to, in order, as `provider/id[:level]`.
+    pub resolved: Vec<String>,
+    /// The thinking level of the first model, when the chain names one with the model.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<String>,
+}
+
+/// The data of `list_roles`, `set_role`, `save_preset` and `apply_preset`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Roles {
+    pub roles: Vec<RoleRow>,
+    /// The names of the saved presets.
+    pub presets: Vec<String>,
+    /// Whether `set_role` may write the project's config (the project is trusted).
+    pub project: bool,
 }
 
 /// One saved session.
