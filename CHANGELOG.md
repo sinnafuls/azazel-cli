@@ -38,6 +38,8 @@ GitHub are its section here.
 
 ### Fixed
 
+- Models now know their thinking levels: the catalogue takes the efforts models.dev lists for each model (4,338 of 7,429 models), and ChatGPT's own model list says which efforts each model takes. `/thinking`, `alt+t` and `/models` offer only those levels; before, the catalogue named none, so every level was offered. A provider's model list that names no levels no longer hides the catalogue's.
+- `/models` kept its selection on a model only until a provider's model list arrived; a list that grew or shrank moved the selection onto another model.
 - `--set` takes quoted key parts as TOML does, so `--set 'models."openai/gpt-5.5".context_window=400000'` reaches that model; the quotes were kept in the name before and the setting did nothing. An unclosed quote is an error.
 - A reply that Anthropic's safety system stops (`stop_reason: refusal`) ended the turn with nothing on screen. It is now an error that gives the provider's reason and explanation, for example `the model declined to answer (cyber): Cyber safeguards flagged this message…`; it is not retried, and no other model is asked on its own.
 

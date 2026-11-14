@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use azazel_ai::catalog::{CatalogFile, Cost, ModelInfo};
-use azazel_ai::types::WireApi;
+use azazel_ai::types::{ThinkingLevel, WireApi};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xtask::TASKS;
@@ -691,8 +691,29 @@ fn model_info(provider: &str, entry: &Value) -> Option<ModelInfo> {
         .and_then(Value::as_str)
         .filter(|name| !name.is_empty() && *name != id)
         .map(str::to_string);
+    // The efforts the model takes, in the order of the levels; `none` is `off`, which every
+    // model has, and a toggle or a token budget names no levels.
+    let mut thinking_levels: Vec<ThinkingLevel> = entry
+        .get("reasoning_options")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|option| option.get("type").and_then(Value::as_str) == Some("effort"))
+        .flat_map(|option| {
+            option
+                .get("values")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(|value| value.as_str()?.parse::<ThinkingLevel>().ok())
+        .filter(|level| *level != ThinkingLevel::Off)
+        .collect();
+    thinking_levels.sort();
+    thinking_levels.dedup();
     Some(ModelInfo {
         name,
+        thinking_levels,
         context_window: limit("context").unwrap_or(unknown.context_window),
         max_output: limit("output")
             .and_then(|n| u32::try_from(n).ok())
@@ -711,6 +732,31 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_model_takes_the_efforts_its_entry_lists() {
+        let entry = |options: Value| {
+            json!({
+                "id": "m", "tool_call": true, "reasoning": true,
+                "modalities": {"input": ["text"], "output": ["text"]},
+                "reasoning_options": options
+            })
+        };
+        let levels = |options: Value| model_info("p", &entry(options)).unwrap().thinking_levels;
+        use ThinkingLevel::{High, Low, Max, Medium, Xhigh};
+        assert_eq!(
+            levels(json!([{"type": "effort", "values": ["max", "low", "medium", "high", "xhigh"]}])),
+            [Low, Medium, High, Xhigh, Max]
+        );
+        // `none` is off, which every model has; unknown words are left out.
+        assert_eq!(
+            levels(json!([{"type": "effort", "values": ["none", "low", "high", "default"]}])),
+            [Low, High]
+        );
+        // A toggle or a token budget names no levels.
+        assert!(levels(json!([{"type": "toggle"}, {"type": "budget_tokens", "min": 1024}])).is_empty());
+        assert!(levels(Value::Null).is_empty());
+    }
 
     /// A tool-capable text model, routed through `route` (`{npm, api}`) when given.
     fn model(id: &str, route: Option<Value>) -> Value {

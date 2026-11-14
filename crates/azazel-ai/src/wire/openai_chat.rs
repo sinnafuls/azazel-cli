@@ -17,7 +17,8 @@ use crate::error::AiError;
 use crate::providers::presets::ProviderConfig;
 use crate::stream::StreamEvent;
 use crate::types::{
-    AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, Tier, Usage, WireApi,
+    AssistantMeta, Block, INVALID_JSON_KEY, Message, Request, Role, StopReason, ThinkingLevel, Tier, Usage,
+    WireApi,
 };
 use crate::wire::thinking::{ThinkingParam, thinking_param};
 use crate::wire::{Decoder, KeyHeader, add_headers, apply_extra_body};
@@ -561,6 +562,27 @@ fn model_info(provider: &ProviderConfig, entry: &Value) -> Option<ModelInfo> {
         || reasoning_level(entry).is_some()
     {
         info.reasoning = true;
+    }
+    // The ChatGPT backend lists the efforts a model takes: `[{"effort": "low", ...}, ...]`.
+    let mut levels: Vec<ThinkingLevel> = entry
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|level| {
+            let effort = level
+                .get("effort")
+                .and_then(Value::as_str)
+                .or_else(|| level.as_str())?;
+            effort.parse::<ThinkingLevel>().ok()
+        })
+        .filter(|level| *level != ThinkingLevel::Off)
+        .collect();
+    levels.sort();
+    levels.dedup();
+    if !levels.is_empty() {
+        info.reasoning = true;
+        info.thinking_levels = levels;
     }
     info.cost = entry.get("pricing").and_then(pricing);
     Some(info)

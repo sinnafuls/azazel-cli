@@ -141,9 +141,16 @@ impl Catalog {
         catalog
     }
 
-    /// Later entries replace earlier ones with the same `provider/id`.
+    /// Later entries replace earlier ones with the same `provider/id`, except for the thinking
+    /// levels: a provider's own model list never names them, so an entry that knows none keeps
+    /// the levels the one it replaces knew.
     pub fn merge(&mut self, models: impl IntoIterator<Item = ModelInfo>) {
-        for model in models {
+        for mut model in models {
+            if model.thinking_levels.is_empty()
+                && let Some(known) = self.models.get(&model.key())
+            {
+                model.thinking_levels = known.thinking_levels.clone();
+            }
             self.models.insert(model.key(), model);
         }
     }
@@ -359,6 +366,26 @@ mod tests {
             (m.context_window, m.max_output, m.vision, m.reasoning, m.cost),
             (128_000, 8192, false, false, None)
         );
+    }
+
+    #[test]
+    fn a_listing_without_thinking_levels_keeps_the_known_ones() {
+        let mut known = ModelInfo::unknown("mock", "a");
+        known.thinking_levels = vec![ThinkingLevel::Low, ThinkingLevel::High];
+        let mut catalog = Catalog::default();
+        catalog.merge([known]);
+        // As a provider's own model list describes it: a larger window, no levels.
+        let mut listed = ModelInfo::unknown("mock", "a");
+        listed.context_window = 400_000;
+        catalog.merge([listed]);
+        let model = catalog.get("mock", "a");
+        assert_eq!(model.context_window, 400_000);
+        assert_eq!(model.thinking_levels, [ThinkingLevel::Low, ThinkingLevel::High]);
+        // An entry that names levels replaces them.
+        let mut named = ModelInfo::unknown("mock", "a");
+        named.thinking_levels = vec![ThinkingLevel::Max];
+        catalog.merge([named]);
+        assert_eq!(catalog.get("mock", "a").thinking_levels, [ThinkingLevel::Max]);
     }
 
     #[test]

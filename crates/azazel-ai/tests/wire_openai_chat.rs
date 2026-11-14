@@ -1201,6 +1201,35 @@ fn parse_models_reads_the_shapes_other_servers_use_for_the_same_facts() {
 }
 
 #[test]
+fn parse_models_reads_the_efforts_the_chatgpt_backend_lists() {
+    let body = json!({"models": [
+        {"slug": "gpt-x", "default_reasoning_level": "medium", "supported_reasoning_levels": [
+            {"effort": "high", "description": "deep"},
+            {"effort": "low", "description": "quick"},
+            {"effort": "medium", "description": "balanced"},
+            {"effort": "none", "description": "off"},
+        ]},
+        {"slug": "gpt-plain", "default_reasoning_level": "none"},
+    ]});
+    let models = openai_chat::parse_models(&provider(), &body);
+    let levels: Vec<(&str, bool, Vec<ThinkingLevel>)> = models
+        .iter()
+        .map(|m| (m.id.as_str(), m.reasoning, m.thinking_levels.clone()))
+        .collect();
+    assert_eq!(
+        levels,
+        [
+            (
+                "gpt-x",
+                true,
+                vec![ThinkingLevel::Low, ThinkingLevel::Medium, ThinkingLevel::High]
+            ),
+            ("gpt-plain", false, Vec::new()),
+        ]
+    );
+}
+
+#[test]
 fn parse_models_accepts_a_bare_array_and_a_models_key() {
     let entries = json!([{"id": "mock-a"}, {"id": "mock-b"}]);
     for body in [entries.clone(), json!({"models": entries})] {
