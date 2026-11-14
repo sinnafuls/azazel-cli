@@ -789,7 +789,7 @@ mod tests {
         if let Some(oauth) = &mut claude.oauth {
             oauth.token_url = format!("{}/token", server.uri());
         }
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
 
         let report = fetch(&client, &claude, &credentials, "default", false)
             .await
@@ -926,7 +926,7 @@ mod tests {
                 login("c@example.com", &[("account_id", "acct-7")]),
             )
             .unwrap();
-        let client = reqwest::Client::new();
+        let client = crate::tls::client();
 
         let claude = preset("anthropic", server.uri());
         assert!(supported(&claude));

@@ -80,7 +80,7 @@ fn header_map(
 
 /// The HTTP client for one server's requests.
 pub(crate) fn http_client(config: &ServerConfig) -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    azazel_ai::tls::client_builder()
         .connect_timeout(config.timeout)
         .build()
         .map_err(|e| format!("could not set up the HTTP client: {e}"))

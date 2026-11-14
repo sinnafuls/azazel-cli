@@ -55,7 +55,7 @@ impl Embedder {
         if model.is_empty() {
             return Err("[embeddings] model is empty".to_string());
         }
-        let http = reqwest::Client::builder()
+        let http = azazel_ai::tls::client_builder()
             .timeout(TIMEOUT)
             .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
             .build()

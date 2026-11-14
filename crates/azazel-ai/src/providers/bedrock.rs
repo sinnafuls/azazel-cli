@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::time::Instant;
 
 use async_trait::async_trait;
+use aws_sdk_bedrockruntime::config::SharedHttpClient;
 use aws_sdk_bedrockruntime::error::{ProvideErrorMetadata, SdkError};
 use aws_sdk_bedrockruntime::primitives::Blob;
 use aws_sdk_bedrockruntime::types::{
@@ -17,6 +18,10 @@ use aws_sdk_bedrockruntime::types::{
     ToolConfiguration, ToolInputSchema, ToolResultBlock, ToolResultContentBlock, ToolResultStatus,
     ToolSpecification, ToolUseBlock,
 };
+use aws_smithy_http_client::ConnectorBuilder;
+use aws_smithy_http_client::proxy::ProxyConfig;
+use aws_smithy_http_client::tls::rustls_provider::CryptoMode;
+use aws_smithy_http_client::tls::{self, TlsContext};
 use aws_smithy_types::{Document, Number};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -638,7 +643,8 @@ impl BedrockProvider {
     async fn client(&self) -> &aws_sdk_bedrockruntime::Client {
         self.client
             .get_or_init(|| async {
-                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+                let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
+                    .http_client(https_client(TlsContext::default(), ProxyConfig::from_env()));
                 if let Some(region) = &self.region {
                     loader = loader.region(aws_config::Region::new(region.clone()));
                 }
@@ -649,6 +655,23 @@ impl BedrockProvider {
             })
             .await
     }
+}
+
+/// The SDK's default HTTPS client (which trusts the system's roots and takes its proxy from the
+/// environment) on `ring`, the TLS provider of the rest of the binary. The SDK's own default
+/// links aws-lc for this, a second cryptography library.
+fn https_client(context: TlsContext, proxy: ProxyConfig) -> SharedHttpClient {
+    aws_smithy_http_client::Builder::new().build_with_connector_fn(move |settings, components| {
+        let mut connector = ConnectorBuilder::default()
+            .tls_provider(tls::Provider::Rustls(CryptoMode::Ring))
+            .tls_context(context.clone());
+        connector.set_connector_settings(settings.cloned());
+        if let Some(components) = components {
+            connector.set_sleep_impl(components.sleep_impl());
+        }
+        connector.set_proxy_config(Some(proxy.clone()));
+        connector.build()
+    })
 }
 
 type Events = aws_sdk_bedrockruntime::primitives::event_stream::EventReceiver<
@@ -788,6 +811,8 @@ mod tests {
         MessageStartEvent, MessageStopEvent, TokenUsage, ToolUseBlockDelta, ToolUseBlockStart,
     };
 
+    use aws_smithy_http_client::tls::TrustStore;
+
     use super::*;
     use crate::types::{SystemPart, ThinkingLevel, ToolSpec};
 
@@ -797,6 +822,41 @@ mod tests {
             max_output: 64_000,
             ..ModelInfo::unknown(BEDROCK, id)
         }
+    }
+
+    /// The SDK's requests go out through [`https_client`]: one to a TLS server whose root it has
+    /// comes back as the answer of the service, not as a failed connection.
+    #[tokio::test]
+    async fn the_sdk_reaches_a_tls_server_through_the_ring_client() {
+        let server = crate::tls::local::serve(concat!(
+            "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\n",
+            "x-amzn-errortype: ValidationException\r\ncontent-length: 27\r\nconnection: close\r\n\r\n",
+            r#"{"message":"no such model"}"#,
+        ))
+        .await;
+        let roots = TrustStore::empty().with_pem_certificate(server.certificate.as_bytes());
+        let tls = TlsContext::builder().with_trust_store(roots).build().unwrap();
+        let config = aws_sdk_bedrockruntime::Config::builder()
+            .behavior_version(aws_sdk_bedrockruntime::config::BehaviorVersion::latest())
+            .region(aws_sdk_bedrockruntime::config::Region::new("us-east-1"))
+            .credentials_provider(aws_sdk_bedrockruntime::config::Credentials::new(
+                "key", "secret", None, None, "test",
+            ))
+            .endpoint_url(server.url())
+            .http_client(https_client(tls, ProxyConfig::disabled()))
+            .build();
+
+        let error = aws_sdk_bedrockruntime::Client::from_conf(config)
+            .converse()
+            .model_id("some-model")
+            .send()
+            .await
+            .unwrap_err();
+
+        let SdkError::ServiceError(answer) = &error else {
+            panic!("the request did not reach the server: {error:?}");
+        };
+        assert_eq!(answer.err().message(), Some("no such model"));
     }
 
     fn delta(index: i32, delta: ContentBlockDelta) -> ConverseStreamOutput {

@@ -131,7 +131,7 @@ fn verify(tarball: &[u8], sha512: &str) -> bool {
 }
 
 fn client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    azazel_ai::tls::client_builder()
         .timeout(TIMEOUT)
         .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
         .build()

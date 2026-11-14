@@ -561,7 +561,7 @@ impl Credentials {
     /// The client token endpoints are reached with, built when a login first needs refreshing.
     pub(crate) fn http(&self) -> &reqwest::Client {
         self.http.get_or_init(|| {
-            reqwest::Client::builder()
+            crate::tls::client_builder()
                 .connect_timeout(Duration::from_secs(30))
                 .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
                 .build()

@@ -219,7 +219,7 @@ impl Extension for HooksExt {
             claude_compat: self.claude_compat,
             trusted: self.trusted,
             disabled: self.disabled,
-            http: LazyLock::new(reqwest::Client::new),
+            http: LazyLock::new(azazel_ai::tls::client),
         });
         r.service(Arc::new(Hooks(inner.clone())));
         // Loaded but never run: `/hooks` can still say what was skipped.

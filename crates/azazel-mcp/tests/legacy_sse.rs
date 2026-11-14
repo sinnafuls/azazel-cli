@@ -83,7 +83,7 @@ impl Server {
 
     /// Opens the event stream with a client that ignores any proxy the environment names.
     async fn connect(&self, headers: &BTreeMap<String, String>) -> Result<LegacySseTransport, SseError> {
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let client = azazel_ai::tls::client_builder().no_proxy().build().unwrap();
         connect(
             &format!("http://{}/sse", self.addr),
             client,

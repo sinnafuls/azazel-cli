@@ -969,7 +969,7 @@ pie charts, Gantt charts, timelines, mind maps and git graphs.
 cargo install --path crates/azazel-cli --features diagrams
 ```
 
-The feature is not part of the default build: the diagram renderer and what draws its output add 5.8 MB to
+The feature is not part of the default build: the diagram renderer and what draws its output add 4.9 MB to
 the binary. Without it a `mermaid` block is shown as its source, like any other code block.
 
 With the feature:
