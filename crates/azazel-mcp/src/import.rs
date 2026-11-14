@@ -16,15 +16,17 @@ pub enum Client {
     Cursor,
     VsCode,
     Windsurf,
+    Jcode,
 }
 
 impl Client {
-    pub const ALL: [Client; 5] = [
+    pub const ALL: [Client; 6] = [
         Client::ClaudeDesktop,
         Client::ClaudeCode,
         Client::Cursor,
         Client::VsCode,
         Client::Windsurf,
+        Client::Jcode,
     ];
 
     /// The name on the command line.
@@ -35,6 +37,7 @@ impl Client {
             Client::Cursor => "cursor",
             Client::VsCode => "vscode",
             Client::Windsurf => "windsurf",
+            Client::Jcode => "jcode",
         }
     }
 
@@ -59,6 +62,8 @@ pub struct Dirs {
     pub config: PathBuf,
     /// The project root, for the files clients keep in a project.
     pub project: PathBuf,
+    /// jcode's own directory: `$JCODE_HOME`, else `~/.jcode`.
+    pub jcode: PathBuf,
 }
 
 impl Dirs {
@@ -74,10 +79,14 @@ impl Dirs {
                 .filter(|dir| !dir.is_empty())
                 .map_or_else(|| home.join(".config"), PathBuf::from)
         };
+        let jcode = env("JCODE_HOME")
+            .filter(|dir| !dir.is_empty())
+            .map_or_else(|| home.join(".jcode"), PathBuf::from);
         Some(Dirs {
             home,
             config,
             project: project.to_path_buf(),
+            jcode,
         })
     }
 }
@@ -101,6 +110,11 @@ pub fn config_files(client: Client, dirs: &Dirs) -> Vec<PathBuf> {
                 .join(".codeium")
                 .join("windsurf")
                 .join("mcp_config.json"),
+        ],
+        // jcode also reads the project's `.mcp.json`, which azazel reads where it is.
+        Client::Jcode => vec![
+            dirs.jcode.join("mcp.json"),
+            dirs.project.join(".jcode").join("mcp.json"),
         ],
     }
 }
@@ -259,11 +273,18 @@ pub fn convert(entry: &Value) -> Result<(RawServer, Option<String>), String> {
     }
     let kind = match kind.as_deref() {
         Some("sse") => Some("sse".to_string()),
-        Some("http" | "streamable-http" | "streamableHttp" | "streamable_http") => Some("http".to_string()),
+        Some("http" | "streamable-http" | "streamableHttp" | "streamable_http" | "streamablehttp") => {
+            Some("http".to_string())
+        }
         _ => None,
     };
     let disabled = fields.get("disabled").and_then(Value::as_bool) == Some(true)
         || fields.get("enabled").and_then(Value::as_bool) == Some(false);
+    // jcode writes the time limit of a call in seconds.
+    let timeout = fields
+        .get("timeout_secs")
+        .and_then(Value::as_u64)
+        .filter(|secs| *secs > 0);
     let server = RawServer {
         kind: kind.filter(|_| command.is_none()),
         command,
@@ -272,7 +293,7 @@ pub fn convert(entry: &Value) -> Result<(RawServer, Option<String>), String> {
         cwd,
         url,
         headers,
-        timeout: None,
+        timeout,
         oauth: None,
         enabled: disabled.then_some(false),
         ..RawServer::default()
@@ -293,6 +314,8 @@ fn server_maps<'a>(client: Client, root: &'a Value, project: &Path) -> Vec<&'a M
     let mut maps = Vec::new();
     maps.extend(object(root.get("mcpServers")));
     match client {
+        // jcode's own name for the key, beside `mcpServers`.
+        Client::Jcode => maps.extend(object(root.get("servers"))),
         // VS Code names the key `servers`; older versions kept it under `mcp` in the settings.
         Client::VsCode => {
             maps.extend(object(root.get("servers")));
@@ -367,7 +390,12 @@ mod tests {
             home: root.join("home"),
             config: root.join("config"),
             project: root.join("project"),
+            jcode: root.join("jcode-home"),
         }
+    }
+
+    fn by_name_timeout(scan: &Scan, name: &str) -> Option<u64> {
+        scan.found.iter().find(|found| found.name == name)?.server.timeout
     }
 
     fn write(file: &Path, text: &str) {
@@ -414,9 +442,19 @@ mod tests {
             &dirs.home.join(".codeium/windsurf/mcp_config.json"),
             r#"{ "mcpServers": { "remote": { "serverUrl": "https://wind.example/mcp" } } }"#,
         );
+        write(
+            &dirs.jcode.join("mcp.json"),
+            r#"{ "servers": { "notes": { "command": "notes-mcp", "env": { "TOKEN": "${NOTES_TOKEN}" },
+                                         "timeout_secs": 60, "shared": true },
+                              "live": { "type": "streamablehttp", "url": "https://live.example/mcp" } } }"#,
+        );
+        write(
+            &dirs.project.join(".jcode/mcp.json"),
+            r#"{ "mcpServers": { "local": { "command": "local-mcp", "disabled": true } } }"#,
+        );
 
         let scan = scan(&Client::ALL, &dirs);
-        assert_eq!(scan.looked.len(), 7);
+        assert_eq!(scan.looked.len(), 9);
         let listed: Vec<(&str, &str, String)> = scan
             .found
             .iter()
@@ -433,7 +471,34 @@ mod tests {
                 ("files", "cursor", "other-fs".to_string()),
                 ("gh", "vscode", "gh-mcp --root ${workspaceFolder}".to_string()),
                 ("remote", "windsurf", "https://wind.example/mcp".to_string()),
+                ("notes", "jcode", "notes-mcp".to_string()),
+                ("live", "jcode", "https://live.example/mcp".to_string()),
+                ("local", "jcode", "local-mcp".to_string()),
             ]
+        );
+        assert_eq!(by_name_timeout(&scan, "notes"), Some(60));
+        assert_eq!(
+            scan.found.iter().find(|f| f.name == "notes").unwrap().server.env["TOKEN"],
+            "${NOTES_TOKEN}"
+        );
+        assert_eq!(
+            scan.found
+                .iter()
+                .find(|f| f.name == "live")
+                .unwrap()
+                .server
+                .kind
+                .as_deref(),
+            Some("http")
+        );
+        assert_eq!(
+            scan.found
+                .iter()
+                .find(|f| f.name == "local")
+                .unwrap()
+                .server
+                .enabled,
+            Some(false)
         );
         let by_name = |name: &str| scan.found.iter().find(|found| found.name == name).unwrap();
         assert_eq!(by_name("files").server.env["TOKEN"], "t0p");
@@ -469,6 +534,7 @@ mod tests {
         assert_eq!(cursor.found.len(), 1);
         assert!(cursor.problems[0].1.starts_with("not valid JSON"));
         assert_eq!(Client::parse("vscode"), Ok(Client::VsCode));
+        assert_eq!(Client::parse("jcode"), Ok(Client::Jcode));
         assert!(Client::parse("emacs").unwrap_err().contains("claude-desktop"));
     }
 

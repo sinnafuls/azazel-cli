@@ -121,6 +121,11 @@ pub(crate) enum Billing {
     Subscription { window: Option<(String, f32)> },
 }
 
+/// What azazel prints as it ends, to say how to come back to session `id`.
+pub(crate) fn resume_line(id: &str) -> String {
+    format!("Resume this session with\n  azazel -r {id}")
+}
+
 /// The roles the cycling keys step through when there are no favourites, as `@role`: those of
 /// `roles` that answer with a model (each comes with the models it resolves to), `default`,
 /// `smol` and `slow` first and the others by name. A role that answers with the same models as
@@ -564,6 +569,16 @@ impl Local {
 impl Backend for Local {
     fn local(&self) -> Option<&Local> {
         Some(self)
+    }
+
+    /// How to come back to this session, once it holds a conversation that is kept on disk.
+    fn farewell(&self) -> Option<String> {
+        let session = &self.active.session;
+        let said = session
+            .entries()
+            .iter()
+            .any(|entry| matches!(entry.kind, EntryKind::Message { .. }));
+        (self.app.keeps_sessions() && said).then(|| resume_line(&session.id()))
     }
 
     async fn next(&mut self) -> Incoming {

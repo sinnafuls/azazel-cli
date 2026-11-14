@@ -32,7 +32,13 @@ manual · ⑂ main · ~/src/app · ◫ 12% · ↯ 78 tok/s · $0.04    ⬢ provi
 The input and the status line sit on the last rows of the terminal from the first frame on. When azazel starts,
 what the terminal showed before scrolls up into the scrollback, as after `clear`. The transcript then grows from
 the top of the screen down towards the input; once it reaches it, older lines scroll away as in any terminal.
-Leaving azazel puts the shell prompt right under the transcript.
+Leaving azazel puts the shell prompt right under the transcript. Once the session holds a conversation and is kept
+on disk (not with `--no-session`), azazel prints how to come back to it:
+
+```
+Resume this session with
+  azazel -r 01a1c7a9-41ad-758c-9f4f-65d319ad0631
+```
 
 The live region, top to bottom:
 

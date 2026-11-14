@@ -5,6 +5,11 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Leaving the terminal UI prints how to come back to the session (`Resume this session with` / `azazel -r <id>`), once the session holds a conversation and is kept on disk.
+- `azazel mcp import jcode` copies the MCP servers of jcode (`~/.jcode/mcp.json`, or `$JCODE_HOME`, and `<project>/.jcode/mcp.json`), reading its `servers` key and its `timeout_secs`. Every client's `timeout_secs` now becomes `timeout`.
+
 ## [0.8.0] - 2026-11-14
 
 ### Added

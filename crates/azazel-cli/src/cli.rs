@@ -679,7 +679,7 @@ pub enum McpAction {
     Serve,
     /// Copy the servers another client is configured with into ~/.azazel/mcp.json
     Import {
-        /// claude-desktop, claude-code, cursor, vscode or windsurf; all of them when left out
+        /// claude-desktop, claude-code, cursor, vscode, windsurf or jcode; all of them when left out
         client: Option<String>,
         /// Import every server found without asking; names already configured are left alone
         #[arg(long)]

@@ -127,12 +127,13 @@ In the terminal UI, `/mcp` opens a list of servers; picking one offers `reconnec
 | `cursor` | `~/.cursor/mcp.json` and `<project>/.cursor/mcp.json` |
 | `vscode` | `mcp.json` in the user folder of VS Code (`%APPDATA%\Code\User`, `~/Library/Application Support/Code/User` or `~/.config/Code/User`) and `<project>/.vscode/mcp.json` |
 | `windsurf` | `~/.codeium/windsurf/mcp_config.json` |
+| `jcode` | `mcp.json` in `$JCODE_HOME` (else `~/.jcode`) and `<project>/.jcode/mcp.json`; its `servers` key and `mcpServers` are both read, and `timeout_secs` becomes `timeout` |
 
-Without a client name all five are read. In a terminal you are asked which servers to import (`all`, numbers such as `1,3`, or Enter for none); `--yes` imports every one. A name that `~/.azazel/mcp.json` already has is never replaced without asking, and with `--yes` it is left as it is. The listing shows the command line or address only; environment values and headers are copied but not printed.
+Without a client name all six are read. In a terminal you are asked which servers to import (`all`, numbers such as `1,3`, or Enter for none); `--yes` imports every one. A name that `~/.azazel/mcp.json` already has is never replaced without asking, and with `--yes` it is left as it is. The listing shows the command line or address only; environment values and headers are copied but not printed.
 
 `${env:NAME}` becomes `${NAME}`. Variables azazel does not fill in, such as `${workspaceFolder}` and `${input:...}`, are copied as written and named in the listing so you can edit the entry afterwards. A project's `.mcp.json` needs no import: azazel reads it where it is.
 
-The servers of pi, omp, jcode and Codex CLI, and Claude Code's together with everything else it holds, come over with [`azazel migrate --only mcp`](migrating.md#mcp-servers).
+The servers of pi, omp and Codex CLI, and Claude Code's together with everything else it holds, come over with [`azazel migrate --only mcp`](migrating.md#mcp-servers).
 
 ## Tools
 
