@@ -67,5 +67,5 @@ jobs:
           sudo systemctl start ssh
           ssh-keyscan localhost >> ~/.ssh/known_hosts
           ssh -o BatchMode=yes localhost true
-          AZAZEL_TEST_SSH=1 cargo test -p azazel-cli --test remote
+          AZAZEL_TEST_SSH=1 cargo test -p azazel-cli --test it remote::
       - run: cargo build --no-default-features -p azazel-cli
