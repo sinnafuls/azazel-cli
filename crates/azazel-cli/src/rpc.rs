@@ -9,13 +9,13 @@
 
 mod session;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
-use azazel_agent::{AgentCmd, AgentEvent, UserInput};
+use azazel_agent::{AgentCmd, AgentEvent, AgentHandle, UserInput};
 use azazel_ai::{Block, Message, ModelSpec, Role, ThinkingLevel};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::side::{Side, SideQuestion};
@@ -32,7 +32,7 @@ use futures::StreamExt;
 use serde::Serialize;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::broadcast::error::RecvError;
+use tokio::sync::broadcast::error::{RecvError, TryRecvError};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -98,8 +98,28 @@ impl Waiting {
 /// Agents reach the client through this: each call becomes a request line and waits for the
 /// command that answers it. When the client has gone, the call ends as it does with nobody there.
 struct RpcBridge {
-    out: Out,
+    out: Requests,
     waiting: Arc<Waiting>,
+}
+
+/// The lines of requests to the user, each with the number of events the lead had emitted when
+/// it was made. They reach the client through the loop of [`serve_lines`], which writes each
+/// one after those events of the lead and before the later ones: a `tool_start` comes before
+/// its `approval_request`, and a notice given during a run before the run's `idle`.
+struct Requests {
+    lead: AgentHandle,
+    lines: mpsc::UnboundedSender<Fenced>,
+}
+
+/// A request line and the count of lead events that go out before it.
+type Fenced = (u64, String);
+
+impl Requests {
+    fn line(&self, frame: &Frame) {
+        if let Ok(text) = serde_json::to_string(frame) {
+            let _ = self.lines.send((self.lead.emitted(), text));
+        }
+    }
 }
 
 impl RpcBridge {
@@ -875,10 +895,13 @@ pub(crate) async fn serve_lines(
 ) {
     let out = Out(lines);
     // Requests from agents go through the loop below rather than straight out, so they are written
-    // after the events emitted before them (a `tool_start` comes before its `approval_request`).
-    let (request_lines, mut requests) = mpsc::unbounded_channel::<Option<String>>();
+    // in their place among the lead's events (see `Requests`).
+    let (request_lines, mut requests) = mpsc::unbounded_channel::<Fenced>();
     app.registry.services.insert(Arc::new(Ui(Arc::new(RpcBridge {
-        out: Out(request_lines),
+        out: Requests {
+            lead: active.lead.clone(),
+            lines: request_lines,
+        },
         waiting: waiting.clone(),
     }))));
 
@@ -891,8 +914,13 @@ pub(crate) async fn serve_lines(
     };
     app.start(source).await;
     let (finished, mut finishing) = mpsc::unbounded_channel();
+    let (events, emitted) = active.lead.subscribe_counted();
+    let mut pending = Pending {
+        written: emitted,
+        lines: VecDeque::new(),
+    };
     let mut session = Session {
-        events: active.lead.subscribe(),
+        events,
         app,
         active,
         team,
@@ -910,21 +938,34 @@ pub(crate) async fn serve_lines(
         tokio::select! {
             // Agent events first: an event is always queued before the request it causes.
             biased;
-            Some(event) = session.events.recv() => session.on_event(event),
+            Some(event) = session.events.recv() => {
+                // What sub-agents did before this event of the lead goes out first: a report
+                // comes before the run of the lead it starts.
+                while let Some(earlier) = team_events.as_mut().map(|events| events.try_recv()) {
+                    match earlier {
+                        Ok(earlier) => team_line(&out, &session, earlier),
+                        Err(TryRecvError::Lagged(_)) => out.line(&Frame::Roster { members: session.roster() }),
+                        Err(TryRecvError::Closed) => team_events = None,
+                        Err(TryRecvError::Empty) => break,
+                    }
+                }
+                while let Ok(fenced) = requests.try_recv() {
+                    pending.lines.push_back(fenced);
+                }
+                pending.flush(&out);
+                session.on_event(event);
+                pending.written += 1;
+                pending.flush(&out);
+            }
             Some(event) = async { Some(team_events.as_mut()?.recv().await) } => match event {
-                Ok(TeamEvent::Agent { id, event }) => out.line(&event_json(&id, &event)),
-                Ok(TeamEvent::Input { id, text }) => out.line(&Frame::UserInput {
-                    kind: "prompt".to_string(),
-                    text,
-                    agent: Some(id),
-                }),
-                Ok(TeamEvent::Roster) => out.line(&Frame::Roster { members: session.roster() }),
+                Ok(event) => team_line(&out, &session, event),
                 // Events were missed; the roster says where everyone stands now.
                 Err(RecvError::Lagged(_)) => out.line(&Frame::Roster { members: session.roster() }),
                 Err(RecvError::Closed) => team_events = None,
             },
-            Some(Some(line)) = requests.recv() => {
-                let _ = out.0.send(Some(line));
+            Some(fenced) = requests.recv() => {
+                pending.lines.push_back(fenced);
+                pending.flush(&out);
             }
             Some(done) = finishing.recv() => session.finish(done).await,
             line = input.next() => match line {
@@ -934,6 +975,9 @@ pub(crate) async fn serve_lines(
         }
     }
 
+    // Nothing the lead emits now is still to come before them.
+    pending.written = u64::MAX;
+    pending.flush(&out);
     // Requests still open end the way they do when nobody is there.
     session.cancel.cancel();
     locked(&session.waiting.approvals).clear();
@@ -942,6 +986,37 @@ pub(crate) async fn serve_lines(
     // The bridge the agents were given keeps a sender, so the end of the output is said, not
     // inferred from the channel closing.
     let _ = out.0.send(None);
+}
+
+/// Request lines that wait for the events the lead emitted before them.
+struct Pending {
+    /// The lead's events written so far, counted from its first.
+    written: u64,
+    lines: VecDeque<Fenced>,
+}
+
+impl Pending {
+    /// Writes the lines, in the order they came, whose events of the lead have all been written.
+    fn flush(&mut self, out: &Out) {
+        while let Some((_, line)) = self.lines.pop_front_if(|(after, _)| *after <= self.written) {
+            let _ = out.0.send(Some(line));
+        }
+    }
+}
+
+/// Writes what the team reports.
+fn team_line(out: &Out, session: &Session, event: TeamEvent) {
+    match event {
+        TeamEvent::Agent { id, event } => out.line(&event_json(&id, &event)),
+        TeamEvent::Input { id, text } => out.line(&Frame::UserInput {
+            kind: "prompt".to_string(),
+            text,
+            agent: Some(id),
+        }),
+        TeamEvent::Roster => out.line(&Frame::Roster {
+            members: session.roster(),
+        }),
+    }
 }
 
 #[cfg(test)]

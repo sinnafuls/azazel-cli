@@ -1,5 +1,6 @@
 //! The team: sub-agents that work for the lead, or for each other, at the same time.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -116,6 +117,22 @@ pub enum TeamEvent {
     /// What a sub-agent was handed to work on: the prompt it started with, or a message sent
     /// to it since.
     Input { id: String, text: String },
+}
+
+/// An id a spawn has chosen for an agent it is still setting up. Once the agent is a member the
+/// id is its; when the spawn fails the id is free again.
+struct Reservation<'a> {
+    reserved: &'a Mutex<HashSet<String>>,
+    id: String,
+}
+
+impl Drop for Reservation<'_> {
+    fn drop(&mut self) {
+        self.reserved
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.id);
+    }
 }
 
 /// What came of `@name text` typed by the user.
@@ -257,6 +274,9 @@ struct Inner {
     deps: TeamDeps,
     gate: Arc<dyn Gate>,
     members: Mutex<Vec<Member>>,
+    /// Ids that a spawn has chosen and not yet given to its member: two spawns at the same time
+    /// must not both take `scout-3`.
+    reserved: Mutex<HashSet<String>>,
     lead: RwLock<Option<Lead>>,
     /// The typed result the lead owes (print mode's `--json-schema`).
     lead_report: RwLock<Option<Arc<Typed>>>,
@@ -788,6 +808,7 @@ impl Team {
                 deps,
                 gate: Arc::new(gate),
                 members: Mutex::default(),
+                reserved: Mutex::default(),
                 lead: RwLock::default(),
                 lead_report: RwLock::default(),
                 lead_mail: AtomicBool::new(false),
@@ -918,10 +939,13 @@ impl Team {
 
         let (lead, session) = inner.lead().ok_or("no session is open")?;
         let session_id = lead.info().session_id.clone();
-        let id = {
+        let reservation = {
             let members = inner.members();
-            let taken = |id: &str| id == LEAD || members.iter().any(|member| member.info.id == id);
-            match &request.name {
+            let mut reserved = inner.reserved.lock().unwrap_or_else(PoisonError::into_inner);
+            let taken = |id: &str| {
+                id == LEAD || reserved.contains(id) || members.iter().any(|member| member.info.id == id)
+            };
+            let id = match &request.name {
                 Some(name) if !valid_id(name) => {
                     return Err(format!(
                         "`{name}` is not a usable agent name: use letters, digits, `-` and `_`"
@@ -933,8 +957,14 @@ impl Team {
                     .map(|n| format!("{}-{n}", def.name))
                     .find(|candidate| !taken(candidate))
                     .unwrap_or_default(),
+            };
+            reserved.insert(id.clone());
+            Reservation {
+                reserved: &inner.reserved,
+                id,
             }
         };
+        let id = reservation.id.clone();
         let worktree = match request.isolation.unwrap_or(def.isolation) {
             Isolation::None => None,
             Isolation::Worktree => {
@@ -986,6 +1016,8 @@ impl Team {
             patch: None,
             stop: CancellationToken::new(),
         });
+        // The member holds the id now.
+        drop(reservation);
         inner.announce();
         tokio::spawn(inner.clone().run_member(id.clone(), prompt));
         Ok(id)

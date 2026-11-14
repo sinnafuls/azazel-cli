@@ -121,7 +121,7 @@ fn normal(path: &Path) -> String {
 /// that reads a file on its own account, such as an `@path` include, where no agent asked and
 /// no user can be asked.
 pub(crate) fn holds_credentials(path: &Path, azazel_home: &Path, project_root: &Path) -> bool {
-    let home = std::env::home_dir();
+    let home = std::env::home_dir().map(|home| canonical(&home));
     let ctx = MatchCtx {
         project_root,
         cwd: project_root,
@@ -138,19 +138,21 @@ pub struct MatchCtx<'a> {
 }
 
 impl MatchCtx<'_> {
-    /// A path subject as written by the model, made absolute.
+    /// A path subject as written by the model, made absolute and canonical: the form the roots,
+    /// the homes and the plans directory are kept in, so `/var/…` on macOS is `/private/var/…`
+    /// and a Windows short name (`RUNNER~1`) is the long one.
     pub fn resolve(&self, subject: &str) -> PathBuf {
         let subject = subject.trim();
         if let Some(rest) = subject.strip_prefix("~/")
             && let Some(home) = self.home
         {
-            return home.join(rest);
+            return canonical(&home.join(rest));
         }
         let path = Path::new(subject);
         if path.is_absolute() {
-            path.to_path_buf()
+            canonical(path)
         } else {
-            self.cwd.join(path)
+            canonical(&self.cwd.join(path))
         }
     }
 }
@@ -176,7 +178,7 @@ impl Rule {
                 }
                 None => glob(pattern, false).is_some_and(|g| g.is_match(subject)),
             },
-            SubjectKind::Path => path_matches(pattern, subject, ctx),
+            SubjectKind::Path => path_matches(pattern, &normal(&ctx.resolve(subject)), ctx),
             SubjectKind::Domain => match (pattern.strip_prefix("domain:"), subject.strip_prefix("domain:")) {
                 (Some(wanted), Some(host)) => {
                     let (wanted, host) = (wanted.to_ascii_lowercase(), host.to_ascii_lowercase());
@@ -190,9 +192,9 @@ impl Rule {
 }
 
 /// Gitignore-style: a pattern without `/` matches at any depth; a pattern naming a directory covers
-/// everything below it; relative patterns are anchored at the project root.
-fn path_matches(pattern: &str, subject: &str, ctx: &MatchCtx<'_>) -> bool {
-    let path = normal(&ctx.resolve(subject));
+/// everything below it; relative patterns are anchored at the project root. `path` is resolved
+/// and normalised.
+fn path_matches(pattern: &str, path: &str, ctx: &MatchCtx<'_>) -> bool {
     let pattern = pattern.replace('\\', "/");
     let pattern = pattern.trim_end_matches('/');
     let absolute = if let Some(rest) = pattern.strip_prefix("~/") {
@@ -209,7 +211,7 @@ fn path_matches(pattern: &str, subject: &str, ctx: &MatchCtx<'_>) -> bool {
     };
     [absolute.clone(), format!("{absolute}/**")]
         .iter()
-        .any(|p| glob(p, true).is_some_and(|g| g.is_match(&path)))
+        .any(|p| glob(p, true).is_some_and(|g| g.is_match(path)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,8 +339,8 @@ impl PermissionState {
             roots: RwLock::new(roots),
             cwd: paths.cwd.clone(),
             home: canonical(&paths.home),
-            user_home: std::env::home_dir(),
-            plans_dir: paths.plans_dir(),
+            user_home: std::env::home_dir().map(|home| canonical(&home)),
+            plans_dir: canonical(&paths.plans_dir()),
             local_config: paths.project_local_config(),
             destructive: permissions.destructive,
             secret_patterns: permissions.secret_paths.clone(),
@@ -811,7 +813,8 @@ impl PermissionState {
 
     /// Whether `path` is one of the files that hold credentials: the built-in list (`.env`,
     /// `*.pem`, `*.key`, SSH keys, the cloud and package credentials under the home directory,
-    /// azazel's own login file) or a match of `permissions.secret_paths`.
+    /// azazel's own login file) or a match of `permissions.secret_paths`. `path` is canonical,
+    /// as [`MatchCtx::resolve`] makes it; a walk makes its root canonical once.
     pub fn is_secret(&self, path: &Path) -> bool {
         secrets::is_secret(path, &self.secret_patterns, &self.home, &self.ctx(&self.cwd))
     }
