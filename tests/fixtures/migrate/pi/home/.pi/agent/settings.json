@@ -1,0 +1,24 @@
+{
+  "defaultProvider": "team-gateway",
+  "defaultModel": "big-model",
+  "defaultThinkingLevel": "high",
+  "enabledModels": [
+    "team-gateway/big-model",
+    "ollama/local-coder"
+  ],
+  "theme": "light",
+  "steeringMode": "all",
+  "hideThinkingBlock": false,
+  "compaction": {
+    "enabled": true,
+    "reserveTokens": 20000,
+    "keepRecentTokens": 30000
+  },
+  "retry": {
+    "enabled": true,
+    "maxRetries": 5
+  },
+  "extensions": [
+    "./extensions/notify.ts"
+  ]
+}

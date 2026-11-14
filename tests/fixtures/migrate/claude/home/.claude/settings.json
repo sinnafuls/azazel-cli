@@ -1,0 +1,47 @@
+{
+  "model": "claude-test-2[1m]",
+  "permissions": {
+    "allow": [
+      "Bash(npm run test:*)",
+      "Edit(src/**)",
+      "mcp__db__query",
+      "mcp__search",
+      "WebFetch(domain:docs.example.com)",
+      "NotebookEdit"
+    ],
+    "deny": [
+      "Read(./.env)",
+      "Read(//etc/passwd)"
+    ],
+    "ask": [
+      "Bash(git push:*)"
+    ],
+    "defaultMode": "acceptEdits",
+    "additionalDirectories": [
+      "../lib"
+    ]
+  },
+  "env": {
+    "FOO": "1"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "./check.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "~/.claude/statusline.sh"
+  },
+  "apiKeyHelper": "pass show anthropic",
+  "cleanupPeriodDays": 45
+}

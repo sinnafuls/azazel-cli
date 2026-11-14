@@ -338,6 +338,25 @@ pub enum Sub {
         #[command(subcommand)]
         action: McpAction,
     },
+    /// Bring over what pi, omp, jcode, Claude Code and Codex CLI hold: models, keys, skills,
+    /// commands, agents, MCP servers, rules, settings, chats and memory
+    Migrate {
+        /// Where from: pi, omp, jcode, claude, codex or all; several separated by commas
+        #[arg(long, value_name = "SOURCE", value_delimiter = ',')]
+        from: Vec<String>,
+        /// Only these kinds: models, keys, skills, commands, agents, mcp, rules, settings, chats, memory
+        #[arg(long, value_name = "KINDS", value_delimiter = ',')]
+        only: Vec<String>,
+        /// Say what would be brought over, and write nothing
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace what is already there instead of leaving it
+        #[arg(long)]
+        overwrite: bool,
+        /// The project whose own files (skills, commands, MCP servers) are brought over; this one when left out
+        #[arg(long, value_name = "DIR")]
+        project: Option<PathBuf>,
+    },
     /// Install and manage packages of skills, agents, commands and extensions
     Pkg {
         #[command(subcommand)]

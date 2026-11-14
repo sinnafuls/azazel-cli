@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "notes": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "notes-mcp"
+      ],
+      "env": {
+        "NOTES_DIR": "/data/notes"
+      },
+      "timeout": 30
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://docs.example.com/mcp"
+    }
+  }
+}

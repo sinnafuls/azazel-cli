@@ -1,0 +1,16 @@
+{
+  "servers": {
+    "notes": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "notes-mcp"
+      ],
+      "env": {
+        "TOKEN": "${NOTES_TOKEN}"
+      },
+      "shared": true,
+      "timeout_secs": 60
+    }
+  }
+}

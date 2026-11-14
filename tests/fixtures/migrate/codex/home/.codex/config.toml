@@ -1,0 +1,30 @@
+model = "gpt-test-1"
+model_provider = "openai"
+model_reasoning_effort = "high"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+[model_providers.corp]
+name = "Corp proxy"
+base_url = "https://proxy.example.org/v1"
+env_key = "CORP_API_KEY"
+wire_api = "responses"
+http_headers = { "X-Org" = "eng" }
+env_http_headers = { "X-Trace" = "TRACE_ID" }
+query_params = { "api-version" = "2026-01-01" }
+
+[mcp_servers.docs]
+url = "https://docs.example.org/mcp"
+bearer_token_env_var = "DOCS_TOKEN"
+tool_timeout_sec = 45
+
+[mcp_servers.files]
+command = "npx"
+args = ["-y", "files-mcp"]
+env = { ROOT = "/data" }
+env_vars = ["HOME_TOKEN"]
+enabled_tools = ["read_file"]
+startup_timeout_sec = 20
+
+[profiles.fast]
+model = "gpt-test-mini"

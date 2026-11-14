@@ -445,6 +445,7 @@ unknown tier or preset) exits with status 2.
 | `azazel export` | | Write a session to a file |
 | `azazel context` | | What the last request of a session was made of |
 | `azazel stats` | | Sessions, prompts, tokens and cost per day, model, project and tool |
+| `azazel migrate` | | Bring models, keys, skills, commands, agents, MCP servers, rules, settings, chats and memory over from pi, omp, jcode, Claude Code or Codex CLI; see [migrating](migrating.md) |
 | `azazel goal` | | Work on an objective until it is verified; see [goals](goals.md) |
 | `azazel bg` | | Run a prompt in a background session; see [background sessions](background-and-remote.md) |
 | `azazel ps` | | List the background sessions |

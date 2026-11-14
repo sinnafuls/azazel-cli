@@ -211,8 +211,9 @@ fn variables(text: &str, unfilled: &mut Vec<String>) -> String {
     text
 }
 
-/// An entry of another client as an `mcp.json` entry. `Err` says why it cannot be one.
-fn convert(entry: &Value) -> Result<(RawServer, Option<String>), String> {
+/// An entry of another client as an `mcp.json` entry, and what in it azazel cannot carry over as
+/// it is. `Err` says why it cannot be an entry at all.
+pub fn convert(entry: &Value) -> Result<(RawServer, Option<String>), String> {
     let fields = entry.as_object().ok_or("the entry is not an object")?;
     // Shared by the closures below, which each note what they could not carry over.
     let unfilled = std::cell::RefCell::new(Vec::new());

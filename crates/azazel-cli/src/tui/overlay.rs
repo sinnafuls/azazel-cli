@@ -162,6 +162,10 @@ pub enum Action {
     /// `/terminal-setup`: whether to add the key binding to the terminal's file; the first
     /// row says yes.
     TerminalSetup(Box<super::setup::Change>),
+    /// `/migrate`: the sources and the kinds to bring over, ticked in a form.
+    Migrate(Box<super::migrate::Offer>),
+    /// The plan of a migration; the first row brings it over.
+    MigrateGo(Box<super::migrate::Pick>),
     /// `/settings`: the screen goes back to the command once it has given up the keyboard.
     Settings {
         reply: Reply<Box<crate::settings::Screen>>,

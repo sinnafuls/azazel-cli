@@ -1,0 +1,44 @@
+{
+  "graph_version": 2,
+  "memories": {
+    "mem_1763000000000_42": {
+      "id": "mem_1763000000000_42",
+      "category": "preference",
+      "content": "Prefers ripgrep over grep.",
+      "tags": [
+        "tools"
+      ],
+      "created_at": "2026-11-13T10:00:00Z",
+      "updated_at": "2026-11-13T10:00:00Z",
+      "access_count": 0,
+      "source": null,
+      "trust": "high",
+      "strength": 1,
+      "active": true,
+      "confidence": 1.0
+    },
+    "mem_1763000000001_43": {
+      "id": "mem_1763000000001_43",
+      "category": "fact",
+      "content": "Uses npm.",
+      "tags": [],
+      "created_at": "2026-11-13T10:00:00Z",
+      "updated_at": "2026-11-14T10:00:00Z",
+      "access_count": 0,
+      "source": null,
+      "trust": "low",
+      "strength": 1,
+      "active": false,
+      "superseded_by": "mem_1763000000002_44",
+      "confidence": 0.4
+    }
+  },
+  "tags": {},
+  "clusters": {},
+  "edges": {},
+  "reverse_edges": {},
+  "metadata": {
+    "retrieval_count": 0,
+    "link_discovery_count": 0
+  }
+}

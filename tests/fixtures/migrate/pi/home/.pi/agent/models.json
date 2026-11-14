@@ -1,0 +1,44 @@
+{
+  "providers": {
+    "team-gateway": {
+      "name": "Team gateway",
+      "baseUrl": "https://llm.example.com/v1",
+      "api": "openai-completions",
+      "apiKey": "test-key-team-gateway",
+      "authHeader": true,
+      "headers": {
+        "X-Team": "platform"
+      },
+      "models": [
+        {
+          "id": "big-model",
+          "name": "Big Model",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 200000,
+          "maxTokens": 32000,
+          "cost": {
+            "input": 3,
+            "output": 15,
+            "cacheRead": 0.3,
+            "cacheWrite": 3.75
+          }
+        },
+        {
+          "id": "small-model"
+        }
+      ]
+    },
+    "ollama": {
+      "models": [
+        {
+          "id": "local-coder",
+          "contextWindow": 32768
+        }
+      ]
+    }
+  }
+}

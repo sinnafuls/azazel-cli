@@ -12,6 +12,7 @@ mod form;
 mod gitcmd;
 mod input;
 mod loops;
+mod migrate;
 mod overlay;
 mod pager;
 mod panels;
@@ -270,6 +271,8 @@ enum Internal {
     Clipboard(paste::Clip),
     /// The clipboard's text, for the key that pastes text only.
     ClipboardText(Option<String>),
+    /// A step of `/migrate` finished beside the UI loop.
+    Migrate(migrate::Step),
 }
 
 pub struct Tui {
@@ -1335,6 +1338,7 @@ impl Tui {
             Internal::Sent(sent) => return self.on_sent(sent),
             Internal::Clipboard(clip) => return self.on_clipboard(clip),
             Internal::ClipboardText(text) => return self.on_clipboard_text(text),
+            Internal::Migrate(step) => return self.on_migrate(step).await,
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1941,6 +1945,7 @@ impl Tui {
                 return match action {
                     Action::Ask { reply } => drop(reply.send(Ok(answers.pop().unwrap_or_default()))),
                     Action::Form { reply } => drop(reply.send(Ok(answers))),
+                    Action::Migrate(offer) => self.migrate_picked(*offer, &answers),
                     other => other.cancel(),
                 };
             }
@@ -1949,7 +1954,8 @@ impl Tui {
         };
         match action {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
-            action @ (Action::Ask { .. } | Action::Form { .. }) => action.cancel(),
+            action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
+            Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
             Action::AgentPane => {}
             // The screen goes back to the command that showed it, which knows what it asked for.
             Action::Settings { reply } => {

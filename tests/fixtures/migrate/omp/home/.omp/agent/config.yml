@@ -1,0 +1,38 @@
+symbolPreset: nerd
+theme:
+  dark: tokyo-night
+  light: light
+setupVersion: 3
+statusLine:
+  preset: compact
+  separator: powerline-thin
+  sessionAccent: true
+modelRoles:
+  default: anthropic/claude-test-1:high
+  smol: gate/small-chat:low
+  slow: gate/big-responses:xhigh
+  advisor: openrouter/vendor/model-x:max
+  odd: nowhere/model-y
+disabledProviders:
+  - ollama
+task:
+  maxConcurrency: 6
+tools:
+  approvalMode: yolo
+compaction:
+  keepRecentTokens: 24000
+cycleOrder:
+  - default
+  - slow
+  - odd
+steeringMode: one-at-a-time
+hideThinkingBlock: true
+retry:
+  fallbackChains:
+    advisor:
+      - openrouter/vendor/model-x:high
+      - gate/small-chat:high
+    gate/small-chat:
+      - anthropic/claude-test-1
+extensions:
+  - ~/.omp/agent/extensions/consult

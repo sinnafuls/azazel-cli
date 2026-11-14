@@ -175,6 +175,11 @@ const BUILTIN: &[(&str, &str)] = &[
          /loop stop ends it",
     ),
     ("init", "Have the agent write AGENTS.md for this project"),
+    (
+        "migrate",
+        "Bring over models, keys, skills, commands, MCP servers, chats and memory from pi, omp, jcode, Claude Code \
+         and Codex CLI",
+    ),
     ("doctor", "Check the installation and this project's setup"),
     #[cfg(feature = "voice")]
     (
@@ -331,6 +336,7 @@ impl Tui {
             "commit" => self.commit_command(args).await,
             "loop" => self.loop_command(args).await,
             "init" => self.send_prompt(INIT_PROMPT.to_string(), Vec::new()).await,
+            "migrate" => self.migrate_command(),
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
             "quit" => self.quit = true,

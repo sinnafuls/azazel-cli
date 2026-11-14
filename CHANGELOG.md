@@ -7,6 +7,19 @@ GitHub are its section here.
 
 ### Added
 
+- `azazel migrate [--from pi|omp|jcode|claude|codex|all] [--only <kinds>] [--dry-run] [--overwrite]
+  [--project <dir>]` and `/migrate` bring over what another harness holds on this machine: providers,
+  models, roles and fallbacks (to `models.yml` and `[roles]`), API keys (to `auth.json`), skills, custom
+  commands (placeholders converted), agent definitions (frontmatter mapped), MCP servers of the user and the
+  project, rule and context files azazel does not read where they are, settings that have an equivalent,
+  the conversations of every project (as sessions named `imported from <source>: <title>`, with thinking,
+  images, tool calls and results, the model of each reply, compactions and sub-agents' transcripts) and
+  memories. The source is only read; nothing that is there is replaced without `--overwrite`; sign-ins are
+  never copied but listed with the `azazel login <provider>` to run, and a key of a provider the source
+  signs in to is left out, so that nothing is billed to a key by surprise; a second run skips what is
+  already there. A report lists everything imported, skipped and lost. `/migrate` shows the harnesses found with
+  their counts, lets you untick sources and kinds, and shows the plan of a dry run before it writes. See
+  `docs/migrating.md`.
 - `/settings` is one screen of ten pages behind a row of tabs (Accounts, Models, Appearance, Status line,
   Input, Permissions, Tools, Sessions, Usage, Advanced) and reaches every configuration key. `Tab` and the
   arrows change pages, `/` searches all of them, `r` puts a setting back on its default, and `p` saves to the
