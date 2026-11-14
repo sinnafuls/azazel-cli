@@ -1,5 +1,8 @@
 //! `/restart`: azazel starts again in the same terminal, on the session that was open. It is
-//! what picks up a new binary after an update without losing the conversation.
+//! what picks up a new binary after an update without losing the conversation. `/open`, `/cd`
+//! and `/worktree` start again the same way, in another directory: what is read once at the
+//! start (the project, its trust, configuration and context files) is read there afresh. A
+//! session that changes project goes into the other project's sessions on the way ([`Move`]).
 //!
 //! The UI asks for it as it ends ([`request`]); once the run is over and everything it held is
 //! closed, [`Builder::run`](crate::Builder::run) starts the binary again ([`exec`]). On Unix
@@ -12,6 +15,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::{Mutex, OnceLock, PoisonError};
 
+use azazel_core::SessionStore;
 use clap::CommandFactory;
 
 use crate::cli::Cli;
@@ -34,31 +38,89 @@ const LIVE_OPTIONS: &[&str] = &["model", "thinking", "mode"];
 /// The binary this process was started from. Asked for at the start: after an update the
 /// running program's own file has been moved aside, and the new one is where this was.
 static BINARY: OnceLock<Option<PathBuf>> = OnceLock::new();
-/// The arguments to start again with, once the UI asked for it. The whole process ends and
-/// starts over, so this is the one thing that is the process's and not a session's.
-static REQUESTED: Mutex<Option<Vec<OsString>>> = Mutex::new(None);
+/// What to start again with, once the UI asked for it. The whole process ends and starts over,
+/// so this is the one thing that is the process's and not a session's.
+static REQUESTED: Mutex<Option<Request>> = Mutex::new(None);
+
+/// A session that goes into the sessions of another project as azazel starts again. It moves
+/// once this run has closed its file, so that nothing written at the end is lost.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Move {
+    /// Its file now.
+    pub file: PathBuf,
+    /// The sessions directory of the project it goes to.
+    pub dir: PathBuf,
+    /// Where it works from now on.
+    pub cwd: PathBuf,
+}
+
+impl Move {
+    /// Where its file will be.
+    pub fn target(&self) -> PathBuf {
+        match self.file.file_name() {
+            Some(name) => self.dir.join(name),
+            None => self.file.clone(),
+        }
+    }
+}
+
+/// What azazel starts again with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Request {
+    args: Vec<OsString>,
+    moving: Option<Move>,
+}
 
 /// Notes where the binary is, before anything can move it.
 pub(crate) fn remember_binary() {
     BINARY.get_or_init(|| std::env::current_exe().ok());
 }
 
-/// Asks for azazel to start again with `args` once this run has ended.
-pub(crate) fn request(args: Vec<OsString>) {
-    *REQUESTED.lock().unwrap_or_else(PoisonError::into_inner) = Some(args);
+/// Asks for azazel to start again with `args` once this run has ended; `moving`, when the
+/// session goes into another project's sessions on the way. `args` then open it at
+/// [`Move::target`].
+pub(crate) fn request(args: Vec<OsString>, moving: Option<Move>) {
+    *REQUESTED.lock().unwrap_or_else(PoisonError::into_inner) = Some(Request { args, moving });
 }
 
 /// What [`request`] asked for, if anything.
-pub(crate) fn take() -> Option<Vec<OsString>> {
+pub(crate) fn take() -> Option<Request> {
     REQUESTED.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Moves the session where the request says, then starts again ([`exec`]). A session that
+/// cannot be moved is opened where it is, and why is said.
+pub(crate) fn start(request: Request) -> ExitCode {
+    let Request { mut args, moving } = request;
+    if let Some(moving) = moving
+        && let Err(e) = SessionStore::relocate(&moving.file, &moving.dir, &moving.cwd)
+    {
+        eprintln!(
+            "azazel: the session stays in {}, as it could not be moved: {e}",
+            moving.file.display()
+        );
+        let target = OsString::from(moving.target());
+        for arg in &mut args {
+            if *arg == target {
+                *arg = moving.file.clone().into_os_string();
+            }
+        }
+    }
+    exec(args)
 }
 
 /// The arguments for the azazel that starts again: those this one was started with
 /// (`original`, without the program's name), minus the prompt, the options that chose a
 /// session and a subcommand with what belongs to it, plus `reopen`, which opens the session
 /// that is open now. With `live` the model, the thinking level and the permission mode are
-/// left out too, for `reopen` to say what they are now.
-pub(crate) fn arguments(original: &[OsString], reopen: &[OsString], live: bool) -> Vec<OsString> {
+/// left out too, for `reopen` to say what they are now. `without` names more options to leave
+/// out, by their ids (`cwd`, `trust`).
+pub(crate) fn arguments(
+    original: &[OsString],
+    reopen: &[OsString],
+    live: bool,
+    without: &[&str],
+) -> Vec<OsString> {
     let mut command = Cli::command();
     command.build();
     // What the command line parser took for the subcommand; a prompt can hold the same word.
@@ -110,6 +172,7 @@ pub(crate) fn arguments(original: &[OsString], reopen: &[OsString], live: bool) 
         let keep = option.is_some_and(|option| {
             let id = option.get_id().as_str();
             !SESSION_OPTIONS.contains(&id)
+                && !without.contains(&id)
                 && !(live && LIVE_OPTIONS.contains(&id))
                 && (!in_subcommand || option.is_global_set())
         });
@@ -180,7 +243,7 @@ mod tests {
     }
 
     fn restarted(original: &[&str], reopen: &[&str], live: bool) -> Vec<String> {
-        arguments(&words(original), &words(reopen), live)
+        arguments(&words(original), &words(reopen), live, &[])
             .iter()
             .map(|word| word.to_string_lossy().into_owned())
             .collect()
@@ -322,8 +385,28 @@ mod tests {
 
     #[test]
     fn what_was_asked_for_is_taken_once() {
-        request(words(&["-r", "x"]));
-        assert_eq!(take(), Some(words(&["-r", "x"])));
+        request(words(&["-r", "x"]), None);
+        assert_eq!(take().map(|request| request.args), Some(words(&["-r", "x"])));
         assert_eq!(take(), None);
+    }
+
+    #[test]
+    fn starting_in_another_directory_leaves_out_the_directory_and_the_trust_given() {
+        let original = words(&["--cwd", "/old", "--trust", "--set", "tui.popups=false", "-c"]);
+        let reopen = words(&["--cwd", "/new", "-r", "/s/one.jsonl"]);
+        let moved: Vec<String> = arguments(&original, &reopen, true, &["cwd", "trust"])
+            .iter()
+            .map(|word| word.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            moved,
+            ["--set", "tui.popups=false", "--cwd", "/new", "-r", "/s/one.jsonl"]
+        );
+        let moving = Move {
+            file: PathBuf::from("/a/sessions/x.jsonl"),
+            dir: PathBuf::from("/b/sessions"),
+            cwd: PathBuf::from("/b"),
+        };
+        assert_eq!(moving.target(), PathBuf::from("/b/sessions/x.jsonl"));
     }
 }

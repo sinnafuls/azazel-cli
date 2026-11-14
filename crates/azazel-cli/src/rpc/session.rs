@@ -87,6 +87,7 @@ fn kind_name(kind: &EntryKind) -> &'static str {
         EntryKind::SessionInfo { .. } => "session_info",
         EntryKind::ThinkingChange { .. } => "thinking_change",
         EntryKind::Pin { .. } => "pin",
+        EntryKind::Archive { .. } => "archive",
         EntryKind::RunStarted { .. } => "run_started",
         EntryKind::RequestStarted { .. } => "request_started",
         EntryKind::ToolStarted { .. } => "tool_started",

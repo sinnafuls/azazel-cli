@@ -381,6 +381,9 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--max-cost <USD>` | Stop every agent once the run has spent this much (`[limits] max_cost_usd`) |
 | `--coordinator` | Start in [coordinator mode](team.md#coordinator-mode): the lead plans and delegates |
 | `--json-schema <FILE\|JSON>` | With `-p`: the run must end in JSON that matches this schema, and only that JSON is printed; see [typed results](team.md#typed-results) |
+| `-f`, `--file <PATH>` | With `-p`: a file for the prompt, repeatable up to 100. A text file is added to the prompt as an `@path` mention is, an image is attached. A file that is missing, larger than 256 KB of text or neither text nor an image ends the run with status 2 before anything is sent |
+| `--worktree[=NAME]` | With `-p`: run in a new git worktree, `.azazel/worktrees/<NAME>` on a new branch `azazel/<NAME>` from HEAD (named after the time when no name is given); its path is printed at the end. See [worktrees](sessions-and-checkpoints.md#worktrees) |
+| `--archived` | With `-p`: keep the session out of `/resume`, `/open`, `-c` and `azazel sessions list` (`--all` lists it); for runs from scripts and CI |
 | `--tier <TIER>` | [Service tier](models-and-logins.md#service-tiers) of the requests: `priority`, `standard`, `economy` |
 | `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
@@ -443,8 +446,9 @@ unknown tier or preset) exits with status 2.
 | `azazel models` | | List the models of the providers you have a credential for |
 | `azazel usage` | | What your subscriptions have left; see [usage](models-and-logins.md#usage) |
 | `azazel secrets` | `add`, `add-site`, `list`, `rm` | Credentials agents use without seeing them; see [stored credentials](web-and-browser.md#credentials-for-services) |
-| `azazel sessions` | `list`, `search`, `delete`, `prune`, `export` | Manage saved sessions; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
-| `azazel export` | | Write a session to a file |
+| `azazel sessions` | `list`, `search`, `delete`, `prune`, `export`, `import` | Manage saved sessions, and bring one in from a file; see [sessions](sessions-and-checkpoints.md#from-the-shell) |
+| `azazel export` | | Write a session to a file; `--sanitize` for sharing |
+| `azazel open` | | Pick a recent session of any project and open it in the UI; see [projects and directories](sessions-and-checkpoints.md#projects-and-directories) |
 | `azazel context` | | What the last request of a session was made of |
 | `azazel stats` | | Sessions, prompts, tokens and cost per day, model, project and tool |
 | `azazel migrate` | | Bring models, keys, skills, commands, agents, MCP servers, rules, settings, chats and memory over from pi, omp, jcode, Claude Code or Codex CLI; see [migrating](migrating.md) |

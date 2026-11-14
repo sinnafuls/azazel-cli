@@ -1,10 +1,12 @@
 //! Print mode: one prompt in, the result out, no interactive UI.
 
 use std::io::{IsTerminal, Read, Write};
+use std::path::{Path, PathBuf};
 
 use azazel_agent::AgentEvent;
-use azazel_ai::StopReason;
-use azazel_core::StartSource;
+use azazel_ai::{Block, StopReason};
+use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
+use azazel_core::{FileTracker, StartSource};
 use azazel_team::{Team, TeamEvent};
 use serde_json::Value;
 
@@ -43,17 +45,98 @@ pub(crate) fn with_piped_stdin(prompt: &str) -> String {
     format!("{prompt}\n\n{piped}")
 }
 
+/// Files `-f/--file` takes in one run.
+pub const MAX_FILES: usize = 100;
+/// Size above which a text file of `-f` is refused, as an `@path` mention leaves it out.
+const MAX_TEXT_BYTES: u64 = 256 * 1024;
+/// Size above which an image of `-f` is refused.
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// The files of `-f/--file`: texts inlined in the prompt as `@path` mentions are, images
+/// attached.
+#[derive(Debug, Default)]
+pub struct Files {
+    /// The `<file>` blocks appended to the prompt.
+    text: String,
+    images: Vec<Block>,
+    /// What each text file held, for the lead to count as read.
+    read: Vec<(PathBuf, Vec<u8>)>,
+}
+
+/// Reads the files of `-f`, given relative to `cwd`. A file that cannot be given to the model
+/// is a mistake of the command line, said before anything starts.
+pub fn files(given: &[PathBuf], cwd: &Path) -> Result<Files, String> {
+    if given.len() > MAX_FILES {
+        return Err(format!(
+            "-f takes at most {MAX_FILES} files; {} were given",
+            given.len()
+        ));
+    }
+    let mut files = Files::default();
+    for name in given {
+        let path = cwd.join(name);
+        let shown = name.display();
+        let meta = std::fs::metadata(&path).map_err(|e| format!("-f {shown}: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!("-f {shown}: not a file"));
+        }
+        if meta.len() > MAX_IMAGE_BYTES {
+            return Err(format!("-f {shown}: larger than 20 MB"));
+        }
+        let bytes = std::fs::read(&path).map_err(|e| format!("-f {shown}: {e}"))?;
+        if image_mime(&bytes).is_some() {
+            files
+                .images
+                .push(image_block(&bytes, MAX_IMAGE_SIDE).map_err(|e| format!("-f {shown}: {e}"))?);
+            continue;
+        }
+        if meta.len() > MAX_TEXT_BYTES {
+            return Err(format!(
+                "-f {shown}: a text file larger than 256 KB; ask for it to be read instead"
+            ));
+        }
+        let text = std::str::from_utf8(&bytes)
+            .map_err(|_| format!("-f {shown}: neither text nor a PNG, JPEG, WebP or GIF image"))?;
+        files.text.push_str(&format!(
+            "\n\n<file path=\"{shown}\">\n{}\n</file>",
+            text.trim_end()
+        ));
+        files.read.push((path, bytes));
+    }
+    Ok(files)
+}
+
+/// Says, at the end of a `--worktree` run, where it happened: a line on standard error, or with
+/// `--output json` a last object on standard output.
+pub fn worktree_line(created: &crate::worktree::Created, format: OutputFormat) {
+    match format {
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::json!({
+                "type": "worktree",
+                "path": created.path,
+                "branch": created.branch,
+            })
+        ),
+        OutputFormat::Text => eprintln!(
+            "azazel: worktree {} (branch {})",
+            created.path.display(),
+            created.branch
+        ),
+    }
+}
+
 /// What a run in print mode works on.
 pub enum What<'a> {
-    /// A prompt, with anything piped on standard input appended.
-    Prompt(&'a str),
+    /// A prompt, with anything piped on standard input appended, and the files of `-f`.
+    Prompt(&'a str, Files),
     /// The run the session's last process did not finish (`--continue-run`).
     ContinueRun,
 }
 
 pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputFormat) -> u8 {
     let prompt = match what {
-        What::Prompt(prompt) => {
+        What::Prompt(prompt, files) => {
             let prompt = with_piped_stdin(prompt);
             if prompt.trim().is_empty() {
                 eprintln!(
@@ -62,7 +145,12 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
                 app.finish(active).await;
                 return EXIT_USAGE;
             }
-            Some(prompt)
+            if let Some(tracker) = app.registry.services.get::<FileTracker>() {
+                for (path, bytes) in &files.read {
+                    tracker.record(&active.lead.id, path, bytes);
+                }
+            }
+            Some((prompt + &files.text, files.images))
         }
         What::ContinueRun => None,
     };
@@ -74,8 +162,8 @@ pub async fn run(app: &App, active: &Active, what: What<'_>, format: OutputForma
     .await;
     let mut events = active.lead.subscribe();
     let started = match prompt {
-        Some(prompt) => app
-            .submit(active, prompt, Vec::new())
+        Some((prompt, images)) => app
+            .submit(active, prompt, images)
             .await
             .map_err(|reason| format!("prompt rejected: {reason}")),
         None => app.continue_run(active).map(|_| ()),

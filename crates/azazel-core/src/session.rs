@@ -97,6 +97,10 @@ pub enum EntryKind {
     Pin {
         pinned: bool,
     },
+    /// An archived session is kept out of the lists of sessions (`-p --archived`).
+    Archive {
+        archived: bool,
+    },
     /// A run began: the work one prompt starts. The entry hangs from that prompt. `request_id`
     /// is the name whoever sent the prompt gave it.
     #[serde(rename_all = "camelCase")]
@@ -178,6 +182,12 @@ pub struct SessionSummary {
     /// Calls per tool name.
     #[serde(default)]
     pub tools: BTreeMap<String, u32>,
+    /// The directory the session works in, as its header says.
+    #[serde(default)]
+    pub cwd: String,
+    /// Kept out of the lists of sessions unless they are asked for all (`-p --archived`).
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// A sub-agent that ran in a session.
@@ -376,7 +386,7 @@ const CONTEXT_FILE: &str = "context.json";
 const INDEX_FILE: &str = "index.json";
 /// Bumped when [`SessionSummary`] gains a field, so older indexes are rebuilt rather than read
 /// with that field empty.
-const INDEX_VERSION: u32 = 3;
+const INDEX_VERSION: u32 = 4;
 
 #[derive(Default, Serialize, Deserialize)]
 struct Index {
@@ -774,19 +784,89 @@ impl SessionStore {
             (PathBuf::from(&inner.header.cwd), inner.path.clone())
         };
         let fork = SessionStore::create(dir, &cwd, Some(&source))?;
-        {
-            let mut inner = fork.lock();
-            for entry in branch {
-                if let Some(file) = &mut inner.file {
-                    writeln!(file, "{}", serde_json::to_string(&entry)?)?;
-                }
-                let position = inner.entries.len();
-                inner.index.insert(entry.id.clone(), position);
-                inner.leaf = Some(entry.id.clone());
-                inner.entries.push(entry);
-            }
-        }
+        fork.extend(branch)?;
         Ok(fork)
+    }
+
+    /// A new session in `dir` that works in `cwd` and holds `entries` as they are, from a file
+    /// written elsewhere (`azazel sessions import`). Its file name, header and id carry
+    /// `created`; the id is its own, so a session brought in twice is two sessions.
+    pub fn import(
+        dir: &Path,
+        cwd: &Path,
+        created: jiff::Timestamp,
+        entries: Vec<Entry>,
+    ) -> io::Result<SessionStore> {
+        let store = SessionStore::create_dated(dir, cwd, created)?;
+        store.extend(entries)?;
+        Ok(store)
+    }
+
+    /// Writes `entries` after those the store holds, as they are. The leaf moves to the last
+    /// of them that is part of the conversation.
+    fn extend(&self, entries: Vec<Entry>) -> io::Result<()> {
+        let mut inner = self.lock();
+        for entry in entries {
+            if let Some(file) = &mut inner.file {
+                writeln!(file, "{}", serde_json::to_string(&entry)?)?;
+            }
+            if !entry.kind.is_journal() {
+                inner.leaf = Some(entry.id.clone());
+            }
+            let position = inner.entries.len();
+            inner.index.insert(entry.id.clone(), position);
+            inner.entries.push(entry);
+        }
+        Ok(())
+    }
+
+    /// Moves the session in `path`, which no process has open, into `dir` for work in `cwd`:
+    /// the file keeps its name and id, its header names `cwd`, and the transcripts of its
+    /// sub-agents go with it. Returns where the file is now. The header is rewritten in place
+    /// when `dir` is where the file already is.
+    pub fn relocate(path: &Path, dir: &Path, cwd: &Path) -> io::Result<PathBuf> {
+        let text = std::fs::read_to_string(path)?;
+        let (first, rest) = text.split_once('\n').unwrap_or((text.as_str(), ""));
+        let mut header: Header = serde_json::from_str(first).map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("{}: not a session file", path.display()),
+            )
+        })?;
+        header.cwd = cwd.to_string_lossy().into_owned();
+        let name = path.file_name().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{}: no file name", path.display()),
+            )
+        })?;
+        std::fs::create_dir_all(dir)?;
+        let target = dir.join(name);
+        let moving = crate::paths::canonical(&target) != crate::paths::canonical(path);
+        if moving && target.exists() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("{} already exists", target.display()),
+            ));
+        }
+        // Written beside its place and renamed into it, so the file is never seen half written.
+        let temp = target.with_extension(format!("jsonl.{}.tmp", std::process::id()));
+        let written = serde_json::to_string(&header)
+            .map_err(io::Error::from)
+            .and_then(|line| std::fs::write(&temp, format!("{line}\n{rest}")))
+            .and_then(|()| std::fs::rename(&temp, &target));
+        if let Err(e) = written {
+            let _ = std::fs::remove_file(&temp);
+            return Err(e);
+        }
+        if moving {
+            let agents = path.parent().map(|old| old.join(&header.id));
+            if let Some(agents) = agents.filter(|folder| folder.is_dir()) {
+                move_dir(&agents, &dir.join(&header.id))?;
+            }
+            std::fs::remove_file(path)?;
+        }
+        Ok(target)
     }
 
     /// The most recent `session_info` name.
@@ -1133,6 +1213,8 @@ fn summarise(path: &Path) -> Option<SessionSummary> {
         updated: last_used(&header, &entries),
         id: header.id,
         timestamp: header.timestamp,
+        cwd: header.cwd,
+        archived: false,
         name: None,
         first_prompt: None,
         messages: 0,
@@ -1168,6 +1250,7 @@ fn summarise(path: &Path) -> Option<SessionSummary> {
             }
             EntryKind::SessionInfo { name } => summary.name = Some(name.clone()),
             EntryKind::Pin { pinned } => summary.pinned = *pinned,
+            EntryKind::Archive { archived } => summary.archived = *archived,
             _ => {}
         }
     }
@@ -1200,7 +1283,10 @@ fn last_used(header: &Header, entries: &[Entry]) -> String {
         .find(|entry| {
             !matches!(
                 entry.kind,
-                EntryKind::SessionInfo { .. } | EntryKind::Pin { .. } | EntryKind::Label { .. }
+                EntryKind::SessionInfo { .. }
+                    | EntryKind::Pin { .. }
+                    | EntryKind::Archive { .. }
+                    | EntryKind::Label { .. }
             )
         })
         .map_or_else(|| header.timestamp.clone(), |entry| entry.timestamp.clone())
@@ -1217,6 +1303,51 @@ fn write_index(path: &Path, index: &Index) {
         let _ = std::fs::remove_file(&temp);
         tracing::debug!("could not write {}: {e}", path.display());
     }
+}
+
+/// Moves a directory; across file systems, where it cannot be renamed, by copying it.
+fn move_dir(from: &Path, to: &Path) -> io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    copy_dir(from, to)?;
+    std::fs::remove_dir_all(from)
+}
+
+fn copy_dir(from: &Path, to: &Path) -> io::Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+/// The lines of a session file, or of the entries of one as `azazel export --format jsonl`
+/// writes them: the header when the text starts with one, the entries that parse, and how many
+/// lines did not.
+pub fn parse_lines(text: &str) -> (Option<Header>, Vec<Entry>, usize) {
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty()).peekable();
+    let header = lines
+        .peek()
+        .and_then(|line| serde_json::from_str::<Header>(line).ok());
+    if header.is_some() {
+        lines.next();
+    }
+    let mut entries = Vec::new();
+    let mut skipped = 0;
+    for line in lines {
+        match serde_json::from_str::<Entry>(line) {
+            Ok(entry) => entries.push(entry),
+            Err(_) => skipped += 1,
+        }
+    }
+    (header, entries, skipped)
 }
 
 fn read_file(path: &Path) -> io::Result<(Header, Vec<Entry>)> {
@@ -1925,5 +2056,99 @@ mod tests {
         assert_eq!(SessionStore::list(dir.path()).len(), 1);
         let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         assert_eq!(index["files"].as_object().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn summaries_say_where_a_session_works_and_whether_it_is_archived() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), Path::new("/work/app"), None).unwrap();
+        store.message(&Message::user("run in ci"));
+        let used = SessionStore::list(dir.path())[0].updated.clone();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        store.append(EntryKind::Archive { archived: true });
+        let listed = &SessionStore::list(dir.path())[0];
+        assert_eq!((listed.cwd.as_str(), listed.archived), ("/work/app", true));
+        // Archiving is not use: the session keeps its place in time.
+        assert_eq!(listed.updated, used);
+    }
+
+    #[test]
+    fn an_export_is_imported_as_a_new_session_of_its_own() {
+        let from = tempfile::tempdir().unwrap();
+        let original = SessionStore::create(from.path(), Path::new("/there"), None).unwrap();
+        original.append(EntryKind::SessionInfo {
+            name: "shared".into(),
+        });
+        original.message(&Message::user("question"));
+        original.message(&assistant("answer"));
+        let exported: String = original
+            .branch(None)
+            .iter()
+            .map(|entry| serde_json::to_string(entry).unwrap() + "\n")
+            .collect();
+
+        // The lines of an export, and those of a whole session file, both read.
+        let (header, entries, skipped) = parse_lines(&format!("{exported}not json\n"));
+        assert_eq!((header, entries.len(), skipped), (None, 3, 1));
+        let whole = std::fs::read_to_string(original.path()).unwrap();
+        let (header, entries, skipped) = parse_lines(&whole);
+        assert_eq!(
+            (header.map(|h| h.id), entries.len(), skipped),
+            (Some(original.id()), 3, 0)
+        );
+
+        let to = tempfile::tempdir().unwrap();
+        let created: jiff::Timestamp = "2026-01-02T03:04:05Z".parse().unwrap();
+        let imported = SessionStore::import(to.path(), Path::new("/here"), created, entries).unwrap();
+        assert_ne!(imported.id(), original.id());
+        let reopened = SessionStore::open(&imported.path()).unwrap();
+        assert_eq!(reopened.header().cwd, "/here");
+        assert_eq!(reopened.header().timestamp, created.to_string());
+        assert_eq!(reopened.name().as_deref(), Some("shared"));
+        assert_eq!(texts(&reopened.build_context(None)), ["question", "answer"]);
+        let listed = SessionStore::list(to.path());
+        assert_eq!((listed.len(), listed[0].messages), (1, 2));
+    }
+
+    #[test]
+    fn a_relocated_session_moves_with_its_agents_and_names_its_new_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let old = tmp.path().join("old");
+        let new = tmp.path().join("new");
+        let store = SessionStore::create(&old, Path::new("/first"), None).unwrap();
+        store.message(&Message::user("keep me"));
+        let agents = old.join(store.id()).join(crate::paths::AGENT_TRANSCRIPTS);
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(agents.join("scout.jsonl"), "{}").unwrap();
+        let file = store.path();
+        drop(store);
+
+        // In place, only the header changes.
+        let same = SessionStore::relocate(&file, &old, Path::new("/second")).unwrap();
+        assert_eq!(same, file);
+        assert_eq!(SessionStore::open(&file).unwrap().header().cwd, "/second");
+
+        let moved = SessionStore::relocate(&file, &new, Path::new("/third")).unwrap();
+        assert_eq!(moved, new.join(file.file_name().unwrap()));
+        assert!(!file.exists());
+        let reopened = SessionStore::open(&moved).unwrap();
+        assert_eq!(reopened.header().cwd, "/third");
+        assert_eq!(texts(&reopened.build_context(None)), ["keep me"]);
+        let id = reopened.id();
+        assert!(
+            new.join(&id)
+                .join(crate::paths::AGENT_TRANSCRIPTS)
+                .join("scout.jsonl")
+                .is_file()
+        );
+        assert!(!old.join(&id).exists());
+        // Nothing is overwritten.
+        let other = SessionStore::create(&old, Path::new("/x"), None).unwrap();
+        let clash = new.join(other.path().file_name().unwrap());
+        std::fs::write(&clash, "taken").unwrap();
+        let other_file = other.path();
+        drop(other);
+        assert!(SessionStore::relocate(&other_file, &new, Path::new("/y")).is_err());
+        assert!(other_file.exists());
     }
 }

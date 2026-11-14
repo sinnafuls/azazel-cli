@@ -1089,8 +1089,9 @@ impl App {
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
         if cli.resume_latest {
-            return match SessionStore::list(&dir).first() {
-                Some(latest) => Ok(Open::File(latest.path.clone())),
+            // An archived session (`-p --archived`) is not one to go on with.
+            return match SessionStore::list(&dir).into_iter().find(|s| !s.archived) {
+                Some(latest) => Ok(Open::File(latest.path)),
                 None => bail!("this project has no session to continue"),
             };
         }

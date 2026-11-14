@@ -61,6 +61,7 @@ pub mod update;
 pub mod usage;
 #[cfg(feature = "voice")]
 pub mod voice;
+pub mod worktree;
 
 use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
@@ -122,7 +123,7 @@ impl Builder {
         match running.map(|run| run.join()) {
             // `/restart`: the run is over and everything it held is closed.
             Ok(Ok(code)) => match restart::take() {
-                Some(args) => restart::exec(args),
+                Some(request) => restart::start(request),
                 None => code,
             },
             // The run panicked; the panic has been reported.
@@ -262,6 +263,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Ok(cli) => cli,
         Err(code) => return code,
     };
+    // `azazel open` is the interactive UI with the picker of `/open` up.
+    let mut cli = cli;
+    let open_picker = matches!(cli.command, Some(Sub::Open));
+    if open_picker {
+        cli.command = None;
+    }
+    let cli = cli;
     let paths = match discover_paths(&cli) {
         Ok(paths) => paths,
         Err(e) => {
@@ -294,6 +302,25 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         return print::EXIT_USAGE;
     }
     let trusted = project_trust(&cli, &paths, interactive);
+    // The files of `-f` are named from where azazel was started, also when the run moves to
+    // a worktree.
+    let files = match print::files(&cli.files, &paths.cwd) {
+        Ok(files) => files,
+        Err(e) => {
+            eprintln!("azazel: {e}");
+            return print::EXIT_USAGE;
+        }
+    };
+    let (paths, worktree) = match &cli.worktree {
+        Some(name) => match into_worktree(&paths, name).await {
+            Ok((moved, created)) => (moved, Some(created)),
+            Err(e) => {
+                eprintln!("azazel: --worktree: {e}");
+                return print::EXIT_FAILED;
+            }
+        },
+        None => (paths, None),
+    };
     let goal = match &cli.command {
         Some(Sub::Init) => {
             let code = init::run(&paths).await;
@@ -326,7 +353,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return login::logout(provider, account.as_deref(), &paths);
         }
         Some(Sub::Secrets { action }) => return secrets::run(action, &paths),
-        Some(Sub::Sessions { action }) => return sessions::run(action, &paths),
+        Some(Sub::Sessions { action }) => return sessions::run(action, &paths).await,
         Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),
         Some(Sub::Stats { days, json }) => return stats::run(&paths, *days, *json),
         Some(Sub::Context { session, json }) => return context::run(&paths, session.as_deref(), *json),
@@ -334,9 +361,12 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             session,
             format,
             file,
+            sanitize,
         }) => {
-            return sessions::export(&paths, session.as_deref(), *format, file.as_deref());
+            return sessions::export(&paths, session.as_deref(), *format, file.as_deref(), *sanitize);
         }
+        // Taken for the interactive UI above.
+        Some(Sub::Open) => None,
         Some(Sub::Completions { shell }) => {
             let mut command = <Cli as clap::CommandFactory>::command();
             clap_complete::generate(*shell, &mut command, "azazel", &mut std::io::stdout());
@@ -517,6 +547,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             name: name.to_string(),
         });
     }
+    if cli.archived {
+        active
+            .session
+            .append(azazel_core::EntryKind::Archive { archived: true });
+    }
     if let Some((objective, max_iterations, max_cost, max_minutes)) = goal {
         return goal_mode(
             &app,
@@ -554,17 +589,37 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if cli.print {
         let what = match cli.continue_run {
             true => print::What::ContinueRun,
-            false => print::What::Prompt(&prompt),
+            false => print::What::Prompt(&prompt, files),
         };
-        print::run(&app, &active, what, cli.output).await
+        let code = print::run(&app, &active, what, cli.output).await;
+        if let Some(created) = worktree {
+            print::worktree_line(&created, cli.output);
+        }
+        code
     } else {
         // Going on with an interrupted run is a command of the UI, sent as if typed.
-        let first = match cli.continue_run {
-            true => Some("/continue".to_string()),
-            false => (!prompt.trim().is_empty()).then_some(prompt),
+        let first = match (cli.continue_run, open_picker) {
+            (true, _) => Some("/continue".to_string()),
+            (false, true) => Some("/open".to_string()),
+            (false, false) => (!prompt.trim().is_empty()).then_some(prompt),
         };
         tui::run(Arc::new(app), active, first).await
     }
+}
+
+/// `-p --worktree[=NAME]`: makes the worktree the run happens in, and the paths of the run
+/// there. A worktree of a trusted project is trusted.
+async fn into_worktree(paths: &Paths, name: &str) -> Result<(Paths, worktree::Created), String> {
+    let dir = worktree::dir(paths);
+    let name = match name.trim() {
+        "" => worktree::new_name(&dir),
+        given => given.to_string(),
+    };
+    let created = worktree::create(&paths.cwd, &dir, &name, false).await?;
+    worktree::inherit_trust(paths, &created.path);
+    let mut moved = Paths::discover(&created.cwd, Some(&paths.home.to_string_lossy()));
+    moved.sessions_override = paths.sessions_override.clone();
+    Ok((moved, created))
 }
 
 /// The options a background session was started with that a process started in its place
@@ -655,7 +710,8 @@ async fn goal_mode(
         app.finish(active).await;
         return print::EXIT_FAILED;
     }
-    let code = print::run(app, active, print::What::Prompt(&goal_prompt(objective)), output).await;
+    let what = print::What::Prompt(&goal_prompt(objective), print::Files::default());
+    let code = print::run(app, active, what, output).await;
     if code != print::EXIT_OK {
         return code;
     }

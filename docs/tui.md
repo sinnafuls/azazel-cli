@@ -805,6 +805,9 @@ Session and display:
 | `/help` | List every command |
 | `/new` | Start a new session |
 | `/resume` | Reopen an earlier session of this project, on the model and thinking level it last used; its keys rename, delete, pin and preview sessions |
+| `/open` | Open a recent session of any project: in place for one of this project, else by starting again in its directory; see [projects and directories](sessions-and-checkpoints.md#projects-and-directories) |
+| `/cd <dir>` | Go on in another directory (`Tab` completes it); a directory of another project moves the session there |
+| `/worktree [name \| list \| remove <name>]` | Go on in a new git worktree on a branch of its own, with the uncommitted changes; list or remove the worktrees. See [worktrees](sessions-and-checkpoints.md#worktrees) |
 | `/name [text]` | Name this session; without text, have a name suggested |
 | `/session` | What this session is: file, id, name, messages, branch points, tokens and cost, model, checkpoints, agents |
 | `/search <text>` | Find sessions of this project by what was said in them; choosing a line resumes its session |
@@ -817,13 +820,13 @@ Session and display:
 | `/consult [question]` | Ask a saved session a question without resuming it |
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
-| `/export [path]` | Write the conversation to a file: `.md`, `.html` or `.jsonl` |
+| `/export [path] [--sanitize]` | Write the conversation to a file: `.md`, `.html` or `.jsonl`; `--sanitize` hides secrets and leaves out what files held, [for sharing](sessions-and-checkpoints.md#sanitized-exports) |
 | `/share` | Upload the conversation, secrets hidden, as a secret gist and print its link; asks first |
 | `/bug [what went wrong]` | Write a bug report to a zip and offer to open an issue |
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |
 | `/copy [code \| n \| last n]` | Copy the last reply as Markdown; `/copy code` copies one of its code blocks, `/copy 2` the reply before the last, `/copy last 4` the last four messages, yours and the agent's, under `## You` and `## Assistant` headings |
 | `/vim` | Switch [Vim keys](#vim-keys) in the input on or off |
-| `/open [n \| path \| diagram]` | Open the last link of the last reply in your browser; `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams) |
+| `/open link \| n \| path \| diagram` | `/open link` opens the last link of the last reply in your browser, `/open 2` its second link, `/open <path>` a file, `/open diagram` the last [Mermaid diagram](#mermaid-diagrams) as an SVG file (in a build that has diagrams). `/open` alone opens a session |
 | `/clear` | Clear the screen and scrollback (the conversation is kept) |
 | `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost; how much of the input was read from the [prompt cache](models-and-logins.md#prompt-cache), per model, and why a request missed it |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
@@ -844,9 +847,9 @@ Session and display:
 | `/restart` | Start azazel again in this terminal on the session that is open, with the options it was started with: what picks up a new version after `azazel update` |
 | `/quit`, `/exit` | Exit |
 
-`/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/fix`, `/handoff`,
-`/consult`, `/rewind`, `/compact`, `/export`, `/share`, `/bug`, `/debug` and `/restart` are covered in
-[sessions and checkpoints](sessions-and-checkpoints.md).
+`/resume`, `/open`, `/cd`, `/worktree`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`,
+`/fix`, `/handoff`, `/consult`, `/rewind`, `/compact`, `/export`, `/share`, `/bug`, `/debug` and `/restart` are
+covered in [sessions and checkpoints](sessions-and-checkpoints.md).
 
 Models, permissions and setup:
 
@@ -1137,8 +1140,8 @@ brackets, so it can still be read and copied where clicking is not possible. Lin
 WezTerm, iTerm2, Windows Terminal and VTE-based terminals (GNOME Terminal and others); they are off in Warp and
 inside tmux older than 3.4.
 
-`/open` opens the last link of the last reply in your browser, `/open <n>` its n-th link, `/open <path>` a file
-with the program your system uses for it. In the [viewer](#transcript-viewer), `o` opens the link on the cursor
+`/open link` opens the last link of the last reply in your browser, `/open <n>` its n-th link, `/open <path>` a
+file with the program your system uses for it. In the [viewer](#transcript-viewer), `o` opens the link on the cursor
 row. These work in every terminal.
 
 ## Images
