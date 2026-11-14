@@ -140,8 +140,9 @@ fn set(
     let ids: Vec<String> = setup.providers.iter().map(|p| p.id.clone()).collect();
     let (known, usable) = crate::app::known_and_usable(ids, &setup.providers, &setup.credentials, false);
     let catalog = Catalog::load(Some(&setup.paths.models_cache()), &setup.config.models);
-    let mut chain =
-        crate::models::resolve_specs(models, &catalog, &known, &usable).map_err(Failure::Usage)?;
+    // The names are this command's words, not `--model`'s.
+    let mut chain = crate::models::resolve_specs(models, &catalog, &known, &usable)
+        .map_err(|why| Failure::Usage(why.strip_prefix("--model ").unwrap_or(&why).to_string()))?;
     if let Some(text) = &setup.thinking {
         let level: ThinkingLevel = text
             .parse()
