@@ -372,6 +372,9 @@ config_table!(TuiConfig {
     /// Tint the working indicator with a colour derived from the session's name.
     session_accent: bool = false,
     tool_style: ToolStyle = ToolStyle::Card,
+    /// How `/diff` shows a file: old beside new (`split`), in one column (`unified`), or split
+    /// from 140 columns on (`auto`).
+    diff_view: DiffView = DiffView::Auto,
     /// Hide what looks like a secret (API keys, tokens, private keys) in what the UI shows.
     redact: bool = true,
     /// How messages queued while the agent works are delivered: one per turn, or all at once.
@@ -561,6 +564,7 @@ config_enum!(StatusSeparator { Dot = "dot", Bar = "bar", Powerline = "powerline"
 config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", Ascii = "ascii" } default Auto);
 config_enum!(Indicator { Shimmer = "shimmer", Kitt = "kitt", Static = "static" } default Shimmer);
 config_enum!(ToolStyle { Card = "card", Compact = "compact" } default Card);
+config_enum!(DiffView { Auto = "auto", Split = "split", Unified = "unified" } default Auto);
 config_enum!(
     /// `delta`: findings on lines the agent changed in this turn; `all`: every finding.
     CheckReport { Delta = "delta", All = "all", Off = "off" } default Delta

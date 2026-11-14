@@ -256,13 +256,14 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
 | | `auto_send` | `false` | Send a transcript as a prompt at once |
 | | `max_secs` | `120` | Longest recording, in seconds |
-| `[tui]` | `theme` | `"dark"` | `dark`, `light`, `catppuccin-mocha`, `tokyo-night`, `gruvbox-dark`, `dark-daltonized`, a file in `~/.azazel/themes/`, or `auto`, which is `light` or `dark` as the terminal's background is; see [the terminal UI](tui.md#themes) |
+| `[tui]` | `theme` | `"dark"` | A built-in theme (`auto`, `dark`, `light`, `catppuccin`, `dracula`, `nord`, `solarized`, `github`, …) or a file in `~/.azazel/themes/`. A built-in theme with a dark and a light palette follows the terminal's background (`auto` is `light` or `dark`); `<name>-dark` and `<name>-light` pin one; see [the terminal UI](tui.md#themes) |
 | | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
 | | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
 | | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing. A running tool is always named |
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
 | | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row and calls that follow one another as a tree; see [compact style](tui.md#compact-style) |
+| | `diff_view` | `"auto"` | How `/diff` shows a file: `split` (old beside new), `unified` (one column), or `auto`, split in a window of 140 columns or more; see [diffs and commits](tui.md#diffs-and-commits) |
 | | `redact` | `true` | Hide what looks like a secret in tool cards, the transcript viewer and Markdown and HTML exports; the model and the session file keep it. See [hiding secrets](tui.md#hiding-secrets) |
 | | `favourites` | `[]` | Models and roles `Ctrl+P` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list. Empty steps through the roles that were given models; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |

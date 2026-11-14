@@ -105,8 +105,7 @@ pub(crate) type ShowScreen = dyn Fn(Box<Screen>) -> oneshot::Receiver<Box<Screen
 /// `home` (`~/.azazel`) by name.
 pub(crate) fn theme_names(home: &Path) -> Vec<String> {
     // `auto` first: it is one of the built-in two, whichever suits the terminal.
-    let mut names = vec![crate::tui::AUTO_THEME.to_string()];
-    names.extend(Theme::BUILTINS.iter().map(ToString::to_string));
+    let mut names: Vec<String> = Theme::builtin_names().into_iter().map(str::to_string).collect();
     let mut custom: Vec<String> = std::fs::read_dir(home.join("themes"))
         .into_iter()
         .flatten()
@@ -114,7 +113,7 @@ pub(crate) fn theme_names(home: &Path) -> Vec<String> {
         .map(|entry| entry.path())
         .filter(|path| path.extension().is_some_and(|extension| extension == "toml"))
         .filter_map(|path| Some(path.file_stem()?.to_string_lossy().into_owned()))
-        .filter(|name| !Theme::BUILTINS.contains(&name.as_str()) && name != crate::tui::AUTO_THEME)
+        .filter(|name| !Theme::is_builtin(name))
         .collect();
     custom.sort();
     names.extend(custom);
@@ -772,8 +771,9 @@ mod tests {
     fn themes_to_choose_from_are_auto_the_built_in_ones_then_the_files() {
         let dir = tempfile::tempdir().unwrap();
         let names = theme_names(dir.path());
+        let builtins = Theme::builtin_names();
         assert_eq!(names[0], "auto");
-        assert_eq!(&names[1..], Theme::BUILTINS);
+        assert_eq!(names, builtins);
         let themes = dir.path().join("themes");
         std::fs::create_dir_all(&themes).unwrap();
         std::fs::write(themes.join("zenburn.toml"), "accent = \"#dcdccc\"\n").unwrap();
@@ -784,8 +784,8 @@ mod tests {
         std::fs::write(themes.join("auto.toml"), "accent = \"#ffffff\"\n").unwrap();
         std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
         let names = theme_names(dir.path());
-        assert_eq!(&names[1..=Theme::BUILTINS.len()], Theme::BUILTINS);
-        assert_eq!(&names[Theme::BUILTINS.len() + 1..], ["amber", "zenburn"]);
+        assert_eq!(&names[..builtins.len()], builtins);
+        assert_eq!(&names[builtins.len()..], ["amber", "zenburn"]);
     }
 
     #[test]
