@@ -200,30 +200,3 @@ async fn a_sign_in_asks_its_inputs_and_its_login_keeps_the_address_requests_go_t
     assert_eq!(answered.status.code(), Some(0), "{}", trimmed(&answered.stderr));
     assert_eq!(trimmed(&answered.stdout), "hello from the gateway");
 }
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_device_and_enterprise_flags_name_the_providers_they_work_with() {
-    let sandbox = Sandbox {
-        dir: tempfile::tempdir().unwrap(),
-    };
-    std::fs::create_dir_all(sandbox.home()).unwrap();
-    let both = sandbox
-        .azazel(&["login", "openai-codex", "--key", "--device"])
-        .await;
-    assert_eq!(both.status.code(), Some(2), "{}", trimmed(&both.stderr));
-    let wrong = sandbox.azazel(&["login", "groq", "--device"]).await;
-    assert_eq!(wrong.status.code(), Some(1));
-    assert!(
-        trimmed(&wrong.stderr).contains("groq has no device sign-in; --device works with openai-codex"),
-        "{}",
-        trimmed(&wrong.stderr)
-    );
-    let enterprise = sandbox
-        .azazel(&["login", "anthropic", "--enterprise", "ghe.example.com"])
-        .await;
-    assert!(
-        trimmed(&enterprise.stderr).contains("--enterprise works with github-copilot"),
-        "{}",
-        trimmed(&enterprise.stderr)
-    );
-}

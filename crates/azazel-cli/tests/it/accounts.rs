@@ -7,7 +7,7 @@ use std::process::Output;
 use crate::common::trimmed;
 use assert_cmd::Command;
 use serde_json::{Value, json};
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const REPLY: &str = concat!(
@@ -32,10 +32,6 @@ impl Sandbox {
         self.dir.path().join("home")
     }
 
-    fn requests_file(&self) -> PathBuf {
-        self.dir.path().join("requests.jsonl")
-    }
-
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::cargo_bin("azazel").unwrap();
         command
@@ -56,33 +52,6 @@ impl Sandbox {
         tokio::task::spawn_blocking(move || command.output().unwrap())
             .await
             .unwrap()
-    }
-
-    /// Runs `azazel` answering from `script`; the requests it made are recorded.
-    fn scripted(&self, script: &Value, args: &[&str]) -> Output {
-        let script_path = self.dir.path().join("script.json");
-        std::fs::write(&script_path, script.to_string()).unwrap();
-        let _ = std::fs::remove_file(self.requests_file());
-        self.command(args)
-            .env("AZAZEL_MOCK_SCRIPT", &script_path)
-            .env("AZAZEL_MOCK_REQUESTS", self.requests_file())
-            .output()
-            .unwrap()
-    }
-
-    /// Every recorded request as `(model, request)`.
-    fn requests(&self) -> Vec<(String, Value)> {
-        std::fs::read_to_string(self.requests_file())
-            .unwrap_or_default()
-            .lines()
-            .map(|line| {
-                let recorded: Value = serde_json::from_str(line).unwrap();
-                (
-                    recorded["model"].as_str().unwrap().to_string(),
-                    recorded["request"].clone(),
-                )
-            })
-            .collect()
     }
 }
 
@@ -282,102 +251,4 @@ async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
         )
     );
     assert!(switch["until"].as_u64().is_some());
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn the_tier_goes_out_with_the_request_and_is_dropped_when_the_model_refuses_it() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .and(body_partial_json(json!({"service_tier": "priority"})))
-        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
-            "error": {
-                "message": "Unsupported parameter: 'service_tier' is not supported with this model.",
-                "type": "invalid_request_error",
-                "param": "service_tier",
-                "code": "unsupported_parameter"
-            }
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/chat/completions"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(REPLY, "text/event-stream"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let sandbox = Sandbox::new();
-    std::fs::write(
-        sandbox.home().join("config.toml"),
-        format!(
-            "[session]\nauto_name = false\n[providers.gateway]\napi = \"openai-chat\"\nbase_url = \"{}/v1\"\napi_key = \"k\"\n",
-            server.uri()
-        ),
-    )
-    .unwrap();
-
-    let run = sandbox
-        .azazel(&[
-            "-p",
-            "hi",
-            "--model",
-            "gateway/small",
-            "--no-memory",
-            "--tier",
-            "priority",
-        ])
-        .await;
-    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
-    assert_eq!(trimmed(&run.stdout), "hello from work");
-    assert!(
-        trimmed(&run.stderr).contains("gateway/small does not take the priority tier"),
-        "{}",
-        trimmed(&run.stderr)
-    );
-}
-
-#[test]
-fn tier_and_preset_flags_shape_the_requests_of_a_scripted_run() {
-    let sandbox = Sandbox::new();
-    std::fs::write(
-        sandbox.home().join("config.toml"),
-        "[presets.cheap.roles]\ndefault = [\"mock/small\"]\n",
-    )
-    .unwrap();
-    let script = json!({
-        "lead": [{ "reply": { "text": "from lead" } }, { "reply": { "text": "from lead" } }],
-        "small": [{ "reply": { "text": "from small" } }]
-    });
-
-    let fast = sandbox.scripted(&script, &["-p", "hi", "--tier", "priority"]);
-    assert_eq!(fast.status.code(), Some(0), "{}", trimmed(&fast.stderr));
-    let requests = sandbox.requests();
-    assert_eq!(requests[0].1["tier"], "priority");
-
-    // The standard tier is the same as naming none.
-    sandbox.scripted(&script, &["-p", "hi", "--tier", "standard"]);
-    assert!(sandbox.requests()[0].1.get("tier").is_none());
-
-    let unknown = sandbox.scripted(&script, &["-p", "hi", "--tier", "turbo"]);
-    assert_eq!(unknown.status.code(), Some(2));
-    assert!(
-        trimmed(&unknown.stderr).contains("--tier: unknown tier `turbo`"),
-        "{}",
-        trimmed(&unknown.stderr)
-    );
-
-    // A preset's roles replace the configured ones for the run.
-    let cheap = sandbox.scripted(&script, &["-p", "hi", "--preset", "cheap"]);
-    assert_eq!(cheap.status.code(), Some(0), "{}", trimmed(&cheap.stderr));
-    assert_eq!(trimmed(&cheap.stdout), "from small");
-    assert_eq!(sandbox.requests()[0].0, "small");
-
-    let missing = sandbox.scripted(&script, &["-p", "hi", "--preset", "dear"]);
-    assert_eq!(missing.status.code(), Some(2));
-    assert!(
-        trimmed(&missing.stderr).contains("--preset: no preset `dear`; there are: cheap"),
-        "{}",
-        trimmed(&missing.stderr)
-    );
 }

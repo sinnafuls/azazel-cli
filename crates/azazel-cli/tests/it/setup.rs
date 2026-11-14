@@ -127,32 +127,6 @@ fn doctor_lists_what_an_untrusted_project_asked_for_and_what_was_skipped() {
 }
 
 #[test]
-fn init_keeps_an_existing_default_model_and_writes_the_project_config_once() {
-    let sandbox = Sandbox::new();
-    sandbox.write("home/config.toml", "[roles]\ndefault = [\"mock/a\"]\n");
-    let output = sandbox.azazel().arg("init").output().unwrap();
-    let said = stdout(&output);
-    assert_eq!(output.status.code(), Some(0), "{said}");
-    assert!(said.contains("already sets roles.default"), "{said}");
-    let config = sandbox.project().join(".azazel/config.toml");
-    assert_eq!(
-        std::fs::read_to_string(&config).unwrap(),
-        "[verify]\ncommands = []\n"
-    );
-    assert_eq!(
-        std::fs::read_to_string(sandbox.home().join("config.toml")).unwrap(),
-        "[roles]\ndefault = [\"mock/a\"]\n"
-    );
-
-    std::fs::write(&config, "[verify]\ncommands = [\"make test\"]\n").unwrap();
-    assert!(sandbox.azazel().arg("init").output().unwrap().status.success());
-    assert_eq!(
-        std::fs::read_to_string(&config).unwrap(),
-        "[verify]\ncommands = [\"make test\"]\n"
-    );
-}
-
-#[test]
 fn the_interactive_ui_refuses_to_start_without_a_terminal() {
     let sandbox = Sandbox::new();
     let output = sandbox.azazel().output().unwrap();

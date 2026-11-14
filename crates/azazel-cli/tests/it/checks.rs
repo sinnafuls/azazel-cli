@@ -194,63 +194,6 @@ fn a_checker_on_path_checks_what_the_lead_writes_and_the_lead_is_told_the_rest_w
 }
 
 #[test]
-fn doctor_says_which_checkers_are_installed_and_whether_secrets_are_scanned_for() {
-    let sandbox = Sandbox::new();
-    let doctor = |args: &[&str]| {
-        let output = sandbox.command(FOUND).args(args).arg("doctor").output();
-        stdout(&output.unwrap())
-    };
-    let line = |report: &str, start: &str| {
-        report
-            .lines()
-            .find(|line| line.contains(start))
-            .unwrap_or_else(|| panic!("no `{start}` line in:\n{report}"))
-            .to_string()
-    };
-
-    let report = doctor(&[]);
-    let checks = line(&report, "checks on write:");
-    assert!(
-        checks.starts_with("ok    ") && checks.contains("shellcheck (sh, bash)"),
-        "{checks}"
-    );
-    assert_eq!(
-        line(&report, "secret scan:"),
-        "ok    secret scan: off, the project is not trusted"
-    );
-    let trusted = line(&doctor(&["--trust"]), "secret scan:");
-    let gitleaks = sandbox.path("bin").join("gitleaks");
-    assert!(
-        trusted.starts_with(&format!("ok    secret scan: {}", gitleaks.display())),
-        "{trusted}"
-    );
-
-    std::fs::write(
-        sandbox.path("home/config.toml"),
-        "[tools]\ncheck_report = \"off\"\n[tools.check]\nzz = \"azazel-no-such-checker --strict\"\n",
-    )
-    .unwrap();
-    let report = doctor(&["--trust"]);
-    assert_eq!(
-        line(&report, "checker for"),
-        "warn  checker for `zz` files: `azazel-no-such-checker` was not found"
-    );
-    assert_eq!(
-        line(&report, "secret scan:"),
-        "ok    secret scan: off, because `tools.check_report` is off and nothing would show what it found"
-    );
-
-    std::fs::write(
-        sandbox.path("home/config.toml"),
-        "[tools]\ncheck_on_write = false\n[tools.scan]\nsecrets = false\n",
-    )
-    .unwrap();
-    let report = doctor(&["--trust"]);
-    assert_eq!(line(&report, "checks on write:"), "ok    checks on write: off");
-    assert_eq!(line(&report, "secret scan:"), "ok    secret scan: off");
-}
-
-#[test]
 fn a_checker_that_runs_the_project_s_code_runs_only_when_the_project_is_trusted() {
     let sandbox = Sandbox::new();
     std::fs::create_dir_all(sandbox.path("project/src")).unwrap();

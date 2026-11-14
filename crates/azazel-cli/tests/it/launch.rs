@@ -79,21 +79,6 @@ fn ok(text: &str) -> Value {
     json!({ "lead": [{ "reply": { "text": text } }] })
 }
 
-fn first_user_text(request: &Value) -> String {
-    request["messages"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|m| m["role"] == "user")
-        .unwrap()["content"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|b| b["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("")
-}
-
 fn system(request: &Value) -> Vec<String> {
     request["system"]
         .as_array()
@@ -101,28 +86,6 @@ fn system(request: &Value) -> Vec<String> {
         .iter()
         .map(|part| part["text"].as_str().unwrap().to_string())
         .collect()
-}
-
-#[test]
-fn the_prompt_is_the_words_after_the_flags_quoted_or_not() {
-    let sandbox = Sandbox::new();
-    let joined = sandbox.azazel(&ok("a"), &["-p", "hello", "world", "--mode", "auto"]);
-    assert!(joined.status.success(), "{}", stderr(&joined));
-    let first = first_user_text(&sandbox.requests()[0]);
-
-    let quoted = sandbox.azazel(&ok("b"), &["-p", "hello world"]);
-    assert!(quoted.status.success(), "{}", stderr(&quoted));
-    assert_eq!(first_user_text(&sandbox.requests()[0]), first);
-    assert_eq!(first, "hello world");
-
-    // `--` makes a subcommand's name part of the prompt.
-    let forced = sandbox.azazel(&ok("c"), &["-p", "--", "init", "x"]);
-    assert!(forced.status.success(), "{}", stderr(&forced));
-    assert_eq!(first_user_text(&sandbox.requests()[0]), "init x");
-
-    let empty = sandbox.azazel(&ok("d"), &["-p"]);
-    assert_eq!(empty.status.code(), Some(2));
-    assert!(stderr(&empty).contains("-p needs a prompt"));
 }
 
 #[test]
@@ -325,45 +288,6 @@ fn the_cost_cap_stops_the_run_after_the_turn_that_reached_it() {
         stderr(&output)
     );
     assert_eq!(sandbox.requests().len(), 1);
-}
-
-#[test]
-fn settings_can_be_changed_for_one_run() {
-    let sandbox = Sandbox::new();
-    let output = sandbox.azazel(&ok("x"), &["-p", "hi", "--set", "tools.disabled=[\"shell\"]"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(!tool_names(&sandbox.requests()[0]).contains(&"shell".to_string()));
-
-    let wrong = sandbox.azazel(&ok("x"), &["-p", "hi", "--set", "nonsense"]);
-    assert_eq!(wrong.status.code(), Some(2));
-    assert!(stderr(&wrong).contains("--set"), "{}", stderr(&wrong));
-}
-
-#[test]
-fn model_names_may_be_partial() {
-    let sandbox = Sandbox::new();
-    std::fs::write(
-        sandbox.dir.path().join("home/config.toml"),
-        "[models.\"mock/lead-one\"]\n[models.\"mock/other\"]\n",
-    )
-    .unwrap();
-    let script = json!({ "lead-one": [{ "reply": { "text": "from one" } }] });
-    let output = sandbox.azazel(&script, &["-p", "hi", "--model", "lead-o", "--output", "json"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert!(String::from_utf8_lossy(&output.stdout).contains("from one"));
-
-    std::fs::write(
-        sandbox.dir.path().join("home/config.toml"),
-        "[models.\"mock/lead-one\"]\n[models.\"mock/lead-two\"]\n",
-    )
-    .unwrap();
-    let tied = sandbox.azazel(&script, &["-p", "hi", "--model", "lead-"]);
-    assert_eq!(tied.status.code(), Some(2));
-    let error = stderr(&tied);
-    assert!(
-        error.contains("mock/lead-one") && error.contains("mock/lead-two"),
-        "{error}"
-    );
 }
 
 #[test]

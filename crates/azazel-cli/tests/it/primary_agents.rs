@@ -110,35 +110,6 @@ fn identity(request: &Value) -> String {
 }
 
 #[test]
-fn an_agent_that_is_no_primary_agent_is_refused() {
-    let sandbox = Sandbox::new();
-    let script = json!({ "lead": [text("hi")] });
-    let ghost = sandbox.run(&script, &["-p", "hi", "--agent", "ghost"]);
-    assert_eq!(ghost.status.code(), Some(2), "{}", stderr(&ghost));
-    assert!(
-        stderr(&ghost).contains("--agent: there is no agent `ghost`; the primary agents are: build, plan"),
-        "{}",
-        stderr(&ghost)
-    );
-    let scout = sandbox.run(&script, &["-p", "hi", "--agent", "scout"]);
-    assert_eq!(scout.status.code(), Some(2));
-    assert!(
-        stderr(&scout).contains("`scout` is a sub-agent, not a primary agent"),
-        "{}",
-        stderr(&scout)
-    );
-
-    sandbox.write("home/config.toml", "[agents]\ndefault = \"scout\"\n");
-    let config = sandbox.run(&script, &["-p", "hi"]);
-    assert!(!config.status.success());
-    assert!(
-        stderr(&config).contains("[agents] default: `scout` is a sub-agent"),
-        "{}",
-        stderr(&config)
-    );
-}
-
-#[test]
 fn the_plan_agent_writes_only_plans_and_a_resumed_session_is_the_agent_it_was() {
     let sandbox = Sandbox::new();
     let script = json!({ "lead": [

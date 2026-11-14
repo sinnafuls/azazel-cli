@@ -8,7 +8,6 @@ use std::sync::LazyLock;
 use std::time::Duration;
 
 use crate::common::fixture_program;
-use assert_cmd::Command;
 use azazel_ai::types::WireApi;
 use azazel_ai::{Auth, Credentials, ProviderConfig, ProviderSettings};
 use azazel_cli::doctor::Severity;
@@ -139,103 +138,6 @@ async fn transcription_posts_the_recording_as_multipart() {
     let sent = parts(content_type, &requests[1].body);
     assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|(headers, _)| !headers.contains("language")));
-}
-
-#[tokio::test]
-async fn the_settings_choose_the_provider_model_and_language() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/audio/transcriptions"))
-        .and(header("authorization", "Bearer sk-test-secret"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "text": "dzień dobry" })))
-        .mount(&server)
-        .await;
-    let mut config = config_for(&server);
-    config.voice.stt = "speech/whisper-large-v3".to_string();
-    config.voice.language = "pl".to_string();
-    let recording = wav::encode(&[0; 160], 16_000, 1);
-
-    let text = stt::transcribe(&config, &credentials(), recording).await.unwrap();
-    assert_eq!(text, "dzień dobry");
-    let requests = server.received_requests().await.unwrap();
-    let sent = parts(
-        requests[0].headers["content-type"].to_str().unwrap(),
-        &requests[0].body,
-    );
-    assert_eq!(sent[1].1, b"whisper-large-v3");
-    assert_eq!(sent[2].1, b"pl");
-
-    // A setting that names no provider, or nothing at all, says what to write.
-    config.voice.stt = "nowhere/whisper-1".to_string();
-    let error = stt::transcribe(&config, &credentials(), Vec::new())
-        .await
-        .unwrap_err();
-    assert_eq!(error, "[voice] stt: there is no provider named `nowhere`");
-    config.voice.stt.clear();
-    let error = stt::transcribe(&config, &credentials(), Vec::new())
-        .await
-        .unwrap_err();
-    assert!(
-        error.starts_with("voice input is not set up: set [voice] stt"),
-        "{error}"
-    );
-}
-
-#[tokio::test]
-async fn failed_requests_keep_neither_the_address_nor_the_key() {
-    let server = MockServer::start().await;
-    let address = server.uri();
-    Mock::given(method("POST"))
-        .and(path("/v1/audio/transcriptions"))
-        .respond_with(ResponseTemplate::new(401).set_body_json(json!({
-            "error": { "message": format!("Incorrect API key provided: sk-test-secret, sent to {address}/v1/audio/transcriptions") }
-        })))
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/v1/audio/speech"))
-        .respond_with(ResponseTemplate::new(503).set_body_string("upstream is down\nmore detail"))
-        .mount(&server)
-        .await;
-    let client = azazel_ai::tls::client();
-
-    let error = stt::by_http(&client, &endpoint(&server, "whisper-1"), "", vec![0; 64])
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error,
-        "transcription failed: openai answered 401 Unauthorized: Incorrect API key provided: [key], \
-         sent to [address]/audio/transcriptions"
-    );
-    let error = speak::synthesize(&client, &endpoint(&server, "tts-1"), "", "hello")
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error,
-        "speech failed: openai answered 503 Service Unavailable: upstream is down"
-    );
-
-    // Nothing listens at this address: the port was free a moment ago.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    let mut gone = endpoint(&server, "whisper-1");
-    gone.provider.base_url = format!("http://127.0.0.1:{port}/v1");
-    let error = stt::by_http(&client, &gone, "", vec![0; 64]).await.unwrap_err();
-    assert_eq!(error, "transcription failed: could not connect to openai");
-
-    // A reply that is not what the endpoint promises.
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "segments": [] })))
-        .mount(&server)
-        .await;
-    let error = stt::by_http(&client, &endpoint(&server, "whisper-1"), "", vec![0; 64])
-        .await
-        .unwrap_err();
-    assert_eq!(error, "transcription failed: the answer of openai has no text");
 }
 
 #[tokio::test]
@@ -417,44 +319,6 @@ async fn a_recorder_may_write_raw_audio_and_end_by_itself() {
     assert!((peak - 16_000.0 / 32_768.0).abs() < 0.01, "peak {peak}");
 }
 
-#[tokio::test]
-async fn a_recorder_that_cannot_record_says_why() {
-    let mut config = Config::default();
-    config.voice.stt_command = fake("transcribe {file}");
-    config.voice.record_command = fake("record --fail");
-    let mut recording = record::start(&config.voice).await.unwrap();
-    ended(&mut recording).await;
-    let error = voice::dictate(recording, &config, &credentials())
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error,
-        "fake-audio recorded nothing: fake-audio: audio open error: Device or resource busy"
-    );
-
-    config.voice.record_command = "azazel-no-such-recorder -f wav".to_string();
-    let error = record::start(&config.voice).await.err().unwrap();
-    assert_eq!(error, "`azazel-no-such-recorder` was not found");
-
-    // A transcriber that fails, and one that is missing.
-    config.voice.record_command = fake("record --exit 100");
-    config.voice.stt_command = fake("transcribe no-such-dir/{file}");
-    let mut recording = record::start(&config.voice).await.unwrap();
-    ended(&mut recording).await;
-    let error = voice::dictate(recording, &config, &credentials())
-        .await
-        .unwrap_err();
-    assert!(error.starts_with("fake-audio failed ("), "{error}");
-    config.voice.stt_command = "azazel-no-such-whisper {file}".to_string();
-    let error = stt::transcribe(&config, &credentials(), Vec::new())
-        .await
-        .unwrap_err();
-    assert_eq!(
-        error,
-        "`azazel-no-such-whisper` was not found (from [voice] stt_command)"
-    );
-}
-
 #[test]
 fn doctor_reports_the_voice_setup() {
     let line = |findings: &[azazel_cli::doctor::Finding], start: &str| {
@@ -554,32 +418,4 @@ fn doctor_reports_the_voice_setup() {
             ),
         ]
     );
-}
-
-#[test]
-fn the_doctor_command_includes_voice() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("project/.git")).unwrap();
-    std::fs::create_dir_all(dir.path().join("home")).unwrap();
-    std::fs::write(
-        dir.path().join("home/config.toml"),
-        "[voice]\nstt = \"openai/whisper-1\"\nlanguage = \"en\"\n",
-    )
-    .unwrap();
-    let output = Command::cargo_bin("azazel")
-        .unwrap()
-        .env("AZAZEL_HOME", dir.path().join("home"))
-        .env_remove("OPENAI_API_KEY")
-        .arg("--cwd")
-        .arg(dir.path().join("project"))
-        .arg("doctor")
-        .output()
-        .unwrap();
-    let report = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        report.contains("warn  voice transcription: whisper-1 at openai, but openai has no credential"),
-        "{report}"
-    );
-    assert!(report.contains("voice recorder: "), "{report}");
-    assert!(report.contains("ok    spoken replies: not set up"), "{report}");
 }

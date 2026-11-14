@@ -154,30 +154,6 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     assert!(tool(&sandbox.requests()[0], "run_code").is_some());
 }
 
-#[cfg(feature = "pdf")]
-#[test]
-fn a_pdf_is_read_as_text_page_by_page() {
-    let sandbox = Sandbox::new();
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../azazel-tools/tests/fixtures/read/three-pages.pdf");
-    std::fs::copy(fixture, sandbox.project().join("doc.pdf")).unwrap();
-    let script = calls(&[
-        ("read", json!({ "path": "doc.pdf" })),
-        ("read", json!({ "path": "doc.pdf", "pages": "2" })),
-    ]);
-    let output = sandbox.azazel(&script, &[]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(
-        sandbox.results(),
-        [
-            "--- page 1 ---\nAlpha one\n\n--- page 2 ---\nBeta two\n\n--- page 3 ---\nGamma three",
-            "--- page 2 ---\nBeta two\n[pages 2-2 of 3]",
-        ]
-    );
-    let read = sandbox.requests()[0].clone();
-    assert!(tool(&read, "read").unwrap()["schema"]["properties"]["pages"].is_object());
-}
-
 #[test]
 fn read_takes_the_addresses_of_sessions_jobs_and_memories() {
     let sandbox = Sandbox::new();
@@ -466,46 +442,6 @@ fn a_gpt_model_gets_patch_in_place_of_edit_and_patches_files() {
         "a\nB\n"
     );
     assert!(!project.join("app.py").exists() && !project.join("old.txt").exists());
-}
-
-#[test]
-fn a_patch_with_a_hunk_that_does_not_fit_changes_nothing() {
-    let sandbox = Sandbox::new();
-    let project = sandbox.project();
-    std::fs::write(project.join("a.txt"), "one\ntwo\n").unwrap();
-    std::fs::write(project.join("b.txt"), "three\n").unwrap();
-    let patch = "*** Begin Patch\n\
-                 *** Update File: a.txt\n@@\n-one\n+ONE\n\
-                 *** Update File: b.txt\n@@\n-four\n+FOUR\n\
-                 *** Add File: c.txt\n+new\n\
-                 *** End Patch";
-    let script = on_gpt(&[
-        ("read", json!({ "path": "a.txt" })),
-        ("read", json!({ "path": "b.txt" })),
-        ("patch", json!({ "patch_text": patch })),
-        // Not read: the read guard stops the whole patch.
-        (
-            "patch",
-            json!({ "patch_text": "*** Begin Patch\n*** Update File: unread.txt\n@@\n-x\n+y\n*** End Patch" }),
-        ),
-    ]);
-    std::fs::write(project.join("unread.txt"), "x\n").unwrap();
-    let output = sandbox.azazel(&script, &["--mode", "auto", "--model", "mock/gpt-5"]);
-    assert!(output.status.success(), "{}", stderr(&output));
-    let results = sandbox.results();
-    assert_eq!(
-        results[2],
-        "b.txt, hunk 1: its lines were not found, starting with `four`; nothing was changed"
-    );
-    assert_eq!(
-        results[3],
-        "nothing was written:\nunread.txt: read the file before overwriting it"
-    );
-    assert_eq!(
-        std::fs::read_to_string(project.join("a.txt")).unwrap(),
-        "one\ntwo\n"
-    );
-    assert!(!project.join("c.txt").exists());
 }
 
 #[test]

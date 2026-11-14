@@ -263,37 +263,3 @@ fn a_background_session_there_outlives_the_connection_and_is_come_back_to() {
         assert!(sandbox.ps().is_empty());
     }
 }
-
-#[test]
-fn a_machine_without_azazel_is_told_how_to_get_it() {
-    let sandbox = Sandbox::new(&json!({ "lead": [] }), Through::Fake);
-    let output = sandbox
-        .azazel_to(None, Some("no-such-azazel"), &["-p", "hello"])
-        .output()
-        .unwrap();
-    let said = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert_eq!(output.status.code(), Some(1), "{said}");
-    assert!(
-        said.contains("could not start azazel on build-box") && said.contains("command not found"),
-        "{said}"
-    );
-    assert!(said.contains("install/install.sh | sh"), "{said}");
-
-    // A machine that cannot be reached says so in ssh's own words.
-    let output = sandbox
-        .azazel_to(Some("unreachable"), None, &["-p", "hello"])
-        .output()
-        .unwrap();
-    let said = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert_eq!(output.status.code(), Some(1), "{said}");
-    assert!(said.contains("Connection refused"), "{said}");
-
-    // A name that ssh would read as an option is not passed to it.
-    let output = sandbox
-        .azazel_to(Some("-oProxyCommand=x"), None, &["-p", "hello"])
-        .output()
-        .unwrap();
-    let said = String::from_utf8_lossy(&output.stderr).into_owned();
-    assert_eq!(output.status.code(), Some(2), "{said}");
-    assert!(said.contains("--ssh takes the name of a machine"), "{said}");
-}

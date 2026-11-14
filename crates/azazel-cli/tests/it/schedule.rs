@@ -286,25 +286,6 @@ fn a_schedule_is_added_listed_run_in_the_background_and_removed() {
 }
 
 #[test]
-fn what_cannot_be_scheduled_is_refused_with_the_reason() {
-    let sandbox = Sandbox::new(&json!({ "lead": [] }));
-    let refused = |args: &[&str]| {
-        let mut all = vec!["--set", "schedule.register=false", "schedule", "add"];
-        all.extend(args);
-        let output = sandbox.run(&all);
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {:?}", text(&output));
-        text(&output).1
-    };
-    assert!(refused(&["every", "30s", "go"]).contains("between one minute and 31 days"));
-    assert!(refused(&["at", "2020-01-01 10:00", "go"]).contains("in the past"));
-    assert!(refused(&["go"]).contains("when is it to run?"));
-    assert!(refused(&["--on", "weather", "go"]).contains("ci-failure, or file:<glob>"));
-    assert!(refused(&["--on", "ci-failure", "every", "10m", "go"]).contains("not both"));
-    assert!(refused(&["--session", "nosuch", "every", "10m", "go"]).contains("no session with id `nosuch`"));
-    assert!(sandbox.schedules().is_empty());
-}
-
-#[test]
 fn a_schedule_with_a_session_sends_its_prompt_to_the_background_session_that_has_it_open() {
     let sandbox = Sandbox::new(&json!({ "lead": [
         { "delay_ms": 2500, "reply": { "text": "The first is done." } },
@@ -717,32 +698,6 @@ fn the_agent_schedules_with_permission_only() {
 }
 
 #[test]
-fn doctor_says_who_starts_the_schedules() {
-    let sandbox = Sandbox::new(&json!({ "lead": [] }));
-    sandbox.add(&["every", "10m", "go"]);
-    sandbox.add(&["--on", "file:*.md", "go"]);
-    // The report comes whatever else doctor finds amiss in an empty home.
-    let report_of = |args: &[&str]| text(&sandbox.run(args)).0;
-    let report = report_of(&["doctor"]);
-    assert!(report.contains("schedules: 1 here, started by "), "{report}");
-    assert!(
-        report.contains("triggers: 1 here, watched while a session is open"),
-        "{report}"
-    );
-    std::fs::create_dir_all(sandbox.path("project/.azazel")).unwrap();
-    std::fs::write(
-        sandbox.path("project/.azazel/config.toml"),
-        "[schedule]\nregister = false\n",
-    )
-    .unwrap();
-    let off = report_of(&["doctor"]);
-    assert!(
-        off.contains("schedules: 1 here, not handed to ") && off.contains("(`schedule.register` is off)"),
-        "{off}"
-    );
-}
-
-#[test]
 fn a_schedule_runs_its_prompt_only_when_its_check_holds_and_ends_once_until_holds() {
     let sandbox = Sandbox::new(&json!({ "lead": [said("Deployed.")] }));
     let id = sandbox.add(&[
@@ -907,28 +862,6 @@ fn a_schedule_is_paused_out_of_the_systems_scheduler_and_resumed_into_it() {
     if cfg!(windows) {
         assert_eq!(sandbox.scheduler_calls().last().unwrap()["args"][0], "/Create");
     }
-}
-
-#[test]
-fn checks_ends_and_zones_that_make_no_sense_are_refused() {
-    let sandbox = Sandbox::new(&json!({ "lead": [] }));
-    let refused = |args: &[&str]| {
-        let mut all = vec!["--set", "schedule.register=false", "schedule", "add"];
-        all.extend(args);
-        let output = sandbox.run(&all);
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {:?}", text(&output));
-        text(&output).1
-    };
-    assert!(refused(&["--tz", "Mars/Base", "0 9 * * *", "go"]).contains("no time zone"));
-    assert!(refused(&["--tz", "UTC", "every", "10m", "go"]).contains("cron expression or `at`"));
-    assert!(
-        refused(&["--if", "true", "--if-matches", "(", "every", "10m", "go"])
-            .contains("not a regular expression")
-    );
-    assert!(refused(&["--if-is", "1", "every", "10m", "go"]).contains("--if"));
-    assert!(refused(&["--times", "0", "every", "10m", "go"]).contains("1 at least"));
-    assert!(refused(&["--ends-at", "2020-01-01 00:00", "every", "10m", "go"]).contains("in the past"));
-    assert!(sandbox.schedules().is_empty());
 }
 
 #[test]

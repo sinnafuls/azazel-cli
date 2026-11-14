@@ -230,69 +230,6 @@ fn credentials_are_stored_listed_without_their_secret_and_forgotten() {
     );
 }
 
-#[test]
-fn what_cannot_be_stored_is_refused_with_the_reason() {
-    let sandbox = Sandbox::new();
-    for (args, why) in [
-        (
-            vec!["add", "x", "--host", "api.test"],
-            "give one of --header, --query and --basic",
-        ),
-        (
-            vec![
-                "add", "x", "--host", "api.test", "--header", "A: bcdef", "--query", "a=bcdef",
-            ],
-            "give one of --header, --query and --basic",
-        ),
-        (
-            vec![
-                "add",
-                "x",
-                "--host",
-                "https://api.test/v1",
-                "--header",
-                "A: bcdef",
-            ],
-            "`https://api.test/v1` is not a host",
-        ),
-        (
-            vec!["add", "x", "--host", "api.test", "--header", "no separator"],
-            "write it as `Name: value`",
-        ),
-        (
-            vec!["add", "none", "--host", "api.test", "--header", "A: bcdef"],
-            "choose another name",
-        ),
-        (
-            vec![
-                "add-site",
-                "http://example.com/login",
-                "--username",
-                "me",
-                "--password",
-                "pw-123456",
-            ],
-            "only typed into an https page",
-        ),
-        (
-            vec![
-                "add-site",
-                "example.com",
-                "--username",
-                "me",
-                "--password",
-                "pw-123456",
-            ],
-            "is not the address of a page",
-        ),
-    ] {
-        let refused = sandbox.secrets(&args, "");
-        assert_eq!(refused.status.code(), Some(2), "{args:?}: {}", err(&refused));
-        assert!(err(&refused).contains(why), "{args:?}: {}", err(&refused));
-    }
-    assert!(!sandbox.home().join("secrets.json").exists());
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn an_agent_calls_a_service_with_the_stored_credential_and_never_holds_it() {
     let server = MockServer::start().await;

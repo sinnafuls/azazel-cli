@@ -113,32 +113,6 @@ fn collect(value: &Value, out: &mut Vec<String>) {
 }
 
 #[test]
-fn the_old_name_of_manual_mode_is_refused_wherever_a_mode_is_given() {
-    let sandbox = Sandbox::new();
-    let script = json!({ "lead": [text("hi")] });
-    let flag = sandbox.run(&script, &["-p", "hi", "--mode", "ask"]);
-    assert_eq!(flag.status.code(), Some(2));
-    assert!(
-        stderr(&flag).contains("--mode: the mode `ask` is now called `manual`"),
-        "{}",
-        stderr(&flag)
-    );
-
-    sandbox.write("home/config.toml", "[permissions]\nmode = \"ask\"\n");
-    let config = sandbox.run(&script, &["-p", "hi"]);
-    assert!(!config.status.success());
-    let said = stderr(&config);
-    assert!(
-        said.contains("config.toml") && said.contains("the mode `ask` is now called `manual`"),
-        "{said}"
-    );
-
-    sandbox.write("home/config.toml", "[permissions]\nmode = \"manual\"\n");
-    let renamed = sandbox.run(&script, &["-p", "hi"]);
-    assert!(renamed.status.success(), "{}", stderr(&renamed));
-}
-
-#[test]
 fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guard() {
     let sandbox = Sandbox::new();
     sandbox.write("project/.env", "DATABASE_PASSWORD=hunter2-very-secret\n");

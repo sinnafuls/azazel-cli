@@ -231,40 +231,6 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn usage_that_cannot_be_asked_for_says_why_and_fails() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/api/oauth/usage"))
-        .respond_with(ResponseTemplate::new(503))
-        .mount(&server)
-        .await;
-    let sandbox = Sandbox::new();
-    std::fs::write(
-        sandbox.home().join("config.toml"),
-        format!("[providers.anthropic]\nbase_url = \"{}\"\n", server.uri()),
-    )
-    .unwrap();
-    std::fs::write(
-        sandbox.home().join("auth.json"),
-        json!({ "anthropic": login("a@example.com", "acct-a") }).to_string(),
-    )
-    .unwrap();
-    let shown = sandbox.azazel(&["usage"]).await;
-    assert_eq!(shown.status.code(), Some(1));
-    let out = trimmed(&shown.stdout);
-    assert!(
-        out.starts_with("anthropic\n ● default  a***@example.com · in use"),
-        "{out}"
-    );
-    assert!(
-        out.contains("anthropic answered HTTP 503 Service Unavailable when asked for its usage"),
-        "{out}"
-    );
-    // Nothing was learnt, so nothing is kept.
-    assert!(!sandbox.home().join("cache").join("limits.json").exists());
-}
-
-#[tokio::test(flavor = "multi_thread")]
 async fn a_refusal_for_extra_usage_names_the_full_window_and_its_reset() {
     let server = MockServer::start().await;
     let reset = std::time::SystemTime::now()

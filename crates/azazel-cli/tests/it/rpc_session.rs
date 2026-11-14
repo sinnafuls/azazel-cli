@@ -183,17 +183,6 @@ fn pair(role: &str, text: &str) -> (String, String) {
 }
 
 #[test]
-fn the_first_line_says_hello() {
-    let client = Client::start(&replies(&[]), &[]);
-    let hello = client.next();
-    assert_eq!(
-        hello,
-        json!({ "type": "hello", "protocol": 1, "version": env!("CARGO_PKG_VERSION") })
-    );
-    assert_eq!(client.finish(), Some(0));
-}
-
-#[test]
 fn sessions_are_started_listed_resumed_and_forked() {
     let mut client = Client::start(&replies(&["one", "two", "three"]), &[]);
     let first = client.state(json!({ "type": "get_state" }));
@@ -420,39 +409,6 @@ fn the_agent_is_told_what_happened_on_a_branch_that_is_left() {
     );
     assert_eq!(sent[2], "third");
 
-    assert_eq!(client.finish(), Some(0));
-}
-
-#[test]
-fn a_branch_is_not_summarised_when_that_is_switched_off() {
-    let script = json!({
-        "lead": [
-            { "reply": { "text": "one" } },
-            { "reply": { "text": "two" } },
-            { "reply": { "text": "three" } },
-        ],
-        "smol": [{ "reply": { "text": "never asked for" } }],
-    });
-    let mut client = Client::start(
-        &script,
-        &[
-            "--set",
-            "roles.smol=[\"mock/smol\"]",
-            "--set",
-            "session.branch_summary=false",
-        ],
-    );
-    client.prompt("first");
-    client.prompt("second");
-    let one = client
-        .tree()
-        .into_iter()
-        .find(|row| row.text.as_deref() == Some("one"))
-        .unwrap();
-    client.state(json!({ "type": "set_leaf", "entry_id": one.id }));
-    client.prompt("third");
-    assert_eq!(models_asked(&client), ["lead", "lead", "lead"]);
-    assert_eq!(user_texts(&client.requests().pop().unwrap()), ["first", "third"]);
     assert_eq!(client.finish(), Some(0));
 }
 

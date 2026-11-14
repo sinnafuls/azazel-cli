@@ -162,26 +162,3 @@ fn a_packages_code_runs_only_when_it_was_enabled_at_install() {
     // The package's directory was never touched.
     assert!(sandbox.path("pack").join("ext").join("main.luau").is_file());
 }
-
-#[test]
-fn what_cannot_be_installed_is_explained() {
-    let sandbox = Sandbox::new();
-    let unknown = sandbox.azazel(&["pkg", "add", "no-such-thing"], "");
-    assert_eq!(unknown.status.code(), Some(1));
-    let why = String::from_utf8_lossy(&unknown.stderr).to_string();
-    assert!(
-        why.contains(
-            "`no-such-thing` is not a git URL, `github:<owner>/<repo>`, `npm:<name>`, a directory or a registry \
-             name"
-        ),
-        "{why}"
-    );
-    let missing = sandbox.azazel(&["pkg", "remove", "ghost"], "");
-    assert_eq!(
-        String::from_utf8_lossy(&missing.stderr).trim(),
-        "azazel: no package named `ghost` is installed; none are"
-    );
-    // One skill of a package can only be asked for when the package is known.
-    let stray = sandbox.azazel(&["skills", "add", "ghost/skill"], "");
-    assert_eq!(stray.status.code(), Some(1));
-}

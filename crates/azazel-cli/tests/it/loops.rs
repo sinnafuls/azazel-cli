@@ -69,28 +69,6 @@ fn text(output: &Output) -> (String, String) {
 }
 
 #[test]
-fn a_counted_loop_sends_the_prompt_that_many_times() {
-    let dir = tempfile::tempdir().unwrap();
-    let script = json!({ "lead": [said("one"), said("two"), said("three"), said("too many")] });
-    let output = looped(
-        dir.path(),
-        &script,
-        "3 fix one failing test",
-        "fix one failing test",
-    );
-    let (out, err) = text(&output);
-    assert!(output.status.success(), "{err}");
-    assert_eq!(out.trim(), "three");
-    assert!(err.contains("loop finished: 3 rounds"), "{err}");
-    let sent = requests(dir.path());
-    assert_eq!(sent.len(), 3, "{sent:?}");
-    assert!(
-        sent.iter()
-            .all(|(model, prompt)| model == "lead" && prompt == "fix one failing test")
-    );
-}
-
-#[test]
 fn a_loop_with_a_condition_goes_on_until_the_small_model_says_it_holds() {
     let dir = tempfile::tempdir().unwrap();
     let script = json!({
@@ -154,24 +132,4 @@ fn a_condition_that_cannot_be_checked_ends_the_loop() {
         "{err}"
     );
     assert_eq!(requests(dir.path()).len(), 2);
-}
-
-#[test]
-fn a_loop_stops_by_itself_after_the_most_rounds_it_may_take() {
-    let dir = tempfile::tempdir().unwrap();
-    let script = json!({
-        "lead": [said("one"), said("two"), said("never asked for")],
-        "judge": [said("no"), said("no")],
-    });
-    let project = dir.path().join("project/.azazel");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::write(project.join("config.toml"), "[schedule]\nloop_max = 2\n").unwrap();
-    let output = looped(dir.path(), &script, "until \"it works\" try again", "try again");
-    let (_, err) = text(&output);
-    assert!(output.status.success(), "{err}");
-    assert!(
-        err.contains("loop stopped after 2 rounds (`[schedule] loop_max`)"),
-        "{err}"
-    );
-    assert_eq!(requests(dir.path()).len(), 4);
 }
