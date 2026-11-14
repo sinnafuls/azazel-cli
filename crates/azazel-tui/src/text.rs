@@ -161,6 +161,23 @@ pub fn strip_ansi(s: &str) -> String {
     out
 }
 
+/// One line a program printed, made safe to place in a line of the UI: its colours (SGR
+/// sequences) are kept, every other escape sequence and control character is removed, and a
+/// tab is a space.
+pub fn keep_colours(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for seg in segments(s) {
+        match seg {
+            Segment::Escape(seq) if seq.starts_with("\x1b[") && seq.ends_with('m') => out.push_str(seq),
+            Segment::Escape(_) => {}
+            Segment::Grapheme("\t") => out.push(' '),
+            Segment::Grapheme(g) if is_control(g) => {}
+            Segment::Grapheme(g) => out.push_str(g),
+        }
+    }
+    out
+}
+
 /// Makes untrusted text (model output, program output) safe to place in a line: escape sequences
 /// and control characters are removed, tabs expand to the next multiple of four columns and
 /// `\r\n` becomes `\n`. Newlines are kept.

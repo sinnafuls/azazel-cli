@@ -62,6 +62,13 @@ pub async fn toplevel(dir: &Path) -> Option<PathBuf> {
     (!top.is_empty()).then(|| PathBuf::from(top))
 }
 
+/// How many files of the repository `dir` is in differ from the last commit, untracked ones
+/// included; `None` outside a repository or without git.
+pub async fn changed_files(dir: &Path) -> Option<usize> {
+    let status = run(dir, &["status", "--porcelain"]).await.ok()?;
+    Some(status.lines().filter(|line| !line.trim().is_empty()).count())
+}
+
 /// What the working tree is compared with: `HEAD`, or the empty tree before the first commit.
 async fn base(top: &Path) -> Result<String, String> {
     if run(top, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
@@ -441,6 +448,26 @@ mod tests {
         async fn commit_all(&self, message: &str) {
             let done = commit(self.path(), message, true).await;
             assert_eq!(done.status, "exit code: 0", "{}", done.output);
+        }
+    }
+
+    #[tokio::test]
+    async fn changed_files_are_counted_until_they_are_committed() {
+        let outside = tempfile::tempdir().unwrap();
+        // A directory of its own, so that no repository above the temporary one answers.
+        let alone = outside.path().join("alone");
+        std::fs::create_dir(&alone).unwrap();
+        let repo = Repo::new().await;
+        assert_eq!(changed_files(repo.path()).await, Some(0));
+        repo.write("a.txt", "one\n");
+        repo.write("src/b.txt", "two\n");
+        assert_eq!(changed_files(repo.path()).await, Some(2));
+        repo.commit_all("first").await;
+        assert_eq!(changed_files(repo.path()).await, Some(0));
+        repo.write("a.txt", "changed\n");
+        assert_eq!(changed_files(&repo.path().join("src")).await, Some(1));
+        if toplevel(&alone).await.is_none() {
+            assert_eq!(changed_files(&alone).await, None);
         }
     }
 

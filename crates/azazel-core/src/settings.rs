@@ -228,7 +228,7 @@ settings! {
     }
     Models / "Switching and advice" {
         "tui.favourites": List, "Favourite models",
-            "Models and @roles the model-cycling keys step through, such as @default or anthropic/claude-x.";
+            "Models and @roles ctrl+p steps through, such as @default or anthropic/claude-x; empty steps through the roles that have models.", live;
         "advisor.when": Choice(AdvisorWhen::NAMES), "Second-model advisor",
             "stop: a second model reviews the lead's work each time it is about to finish; off leaves it to /advise.";
         "advisor.model": List, "Advisor model",
@@ -286,14 +286,17 @@ settings! {
     }
     StatusLine / "Status line" {
         "statusline.preset": Choice(StatusPreset::NAMES), "Preset",
-            "The set of segments shown when the left and right lists are empty.";
-        "statusline.left": List, "Left segments", "Segment names on the left, in order; empty takes the preset's.";
-        "statusline.right": List, "Right segments", "Segment names on the right, in order; empty takes the preset's.";
-        "statusline.separator": Choice(StatusSeparator::NAMES), "Separator", "What stands between two segments.";
+            "The set of segments shown when the left and right lists are empty; /statusline sets the line up with it in view.", live;
+        "statusline.left": List, "Left segments",
+            "Segment names on the left, in order (mode, branch, path, context, ...); empty takes the preset's, none leaves the side empty.", live;
+        "statusline.right": List, "Right segments",
+            "Segment names on the right, in order (model, thinking, time, ...); empty takes the preset's, none leaves the side empty.", live;
+        "statusline.separator": Choice(StatusSeparator::NAMES), "Separator",
+            "What stands between two segments; powerline makes each segment a block of colour.", live;
         "statusline.segments": Kind::Table, "Segment options",
-            "Options of each segment by its name, such as path = { style = \"short\" }.";
+            "Options of each segment by its name, such as path = { style = \"basename\" } or time = { seconds = true }.", live;
         "statusline.command": Text, "Command",
-            "A program whose output replaces the left side of the status line; empty runs nothing.";
+            "A program given the session as JSON whose first line of output replaces the left side of the status line; empty runs nothing.", live;
     }
     Input / "Editor" {
         "editor.mode": Choice(EditorMode::NAMES), "Keys in the input", "emacs or vim keys in the input.", live;

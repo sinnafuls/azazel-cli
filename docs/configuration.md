@@ -234,16 +234,16 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
 | | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row and calls that follow one another as a tree; see [compact style](tui.md#compact-style) |
 | | `redact` | `true` | Hide what looks like a secret in tool cards, the transcript viewer and Markdown and HTML exports; the model and the session file keep it. See [hiding secrets](tui.md#hiding-secrets) |
-| | `favourites` | `[]` | Models `Alt+M` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list |
+| | `favourites` | `[]` | Models and roles `Ctrl+P` steps through, such as `["@default", "anthropic/claude-x"]`; `Ctrl+F` in the model picker edits the list. Empty steps through the roles that were given models; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
 | | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together |
-| `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full` |
-| | `left`, `right` | `[]` | Segment names on each side, in order; empty takes the preset's |
-| | `separator` | `"dot"` | Between segments: `dot`, `bar`, `powerline` or `space` |
-| | `segments.<name>` | `{}` | Options of one segment, such as `[statusline.segments.path] style = "short"` |
-| | `command` | `""` | A program whose output replaces the left side of the status line; empty runs nothing |
+| `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full`; see [the status line](tui.md#status-line). `/statusline` sets these keys up with the line in view |
+| | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`. Empty takes the preset's; `["none"]` is an empty side |
+| | `separator` | `"dot"` | Between segments: `dot`, `bar`, `space`, or `powerline` (each segment a block of colour, ended by an arrow with `tui.glyphs = "nerd"`). The `powerline` preset is drawn in blocks while this is `dot` |
+| | `segments.<name>` | `{}` | Options of one segment: `priority` (`0` to `100`; the lowest leaves a narrow line first) and `icon` (`false` leaves the symbol out) for all; `max` columns for `path`, `model`, `branch`, `goal`, `session`, `account`; `style` for `path` (`short`, `full`, `basename`), `model` (`full`, `short`) and `context` (`percent`, `tokens`); `format` (`24h`, `12h`) and `seconds` for `time`; `cells` and `min_width` for `bar`. For example `[statusline.segments.path] style = "basename"` |
+| | `command` | `""` | A program whose first line of output replaces the left side of the status line; it is given the session as JSON on its standard input, runs at most once a second and is ended after two seconds. Empty runs nothing. See [your own command](tui.md#your-own-command) |
 | `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
 | | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |
 | | `fold_paste_lines` | `10` | Pastes longer than this many lines fold into one token; `0` never folds |
@@ -351,6 +351,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `PROMPT...` | Words after the flags: the first message of the session, or with `-p` the whole run. Put `--` before a prompt that starts with a subcommand's name |
 | `-p`, `--print` | Run the prompt without the UI and print the result |
 | `--model <SPEC>` | `provider/model[:thinking]`, `@role`, or part of a model's name (`fable`); repeat to add fallbacks. Concrete models become this run's `default` role |
+| `--models <SPECS>` | What `Ctrl+P` steps through in this run, in place of `tui.favourites`: models and `@roles` separated by commas, named as for `--model`; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `--thinking <LEVEL>` | `off` (default), `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
 | `--output <text\|json>` | Output of print mode; default `text` |

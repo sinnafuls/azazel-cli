@@ -1100,6 +1100,8 @@ mod tests {
                 "alt+enter (follow_up) does not reach azazel: Windows Terminal toggles full screen",
                 "ctrl+v (paste_image) does not reach azazel: Windows Terminal pastes (alt+v works)",
                 "ctrl+shift+v (paste_text) does not reach azazel: Windows Terminal pastes (alt+shift+v works)",
+                "ctrl+shift+p (cycle_model_back) does not reach azazel: Windows Terminal opens its command \
+                 palette (alt+shift+p, alt+shift+m works)",
             ]
         );
 
@@ -1113,6 +1115,8 @@ mod tests {
                 "ctrl+enter (newline) arrives as plain enter in this terminal (ctrl+j works)",
                 "ctrl+shift+v (paste_text) arrives without shift, as the ctrl key of the same letter in this \
                  terminal (alt+shift+v works)",
+                "ctrl+shift+p (cycle_model_back) arrives without shift, as the ctrl key of the same letter in this \
+                 terminal (alt+shift+p, alt+shift+m works)",
             ]
         );
         assert!(key_conflicts(&keymap, Terminal::Other, false, false, false).is_empty());
@@ -1130,6 +1134,14 @@ mod tests {
             found.contains(&"ctrl+j (newline) does not reach azazel: VS Code toggles the panel".to_string())
         );
         assert!(found.contains(&"ctrl+enter (newline) arrives as plain enter in VS Code".to_string()));
+        // It keeps `ctrl+p` too: the other key of the action is named.
+        assert!(
+            found.contains(
+                &"ctrl+p (cycle_model) does not reach azazel: VS Code opens Quick Open (alt+m works)"
+                    .to_string()
+            ),
+            "{found:#?}"
+        );
         let set_up = key_conflicts(&keymap, Terminal::VsCode, false, false, true);
         assert!(
             !set_up.iter().any(|line| line.starts_with("shift+enter")),
