@@ -774,9 +774,12 @@ async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
         .await;
     assert_eq!(typed.text_content(), "table 4");
 
-    // Agents started from `parallel` work at the same time; each result is in its place.
-    mock.push("a", MockStep::text("alpha").delayed(Duration::from_millis(300)));
-    mock.push("b", MockStep::text("beta").delayed(Duration::from_millis(300)));
+    // Agents started from `parallel` work at the same time; each result is in its place. One
+    // after the other they take two delays; together they take one, and a whole delay is left
+    // for a slow runner.
+    let delay = Duration::from_secs(1);
+    mock.push("a", MockStep::text("alpha").delayed(delay));
+    mock.push("b", MockStep::text("beta").delayed(delay));
     let started = std::time::Instant::now();
     let both = bench
         .run(
@@ -790,11 +793,7 @@ async fn a_script_starts_agents_and_gets_their_reports_or_typed_values() {
         )
         .await;
     assert_eq!(both.text_content(), "alpha beta");
-    assert!(
-        started.elapsed() < Duration::from_millis(580),
-        "{:?}",
-        started.elapsed()
-    );
+    assert!(started.elapsed() < 2 * delay, "{:?}", started.elapsed());
 
     // What `task` refuses is the script's error to catch.
     let unknown = bench.run(r#"return agents.run("nobody", "x")"#).await;

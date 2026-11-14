@@ -83,6 +83,15 @@ GitHub are its section here.
   width and the row they had, and no rule or status line drawn at the old width is left above them. A
   window narrowed while a popup or the viewer is open no longer has the end of the transcript written over
   when it closes.
+- A path an agent names through a symbolic link or a Windows short name (`/var/…` on macOS, which is
+  `/private/var/…`; `C:\Users\RUNNER~1\…`) is checked as the file it is: a secret file, a protected file or
+  a path outside the project is asked about as it is when named the usual way, and `grep` leaves secret
+  files out of a directory named that way too.
+- Two agents started at the same moment (from `parallel` in a script, or two `task` calls) no longer take
+  the same name, which failed one of them with `cannot write …: File exists`.
+- `azazel rpc` writes its frames in the order things happened: a notice given during a run (such as a
+  cache miss) comes before the run's `idle`, and what a sub-agent did comes before the run of the lead its
+  report starts.
 
 ## [0.6.0] - 2026-11-14
 

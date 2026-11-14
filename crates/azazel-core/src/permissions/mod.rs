@@ -121,7 +121,7 @@ fn normal(path: &Path) -> String {
 /// that reads a file on its own account, such as an `@path` include, where no agent asked and
 /// no user can be asked.
 pub(crate) fn holds_credentials(path: &Path, azazel_home: &Path, project_root: &Path) -> bool {
-    let home = std::env::home_dir();
+    let home = std::env::home_dir().map(|home| canonical(&home));
     let ctx = MatchCtx {
         project_root,
         cwd: project_root,
@@ -138,8 +138,8 @@ pub struct MatchCtx<'a> {
 }
 
 impl MatchCtx<'_> {
-    /// A path subject as written by the model, made absolute.
-    pub fn resolve(&self, subject: &str) -> PathBuf {
+    /// A path subject as written by the model, made absolute, with nothing on disk looked at.
+    pub fn absolute(&self, subject: &str) -> PathBuf {
         let subject = subject.trim();
         if let Some(rest) = subject.strip_prefix("~/")
             && let Some(home) = self.home
@@ -152,6 +152,23 @@ impl MatchCtx<'_> {
         } else {
             self.cwd.join(path)
         }
+    }
+
+    /// The file a path subject stands for: [`MatchCtx::absolute`] made canonical, the form the
+    /// roots, the homes and the plans directory are kept in. `/var/…` on macOS is
+    /// `/private/var/…`, a Windows short name (`RUNNER~1`) is the long one, and a symbolic link
+    /// is where it leads.
+    pub fn resolve(&self, subject: &str) -> PathBuf {
+        canonical(&self.absolute(subject))
+    }
+
+    /// Both forms of a path subject, as written and canonical. What is known by its name (a
+    /// rule, a secret file, a protected one) is matched against either: the name a link has is
+    /// gone from where it leads, and a path written through a link has not the name it leads to.
+    pub fn forms(&self, subject: &str) -> [PathBuf; 2] {
+        let written = self.absolute(subject);
+        let real = canonical(&written);
+        [written, real]
     }
 }
 
@@ -180,7 +197,10 @@ impl Rule {
                 }
                 None => glob(pattern, false).is_some_and(|g| g.is_match(subject)),
             },
-            SubjectKind::Path => path_matches(pattern, subject, ctx),
+            SubjectKind::Path => ctx
+                .forms(subject)
+                .iter()
+                .any(|path| path_matches(pattern, &normal(path), ctx)),
             SubjectKind::Domain => match (pattern.strip_prefix("domain:"), subject.strip_prefix("domain:")) {
                 (Some(wanted), Some(host)) => {
                     let (wanted, host) = (wanted.to_ascii_lowercase(), host.to_ascii_lowercase());
@@ -194,9 +214,9 @@ impl Rule {
 }
 
 /// Gitignore-style: a pattern without `/` matches at any depth; a pattern naming a directory covers
-/// everything below it; relative patterns are anchored at the project root.
-fn path_matches(pattern: &str, subject: &str, ctx: &MatchCtx<'_>) -> bool {
-    let path = normal(&ctx.resolve(subject));
+/// everything below it; relative patterns are anchored at the project root. `path` is resolved
+/// and normalised.
+fn path_matches(pattern: &str, path: &str, ctx: &MatchCtx<'_>) -> bool {
     let pattern = pattern.replace('\\', "/");
     let pattern = pattern.trim_end_matches('/');
     let absolute = if let Some(rest) = pattern.strip_prefix("~/") {
@@ -213,7 +233,7 @@ fn path_matches(pattern: &str, subject: &str, ctx: &MatchCtx<'_>) -> bool {
     };
     [absolute.clone(), format!("{absolute}/**")]
         .iter()
-        .any(|p| glob(p, true).is_some_and(|g| g.is_match(&path)))
+        .any(|p| glob(p, true).is_some_and(|g| g.is_match(path)))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,8 +361,8 @@ impl PermissionState {
             roots: RwLock::new(roots),
             cwd: paths.cwd.clone(),
             home: canonical(&paths.home),
-            user_home: std::env::home_dir(),
-            plans_dir: paths.plans_dir(),
+            user_home: std::env::home_dir().map(|home| canonical(&home)),
+            plans_dir: canonical(&paths.plans_dir()),
             local_config: paths.project_local_config(),
             destructive: permissions.destructive,
             secret_patterns: permissions.secret_paths.clone(),
@@ -773,7 +793,10 @@ impl PermissionState {
         let protected = !self.bypass()
             && call.access == Access::Write
             && subject_kind(call.tool) == SubjectKind::Path
-            && call.subjects.iter().any(|s| self.is_protected(&ctx.resolve(s)));
+            && call
+                .subjects
+                .iter()
+                .any(|s| ctx.forms(s).iter().any(|path| self.is_protected(path)));
         Ok(protected)
     }
 
@@ -834,16 +857,24 @@ impl PermissionState {
 
     /// Whether `path` is one of the files that hold credentials: the built-in list (`.env`,
     /// `*.pem`, `*.key`, SSH keys, the cloud and package credentials under the home directory,
-    /// azazel's own login file) or a match of `permissions.secret_paths`.
+    /// azazel's own login file) or a match of `permissions.secret_paths`. `path` is absolute and
+    /// checked as it is written and as the file it stands for (see [`MatchCtx::forms`]).
     pub fn is_secret(&self, path: &Path) -> bool {
+        self.secret_as_written(path) || self.secret_as_written(&canonical(path))
+    }
+
+    fn secret_as_written(&self, path: &Path) -> bool {
         secrets::is_secret(path, &self.secret_patterns, &self.home, &self.ctx(&self.cwd))
     }
 
     /// Whether a tool that reads the files of a directory has to leave `path` out: it is a
     /// secret file the user has not allowed for this session, and the session is not in
-    /// `bypass` mode. Naming the file itself is what gets the user asked.
+    /// `bypass` mode. Naming the file itself is what gets the user asked. A walk passes the
+    /// path below its root made canonical once, so nothing on disk is looked at per file.
     pub fn withholds(&self, path: &Path) -> bool {
-        !self.bypass() && self.is_secret(path) && !read(&self.secret_grants).contains(&Self::secret_key(path))
+        !self.bypass()
+            && self.secret_as_written(path)
+            && !read(&self.secret_grants).contains(&Self::secret_key(path))
     }
 
     /// The secret files a call names, as written and resolved: the path of a file tool, and the
@@ -860,8 +891,9 @@ impl PermissionState {
         words
             .into_iter()
             .filter_map(|word| {
-                let path = ctx.resolve(&word);
-                secrets::is_secret(&path, &self.secret_patterns, &self.home, ctx).then_some((word, path))
+                let [written, real] = ctx.forms(&word);
+                let secret = |path: &Path| secrets::is_secret(path, &self.secret_patterns, &self.home, ctx);
+                (secret(&written) || secret(&real)).then_some((word, real))
             })
             .collect()
     }
@@ -1000,7 +1032,7 @@ impl PermissionState {
                 let [subject] = call.subjects else {
                     return None;
                 };
-                let path = ctx.resolve(subject);
+                let path = ctx.absolute(subject);
                 let dir = normal(path.parent()?);
                 let root = normal(&self.project_root);
                 Some(match dir.strip_prefix(&root) {
