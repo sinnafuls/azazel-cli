@@ -879,7 +879,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-agent"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-ai",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-ai"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "aws-config",
@@ -928,7 +928,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-browser"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -954,7 +954,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-cli"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "agent-client-protocol",
  "anyhow",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-client"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "azazel-protocol",
  "futures",
@@ -1030,7 +1030,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-core"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1066,7 +1066,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-lua"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1086,7 +1086,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-mcp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-media"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1136,7 +1136,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-memory"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -1169,7 +1169,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-team"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1189,7 +1189,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-tools"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "async-trait",
  "azazel-agent",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-tui"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
@@ -1679,7 +1679,7 @@ checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
 name = "client-demo"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "azazel-client",
  "serde_json",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "custom-distro"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "assert_cmd",
  "async-trait",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "docs-check"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "azazel-cli",
@@ -2645,40 +2645,40 @@ dependencies = [
 
 [[package]]
 name = "fake-audio"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "fake-check"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "fake-gh"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "fake-lsp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "fake-sched"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "fake-sg"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "fake-ssh"
-version = "0.5.0"
+version = "0.6.0"
 
 [[package]]
 name = "fallible-iterator"
@@ -4257,7 +4257,7 @@ dependencies = [
 
 [[package]]
 name = "mcp-echo"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "rmcp",
  "serde_json",
@@ -8274,7 +8274,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "azazel-ai",
