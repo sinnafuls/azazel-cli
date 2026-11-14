@@ -329,7 +329,7 @@ Wire APIs that other harnesses ship and azazel does not: Cursor, Factory Droid, 
 | `fireworks` | Fireworks | `openai-chat` | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
 | `github-copilot` | GitHub Copilot | `openai-chat` | `https://api.githubcopilot.com` | `COPILOT_GITHUB_TOKEN`; sign-in |
 | `gmi-cloud` | GMI Cloud | `openai-chat` | `https://api.gmi-serving.com/v1` | `GMI_API_KEY` |
-| `google` | Google Gemini API | `google-generative` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` |
+| `google` | Google Gemini API | `google-generative` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY` |
 | `google-gemini-cli` | Google Cloud Code Assist (Gemini CLI) | `google-gemini-cli` | `https://cloudcode-pa.googleapis.com` | none: sign-in only |
 | `groq` | Groq | `openai-chat` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
 | `helmcode` | Helmcode | `openai-chat` | `https://api.helmcode.com/v1` | `HELMCODE_API_KEY` |
@@ -343,7 +343,7 @@ Wire APIs that other harnesses ship and azazel does not: Cursor, Factory Droid, 
 | `meta` | Meta Model API | `openai-responses` | `https://api.meta.ai/v1` | `MODEL_API_KEY`, `META_API_KEY`, `META_MODEL_API_KEY` |
 | `minimax` | MiniMax | `anthropic-messages` | `https://api.minimax.io/anthropic` | `MINIMAX_API_KEY` |
 | `minimax-code` | MiniMax Code | `anthropic-messages` | `https://api.minimax.io/anthropic` | `MINIMAX_CODE_API_KEY` |
-| `minimax-code-cn` | MiniMax Code CN | `anthropic-messages` | `https://api.minimaxi.com/anthropic` | `MINIMAX_CODE_CN_API_KEY` |
+| `minimax-code-cn` | MiniMax Code CN | `anthropic-messages` | `https://api.minimax.cn/anthropic` | `MINIMAX_CODE_CN_API_KEY` |
 | `mistral` | Mistral | `openai-chat` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 | `modular` | Modular | `openai-chat` | `https://api.modular.com/v1` | `MODULAR_API_KEY` |
 | `moonshot` | Moonshot | `openai-chat` | `${MOONSHOT_BASE_URL:-https://api.moonshot.ai/v1}` | `MOONSHOT_API_KEY` |
@@ -354,8 +354,8 @@ Wire APIs that other harnesses ship and azazel does not: Cursor, Factory Droid, 
 | `ollama-cloud` | Ollama Cloud | `ollama-chat` | `https://ollama.com` | `OLLAMA_CLOUD_API_KEY`, `OLLAMA_API_KEY` |
 | `openai` | OpenAI | `openai-responses` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
 | `openai-codex` | ChatGPT (Codex) | `openai-responses` | `https://chatgpt.com/backend-api/codex` | none: sign-in only |
-| `opencode-go` | OpenCode Go | `openai-chat` | `https://opencode.ai/zen/go/v1` | `OPENCODE_API_KEY` |
-| `opencode-zen` | OpenCode Zen | `openai-chat` | `https://opencode.ai/zen/v1` | `OPENCODE_API_KEY` |
+| `opencode-go` | OpenCode Go | `openai-chat` | `https://opencode.ai/inference/go/openai/v1` | `OPENCODE_API_KEY` |
+| `opencode-zen` | OpenCode Zen | `openai-chat` | `https://opencode.ai/inference/openai/v1` | `OPENCODE_API_KEY` |
 | `openrouter` | OpenRouter | `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`; sign-in |
 | `otari` | Otari | `openai-chat` | `${OTARI_BASE_URL:-https://api.otari.ai/api/v1}` | `OTARI_API_KEY` |
 | `qianfan` | Qianfan | `openai-chat` | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
@@ -376,7 +376,7 @@ Wire APIs that other harnesses ship and azazel does not: Cursor, Factory Droid, 
 | `vercel-ai-gateway` | Vercel AI Gateway | `openai-chat` | `https://ai-gateway.vercel.sh/v1` | `AI_GATEWAY_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` |
 | `vllm` | vLLM | `openai-chat` | `${VLLM_BASE_URL:-http://localhost:8000/v1}` | `VLLM_API_KEY` (optional) |
 | `wafer-serverless` | Wafer Serverless | `openai-chat` | `https://pass.wafer.ai/v1` | `WAFER_SERVERLESS_API_KEY`, `WAFER_API_KEY` |
-| `xai` | xAI | `openai-chat` | `https://api.x.ai/v1` | `XAI_API_KEY` |
+| `xai` | xAI | `openai-responses` | `https://api.x.ai/v1` | `XAI_API_KEY` |
 | `xai-oauth` | xAI Grok (SuperGrok) | `openai-responses` | `https://api.x.ai/v1` | `XAI_OAUTH_TOKEN`; sign-in |
 | `xiaomi` | Xiaomi MiMo | `openai-chat` | `https://api.xiaomimimo.com/v1` | `XIAOMI_API_KEY` |
 | `xiaomi-token-plan-ams` | Xiaomi Token Plan (AMS) | `openai-chat` | `https://token-plan-ams.xiaomimimo.com/v1` | `XIAOMI_TOKEN_PLAN_AMS_API_KEY` |
@@ -394,9 +394,183 @@ Notes:
 - Key variables are tried in the order shown. "(optional)" marks a server that is called without a key when none is set (the local ones); "sign-in" marks a provider `azazel login <id>` can sign in to.
 - `${VAR}` in an address is filled from the environment, and `${VAR:-default}` falls back to the default. A provider whose address still needs a variable (`cloudflare-ai-gateway`, `cloudflare-workers-ai`, `snowflake`, `azure`) is listed, and answers a request with which variable to set.
 - `ollama` chats through Ollama's OpenAI-compatible endpoint and reads the model list from its native one. Set `api = "ollama-chat"` on it to chat through the native API too.
-- A provider with two surfaces has one preset here. To use the other, define a second provider, for example `api: anthropic-messages` with `base_url: https://api.z.ai/api/anthropic`, `https://zenmux.ai/api/anthropic`, `https://api.synthetic.new/anthropic` or `https://opencode.ai/zen`.
+- A provider with two surfaces has one preset here. To use the other, define a second provider, for example `api: anthropic-messages` with `base_url: https://api.z.ai/api/anthropic`, `https://zenmux.ai/api/anthropic`, `https://api.synthetic.new/anthropic` or `https://opencode.ai/inference/anthropic`.
 - `kimi-code` may refuse clients it does not recognise; azazel sends its own identity.
 - `github-copilot` also accepts a GitHub token with Copilot access in `COPILOT_GITHUB_TOKEN`.
+- `cloudflare-ai-gateway` uses the gateway's `/compat` endpoint, which keeps the provider keys stored in the gateway and its dynamic routes. Cloudflare's newer REST endpoint, billed to the Cloudflare account, is the address of `cloudflare-workers-ai`, which serves third-party models too.
+
+### Providers from models.dev
+
+Beside the providers above, azazel knows every provider [models.dev](https://models.dev) lists that speaks `anthropic-messages`, `openai-responses`, `openai-chat` or `google-generative` and that no row above covers. Their rows are written by `cargo xtask catalog` into `crates/azazel-ai/src/providers/generated.rs`, with the models each serves in the catalogue; a row above with the same id, or taking its models from the same models.dev provider, replaces the generated one. Set the key variable and the provider's models appear in `/model` and `azazel models`.
+
+models.dev names one route for each model: a wire API at an address. A provider whose models take several routes gets the one most of them take (on a tie: `anthropic-messages`, then `openai-responses`, then `openai-chat`), and the catalogue lists the models of that route; `/settings` and `azazel init` ask the provider itself for its whole list ([model discovery](#model-discovery)). To reach another route, define a second provider as above.
+
+Each generated provider reads a key variable of its own: a variable models.dev gives to several providers, or that a provider above reads, is left out, so one key never makes several providers usable at once, and a provider left without one reads `<ID>_API_KEY` (`MINIMAX_CN_API_KEY` for `minimax-cn`). A provider on this machine (`localhost`) is called without a key when none is set.
+
+<!-- generated by `cargo xtask catalog`: do not edit by hand -->
+
+| Id | Name | Wire API | Base URL | Key variable |
+|---|---|---|---|---|
+| `302ai` | 302.AI | `openai-chat` | `https://api.302.ai/v1` | `302AI_API_KEY` |
+| `abacus` | Abacus | `openai-chat` | `https://routellm.abacus.ai/v1` | `ABACUS_API_KEY` |
+| `above` | above.dev | `openai-chat` | `https://api.above.dev/v1` | `ABOVE_API_KEY` |
+| `agentrouter` | AgentRouter | `anthropic-messages` | `https://agentrouter.org` | `AGENTROUTER_API_KEY` |
+| `agnes` | Agnes AI | `openai-chat` | `https://apihub.agnes-ai.com/v1` | `AGNES_API_KEY` |
+| `ai-router` | AI-ROUTER | `openai-chat` | `https://api.ai-router.dev/v1` | `AI_ROUTER_API_KEY` |
+| `ai21` | AI21 Labs | `openai-chat` | `https://api.ai21.com/studio/v1` | `AI21_API_KEY` |
+| `ainetcafe` | ainetcafe | `openai-chat` | `https://microquickjs.com/v1` | `AINETCAFE_API_KEY` |
+| `aixy` | Aixy | `openai-responses` | `https://api.aixy-gateway.com/v1` | `AIXY_API_KEY` |
+| `aki-io` | AKI.IO | `openai-chat` | `https://aki.io/v1` | `AKI_IO_API_KEY` |
+| `alibaba` | Alibaba | `openai-chat` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` | `ALIBABA_API_KEY` |
+| `alibaba-cn` | Alibaba (China) | `openai-chat` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `ALIBABA_CN_API_KEY` |
+| `alibaba-coding-plan-cn` | Alibaba Coding Plan (China) | `openai-chat` | `https://coding.dashscope.aliyuncs.com/v1` | `ALIBABA_CODING_PLAN_CN_API_KEY` |
+| `alibaba-token-plan-cn` | Alibaba Token Plan (China) | `openai-chat` | `https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1` | `ALIBABA_TOKEN_PLAN_CN_API_KEY` |
+| `ambient` | Ambient | `openai-chat` | `https://api.ambient.xyz/v1` | `AMBIENT_API_KEY` |
+| `amd` | AMD | `openai-chat` | `https://developer.amd.com.cn/radeon/api/v1` | `AMD_API_KEY` |
+| `anyapi` | AnyAPI | `openai-chat` | `https://api.anyapi.ai/v1` | `ANYAPI_API_KEY` |
+| `arcee` | Arcee | `openai-chat` | `https://api.arcee.ai/api/v1` | `ARCEE_API_KEY` |
+| `atomic-chat` | Atomic Chat | `openai-chat` | `http://127.0.0.1:1337/v1` | `ATOMIC_CHAT_API_KEY` (optional) |
+| `auriko` | Auriko | `openai-chat` | `https://api.auriko.ai/v1` | `AURIKO_API_KEY` |
+| `azure-cognitive-services` | Azure Cognitive Services | `anthropic-messages` | `https://${AZURE_COGNITIVE_SERVICES_RESOURCE_NAME}.services.ai.azure.com/anthropic` | `AZURE_COGNITIVE_SERVICES_API_KEY` |
+| `bailing` | Bailing | `openai-chat` | `https://api.tbox.cn/api/llm/v1` | `BAILING_API_TOKEN` |
+| `bee` | Bee by HEOSSI | `openai-chat` | `https://api.bee.heossi.com/bee` | `BEE_API_KEY` |
+| `berget` | Berget.AI | `openai-chat` | `https://api.berget.ai/v1` | `BERGET_API_KEY` |
+| `blueclaw` | Blue Claw | `openai-chat` | `https://openai.blueclaw.network/v1` | `BLUECLAW_API_KEY` |
+| `bothub` | Bothub | `openai-chat` | `https://openai.bothub.ru/v1` | `BOTHUB_API_KEY` |
+| `boundless` | Boundless | `openai-chat` | `https://api.inference.boundless.network/v1` | `BOUNDLESS_API_KEY` |
+| `byteplus` | BytePlus ModelArk | `openai-chat` | `https://ark.ap-southeast.bytepluses.com/api/v3` | `BYTEPLUS_API_KEY` |
+| `chutes` | Chutes | `openai-chat` | `https://llm.chutes.ai/v1` | `CHUTES_API_KEY` |
+| `clarifai` | Clarifai | `openai-chat` | `https://api.clarifai.com/v2/ext/openai/v1` | `CLARIFAI_PAT` |
+| `claudinio` | Claudinio | `openai-chat` | `https://api.claudin.io/v1` | `CLAUDINIO_API_KEY` |
+| `cloudferro-sherlock` | CloudFerro Sherlock | `openai-chat` | `https://api-sherlock.cloudferro.com/openai/v1` | `CLOUDFERRO_SHERLOCK_API_KEY` |
+| `cohere` | Cohere | `openai-chat` | `https://api.cohere.ai/compatibility/v1` | `COHERE_API_KEY` |
+| `cortecs` | Cortecs | `openai-chat` | `https://api.cortecs.ai/v1` | `CORTECS_API_KEY` |
+| `crossmodel` | CrossModel | `openai-chat` | `https://api.crossmodel.ai/v1` | `CROSSMODEL_API_KEY` |
+| `crusoe` | Crusoe | `openai-chat` | `https://api.inference.crusoecloud.com/v1` | `CRUSOE_API_KEY` |
+| `daoxe` | DaoXE | `openai-chat` | `https://daoxe.com/v1` | `DAOXE_API_KEY` |
+| `databricks` | Databricks | `openai-chat` | `https://${DATABRICKS_HOST}/ai-gateway/mlflow/v1` | `DATABRICKS_TOKEN` |
+| `digitalocean` | DigitalOcean | `openai-chat` | `https://inference.do-ai.run/v1` | `DIGITALOCEAN_ACCESS_TOKEN` |
+| `dinference` | DInference | `openai-chat` | `https://api.dinference.com/v1` | `DINFERENCE_API_KEY` |
+| `drun` | D.Run (China) | `openai-chat` | `https://chat.d.run/v1` | `DRUN_API_KEY` |
+| `ebcloud` | EBCloud | `openai-chat` | `https://maas-api.ebcloud.com/v1` | `EBCLOUD_API_KEY` |
+| `echo` | Echo | `openai-chat` | `https://echo.tracerml.ai/v1` | `ECHO_API_KEY` |
+| `edenai` | Eden AI | `openai-chat` | `https://api.edenai.run/v3` | `EDENAI_API_KEY` |
+| `empiriolabs` | EmpirioLabs AI | `openai-chat` | `https://api.empiriolabs.ai/v1` | `EMPIRIOLABS_API_KEY` |
+| `engy` | engy | `openai-chat` | `https://api.engy.ai/v1` | `ENGY_API_KEY` |
+| `evroc` | evroc | `openai-chat` | `https://models.think.evroc.com/v1` | `EVROC_API_KEY` |
+| `fastrouter` | FastRouter | `openai-chat` | `https://go.fastrouter.ai/api/v1` | `FASTROUTER_API_KEY` |
+| `freemodel` | FreeModel | `anthropic-messages` | `https://cc.freemodel.dev` | `FREEMODEL_API_KEY` |
+| `friendli` | Friendli | `openai-chat` | `https://api.friendli.ai/serverless/v1` | `FRIENDLI_TOKEN` |
+| `frogbot` | FrogBot | `openai-chat` | `https://app.frogbot.ai/api/v1` | `FROGBOT_API_KEY` |
+| `greenpt` | GreenPT | `openai-chat` | `https://api.greenpt.ai/v1` | `GREENPT_API_KEY` |
+| `helicone` | Helicone | `openai-chat` | `https://ai-gateway.helicone.ai/v1` | `HELICONE_API_KEY` |
+| `hetzner` | Hetzner | `openai-chat` | `https://inference.hetzner.com/api/v1` | `HETZNER_API_KEY` |
+| `hopper` | Hopper | `openai-chat` | `https://api.withhopper.com/v1` | `HOPPER_API_KEY` |
+| `hpc-ai` | HPC-AI | `openai-chat` | `https://api.hpc-ai.com/inference/v1` | `HPC_AI_API_KEY` |
+| `impossibl` | Impossibl | `openai-chat` | `https://api.impossibl.com/v1` | `IMPOSSIBL_API_KEY` |
+| `inceptron` | Inceptron | `openai-chat` | `https://api.inceptron.io/v1` | `INCEPTRON_API_KEY` |
+| `inco` | Inco | `openai-chat` | `https://api.inco.ai/v1` | `INCO_API_KEY` |
+| `infer` | Infer by Flow7 | `openai-responses` | `https://infer.flow7.org/v1` | `INFER_API_KEY` |
+| `inference` | Inference | `openai-chat` | `https://inference.net/v1` | `INFERENCE_API_KEY` |
+| `inferx` | InferX | `openai-chat` | `https://model.inferx.net/endpoints/v1` | `INFERX_API_KEY` |
+| `infomaniak` | Infomaniak | `openai-chat` | `https://api.infomaniak.com/2/ai/${INFOMANIAK_PRODUCT_ID}/openai/v1` | `INFOMANIAK_API_KEY` |
+| `io-net` | IO.NET | `openai-chat` | `https://api.intelligence.io.solutions/api/v1` | `IOINTELLIGENCE_API_KEY` |
+| `iteracompute` | IteraCompute | `openai-chat` | `https://api.iteracompute.com/v1` | `ITERACOMPUTE_API_KEY` |
+| `jalapeno` | Jalapeno Cloud | `openai-chat` | `https://api.jalapeno-cloud.ai/v1` | `JALAPENO_API_KEY` |
+| `jiekou` | Jiekou.AI | `openai-chat` | `https://api.jiekou.ai/openai` | `JIEKOU_API_KEY` |
+| `kenari` | Kenari | `openai-chat` | `https://kenari.id/v1` | `KENARI_API_KEY` |
+| `kimi-code-plan-global` | Kimi For Coding (kimi.ai) | `openai-chat` | `https://api.kimi.ai/coding/v1` | `KIMI_CODE_PLAN_GLOBAL_API_KEY` |
+| `klokintegration` | klokintegration.se | `openai-chat` | `https://api-gw.klok.ipaas.se/proxy/kloker-key/v1` | `KLOKINTEGRATION_API_KEY` |
+| `kosmik` | Kosmik Compute | `openai-chat` | `https://api.koscompute.com/v1` | `KOSMIK_API_KEY` |
+| `kuae-cloud-coding-plan` | KUAE Cloud Coding Plan | `openai-chat` | `https://coding-plan-endpoint.kuaecloud.net/v1` | `KUAE_API_KEY` |
+| `lilac` | Lilac | `openai-chat` | `https://api.getlilac.com/v1` | `LILAC_API_KEY` |
+| `liquid` | Liquid Inference | `openai-chat` | `https://router.inference.ai.exchange/v1` | `LIQUID_API_KEY` |
+| `llmgateway` | DevPass (LLM Gateway) | `openai-chat` | `https://api.llmgateway.io/v1` | `LLMGATEWAY_API_KEY` |
+| `llmgateway-providers` | LLM Gateway | `openai-chat` | `https://api.llmgateway.io/v1` | `LLMGATEWAY_PROVIDERS_API_KEY` |
+| `llmtech` | LLM Tech | `openai-chat` | `https://api.llmtech.eu/v1` | `LLMTECH_API_KEY` |
+| `llmtr` | LLMTR | `openai-chat` | `https://llmtr.com/v1` | `LLMTR_API_KEY` |
+| `longcat` | LongCat | `openai-chat` | `https://api.longcat.chat/openai` | `LONGCAT_API_KEY` |
+| `lowrouter` | LowRouter | `openai-chat` | `https://api.lowrouter.ai/v1` | `LOWROUTER_API_KEY` |
+| `lucidquery` | LucidQuery | `openai-chat` | `https://api.lucidquery.com/v1` | `LUCIDQUERY_API_KEY` |
+| `lynkr` | Lynkr | `openai-chat` | `http://127.0.0.1:8081/v1` | `LYNKR_API_KEY` (optional) |
+| `meganova` | Meganova | `openai-chat` | `https://api.meganova.ai/v1` | `MEGANOVA_API_KEY` |
+| `melious` | Melious | `openai-chat` | `https://api.melious.ai/v1` | `MELIOUS_API_KEY` |
+| `minimax-cn` | MiniMax (minimax.cn) | `anthropic-messages` | `https://api.minimax.cn/anthropic` | `MINIMAX_CN_API_KEY` |
+| `mixlayer` | Mixlayer | `openai-chat` | `https://models.mixlayer.ai/v1` | `MIXLAYER_API_KEY` |
+| `moark` | Moark | `openai-chat` | `https://moark.com/v1` | `MOARK_API_KEY` |
+| `modal` | Modal | `openai-chat` | `https://inference.us-west.modal.direct/v1` | `MODAL_PROXY_TOKEN` |
+| `model-oracle-ai` | Model Oracle AI | `openai-chat` | `https://api.modeloracle.com/api/v1` | `MODEL_ORACLE_API_KEY` |
+| `modelis` | Modelis | `openai-chat` | `https://modelishub.com/v1` | `MODELIS_API_KEY` |
+| `modelscope` | ModelScope | `openai-chat` | `https://api-inference.modelscope.cn/v1` | `MODELSCOPE_API_KEY` |
+| `moonshotai-cn` | Moonshot AI (China) | `openai-chat` | `https://api.moonshot.cn/v1` | `MOONSHOTAI_CN_API_KEY` |
+| `morph` | Morph | `openai-chat` | `https://api.morphllm.com/v1` | `MORPH_API_KEY` |
+| `munito` | Munito AI | `openai-chat` | `https://api.munito.ai/inference/v1` | `MUNITO_API_KEY` |
+| `munito-eu` | Munito AI (EU) | `openai-chat` | `https://api.eu.munito.ai/inference/v1` | `MUNITO_EU_API_KEY` |
+| `nan` | NaN | `openai-chat` | `https://api.nan.builders/v1` | `NAN_API_KEY` |
+| `nearai` | NEAR AI Cloud | `openai-chat` | `https://cloud-api.near.ai/v1` | `NEARAI_API_KEY` |
+| `nebius` | Nebius Token Factory | `openai-chat` | `https://api.tokenfactory.nebius.com/v1` | `NEBIUS_API_KEY` |
+| `neon` | Neon | `openai-chat` | `${NEON_AI_GATEWAY_BASE_URL}/v1` | `NEON_AI_GATEWAY_TOKEN` |
+| `neosmith` | NeoSmith | `openai-responses` | `https://router.neosmith.ai/v1` | `NEOSMITH_API_KEY` |
+| `neuralwatt` | Neuralwatt | `openai-chat` | `https://api.neuralwatt.com/v1` | `NEURALWATT_API_KEY` |
+| `nova` | Nova | `openai-chat` | `https://api.nova.amazon.com/v1` | `NOVA_API_KEY` |
+| `oci` | OCI Generative AI | `openai-chat` | `https://inference.generativeai.us-chicago-1.oci.oraclecloud.com/openai/v1` | `OCI_GENAI_API_KEY` |
+| `ofox` | Ofox | `openai-chat` | `https://api.ofox.ai/v1` | `OFOX_API_KEY` |
+| `openreason` | OpenReason | `openai-chat` | `https://api.openreason.app/v1` | `OPENREASON_API_KEY` |
+| `opper` | Opper | `openai-chat` | `https://api.opper.ai/v3/compat` | `OPPER_API_KEY` |
+| `orcarouter` | OrcaRouter | `openai-chat` | `https://api.orcarouter.ai/v1` | `ORCAROUTER_API_KEY` |
+| `ovhcloud` | OVHcloud AI Endpoints | `openai-chat` | `https://oai.endpoints.kepler.ai.cloud.ovh.net/v1` | `OVHCLOUD_API_KEY` |
+| `pareto` | Pareto Inference | `openai-chat` | `https://api.paretoinference.com/v1` | `PARETO_API_KEY` |
+| `pendra` | Pendra | `openai-chat` | `https://api.pendra.ai/api/v1` | `PENDRA_API_KEY` |
+| `perplexity-agent` | Perplexity Agent | `openai-responses` | `https://api.perplexity.ai/v1` | `PERPLEXITY_API_KEY` |
+| `pioneer` | Pioneer | `openai-chat` | `https://api.fastino.ai/v1` | `PIONEER_API_KEY` |
+| `poe` | Poe | `openai-chat` | `https://api.poe.com/v1` | `POE_API_KEY` |
+| `poolside` | Poolside | `openai-chat` | `https://inference.poolside.ai/v1` | `POOLSIDE_API_KEY` |
+| `prime` | Prime Inference | `openai-chat` | `https://api.pinference.ai/api/v1` | `PRIME_API_KEY` |
+| `privatemode-ai` | Privatemode AI | `openai-chat` | `http://localhost:8080/v1` | `PRIVATEMODE_API_KEY` (optional) |
+| `qihang-ai` | QiHang | `openai-chat` | `https://api.qhaigc.net/v1` | `QIHANG_API_KEY` |
+| `qiniu-ai` | Qiniu | `openai-chat` | `https://api.qnaigc.com/v1` | `QINIU_API_KEY` |
+| `reflection` | Reflection | `openai-chat` | `https://api.reflection.ai/openai/v1` | `REFLECTION_API_KEY` |
+| `regolo-ai` | Regolo AI | `openai-chat` | `https://api.regolo.ai/v1` | `REGOLO_API_KEY` |
+| `requesty` | Requesty | `openai-chat` | `https://router.requesty.ai/v1` | `REQUESTY_API_KEY` |
+| `routing-run` | routing.run | `openai-chat` | `https://api.routing.run/v1` | `ROUTING_RUN_API_KEY` |
+| `runinfra` | RunInfra | `openai-chat` | `https://api.runinfra.ai/v1` | `RUNINFRA_GATEWAY_KEY` |
+| `sarvam` | Sarvam AI | `openai-chat` | `https://api.sarvam.ai/v1` | `SARVAM_API_KEY` |
+| `scnet-token-plan` | SCNet Token Plan | `openai-chat` | `https://api.scnet.cn/api/llm/v1` | `SCNET_API_KEY` |
+| `scx-ai` | SCX.ai | `openai-chat` | `https://api.scx.ai/v1` | `SCX_API_KEY` |
+| `sensenova` | SenseNova (China) | `openai-chat` | `https://token.sensenova.cn/v1` | `SENSENOVA_API_KEY` |
+| `stackit` | STACKIT | `openai-chat` | `https://api.openai-compat.model-serving.eu01.onstackit.cloud/v1` | `STACKIT_API_KEY` |
+| `stepfun-ai-step-plan` | StepFun Step Plan (Global) | `openai-chat` | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_AI_STEP_PLAN_API_KEY` |
+| `stepfun-step-plan` | StepFun Step Plan (China) | `openai-chat` | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_STEP_PLAN_API_KEY` |
+| `subconscious` | Subconscious | `anthropic-messages` | `https://api.subconscious.dev` | `SUBCONSCIOUS_API_KEY` |
+| `submodel` | submodel | `openai-chat` | `https://llm.submodel.ai/v1` | `SUBMODEL_INSTAGEN_ACCESS_KEY` |
+| `tempr` | Tempr Gateway | `openai-chat` | `https://api.temprhq.io/v1` | `TEMPR_API_KEY` |
+| `tencent-coding-plan` | Tencent Coding Plan (China) | `openai-chat` | `https://api.lkeap.cloud.tencent.com/coding/v3` | `TENCENT_CODING_PLAN_API_KEY` |
+| `tencent-token-plan` | Tencent Token Plan | `openai-chat` | `https://api.lkeap.cloud.tencent.com/plan/v3` | `TENCENT_TOKEN_PLAN_API_KEY` |
+| `tencent-tokenhub` | Tencent TokenHub | `openai-chat` | `https://tokenhub.tencentmaas.com/v1` | `TENCENT_TOKENHUB_API_KEY` |
+| `tensorx` | TensorX | `openai-chat` | `https://api.tensorx.ai/v1` | `TENSORX_API_KEY` |
+| `the-grid-ai` | The Grid AI | `openai-chat` | `https://api.thegrid.ai/v1` | `THEGRID_API_KEY` |
+| `thinkingmachines` | Thinking Machines | `anthropic-messages` | `https://tinker.thinkingmachines.dev/services/tinker-prod/anthropic/api` | `TINKER_API_KEY` |
+| `tinfoil` | Tinfoil | `openai-chat` | `https://inference.tinfoil.sh/v1` | `TINFOIL_API_KEY` |
+| `tokengo` | TokenGo | `openai-chat` | `https://api.tokengo.com/v1` | `TOKENGO_API_KEY` |
+| `tokenrouter` | TokenRouter | `openai-chat` | `https://api.tokenrouter.com/v1` | `TOKENROUTER_API_KEY` |
+| `trustedrouter` | TrustedRouter | `openai-chat` | `https://api.trustedrouter.com/v1` | `TRUSTEDROUTER_API_KEY` |
+| `umans-ai` | Umans AI | `openai-chat` | `https://api.code.umans.ai/v1` | `UMANS_AI_API_KEY` |
+| `unorouter` | UnoRouter | `openai-chat` | `https://api.unorouter.com/v1` | `UNOROUTER_API_KEY` |
+| `upstage` | Upstage | `openai-chat` | `https://api.upstage.ai/v1/solar` | `UPSTAGE_API_KEY` |
+| `vancine` | Vancine | `openai-chat` | `https://vancine.com/v1` | `VANCINE_API_KEY` |
+| `vispark` | Vispark | `openai-chat` | `https://api.lab.vispark.in/v1` | `VISPARK_LAB_API_KEY` |
+| `vivgrid` | Vivgrid | `openai-chat` | `https://api.vivgrid.com/v1` | `VIVGRID_API_KEY` |
+| `volcengine` | Volcengine Ark | `openai-chat` | `https://ark.cn-beijing.volces.com/api/v3` | `ARK_API_KEY` |
+| `volcengine-coding-plan` | Volcengine Ark Coding Plan | `openai-chat` | `https://ark.cn-beijing.volces.com/api/coding/v3` | `ARK_CODING_PLAN_API_KEY` |
+| `vultr` | Vultr | `openai-chat` | `https://api.vultrinference.com/v1` | `VULTR_API_KEY` |
+| `wallaby` | Wallaby | `openai-chat` | `https://api.wallabytoken.com/v1` | `WALLABY_API_KEY` |
+| `wally` | Wally | `openai-chat` | `https://inference.runanywhere.ai/v1` | `WALLY_API_KEY` |
+| `xpersona` | Xpersona | `openai-chat` | `https://www.xpersona.co/v1` | `XPERSONA_API_KEY` |
+| `zeldoc` | Zeldoc | `openai-chat` | `https://api.zeldoc.ai/v1` | `ZELDOC_API_KEY` |
+| `zenifra` | Zenifra | `openai-chat` | `https://ai.zenifra.com/v1` | `ZENIFRA_AI_KEY` |
+| `zhipuai` | Zhipu AI | `openai-chat` | `https://open.bigmodel.cn/api/paas/v4` | `ZHIPUAI_API_KEY` |
+
+<!-- end of the generated table -->
 
 ## Custom providers
 

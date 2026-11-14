@@ -17,6 +17,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
 use crate::oauth::OAuthSettings;
+use crate::providers::generated::GENERATED;
 use crate::providers::logins;
 use crate::providers::table::{PRESETS, Preset};
 use crate::types::WireApi;
@@ -309,6 +310,25 @@ fn from_row(row: &Preset, env: Env<'_>) -> ProviderConfig {
     }
 }
 
+/// The built-in rows, sorted by id: every hand-written one, and each generated one that no
+/// hand-written row covers.
+fn rows() -> Vec<&'static Preset> {
+    merge(PRESETS, GENERATED)
+}
+
+/// `hand` and the rows of `generated` that none of `hand` covers, by id or by the models.dev
+/// provider it takes its models from, sorted by id. A hand-written row carries what models.dev
+/// does not say (a sign-in, headers, a quirk), and the generated file may predate it.
+fn merge<'a>(hand: &'a [Preset], generated: &'a [Preset]) -> Vec<&'a Preset> {
+    let covered = |id: &str| hand.iter().any(|row| row.id == id || row.catalog == id);
+    let mut rows: Vec<&Preset> = hand
+        .iter()
+        .chain(generated.iter().filter(|row| !covered(row.id)))
+        .collect();
+    rows.sort_by_key(|row| row.id);
+    rows
+}
+
 /// The built-in providers, sorted by id, with the process environment filled into their
 /// addresses.
 pub fn presets() -> Vec<ProviderConfig> {
@@ -316,17 +336,14 @@ pub fn presets() -> Vec<ProviderConfig> {
 }
 
 pub fn presets_with(env: Env<'_>) -> Vec<ProviderConfig> {
-    PRESETS.iter().map(|row| from_row(row, env)).collect()
+    rows().into_iter().map(|row| from_row(row, env)).collect()
 }
 
-/// Where the catalogue snapshot takes each built-in provider's models from, as
-/// `(name on models.dev, provider id)`.
-pub fn catalog_sources() -> Vec<(&'static str, &'static str)> {
-    PRESETS
-        .iter()
-        .filter(|row| !row.catalog.is_empty())
-        .map(|row| (row.catalog, row.id))
-        .collect()
+/// The hand-written providers as `(provider id, name on models.dev, key variables)`; the name is
+/// empty when the catalogue snapshot takes no models for it. `cargo xtask catalog` generates rows
+/// for the other models.dev providers.
+pub fn hand_written() -> Vec<(&'static str, &'static str, &'static [&'static str])> {
+    PRESETS.iter().map(|row| (row.id, row.catalog, row.env)).collect()
 }
 
 /// The provider id under which an Azure OpenAI resource is configured.
@@ -337,7 +354,7 @@ pub const VERTEX: &str = "vertex";
 
 /// Whether `id` names a provider that exists without any configuration.
 pub fn is_builtin(id: &str) -> bool {
-    id == BEDROCK || id == VERTEX || PRESETS.iter().any(|row| row.id == id)
+    id == BEDROCK || id == VERTEX || rows().iter().any(|row| row.id == id)
 }
 
 /// Presets with `settings` applied, sorted by id. A new provider needs `api` and `base_url`; it
@@ -425,6 +442,7 @@ mod tests {
 
     use super::*;
     use crate::oauth::{BodyKind, OAuthFlow};
+    use crate::providers::table::row;
 
     fn no_env(_: &str) -> Option<String> {
         None
@@ -444,15 +462,19 @@ mod tests {
 
     #[test]
     fn the_table_is_sorted_and_every_row_is_usable() {
-        let ids: Vec<&str> = PRESETS.iter().map(|row| row.id).collect();
-        let mut sorted = ids.clone();
-        sorted.sort_unstable();
-        sorted.dedup();
-        assert_eq!(ids, sorted, "rows must be sorted by id, each id once");
+        for table in [PRESETS, GENERATED] {
+            let ids: Vec<&str> = table.iter().map(|row| row.id).collect();
+            let mut sorted = ids.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(ids, sorted, "rows must be sorted by id, each id once");
+        }
         for provider in presets_with(&no_env) {
             assert!(!provider.name.is_empty(), "{}", provider.id);
+            // An address may start with the variable that names it.
             assert!(
-                provider.base_url.starts_with("http") && !provider.base_url.ends_with('/'),
+                (provider.base_url.starts_with("http") || provider.unset_variable().is_some())
+                    && !provider.base_url.ends_with('/'),
                 "{}: {}",
                 provider.id,
                 provider.base_url
@@ -856,15 +878,158 @@ mod tests {
     }
 
     #[test]
-    fn catalogue_sources_name_where_each_provider_is_listed() {
-        let sources = catalog_sources();
-        assert!(sources.contains(&("fireworks-ai", "fireworks")));
-        assert!(sources.contains(&("openai", "openai")));
+    fn hand_written_rows_name_where_each_provider_is_listed() {
+        let rows: Vec<(&str, &str)> = hand_written().iter().map(|(id, name, _)| (*id, *name)).collect();
+        assert!(rows.contains(&("fireworks", "fireworks-ai")));
+        assert!(rows.contains(&("openai", "openai")));
         // Local servers are asked themselves; a snapshot of someone else's models would mislead.
+        for local in ["ollama", "lmstudio", "llamacpp"] {
+            assert!(rows.contains(&(local, "")), "{local}");
+        }
+    }
+
+    #[test]
+    fn every_generated_row_resolves_to_a_provider_with_a_key_of_its_own() {
         assert!(
-            sources
-                .iter()
-                .all(|(_, id)| !["ollama", "lmstudio", "llamacpp"].contains(id))
+            GENERATED.len() >= 100,
+            "generated.rs holds {} rows",
+            GENERATED.len()
         );
+        // Every variable an address waits for, set.
+        let filled = |name: &str| {
+            Some(
+                if name.ends_with("_URL") {
+                    "https://gateway.example"
+                } else {
+                    "acct"
+                }
+                .to_string(),
+            )
+        };
+        let all = resolve_with(&BTreeMap::new(), &filled).unwrap();
+        let catalog = crate::catalog::Catalog::embedded();
+        let dir = tempfile::tempdir().unwrap();
+        for row in GENERATED {
+            let provider = all
+                .iter()
+                .find(|p| p.id == row.id)
+                .unwrap_or_else(|| panic!("generated `{}` is covered by a hand-written row", row.id));
+            let id = &provider.id;
+            assert!(is_builtin(id), "{id}");
+            assert!(
+                [
+                    WireApi::AnthropicMessages,
+                    WireApi::OpenAiResponses,
+                    WireApi::OpenAiChat,
+                    WireApi::GoogleGenerative
+                ]
+                .contains(&provider.api),
+                "{id}: {:?}",
+                provider.api
+            );
+            assert_eq!(provider.unset_variable(), None, "{id}: {}", provider.base_url);
+            assert!(
+                provider.base_url.starts_with("https://") || provider.base_url.starts_with("http://"),
+                "{id}: {}",
+                provider.base_url
+            );
+            let local = ["http://localhost:", "http://127.0.0.1:"]
+                .iter()
+                .any(|prefix| provider.base_url.starts_with(prefix));
+            assert_eq!(provider.requires_key, !local, "{id}");
+            if !local {
+                assert!(
+                    !catalog.for_provider(id).is_empty(),
+                    "{id} has no models in the catalogue"
+                );
+            }
+
+            // Its variable makes it usable, and makes no other provider usable.
+            assert!(!provider.api_key_env.is_empty(), "{id}");
+            for name in &provider.api_key_env {
+                let readers: Vec<&str> = all
+                    .iter()
+                    .filter(|other| other.api_key_env.contains(name))
+                    .map(|other| other.id.as_str())
+                    .collect();
+                assert_eq!(readers, [id.as_str()], "{name}");
+            }
+            let key = provider.api_key_env[0].clone();
+            let credentials = crate::credentials::Credentials::with_env(
+                dir.path().join("auth.json"),
+                std::sync::Arc::new(move |name: &str| (name == key).then(|| "k".to_string())),
+            );
+            assert!(credentials.source(provider).is_some(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_hand_written_row_replaces_a_generated_one() {
+        let hand = [
+            row(
+                "acme",
+                "Acme (hand)",
+                WireApi::AnthropicMessages,
+                "https://hand.acme.example",
+                &["ACME_KEY"],
+            ),
+            row(
+                "bolt",
+                "Bolt",
+                WireApi::OpenAiChat,
+                "https://bolt.example/v1",
+                &["BOLT_KEY"],
+            )
+            .catalog("bolt-ai"),
+        ];
+        let generated = [
+            row(
+                "acme",
+                "Acme",
+                WireApi::OpenAiChat,
+                "https://acme.example/v1",
+                &["ACME_API_KEY"],
+            ),
+            row(
+                "aero",
+                "Aero",
+                WireApi::OpenAiChat,
+                "https://aero.example/v1",
+                &["AERO_API_KEY"],
+            ),
+            row(
+                "bolt-ai",
+                "Bolt AI",
+                WireApi::OpenAiChat,
+                "https://bolt.example/v1",
+                &["BOLT_AI_API_KEY"],
+            ),
+        ];
+        let merged: Vec<(&str, &str)> = merge(&hand, &generated)
+            .iter()
+            .map(|row| (row.id, row.base_url))
+            .collect();
+        // Same id: the hand-written row. Same models.dev provider under another id: gone.
+        assert_eq!(
+            merged,
+            [
+                ("acme", "https://hand.acme.example"),
+                ("aero", "https://aero.example/v1"),
+                ("bolt", "https://bolt.example/v1")
+            ]
+        );
+    }
+
+    #[test]
+    fn the_models_and_logins_page_lists_every_generated_row() {
+        let page = include_str!("../../../../docs/models-and-logins.md");
+        for row in GENERATED {
+            let line = format!("| `{}` | ", row.id);
+            assert!(
+                page.contains(&line),
+                "docs/models-and-logins.md does not list `{}`",
+                row.id
+            );
+        }
     }
 }

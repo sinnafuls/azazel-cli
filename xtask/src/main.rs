@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use azazel_ai::catalog::{CatalogFile, Cost, ModelInfo};
+use azazel_ai::types::WireApi;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use xtask::TASKS;
@@ -317,8 +318,10 @@ fn bench_startup() -> Result<()> {
     Ok(())
 }
 
-/// Regenerates `crates/azazel-ai/catalog/models.json` from models.dev, keeping the tool-capable text
-/// models of the built-in providers and of the cloud providers.
+/// Regenerates, from models.dev: `crates/azazel-ai/catalog/models.json`, the tool-capable text
+/// models of the built-in and the cloud providers; `crates/azazel-ai/src/providers/generated.rs`,
+/// a provider row for each models.dev provider that speaks a wire API azazel has and no
+/// hand-written row covers; and the table of those rows in `docs/models-and-logins.md`.
 fn catalog() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -332,11 +335,22 @@ fn catalog() -> Result<()> {
         response.json::<Value>().await
     })?;
 
-    // Each built-in provider says what it is called in the source; several may share one.
-    let sources = azazel_ai::providers::presets::catalog_sources()
-        .into_iter()
+    let hand_written = azazel_ai::providers::presets::hand_written();
+    let generated = generated_rows(&source, &hand_written);
+
+    // Each hand-written provider says what it is called in the source; several may share one.
+    let sources = hand_written
+        .iter()
+        .filter(|(_, name, _)| !name.is_empty())
+        .map(|(id, name, _)| (*name, *id))
         .chain(CLOUD_SOURCES);
     let mut models: Vec<ModelInfo> = Vec::new();
+    let mut add = |model: ModelInfo| {
+        // Two sources of one provider may both list a model; the first listing stands.
+        if !models.iter().any(|known| known.key() == model.key()) {
+            models.push(model);
+        }
+    };
     for (source_name, provider) in sources {
         let Some(entries) = source
             .get(source_name)
@@ -345,12 +359,23 @@ fn catalog() -> Result<()> {
         else {
             continue;
         };
-        for model in entries.values().filter_map(|entry| model_info(provider, entry)) {
-            // Two sources of one provider may both list a model; the first listing stands.
-            if !models.iter().any(|known| known.key() == model.key()) {
-                models.push(model);
-            }
-        }
+        entries
+            .values()
+            .filter_map(|entry| model_info(provider, entry))
+            .for_each(&mut add);
+    }
+    // A generated provider lists the models it serves on the route its row takes; a local
+    // server is asked itself.
+    for row in generated.iter().filter(|row| !row.keyless) {
+        let entries = source
+            .pointer(&format!("/{}/models", row.id))
+            .and_then(Value::as_object);
+        entries
+            .into_iter()
+            .flat_map(|entries| entries.iter())
+            .filter(|(key, _)| row.models.contains(key))
+            .filter_map(|(_, entry)| model_info(&row.id, entry))
+            .for_each(&mut add);
     }
     if models.is_empty() {
         bail!("{CATALOG_SOURCE} contained no models for the built-in providers; its format may have changed");
@@ -366,10 +391,268 @@ fn catalog() -> Result<()> {
     out.push_str("]}\n");
     serde_json::from_str::<CatalogFile>(&out).context("generated catalogue does not parse")?;
 
-    let path = workspace_root().join("crates/azazel-ai/catalog/models.json");
+    let root = workspace_root();
+    let path = root.join("crates/azazel-ai/catalog/models.json");
     std::fs::write(&path, out).with_context(|| format!("writing {}", path.display()))?;
     println!("wrote {} models to {}", models.len(), path.display());
+
+    let path = root.join("crates/azazel-ai/src/providers/generated.rs");
+    std::fs::write(&path, generated_source(&generated))
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("wrote {} providers to {}", generated.len(), path.display());
+
+    let path = root.join("docs/models-and-logins.md");
+    let page = std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
+    std::fs::write(&path, with_generated_table(&page, &generated)?)
+        .with_context(|| format!("writing {}", path.display()))?;
+    println!("wrote the table of generated providers to {}", path.display());
     Ok(())
+}
+
+/// The AI SDK packages of models.dev whose wire API azazel speaks, in the order a provider
+/// whose models take several routes prefers them when as many models take each.
+const PACKAGE_WIRES: [(&str, WireApi); 4] = [
+    ("@ai-sdk/anthropic", WireApi::AnthropicMessages),
+    ("@ai-sdk/openai", WireApi::OpenAiResponses),
+    ("@ai-sdk/openai-compatible", WireApi::OpenAiChat),
+    ("@ai-sdk/google", WireApi::GoogleGenerative),
+];
+
+/// The lines of `docs/models-and-logins.md` the table of generated providers sits between.
+const TABLE_START: &str = "<!-- generated by `cargo xtask catalog`: do not edit by hand -->";
+const TABLE_END: &str = "<!-- end of the generated table -->";
+
+/// A provider row made from a models.dev provider.
+#[derive(Debug, PartialEq)]
+struct GeneratedRow {
+    id: String,
+    name: String,
+    api: WireApi,
+    base_url: String,
+    /// The variables that hold the provider's key, in the source's order.
+    env: Vec<String>,
+    /// A server on this machine, called without a key when none is set.
+    keyless: bool,
+    /// The source's keys of the models served on the row's route.
+    models: Vec<String>,
+}
+
+/// A row for each provider of `source` that no `hand_written` row (`(id, models.dev name, key
+/// variables)`) covers and that serves models over a wire API azazel speaks, sorted by id.
+/// models.dev routes each model through one AI SDK package at one address (the provider's,
+/// unless the model names its own); the row takes the route most of the provider's models take,
+/// and [`PACKAGE_WIRES`] decides between routes that as many take.
+///
+/// A key variable models.dev gives to several providers, or that a hand-written row reads, is
+/// left out, so that one key never makes several providers usable at once (a model name would
+/// then match in each); a row left without one reads `<ID>_API_KEY`.
+fn generated_rows(source: &Value, hand_written: &[(&str, &str, &[&str])]) -> Vec<GeneratedRow> {
+    let Some(providers) = source.as_object() else {
+        return Vec::new();
+    };
+    let claimed = |id: &str| {
+        hand_written
+            .iter()
+            .any(|(own, name, _)| *own == id || *name == id)
+            || CLOUD_SOURCES.iter().any(|(name, _)| *name == id)
+    };
+    let mut rows: Vec<GeneratedRow> = providers
+        .iter()
+        .filter(|(id, _)| !claimed(id) && plain_id(id))
+        .filter_map(|(id, provider)| generated_row(id, provider))
+        .collect();
+    rows.sort_by(|a, b| a.id.cmp(&b.id));
+
+    let readers = |name: &str| {
+        let hand = hand_written
+            .iter()
+            .filter(|(_, _, env)| env.contains(&name))
+            .count();
+        hand + rows
+            .iter()
+            .filter(|row| row.env.iter().any(|own| own == name))
+            .count()
+    };
+    let own: Vec<Vec<String>> = rows
+        .iter()
+        .map(|row| {
+            let mut env: Vec<String> = row
+                .env
+                .iter()
+                .filter(|name| readers(name) == 1)
+                .cloned()
+                .collect();
+            if env.is_empty() {
+                env.push(format!(
+                    "{}_API_KEY",
+                    row.id.to_ascii_uppercase().replace('-', "_")
+                ));
+            }
+            env
+        })
+        .collect();
+    for (row, env) in rows.iter_mut().zip(own) {
+        row.env = env;
+    }
+    rows
+}
+
+fn generated_row(id: &str, provider: &Value) -> Option<GeneratedRow> {
+    let text = |value: &Value, name: &str| {
+        value
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+    };
+    let package = text(provider, "npm");
+    let address = text(provider, "api");
+    // (preference, address) -> the keys of the models taking that route.
+    let mut routes: std::collections::BTreeMap<(usize, String), Vec<String>> = Default::default();
+    for (key, model) in provider.get("models").and_then(Value::as_object)? {
+        if model_info(id, model).is_none() {
+            continue;
+        }
+        let own = model.get("provider").unwrap_or(&Value::Null);
+        let (Some(package), Some(address)) = (
+            text(own, "npm").or_else(|| package.clone()),
+            text(own, "api").or_else(|| address.clone()),
+        ) else {
+            continue;
+        };
+        let Some(preference) = PACKAGE_WIRES.iter().position(|(name, _)| *name == package) else {
+            continue;
+        };
+        if !(address.starts_with("https://") || address.starts_with("http://") || address.starts_with("${")) {
+            continue;
+        }
+        let address = address.trim_end_matches('/');
+        // azazel adds `/v1/messages` to an Anthropic address itself.
+        let base_url = match PACKAGE_WIRES[preference].1 {
+            WireApi::AnthropicMessages => match address.strip_suffix("/v1") {
+                Some(base) => base,
+                None => continue,
+            },
+            _ => address,
+        };
+        routes
+            .entry((preference, base_url.to_string()))
+            .or_default()
+            .push(key.clone());
+    }
+    // The first of the most taken routes, in preference order.
+    let mut best: Option<(&(usize, String), &Vec<String>)> = None;
+    for route in &routes {
+        if best.is_none_or(|(_, models)| route.1.len() > models.len()) {
+            best = Some(route);
+        }
+    }
+    let ((preference, base_url), models) = best?;
+    let api = PACKAGE_WIRES[*preference].1;
+    let base_url = base_url.clone();
+    let host = base_url.split_once("://").map_or("", |(_, rest)| rest);
+    let keyless = ["localhost", "127.0.0.1"].iter().any(|local| {
+        host.strip_prefix(local)
+            .is_some_and(|rest| rest.starts_with([':', '/']))
+    });
+    // A variable the address names is part of where the provider is, not its key.
+    let env: Vec<String> = provider
+        .get("env")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter(|name| {
+            !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        })
+        .filter(|name| !base_url.contains(&format!("${{{name}")))
+        .map(str::to_string)
+        .collect();
+    Some(GeneratedRow {
+        id: id.to_string(),
+        name: text(provider, "name").unwrap_or_else(|| id.to_string()),
+        api,
+        base_url,
+        env,
+        keyless,
+        models: models.clone(),
+    })
+}
+
+/// Whether `id` can stand as a provider id: in `provider/model`, a `[providers.<id>]` table and
+/// a file name alike.
+fn plain_id(id: &str) -> bool {
+    id.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// `crates/azazel-ai/src/providers/generated.rs` holding `rows`.
+fn generated_source(rows: &[GeneratedRow]) -> String {
+    let mut wires: Vec<WireApi> = rows.iter().map(|row| row.api).collect();
+    wires.sort_by_key(|api| format!("{api:?}"));
+    wires.dedup();
+    let mut out = String::from(
+        "//! The providers models.dev lists that no hand-written row in `table.rs` covers, one row each,\n\
+         //! sorted by id. A row there with the same id, or taking its models from the same models.dev\n\
+         //! provider, replaces the one here.\n\
+         //!\n\
+         //! Written by `cargo xtask catalog` from <https://models.dev/api.json>: do not edit it by hand.\n\
+         \n\
+         use crate::providers::table::{Preset, row};\n",
+    );
+    if !wires.is_empty() {
+        let names: Vec<String> = wires.iter().map(|api| format!("{api:?}")).collect();
+        out.push_str(&format!("use crate::types::WireApi::{{{}}};\n", names.join(", ")));
+    }
+    out.push_str("\n#[rustfmt::skip]\npub(super) static GENERATED: &[Preset] = &[\n");
+    for row in rows {
+        let env: Vec<String> = row.env.iter().map(|name| format!("{name:?}")).collect();
+        out.push_str(&format!(
+            "    row({:?}, {:?}, {:?}, {:?}, &[{}]){},\n",
+            row.id,
+            row.name,
+            row.api,
+            row.base_url,
+            env.join(", "),
+            if row.keyless { ".keyless()" } else { "" }
+        ));
+    }
+    out.push_str("];\n");
+    out
+}
+
+/// `page` with the lines between [`TABLE_START`] and [`TABLE_END`] replaced by the table of
+/// `rows`.
+fn with_generated_table(page: &str, rows: &[GeneratedRow]) -> Result<String> {
+    let (Some(start), Some(end)) = (page.find(TABLE_START), page.find(TABLE_END)) else {
+        bail!("the page has no `{TABLE_START}` … `{TABLE_END}` lines for the generated providers");
+    };
+    let mut table =
+        String::from("\n\n| Id | Name | Wire API | Base URL | Key variable |\n|---|---|---|---|---|\n");
+    for row in rows {
+        let mut keys: Vec<String> = row.env.iter().map(|name| format!("`{name}`")).collect();
+        if keys.is_empty() {
+            keys.push("none".to_string());
+        }
+        let optional = if row.keyless { " (optional)" } else { "" };
+        table.push_str(&format!(
+            "| `{}` | {} | `{}` | `{}` | {}{optional} |\n",
+            row.id,
+            row.name.replace('|', "\\|"),
+            row.api.as_str(),
+            row.base_url,
+            keys.join(", ")
+        ));
+    }
+    table.push('\n');
+    let head = &page[..start + TABLE_START.len()];
+    Ok(format!("{head}{table}{}", &page[end..]))
 }
 
 fn model_info(provider: &str, entry: &Value) -> Option<ModelInfo> {
@@ -419,4 +702,166 @@ fn model_info(provider: &str, entry: &Value) -> Option<ModelInfo> {
         cost,
         ..unknown
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use serde_json::json;
+
+    use super::*;
+
+    /// A tool-capable text model, routed through `route` (`{npm, api}`) when given.
+    fn model(id: &str, route: Option<Value>) -> Value {
+        let mut model = json!({
+            "id": id,
+            "tool_call": true,
+            "modalities": { "input": ["text"], "output": ["text"] },
+            "limit": { "context": 200000, "output": 32000 },
+        });
+        if let Some(route) = route {
+            model["provider"] = route;
+        }
+        model
+    }
+
+    fn provider(npm: &str, api: Option<&str>, env: &[&str], models: &[Value]) -> Value {
+        let models: serde_json::Map<String, Value> = models
+            .iter()
+            .map(|m| (m["id"].as_str().unwrap().to_string(), m.clone()))
+            .collect();
+        json!({ "name": "Display Name", "npm": npm, "api": api, "env": env, "models": models })
+    }
+
+    const CHAT: &str = "@ai-sdk/openai-compatible";
+
+    #[test]
+    fn a_provider_takes_the_route_most_of_its_models_take() {
+        let messages = json!({ "npm": "@ai-sdk/anthropic", "api": "https://gw.example/anthropic/v1" });
+        let source = json!({
+            "mixed": provider(CHAT, Some("https://gw.example/v1"), &["MIXED_KEY"], &[
+                model("claude-a", Some(messages.clone())),
+                model("claude-b", Some(messages.clone())),
+                model("open-c", None),
+            ]),
+            // As many on each route: messages before chat.
+            "tied": provider(CHAT, Some("https://tied.example/v1/"), &["TIED_KEY"], &[
+                model("claude-a", Some(messages)),
+                model("open-c", None),
+            ]),
+            "plain": provider(CHAT, Some("https://plain.example/v1/"), &["PLAIN_KEY"], &[model("m", None)]),
+        });
+        let rows = generated_rows(&source, &[]);
+        let row = |id: &str| rows.iter().find(|row| row.id == id).unwrap();
+
+        let mixed = row("mixed");
+        assert_eq!(mixed.api, WireApi::AnthropicMessages);
+        // azazel adds `/v1/messages` itself.
+        assert_eq!(mixed.base_url, "https://gw.example/anthropic");
+        assert_eq!(mixed.models, ["claude-a", "claude-b"]);
+        assert_eq!(mixed.name, "Display Name");
+
+        assert_eq!(row("tied").api, WireApi::AnthropicMessages);
+        let plain = row("plain");
+        assert_eq!(
+            (plain.api, plain.base_url.as_str()),
+            (WireApi::OpenAiChat, "https://plain.example/v1")
+        );
+    }
+
+    #[test]
+    fn providers_azazel_cannot_reach_or_already_has_get_no_row() {
+        let source = json!({
+            "vendor-sdk": provider("@vendor/ai-sdk-provider", Some("https://v.example"), &["V_KEY"], &[model("m", None)]),
+            "no-address": provider(CHAT, None, &["N_KEY"], &[model("m", None)]),
+            "covered": provider(CHAT, Some("https://c.example/v1"), &["C_KEY"], &[model("m", None)]),
+            "renamed-here": provider(CHAT, Some("https://r.example/v1"), &["R_KEY"], &[model("m", None)]),
+            "amazon-bedrock": provider(CHAT, Some("https://b.example/v1"), &["B_KEY"], &[model("m", None)]),
+            "no-tools": provider(CHAT, Some("https://t.example/v1"), &["T_KEY"], &[json!({
+                "id": "embed", "tool_call": false, "modalities": { "input": ["text"], "output": ["text"] }
+            })]),
+            "Odd.Id": provider(CHAT, Some("https://o.example/v1"), &["O_KEY"], &[model("m", None)]),
+        });
+        let hand: [(&str, &str, &[&str]); 2] =
+            [("covered", "covered", &[]), ("renamed", "renamed-here", &[])];
+        assert_eq!(generated_rows(&source, &hand), []);
+    }
+
+    #[test]
+    fn every_row_reads_a_key_variable_of_its_own() {
+        let source = json!({
+            "cloud": provider(CHAT, Some("https://${CLOUD_ACCOUNT}.cloud.example/v1"), &["CLOUD_ACCOUNT", "CLOUD_TOKEN"], &[model("m", None)]),
+            "east": provider(CHAT, Some("https://east.example/v1"), &["SHARED_KEY"], &[model("m", None)]),
+            "west": provider(CHAT, Some("https://west.example/v1"), &["SHARED_KEY", "WEST_KEY"], &[model("m", None)]),
+            "taken": provider(CHAT, Some("https://taken.example/v1"), &["HAND_KEY"], &[model("m", None)]),
+            "local-box": provider(CHAT, Some("http://localhost:8080/v1"), &[], &[model("m", None)]),
+        });
+        let hand: [(&str, &str, &[&str]); 1] = [("hand", "", &["HAND_KEY"])];
+        let rows = generated_rows(&source, &hand);
+        let env = |id: &str| {
+            let row = rows.iter().find(|row| row.id == id).unwrap();
+            (row.env.clone(), row.keyless)
+        };
+        // A variable the address names says where the provider is, not what its key is.
+        assert_eq!(env("cloud"), (vec!["CLOUD_TOKEN".to_string()], false));
+        assert_eq!(env("east"), (vec!["EAST_API_KEY".to_string()], false));
+        assert_eq!(env("west"), (vec!["WEST_KEY".to_string()], false));
+        assert_eq!(env("taken"), (vec!["TAKEN_API_KEY".to_string()], false));
+        assert_eq!(env("local-box"), (vec!["LOCAL_BOX_API_KEY".to_string()], true));
+    }
+
+    #[test]
+    fn the_generated_file_and_table_hold_every_row() {
+        let rows = vec![
+            GeneratedRow {
+                id: "acme".into(),
+                name: "Acme | Co".into(),
+                api: WireApi::AnthropicMessages,
+                base_url: "https://acme.example".into(),
+                env: vec!["ACME_KEY".into()],
+                keyless: false,
+                models: vec![],
+            },
+            GeneratedRow {
+                id: "box".into(),
+                name: "Box".into(),
+                api: WireApi::OpenAiChat,
+                base_url: "http://localhost:1/v1".into(),
+                env: vec!["BOX_API_KEY".into()],
+                keyless: true,
+                models: vec![],
+            },
+        ];
+        let source = generated_source(&rows);
+        assert!(
+            source.contains("use crate::types::WireApi::{AnthropicMessages, OpenAiChat};"),
+            "{source}"
+        );
+        assert!(
+            source.contains(
+                r#"row("acme", "Acme | Co", AnthropicMessages, "https://acme.example", &["ACME_KEY"]),"#
+            ),
+            "{source}"
+        );
+        assert!(
+            source.contains(
+                r#"row("box", "Box", OpenAiChat, "http://localhost:1/v1", &["BOX_API_KEY"]).keyless(),"#
+            ),
+            "{source}"
+        );
+
+        let page = format!("# Page\n\n{TABLE_START}\n| old |\n{TABLE_END}\n\n## Next\n");
+        let written = with_generated_table(&page, &rows).unwrap();
+        assert!(written.contains(
+            "| `acme` | Acme \\| Co | `anthropic-messages` | `https://acme.example` | `ACME_KEY` |"
+        ));
+        assert!(written.contains(
+            "| `box` | Box | `openai-chat` | `http://localhost:1/v1` | `BOX_API_KEY` (optional) |"
+        ));
+        assert!(!written.contains("| old |") && written.ends_with(&format!("{TABLE_END}\n\n## Next\n")));
+        // Writing it again changes nothing.
+        assert_eq!(with_generated_table(&written, &rows).unwrap(), written);
+        assert!(with_generated_table("# No markers\n", &rows).is_err());
+    }
 }

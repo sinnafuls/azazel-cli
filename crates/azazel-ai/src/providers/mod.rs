@@ -4,6 +4,7 @@
 pub mod bedrock;
 mod cloud_code;
 mod discovery;
+mod generated;
 pub mod http;
 mod logins;
 pub mod presets;
