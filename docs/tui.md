@@ -81,7 +81,9 @@ and the status line stay on the last rows and everything azazel is still drawing
 width.
 
 - A drag reports dozens of sizes. azazel waits until the size has been still for 60 ms and then draws once, at
-  the size the window has by then. Nothing is drawn in between.
+  the size the window has by then. Nothing is drawn in between. It also asks for the size before every
+  frame, so that the spinner does not draw at the old size between the change and the terminal's report of
+  it.
 - Laid out again at the new width: the reply that is being written, tool cards that are still running (and in
   the [compact style](#compact-style) the group that is still growing), the agents at work, the todo list, the
   input and the status line. A [popup](#popups) is centred again, and the
@@ -98,11 +100,18 @@ width.
 - A window that gets narrower: most terminals re-wrap what is on screen, which puts the rules and the status
   line on two rows each. azazel works out how many rows the old live region takes now and erases all of it.
   Where it cannot be sure it counts too few rows rather than too many: a row of the old input box can then
-  stay behind in the transcript, and no transcript line is erased. xterm, rxvt, st, GNU screen and the Linux
-  console cut rows instead, and are treated that way.
-- On Windows azazel also reads where the console has its cursor after the size settled and after a popup or
-  the viewer closes, so the live region gets exactly the rows down to the bottom of the window whatever the
-  terminal did with the transcript.
+  stay behind in the transcript, and no transcript line is erased. When the re-wrapped rows no longer fit on
+  the screen, the terminal moves the first rows of the live region (what was being written) into its
+  scrollback, where azazel cannot reach them; the screen itself is drawn anew. xterm, rxvt, st, GNU screen
+  and the Linux console cut rows instead, and are treated that way.
+- A window that changes width while a popup or the viewer is open: the terminal re-wraps the transcript
+  when the popup closes, and some terminals (Windows Terminal) then put the cursor back where it was, among
+  the rows the re-wrap added. azazel works those rows out from what it wrote and starts the live region
+  below them, so nothing of the transcript is written over; at worst a blank row is left above the input.
+- On Windows azazel asks the console to report changes of the window's size (Windows Terminal reports none
+  to a program that does not ask), and reads where the console has its cursor after the size settled and
+  after a popup or the viewer closes, so the live region gets exactly the rows down to the bottom of the
+  window whatever the terminal did with the transcript.
 - A popup that is open when the window gets smaller than 44 columns by 12 rows becomes a box in place of the
   input, and a popup again when the window is large enough.
 

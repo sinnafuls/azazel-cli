@@ -53,6 +53,11 @@ impl Backdrop {
     pub(super) fn clear(&mut self) {
         self.rows.clear();
     }
+
+    /// The rows remembered, oldest first.
+    pub(super) fn rows(&self) -> impl DoubleEndedIterator<Item = &str> {
+        self.rows.iter().map(String::as_str)
+    }
 }
 
 /// A transcript item as the rows of plain text it takes; an image is blank rows.
@@ -145,6 +150,7 @@ impl Tui {
                 // The live region leaves the real screen, so that nothing of it is in the way
                 // when the window changes size behind the popup. It is drawn again on return.
                 self.renderer.suspend()?;
+                self.leaving_main();
                 Popup::new(columns, rows)
             }
         };
@@ -201,7 +207,7 @@ impl Tui {
         if self.popup.take().is_some() {
             self.guard.leave_alt();
             // The window may have changed size behind the popup.
-            self.anchor_floor();
+            self.back_on_main();
         }
     }
 

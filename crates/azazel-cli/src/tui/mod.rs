@@ -106,6 +106,8 @@ struct TerminalGuard {
     alt: bool,
     /// The mouse is reported to azazel (the wheel, in the full-screen viewer).
     mouse: bool,
+    /// Changes of the window's size are reported because azazel asked (a Windows console).
+    sizes: bool,
 }
 
 impl TerminalGuard {
@@ -115,6 +117,7 @@ impl TerminalGuard {
             active: false,
             alt: false,
             mouse: false,
+            sizes: false,
         };
         guard.take()?;
         Ok(guard)
@@ -162,6 +165,7 @@ impl TerminalGuard {
     fn take(&mut self) -> io::Result<()> {
         enable_raw_mode()?;
         self.active = true;
+        self.sizes = resize::hear_sizes();
         let mut out = io::stdout();
         crossterm::execute!(out, EnableBracketedPaste)?;
         self.enhanced_keys = enable_enhanced_keys(&mut out).unwrap_or(false);
@@ -184,6 +188,9 @@ impl TerminalGuard {
             let _ = disable_enhanced_keys(&mut out);
         }
         let _ = crossterm::execute!(out, DisableBracketedPaste);
+        if std::mem::take(&mut self.sizes) {
+            resize::stop_hearing_sizes();
+        }
         let _ = disable_raw_mode();
         let _ = out.flush();
     }
@@ -342,6 +349,9 @@ pub struct Tui {
     floor: Floor,
     /// A change of the window's size that has not settled yet.
     resize: resize::Resize,
+    /// The width of the window and the row the live region began on when the alternate screen
+    /// was shown, while it is.
+    alt_from: Option<(u16, usize)>,
     /// Transcript rows and blocks waiting to be written above the live region.
     transcript: Vec<HistoryItem>,
     /// The last thing written to the transcript is a tool card, so the next card joins it
@@ -618,6 +628,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         stashed: Vec::new(),
         floor: Floor::new(height),
         resize: resize::Resize::default(),
+        alt_from: None,
         transcript: Vec::new(),
         after_card: false,
         branch,
@@ -1650,7 +1661,7 @@ impl Tui {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key).await,
             Event::Paste(pasted) => self.on_paste(&pasted),
-            Event::Resize(width, height) => self.resize.note((width, height), Instant::now()),
+            Event::Resize(width, height) => self.size_reported((width, height)),
             Event::FocusGained => self.attention.focus(true),
             Event::FocusLost => self.attention.focus(false),
             _ => {}

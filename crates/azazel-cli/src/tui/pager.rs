@@ -152,6 +152,7 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
         view.to_top();
     }
     let _ = tui.renderer.suspend();
+    tui.leaving_main();
     // A popup may have the alternate screen already; then it stays when the viewer closes.
     let entered = tui.guard.enter_alt();
     tui.guard.capture_mouse(true);
@@ -189,9 +190,7 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
                 Some(Ok(Event::Paste(pasted))) => view.paste(&pasted),
                 Some(Ok(Event::FocusGained)) => tui.attention.focus(true),
                 Some(Ok(Event::FocusLost)) => tui.attention.focus(false),
-                Some(Ok(Event::Resize(columns, rows))) => {
-                    tui.resize.note((columns, rows), std::time::Instant::now());
-                }
+                Some(Ok(Event::Resize(columns, rows))) => tui.size_reported((columns, rows)),
                 Some(Ok(_)) => {}
                 Some(Err(_)) | None => break,
             },
@@ -209,7 +208,7 @@ pub(super) async fn show(tui: &mut Tui, title: &str, sources: Vec<Source>, start
     tui.guard.capture_mouse(false);
     if entered {
         tui.guard.leave_alt();
-        tui.anchor_floor();
+        tui.back_on_main();
     } else {
         tui.popup_painted_over();
     }
