@@ -2,8 +2,7 @@
 //! whose clean run counts as a check.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
@@ -19,26 +18,7 @@ use azazel_tools::guards::GuardsExt;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-/// The `fake-check` fixture program, built on first use into the directory this test runs from.
-static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| {
-    // <target>/<profile>/deps/<this test>
-    let test = std::env::current_exe().unwrap();
-    let profile_dir = test.parent().unwrap().parent().unwrap();
-    let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "--package", "fake-check", "--target-dir"]);
-    build.arg(profile_dir.parent().unwrap());
-    if profile_dir.file_name().unwrap() == "release" {
-        build.arg("--release");
-    }
-    build.current_dir(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    assert!(
-        build.status().unwrap().success(),
-        "could not build the fake-check fixture"
-    );
-    let binary = profile_dir.join(format!("fake-check{}", std::env::consts::EXE_SUFFIX));
-    assert!(binary.is_file(), "{} is missing", binary.display());
-    binary
-});
+static FIXTURE: LazyLock<PathBuf> = LazyLock::new(|| crate::common::fixture_program("fake-check"));
 
 struct Bench {
     dir: tempfile::TempDir,
