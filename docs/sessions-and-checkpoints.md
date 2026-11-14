@@ -39,6 +39,7 @@ A session file is append-only JSON Lines. The first line is a header; every othe
 | `model_change` | A model chosen with `/model`, the model picker or `--model` |
 | `thinking_change` | A thinking level chosen with `/thinking`, the thinking key or `--thinking` |
 | `mode_change` | A change of permission mode |
+| `agent_change` | The [primary agent](team.md#primary-agents) the lead switched to, with `tab`, `/agent` or `--agent`; resuming the session comes back on it |
 | `context_edit` | An old tool result replaced by a short note (see compaction) |
 | `compaction` | A summary standing in for older history |
 | `checkpoint` | The snapshot taken before a prompt |

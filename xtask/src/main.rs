@@ -1,5 +1,7 @@
 //! Workspace maintenance tasks, run as `cargo xtask <task>`.
 
+mod prune;
+
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::time::{Duration, Instant};
@@ -32,6 +34,7 @@ fn main() -> ExitCode {
         Some("dist") => dist(),
         Some("rpc-schema") => rpc_schema(),
         Some("docs-check") => docs_check(),
+        Some("prune") => prune::run(&workspace_root(), &std::env::args().skip(2).collect::<Vec<_>>()),
         Some(other) => Err(anyhow::anyhow!(
             "unknown task `{other}`; tasks: {}",
             TASKS.join(", ")

@@ -390,6 +390,25 @@ impl PermissionState {
         write(&self.plan_agents).insert(agent.to_string());
     }
 
+    /// Whether `agent` is kept in plan mode whatever the session's mode is.
+    pub fn kept_in_plan_mode(&self, agent: &str) -> bool {
+        read(&self.plan_agents).contains(agent)
+    }
+
+    /// Puts `agent` under the limits of the definition it follows now, in place of those of the
+    /// one before: kept in plan mode or not, and restricted to `grants` or not (the lead switching
+    /// between primary agents).
+    pub fn set_limits(&self, agent: &str, plan: bool, grants: Option<Vec<Rule>>) {
+        match plan {
+            true => write(&self.plan_agents).insert(agent.to_string()),
+            false => write(&self.plan_agents).remove(agent),
+        };
+        match grants {
+            Some(grants) => write(&self.agent_grants).insert(agent.to_string(), vec![grants]),
+            None => write(&self.agent_grants).remove(agent),
+        };
+    }
+
     /// Whether the session runs without the safety guards: only deny rules and the push guard
     /// stop a call.
     fn bypass(&self) -> bool {

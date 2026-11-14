@@ -856,8 +856,14 @@ fn a_script_adds_a_prompt_part_and_acts_on_the_session() {
         std::fs::create_dir_all(home.join("extensions")).unwrap();
         std::fs::write(home.join("extensions/house.luau"), SCRIPT).unwrap();
     });
-    // What the script did when the session started is in the session file.
-    let state = client.state(json!({ "type": "get_state" }));
+    // What the script did when the session started is in the session file. The thinking level
+    // reaches the lead through its command queue, so the state may show it a moment later.
+    let mut state = client.state(json!({ "type": "get_state" }));
+    let asked = std::time::Instant::now();
+    while state.thinking != "high" && asked.elapsed() < std::time::Duration::from_secs(10) {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        state = client.state(json!({ "type": "get_state" }));
+    }
     assert_eq!(
         (state.name.as_deref(), state.thinking.as_str()),
         (Some("named by a script"), "high")

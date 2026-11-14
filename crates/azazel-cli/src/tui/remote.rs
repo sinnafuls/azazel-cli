@@ -1076,6 +1076,20 @@ impl Backend for Remote {
         Ok(())
     }
 
+    fn agents(&self) -> (Vec<azazel_protocol::PrimaryAgent>, String) {
+        let state = self.state();
+        (state.primary_agents, state.agent)
+    }
+
+    async fn set_agent(&mut self, name: &str) -> Result<(), String> {
+        let command = Command::SetAgent {
+            agent: name.to_string(),
+        };
+        self.client.send(command).await.map_err(|e| e.to_string())?;
+        locked(&self.shared.state).agent = name.to_string();
+        Ok(())
+    }
+
     async fn set_name(&mut self, name: String) -> Result<(), String> {
         self.client
             .send(Command::SetName { name: name.clone() })

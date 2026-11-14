@@ -616,6 +616,27 @@ pub struct AgentOverride {
     pub thinking: Option<ThinkingLevel>,
 }
 
+/// `[agents]`: the primary agent a session starts as, and `[agents.<name>]` overrides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// The primary agent the lead is when a session starts.
+    pub default: String,
+    /// Any other key is the name of a definition. `deny_unknown_fields` does not work beside a
+    /// flattened map; the map's entries are checked by their own type instead.
+    #[serde(flatten)]
+    pub overrides: BTreeMap<String, AgentOverride>,
+}
+
+impl Default for AgentsConfig {
+    fn default() -> Self {
+        AgentsConfig {
+            default: crate::agents::BUILD.to_string(),
+            overrides: BTreeMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -625,7 +646,7 @@ pub struct Config {
     /// Keyed by `provider/model-id`.
     pub models: BTreeMap<String, ModelOverride>,
     pub retry: RetryConfig,
-    pub agents: BTreeMap<String, AgentOverride>,
+    pub agents: AgentsConfig,
     pub permissions: PermissionsConfig,
     pub checkpoints: CheckpointsConfig,
     pub team: TeamConfig,
@@ -704,7 +725,7 @@ impl Default for Config {
             providers: BTreeMap::new(),
             models: BTreeMap::new(),
             retry: RetryConfig::default(),
-            agents: BTreeMap::new(),
+            agents: AgentsConfig::default(),
             permissions: PermissionsConfig::default(),
             checkpoints: CheckpointsConfig::default(),
             team: TeamConfig::default(),

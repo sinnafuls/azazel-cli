@@ -591,7 +591,11 @@ impl Tui {
                 azazel_team::BUILTIN_AGENTS,
                 &app.run.def_roots(&app.paths, compat, &packages),
             );
-            fresh.apply_overrides(config.as_ref().map_or(&app.config.agents, |c| &c.agents));
+            fresh.apply_overrides(
+                config
+                    .as_ref()
+                    .map_or(&app.config.agents.overrides, |c| &c.agents.overrides),
+            );
             for invalid in fresh.invalid() {
                 problems.push(format!("{}: {}", invalid.path.display(), invalid.error));
             }

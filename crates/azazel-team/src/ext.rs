@@ -110,7 +110,7 @@ struct TeamPart {
 #[async_trait]
 impl SystemPartProvider for TeamPart {
     async fn render(&self, agent: &AgentInfo) -> Option<String> {
-        let all = self.defs.list();
+        let all = self.defs.subagents();
         let available: Vec<_> = if agent.depth == 0 {
             all
         } else {

@@ -235,6 +235,8 @@ settings! {
             "The chain of the second model: the first that answers is used; empty means no advisor.";
     }
     Models / "Agents" {
+        "agents.default": Text, "Lead agent",
+            "The primary agent the lead is when a session starts: build, plan or one of your own (tab switches).";
         "agents": Kind::Table, "Agent overrides",
             "Per agent, a model chain and a thinking level that replace its definition's, such as scout = { model = [\"@smol\"], thinking = \"low\" }.";
     }
@@ -549,8 +551,10 @@ mod tests {
         // are an open table, and `embeddings` is absent until it is set.
         let leaves: BTreeSet<&str> = leaves.iter().map(String::as_str).collect();
         for path in rows.iter().chain(&fixed) {
+            // `agents` holds the overrides the user names beside its own `default`.
             let known = leaves.contains(path)
                 || *path == "roles.default"
+                || *path == "agents"
                 || (*path == "embeddings" && TABLES.contains(path));
             assert!(known, "{path} is not a configuration key");
         }
