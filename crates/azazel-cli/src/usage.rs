@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use azazel_ai::credentials::{account_key, now_ms};
 use azazel_ai::limits::time_left;
 use azazel_ai::providers::http::http_client;
+use azazel_ai::providers::resets::{self, Desk};
 use azazel_ai::providers::usage::{self, Spend, UsageReport};
 use azazel_ai::{Account, Credentials, LimitBlock, ProviderConfig, Window};
 use azazel_core::{Command, CommandHandler, CommandOutcome, ExtCtx, ExtError, Extension, Registrar};
@@ -53,6 +54,8 @@ pub struct Source {
     pub credentials: Arc<Credentials>,
     /// `cache/limits.json`.
     pub cache_file: PathBuf,
+    /// Where banked resets are read and spent, and the journal of the ones that were.
+    pub desk: Desk,
 }
 
 impl Source {
@@ -65,6 +68,7 @@ impl Source {
             providers: crate::login::key_providers(config)?,
             credentials,
             cache_file: cache_file(paths),
+            desk: Desk::new(crate::resets::journal_dir(paths)),
         })
     }
 }
@@ -146,15 +150,34 @@ pub async fn collect(source: &Source, ask: Ask) -> Vec<Entry> {
                     }
                     (kept, None)
                 }
-                Ask::Stale | Ask::All => {
-                    match usage::fetch(&client, provider, credentials, label, true).await {
-                        Ok(report) => {
-                            usage::keep(&source.cache_file, &report);
-                            (Some(report), None)
+                Ask::Stale | Ask::All => match fetch(source, &client, provider, label, true).await {
+                    Ok(report) => (Some(report), None),
+                    Err(why) => (kept, Some(why)),
+                },
+            };
+            // The resets an account holds take a question of their own, asked when somebody
+            // looks and the last answer is older than five minutes.
+            let report = match report {
+                Some(mut report)
+                    if ask != Ask::Known && problem.is_none() && asks_resets(provider, &report, now) =>
+                {
+                    match source.desk.offers(provider, credentials, label, true).await {
+                        Ok(offers) => report.resets = offers.shown,
+                        Err(why) => {
+                            tracing::debug!("resets of {} ({label}) were not read: {why}", provider.id);
+                            // What the account holds is not known; what the usage report
+                            // itself counted stays.
+                            if resets::asked_apart(provider) {
+                                report.resets.clear();
+                            }
                         }
-                        Err(why) => (kept, Some(why)),
                     }
+                    // Asked, with or without an answer: not again for five minutes.
+                    report.resets_asked_at = Some(now);
+                    usage::keep(&source.cache_file, &report);
+                    Some(report)
                 }
+                report => report,
             };
             let seen = match report {
                 Some(_) => Vec::new(),
@@ -172,6 +195,52 @@ pub async fn collect(source: &Source, ask: Ask) -> Vec<Entry> {
         }
     }
     entries
+}
+
+/// Asks `provider` for the usage of the login stored as `account` and keeps the answer: in
+/// the limit store, in `cache/limits.json`, and in the journal of resets, where an answer
+/// that shows room settles a redemption whose outcome was open. What was last heard about
+/// the account's resets stays with the answer when the usage report itself cannot say.
+pub async fn fetch(
+    source: &Source,
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    account: &str,
+    renew: bool,
+) -> Result<UsageReport, String> {
+    let mut report = usage::fetch(client, provider, &source.credentials, account, renew).await?;
+    if resets::asked_apart(provider)
+        && let Some(kept) = usage::cached(&source.cache_file).remove(&account_key(&provider.id, account))
+    {
+        report.resets = kept.resets;
+        report.resets_asked_at = kept.resets_asked_at;
+    }
+    usage::keep(&source.cache_file, &report);
+    source.desk.journal().settle(&report);
+    Ok(report)
+}
+
+/// Whether the provider is to be asked which resets the account of `report` holds: it tells
+/// them apart from the usage report (Claude), or the report counts some without saying when
+/// they lapse (ChatGPT), and the last answer is older than five minutes.
+fn asks_resets(provider: &ProviderConfig, report: &UsageReport, now: u64) -> bool {
+    let stale = report
+        .resets_asked_at
+        .is_none_or(|at| now.saturating_sub(at) >= FRESH_SECS);
+    match resets::asked_apart(provider) {
+        true => stale,
+        false => stale && report.resets.iter().any(|offer| offer.available > 0),
+    }
+}
+
+/// The resets of `report` that are still worth showing at `now`: an answer about them that
+/// is older than an hour says nothing about what can be spent.
+fn shown_resets(report: &UsageReport, now: u64) -> &[azazel_ai::providers::usage::ResetOffer] {
+    let asked_at = report.resets_asked_at.unwrap_or(report.fetched_at);
+    match now.saturating_sub(asked_at) < KEPT_SECS {
+        true => &report.resets,
+        false => &[],
+    }
 }
 
 /// An e-mail address with all but the first letter of its name hidden: `j***@example.com`.
@@ -409,11 +478,10 @@ pub fn page(entries: &[Entry], view: &View, width: usize, theme: &Theme) -> Vec<
             if let Some(extra) = extra {
                 note(&mut lines, Role::Muted, &extra);
             }
-            let banked: u32 = report.resets.iter().map(|offer| offer.available).sum();
-            match banked {
-                0 => {}
-                1 => note(&mut lines, Role::Muted, "1 banked reset"),
-                count => note(&mut lines, Role::Muted, &format!("{count} banked resets")),
+            for offer in shown_resets(report, view.now) {
+                if let Some(text) = crate::resets::offer_text(offer, view.now) {
+                    note(&mut lines, Role::Muted, &text);
+                }
             }
         }
         if let Some(overage) = entry.seen.iter().find(|window| window.name == "overage") {
@@ -509,7 +577,7 @@ fn json_of(entries: &[Entry], view: &View) -> serde_json::Value {
                 "windows": entry.windows().iter().map(window).collect::<Vec<_>>(),
                 "extra_usage": report.and_then(|report| report.extra_usage),
                 "spend": report.and_then(|report| report.spend.clone()),
-                "resets": report.map(|report| report.resets.clone()).unwrap_or_default(),
+                "resets": report.map(|report| shown_resets(report, view.now).to_vec()).unwrap_or_default(),
                 "blocks": entry.blocks,
                 "fetched_at": report.map(|report| report.fetched_at),
                 "error": entry.problem,
@@ -613,11 +681,8 @@ async fn poll_once(source: &Source, client: &reqwest::Client, every: u64, heard:
                 }
             }
             if now.saturating_sub(latest) >= every {
-                match usage::fetch(client, provider, credentials, label, false).await {
-                    Ok(report) => {
-                        latest = report.fetched_at;
-                        usage::keep(&source.cache_file, &report);
-                    }
+                match fetch(source, client, provider, label, false).await {
+                    Ok(report) => latest = report.fetched_at,
                     Err(why) => tracing::debug!("usage of {key} was not fetched: {why}"),
                 }
             }
@@ -766,6 +831,7 @@ mod tests {
                         currency: "USD".into(),
                     }),
                     resets: Vec::new(),
+                    resets_asked_at: None,
                     fetched_at: NOW,
                 }),
                 seen: Vec::new(),
@@ -788,12 +854,8 @@ mod tests {
                     windows: vec![window("5h", 0.05, None, "allowed")],
                     extra_usage: Some(false),
                     spend: None,
-                    resets: vec![ResetOffer {
-                        kind: "credits".into(),
-                        available: 2,
-                        expires_at: None,
-                        next_available_at: None,
-                    }],
+                    resets: vec![ResetOffer::held("credits", 2)],
+                    resets_asked_at: None,
                     // Asked twelve minutes ago, and not since.
                     fetched_at: NOW - 12 * 60,
                 }),
@@ -1018,6 +1080,7 @@ mod tests {
             providers,
             credentials,
             cache_file: dir.join("cache").join("limits.json"),
+            desk: Desk::new(dir.join("resets")),
         }
     }
 

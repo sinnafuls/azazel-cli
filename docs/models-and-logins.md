@@ -537,7 +537,7 @@ anthropic: account work reached its 5-hour limit (resets 14:05); now using perso
 anthropic: account default reached its 7-day Fable limit (resets Tue 09:00); now using work
 ```
 
-Otherwise the chain falls back as for any other failure. An account is never switched for any other reason, and work stays on the account it moved to. Accounts apply to credentials in `auth.json` only: a key from the environment, a command or the configuration is used whatever is selected.
+Otherwise the chain falls back as for any other failure, and when no model of the chain can answer either, azazel asks what to do (see [when every account is out](#when-every-account-is-out)). An account is never switched for any other reason, and work stays on the account it moved to. Accounts apply to credentials in `auth.json` only: a key from the environment, a command or the configuration is used whatever is selected.
 
 **Which account is next.** The first with room, in this order: the accounts `[accounts] order` lists for the provider, as listed; then the account a new session starts on (`[providers.<id>] account`, else the default account); then the rest by label.
 
@@ -553,6 +553,66 @@ An account has room for a model when it is not marked as out of allowance for th
 **Across runs.** The marks are kept in `~/.azazel/cache/limits.json` with their reset times, so a new run does not start on an account that ran out an hour ago. A mark ends at its reset time, when the account answers a request for a model it held back, when you pick the account in `/account`, or when a usage report fetched at least a minute after the refusal shows room in the window that ran out.
 
 **In the background.** While a session is open, azazel asks the usage endpoint of every stored subscription login every `[usage] poll_secs` seconds (300; never less than 60; `0` turns it off), so that the windows of the accounts that are not in use are known too. A login is never renewed for this: an account whose token has run out is asked again after a request has renewed it. Accounts with an API key have no usage endpoint; for them azazel knows only what their responses said.
+
+### When every account is out
+
+When a request fails because a subscription is out of allowance, no other stored account of that provider has room and no other model of the chain answers, the run stops and asks:
+
+```text
+╭─ Usage limit reached ────────────────────────────────────────────────────────────────╮
+│ anthropic: 5-hour limit reached until 14:05. You have 1 banked reset.                │
+│                                                                                      │
+│ Account default (y***@example.com).                                                  │
+│ Session reset: Gives the 5-hour window back now. The weekly windows stay as they     │
+│ are. There is one a week.                                                            │
+│ Spending a reset cannot be undone.                                                   │
+│                                                                                      │
+│ ▌ Use the reset                                                                      │
+│   Wait until reset                                                                   │
+│   Pick another model                                                                 │
+╰─ ↑↓ move · enter pick · esc cancel ──────────────────────────────────────────────────╯
+```
+
+| Answer | What happens |
+|---|---|
+| Use the reset | Offered when the account holds a [banked reset](#banked-resets) that gives back every window that is full. The reset is spent and the request that was refused is sent again |
+| Wait until reset | The run waits until the reset time and then sends the request again. The line above the input counts down (`waiting for the 5-hour limit of anthropic · 2 h 10 min left`); `esc` stops the run. It goes on earlier when a usage report or another request shows the account has room again. Other agents that run into the same limit meanwhile wait with it, without asking again |
+| Pick another model | A list of the roles and models that can be asked, without those the same limit holds back. The agent goes on with the one you pick, for this request and the ones after it; for the lead the choice is recorded in the session, as with `/model` |
+| `esc` | The run fails with the provider's refusal, as it would without the question |
+
+Before the question is put, azazel asks the provider for the account's usage and its resets, so the question says what holds now. When that report shows room (the window was reset elsewhere), the request is sent again without a question. The box names the account (its e-mail address shortened unless `[usage] redact_email = false`), the agent when it is not the lead, and what the reset gives back.
+
+The question is asked through whatever is attached: the box in the UI, a `ui_request` of kind `select` (and a second one for the model) to an [RPC](rpc.md) client, a choice in an ACP client. It is asked for logins only: a provider used with an API key fails as before.
+
+With nobody to ask (print mode, a background session, a schedule) the run fails as before and no reset is spent, unless `[usage] auto_reset = true`. Then a banked reset is spent without asking when all of this holds: the account holds one that gives back every window that is full; no earlier reset of the account is still open (see below); and no reset was tried for the account in the last five minutes.
+
+### Banked resets
+
+Some subscriptions hold resets: each gives a usage window back before its time, once.
+
+| Provider | Reset | Gives back | Shown in `/usage` as |
+|---|---|---|---|
+| `openai-codex` (a ChatGPT login) | Reset credits of the plan | The windows of the plan | `2 banked resets · first lapses Tue 09:00` |
+| `anthropic` (a Claude login) | The session reset: one a week, for accounts Anthropic offers it to | The 5-hour window; the weekly windows stay | `1 session reset`, `session reset used; the next one comes Tue 09:00`, `session resets: not offered to this account` |
+| `anthropic` (a Claude login) | Weekly resets: grants an account earned | The windows the grant names, such as the weekly window of the Fable models; usable only while one of them is full | `2 weekly resets · first lapses Mon 08:59 · usable once the window it gives back is full` |
+
+`/usage` and `azazel usage` ask the provider which resets an account holds when somebody looks and the last answer is older than five minutes; an answer older than an hour is no longer shown, so that nothing is offered from what was true yesterday, and what was known is dropped the moment a reset of the account is sent. Asking spends nothing.
+
+`/reset-usage [provider]` spends one on purpose. It reads what the account holds, shows the reset (what it gives back, how many are left, when it lapses) and asks; the row a stray `enter` lands on is "Cancel". With several logins of the provider it asks which account; with several resets, which one.
+
+A reset that is spent cannot be taken back, so every redemption goes the same way, whoever asked for it:
+
+1. What the account holds is read fresh, and the account, the reset and a request id are fixed before the question is put. Switching accounts while the question is open cannot spend another account's reset.
+2. The redemption is written to `~/.azazel/resets/<provider>.<account>.json` (the reset, the request id, the time; never a token) before it is sent. If that file cannot be written, nothing is sent.
+3. It is sent once. azazel never sends it a second time by itself.
+4. An answer that does not come (a timeout after 30 seconds, a lost connection, a server error, an answer that cannot be read) means the outcome is not known. azazel says so and does not count the reset as unspent. Only a request that never reached the provider, or one it turned away outright (HTTP 400, 401, 403, 404 or 422), is taken as not spent.
+5. The usage report fetched afterwards settles it: when it shows room in the windows the reset was for, the redemption is closed. Until then it is open.
+
+While a redemption of an account is open, no reset of that account is spent automatically. When its outcome is not known, the question and `/reset-usage` offer "Send the same reset request again" in place of a new reset: the same reset with the same request id, which a provider that already honoured it answers without spending another. An open redemption closes by itself when the reset it was about would have lapsed anyway, and after a week at the latest.
+
+What the provider answers decides what is said: the window was reset; the reset was already spent; no window is full (nothing is spent); the account holds none or cannot use it (nothing is spent). A waiting request goes on after "reset" and after "no window is full"; after "already spent" and after an outcome that is not known, only when the usage report shows room. Otherwise the question is put again with what is known now.
+
+Reading uses `GET /wham/rate-limit-reset-credits` on the ChatGPT backend, and Anthropic's usage endpoint with `?cedar_ember=1&skip_spend=1` (weekly resets) and `?at_wall=1&skip_spend=1` (the session reset). Spending uses `POST /wham/rate-limit-reset-credits/consume` and `POST /api/organizations/<organisation>/reset_rate_limits`. As with the usage endpoints, none of this is documented by the vendors; it is what their own clients do.
 
 ### Usage
 
@@ -572,6 +632,7 @@ An account has room for a model when it is not marked as out of allowance for th
 │      7d        ━━━─────────────────  14%  resets in 6 d 2 h (Fri 07:00)                          │
 │      7d Fable  ━━━━────────────────  20%  resets in 6 d 2 h (Fri 07:00)  Fable only              │
 │      extra usage on · $12.50 of $50.00 used                                                      │
+│      1 session reset                                                                             │
 │                                                                                                  │
 │ openai-codex                                                                                     │
 │  ● default  y***@example.com · plus plan · in use                                                │
@@ -587,7 +648,7 @@ Per provider, one block per stored login, labelled accounts included:
 - The plan, when the provider names it.
 - Every window the provider reports, with a bar, the share used, the time to its reset and the time of day, and what it counts when that is not every request (`Fable only`). The bar turns to the warning colour from 80 % and to the error colour when the window is full; a window the provider refuses for says `no requests for 3 d 4 h` in place of `resets in`. A narrow box drops the note, then the time of day, then the bar; the share stays.
 - Extra usage: on or off, and what it has cost when the provider says. While it is on and has money left, a full window does not stop requests and is not marked as refusing them.
-- Banked resets the account holds, when the provider's usage answer counts them (ChatGPT reset credits).
+- The [banked resets](#banked-resets) the account holds: how many, when the first lapses, and whether one can be spent now. `/reset-usage` spends one.
 - Until when the account is left alone, and for which models (see [several accounts](#several-accounts)).
 
 `r` asks the providers again; the arrows, `PgUp`/`PgDn`, `Home` and `End` scroll when the box is too short; `esc` or `enter` closes it. In a session that runs in another process (`azazel attach`, an RPC client) `/usage` answers with the same rows as text.
@@ -596,7 +657,7 @@ The numbers come from the provider: Anthropic is asked at `/api/oauth/usage` for
 
 An answer is kept in `~/.azazel/cache/limits.json`, per provider and account. `/usage` and `azazel usage` ask again when the answer is older than five minutes; `r` asks at once. When a provider cannot be asked (no network, an expired login, a changed endpoint), the block shows its last answer with its age and the reason, or, when there has never been one, what the headers of this session's responses said about the account. Providers used with an API key have no usage windows to show.
 
-`azazel usage --json` prints one array with an object per account: `provider`, `account`, `email` (hidden the same way), `in_use`, `plan`, `windows` (`name`, `label`, `scope`, `used` from 0 to 1, `resets_at` in Unix seconds, `status`), `extra_usage`, `spend` (`used`, `limit`, `currency`), `resets` (`kind`, `available`), `blocks` (`until`, `since`, `window`, `scope`), `fetched_at` and `error`. The command exits with 1 when there are logins and nothing could be shown for any of them.
+`azazel usage --json` prints one array with an object per account: `provider`, `account`, `email` (hidden the same way), `in_use`, `plan`, `windows` (`name`, `label`, `scope`, `used` from 0 to 1, `resets_at` in Unix seconds, `status`), `extra_usage`, `spend` (`used`, `limit`, `currency`), `resets` (`kind`: `credits`, `session` or `weekly`; `available`; `expires_at` and `next_available_at` in Unix seconds; `eligible`; `usable`), `blocks` (`until`, `since`, `window`, `scope`), `fetched_at` and `error`. The command exits with 1 when there are logins and nothing could be shown for any of them.
 
 Between looks, the windows are kept up to date from response headers (Anthropic's unified rate-limit headers, its `7d_oi` headers for the weekly window of the Fable models included, and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend) and by the background asking described above. While the lead answers on a subscription, the status line shows the fullest window that counts the lead's model in place of a cost (`◔ 61% 5h`), in the warning colour once it is at least 80 % full; see [the status line](tui.md#status-line).
 

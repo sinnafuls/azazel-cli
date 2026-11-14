@@ -579,6 +579,17 @@ impl App {
             redact_email: config.usage.redact_email,
             paths: paths.clone(),
         })?;
+        registry.load(&crate::resets::ResetsExt {
+            resets: crate::resets::Resets {
+                source: crate::usage::Source::of(&config, credentials.clone(), &paths)
+                    .map_err(|e| anyhow!(e))?,
+                redact_email: config.usage.redact_email,
+            },
+            auto_reset: config.usage.auto_reset,
+            unattended: cli.background(),
+            only: cli.provider.clone(),
+            providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
+        })?;
         registry.load(&crate::routing::RoutingExt {
             presets: config.presets.clone(),
             home_config: paths.home_config(),

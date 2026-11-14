@@ -206,7 +206,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |
 | | `api_key_env` | `""` | Environment variable holding the backend's key |
 | | `content` | `false` | Send prompt and reply text, tool input and tool output, not only the shape of each step |
-| `[usage]` | `auto_reset` | `false` | Spend a banked usage reset without asking when nobody is there to ask (print mode, background sessions, schedules) |
+| `[usage]` | `auto_reset` | `false` | Spend a banked usage reset without asking when nobody is there to ask (print mode, background sessions, schedules) and a subscription runs out; see [when every account is out](models-and-logins.md#when-every-account-is-out). With somebody there the choice is always theirs |
 | | `poll_secs` | `300` | How often, in seconds, the usage of every stored subscription login is fetched in the background while a session is open, so that a request does not start on an account with nothing left. Never more often than every 60; `0` never. A login is not renewed for this; see [several accounts](models-and-logins.md#several-accounts) |
 | | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` in `/usage`, `azazel usage` (`--json` included) and `/account` |
 | `[accounts]` | `order` | `{}` | Provider id to account labels in the order work moves through them when the account in use runs out, such as `{ anthropic = ["work", "default"] }`. Accounts that are not listed follow: the default one, then the rest by label; see [several accounts](models-and-logins.md#several-accounts) |

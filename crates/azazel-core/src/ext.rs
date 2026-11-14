@@ -1106,6 +1106,21 @@ impl AgentHooks for BusHooks {
             .and_then(|rules| rules.stream_thinking(agent, so_far));
         rule.or_else(|| self.runaway.as_ref()?.note(so_far, true))
     }
+
+    async fn out_of_allowance(
+        &self,
+        agent: &AgentInfo,
+        chain: &[ModelSpec],
+        error: &azazel_ai::AiError,
+        cancel: &tokio_util::sync::CancellationToken,
+    ) -> azazel_agent::Recovery {
+        // Looked up when it happens: whoever runs the agents registers it after these hooks
+        // were made.
+        match self.services.get::<azazel_agent::OnLimit>() {
+            Some(handler) => handler.0.out_of_allowance(agent, chain, error, cancel).await,
+            None => azazel_agent::Recovery::Fail,
+        }
+    }
 }
 
 #[cfg(test)]

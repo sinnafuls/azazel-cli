@@ -38,6 +38,7 @@ pub mod orchestration;
 pub mod pkg;
 pub mod print;
 pub mod reports;
+pub mod resets;
 pub mod resources;
 mod restart;
 pub mod retry;

@@ -170,6 +170,12 @@ pub trait UiBridge: Send + Sync {
     async fn review_plan(&self, _path: &std::path::Path, _plan: &str) -> Result<PlanDecision, UiError> {
         Err(UiError::NoUser)
     }
+
+    /// Whether somebody may answer a question at all. False for the bridge of a run nobody
+    /// watches, so that nothing is prepared for a question that cannot be put.
+    fn present(&self) -> bool {
+        true
+    }
 }
 
 /// The service under which the active bridge is registered.
@@ -214,6 +220,10 @@ impl UiBridge for Headless {
 
     async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
         None
+    }
+
+    fn present(&self) -> bool {
+        false
     }
 }
 
