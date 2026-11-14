@@ -8,6 +8,7 @@ use nucleo_matcher::{Config, Matcher, Utf32Str};
 use super::one_line;
 use super::overlay::Scroll;
 use crate::glyphs::Glyph;
+use crate::mouse::MouseKind;
 use crate::render::Line;
 use crate::text;
 use crate::theme::{RESET, Role, Theme};
@@ -60,6 +61,17 @@ impl SelectItem {
     }
 }
 
+/// What the mouse did to a list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListMouse {
+    /// Nothing to act on: the pointer moved, the wheel turned, or it was not over a row.
+    Nothing,
+    /// A press selected a row that was not selected: the index of its item.
+    Selected(usize),
+    /// A press on the row that was already selected: what `enter` would pick.
+    Again(usize),
+}
+
 /// The rows of a list in view, and where they are in the whole list when it does not fit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ListView {
@@ -78,6 +90,8 @@ pub struct SelectList {
     scroll: Cell<usize>,
     /// Rows of items shown by the last render: the distance of a page movement.
     page: Cell<usize>,
+    /// The position within `matches` the mouse is over, drawn as a band of its own.
+    hover: Option<usize>,
     /// Width of the label column: the widest label that has a detail and is no wider than
     /// [`PRIMARY_WIDTH`]. `None` when no such label exists.
     primary: Option<usize>,
@@ -106,6 +120,7 @@ impl SelectList {
             cursor: 0,
             scroll: Cell::new(0),
             page: Cell::new(DEFAULT_PAGE),
+            hover: None,
             matcher: Matcher::new(Config::DEFAULT),
         }
     }
@@ -175,6 +190,47 @@ impl SelectList {
         self.cursor = self.cursor.saturating_add(self.page.get().max(1)).min(last);
     }
 
+    /// The position among the rows shown (`0` the first match) of the row `row` rows below the
+    /// top of the last [`SelectList::view`], or `None` when no row of the list is there.
+    pub fn row_at(&self, row: usize) -> Option<usize> {
+        let visible = self.page.get().min(self.matches.len());
+        (row < visible).then(|| self.scroll.get() + row)
+    }
+
+    /// The mouse over the list: `row` is the row of the last [`SelectList::view`] it is on,
+    /// `None` when it is elsewhere. Moving over a row marks it; a press selects a row, and a
+    /// press on the selected row is [`ListMouse::Again`]; the wheel moves the selection one row,
+    /// stopping at the ends.
+    pub fn on_mouse(&mut self, kind: MouseKind, row: Option<usize>) -> ListMouse {
+        let at = row.and_then(|row| self.row_at(row));
+        match kind {
+            MouseKind::Move => self.hover = at,
+            MouseKind::ScrollUp => self.cursor = self.cursor.saturating_sub(1),
+            MouseKind::ScrollDown => {
+                self.cursor = (self.cursor + 1).min(self.matches.len().saturating_sub(1));
+            }
+            MouseKind::Press | MouseKind::Drag => {
+                let Some(at) = at else {
+                    return ListMouse::Nothing;
+                };
+                let again = at == self.cursor && kind == MouseKind::Press;
+                self.cursor = at;
+                let index = self.matches[at];
+                return match again {
+                    true => ListMouse::Again(index),
+                    false if kind == MouseKind::Press => ListMouse::Selected(index),
+                    false => ListMouse::Nothing,
+                };
+            }
+        }
+        ListMouse::Nothing
+    }
+
+    /// Forgets the row the mouse was over: the keys moved the selection.
+    pub fn clear_hover(&mut self) {
+        self.hover = None;
+    }
+
     /// Index of the selected item in the original item list.
     pub fn selected(&self) -> Option<usize> {
         self.matches.get(self.cursor).copied()
@@ -221,7 +277,14 @@ impl SelectList {
             .enumerate()
             .skip(scroll)
             .take(visible)
-            .map(|(position, &index)| self.row(&self.items[index], position == self.cursor, width, theme))
+            .map(|(position, &index)| {
+                let state = match position {
+                    position if position == self.cursor => RowState::Selected,
+                    position if Some(position) == self.hover => RowState::Hovered,
+                    _ => RowState::Plain,
+                };
+                self.row(&self.items[index], state, width, theme)
+            })
             .collect();
         ListView {
             lines,
@@ -277,7 +340,7 @@ impl SelectList {
         (text::truncate(&line, width, ""), column as u16)
     }
 
-    fn row(&self, item: &SelectItem, selected: bool, width: usize, theme: &Theme) -> Line {
+    fn row(&self, item: &SelectItem, state: RowState, width: usize, theme: &Theme) -> Line {
         let ellipsis = theme.glyph(Glyph::Ellipsis);
         let mark = match item.mark {
             Some(true) => theme.glyphs().prefix(Glyph::CheckOn),
@@ -319,7 +382,7 @@ impl SelectList {
             (label, detail)
         };
 
-        if selected {
+        if state == RowState::Selected {
             // One band across the row: nothing in it may reset the background.
             let mut line = format!(
                 "{}{}{} {}{mark}\x1b[1m{label}\x1b[22m",
@@ -328,6 +391,16 @@ impl SelectList {
                 theme.glyph(Glyph::Rail),
                 theme.fg(Role::Text),
             );
+            if !detail.is_empty() {
+                line.push_str(&theme.fg(Role::Muted));
+                line.push_str(&detail);
+            }
+            let cut = text::truncate(&line, width, "");
+            let open = cut.strip_suffix(RESET).unwrap_or(&cut);
+            format!("{}{RESET}", text::pad_right(open, width))
+        } else if state == RowState::Hovered {
+            // A quieter band than the selection's, with no rail: the mouse is over the row.
+            let mut line = format!("{}{}{mark}{label}", theme.bg(Role::UserBg), " ".repeat(RAIL));
             if !detail.is_empty() {
                 line.push_str(&theme.fg(Role::Muted));
                 line.push_str(&detail);
@@ -368,8 +441,17 @@ impl SelectList {
             self.matches = scored.into_iter().map(|(_, index)| index).collect();
         }
         self.cursor = 0;
+        self.hover = None;
         self.scroll.set(0);
     }
+}
+
+/// How a row of a list is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowState {
+    Plain,
+    Selected,
+    Hovered,
 }
 
 #[cfg(test)]
@@ -755,5 +837,83 @@ mod tests {
         let mut select = list(&["a"]);
         select.set_filter("zzz");
         assert_eq!(plain(&select.render(20, 5, &Theme::dark())), ["  no matches"]);
+    }
+
+    #[test]
+    fn rows_under_the_mouse_follow_the_scroll() {
+        let labels: Vec<String> = (0..20).map(|n| format!("item {n}")).collect();
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let mut select = list(&labels);
+        let theme = Theme::dark();
+        select.view(30, 5, &theme);
+        assert_eq!(
+            (select.row_at(0), select.row_at(4), select.row_at(5)),
+            (Some(0), Some(4), None)
+        );
+        select.set_cursor(12);
+        select.view(30, 5, &theme);
+        // Rows 8..=12 are in view.
+        assert_eq!(
+            (select.row_at(0), select.row_at(4), select.row_at(5)),
+            (Some(8), Some(12), None)
+        );
+        select.set_filter("item 1");
+        select.view(30, 5, &theme);
+        assert_eq!(select.row_at(0), Some(0));
+        select.set_filter("zzz");
+        select.view(30, 5, &theme);
+        assert_eq!(select.row_at(0), None);
+    }
+
+    #[test]
+    fn a_press_selects_a_second_press_picks_and_the_wheel_moves() {
+        let mut select = list(&["alpha", "beta", "gamma", "delta"]);
+        let theme = Theme::dark();
+        select.view(30, 3, &theme);
+        assert_eq!(select.on_mouse(MouseKind::Press, Some(1)), ListMouse::Selected(1));
+        assert_eq!(select.selected(), Some(1));
+        assert_eq!(select.on_mouse(MouseKind::Press, Some(1)), ListMouse::Again(1));
+        assert_eq!(select.on_mouse(MouseKind::Press, None), ListMouse::Nothing);
+        assert_eq!(
+            select.selected(),
+            Some(1),
+            "a press beside the rows changes nothing"
+        );
+        // Dragging over the rows carries the selection without picking.
+        assert_eq!(select.on_mouse(MouseKind::Drag, Some(2)), ListMouse::Nothing);
+        assert_eq!(select.selected(), Some(2));
+
+        select.on_mouse(MouseKind::ScrollDown, None);
+        assert_eq!(select.selected(), Some(3));
+        select.on_mouse(MouseKind::ScrollDown, Some(0));
+        assert_eq!(select.selected(), Some(3), "the wheel stops at the end");
+        select.view(30, 3, &theme);
+        // The view scrolled to keep the selection: its first row is now `beta`.
+        assert_eq!(select.on_mouse(MouseKind::Press, Some(0)), ListMouse::Selected(1));
+        for _ in 0..5 {
+            select.on_mouse(MouseKind::ScrollUp, None);
+        }
+        assert_eq!(select.selected(), Some(0), "nor does it wrap at the top");
+    }
+
+    #[test]
+    fn the_row_under_the_mouse_is_set_apart() {
+        let mut select = SelectList::new(vec![
+            SelectItem::new("alpha", "first"),
+            SelectItem::new("beta", "second"),
+        ]);
+        let theme = Theme::dark();
+        let band = theme.bg(Role::UserBg);
+        let before = plain(&select.view(30, 2, &theme).lines);
+        select.on_mouse(MouseKind::Move, Some(1));
+        let lines = select.view(30, 2, &theme).lines;
+        assert!(!lines[0].contains(&band) && lines[1].contains(&band));
+        assert_eq!(text::width(&lines[1]), 30, "the band runs across the row");
+        assert_eq!(plain(&lines), before, "the text stays where it was");
+        select.on_mouse(MouseKind::Move, None);
+        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
+        select.on_mouse(MouseKind::Move, Some(1));
+        select.clear_hover();
+        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
     }
 }

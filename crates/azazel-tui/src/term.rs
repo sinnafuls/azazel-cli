@@ -1,5 +1,8 @@
 //! What the terminal azazel runs in can do, worked out once from the environment, and the escape
-//! sequences for the extras (title, progress, notifications, links), wrapped for tmux when needed.
+//! sequences for the extras (title, progress, notifications, links, mouse reporting), wrapped for
+//! tmux when needed.
+
+use std::io::{self, Write};
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
@@ -553,6 +556,74 @@ pub const PUSH_TITLE: &str = "\x1b[22;0t";
 pub const POP_TITLE: &str = "\x1b[23;0t";
 pub const FOCUS_ON: &str = "\x1b[?1004h";
 pub const FOCUS_OFF: &str = "\x1b[?1004l";
+/// Has the terminal report the mouse: presses (`?1000h`), drags (`?1002h`) and moves
+/// (`?1003h`), in SGR coordinates (`?1006h`), which no column is too far for.
+pub const MOUSE_ON: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h";
+/// Undoes [`MOUSE_ON`], in reverse order.
+pub const MOUSE_OFF: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
+
+/// Mouse reporting, turned on and off through one owner. While the terminal reports the mouse
+/// its own selection and wheel do not work, so reporting is never left on: dropping the owner,
+/// also while a panic unwinds, turns it off.
+pub struct MouseCapture<W: Write> {
+    out: W,
+    on: bool,
+    /// A Windows console reports the mouse when its input mode says so, not after a sequence.
+    #[cfg(windows)]
+    console: bool,
+}
+
+impl<W: Write> MouseCapture<W> {
+    /// Reporting asked for with [`MOUSE_ON`] and ended with [`MOUSE_OFF`], written to `out`.
+    pub fn sequences(out: W) -> Self {
+        MouseCapture {
+            out,
+            on: false,
+            #[cfg(windows)]
+            console: false,
+        }
+    }
+
+    /// Reporting as the platform asks for it: the input mode of the console on Windows, the
+    /// sequences written to `out` elsewhere.
+    pub fn native(out: W) -> Self {
+        MouseCapture {
+            out,
+            on: false,
+            #[cfg(windows)]
+            console: true,
+        }
+    }
+
+    pub fn is_on(&self) -> bool {
+        self.on
+    }
+
+    /// Turns reporting on or off; nothing happens when it already is.
+    pub fn set(&mut self, on: bool) -> io::Result<()> {
+        if self.on == on {
+            return Ok(());
+        }
+        self.on = on;
+        #[cfg(windows)]
+        if self.console {
+            use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+            return match on {
+                true => crossterm::execute!(self.out, EnableMouseCapture),
+                false => crossterm::execute!(self.out, DisableMouseCapture),
+            };
+        }
+        let sequence = if on { MOUSE_ON } else { MOUSE_OFF };
+        self.out.write_all(sequence.as_bytes())?;
+        self.out.flush()
+    }
+}
+
+impl<W: Write> Drop for MouseCapture<W> {
+    fn drop(&mut self) {
+        let _ = self.set(false);
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Progress {
@@ -854,5 +925,69 @@ mod tests {
         assert!(!rewraps(&env(&[("TERM", "rxvt-unicode-256color")])));
         assert!(!rewraps(&env(&[("TERM", "st-256color")])));
         assert!(!rewraps(&env(&[("TERM", "linux")])));
+    }
+
+    /// What the capture writes, shared with the test while the capture owns its writer.
+    #[derive(Clone, Default)]
+    struct Shared(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl Write for Shared {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().expect("not poisoned").extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl Shared {
+        /// The mouse mode a terminal is left in after everything written so far.
+        fn mode(&self) -> (vt100::MouseProtocolMode, vt100::MouseProtocolEncoding) {
+            let rows = std::num::NonZero::new(24).expect("not zero");
+            let columns = std::num::NonZero::new(80).expect("not zero");
+            let mut parser = vt100::Parser::new(rows, columns, 0);
+            parser.process(&self.0.lock().expect("not poisoned"));
+            let screen = parser.screen();
+            (screen.mouse_protocol_mode(), screen.mouse_protocol_encoding())
+        }
+    }
+
+    #[test]
+    fn mouse_reporting_is_turned_on_and_off_and_never_left_on() {
+        use vt100::{MouseProtocolEncoding as Encoding, MouseProtocolMode as Mode};
+        let off = (Mode::None, Encoding::Default);
+
+        let out = Shared::default();
+        let mut capture = MouseCapture::sequences(out.clone());
+        capture.set(true).expect("written");
+        assert_eq!(out.mode(), (Mode::AnyMotion, Encoding::Sgr));
+        capture.set(true).expect("written");
+        assert_eq!(
+            out.0.lock().expect("not poisoned").len(),
+            MOUSE_ON.len(),
+            "asked once"
+        );
+        capture.set(false).expect("written");
+        assert_eq!(out.mode(), off);
+
+        // Dropped while on, as when the UI ends.
+        let out = Shared::default();
+        let mut capture = MouseCapture::sequences(out.clone());
+        capture.set(true).expect("written");
+        drop(capture);
+        assert_eq!(out.mode(), off);
+
+        // A panic unwinds through the owner.
+        let out = Shared::default();
+        let writer = out.clone();
+        let panicked = std::panic::catch_unwind(move || {
+            let mut capture = MouseCapture::sequences(writer);
+            capture.set(true).expect("written");
+            panic!("the UI failed");
+        });
+        assert!(panicked.is_err());
+        assert_eq!(out.mode(), off);
     }
 }
