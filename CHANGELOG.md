@@ -27,6 +27,10 @@ GitHub are its section here.
   `--all`), and has columns for the price (`subscription`, `free`), the thinking levels, vision and the roles
   that use each model. `--json` adds `name`, `thinking_levels`, `roles`, `login` and `usable`.
 
+### Fixed
+
+- A reply that Anthropic's safety system stops (`stop_reason: refusal`) ended the turn with nothing on screen. It is now an error that gives the provider's reason and explanation, for example `the model declined to answer (cyber): Cyber safeguards flagged this message…`; it is not retried, and no other model is asked on its own.
+
 ## [0.7.0] - 2026-11-14
 
 ### Added

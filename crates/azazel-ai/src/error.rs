@@ -39,6 +39,16 @@ pub enum AiError {
     Stalled { secs: u64 },
     #[error("aborted")]
     Aborted,
+    /// The provider's safety system stopped the reply: the model declined to answer.
+    /// `explanation` is the provider's own words, `category` its name for the reason
+    /// (Anthropic's `cyber`, for example). Sending the conversation again, here or to another
+    /// model, is left to the user.
+    #[error("the model declined to answer{}: {explanation}", category.as_deref().map(|c| format!(" ({c})")).unwrap_or_default())]
+    Refused {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        category: Option<String>,
+        explanation: String,
+    },
 }
 
 impl AiError {
@@ -54,6 +64,7 @@ impl AiError {
             | AiError::Quota { .. }
             | AiError::ContextOverflow
             | AiError::InvalidRequest(_)
+            | AiError::Refused { .. }
             | AiError::Aborted => false,
         }
     }
