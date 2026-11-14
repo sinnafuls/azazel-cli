@@ -994,6 +994,7 @@ dependencies = [
  "mermaid-rs-renderer",
  "mimalloc",
  "notify-rust",
+ "nucleo-matcher",
  "process-wrap",
  "regex",
  "reqwest",

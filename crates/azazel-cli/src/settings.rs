@@ -11,26 +11,22 @@ mod store;
 
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
 
 use crate::login::{forget_key, sign_in_from_ui, store_key};
 use async_trait::async_trait;
 use azazel_ai::catalog::Cost;
-use azazel_ai::{Credentials, ModelSpec, ProviderConfig, Router};
+use azazel_ai::{Credentials, ProviderConfig, Router};
 use azazel_core::settings::{Kind, Page, SETTINGS, Setting};
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, Config, ExtCtx, ExtError, Extension, Level, LoadOptions, Paths,
+    Command, CommandHandler, CommandOutcome, ExtCtx, ExtError, Extension, Level, LoadOptions, Paths,
     PermissionMode, Registrar, Ui, UiError,
 };
 use azazel_tui::Theme;
 use tokio::sync::oneshot;
 
-pub(crate) use self::screen::Screen;
 use self::screen::{Accounts, Request};
+pub(crate) use self::screen::{Screen, View};
 use self::store::{Changes, Store, chain_label, parse_entry, parse_value, role_name, shown};
-
-/// How long a provider may take to list its models before the built-in catalogue is used.
-const LIST_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// What a subscription login is called, for the providers that have one built in.
 fn subscription_name(provider: &str) -> Option<&'static str> {
@@ -86,6 +82,23 @@ pub type ApplySetting = dyn Fn(&str, &toml::Value) + Send + Sync;
 pub(crate) struct SettingsHost(pub Arc<ShowScreen>);
 
 pub(crate) type ShowScreen = dyn Fn(Box<Screen>) -> oneshot::Receiver<Box<Screen>> + Send + Sync;
+
+/// Where `/models` opens.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct ModelsAt {
+    /// On the Roles view with this role selected; with `provider` as well, choosing the
+    /// role's model among that provider's.
+    pub role: Option<String>,
+    /// On this provider's models.
+    pub provider: Option<String>,
+}
+
+/// How the settings open `/models`: called with where it is to open, it shows the screen and
+/// the receiver hears when it closes. The terminal UI registers it as a service; without it a
+/// role is set by typing its models.
+pub(crate) struct ModelsHost(pub Arc<ShowModels>);
+
+pub(crate) type ShowModels = dyn Fn(ModelsAt) -> oneshot::Receiver<()> + Send + Sync;
 
 /// The themes there are to choose from: the built-in ones, then the files in `themes` under
 /// `home` (`~/.azazel`) by name.
@@ -196,123 +209,42 @@ impl Settings {
         }
     }
 
-    /// Lets the user pick a model of `only` (or of a provider they choose), then makes it the
-    /// model of `role` for this session and later ones.
-    async fn model_for(
-        &self,
-        ui: &Arc<Ui>,
-        router: &Router,
-        only: Option<&str>,
-        role: &str,
-    ) -> Result<Option<String>, String> {
-        let provider = match only {
-            Some(id) => id.to_string(),
-            None => {
-                // Providers that can answer: with a credential, or local servers that need none.
-                let usable: Vec<&ProviderConfig> = self
-                    .providers
-                    .iter()
-                    .filter(|p| !p.requires_key || self.credentials.source(p).is_some())
-                    .collect();
-                let labels: Vec<String> = usable
-                    .iter()
-                    .map(|p| match p.requires_key {
-                        true => p.id.clone(),
-                        false => format!("{}\tlocal server", p.id),
-                    })
-                    .collect();
-                let Ok(index) = ui.0.select("Models of which provider?", &labels).await else {
-                    return Ok(None);
-                };
-                usable[index].id.clone()
-            }
-        };
-        ui.0.notify(Level::Info, &format!("asking {provider} for its models…"));
-        let mut ids: Vec<String> = match router.provider(&provider) {
-            Some(handle) => match tokio::time::timeout(LIST_TIMEOUT, handle.list_models()).await {
-                Ok(Ok(models)) => models.into_iter().map(|m| m.id).collect(),
-                Ok(Err(e)) => {
-                    ui.0.notify(Level::Warn, &format!("{provider} did not list its models: {e}"));
-                    Vec::new()
-                }
-                Err(_) => Vec::new(),
-            },
-            None => return Err(format!("`{provider}` is not a provider")),
-        };
-        if ids.is_empty() {
-            ids = router
-                .catalog()
-                .for_provider(&provider)
-                .into_iter()
-                .map(|m| m.id.clone())
-                .collect();
-        }
-        if ids.is_empty() {
-            return Err(format!("{provider} offers no models"));
-        }
-        ids.sort();
-        ids.dedup();
-        // Beside each model: its context window and price, as far as the catalogue knows them.
-        let login = self
-            .providers
-            .iter()
-            .find(|p| p.id == provider)
-            .and_then(|config| self.credentials.source(config))
-            .is_some_and(|source| source.starts_with("auth.json (login"));
-        let catalog = router.catalog();
-        let labels: Vec<String> = ids
-            .iter()
-            .map(|id| match catalog.contains(&provider, id) {
-                true => {
-                    let info = catalog.get(&provider, id);
-                    let detail = model_detail(info.context_window, info.cost.as_ref(), login);
-                    format!("{id}\t{detail}")
-                }
-                false if login => format!("{id}\tsubscription"),
-                false => id.clone(),
-            })
-            .collect();
-        let Ok(index) =
-            ui.0.select(&format!("Model for {role} ({provider})"), &labels)
-                .await
-        else {
-            return Ok(None);
-        };
-        let model = format!("{provider}/{}", ids[index]);
-        let spec: ModelSpec = model.parse().map_err(|e| format!("{model}: {e}"))?;
-        let home_config = self.paths.home_config();
-        crate::init::write_role(&home_config, role, Some(&model)).map_err(|e| format!("{e:#}"))?;
-        router.set_role(role, vec![spec]);
-        let what = match role {
-            "default" => "the default model".to_string(),
-            role => format!("the {role} model"),
-        };
-        Ok(Some(format!(
-            "{what} is now {model} (saved in {})",
-            home_config.display()
-        )))
-    }
-
-    /// Gives a role a model, or puts it back on the role it falls back to. The default role
-    /// has nothing to fall back to: it goes straight to the models.
+    /// Sets a role where there is no `/models` screen: its models are typed, the first and
+    /// then its fallbacks; nothing typed puts it back on its built-in value.
     async fn role(&self, ui: &Arc<Ui>, router: &Router, role: &str) -> Result<Option<String>, String> {
-        let Some(fallback) = Config::default().roles.get(role).cloned() else {
-            return self.model_for(ui, router, None, role).await;
-        };
-        let actions = [
-            "Choose a model".to_string(),
-            format!("Use the fallback\t{}", chain_label(&fallback)),
-        ];
-        let Ok(action) = ui.0.select(&format!("Model for {role}"), &actions).await else {
+        let now = router
+            .roles()
+            .get(role)
+            .map(|chain| chain_label(chain))
+            .unwrap_or_else(|| "none".to_string());
+        let prompt = format!(
+            "Models of the role {role} (now: {now})\nprovider/model, with :high or another thinking level after it if you like, then fallbacks, with spaces between them. Nothing puts the role back on its built-in value."
+        );
+        let Ok(typed) = ui.0.input(&prompt).await else {
             return Ok(None);
         };
-        if action != 1 {
-            return self.model_for(ui, router, None, role).await;
-        }
-        crate::init::write_role(&self.paths.home_config(), role, None).map_err(|e| format!("{e:#}"))?;
-        let label = chain_label(&fallback);
-        router.set_role(role, fallback);
-        Ok(Some(format!("{role} now follows {label}")))
+        let texts: Vec<String> = typed.split_whitespace().map(str::to_string).collect();
+        let chain = match texts.is_empty() {
+            true => None,
+            false => Some(crate::roles::parse_chain(&texts)?),
+        };
+        let place = crate::roles::Place {
+            paths: &self.paths,
+            load: &self.options,
+            trusted: self.options.trusted,
+            router,
+            lead: None,
+        };
+        let roles = crate::roles::set(&place, role, chain, azazel_protocol::SaveTo::Home)?;
+        let row = roles.roles.iter().find(|row| row.role == role);
+        let chain = row.map(|row| row.chain.join(" ")).unwrap_or_default();
+        Ok(Some(match chain.is_empty() {
+            true => format!("{role} has no model now"),
+            false => format!(
+                "{role} is now {chain} (saved in {})",
+                self.paths.home_config().display()
+            ),
+        }))
     }
 
     async fn sign_out(&self, ui: &Arc<Ui>) -> Result<Option<String>, String> {
@@ -334,9 +266,23 @@ impl Settings {
         request: Request,
         ui: &Arc<Ui>,
         router: Option<&Router>,
+        models: Option<&ModelsHost>,
     ) -> Result<Option<String>, String> {
+        let open = |role: Option<String>| models.map(|host| (host.0)(ModelsAt { role, provider: None }));
         match request {
             Request::Close => Ok(None),
+            Request::Models => {
+                if let Some(closed) = open(None) {
+                    let _ = closed.await;
+                }
+                Ok(None)
+            }
+            Request::Role(setting) if models.is_some() => {
+                if let Some(closed) = open(Some(role_name(setting).to_string())) {
+                    let _ = closed.await;
+                }
+                Ok(None)
+            }
             Request::Subscription => self.subscription(ui).await,
             Request::ApiKey => self.api_key(ui).await,
             Request::SignOut => self.sign_out(ui).await,
@@ -349,12 +295,13 @@ impl Settings {
 
     /// Says what a sign-in, a key or a choice of model came to and notes it for the summary.
     /// A first credential with no default model yet goes straight on to choosing one of that
-    /// provider's models. Returns the last line, for the screen to show.
+    /// provider's models in `/models`. Returns the last line, for the screen to show.
     async fn settle(
         &self,
         outcome: Result<Option<String>, String>,
         ui: &Arc<Ui>,
         router: Option<&Router>,
+        models: Option<&ModelsHost>,
         store: &Store,
     ) -> Option<(Level, String)> {
         let line = match outcome {
@@ -368,20 +315,21 @@ impl Settings {
         let (mut line, provider) = split_provider(line);
         ui.0.notify(Level::Info, &line);
         store.note(line.clone());
-        if let Some(router) = router
-            && !provider.is_empty()
-            && self.default_model(Some(router)).is_none()
-        {
-            match self.model_for(ui, router, Some(&provider), "default").await {
-                Ok(Some(chosen)) => {
-                    ui.0.notify(Level::Info, &chosen);
-                    store.note(chosen.clone());
-                    line = chosen;
+        if !provider.is_empty() && router.is_some() && self.default_model(router).is_none() {
+            match models {
+                Some(host) => {
+                    let at = ModelsAt {
+                        role: Some("default".to_string()),
+                        provider: Some(provider),
+                    };
+                    let _ = (host.0)(at).await;
+                    if let Some(chosen) = self.default_model(router) {
+                        line = format!("the default model is now {chosen}");
+                        store.note(line.clone());
+                    }
                 }
-                Ok(None) => {}
-                Err(why) => {
-                    ui.0.notify(Level::Error, &why);
-                    return Some((Level::Error, why));
+                None => {
+                    line.push_str("; choose the default model with /models");
                 }
             }
         }
@@ -391,7 +339,14 @@ impl Settings {
     /// The settings as one screen: it is shown until it gives up the keyboard, which is when it
     /// is closed or when a row needs prompts of its own; after those it opens again where it
     /// was.
-    async fn paged(&self, host: &SettingsHost, store: Store, ui: &Arc<Ui>, router: Option<&Router>) {
+    async fn paged(
+        &self,
+        host: &SettingsHost,
+        store: Store,
+        ui: &Arc<Ui>,
+        router: Option<&Router>,
+        models: Option<&ModelsHost>,
+    ) {
         let mut screen = Box::new(Screen::new(store, theme_names(&self.paths.home)));
         loop {
             screen.refresh(self.accounts());
@@ -404,8 +359,8 @@ impl Settings {
             if request == Request::Close {
                 return;
             }
-            let outcome = self.flow(request, ui, router).await;
-            if let Some((level, line)) = self.settle(outcome, ui, router, screen.store()).await {
+            let outcome = self.flow(request, ui, router, models).await;
+            if let Some((level, line)) = self.settle(outcome, ui, router, models, screen.store()).await {
                 screen.say(level, &line);
             }
         }
@@ -590,8 +545,8 @@ impl Settings {
                         continue;
                     }
                 };
-                let outcome = self.flow(request, ui, router).await;
-                self.settle(outcome, ui, router, &store).await;
+                let outcome = self.flow(request, ui, router, None).await;
+                self.settle(outcome, ui, router, None, &store).await;
                 if let Err(why) = store.reload() {
                     ui.0.notify(Level::Error, &why);
                 }
@@ -628,7 +583,11 @@ impl CommandHandler for Settings {
             Err(why) => return CommandOutcome::Error(format!("the configuration does not load: {why}")),
         };
         match ctx.services.get::<SettingsHost>() {
-            Some(host) => self.paged(&host, store, &ui, router.as_deref()).await,
+            Some(host) => {
+                let models = ctx.services.get::<ModelsHost>();
+                self.paged(&host, store, &ui, router.as_deref(), models.as_deref())
+                    .await
+            }
             None => self.chain(store, &ui, router.as_deref()).await,
         }
         let done = std::mem::take(&mut *changes.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
@@ -686,7 +645,7 @@ mod tests {
     use std::sync::Mutex;
 
     use azazel_ai::providers::presets;
-    use azazel_core::{ApprovalDecision, ApprovalRequest, Question, UiBridge};
+    use azazel_core::{ApprovalDecision, ApprovalRequest, Config, Question, UiBridge};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
@@ -1061,6 +1020,49 @@ mod tests {
         let lists = ui.lists.lock().unwrap();
         assert_eq!(lists.len(), 1);
         assert_eq!(lists[0].0, "Store an API key for which provider?");
+    }
+
+    #[tokio::test]
+    async fn the_models_rows_open_the_models_screen_and_the_settings_come_back() {
+        let f = fixture("", "");
+        let context = ctx(Scripted::new(Vec::new()));
+        let key = |code: KeyCode| KeyEvent::new(code, KeyModifiers::NONE);
+        let visits = Mutex::new(VecDeque::from([
+            // The Models page starts on the row for the whole screen.
+            vec![key(KeyCode::Right), key(KeyCode::Enter)],
+            // Then the row of the default role.
+            vec![key(KeyCode::Down), key(KeyCode::Enter)],
+            vec![key(KeyCode::Esc)],
+        ]));
+        context.services.insert(Arc::new(SettingsHost(Arc::new(
+            move |mut screen: Box<Screen>| {
+                let keys = visits.lock().unwrap().pop_front().expect("shown a fourth time");
+                assert!(keys.iter().any(|key| screen.on_key(key)));
+                let (reply, back) = oneshot::channel();
+                reply.send(screen).ok();
+                back
+            },
+        ))));
+        let opened: Arc<Mutex<Vec<ModelsAt>>> = Arc::default();
+        let sink = opened.clone();
+        context.services.insert(Arc::new(ModelsHost(Arc::new(move |at| {
+            sink.lock().unwrap().push(at);
+            let (closed, heard) = oneshot::channel();
+            closed.send(()).ok();
+            heard
+        }))));
+        let outcome = handler(&f).run("", &context).await;
+        assert!(matches!(outcome, CommandOutcome::Done), "{outcome:?}");
+        assert_eq!(
+            *opened.lock().unwrap(),
+            [
+                ModelsAt::default(),
+                ModelsAt {
+                    role: Some("default".to_string()),
+                    provider: None,
+                }
+            ]
+        );
     }
 
     #[tokio::test]

@@ -17,12 +17,12 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentEvent, AgentStatus, UserInput};
 use azazel_ai::providers::presets;
-use azazel_ai::{Block, Credentials, ModelSpec, ProviderConfig, ThinkingLevel, Tier};
+use azazel_ai::{Block, ModelSpec, ProviderConfig, ThinkingLevel, Tier};
 use azazel_core::process::{RunOptions, run as run_command};
 use azazel_core::session::SessionSummary;
 use azazel_core::skills::invocation_text;
 use azazel_core::{CommandOutcome, Config, EntryKind, Paths, PermissionMode, SessionStore, StartSource, Ui};
-use azazel_protocol::{PrimaryAgent, Roles, SaveTo};
+use azazel_protocol::{ModelRow, PrimaryAgent, ProviderRow, Roles, SaveTo};
 use azazel_team::{Goals, MemberInfo, Mentioned, Team, TeamEvent};
 use azazel_tools::{TodoItem, TodoStore};
 use tokio::sync::{broadcast, mpsc};
@@ -119,20 +119,6 @@ pub(crate) enum Billing {
     /// is the fullest usage window of the account, as its name and the share used, once the
     /// provider has reported one.
     Subscription { window: Option<(String, f32)> },
-}
-
-/// The stored account of `provider` the next request would use, a sign-in or a stored key;
-/// `None` when the credential comes from elsewhere or there is none.
-fn account_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<azazel_ai::Account> {
-    // Anything that is not in the credential store is a key and wins over what is stored.
-    let stored = credentials
-        .source(provider)
-        .is_some_and(|source| source.starts_with("auth.json"));
-    let label = credentials.selected(&provider.id).filter(|_| stored)?;
-    credentials
-        .accounts(&provider.id)
-        .into_iter()
-        .find(|account| account.label == label)
 }
 
 /// The roles the cycling keys step through when there are no favourites, as `@role`: those of
@@ -264,6 +250,19 @@ pub(crate) trait Backend: Send {
     /// What the model picker offers, as `(spec, detail)`: the roles, then the models.
     async fn models(&mut self) -> Vec<(String, String)>;
 
+    /// The model the lead's next request goes to, as `provider/id`.
+    fn current_model(&self) -> Option<String>;
+
+    /// The models of every provider, each saying whether its provider can be used.
+    async fn model_rows(&mut self) -> Result<Vec<ModelRow>, String>;
+
+    /// Every provider: whether it can be used, how, and how many models it has.
+    async fn providers(&mut self) -> Result<Vec<ProviderRow>, String>;
+
+    /// Asks `provider` for the models it serves now, beside the UI loop; the answer comes back
+    /// as [`Internal::Models`].
+    fn refresh_models(&mut self, provider: String, done: mpsc::UnboundedSender<Internal>);
+
     // ------------------------------------------------------------ talking to the lead
 
     /// Starts work on a prompt. `Err` is why it was rejected.
@@ -289,11 +288,9 @@ pub(crate) trait Backend: Send {
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String>;
 
     /// The model roles, where each one's value comes from, and the saved presets.
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     async fn roles(&mut self) -> Result<Roles, String>;
 
     /// Points `role` at `chain`, or takes away the value `save` names; see `crate::roles::set`.
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     async fn set_role(
         &mut self,
         role: &str,
@@ -301,10 +298,8 @@ pub(crate) trait Backend: Send {
         save: SaveTo,
     ) -> Result<Roles, String>;
 
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     async fn save_preset(&mut self, name: &str) -> Result<Roles, String>;
 
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     async fn apply_preset(&mut self, name: &str) -> Result<Roles, String>;
 
     async fn set_mode(&mut self, mode: PermissionMode) -> Result<(), String>;
@@ -418,11 +413,12 @@ pub(crate) struct Local {
     /// The providers as configured, to tell where each one's credential comes from.
     providers: OnceLock<Vec<ProviderConfig>>,
     payer: Mutex<Option<Payer>>,
+    /// The model lists providers gave this session.
+    listed: Arc<crate::models::Listed>,
 }
 
 impl Local {
     /// Where role changes from the UI land: this session, whose lead follows `default`.
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     fn roles_place(&self) -> crate::roles::Place<'_> {
         crate::roles::Place::of(&self.app, Some((&self.active.lead, Some(&*self.active.session))))
     }
@@ -442,9 +438,16 @@ impl Local {
             resumed: active.resumed,
             providers: OnceLock::new(),
             payer: Mutex::new(None),
+            listed: Arc::default(),
             app,
             active,
         }
+    }
+
+    /// The providers as configured.
+    fn configured(&self) -> &[ProviderConfig] {
+        self.providers
+            .get_or_init(|| presets::resolve(&self.app.config.providers).unwrap_or_default())
     }
 
     /// Requests moved to another account: who pays is asked anew for the next status line.
@@ -470,13 +473,11 @@ impl Local {
         let account = match known {
             Some(payer) => payer.account.clone(),
             None => {
-                let providers = self
-                    .providers
-                    .get_or_init(|| presets::resolve(&self.app.config.providers).unwrap_or_default());
-                let account = providers
+                let account = self
+                    .configured()
                     .iter()
                     .find(|config| config.id == provider)
-                    .and_then(|config| account_in_use(&self.app.credentials, config))
+                    .and_then(|config| crate::models::account_in_use(&self.app.credentials, config))
                     .map(|account| InUse {
                         email: crate::usage::shown_email(&account, self.app.config.usage.redact_email),
                         label: account.label,
@@ -738,28 +739,76 @@ impl Backend for Local {
             rows.push((name, crate::models::VIRTUAL_DETAIL.to_string()));
         }
         // Providers that can be reached: a credential is present, or none is needed.
-        let configured = presets::resolve(&self.app.config.providers).unwrap_or_default();
+        let configured = self.configured();
         for provider in router.provider_ids() {
-            let usable = match configured.iter().find(|p| p.id == provider) {
-                Some(config) => !config.requires_key || self.app.credentials.source(config).is_some(),
-                None => true,
-            };
+            let config = configured.iter().find(|p| p.id == provider);
+            let usable = config.is_none_or(|config| crate::models::usable(&self.app.credentials, config));
             // `--provider` leaves one provider to choose from.
             if !usable || self.app.provider.as_deref().is_some_and(|only| only != provider) {
                 continue;
             }
             // A provider used through a subscription login is not paid for by the token.
-            let login = configured
-                .iter()
-                .find(|p| p.id == provider)
-                .and_then(|config| self.app.credentials.source(config))
-                .is_some_and(|source| source.starts_with("auth.json (login"));
+            let login = config.is_some_and(|config| crate::models::login(&self.app.credentials, config));
             for model in router.catalog().for_provider(provider) {
                 let detail = crate::settings::model_detail(model.context_window, model.cost.as_ref(), login);
                 rows.push((model.key(), detail));
             }
         }
         rows
+    }
+
+    fn current_model(&self) -> Option<String> {
+        let status = self.active.lead.status();
+        let model = self
+            .app
+            .router
+            .resolve(&status.chain)
+            .into_iter()
+            .next()
+            .or(status.model)?;
+        Some(format!("{}/{}", model.provider, model.model))
+    }
+
+    async fn model_rows(&mut self) -> Result<Vec<ModelRow>, String> {
+        Ok(crate::models::rows(
+            &self.app.router,
+            &self.listed,
+            self.configured(),
+            &self.app.credentials,
+            self.app.provider.as_deref(),
+            true,
+        ))
+    }
+
+    async fn providers(&mut self) -> Result<Vec<ProviderRow>, String> {
+        Ok(crate::models::provider_rows(
+            &self.app.router,
+            &self.listed,
+            self.configured(),
+            &self.app.credentials,
+            self.app.provider.as_deref(),
+        ))
+    }
+
+    fn refresh_models(&mut self, provider: String, done: mpsc::UnboundedSender<Internal>) {
+        let (app, listed) = (self.app.clone(), self.listed.clone());
+        tokio::spawn(async move {
+            let cache = app.paths.models_cache();
+            let result = crate::models::refresh(&app.router, &listed, &cache, &provider)
+                .await
+                .map(|models| {
+                    let config = presets::resolve(&app.config.providers).unwrap_or_default();
+                    let (usable, login) = crate::models::standing(&provider, &config, &app.credentials);
+                    models
+                        .iter()
+                        .map(|model| crate::models::model_row(model, usable, login))
+                        .collect()
+                });
+            let _ = done.send(Internal::Models(super::models::Update::Refreshed {
+                provider,
+                result,
+            }));
+        });
     }
 
     async fn prompt(&mut self, text: String, images: Vec<Block>) -> Result<(), String> {
@@ -1152,9 +1201,10 @@ impl Backend for Local {
 
 #[cfg(test)]
 mod tests {
-    use azazel_ai::Credential;
+    use azazel_ai::{Credential, Credentials};
 
     use super::*;
+    use crate::models::account_in_use;
 
     fn login() -> Credential {
         Credential::OAuth {

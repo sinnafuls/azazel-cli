@@ -550,25 +550,47 @@ impl Session {
         })
     }
 
-    /// The models of the providers there is a credential for, as `azazel models` lists them.
     /// Where role changes over RPC land: this session, whose lead follows `default`.
     pub(super) fn roles_place(&self) -> crate::roles::Place<'_> {
         crate::roles::Place::of(&self.app, Some((&self.active.lead, Some(&*self.active.session))))
     }
 
-    pub(super) fn models(&self) -> Result<Value, String> {
+    /// The models of the providers there is a credential for, or with `all` of every one.
+    pub(super) fn models(&self, all: bool) -> Result<Value, String> {
         let providers = presets::resolve(&self.app.config.providers)?;
-        let listed = crate::models::listed(
-            self.app.router.catalog(),
+        data(crate::models::rows(
+            &self.app.router,
+            &self.listed,
             &providers,
             &self.app.credentials,
-            None,
             self.app.provider.as_deref(),
-            false,
-        );
-        Ok(Value::Array(
-            listed.into_iter().map(crate::models::model_json).collect(),
+            all,
         ))
+    }
+
+    pub(super) fn providers(&self) -> Result<Value, String> {
+        let providers = presets::resolve(&self.app.config.providers)?;
+        data(crate::models::provider_rows(
+            &self.app.router,
+            &self.listed,
+            &providers,
+            &self.app.credentials,
+            self.app.provider.as_deref(),
+        ))
+    }
+
+    /// `refresh_models`: what `provider` serves now, as rows of `list_models`.
+    pub(super) async fn refresh_models(&self, provider: &str) -> Result<Value, String> {
+        let providers = presets::resolve(&self.app.config.providers)?;
+        let cache = self.app.paths.models_cache();
+        let models = crate::models::refresh(&self.app.router, &self.listed, &cache, provider).await?;
+        let (usable, login) = crate::models::standing(provider, &providers, &self.app.credentials);
+        data(
+            models
+                .iter()
+                .map(|model| crate::models::model_row(model, usable, login))
+                .collect::<Vec<_>>(),
+        )
     }
 }
 

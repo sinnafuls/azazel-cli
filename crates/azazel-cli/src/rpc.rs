@@ -348,6 +348,8 @@ struct Session {
     named: HashSet<(String, String)>,
     /// Ends side questions when the session ends.
     cancel: CancellationToken,
+    /// The model lists providers gave this session.
+    listed: crate::models::Listed,
 }
 
 /// The conversation up to the last point where every tool call has its result: a side question
@@ -666,7 +668,9 @@ impl Session {
                 self.btw(id.clone(), question)?;
                 Ok(None)
             }
-            Command::ListModels => self.models().map(Some),
+            Command::ListModels { all } => self.models(all).map(Some),
+            Command::ListProviders => self.providers().map(Some),
+            Command::RefreshModels { provider } => self.refresh_models(&provider).await.map(Some),
             Command::ListRoles => data(crate::roles::list(&self.roles_place())).map(Some),
             Command::SetRole { role, chain, save } => {
                 let chain = chain.as_deref().map(crate::roles::parse_chain).transpose()?;
@@ -946,6 +950,7 @@ pub(crate) async fn serve_lines(
         restore_chain: None,
         named: HashSet::new(),
         cancel: CancellationToken::new(),
+        listed: Default::default(),
     };
 
     let mut input = std::pin::pin!(input);

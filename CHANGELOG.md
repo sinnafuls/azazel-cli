@@ -13,6 +13,8 @@ GitHub are its section here.
   scrolling work everywhere else. `tui.mouse = false` (or `/settings` → Appearance) leaves the mouse to the
   terminal.
 - RPC: `list_roles`, `set_role`, `save_preset` and `apply_preset` list the model roles with where each value comes from (built-in, home, project, session) and change them for the session or in a config file.
+- `/models` (and `/model` alone): one screen for the model of every role. It lists the roles with where each value comes from, their fallbacks, thinking levels and place in the `Ctrl+P` cycle, beside the models of every provider with their context window, output limit, price and what they can do. `Enter` on a model makes it a role's model or fallback, then offers the levels it thinks at; in the Roles view `t` sets the thinking level, `f` adds a fallback, `x` clears, `[` `]` reorder, `c` puts a role in the `Ctrl+P` cycle, `n` makes a new role, `s` and `l` save and load presets, and `w` saves to the project's config instead of the home one. Typing searches every provider at once, providers are asked for their current models in the background (`F5` asks again), and a provider without a credential can be signed in to or given a key from the screen. It works for sessions in another process too, and with the mouse.
+- RPC: `list_providers` lists every provider with whether it can be used and how; `refresh_models` asks one for its current models; `list_models` takes `all` for the models of every provider, and its rows carry the provider, the id, the name, the thinking levels, whether the provider can be used and whether it is a subscription.
 - `azazel roles` lists every model role with its chain, the model it resolves to, its thinking level and where
   it is set. `azazel roles set <role> <model> [fallback…] [--thinking LEVEL] [--project]`, `azazel roles clear
   <role>` and `azazel roles preset save|load <name>` change them in the home or project config; `--json` on each.
@@ -22,6 +24,8 @@ GitHub are its section here.
 ### Changed
 
 - Model lists write a context window of 1.5 million tokens as `1.5M`, not `1500k`.
+- `/settings` → Models: a role's row, and the new row `Models for the lead and each agent`, open `/models`; the provider-then-model prompts are gone. After the first sign-in with no default model, `/models` opens on that provider to choose one. Without the screen (a session in another process), a role's models are typed.
+- `/model` alone opens `/models`; `Ctrl+L` and `Alt+P` still open the quick picker for this session's model.
 - A thinking level chosen for the session (`/thinking`, `Alt+T`, `--thinking`, RPC `set_thinking`, an agent's
   `thinking`) now wins over the `:level` of the role's model, so `/thinking low` lowers a lead whose role is
   written `:high`; without one, the role's level applies. The status line and `get_state` show the level

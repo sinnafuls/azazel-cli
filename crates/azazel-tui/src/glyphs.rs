@@ -194,6 +194,22 @@ glyphs! {
     MoreUp => "↑", "↑", "^";
     MoreDown => "↓", "↓", "v";
     Ellipsis => "…", "…", "...";
+    /// Marks a model that can think before it answers.
+    Reasons => "◐", "◐", "T";
+    /// Marks a model that takes images.
+    Vision => "\u{f06e}", "◫", "V";
+    /// Before a model a role falls back to when the one before it fails.
+    Fallback => "↳", "↳", "->";
+    /// Leads from what something follows to what that comes to: `auto → model`.
+    Arrow => "→", "→", "->";
+    /// Points back, as in `← providers`.
+    ArrowBack => "←", "←", "<-";
+    /// A role that has no value of its own.
+    Hollow => "○", "○", "o";
+    /// Before the place of a role in the ctrl+p cycle.
+    Cycle => "⟳", "⟳", "~";
+    /// Between the steps of a sequence: `smol › default`.
+    Step => "›", "›", ">";
 }
 
 /// The characters of a box.

@@ -57,7 +57,9 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `run_command` | `name`, `args?` | Runs a slash command an extension registered (`fast`, `preset`, a custom command), one of the session's reports (`cost`, `context` (also `context json` and `context text <request> <category>`; see [the context inspector](tui.md#the-context-inspector)), `session`, `tools`, `todo`, `dirs`, `add-dir`, `rules`, `hooks`, `doctor`, `trust`, `forget-approvals`), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
 | `list_commands` | | What `run_command` takes | A list of `{"name", "description"}` |
 | `list_files` | | The files of the working directory, relative to it, for completing `@` mentions; ignored files are left out and the list is cut at 20,000 | A list of strings |
-| `list_models` | | The models of the providers you have a credential for | A list of `{"model", "context_window", "max_output", "vision", "reasoning", "cost"}` |
+| `list_models` | `all?` | The models of the providers you have a credential for; with `all: true`, of every provider. A provider `refresh_models` asked has its rows from that answer | A list of [models](#models-and-providers) |
+| `list_providers` | | Every provider, whether it can be used, and how | A list of [providers](#models-and-providers) |
+| `refresh_models` | `provider` | Asks the provider for the models it serves now; the answer stands for the rest of the session and is kept in `~/.azazel/cache/models.json` for later ones | A list of [models](#models-and-providers) of that provider |
 | `list_roles` | | Every [model role](models-and-logins.md#roles): its chain, where that comes from, what it resolves to, and the saved presets | [Roles](#roles) |
 | `set_role` | `role`, `chain?`, `save?` | Points `role` at `chain` (`["provider/model:high", "@slow"]`), or without `chain` takes away the value `save` names so the role falls back to the next config file or its built-in value. `save` is `session` (the default: this session only), `home` (also writes `~/.azazel/config.toml`) or `project` (the project's `.azazel/config.toml`, refused when the project is not trusted). Setting `default` or `lead` puts the lead back on its role | [Roles](#roles) |
 | `save_preset` | `name` | Writes every role as it is now under `[presets.<name>.roles]` in the home config | [Roles](#roles) |
@@ -125,6 +127,25 @@ the file `save` names. The other three commands do not take it: `save_preset` al
 `apply_preset` changes the session only.
 
 In a role, `chain` is the value as configured, `resolved` the usable models it comes to in order, `builtin` the value it falls back to when nothing sets it, and `thinking` the level written with its first model (`provider/model:high`). `source` says where the chain comes from: `builtin`, `home`, `project`, `project_local`, `session` (changed in this session and not saved) or `unset` (nothing sets it, so it resolves to no model).
+
+### Models and providers
+
+A model of `list_models` and `refresh_models`:
+
+| Member | Meaning |
+|---|---|
+| `model`, `provider`, `id` | `provider/id`, and its two parts |
+| `name?` | What the model is called, when that is more than its id |
+| `context_window`, `max_output` | Tokens |
+| `vision`, `reasoning` | Whether it takes images, and whether it thinks |
+| `thinking_levels?` | The thinking levels it takes; absent for every level when `reasoning` is set |
+| `cost` | `{"input", "output"}` in USD per million tokens, or `null` when not known |
+| `usable` | Its provider has a credential, or needs none |
+| `login` | Its provider is used through a subscription sign-in, so it is not paid by the token |
+
+A provider of `list_providers` is `{"id", "name", "usable", "login", "source?", "env?", "oauth", "models"}`:
+`source` says where its credential comes from (`OPENAI_API_KEY`, `auth.json (login)`), `env` the variables a
+key is read from, `oauth` whether it can be signed in to, and `models` how many models it has.
 
 ### Named prompts
 
