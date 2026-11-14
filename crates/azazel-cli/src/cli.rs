@@ -603,6 +603,10 @@ pub struct Cli {
     #[arg(long, value_name = "MODE", global = true)]
     pub mode: Option<String>,
 
+    /// Primary agent the lead is for this run: build, plan or one of your own (see azazel agents)
+    #[arg(long, value_name = "NAME", global = true)]
+    pub agent: Option<String>,
+
     /// Output of print mode
     #[arg(long, value_enum, default_value = "text", global = true)]
     pub output: OutputFormat,

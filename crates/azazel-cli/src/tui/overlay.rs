@@ -75,6 +75,8 @@ pub enum Action {
     Model(Vec<String>),
     Thinking,
     Mode,
+    /// `/agent`: the primary agent of each row.
+    Agent(Vec<String>),
     /// Whether to enter bypass mode: the second row says yes.
     Bypass,
     Theme(Vec<String>),
