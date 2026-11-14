@@ -294,6 +294,13 @@ pub enum Sub {
         /// Store an API key even when the provider also has a sign-in
         #[arg(long)]
         key: bool,
+        /// Sign in without a browser on this machine, with a code entered on another device
+        /// (openai-codex)
+        #[arg(long)]
+        device: bool,
+        /// Sign in through a GitHub Enterprise at this domain (github-copilot)
+        #[arg(long, value_name = "DOMAIN")]
+        enterprise: Option<String>,
         /// Keep it as another account of the provider, under this label
         #[arg(long = "as", value_name = "LABEL")]
         label: Option<String>,

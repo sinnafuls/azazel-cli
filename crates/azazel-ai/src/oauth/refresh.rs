@@ -120,6 +120,14 @@ pub(crate) async fn fresh_login(
         }
         false => configured.to_string(),
     };
+    // A token endpoint that depends on what the login was told (a Snowflake account) is filled
+    // from the fields kept with it.
+    let held = match stored {
+        Some(Credential::OAuth { extra, .. }) => fields(extra),
+        _ => BTreeMap::new(),
+    };
+    let vars: Vec<(&str, &str)> = held.iter().map(|(n, v)| (n.as_str(), v.as_str())).collect();
+    let url = fill(&url, &vars);
     let mut params = vec![
         ("grant_type".to_string(), "refresh_token".to_string()),
         ("refresh_token".to_string(), refresh.clone()),

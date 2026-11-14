@@ -29,6 +29,8 @@ pub(super) struct Preset {
     /// The provider's name on models.dev, where the catalogue snapshot takes its models from;
     /// empty when it is not listed there or its list would mislead (local servers).
     pub catalog: &'static str,
+    /// Model id prefixes served on another wire API; see `ProviderConfig::routes`.
+    pub routes: &'static [(&'static str, WireApi)],
 }
 
 impl Preset {
@@ -56,6 +58,11 @@ impl Preset {
         self.catalog = name;
         self
     }
+
+    const fn routes(mut self, routes: &'static [(&'static str, WireApi)]) -> Self {
+        self.routes = routes;
+        self
+    }
 }
 
 /// A provider that takes a bearer key, lists its models at the wire API's usual address and is
@@ -78,6 +85,7 @@ pub(super) const fn row(
         headers: &[],
         discovery: Discovery::Auto,
         catalog: id,
+        routes: &[],
     }
 }
 
@@ -91,6 +99,17 @@ const COPILOT_HEADERS: &[(&str, &str)] = &[
     ("Copilot-Integration-Id", "copilot-developer-cli"),
     ("Openai-Intent", "conversation-agent"),
     ("X-GitHub-Api-Version", "2026-08-01"),
+];
+/// Where Copilot serves what its chat endpoint does not: Claude on Anthropic Messages (under
+/// `/v1`), GPT-5 and later (but GPT-5 mini), Grok and MAI Code on Responses only.
+const COPILOT_ROUTES: &[(&str, WireApi)] = &[
+    ("claude-", AnthropicMessages),
+    ("gpt-5-mini", OpenAiChat),
+    ("gpt-5", OpenAiResponses),
+    ("gpt-6", OpenAiResponses),
+    ("gpt-7", OpenAiResponses),
+    ("grok-", OpenAiResponses),
+    ("mai-code-", OpenAiResponses),
 ];
 /// OpenCode's gateways refuse a request that names no session (`400 MissingSessionID`), and ask
 /// the client to say who it is.
@@ -107,7 +126,7 @@ pub(super) static PRESETS: &[Preset] = &[
     row("alibaba-coding-plan", "Alibaba Coding Plan", OpenAiChat, "https://coding-intl.dashscope.aliyuncs.com/v1", &["ALIBABA_CODING_PLAN_API_KEY"]),
     row("alibaba-token-plan", "Alibaba Token Plan", OpenAiChat, "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1", &["ALIBABA_TOKEN_PLAN_API_KEY", "BAILIAN_TOKEN_PLAN_API_KEY"]),
     row("anthropic", "Anthropic", AnthropicMessages, "https://api.anthropic.com", &["ANTHROPIC_API_KEY"]),
-    row("azure", "Azure OpenAI", AzureOpenAiResponses, "${AZURE_OPENAI_BASE_URL:-https://${AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com}", &["AZURE_OPENAI_API_KEY"]).auth(AuthStyle::ApiKey).discovery(Discovery::Off),
+    row("azure", "Azure OpenAI", AzureOpenAiResponses, "${AZURE_OPENAI_BASE_URL:-https://${AZURE_OPENAI_RESOURCE_NAME}.openai.azure.com}", &["AZURE_OPENAI_API_KEY"]).auth(AuthStyle::ApiKey).discovery(Discovery::Azure),
     row("baseten", "Baseten", OpenAiChat, "https://inference.baseten.co/v1", &["BASETEN_API_KEY"]),
     row("bedrock-mantle", "Amazon Bedrock Mantle", OpenAiResponses, "https://bedrock-mantle.${AWS_REGION:-us-east-1}.api.aws/v1", &["AWS_BEARER_TOKEN_BEDROCK"]).catalog(""),
     row("cerebras", "Cerebras", OpenAiChat, "https://api.cerebras.ai/v1", &["CEREBRAS_API_KEY"]),
@@ -122,7 +141,7 @@ pub(super) static PRESETS: &[Preset] = &[
     row("deepseek", "DeepSeek", OpenAiChat, "https://api.deepseek.com", &["DEEPSEEK_API_KEY"]),
     row("firepass", "Fire Pass", OpenAiChat, "https://api.fireworks.ai/inference/v1", &["FIREPASS_API_KEY"]).catalog(""),
     row("fireworks", "Fireworks", OpenAiChat, "https://api.fireworks.ai/inference/v1", &["FIREWORKS_API_KEY"]).catalog("fireworks-ai"),
-    row("github-copilot", "GitHub Copilot", OpenAiChat, "https://api.githubcopilot.com", &["COPILOT_GITHUB_TOKEN"]).headers(COPILOT_HEADERS),
+    row("github-copilot", "GitHub Copilot", OpenAiChat, "https://api.githubcopilot.com", &["COPILOT_GITHUB_TOKEN"]).headers(COPILOT_HEADERS).auth(AuthStyle::Bearer).routes(COPILOT_ROUTES),
     row("gmi-cloud", "GMI Cloud", OpenAiChat, "https://api.gmi-serving.com/v1", &["GMI_API_KEY"]).catalog("gmicloud"),
     row("google", "Google Gemini API", GoogleGenerative, "https://generativelanguage.googleapis.com/v1beta", &["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]),
     row("google-gemini-cli", "Google Cloud Code Assist (Gemini CLI)", GoogleGeminiCli, "https://cloudcode-pa.googleapis.com", &[]).discovery(Discovery::Off).catalog(""),

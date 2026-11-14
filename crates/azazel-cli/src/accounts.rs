@@ -217,7 +217,15 @@ impl AccountCommand {
         };
         match (&provider.oauth, by_key) {
             (Some(settings), false) => {
-                sign_in_from_ui(&self.credentials, provider, settings, ui.clone(), label).await
+                sign_in_from_ui(
+                    &self.credentials,
+                    provider,
+                    settings,
+                    &Default::default(),
+                    ui.clone(),
+                    label,
+                )
+                .await
             }
             _ => match ui.0.secret(&format!("API key for {}", provider.id)).await {
                 Ok(key) => store_key(&self.credentials, provider, &key, label).map(Some),

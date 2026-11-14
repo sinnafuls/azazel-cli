@@ -43,6 +43,7 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+which.workspace = true
 
 [build-dependencies]
 flate2.workspace = true

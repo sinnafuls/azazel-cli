@@ -1,5 +1,6 @@
 //! Concrete providers and the built-in endpoint presets.
 
+pub mod azure;
 #[cfg(feature = "bedrock")]
 pub mod bedrock;
 mod cloud_code;

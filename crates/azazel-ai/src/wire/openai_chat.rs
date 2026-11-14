@@ -142,11 +142,26 @@ pub fn build_request(
         .headers(chat_headers(provider, req, auth))
 }
 
-/// [`request_headers`], plus what GitHub Copilot needs to know about the turn: whether a person
-/// or the agent started it (which decides how it is billed), and whether it carries images.
+/// [`request_headers`], plus what GitHub Copilot needs to know about the turn.
 pub(super) fn chat_headers(provider: &ProviderConfig, req: &Request, auth: &Auth) -> HeaderMap {
     let mut headers = request_headers(provider, auth);
-    if provider.base_url.contains("githubcopilot.com") {
+    copilot_turn(provider, req, &mut headers);
+    headers
+}
+
+/// Whether `provider` is GitHub Copilot, at github.com or at an enterprise host: it names the
+/// integration Copilot's API asks every client for.
+pub(crate) fn is_copilot(provider: &ProviderConfig) -> bool {
+    provider
+        .headers
+        .keys()
+        .any(|name| name.eq_ignore_ascii_case("copilot-integration-id"))
+}
+
+/// What GitHub Copilot needs to know about a turn, on each API it serves: whether a person or the
+/// agent started it (which decides how it is billed), and whether it carries images.
+pub(crate) fn copilot_turn(provider: &ProviderConfig, req: &Request, headers: &mut HeaderMap) {
+    if is_copilot(provider) {
         let by_user = req.messages.last().is_none_or(|last| last.role == Role::User);
         let initiator = if by_user { "user" } else { "agent" };
         headers.insert(
@@ -169,7 +184,6 @@ pub(super) fn chat_headers(provider: &ProviderConfig, req: &Request, auth: &Auth
             );
         }
     }
-    headers
 }
 
 pub fn decoder(provider: &ProviderConfig, model: &ModelInfo) -> Box<dyn Decoder> {

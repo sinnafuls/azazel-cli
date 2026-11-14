@@ -1,6 +1,7 @@
 //! `azazel login` and `azazel logout`, and their slash commands: API keys and the logins of
 //! providers with an authorisation server, kept in `auth.json`.
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::sync::Arc;
 
@@ -70,19 +71,48 @@ pub(crate) fn account_label(label: Option<&str>) -> Result<&str, String> {
     }
 }
 
+/// The answers a sign-in's inputs get from the command line, by input name.
+pub(crate) type Given = BTreeMap<String, String>;
+
+/// The sign-in to run for `provider`: its own, or the one `--device` or `--enterprise <domain>`
+/// asks for, with the answers the command line gives. `None` when the provider has no sign-in.
+pub(crate) fn chosen_sign_in(
+    provider: &ProviderConfig,
+    device: bool,
+    enterprise: Option<&str>,
+) -> Result<Option<(OAuthSettings, Given)>, String> {
+    let id = &provider.id;
+    match (device, enterprise) {
+        (true, Some(_)) => Err("--device and --enterprise cannot be used together".to_string()),
+        (true, None) => presets::device_login(id)
+            .map(|settings| Some((settings, Given::new())))
+            .ok_or_else(|| format!("{id} has no device sign-in; --device works with openai-codex")),
+        (false, Some(domain)) => presets::enterprise_login(id)
+            .map(|settings| {
+                Some((
+                    settings,
+                    Given::from([("domain".to_string(), domain.to_string())]),
+                ))
+            })
+            .ok_or_else(|| format!("{id} has no enterprise sign-in; --enterprise works with github-copilot")),
+        (false, None) => Ok(provider.oauth.clone().map(|settings| (settings, Given::new()))),
+    }
+}
+
 /// Signs in with the provider's authorisation server and keeps the login as account `label`
 /// (the default account when `None`). A login for an account that is already stored, under
-/// whatever label, renews that account instead.
+/// whatever label, renews that account instead. `given` answers the sign-in's inputs.
 pub(crate) async fn sign_in(
     credentials: &Credentials,
     provider: &ProviderConfig,
     settings: &OAuthSettings,
+    given: &Given,
     ui: &dyn LoginUi,
     cancel: &CancellationToken,
     label: Option<&str>,
 ) -> Result<String, String> {
     let wanted = account_label(label)?;
-    let login = azazel_ai::oauth::login(&http_client(), settings, ui, cancel)
+    let login = azazel_ai::oauth::login_with(&http_client(), settings, given, ui, cancel)
         .await
         .map_err(|e| format!("login to {} failed: {e}", provider.id))?;
     let file = credentials.auth_file().display().to_string();
@@ -153,12 +183,13 @@ pub(crate) async fn sign_in_from_ui(
     credentials: &Credentials,
     provider: &ProviderConfig,
     settings: &OAuthSettings,
+    given: &Given,
     ui: Arc<Ui>,
     label: Option<&str>,
 ) -> Result<Option<String>, String> {
     let cancel = CancellationToken::new();
     let login = Overlay(ui.clone());
-    let signing_in = sign_in(credentials, provider, settings, &login, &cancel, label);
+    let signing_in = sign_in(credentials, provider, settings, given, &login, &cancel, label);
     tokio::pin!(signing_in);
     let cancel_option = ["Cancel the sign-in".to_string()];
     let waiting =
@@ -295,12 +326,27 @@ fn load(paths: &Paths) -> Result<(Vec<ProviderConfig>, Credentials), String> {
     Ok((key_providers(&config)?, Credentials::new(paths.auth_file())))
 }
 
-/// `azazel login [provider] [--key] [--as label]`: asks for the provider when none is given, then
-/// signs in with its authorisation server or asks for its key, and keeps the result as account
-/// `label`.
-pub async fn login(provider: Option<&str>, key: bool, label: Option<&str>, paths: &Paths) -> u8 {
+/// How `azazel login` signs in.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LoginFlags<'a> {
+    /// Store an API key even when the provider has a sign-in.
+    pub key: bool,
+    /// The sign-in for a machine without a browser.
+    pub device: bool,
+    /// The domain of a GitHub Enterprise to sign in to.
+    pub enterprise: Option<&'a str>,
+}
+
+/// `azazel login [provider] [--key] [--device] [--enterprise domain] [--as label]`: asks for the
+/// provider when none is given, then signs in with its authorisation server or asks for its key,
+/// and keeps the result as account `label`.
+pub async fn login(provider: Option<&str>, flags: LoginFlags<'_>, label: Option<&str>, paths: &Paths) -> u8 {
     if let Err(why) = account_label(label) {
         eprintln!("azazel: --as: {why}");
+        return EXIT_USAGE;
+    }
+    if flags.key && (flags.device || flags.enterprise.is_some()) {
+        eprintln!("azazel: --key stores a key; it cannot be used with --device or --enterprise");
         return EXIT_USAGE;
     }
     let chosen = load(paths).and_then(|(providers, credentials)| {
@@ -328,10 +374,17 @@ pub async fn login(provider: Option<&str>, key: bool, label: Option<&str>, paths
         };
         Ok((find(&providers, &id)?.clone(), credentials))
     });
+    let chosen = chosen.and_then(|(provider, credentials)| {
+        let way = match flags.key {
+            true => None,
+            false => chosen_sign_in(&provider, flags.device, flags.enterprise)?,
+        };
+        Ok((provider, credentials, way))
+    });
     let done = match chosen {
         Err(why) => Err(why),
-        Ok((provider, credentials)) => match provider.oauth.as_ref().filter(|_| !key) {
-            Some(settings) => {
+        Ok((provider, credentials, way)) => match way {
+            Some((settings, given)) => {
                 let cancel = CancellationToken::new();
                 let interrupted = cancel.clone();
                 tokio::spawn(async move {
@@ -339,7 +392,16 @@ pub async fn login(provider: Option<&str>, key: bool, label: Option<&str>, paths
                         interrupted.cancel();
                     }
                 });
-                sign_in(&credentials, &provider, settings, &Terminal, &cancel, label).await
+                sign_in(
+                    &credentials,
+                    &provider,
+                    &settings,
+                    &given,
+                    &Terminal,
+                    &cancel,
+                    label,
+                )
+                .await
             }
             None => read_secret(&format!("API key for {}: ", provider.id))
                 .map_err(|e| e.to_string())
@@ -386,10 +448,21 @@ impl CommandHandler for LoginCommand {
         let Some(ui) = ctx.services.get::<Ui>() else {
             return CommandOutcome::Error("there is nobody to ask for the key".to_string());
         };
-        // `/login <provider> [label]`: the label keeps the login beside the provider's other
-        // accounts.
+        // `/login <provider> [label] [--device] [--enterprise <domain>]`: the label keeps the
+        // login beside the provider's other accounts.
+        let (mut device, mut enterprise, mut plain) = (false, None, Vec::new());
         let mut words = args.split_whitespace();
-        let (first, label) = (words.next(), words.next());
+        while let Some(word) = words.next() {
+            match word {
+                "--device" => device = true,
+                "--enterprise" => match words.next() {
+                    Some(domain) => enterprise = Some(domain),
+                    None => return CommandOutcome::Error("--enterprise needs a domain".to_string()),
+                },
+                _ => plain.push(word),
+            }
+        }
+        let (first, label) = (plain.first().copied(), plain.get(1).copied());
         let id = match first {
             None => {
                 let names: Vec<String> = self
@@ -408,8 +481,12 @@ impl CommandHandler for LoginCommand {
             Ok(provider) => provider,
             Err(why) => return CommandOutcome::Error(why),
         };
-        if let Some(settings) = &provider.oauth {
-            return match sign_in_from_ui(&self.credentials, provider, settings, ui, label).await {
+        let way = match chosen_sign_in(provider, device, enterprise) {
+            Ok(way) => way,
+            Err(why) => return CommandOutcome::Error(why),
+        };
+        if let Some((settings, given)) = &way {
+            return match sign_in_from_ui(&self.credentials, provider, settings, given, ui, label).await {
                 Ok(Some(line)) => CommandOutcome::Show(line),
                 Ok(None) => CommandOutcome::Show("sign-in cancelled".to_string()),
                 Err(why) => CommandOutcome::Error(why),
@@ -457,7 +534,7 @@ impl Extension for LoginExt {
         r.command(Command {
             name: "login".to_string(),
             description: "Sign in to a provider or store its API key".to_string(),
-            argument_hint: Some("[provider] [account]".to_string()),
+            argument_hint: Some("[provider] [account] [--device] [--enterprise <domain>]".to_string()),
             handler: Arc::new(LoginCommand {
                 providers: self.providers.clone(),
                 credentials: self.credentials.clone(),
@@ -589,5 +666,40 @@ mod tests {
             unknown.contains("`ollama` is not a provider that takes a key or a login")
                 && unknown.contains("anthropic")
         );
+    }
+
+    #[test]
+    fn the_command_line_picks_the_device_or_the_enterprise_sign_in() {
+        let providers = key_providers(&Config::default()).unwrap();
+        let codex = find(&providers, "openai-codex").unwrap();
+        let copilot = find(&providers, "github-copilot").unwrap();
+        let groq = find(&providers, "groq").unwrap();
+
+        let (device, given) = chosen_sign_in(codex, true, None).unwrap().unwrap();
+        assert_eq!(device.flow, azazel_ai::OAuthFlow::DeviceAuthCode);
+        assert!(given.is_empty());
+        let (enterprise, given) = chosen_sign_in(copilot, false, Some("ghe.example.com"))
+            .unwrap()
+            .unwrap();
+        assert!(enterprise.device_url.contains("{domain}"));
+        assert_eq!(given["domain"], "ghe.example.com");
+        // Without a flag, the provider's own sign-in; none for a provider that takes keys only.
+        assert_eq!(
+            chosen_sign_in(copilot, false, None).unwrap().unwrap().0,
+            copilot.oauth.clone().unwrap()
+        );
+        assert!(chosen_sign_in(groq, false, None).unwrap().is_none());
+
+        assert!(
+            chosen_sign_in(copilot, true, None)
+                .unwrap_err()
+                .contains("--device works with openai-codex")
+        );
+        assert!(
+            chosen_sign_in(codex, false, Some("x"))
+                .unwrap_err()
+                .contains("--enterprise works with github-copilot")
+        );
+        assert!(chosen_sign_in(codex, true, Some("x")).is_err());
     }
 }

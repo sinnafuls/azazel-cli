@@ -174,7 +174,15 @@ impl Settings {
         let Some(settings) = &provider.oauth else {
             return Ok(None);
         };
-        let line = sign_in_from_ui(&self.credentials, provider, settings, ui.clone(), None).await?;
+        let line = sign_in_from_ui(
+            &self.credentials,
+            provider,
+            settings,
+            &Default::default(),
+            ui.clone(),
+            None,
+        )
+        .await?;
         Ok(line.map(|line| format!("{line}\n{provider}", provider = provider.id)))
     }
 
@@ -708,10 +716,13 @@ mod tests {
             logins,
             [
                 "anthropic",
+                "digitalocean",
                 "github-copilot",
                 "google-gemini-cli",
                 "openai-codex",
                 "openrouter",
+                "poe",
+                "snowflake",
                 "xai-oauth"
             ]
         );
