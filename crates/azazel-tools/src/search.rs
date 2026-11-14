@@ -238,7 +238,8 @@ impl Sink for Collector<'_> {
 }
 
 /// `withheld` says which files of a directory are left out: the secret files, which are searched
-/// only when the call names one and the user allows it.
+/// only when the call names one and the user allows it. It is asked about canonical paths, the
+/// form the permission state keeps the homes in, and the root is made canonical once for the walk.
 fn grep_files(
     input: &GrepInput,
     base: &Path,
@@ -273,13 +274,14 @@ fn grep_files(
     let mut remaining = limit;
     let mut lines = Vec::new();
     let mut skipped = 0;
+    let root = azazel_core::paths::canonical(base);
     let files: Box<dyn Iterator<Item = (PathBuf, PathBuf)>> = if base.is_file() {
         let name = base.file_name().map(PathBuf::from).unwrap_or_default();
         Box::new(std::iter::once((base.to_path_buf(), name)))
     } else {
-        Box::new(walk(base).filter(|(path, relative)| {
+        Box::new(walk(base).filter(|(_, relative)| {
             let wanted = filter.as_ref().is_none_or(|f| f.is_match(relative));
-            let hidden = wanted && withheld(path);
+            let hidden = wanted && withheld(&root.join(relative));
             skipped += usize::from(hidden);
             !hidden
         }))
