@@ -7,6 +7,7 @@ pub mod event;
 pub mod gate;
 pub mod hooks;
 pub mod inspect;
+mod repair;
 pub mod tool;
 
 pub use agent::{Agent, AgentConfig, AgentHandle, AgentStatus, Limits};

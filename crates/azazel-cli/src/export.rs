@@ -3,16 +3,25 @@
 //!
 //! With `tui.redact` on, what looks like a secret is hidden in the Markdown and the HTML. The
 //! JSON lines are the entries as the session stores them, so that the file opens as a session
-//! again: nothing is hidden in those.
+//! again: nothing is hidden in those. `--sanitize` exports a [`sanitized`] copy instead, in which
+//! secrets are hidden in every format and what files held is left out.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use azazel_ai::{Block, Role};
+use azazel_ai::{Block, Message, Role};
 use azazel_core::SessionStore;
-use azazel_core::session::EntryKind;
+use azazel_core::session::{Entry, EntryKind};
+use serde_json::Value;
 
 use crate::tui::view::{redacted, tool_summary};
+
+/// What a sanitized export holds in place of what a file held.
+pub const REMOVED: &str = "[file content removed]";
+
+/// The tools whose results are what files hold: their text, matching lines of it, or diffs.
+const FILE_TOOLS: &[&str] = &["read", "grep", "edit", "write", "patch", "lsp", "ast_grep"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum Format {
@@ -248,6 +257,175 @@ fn html(session: &SessionStore, redact: bool) -> String {
     out
 }
 
+/// A copy of `session`, in memory, fit to share: what looks like a secret is hidden in every
+/// text, and what files held is left out: the results of the tools that read, search or change
+/// files, and the text `write`, `edit` and `patch` were given. Pictures are kept as they are.
+pub fn sanitized(session: &SessionStore) -> SessionStore {
+    let entries = session.entries();
+    let mut tools: HashMap<String, String> = HashMap::new();
+    for entry in &entries {
+        if let EntryKind::Message { message } = &entry.kind {
+            for (id, name, _) in message.tool_calls() {
+                tools.insert(id.to_string(), name.to_string());
+            }
+        }
+    }
+    let entries = entries
+        .into_iter()
+        .map(|entry| Entry {
+            kind: scrubbed(entry.kind, &tools),
+            ..entry
+        })
+        .collect();
+    SessionStore::mirror(session.header(), entries, session.leaf(), session.path())
+}
+
+fn hidden(text: String) -> String {
+    redacted(text, true)
+}
+
+fn scrubbed(kind: EntryKind, tools: &HashMap<String, String>) -> EntryKind {
+    match kind {
+        EntryKind::Message { message } => EntryKind::Message {
+            message: scrubbed_message(message, tools),
+        },
+        EntryKind::Compaction {
+            summary,
+            first_kept_entry_id,
+            tokens_before,
+        } => EntryKind::Compaction {
+            summary: hidden(summary),
+            first_kept_entry_id,
+            tokens_before,
+        },
+        EntryKind::ContextEdit {
+            target_id,
+            replacement,
+        } => EntryKind::ContextEdit {
+            target_id,
+            replacement: hidden(replacement),
+        },
+        EntryKind::SessionInfo { name } => EntryKind::SessionInfo { name: hidden(name) },
+        EntryKind::Label { target_id, label } => EntryKind::Label {
+            target_id,
+            label: hidden(label),
+        },
+        EntryKind::Custom { custom_type, data } => EntryKind::Custom {
+            custom_type,
+            data: hidden_json(data),
+        },
+        EntryKind::ToolStarted { call_id, name, input } => EntryKind::ToolStarted {
+            input: scrubbed_input(&name, input),
+            call_id,
+            name,
+        },
+        other => other,
+    }
+}
+
+fn scrubbed_message(mut message: Message, tools: &HashMap<String, String>) -> Message {
+    message.content = std::mem::take(&mut message.content)
+        .into_iter()
+        .map(|block| match block {
+            Block::Text { text } => Block::Text { text: hidden(text) },
+            Block::Thinking {
+                text,
+                signature,
+                redacted,
+            } => Block::Thinking {
+                text: hidden(text),
+                signature,
+                redacted,
+            },
+            Block::ToolCall {
+                id,
+                name,
+                input,
+                signature,
+            } => Block::ToolCall {
+                input: scrubbed_input(&name, input),
+                id,
+                name,
+                signature,
+            },
+            Block::ToolResult {
+                call_id,
+                content,
+                is_error,
+            } => {
+                let of_files = tools
+                    .get(&call_id)
+                    .is_some_and(|name| FILE_TOOLS.contains(&name.as_str()));
+                let content = match of_files && !is_error {
+                    true => vec![Block::text(REMOVED)],
+                    false => content
+                        .into_iter()
+                        .map(|part| match part {
+                            Block::Text { text } => Block::Text { text: hidden(text) },
+                            other => other,
+                        })
+                        .collect(),
+                };
+                Block::ToolResult {
+                    call_id,
+                    content,
+                    is_error,
+                }
+            }
+            other => other,
+        })
+        .collect();
+    message
+}
+
+/// A tool call's input with secrets hidden and, for the tools that write files, the text they
+/// were to write left out.
+fn scrubbed_input(tool: &str, input: Value) -> Value {
+    let mut input = hidden_json(input);
+    let removed = || Value::String(REMOVED.to_string());
+    match tool {
+        "write" => {
+            if let Some(content) = input.get_mut("content") {
+                *content = removed();
+            }
+        }
+        "edit" => {
+            for edit in input
+                .get_mut("edits")
+                .and_then(Value::as_array_mut)
+                .into_iter()
+                .flatten()
+            {
+                for key in ["old", "new"] {
+                    if let Some(text) = edit.get_mut(key) {
+                        *text = removed();
+                    }
+                }
+            }
+        }
+        "patch" => {
+            if let Some(text) = input.get_mut("patch_text") {
+                *text = removed();
+            }
+        }
+        _ => {}
+    }
+    input
+}
+
+fn hidden_json(value: Value) -> Value {
+    match value {
+        Value::String(text) => Value::String(hidden(text)),
+        Value::Array(items) => Value::Array(items.into_iter().map(hidden_json).collect()),
+        Value::Object(map) => Value::Object(
+            map.into_iter()
+                .map(|(key, value)| (key, hidden_json(value)))
+                .collect(),
+        ),
+        other => other,
+    }
+}
+
 /// Whether the session has anything worth exporting: a message, not only its header.
 pub fn has_messages(session: &SessionStore) -> bool {
     session
@@ -390,5 +568,70 @@ mod tests {
         // The entries are the session itself: the file must open as one again.
         let lines = render(&store, Format::Jsonl, true);
         assert_eq!(lines.matches(key).count(), 3);
+    }
+
+    #[test]
+    fn a_sanitized_export_hides_secrets_and_what_files_held_in_every_format() {
+        let key = "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+        let dir = tempfile::tempdir().unwrap();
+        let store = SessionStore::create(dir.path(), dir.path(), None).unwrap();
+        store.append(EntryKind::Message {
+            message: Message::user(format!("read src/a.rs; my key is {key}")),
+        });
+        let mut calls = assistant("Reading.");
+        for (id, name, input) in [
+            ("c1", "read", json!({ "path": "src/a.rs" })),
+            (
+                "c2",
+                "write",
+                json!({ "path": "b.txt", "content": "fn secret_sauce() {}" }),
+            ),
+            (
+                "c3",
+                "edit",
+                json!({ "path": "src/a.rs", "edits": [{ "old": "fn a()", "new": "fn private_name()" }] }),
+            ),
+            ("c4", "shell", json!({ "command": format!("echo {key}") })),
+        ] {
+            calls.content.push(Block::ToolCall {
+                id: id.into(),
+                name: name.into(),
+                input,
+                signature: None,
+            });
+        }
+        store.append(EntryKind::Message { message: calls });
+        let result = |id: &str, text: &str| Block::ToolResult {
+            call_id: id.into(),
+            content: vec![Block::text(text)],
+            is_error: false,
+        };
+        store.append(EntryKind::Message {
+            message: Message::tool(vec![
+                result("c1", "1\tfn a() { let token = 42; }"),
+                result("c2", "wrote b.txt"),
+                result("c3", "@@ -1 +1 @@\n-fn a()\n+fn private_name()"),
+                result("c4", &format!("{key}\nexit code: 0")),
+            ]),
+        });
+        store.append(EntryKind::Message {
+            message: assistant("All done."),
+        });
+
+        let clean = sanitized(&store);
+        for format in [Format::Markdown, Format::Html, Format::Jsonl] {
+            let text = render(&clean, format, true);
+            for held in ["let token = 42", "secret_sauce", "private_name", key] {
+                assert!(!text.contains(held), "{format:?} still holds `{held}`:\n{text}");
+            }
+            assert!(text.contains("All done."), "{text}");
+        }
+        let lines = render(&clean, Format::Jsonl, true);
+        assert!(lines.contains(REMOVED), "{lines}");
+        assert!(lines.contains("[redacted:anthropic-key]"), "{lines}");
+        // What was shared opens as a session again, and the original is untouched.
+        let (_, entries, skipped) = azazel_core::session::parse_lines(&lines);
+        assert_eq!((entries.len(), skipped), (store.branch(None).len(), 0));
+        assert!(render(&store, Format::Jsonl, true).contains("secret_sauce"));
     }
 }

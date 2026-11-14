@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use azazel_ai::{Block, ToolSpec};
+use azazel_ai::{Block, ModelRef, ToolSpec};
 use serde::Serialize;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +46,11 @@ pub trait Tool: Send + Sync {
     /// example); shown with the approval prompt.
     fn approval_note(&self, _input: &Value) -> Option<String> {
         None
+    }
+    /// Whether the tool is offered in a request to `model`, the first model the agent asks. A
+    /// tool meant for some model families says no to the others (`patch` and `edit`).
+    fn offered_to(&self, _model: &ModelRef) -> bool {
+        true
     }
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }

@@ -83,7 +83,7 @@ pub enum SubjectKind {
 pub fn subject_kind(tool: &str) -> SubjectKind {
     match tool {
         "shell" => SubjectKind::Command,
-        "read" | "write" | "edit" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
+        "read" | "write" | "edit" | "patch" | "glob" | "grep" | "lsp" | "ast_grep" => SubjectKind::Path,
         "web_fetch" | "web_grep" | "browser" | "http" => SubjectKind::Domain,
         _ => SubjectKind::Other,
     }
@@ -173,8 +173,12 @@ impl MatchCtx<'_> {
 }
 
 impl Rule {
+    /// Whether this rule is about `tool`. A `patch` writes files the way `write` and `edit` do,
+    /// so their rules cover it too.
     pub fn matches_tool(&self, tool: &str) -> bool {
-        self.tool == tool || glob(&self.tool, false).is_some_and(|g| g.is_match(tool))
+        let named =
+            |name: &str| self.tool == name || glob(&self.tool, false).is_some_and(|g| g.is_match(name));
+        named(tool) || (tool == "patch" && (named("write") || named("edit")))
     }
 
     /// Whether this rule covers one subject of a call to `tool`. A rule without a pattern covers
@@ -944,7 +948,7 @@ impl PermissionState {
         // change things while planning.
         let mode = self.mode_for(call.agent);
         if mode == PermissionMode::Plan && call.access != Access::Read {
-            let plan_file = matches!(call.tool, "write" | "edit")
+            let plan_file = matches!(call.tool, "write" | "edit" | "patch")
                 && !call.subjects.is_empty()
                 && call
                     .subjects

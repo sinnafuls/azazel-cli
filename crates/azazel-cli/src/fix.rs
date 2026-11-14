@@ -241,10 +241,11 @@ fn plan(branch: &[Entry], start: usize, fixed: &mut Fixed) -> Vec<Step> {
 fn carried(kind: &EntryKind, moved: &HashMap<String, String>, gone: &HashSet<String>) -> Option<EntryKind> {
     let now = |id: &String| moved.get(id).cloned().unwrap_or_else(|| id.clone());
     Some(match kind {
-        // The name, the pin and the sub-agents are the session's, whatever branch it is on, and
-        // the labels are given to the new entries once those are written.
+        // The name, the pin, the archive mark and the sub-agents are the session's, whatever
+        // branch it is on, and the labels are given to the new entries once those are written.
         EntryKind::SessionInfo { .. }
         | EntryKind::Pin { .. }
+        | EntryKind::Archive { .. }
         | EntryKind::Agent { .. }
         | EntryKind::Label { .. } => return None,
         EntryKind::ContextEdit { target_id, .. } if gone.contains(target_id) => return None,

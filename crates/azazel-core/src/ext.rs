@@ -381,6 +381,10 @@ impl Tool for Wrapped {
         self.inner.approval_note(input)
     }
 
+    fn offered_to(&self, model: &azazel_ai::ModelRef) -> bool {
+        self.inner.offered_to(model)
+    }
+
     async fn call(&self, mut input: Value, ctx: &ToolCtx) -> ToolOutput {
         let mut entered = 0;
         let mut answered = None;

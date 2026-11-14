@@ -5,7 +5,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::config::ReadGuard;
+use azazel_ai::ModelRef;
+use azazel_core::config::{PatchMode, ReadGuard};
 use azazel_core::tracker::{LineRange, Splice};
 use azazel_core::{FileTracker, Freshness};
 use serde::Deserialize;
@@ -26,7 +27,7 @@ const RESERVED_STEMS: [&str; 22] = [
 ];
 
 /// The refusal for a path whose file name is a device name up to its first dot.
-fn reserved_name(path: &Path) -> Option<String> {
+pub(crate) fn reserved_name(path: &Path) -> Option<String> {
     let name = path.file_name()?.to_str()?;
     let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
     RESERVED_STEMS
@@ -437,11 +438,17 @@ impl Tool for WriteTool {
 pub struct EditTool {
     tracker: Arc<FileTracker>,
     guard: ReadGuard,
+    /// `tools.patch`: with `auto`, the models that get `patch` do not get `edit`.
+    patch: PatchMode,
 }
 
 impl EditTool {
-    pub fn new(tracker: Arc<FileTracker>, guard: ReadGuard) -> Self {
-        EditTool { tracker, guard }
+    pub fn new(tracker: Arc<FileTracker>, guard: ReadGuard, patch: PatchMode) -> Self {
+        EditTool {
+            tracker,
+            guard,
+            patch,
+        }
     }
 }
 
@@ -629,6 +636,10 @@ impl Tool for EditTool {
 
     fn subjects(&self, input: &Value) -> Vec<String> {
         path_subject(input)
+    }
+
+    fn offered_to(&self, model: &ModelRef) -> bool {
+        self.patch != PatchMode::Auto || !crate::patch::patch_family(model)
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {

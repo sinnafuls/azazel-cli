@@ -15,6 +15,46 @@ GitHub are its section here.
   `thinking`, `skills` and `color` apply to the lead while it is selected. The status line has an `agent`
   segment in its colour, the input's rules take the colour too, and the switch is kept in the session.
   RPC clients switch with `set_agent`, ACP clients with the session option `agent`.
+- About 160 more built-in providers: every provider models.dev lists that speaks a wire API azazel has
+  (`anthropic-messages`, `openai-responses`, `openai-chat`, `google-generative`), with its models in the
+  catalogue. Set its key variable and its models appear in `/model` and `azazel models`. Each reads a
+  variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
+  `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
+- `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+- Tool calls are mended before they run: a tool called by another harness's name (`bash`, `str_replace`,
+  `apply_edit`, `grep_search`, `list_dir`, `ls`, `todowrite`) or in another case runs as the real tool, and
+  an object or array sent as a JSON string, a number or boolean sent as a string, `null` for an optional
+  field and an unknown field of a closed input are put right against the tool's schema. The result gets one
+  `note:` line saying what was mended, and the session file keeps it with the call.
+- A `patch` tool for OpenAI GPT and Codex models: one patch in the `*** Begin Patch` format adds, changes
+  (with `@@` hunks), moves and deletes files. Every file is checked before any is written, permission is
+  asked as for `write` for each file, and each file goes through the read guard, format on write, checks on
+  write and the language server. `[tools] patch = "auto"` offers it in place of `edit` to those models;
+  `"on"` offers both to every model, `"off"` none.
+- Format on write knows 26 formatters and uses the one the file's project uses: `gofmt`, `rustfmt`, `zig
+  fmt`, `terraform fmt`, `shfmt`, `dart format`, `mix format`, `gleam format`, `nixfmt`, `ktlint`,
+  `cljfmt`, `dfmt`, `latexindent`, `htmlbeautifier` and `ormolu` when installed; `prettier` and `oxfmt`
+  when `package.json` depends on them (the project's `node_modules/.bin` copy first), `biome` with a
+  `biome.json`, `clang-format` with a `.clang-format`, `ocamlformat` with an `.ocamlformat`, `ruff format`
+  with a ruff config or dependency, `uv format` with a `uv.lock`, `standardrb` or `rubocop` from the
+  `Gemfile`, `pint` from `composer.json`, and `air` for R. Those that run the project's code wait for the
+  project to be trusted. `azazel doctor` lists the formatters it would use for the project.
+- `/open` (and `azazel open` in the shell) lists the recent sessions of every project, newest first, each with
+  its directory; opening one of another project starts azazel again there, in the same terminal, with that
+  project's trust, configuration and context files.
+- `/cd <dir>` goes on in another directory, with `Tab` completing directory names; a directory of another
+  project moves the session into that project's sessions.
+- `/worktree [name]` makes a git worktree under `.azazel/worktrees/` on a new branch `azazel/<name>` from HEAD,
+  moves the uncommitted changes into it (through `git stash`) and goes on there; `/worktree list` and
+  `/worktree remove <name> [--force]` manage them.
+- `azazel sessions import <file|URL> [--project <dir>]` makes a session from a session file or a JSON lines
+  export, from disk or an `https://` address.
+- `azazel export --sanitize` and `/export --sanitize` hide secrets in every format and replace what files held
+  (the results of `read`, `grep`, `edit` and the like, and the text given to `write`) with
+  `[file content removed]`.
+- Print mode takes `-f/--file <path>` (up to 100: text inlined, images attached), `--worktree[=name]` (the run
+  happens in a new worktree, whose path is printed at the end) and `--archived` (the session stays out of
+  `/resume`, `/open`, `-c` and `azazel sessions list`, which lists it with `--all`).
 
 ### Changed
 
@@ -22,6 +62,15 @@ GitHub are its section here.
   agent in plan mode is `permission-mode: plan`. A definition that still says `mode: plan` is listed by
   `/agents` with that message. `azazel migrate` writes `permission-mode`.
 - Agents started by an agent kept in plan mode are kept in plan mode too.
+- `xai` talks to xAI's Responses API, which xAI names its primary API; Chat Completions is its legacy one.
+- `opencode-zen` and `opencode-go` use OpenCode's current addresses (`https://opencode.ai/inference/openai/v1`
+  and `https://opencode.ai/inference/go/openai/v1`), and `minimax-code-cn` MiniMax's new mainland-China
+  host, `https://api.minimax.cn/anthropic`.
+- `[tools] format_on_write` is on by default: a file is formatted only by a formatter its project uses,
+  and a missing or failing formatter is a note in the result, never a failed write. An empty
+  `[tools.format]` command turns formatting off for that extension.
+- `/open` alone opens the session picker; the last link of the last reply is now `/open link` (`/open <n>`,
+  `/open <path>` and `/open diagram` are unchanged).
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or

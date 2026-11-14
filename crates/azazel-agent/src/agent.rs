@@ -22,6 +22,7 @@ use crate::event::{AgentCmd, AgentEvent, AgentId, AgentInfo, Resume, UserInput};
 use crate::gate::{Gate, GateDecision};
 use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
+use crate::repair::{self, Prepared};
 use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, tool_spec};
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
@@ -471,14 +472,17 @@ impl Actor {
         let tools = self.core.tools.tools(&self.core.info);
         let core = &self.core;
         let mut results = Vec::with_capacity(calls.len());
-        for call in calls {
-            let tool = tools.iter().find(|tool| tool.name() == call.1).cloned();
-            let again =
-                !started.contains(&call.0) || tool.as_ref().is_some_and(|tool| tool.replay_safe(&call.2));
+        for (call_id, name, input) in calls {
+            let call = repair::prepare(call_id, name, input, &tools);
+            let again = !started.contains(&call.call_id)
+                || call
+                    .tool
+                    .as_ref()
+                    .is_some_and(|tool| tool.replay_safe(&call.input));
             results.push(if again {
-                self.inbox.drive(core.run_tool(call, tool, cancel)).await
+                self.inbox.drive(core.run_tool(call, cancel)).await
             } else {
-                core.interrupted(call)
+                core.interrupted((call.call_id, call.name, call.input))
             });
         }
         results
@@ -563,7 +567,7 @@ impl Actor {
             }
             let (request, tools) = self
                 .inbox
-                .drive(self.core.build_request(thinking, !final_report))
+                .drive(self.core.build_request(&chain, thinking, !final_report))
                 .await;
             let request = Arc::new(request);
             self.core.record_request(&request);
@@ -780,26 +784,22 @@ impl Actor {
         tools: &[Arc<dyn Tool>],
         cancel: &CancellationToken,
     ) -> Vec<Block> {
-        let resolved: Vec<Option<Arc<dyn Tool>>> = calls
-            .iter()
-            .map(|(_, name, _)| tools.iter().find(|t| t.name() == name).cloned())
+        let calls: Vec<Prepared> = calls
+            .into_iter()
+            .map(|(call_id, name, input)| repair::prepare(call_id, name, input, tools))
             .collect();
         let concurrent = calls.len() > 1
             && calls
                 .iter()
-                .zip(&resolved)
-                .all(|((_, _, input), tool)| tool.as_ref().is_none_or(|t| t.concurrency_safe(input)));
+                .all(|call| call.tool.as_ref().is_none_or(|t| t.concurrency_safe(&call.input)));
         let core = &self.core;
         if concurrent {
-            let running = calls
-                .into_iter()
-                .zip(resolved)
-                .map(|(call, tool)| core.run_tool(call, tool, cancel));
+            let running = calls.into_iter().map(|call| core.run_tool(call, cancel));
             return self.inbox.drive(join_all(running)).await;
         }
         let mut results = Vec::with_capacity(calls.len());
-        for (call, tool) in calls.into_iter().zip(resolved) {
-            results.push(self.inbox.drive(core.run_tool(call, tool, cancel)).await);
+        for call in calls {
+            results.push(self.inbox.drive(core.run_tool(call, cancel)).await);
         }
         results
     }
@@ -1140,9 +1140,11 @@ impl Core {
         Ok(true)
     }
 
-    /// The request for the next turn and the tools that may be called in its response.
+    /// The request for the next turn and the tools that may be called in its response. Tools
+    /// meant for other model families than the one `chain` asks first are left out.
     async fn build_request(
         &mut self,
+        chain: &[ModelSpec],
         thinking: ThinkingLevel,
         with_tools: bool,
     ) -> (Request, Vec<Arc<dyn Tool>>) {
@@ -1153,6 +1155,9 @@ impl Core {
         } else {
             Vec::new()
         };
+        if let Some(model) = self.router.resolve(chain).first() {
+            tools.retain(|tool| tool.offered_to(model));
+        }
         let mut request = Request {
             system: self.system.clone(),
             messages,
@@ -1173,15 +1178,26 @@ impl Core {
         (request, tools)
     }
 
-    async fn run_tool(&self, call: Call, tool: Option<Arc<dyn Tool>>, cancel: &CancellationToken) -> Block {
-        let (call_id, name, input) = call;
+    async fn run_tool(&self, call: Prepared, cancel: &CancellationToken) -> Block {
+        let note = call.note();
+        let Prepared {
+            call_id,
+            name,
+            input,
+            tool,
+            repairs,
+        } = call;
         self.emit(AgentEvent::ToolStart {
             call_id: call_id.clone(),
             name: name.clone(),
             input: input.clone(),
         });
         let started = Instant::now();
-        let output = self.execute(&call_id, &name, input, tool, cancel).await;
+        let mut output = self.execute(&call_id, &name, input, tool, &repairs, cancel).await;
+        // After the cut for size, so the model always sees what it called wrong.
+        if let Some(note) = note {
+            output.content.push(Block::text(note));
+        }
         let result = Block::ToolResult {
             call_id: call_id.clone(),
             content: output.content.clone(),
@@ -1201,6 +1217,7 @@ impl Core {
         name: &str,
         input: Value,
         tool: Option<Arc<dyn Tool>>,
+        repairs: &[String],
         cancel: &CancellationToken,
     ) -> ToolOutput {
         let Some(tool) = tool else {
@@ -1226,7 +1243,7 @@ impl Core {
             GateDecision::Allow { input: None } => input,
         };
 
-        self.sink.tool_started(call_id, name, &input);
+        self.sink.tool_started(call_id, name, &input, repairs);
         let hub = self.hub.clone();
         let update_id = call_id.to_string();
         let ctx = ToolCtx {

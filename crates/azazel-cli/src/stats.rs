@@ -247,6 +247,8 @@ mod tests {
             prompts: messages / 2,
             models: BTreeMap::from([(model.to_string(), usage)]),
             tools: BTreeMap::from([(tool.to_string(), 3)]),
+            cwd: String::new(),
+            archived: false,
         }
     }
 

@@ -265,6 +265,54 @@ fn the_decision_table() {
     assert_eq!(f.state.roots().len(), 3);
 }
 
+/// What the engine decides for a `patch` of `files`.
+fn patch_verdict(f: &Fixture, mode: PermissionMode, files: &[&str]) -> Verdict {
+    f.state.set_mode(mode);
+    let subjects: Vec<String> = files.iter().map(|file| file.to_string()).collect();
+    let agent = agent();
+    let call = Call {
+        agent: &agent,
+        tool: "patch",
+        access: Access::Write,
+        subjects: &subjects,
+        shell: None,
+        command: None,
+    };
+    match f.state.precheck(&call) {
+        Err(reason) => Verdict::Deny(reason),
+        Ok(protected) => f.state.decide(&call, protected, false),
+    }
+}
+
+#[test]
+fn a_patch_is_judged_file_by_file_as_a_write() {
+    let f = fixture(
+        r#"
+        [permissions]
+        allow = ["write(src/**)", "edit(docs/**)"]
+        deny = ["write(secrets/**)"]
+        "#,
+    );
+    use PermissionMode::*;
+    // The rules of `write` and `edit` cover every file the patch names, or the user is asked.
+    assert!(allowed(&patch_verdict(&f, Manual, &["src/a.rs", "docs/b.md"])));
+    assert!(prompts(&patch_verdict(&f, Manual, &["src/a.rs", "build.rs"])));
+    assert!(denied(&patch_verdict(&f, Auto, &["src/a.rs", "secrets/k"])));
+    // Accept-edits takes it as an edit; plan mode only under the plans directory.
+    assert!(allowed(&patch_verdict(&f, AcceptEdits, &["src/a.rs", "new.rs"])));
+    assert!(prompts(&patch_verdict(
+        &f,
+        Auto,
+        &["src/a.rs", ".azazel/config.toml"]
+    )));
+    assert!(allowed(&patch_verdict(&f, Plan, &[".azazel/plans/a.md"])));
+    assert!(denied(&patch_verdict(
+        &f,
+        Plan,
+        &[".azazel/plans/a.md", "src/a.rs"]
+    )));
+}
+
 #[test]
 fn denial_reasons_say_what_happened() {
     let f = fixture("[permissions]\ndeny = [\"shell(rm -rf:*)\"]\n");
