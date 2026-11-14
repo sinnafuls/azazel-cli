@@ -3,7 +3,9 @@
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use azazel_agent::ToolOutput;
+use azazel_agent::{ToolCtx, ToolOutput};
+use azazel_core::SessionStore;
+use azazel_core::scheme::{LOCAL, local_dir, local_path, split_url};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use similar::TextDiff;
@@ -41,6 +43,73 @@ pub fn resolve_path(cwd: &Path, path: &str) -> PathBuf {
         }
     }
     out
+}
+
+/// The file a file tool's `path` names: a path made absolute against the agent's directory (see
+/// [`resolve_path`]), or for `local://<name>` that file in the session's scratch directory. An
+/// address of any other scheme is refused, naming `tool`.
+pub fn resolve_target(ctx: &ToolCtx, path: &str, tool: &str) -> Result<PathBuf, String> {
+    match split_url(path.trim()) {
+        Some((LOCAL, rest)) => local_path(&local_dir(&ctx.services)?, rest),
+        Some((scheme, _)) => Err(format!(
+            "{tool} does not take {scheme}:// addresses; only local:// and file paths"
+        )),
+        None => Ok(resolve_path(&ctx.cwd, path)),
+    }
+}
+
+/// `path` as a result shows it: `local://<name>` for a file in the session's scratch directory,
+/// otherwise as [`display_path`] shows it against the agent's directory.
+pub fn shown_path(ctx: &ToolCtx, path: &Path) -> String {
+    if let Some(session) = ctx.services.get::<SessionStore>()
+        && let Ok(name) = path.strip_prefix(session.local_dir())
+    {
+        return format!("{LOCAL}://{}", name.to_string_lossy().replace('\\', "/"));
+    }
+    display_path(&ctx.cwd, path)
+}
+
+/// How a tool that lists files shows them: relative to a directory, after a prefix (`local://`
+/// for the session's scratch directory).
+pub struct Shown {
+    root: PathBuf,
+    prefix: &'static str,
+}
+
+impl Shown {
+    pub fn relative_to(root: &Path) -> Self {
+        Shown {
+            root: root.to_path_buf(),
+            prefix: "",
+        }
+    }
+
+    pub fn show(&self, path: &Path) -> String {
+        format!("{}{}", self.prefix, display_path(&self.root, path))
+    }
+}
+
+/// Where a search tool starts, `path` or the agent's directory, and how it shows what it finds:
+/// relative to the agent's directory, or as `local://<name>` in the session's scratch directory.
+pub fn search_base(ctx: &ToolCtx, path: Option<&str>, tool: &str) -> Result<(PathBuf, Shown), String> {
+    let Some(path) = path else {
+        return Ok((ctx.cwd.clone(), Shown::relative_to(&ctx.cwd)));
+    };
+    match split_url(path.trim()) {
+        Some((LOCAL, rest)) => {
+            let dir = local_dir(&ctx.services)?;
+            let base = local_path(&dir, rest)?;
+            let shown = Shown {
+                root: dir,
+                prefix: "local://",
+            };
+            Ok((base, shown))
+        }
+        Some((scheme, _)) => Err(format!(
+            "{tool} does not take {scheme}:// addresses; only local:// and file paths"
+        )),
+        None => Ok((resolve_path(&ctx.cwd, path), Shown::relative_to(&ctx.cwd))),
+    }
 }
 
 /// `path` relative to `base` with forward slashes, or absolute when it is outside `base`.

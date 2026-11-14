@@ -16,7 +16,7 @@ use ignore::WalkBuilder;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::util::{display_path, parse_input, resolve_path};
+use crate::util::{Shown, parse_input, search_base};
 
 const MAX_GLOB_RESULTS: usize = 1000;
 const DEFAULT_GREP_LIMIT: usize = 200;
@@ -125,18 +125,20 @@ impl Tool for GlobTool {
             Ok(matcher) => matcher,
             Err(error) => return ToolOutput::error(error),
         };
-        let base = resolve_path(&ctx.cwd, input.path.as_deref().unwrap_or("."));
+        let (base, shown) = match search_base(ctx, input.path.as_deref(), "glob") {
+            Ok(found) => found,
+            Err(why) => return ToolOutput::error(why),
+        };
         if !base.is_dir() {
             return ToolOutput::error(format!("{} is not a directory", base.display()));
         }
-        let cwd = ctx.cwd.clone();
         let listing = tokio::task::spawn_blocking(move || {
             let files = glob_files(&base, &matcher);
             let total = files.len();
             let mut out: Vec<String> = files
                 .iter()
                 .take(MAX_GLOB_RESULTS)
-                .map(|path| display_path(&cwd, path))
+                .map(|path| shown.show(path))
                 .collect();
             if total > MAX_GLOB_RESULTS {
                 out.push(format!(
@@ -243,7 +245,7 @@ impl Sink for Collector<'_> {
 fn grep_files(
     input: &GrepInput,
     base: &Path,
-    cwd: &Path,
+    shown_as: &Shown,
     withheld: &dyn Fn(&Path) -> bool,
 ) -> Result<String, String> {
     let mut builder = RegexMatcherBuilder::new();
@@ -293,7 +295,7 @@ fn grep_files(
         if filter.as_ref().is_some_and(|f| !f.is_match(&relative)) {
             continue;
         }
-        let shown = display_path(cwd, &path);
+        let shown = shown_as.show(&path);
         let mut collector = Collector {
             shown: &shown,
             mode: input.mode,
@@ -394,16 +396,18 @@ impl Tool for GrepTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        let base = resolve_path(&ctx.cwd, input.path.as_deref().unwrap_or("."));
+        let (base, shown) = match search_base(ctx, input.path.as_deref(), "grep") {
+            Ok(found) => found,
+            Err(why) => return ToolOutput::error(why),
+        };
         if !base.exists() {
             return ToolOutput::error(format!("{}: no such file or directory", base.display()));
         }
-        let cwd = ctx.cwd.clone();
         // Asking about a secret file is the gate's part, and it asks when a call names one. A
         // search of a directory names none, so it passes them by.
         let permissions = ctx.services.get::<PermissionState>();
         let withheld = move |path: &Path| permissions.as_ref().is_some_and(|state| state.withholds(path));
-        match tokio::task::spawn_blocking(move || grep_files(&input, &base, &cwd, &withheld)).await {
+        match tokio::task::spawn_blocking(move || grep_files(&input, &base, &shown, &withheld)).await {
             Ok(Ok(text)) => ToolOutput::text(text),
             Ok(Err(error)) => ToolOutput::error(error),
             Err(e) => ToolOutput::error(format!("grep failed: {e}")),
@@ -414,6 +418,7 @@ impl Tool for GrepTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::util::display_path;
 
     fn tree() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
@@ -449,7 +454,7 @@ mod tests {
 
     fn grep(dir: &Path, input: Value) -> String {
         let input: GrepInput = serde_json::from_value(input).unwrap();
-        grep_files(&input, dir, dir, &|_| false).unwrap()
+        grep_files(&input, dir, &Shown::relative_to(dir), &|_| false).unwrap()
     }
 
     #[test]
@@ -505,7 +510,7 @@ mod tests {
         };
         let search = |input: Value, base: &Path| {
             let input: GrepInput = serde_json::from_value(input).unwrap();
-            grep_files(&input, base, dir.path(), &secret).unwrap()
+            grep_files(&input, base, &Shown::relative_to(dir.path()), &secret).unwrap()
         };
         assert_eq!(
             search(json!({"pattern": "answer", "mode": "files"}), dir.path()),
@@ -558,7 +563,7 @@ mod tests {
         let single: GrepInput = serde_json::from_value(json!({"pattern": "add"})).unwrap();
         let file = dir.path().join("src/util/math.rs");
         assert_eq!(
-            grep_files(&single, &file, dir.path(), &|_| false).unwrap(),
+            grep_files(&single, &file, &Shown::relative_to(dir.path()), &|_| false).unwrap(),
             "src/util/math.rs:1:pub fn add(a: i32, b: i32) -> i32 {"
         );
         let spanning = grep(
@@ -572,13 +577,13 @@ mod tests {
 
         let across: GrepInput = serde_json::from_value(json!({"pattern": "a\\nb"})).unwrap();
         assert!(
-            grep_files(&across, dir.path(), dir.path(), &|_| false)
+            grep_files(&across, dir.path(), &Shown::relative_to(dir.path()), &|_| false)
                 .unwrap_err()
                 .contains("multiline")
         );
         let broken: GrepInput = serde_json::from_value(json!({"pattern": "("})).unwrap();
         assert!(
-            grep_files(&broken, dir.path(), dir.path(), &|_| false)
+            grep_files(&broken, dir.path(), &Shown::relative_to(dir.path()), &|_| false)
                 .unwrap_err()
                 .starts_with("invalid pattern")
         );

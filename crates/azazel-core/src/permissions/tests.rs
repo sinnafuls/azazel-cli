@@ -1869,3 +1869,25 @@ fn a_request_with_a_stored_credential_needs_its_host_and_the_credential_allowed(
         }
     );
 }
+
+#[test]
+fn local_files_are_written_without_asking_and_never_escaped() {
+    let f = fixture("");
+    for mode in [PermissionMode::Manual, PermissionMode::Plan] {
+        f.state.set_mode(mode);
+        for tool in ["write", "edit", "patch"] {
+            let v = verdict(&f, tool, Access::Write, "local://notes/report.md");
+            assert!(allowed(&v), "{mode} {tool}: {v:?}");
+        }
+        // A name that leads out of the scratch directory is refused, whatever the mode.
+        for escape in ["local://../../src/main.rs", "local:///etc/passwd"] {
+            let v = verdict(&f, "write", Access::Write, escape);
+            assert!(denied(&v), "{mode} {escape}: {v:?}");
+        }
+    }
+    f.state.set_mode(PermissionMode::Bypass);
+    assert!(denied(&verdict(&f, "write", Access::Write, "local://a/../../x")));
+    // A project file is still asked about in `manual`.
+    f.state.set_mode(PermissionMode::Manual);
+    assert!(prompts(&verdict(&f, "write", Access::Write, "src/main.rs")));
+}

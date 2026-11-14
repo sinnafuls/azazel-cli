@@ -7,12 +7,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
 use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
-use azazel_core::scheme::split_url;
+use azazel_core::scheme::{LOCAL, split_url};
 use azazel_core::{FileTracker, Lines, Schemes};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::util::{parse_input, resolve_path};
+use crate::util::{parse_input, resolve_target};
 
 const DEFAULT_LIMIT: usize = 2000;
 const MAX_LINE_CHARS: usize = 2000;
@@ -137,7 +137,9 @@ impl Tool for ReadTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        if let Some((scheme, rest)) = split_url(input.path.trim()) {
+        // A `local://` file is a file like any other: it is read, paged and tracked as one.
+        let local = split_url(input.path.trim()).is_some_and(|(scheme, _)| scheme == LOCAL);
+        if !local && let Some((scheme, rest)) = split_url(input.path.trim()) {
             let lines = Lines {
                 offset: input.offset,
                 limit: input.limit,
@@ -157,7 +159,10 @@ impl Tool for ReadTool {
                 )),
             };
         }
-        let path = resolve_path(&ctx.cwd, &input.path);
+        let path = match resolve_target(ctx, &input.path, "read") {
+            Ok(path) => path,
+            Err(why) => return ToolOutput::error(why),
+        };
         let meta = match tokio::fs::metadata(&path).await {
             Ok(meta) => meta,
             Err(e) => return ToolOutput::error(format!("{}: {e}", path.display())),
