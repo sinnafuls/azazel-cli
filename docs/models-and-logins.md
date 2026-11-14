@@ -44,7 +44,7 @@ slow    = ["anthropic/claude-opus-4-5:high", "@default"]
 | `verifier` | `@verify` | The `verifier` agent |
 | `playtester` | `@vision` | The `playtester` agent |
 
-The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: `/settings` → Models → the role's row writes `[roles] <name> = ["provider/model"]`, and you can write the same by hand.
+The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: [`/models`](tui.md#models) writes `[roles] <name> = ["provider/model:high", "@slow"]` (the model, its thinking level, its fallbacks), and you can write the same by hand.
 
 You may define further roles and use them anywhere a spec is accepted. When a chain is resolved, roles are expanded in order, a model that already appeared is dropped, and an unknown role or a role that refers back to itself is skipped.
 
@@ -77,7 +77,8 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 | `/settings` → Models → `default` | Same, from inside the TUI; takes effect at once |
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `--provider <id>` | Only this provider's models for this run: part of a name given to `--model` or `/model` is looked up among them, `provider/model` of another provider is refused, and the `/model` picker lists only them. Without `--model` the lead keeps the models of its configured chain that are this provider's, and the run ends with status 2 when there are none. Roles that name their own models (`smol`, `verify`, agent definitions) are not changed. A [virtual model](#virtual-models) picks among every provider's models, so it is refused and left out of the picker while `--provider` is given |
-| `/model`, `Ctrl+L` or `Alt+P` | Picker over roles, favourites, the models chosen lately, [virtual models](#virtual-models) and the models of providers that have a credential |
+| `/models` (or `/model` alone) | [One screen](tui.md#models) for the model of every role, its fallbacks and thinking level, the `Ctrl+P` cycle and presets, with the models of every provider; providers without a credential are signed in to or given a key from there. Changes go to `~/.azazel/config.toml`, or the project's config |
+| `Ctrl+L` or `Alt+P` | Picker over roles, favourites, the models chosen lately, [virtual models](#virtual-models) and the models of providers that have a credential: the lead's model for this session |
 | `Ctrl+P`, `Ctrl+Shift+P` | The next or previous favourite model or role (`tui.favourites`, or `--models a,b,c` for one run); a step onto a role makes its chain the lead's. See [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
 | `/preset <name>`, `--preset <name>` | Re-points every role a [preset](#presets) names |

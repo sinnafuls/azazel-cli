@@ -1,9 +1,13 @@
 //! Model names as people type them (`--model fable`), `azazel models` and `azazel auth status`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
+use std::sync::{Mutex, PoisonError};
+use std::time::Duration;
 
 use azazel_ai::providers::presets::{self, ProviderConfig};
-use azazel_ai::{Catalog, Credential, Credentials, ModelInfo, ModelSpec, Router, VIRTUAL};
+use azazel_ai::{Account, Catalog, Credential, Credentials, ModelInfo, ModelSpec, Router, VIRTUAL};
+use azazel_protocol::{ModelCost, ModelRow, ProviderRow};
 use serde_json::{Value, json};
 
 use crate::print::{EXIT_FAILED, EXIT_OK};
@@ -292,6 +296,186 @@ fn human(secs: u64) -> String {
 /// Every provider the configuration knows, in id order.
 pub fn providers(config: &azazel_core::Config) -> Result<Vec<ProviderConfig>, String> {
     presets::resolve(&config.providers)
+}
+
+/// The stored account of `provider` the next request would use, a sign-in or a stored key;
+/// `None` when the credential comes from elsewhere (a key in the environment, which wins over
+/// what is stored) or there is none.
+pub fn account_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<Account> {
+    let stored = credentials
+        .source(provider)
+        .is_some_and(|source| source.starts_with("auth.json"));
+    let label = credentials.selected(&provider.id).filter(|_| stored)?;
+    credentials
+        .accounts(&provider.id)
+        .into_iter()
+        .find(|account| account.label == label)
+}
+
+/// Whether `provider` is used through a subscription sign-in, so its tokens are not paid for
+/// one by one.
+pub fn login(credentials: &Credentials, provider: &ProviderConfig) -> bool {
+    account_in_use(credentials, provider).is_some_and(|account| account.login)
+}
+
+/// How long a provider may take to list its models.
+pub const LIST_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// The model lists providers gave in this process, by provider: they stand in for the
+/// catalogue's entries of that provider.
+#[derive(Default)]
+pub struct Listed(Mutex<HashMap<String, Vec<ModelInfo>>>);
+
+impl Listed {
+    fn get(&self, provider: &str) -> Option<Vec<ModelInfo>> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(provider)
+            .cloned()
+    }
+
+    /// The models of `provider`: as it listed them, else as the catalogue knows them.
+    fn of(&self, catalog: &Catalog, provider: &str) -> Vec<ModelInfo> {
+        self.get(provider)
+            .unwrap_or_else(|| catalog.for_provider(provider).into_iter().cloned().collect())
+    }
+}
+
+/// Asks `provider` for the models it serves now, describes each as the catalogue does where it
+/// knows the model, keeps the list in `listed` for the rest of the process and writes it to the
+/// model cache (`cache`) for later ones.
+pub async fn refresh(
+    router: &Router,
+    listed: &Listed,
+    cache: &Path,
+    provider: &str,
+) -> Result<Vec<ModelInfo>, String> {
+    let handle = router
+        .provider(provider)
+        .ok_or_else(|| format!("`{provider}` is not a provider"))?;
+    let models = match tokio::time::timeout(LIST_TIMEOUT, handle.list_models()).await {
+        Ok(Ok(models)) => models,
+        Ok(Err(e)) => return Err(format!("{provider} did not list its models: {e}")),
+        Err(_) => {
+            return Err(format!(
+                "{provider} did not list its models within {} seconds",
+                LIST_TIMEOUT.as_secs()
+            ));
+        }
+    };
+    let catalog = router.catalog();
+    let mut models: Vec<ModelInfo> = models
+        .into_iter()
+        .map(|model| match catalog.contains(&model.provider, &model.id) {
+            true => catalog.get(&model.provider, &model.id),
+            false => model,
+        })
+        .collect();
+    models.sort_by(|a, b| a.id.cmp(&b.id));
+    models.dedup_by(|a, b| a.id == b.id);
+    if !models.is_empty()
+        && let Err(e) = Catalog::refresh_cache(cache, provider, &models)
+    {
+        tracing::warn!("could not record the models of {provider}: {e}");
+    }
+    listed
+        .0
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .insert(provider.to_string(), models.clone());
+    Ok(models)
+}
+
+/// One model as `list_models` and the `/models` screen show it.
+pub fn model_row(model: &ModelInfo, usable: bool, login: bool) -> ModelRow {
+    ModelRow {
+        model: model.key(),
+        provider: model.provider.clone(),
+        id: model.id.clone(),
+        name: model.name.clone(),
+        context_window: model.context_window,
+        max_output: u64::from(model.max_output),
+        vision: model.vision,
+        reasoning: model.reasoning,
+        thinking_levels: model.thinking_levels.iter().map(ToString::to_string).collect(),
+        cost: model.cost.map(|cost| ModelCost {
+            input: cost.input,
+            output: cost.output,
+        }),
+        usable,
+        login,
+    }
+}
+
+/// Whether `id` (a provider of the router) can be used, and through a sign-in. A provider the
+/// configuration does not describe (the scripted one of the tests) needs no credential.
+pub fn standing(id: &str, providers: &[ProviderConfig], credentials: &Credentials) -> (bool, bool) {
+    match providers.iter().find(|p| p.id == id) {
+        Some(config) => (usable(credentials, config), login(credentials, config)),
+        None => (true, false),
+    }
+}
+
+/// The models of the router's providers, provider by provider: of those that can be used, or
+/// of all with `all`. `only` keeps one provider (`--provider`).
+pub fn rows(
+    router: &Router,
+    listed: &Listed,
+    providers: &[ProviderConfig],
+    credentials: &Credentials,
+    only: Option<&str>,
+    all: bool,
+) -> Vec<ModelRow> {
+    let mut rows = Vec::new();
+    for id in router
+        .provider_ids()
+        .into_iter()
+        .filter(|id| only.is_none_or(|only| only == *id))
+    {
+        let (ready, login) = standing(id, providers, credentials);
+        if !ready && !all {
+            continue;
+        }
+        rows.extend(
+            listed
+                .of(router.catalog(), id)
+                .iter()
+                .map(|model| model_row(model, ready, login)),
+        );
+    }
+    rows
+}
+
+/// Every provider of the router (or the one `only` keeps), as `list_providers` shows it.
+pub fn provider_rows(
+    router: &Router,
+    listed: &Listed,
+    providers: &[ProviderConfig],
+    credentials: &Credentials,
+    only: Option<&str>,
+) -> Vec<ProviderRow> {
+    router
+        .provider_ids()
+        .into_iter()
+        .filter(|id| only.is_none_or(|only| only == *id))
+        .map(|id| {
+            let config = providers.iter().find(|p| p.id == id);
+            let (usable, login) = standing(id, providers, credentials);
+            ProviderRow {
+                id: id.to_string(),
+                name: config.map_or_else(|| id.to_string(), |config| config.name.clone()),
+                usable,
+                login,
+                source: config.and_then(|config| credentials.source(config)),
+                env: config
+                    .map(|config| config.api_key_env.clone())
+                    .unwrap_or_default(),
+                oauth: config.is_some_and(|config| config.oauth.is_some()),
+                models: listed.of(router.catalog(), id).len(),
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

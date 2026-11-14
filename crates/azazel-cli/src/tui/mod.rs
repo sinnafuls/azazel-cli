@@ -17,6 +17,7 @@ mod gitcmd;
 mod input;
 mod loops;
 mod migrate;
+mod models;
 mod overlay;
 mod pager;
 mod panels;
@@ -297,6 +298,10 @@ enum Internal {
     StatusCommand(statusbar::CommandLine),
     /// How many files differ from the last commit; none where git cannot say.
     ChangedFiles(Option<usize>),
+    /// Something for the open `/models` screen.
+    Models(models::Update),
+    /// `/settings` opens `/models` and waits for it to close.
+    OpenModels(models::Opening, bridge::Reply<()>),
 }
 
 pub struct Tui {
@@ -381,6 +386,12 @@ pub struct Tui {
     extras_changes: Option<tokio::sync::watch::Receiver<u64>>,
     /// The popup screen, while it is up.
     popup: Option<popup::Popup>,
+    /// The providers asked for their models in this process, by `/models`.
+    models_asked: std::collections::BTreeSet<String>,
+    /// The `/models` screen while the prompts of a sign-in it started are up.
+    models_parked: Option<Overlay>,
+    /// `/models` as `/settings` asked for it, once nothing else is open.
+    models_waiting: Option<(models::Opening, bridge::Reply<()>)>,
     /// What was written to the transcript lately, to paint behind a popup.
     backdrop: popup::Backdrop,
     /// Rows the input and what is pinned around it took in the last inline frame: where the
@@ -559,6 +570,16 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
                     });
                 },
             ))));
+        let models_tx = internal_tx.clone();
+        local
+            .app
+            .registry
+            .services
+            .insert(Arc::new(crate::settings::ModelsHost(Arc::new(move |opening| {
+                let (reply, closed) = tokio::sync::oneshot::channel();
+                let _ = models_tx.send(Internal::OpenModels(opening, reply));
+                closed
+            }))));
         let screen_tx = internal_tx.clone();
         local
             .app
@@ -636,6 +657,9 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         calls: calls::Calls::default(),
         overlay: None,
         deferred: VecDeque::new(),
+        models_asked: Default::default(),
+        models_parked: None,
+        models_waiting: None,
         term: None,
         terms: term::Known::default(),
         term_changes: None,
@@ -861,6 +885,12 @@ impl Tui {
             }
             self.waiting.retain(|request| !request.abandoned());
             self.show_next_request();
+            if self.overlay.is_none()
+                && let Some((opening, done)) = self.models_waiting.take()
+            {
+                self.open_models(opening, Some(done)).await;
+            }
+            self.models_tick();
             self.follow_terminals();
             self.voice_tick();
             self.feed_status();
@@ -1115,7 +1145,7 @@ impl Tui {
             // No popup (the window is too small, or they are off): the box stands in for the
             // input.
             let room = height.saturating_sub(2).clamp(4, overlay::INLINE_ROWS);
-            let (lines, at) = overlay.render(modal::box_width(width), room, &self.theme);
+            let (lines, at) = overlay.render(overlay.box_width(width), room, &self.theme);
             cursor = at;
             bottom.extend(lines);
         } else if let Some((lines, at)) = self.term_box(
@@ -1465,6 +1495,8 @@ impl Tui {
             Internal::Migrate(step) => return self.on_migrate(step).await,
             Internal::StatusCommand(line) => return self.on_status_command(line),
             Internal::ChangedFiles(changed) => return self.on_changed_files(changed),
+            Internal::Models(update) => return self.on_models(update).await,
+            Internal::OpenModels(opening, done) => return self.models_waiting = Some((opening, done)),
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1727,6 +1759,9 @@ impl Tui {
             }
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
+            }
+            if let Outcome::Models(request) = outcome {
+                return self.models_request(request).await;
             }
             // The popup of an agent stays open while it is typed to or stopped.
             match outcome {
@@ -2141,13 +2176,17 @@ impl Tui {
                 };
             }
             // Handled where the key was pressed; the overlay stays open.
-            Outcome::Hotkey { .. } | Outcome::ReadBody | Outcome::Send(_) | Outcome::Stop => return,
+            Outcome::Hotkey { .. }
+            | Outcome::ReadBody
+            | Outcome::Send(_)
+            | Outcome::Stop
+            | Outcome::Models(_) => return,
         };
         match action {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
             action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
             Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
-            Action::AgentPane | Action::Usage(_) => {}
+            Action::AgentPane | Action::Usage(_) | Action::Models { .. } => {}
             // The screen goes back to the command that showed it, which knows what it asked for.
             Action::Settings { reply } => {
                 if let overlay::Kind::Settings(screen) = kind {

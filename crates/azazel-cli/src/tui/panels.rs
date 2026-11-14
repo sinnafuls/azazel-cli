@@ -689,7 +689,9 @@ pub(super) fn is_text_input(overlay: &Overlay) -> bool {
         Kind::Input { secret, .. } => !secret,
         Kind::Form(form) => form.is_typing(),
         Kind::Pane(_) => true,
-        Kind::Select { .. } | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) => false,
+        Kind::Select { .. } | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) | Kind::Models(_) => {
+            false
+        }
     }
 }
 

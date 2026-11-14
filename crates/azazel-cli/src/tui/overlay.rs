@@ -177,6 +177,10 @@ pub enum Action {
     Statusline,
     /// `/usage`: what each subscription has left; its key asks the providers again.
     Usage(std::sync::Arc<super::usage::Shown>),
+    /// `/models`: `done` hears when the screen closes (`/settings` waits for it).
+    Models {
+        done: Option<Reply<()>>,
+    },
 }
 
 impl Action {
@@ -211,6 +215,7 @@ impl Action {
             Action::Approval { reply, .. } | Action::DenyFeedback { reply } => reply.is_closed(),
             Action::Plan { reply } | Action::PlanFeedback { reply } => reply.is_closed(),
             Action::Settings { reply } => reply.is_closed(),
+            Action::Models { done: Some(done) } => done.is_closed(),
             _ => false,
         }
     }
@@ -237,6 +242,8 @@ pub enum Kind {
     Status(Box<StatusEditor>),
     /// Rows to read, not to choose from.
     Report(Report),
+    /// `/models`: the roles and the models of every provider.
+    Models(Box<super::models::Models>),
 }
 
 /// What a [`Report`] draws: the rows for a box with this many columns of text.
@@ -321,6 +328,17 @@ pub enum Outcome {
     Send(String),
     /// The agent of a popup is to be stopped. The popup stays open.
     Stop,
+    /// `/models` asks for something to be done. The screen stays open.
+    Models(super::models::Request),
+}
+
+/// What a step of the `/models` screen is for the UI.
+pub fn models_outcome(step: super::models::Step) -> Outcome {
+    match step {
+        super::models::Step::Pending => Outcome::Pending,
+        super::models::Step::Close => Outcome::Cancelled,
+        super::models::Step::Do(request) => Outcome::Models(request),
+    }
 }
 
 /// A key as the hint line names it: `S` rather than `shift+s`.
@@ -332,6 +350,9 @@ fn key_label(combo: &KeyCombo) -> String {
         _ => combo.to_string(),
     }
 }
+
+/// The widest the `/models` screen gets.
+const MODELS_WIDTH: usize = 150;
 
 /// Columns of text in the box of an overlay, in a window `columns` wide.
 pub fn inner_width(columns: usize) -> usize {
@@ -479,6 +500,22 @@ impl Overlay {
         Overlay::new(title, Vec::new(), Kind::Pane(Box::new(pane)), action)
     }
 
+    /// The `/models` screen in a box. Its title says where changes are saved.
+    pub fn models(screen: Box<super::models::Models>, action: Action) -> Self {
+        Overlay::new(screen.title(), Vec::new(), Kind::Models(screen), action)
+    }
+
+    /// How wide the box is in a window `columns` wide. `/models` takes all but two columns on
+    /// each side, up to 150; every other box nine tenths, up to 100.
+    pub fn box_width(&self, columns: usize) -> usize {
+        match self.kind {
+            Kind::Models(_) if columns >= usize::from(azazel_tui::modal::MIN_COLS) => {
+                columns.saturating_sub(4).min(MODELS_WIDTH)
+            }
+            _ => azazel_tui::modal::box_width(columns),
+        }
+    }
+
     /// The settings screen in a box.
     pub fn settings(screen: Box<crate::settings::Screen>, action: Action) -> Self {
         Overlay::new("Settings".to_string(), Vec::new(), Kind::Settings(screen), action)
@@ -508,7 +545,8 @@ impl Overlay {
             | Kind::Select { .. }
             | Kind::Settings(_)
             | Kind::Status(_)
-            | Kind::Report(_) => None,
+            | Kind::Report(_)
+            | Kind::Models(_) => None,
         }
     }
 
@@ -549,6 +587,11 @@ impl Overlay {
                     EditorStep::Save => Outcome::Chosen(0),
                 };
             }
+            Kind::Models(screen) => {
+                let outcome = models_outcome(screen.on_key(key));
+                self.title = screen.title();
+                return outcome;
+            }
             Kind::Select { .. } | Kind::Input { .. } | Kind::Report(_) => {}
         }
         if key.code == KeyCode::Esc || (ctrl && key.code == KeyCode::Char('c')) {
@@ -565,7 +608,8 @@ impl Overlay {
                 | Kind::Pane(_)
                 | Kind::Settings(_)
                 | Kind::Status(_)
-                | Kind::Report(_) => Outcome::Hotkey { index: 0, key },
+                | Kind::Report(_)
+                | Kind::Models(_) => Outcome::Hotkey { index: 0, key },
             };
         }
         if ctrl && key.code == KeyCode::Char('o') && self.cut.get() {
@@ -632,7 +676,9 @@ impl Overlay {
                 }
                 Outcome::Pending
             }
-            Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) => Outcome::Pending,
+            Kind::Form(_) | Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) | Kind::Models(_) => {
+                Outcome::Pending
+            }
         }
     }
 
@@ -651,6 +697,7 @@ impl Overlay {
             Kind::Form(form) => form.on_paste(pasted),
             Kind::Pane(pane) => pane.on_paste(pasted),
             Kind::Settings(screen) => screen.on_paste(pasted),
+            Kind::Models(screen) => screen.on_paste(pasted),
             Kind::Status(_) => {}
         }
     }
@@ -690,6 +737,7 @@ impl Overlay {
             // Its own way out is named among them.
             Kind::Pane(pane) => return pane.hints(),
             Kind::Settings(screen) => return screen.hints(theme),
+            Kind::Models(screen) => return screen.hints(theme),
             Kind::Status(editor) => return editor.hints(theme),
             Kind::Report(report) => {
                 let (visible, total) = report.shown.get();
@@ -771,7 +819,9 @@ impl Overlay {
             Kind::Input { secret: true, .. } => 1,
             Kind::Input { .. } => 3,
             Kind::Form(form) => form.kept(),
-            Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) => interior,
+            Kind::Pane(_) | Kind::Settings(_) | Kind::Status(_) | Kind::Report(_) | Kind::Models(_) => {
+                interior
+            }
         };
         let has_body = !body.is_empty() || !warning.is_empty();
         let text_room = interior.saturating_sub(kept + usize::from(has_body));
@@ -856,6 +906,13 @@ impl Overlay {
             Kind::Settings(screen) => {
                 let room = total.saturating_sub(rows.len()).max(1);
                 let view = screen.view(inner, room, &prompt, theme);
+                cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
+                frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                rows.extend(view.lines);
+            }
+            Kind::Models(screen) => {
+                let room = total.saturating_sub(rows.len()).max(1);
+                let view = screen.view(inner, room, theme);
                 cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
                 rows.extend(view.lines);

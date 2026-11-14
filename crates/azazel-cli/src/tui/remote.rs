@@ -23,8 +23,8 @@ use azazel_core::{
 };
 use azazel_protocol::{
     self as protocol, Attached, BtwAnswer, Command, CommandResult, CommandRow, Decision, Exported, Frame,
-    Member, ModelRow, Replay, RewindWhat, Roles, SaveTo, SessionCopy, SessionRow, ShellResult, Snapshot,
-    State,
+    Member, ModelRow, ProviderRow, Replay, RewindWhat, Roles, SaveTo, SessionCopy, SessionRow, ShellResult,
+    Snapshot, State,
 };
 use azazel_team::{LEAD, MemberInfo, MemberState, Mentioned, TeamEvent};
 use azazel_tools::{TodoItem, TodoStatus};
@@ -812,7 +812,6 @@ impl Remote {
 
 impl Remote {
     /// Reads the session's state again, after a change that may have moved the lead.
-    #[expect(dead_code, reason = "the /models screen is being built on these")]
     async fn refresh_state(&mut self) {
         if let Ok(state) = ask::<State>(&self.client, Command::GetState).await {
             *locked(&self.shared.state) = state;
@@ -1003,13 +1002,52 @@ impl Backend for Remote {
                 .into_iter()
                 .map(|name| (name, crate::models::VIRTUAL_DETAIL.to_string())),
         );
-        let models: Vec<ModelRow> = ask(&self.client, Command::ListModels).await.unwrap_or_default();
+        let models: Vec<ModelRow> = ask(&self.client, Command::ListModels { all: false })
+            .await
+            .unwrap_or_default();
         rows.extend(models.into_iter().map(|model| {
-            // What the models cost is known where the session runs, not here.
-            let detail = crate::settings::model_detail(model.context_window, None, false);
+            let cost = model.cost.map(|cost| azazel_ai::Cost {
+                input: cost.input,
+                output: cost.output,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            });
+            let detail = crate::settings::model_detail(model.context_window, cost.as_ref(), model.login);
             (model.model, detail)
         }));
         rows
+    }
+
+    fn current_model(&self) -> Option<String> {
+        let state = self.state();
+        // What the chain begins with, else the model that answered last.
+        let first = match state.chain.first()?.parse::<ModelSpec>().ok()? {
+            ModelSpec::Model(model) => Some(format!("{}/{}", model.provider, model.model)),
+            ModelSpec::Role(role) => state.roles.get(&role).cloned(),
+        };
+        first.or(state.model)
+    }
+
+    async fn model_rows(&mut self) -> Result<Vec<ModelRow>, String> {
+        ask(&self.client, Command::ListModels { all: true }).await
+    }
+
+    async fn providers(&mut self) -> Result<Vec<ProviderRow>, String> {
+        ask(&self.client, Command::ListProviders).await
+    }
+
+    fn refresh_models(&mut self, provider: String, done: mpsc::UnboundedSender<Internal>) {
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            let command = Command::RefreshModels {
+                provider: provider.clone(),
+            };
+            let result = ask::<Vec<ModelRow>>(&client, command).await;
+            let _ = done.send(Internal::Models(super::models::Update::Refreshed {
+                provider,
+                result,
+            }));
+        });
     }
 
     async fn prompt(&mut self, text: String, attached: Vec<Block>) -> Result<(), String> {

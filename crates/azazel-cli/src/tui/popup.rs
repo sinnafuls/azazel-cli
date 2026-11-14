@@ -165,7 +165,7 @@ impl Tui {
         let (width, height) = (usize::from(columns), usize::from(rows));
         self.refresh_pane(super::overlay::inner_width(width));
         let (lines, cursor) = match &self.overlay {
-            Some(overlay) => overlay.render(modal::box_width(width), modal::box_rows(height), &self.theme),
+            Some(overlay) => overlay.render(overlay.box_width(width), modal::box_rows(height), &self.theme),
             None => self
                 .term_box(modal::box_width(width), modal::box_rows(height))
                 .unwrap_or_default(),

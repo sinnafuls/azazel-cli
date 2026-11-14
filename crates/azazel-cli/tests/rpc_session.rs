@@ -700,6 +700,87 @@ fn registered_commands_run_and_the_lists_answer() {
 }
 
 #[test]
+fn roles_providers_and_models_are_listed_and_changed() {
+    let mut client = Client::start(&replies(&[]), &["--trust"]);
+    let home_config = client.dir.path().join("home").join("config.toml");
+    let config = || std::fs::read_to_string(&home_config).unwrap_or_default();
+    let role = |roles: &Value, name: &str| {
+        roles["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["role"] == name)
+            .unwrap()
+            .clone()
+    };
+
+    // Every provider, with what it takes; the scripted one needs no credential.
+    let providers = client.ok(json!({ "type": "list_providers" }));
+    let providers = providers.as_array().unwrap();
+    let mock = providers.iter().find(|p| p["id"] == "mock").unwrap();
+    assert_eq!(
+        (mock["usable"].clone(), mock["login"].clone()),
+        (json!(true), json!(false))
+    );
+    let anthropic = providers.iter().find(|p| p["id"] == "anthropic").unwrap();
+    assert_eq!(anthropic["oauth"], true);
+    assert!(
+        anthropic["env"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("ANTHROPIC_API_KEY"))
+    );
+
+    // Without `all` only what can be used; with it, every provider's models, each saying so.
+    let usable = client.ok(json!({ "type": "list_models" }));
+    assert!(usable.as_array().unwrap().iter().all(|row| row["usable"] == true));
+    let all = client.ok(json!({ "type": "list_models", "all": true }));
+    let all = all.as_array().unwrap();
+    assert!(all.len() >= usable.as_array().unwrap().len());
+    let row = all.iter().find(|row| row["provider"] == "anthropic").unwrap();
+    assert_eq!(row["model"], format!("anthropic/{}", row["id"].as_str().unwrap()));
+
+    // The scripted provider lists a model per queue of its script.
+    let fresh = client.ok(json!({ "type": "refresh_models", "provider": "mock" }));
+    assert_eq!(fresh[0]["model"], "mock/lead");
+    let listed = client.ok(json!({ "type": "list_models" }));
+    assert!(
+        listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["model"] == "mock/lead")
+    );
+    assert!(
+        client
+            .error(json!({ "type": "refresh_models", "provider": "nope" }))
+            .contains("nope")
+    );
+
+    // A role is pointed at a model with a thinking level, saved, then cleared.
+    let roles = client.ok(json!({
+        "type": "set_role", "role": "smol", "chain": ["mock/lead:high", "@default"], "save": "home"
+    }));
+    let smol = role(&roles, "smol");
+    assert_eq!(
+        (smol["source"].clone(), smol["thinking"].clone()),
+        (json!("home"), json!("high"))
+    );
+    assert!(
+        config().contains("smol = [\"mock/lead:high\", \"@default\"]"),
+        "{}",
+        config()
+    );
+    let roles = client.ok(json!({ "type": "list_roles" }));
+    assert_eq!(role(&roles, "smol")["resolved"][0], "mock/lead:high");
+    let roles = client.ok(json!({ "type": "set_role", "role": "smol", "save": "home" }));
+    assert_eq!(role(&roles, "smol")["source"], "builtin");
+    assert!(!config().contains("smol"), "{}", config());
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
 fn what_a_ui_elsewhere_needs_is_answered() {
     let mut client = Client::start(&replies(&["one", "two"]), &[]);
     std::fs::create_dir_all(client.project().join("src")).unwrap();

@@ -240,8 +240,21 @@ pub enum Command {
     /// Asks a question on the side, without interrupting the lead. The answer arrives as
     /// `btw_delta` frames and then, whole, in the response as [`BtwAnswer`].
     Btw { question: String },
-    /// The models that can be used. Answers with a list of [`ModelRow`].
-    ListModels,
+    /// The models of the providers there is a credential for; with `all`, of every provider,
+    /// each row saying whether it can be used. A provider whose list was asked for this
+    /// session (`refresh_models`) has its rows from that answer, the others from the
+    /// catalogue. Answers with a list of [`ModelRow`].
+    ListModels {
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        all: bool,
+    },
+    /// Every provider: whether it can be used, how, and how many models it has. Answers with a
+    /// list of [`ProviderRow`].
+    ListProviders,
+    /// Asks `provider` for the models it serves now. The answer stands for the rest of the
+    /// session and is kept in the model cache for later ones. Answers with a list of
+    /// [`ModelRow`] of that provider.
+    RefreshModels { provider: String },
     /// Every model role: its chain, where that comes from and what it resolves to, plus the
     /// saved presets. Answers with [`Roles`].
     ListRoles,
@@ -970,12 +983,46 @@ pub struct TreeRow {
 pub struct ModelRow {
     /// `provider/id`.
     pub model: String,
+    pub provider: String,
+    pub id: String,
+    /// What the model is called in lists, when that is more than its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
     pub context_window: u64,
     pub max_output: u64,
     pub vision: bool,
     pub reasoning: bool,
+    /// The thinking levels the model takes; empty for every level when `reasoning` is set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub thinking_levels: Vec<String>,
     /// USD per million tokens.
     pub cost: Option<ModelCost>,
+    /// Its provider has a credential, or needs none.
+    pub usable: bool,
+    /// Its provider is used through a subscription sign-in: it is not paid by the token.
+    #[serde(default)]
+    pub login: bool,
+}
+
+/// One provider of `list_providers`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProviderRow {
+    pub id: String,
+    pub name: String,
+    /// It has a credential, or needs none.
+    pub usable: bool,
+    /// The credential in use is a subscription sign-in.
+    pub login: bool,
+    /// Where the credential comes from (`OPENAI_API_KEY`, `auth.json (login)`), when there is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The environment variables a key is read from.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    /// It can be signed in to with an account.
+    pub oauth: bool,
+    /// How many models it has: as it listed them this session, else as the catalogue knows them.
+    pub models: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -1165,6 +1212,8 @@ pub fn schema() -> Value {
     generator.subschema_for::<MessageRow>();
     generator.subschema_for::<TreeRow>();
     generator.subschema_for::<ModelRow>();
+    generator.subschema_for::<ProviderRow>();
+    generator.subschema_for::<Roles>();
     generator.subschema_for::<AccountUsage>();
     generator.subschema_for::<ShellResult>();
     generator.subschema_for::<Exported>();

@@ -576,7 +576,8 @@ now in brackets:
   and VS Code keep it for their command palette: `Alt+Shift+P` always arrives. VS Code also keeps `Ctrl+P`;
   `Alt+M` and `Alt+Shift+M` do the same there. `/keys` says which keys your terminal keeps.
 
-`Alt+P` or `Ctrl+L` (and `/model`) open the model picker with the row of what the lead is on selected. Typing
+`Alt+P` or `Ctrl+L` open the model picker, the quick way to put this session on another model, with the row of
+what the lead is on selected (`/model` alone opens [`/models`](#models) instead). Typing
 filters it. The rows come in this order: the roles, each with the model it answers with first; your favourites
 (marked `★`), in the order of the list; the models chosen lately (marked `recent`), the latest first; then
 [virtual models](models-and-logins.md#virtual-models) and every other model of the providers you have a
@@ -860,7 +861,8 @@ Models, permissions and setup:
 
 | Command | Description |
 |---|---|
-| `/model [name [fallback …]]` | Pick the model, or set a chain; part of a name or `@role` works too |
+| `/model [name [fallback …]]` | Set the lead's chain for this session; part of a name or `@role` works too. Alone it opens `/models` |
+| `/models` | [Choose the model of every role](#models), with fallbacks, thinking, the `Ctrl+P` cycle and presets |
 | `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `/mode [mode]` | Pick or set the permission mode. `bypass` opens a warning box that starts on `No`; see [permissions](permissions.md#bypass) |
 | `/agent [name]` | Pick the [primary agent](team.md#primary-agents) the lead is, or switch to one: `/agent plan`. `Tab` in an empty input steps through them |
@@ -1313,7 +1315,7 @@ What `Enter` does depends on the setting:
 | A number or a text | An input holding the value in use. `Enter` saves; a value the configuration refuses stays in the input with the reason. Nothing typed puts a text back on its default |
 | A list (favourites, rules, phrases) | Its entries. `Enter` edits an entry, or adds one on the last row; `a` adds, `d` removes, `[` and `]` move the entry up and down. Every change is saved as it is made |
 | A table (formatters, checkers, language servers, account order) | Its entries as `name = value`, edited like a list. A value is text, or TOML where the key takes more: `rust = { command = "rust-analyzer", extensions = ["rs"] }` |
-| A role on the Models page | The model picker: a provider, then one of its models. Every role but `default` also offers to go back to the role it falls back to |
+| A role on the Models page | [`/models`](#models) on the Roles view with that role selected; `Esc` there comes back to the settings. The row `Models for the lead and each agent` opens it too |
 
 Each change is saved at once (comments and everything else in the file are kept). A value that is the default
 is taken out of the file instead of written, unless a file below says something else. Where a layer above the
@@ -1322,10 +1324,9 @@ and the line that confirms the change says who sets it. The permission rules of 
 editors hold only the rules of the file changes go to. Making `bypass` the mode every session starts in is asked
 about, with `No` first.
 
-Signing in, adding a key, signing out and choosing a model ask their questions in boxes of their own and come
-back to the screen where it was. After the first sign-in or key, it goes straight on to choosing a default
-model. Credentials are kept in `~/.azazel/auth.json` and a model chosen for a role in `~/.azazel/config.toml`,
-whichever file `p` has chosen for the other settings.
+Signing in, adding a key and signing out ask their questions in boxes of their own and come back to the screen
+where it was. After the first sign-in or key, with no default model yet, [`/models`](#models) opens on that
+provider's models to choose the default one. Credentials are kept in `~/.azazel/auth.json`.
 
 `[providers]`, `[models]`, `[presets]`, `[hooks]`, `[[stream_rules]]` and `[embeddings]` are tables of tables
 or lists of tables: the Advanced page lists them with what sets them and why they are edited in the file.
@@ -1333,6 +1334,87 @@ or lists of tables: the Advanced page lists them with what sets them and why the
 In a session that runs in another process (`azazel attach`, SSH) and for RPC clients, `/settings` shows the same
 pages as a chain of menus: the pages, then the settings of one with their values, then the value. There a list
 is typed with commas between its entries and a table one `name = value` at a time (`name =` removes an entry).
+A role's models are typed, the first one then its fallbacks with spaces between them (`openai/gpt-5:high
+@default`), and saved in `~/.azazel/config.toml`; nothing typed puts the role back on its built-in value.
+
+## Models
+
+`/models` (or `/model` alone) opens one screen for choosing models: the model of every role, its fallbacks
+and its thinking level, the `Ctrl+P` cycle and presets, beside the models of every provider. It is a large
+popup, as wide as the window less four columns (at most 150) and as tall as it less four rows.
+
+```
+╭─ Models · saving to home ─────────────────────────────────────────────────────────────────────╮
+│ Model roles: where each one's model comes from, its fallbacks and its thinking                │
+│ ⌕                                                                                       20/20 │
+│ ▌Roles          3/20 │ ▌● default  anthropic/claude-opus-5-5            ◉ high  ⟳ 1      home │
+│  Recent            4 │  ● smol     openai/gpt-5.6-luna                          ⟳ 2      home │
+│  All models      342 │                ↳ anthropic/claude-haiku-4-5                            │
+│  ──────────────────  │  ○ slow     auto → anthropic/claude-opus-5-5                   built-in │
+│  Anthropic        48 │  ○ plan     auto → anthropic/claude-opus-5-5                   built-in │
+│  OpenAI          120 │  + New role…                                                           │
+│  ──────────────────  │                                                                        │
+│  Groq                │  ctrl+p cycle: @default › @smol                                        │
+│                                                                                               │
+╰─ enter pick · t thinking · f fallback · x clear · [ ] reorder · c cycle · n new · esc close ──╯
+```
+
+The sidebar on the left lists `Roles` (how many have a value of their own, of all), `Recent`, `All models`,
+then the providers you have a credential for with their number of models, then, dimmed, those you have none
+for. Below 80 columns the sidebar is left out and `Tab` steps through these instead.
+
+The body shows the scope selected in the sidebar:
+
+- **A list of models**: `provider/id`, a `●` on the model the session is on, the roles whose model it is, then
+  the context window, the output limit, the price per million tokens in and out (`subscription` through a
+  sign-in, `free`), and `◐` for a model that thinks and `◫` for one that takes images. In a narrow box the price
+  goes first, then the output limit, then the context window. The models roles use and those chosen lately
+  come first, above a line. Under the list stand what the selected model is and costs, its thinking levels,
+  and the roles that use it (`used by: default ◉ high · smol`).
+- **The Roles view**: each role with a solid dot when it has a value of its own and a hollow one when it
+  falls back (`auto → model`), its first model, then on the right its thinking level, its place in the
+  `Ctrl+P` cycle and where its value comes from (`home`, `project`, `local`, `session`, `built-in`). Its
+  fallbacks stand under it as `↳ model` rows. The last row makes a new role, and the foot of the view shows the
+  `Ctrl+P` cycle.
+- **A provider without a credential**: which variable to set, `Sign in` for a provider with a sign-in and
+  `Add API key` for one that takes a key, then the models its catalogue entry lists. `Enter` runs the sign-in or
+  asks for the key, and the screen comes back on that provider with its models.
+
+Typing searches every scope at once: `provider/id`, the name, and `free` for a model that costs nothing. A
+model whose id or name is what you typed comes first, then those that contain it, then looser matches. The
+counts in the sidebar become the number of matches, and the arrows step over what has none.
+
+The screen opens on the catalogue at once and asks each provider you have a credential for for the models it
+serves now, in the background and once per run; a spinner stands beside a provider while it is asked. A
+provider you rest on in the sidebar that was not asked yet is asked after a moment, and `F5` asks again. What
+the providers answer is kept in `~/.azazel/cache/models.json` for the next run.
+
+| Where | Key | What it does |
+|---|---|---|
+| Sidebar | `Up`, `Down`, `Home`, `End` | Another scope |
+| | `Right`, `Enter` | Into the body |
+| Models | `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End` | Move |
+| | `Enter` | The roles the model can take, in a strip at the foot: pick one and the model is that role's first model, or `+ fallback for…` and a role to add it to as a fallback. Then the thinking strip offers `inherit` and the levels the model has; `inherit` writes no level, so the session's applies |
+| | `F5` | Ask the provider for its models again |
+| Roles view | `Enter` | Choose the role's model: the list of every model opens with its model selected, and `Enter` picks one (on a fallback row it replaces that fallback) |
+| | `t` | The thinking level of the role's model, or of the fallback |
+| | `f` | Add a fallback |
+| | `x`, `Delete` | Clear the role, which falls back to the next config file or its built-in value; on a fallback row, remove the fallback |
+| | `[`, `]` | Move the role earlier or later in the `Ctrl+P` cycle; on a fallback row, move the fallback among the others |
+| | `c` | Put the role in the `Ctrl+P` cycle (`@role` in `tui.favourites`, saved in `~/.azazel/config.toml`) or take it out |
+| | `n` | A new role: type its name, then choose its model |
+| | `s`, `l` | Save every role as a preset (type its name), or load one for this session |
+| | `w` | Save changes to the project's `.azazel/config.toml` instead of `~/.azazel/config.toml` (the title says which), and back. Only in a [trusted](configuration.md#trust) project |
+| Anywhere | `Alt+S`, `Alt+L`, `Alt+W` | What `s`, `l` and `w` do in the Roles view, where letters search |
+| | `Tab` | Between the sidebar and the body; below 80 columns, the next scope |
+| | `Esc` | Back a step: the strip, then choosing a model for a role, then the search, then the screen closes |
+
+Every change is made at once, through the session (so a session in another process changes the same way), and
+the first row says what it came to: `smol → openai/gpt-5.6-luna (home config)`. When the project's config
+sets the same role, which wins over the home config, the row says so. Choosing the model of `default` (or of
+`lead`) also puts the running session back on it. The mouse works too: the wheel moves in the part under it,
+a click selects, a click on the selected row does what `Enter` does, and a click on a chip of the strip picks
+it.
 
 ## Symbols
 

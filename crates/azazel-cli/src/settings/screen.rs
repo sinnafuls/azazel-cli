@@ -34,7 +34,9 @@ pub(crate) enum Request {
     Subscription,
     ApiKey,
     SignOut,
-    /// Choose the model of this role.
+    /// `/models`, on the Roles view.
+    Models,
+    /// `/models`, on this role.
     Role(&'static Setting),
 }
 
@@ -323,6 +325,15 @@ impl Screen {
                         }),
                 );
             }
+        }
+        if page == Page::Models {
+            rows.push(Row::Action {
+                request: Request::Models,
+                label: "Models for the lead and each agent",
+                detail: "/models",
+                about: "Every role with its model, fallbacks and thinking level, the ctrl+p cycle and \
+                        presets, beside the models of every provider.",
+            });
         }
         let mut group = "";
         for setting in SETTINGS.iter().filter(|setting| setting.page == page) {
@@ -1693,7 +1704,7 @@ mod tests {
 
         press(&mut screen, KeyCode::Right);
         assert_eq!(screen.page(), Page::Models);
-        assert_eq!(selected_name(&screen), "roles.default");
+        assert_eq!(selected_name(&screen), "Models for the lead and each agent");
         press(&mut screen, KeyCode::Tab);
         assert_eq!(screen.page(), Page::Appearance);
         // The first row is a heading: the cursor starts under it.
@@ -2080,7 +2091,7 @@ mod tests {
         let f = fixture("", "");
         let mut screen = screen(&f);
         press(&mut screen, KeyCode::Right);
-        for _ in 0..3 {
+        for _ in 0..4 {
             press(&mut screen, KeyCode::Down);
         }
         assert_eq!(selected_name(&screen), "roles.planner");
@@ -2286,8 +2297,11 @@ mod tests {
         assert!(press(&mut screen, KeyCode::Enter));
         assert_eq!(screen.take_request(), Request::SignOut);
 
-        // A role takes its model from the picker.
+        // The Models page opens `/models`: the whole screen, or on a role.
         press(&mut screen, KeyCode::Right);
+        assert!(press(&mut screen, KeyCode::Enter));
+        assert_eq!(screen.take_request(), Request::Models);
+        press(&mut screen, KeyCode::Down);
         assert!(press(&mut screen, KeyCode::Enter));
         assert_eq!(
             screen.take_request(),

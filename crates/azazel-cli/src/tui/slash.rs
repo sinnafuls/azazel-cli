@@ -57,7 +57,11 @@ const BUILTIN: &[(&str, &str)] = &[
     ("help", "List commands"),
     (
         "model",
-        "Pick the model, or set it: /model <name> [fallback …] (part of a name is enough)",
+        "Set the model: /model <name> [fallback …] (part of a name is enough); alone it opens /models",
+    ),
+    (
+        "models",
+        "Choose the model of every role, with fallbacks, thinking, the ctrl+p cycle and presets",
     ),
     ("thinking", "Pick the thinking level, or set it: /thinking high"),
     ("mode", "Pick the permission mode, or set it: /mode auto"),
@@ -311,7 +315,8 @@ impl Tui {
         self.sync().await;
         match name {
             "help" => self.help(),
-            "model" if args.is_empty() => self.open_model_picker().await,
+            "models" => self.open_models(Default::default(), None).await,
+            "model" if args.is_empty() => self.open_models(Default::default(), None).await,
             "model" => {
                 let specs: Vec<&str> = args.split_whitespace().collect();
                 self.set_model(&specs).await;

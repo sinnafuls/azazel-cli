@@ -405,11 +405,30 @@ fn saved_favourites(file: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// `list` with `spec` in it (`added`) or without it.
-fn toggled(mut list: Vec<String>, spec: &str, added: bool) -> Vec<String> {
-    list.retain(|other| other != spec);
-    if added {
-        list.push(spec.to_string());
+/// A change to what ctrl+p steps through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum FavouriteChange {
+    Add,
+    Remove,
+    /// One place nearer the start.
+    Earlier,
+    /// One place nearer the end.
+    Later,
+}
+
+/// `list` after `change` to `spec`. A move of what is not in the list changes nothing.
+pub(super) fn favourites_changed(mut list: Vec<String>, spec: &str, change: FavouriteChange) -> Vec<String> {
+    let at = list.iter().position(|other| other == spec);
+    match (change, at) {
+        (FavouriteChange::Add, _) | (FavouriteChange::Remove, _) => {
+            list.retain(|other| other != spec);
+            if change == FavouriteChange::Add {
+                list.push(spec.to_string());
+            }
+        }
+        (FavouriteChange::Earlier, Some(at)) if at > 0 => list.swap(at, at - 1),
+        (FavouriteChange::Later, Some(at)) if at + 1 < list.len() => list.swap(at, at + 1),
+        _ => {}
     }
     list
 }
@@ -913,27 +932,28 @@ impl Tui {
     /// Adds `spec` to the favourites or removes it, and saves the change. Returns whether it
     /// is a favourite now.
     pub(super) fn toggle_favourite(&mut self, spec: &str) -> bool {
-        let added = match self.favourites.iter().position(|favourite| favourite == spec) {
-            Some(at) => {
-                self.favourites.remove(at);
-                false
-            }
-            None => {
-                self.favourites.push(spec.to_string());
-                true
-            }
+        let added = !self.favourites.iter().any(|favourite| favourite == spec);
+        let change = match added {
+            true => FavouriteChange::Add,
+            false => FavouriteChange::Remove,
         };
+        self.change_favourite(spec, change);
+        added
+    }
+
+    /// Changes what ctrl+p steps through, and saves the change in the home config.
+    pub(super) fn change_favourite(&mut self, spec: &str, change: FavouriteChange) {
+        self.favourites = favourites_changed(std::mem::take(&mut self.favourites), spec, change);
         // The list of the file is what changes: the one in use may be this run's alone
         // (`--models`).
         let file = self.env.paths.home_config();
-        let saved = toggled(saved_favourites(&file), spec, added);
+        let saved = favourites_changed(saved_favourites(&file), spec, change);
         let list = toml_edit::Array::from_iter(saved.iter().map(String::as_str));
         if let Err(e) =
             crate::init::set_config_value(&file, &["tui", "favourites"], Some(toml_edit::value(list)))
         {
             self.warn(&format!("the favourites were not saved: {e:#}"));
         }
-        added
     }
 
     // ------------------------------------------------------------ running commands
@@ -1326,14 +1346,26 @@ mod tests {
         std::fs::write(&file, "[tui]\nfavourites = [\"@default\", \"mock/a\"]\n").unwrap();
         let saved = saved_favourites(&file);
         assert_eq!(saved, ["@default", "mock/a"]);
+        let changed = |spec: &str, change| favourites_changed(saved.clone(), spec, change);
         assert_eq!(
-            toggled(saved.clone(), "mock/b", true),
+            changed("mock/b", FavouriteChange::Add),
             ["@default", "mock/a", "mock/b"]
         );
-        assert_eq!(toggled(saved.clone(), "@default", false), ["mock/a"]);
+        assert_eq!(changed("@default", FavouriteChange::Remove), ["mock/a"]);
         // What this run alone steps through (`--models`) is not what the file holds.
-        assert_eq!(toggled(saved.clone(), "mock/a", true), ["@default", "mock/a"]);
-        assert_eq!(toggled(saved, "mock/z", false), ["@default", "mock/a"]);
+        assert_eq!(changed("mock/a", FavouriteChange::Add), ["@default", "mock/a"]);
+        assert_eq!(changed("mock/z", FavouriteChange::Remove), ["@default", "mock/a"]);
+        // An entry moves a place at a time, and not past the ends.
+        assert_eq!(
+            changed("mock/a", FavouriteChange::Earlier),
+            ["mock/a", "@default"]
+        );
+        assert_eq!(changed("mock/a", FavouriteChange::Later), ["@default", "mock/a"]);
+        assert_eq!(
+            changed("@default", FavouriteChange::Earlier),
+            ["@default", "mock/a"]
+        );
+        assert_eq!(changed("mock/z", FavouriteChange::Later), ["@default", "mock/a"]);
     }
 
     #[test]

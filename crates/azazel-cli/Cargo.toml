@@ -95,6 +95,7 @@ keepawake = { workspace = true, optional = true }
 mermaid-rs-renderer = { workspace = true, optional = true }
 mimalloc.workspace = true
 notify-rust = { workspace = true, optional = true }
+nucleo-matcher.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 resvg = { workspace = true, optional = true }
