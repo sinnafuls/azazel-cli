@@ -128,12 +128,21 @@ fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// Lossless fan-out of events to any number of subscribers.
 #[derive(Default)]
 struct EventHub {
-    subscribers: Mutex<Vec<mpsc::UnboundedSender<AgentEvent>>>,
+    inner: Mutex<HubInner>,
+}
+
+#[derive(Default)]
+struct HubInner {
+    subscribers: Vec<mpsc::UnboundedSender<AgentEvent>>,
+    /// Every event emitted so far, subscribers or not.
+    emitted: u64,
 }
 
 impl EventHub {
     fn emit(&self, event: AgentEvent) {
-        let mut subscribers = locked(&self.subscribers);
+        let mut inner = locked(&self.inner);
+        inner.emitted += 1;
+        let subscribers = &mut inner.subscribers;
         match subscribers.len() {
             0 => {}
             1 => {
@@ -145,10 +154,15 @@ impl EventHub {
         }
     }
 
-    fn subscribe(&self) -> mpsc::UnboundedReceiver<AgentEvent> {
+    fn subscribe(&self) -> (mpsc::UnboundedReceiver<AgentEvent>, u64) {
         let (tx, rx) = mpsc::unbounded_channel();
-        locked(&self.subscribers).push(tx);
-        rx
+        let mut inner = locked(&self.inner);
+        inner.subscribers.push(tx);
+        (rx, inner.emitted)
+    }
+
+    fn emitted(&self) -> u64 {
+        locked(&self.inner).emitted
     }
 }
 
@@ -191,7 +205,19 @@ impl AgentHandle {
 
     /// Events from now on. Subscribe before sending the prompt whose events you want.
     pub fn subscribe(&self) -> mpsc::UnboundedReceiver<AgentEvent> {
+        self.hub.subscribe().0
+    }
+
+    /// Events from now on, and how many the agent emitted before the first of them: once `n`
+    /// of them are read, [`AgentHandle::emitted`] up to `base + n` has been seen. Lets a reader
+    /// place what other tasks write between the agent's events in the order it happened.
+    pub fn subscribe_counted(&self) -> (mpsc::UnboundedReceiver<AgentEvent>, u64) {
         self.hub.subscribe()
+    }
+
+    /// How many events the agent has emitted so far.
+    pub fn emitted(&self) -> u64 {
+        self.hub.emitted()
     }
 
     pub fn status(&self) -> AgentStatus {
