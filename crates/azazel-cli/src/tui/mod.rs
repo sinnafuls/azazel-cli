@@ -1134,11 +1134,23 @@ impl Tui {
             bottom.extend(self.waiting_lines(width));
             bottom.extend(self.terminal_lines(width));
             let rule = self.rule_role();
+            let mut prompt_role = if rule == Role::Border { Role::Accent } else { rule };
+            // The rules take the colour of the primary agent the lead is, unless a `!` command
+            // or bypass mode has to be seen.
+            let (rule, painted) = match self.agent().1 {
+                Some(color) if !matches!(rule, Role::Bash | Role::Error) => {
+                    let mut theme = self.theme.clone();
+                    theme.set_color(Role::Border, color);
+                    prompt_role = Role::Border;
+                    (Role::Border, Some(theme))
+                }
+                _ => (rule, None),
+            };
             let activity = self.voice_status().or_else(|| self.rule_status());
             let prompt = self.theme.glyphs().prefix(Glyph::Prompt);
             let composer = Composer {
                 prompt: &prompt,
-                prompt_role: if rule == Role::Border { Role::Accent } else { rule },
+                prompt_role,
                 placeholder: if self.busy {
                     "Steer the agent, alt+enter queues a follow-up"
                 } else {
@@ -1148,7 +1160,8 @@ impl Tui {
                 status: activity.as_deref(),
                 max_rows: composer::max_rows(height),
             };
-            let (lines, (row, column)) = composer::render(&self.editor, &composer, width, &self.theme);
+            let theme = painted.as_ref().unwrap_or(&self.theme);
+            let (lines, (row, column)) = composer::render(&self.editor, &composer, width, theme);
             cursor = Some((bottom.len() as u16 + row, column));
             bottom.extend(lines);
         }
@@ -1808,6 +1821,11 @@ impl Tui {
             Some("history_search") => self.open_history(),
             Some("paste_image") => self.paste_image(),
             Some("paste_text") => self.paste_text(),
+            // In an empty input there is nothing to complete: the key steps to the next
+            // primary agent.
+            Some("complete") if self.editor.is_empty() && self.completion.is_none() => {
+                self.cycle_agent().await
+            }
             Some("complete") => {
                 self.refresh_completion();
                 if self.completion.as_ref().is_some_and(|c| c.list.len() == 1) {
@@ -2165,6 +2183,11 @@ impl Tui {
                     self.set_mode(*mode).await;
                 }
             }
+            Action::Agent(names) => {
+                if let Some(name) = names.get(choice) {
+                    self.set_agent(name, false).await;
+                }
+            }
             Action::Bypass => {
                 if choice == 1 {
                     self.apply_mode(PermissionMode::Bypass).await;
@@ -2336,6 +2359,43 @@ impl Tui {
     async fn apply_mode(&mut self, mode: PermissionMode) {
         if let Err(why) = self.backend.set_mode(mode).await {
             self.fail(&why);
+        }
+    }
+
+    /// The primary agent the lead is, and its colour when its definition gives one.
+    pub(super) fn agent(&self) -> (String, Option<azazel_tui::Color>) {
+        let (agents, current) = self.backend.agents();
+        let color = agents
+            .into_iter()
+            .find(|agent| agent.name == current)
+            .and_then(|agent| agent.color)
+            .and_then(|color| color.parse().ok());
+        (current, color)
+    }
+
+    /// Makes the lead the primary agent `name`. `quiet` says so in a passing notice (tab)
+    /// rather than in the transcript.
+    pub(super) async fn set_agent(&mut self, name: &str, quiet: bool) {
+        match self.backend.set_agent(name).await {
+            Ok(()) if quiet => self.notice = Some(format!("agent: {name}")),
+            Ok(()) => self.info(&format!("agent: {name}")),
+            Err(why) => self.fail(&why),
+        }
+    }
+
+    /// `tab` in an empty input: the next primary agent, going round.
+    async fn cycle_agent(&mut self) {
+        let (agents, current) = self.backend.agents();
+        let next = match agents.iter().position(|agent| agent.name == current) {
+            Some(at) => (at + 1) % agents.len(),
+            None => 0,
+        };
+        match agents.get(next).filter(|agent| agent.name != current) {
+            Some(agent) => {
+                let name = agent.name.clone();
+                self.set_agent(&name, true).await;
+            }
+            None => self.notice = Some("there is no other primary agent to switch to".to_string()),
         }
     }
 

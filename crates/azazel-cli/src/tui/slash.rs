@@ -61,6 +61,10 @@ const BUILTIN: &[(&str, &str)] = &[
     ),
     ("thinking", "Pick the thinking level, or set it: /thinking high"),
     ("mode", "Pick the permission mode, or set it: /mode auto"),
+    (
+        "agent",
+        "Pick the primary agent the lead is, or switch to one: /agent plan (tab in an empty input steps through them)",
+    ),
     ("new", "Start a new session"),
     (
         "resume",
@@ -342,6 +346,8 @@ impl Tui {
                 Ok(mode) => self.set_mode(mode).await,
                 Err(e) => self.fail(&e),
             },
+            "agent" if args.is_empty() => self.open_agent_picker(),
+            "agent" => self.set_agent(args, false).await,
             "new" => {
                 if self.idle_to("start a new session") {
                     self.go(Go::New).await;
@@ -430,6 +436,20 @@ impl Tui {
                 None => self.other_command(name, args),
             },
         }
+    }
+
+    /// `/agent`: the primary agents, the one the lead is highlighted.
+    fn open_agent_picker(&mut self) {
+        let (agents, current) = self.backend.agents();
+        let items = agents
+            .iter()
+            .map(|agent| SelectItem::new(agent.name.clone(), agent.description.clone()))
+            .collect();
+        let at = agents.iter().position(|agent| agent.name == current).unwrap_or(0);
+        let names = agents.into_iter().map(|agent| agent.name).collect();
+        let body = vec![format!("current: {current}")];
+        self.overlay =
+            Some(Overlay::select("Agent", body, items, false, Action::Agent(names)).starting_at(at));
     }
 
     /// A skill (`/skill:<name>`) or a command registered by an extension. They run beside the

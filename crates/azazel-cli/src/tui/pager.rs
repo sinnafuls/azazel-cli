@@ -331,6 +331,7 @@ impl Tui {
                     let models: Vec<String> = chain.iter().map(ToString::to_string).collect();
                     sources.push(Source::Note(format!("model: {}", models.join(", "))));
                 }
+                EntryKind::AgentChange { agent } => sources.push(Source::Note(format!("agent: {agent}"))),
                 _ => {}
             }
         }

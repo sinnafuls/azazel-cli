@@ -93,6 +93,10 @@ pub enum EntryKind {
     ThinkingChange {
         level: String,
     },
+    /// The primary agent the lead switched to.
+    AgentChange {
+        agent: String,
+    },
     /// Pinned sessions are listed first.
     Pin {
         pinned: bool,
@@ -918,6 +922,14 @@ impl SessionStore {
     pub fn last_thinking(&self, leaf: Option<&str>) -> Option<String> {
         self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
             EntryKind::ThinkingChange { level } => Some(level),
+            _ => None,
+        })
+    }
+
+    /// The primary agent the branch ending at `leaf` last switched to.
+    pub fn last_agent(&self, leaf: Option<&str>) -> Option<String> {
+        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
+            EntryKind::AgentChange { agent } => Some(agent),
             _ => None,
         })
     }

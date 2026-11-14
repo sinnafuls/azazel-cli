@@ -326,6 +326,7 @@ branch outside a repository, no cost on a subscription) is left out.
 | Segment | Shown when | Content |
 |---|---|---|
 | `mode` | always | The permission mode: `manual`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, `⚠ bypass`, in the colour of the input rules (`bypass` in the colour of errors). `coordinator` follows it while [coordinator mode](team.md#coordinator-mode) is on |
+| `agent` | always | The [primary agent](team.md#primary-agents) the lead is (`build`, `plan`, …), in the colour its definition gives it, else the accent colour. The rules around the input take that colour too |
 | `branch` | the project is a git repository | `⑂ main`: the checked-out branch |
 | `git_dirty` | files differ from the last commit | `± 3`: how many files are changed or untracked. Counted again after every turn and every `!command`, and otherwise at most every five seconds |
 | `path` | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
@@ -354,10 +355,10 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 
 | Preset | Left | Right |
 |---|---|---|
-| `default` | `mode`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
+| `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
 | `minimal` | `mode`, `path` | `model` |
 | `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
-| `full` | `mode`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
+| `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
 
 `statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
 preset's, less what the other list took, and `["none"]` is a side with nothing on it. A segment stands once: named
@@ -375,7 +376,7 @@ The `powerline` preset is drawn in blocks unless you choose `bar` or `space` for
 |---|---|---|
 | `priority` | all | `0` to `100`: how long the segment stays on a narrow line; see below |
 | `icon` | all | `false` leaves out the symbol before the text |
-| `max` | `path`, `model`, `branch`, `goal`, `session`, `account`, `extensions` | The most columns of its text (for `extensions`, of each text), `4` to `200` |
+| `max` | `path`, `model`, `agent`, `branch`, `goal`, `session`, `account`, `extensions` | The most columns of its text (for `extensions`, of each text), `4` to `200` |
 | `style` | `path` | `short` (the default: `~` and the end of a long path), `full`, `basename` (the directory's own name) |
 | `style` | `model` | `full` (the default), `short` (without the provider) |
 | `style` | `context` | `percent` (the default), `tokens` (`◫ 84.0k/200.0k`) |
@@ -402,7 +403,7 @@ at its default.
 **A narrow terminal.** When the line does not fit, whole segments leave it, the one with the lowest priority
 first: `bar` (5), `time` (15), `account` (20), `session` (25), `cache` (30), `extensions` (32), `todo` (35),
 `queue` (38), `tier` (40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70),
-`context` (75), `path` (80), `git_dirty` (84), `branch` (85), `model` (95), `mode` (100). The segment with the
+`context` (75), `path` (80), `git_dirty` (84), `branch` (85), `agent` (90), `model` (95), `mode` (100). The segment with the
 highest priority of each side stays; only then is the right side shortened, and after that left out. The texts
 of `extensions` leave one by one, the last first.
 
@@ -514,7 +515,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
 | `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). Windows Terminal and VS Code paste with `Ctrl+V` themselves, so there the key for an image is `Alt+V` |
 | `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
-| `Tab` | `complete` | Open or accept completion |
+| `Tab` | `complete` | Open or accept completion. In an empty input: switch the lead to the next [primary agent](team.md#primary-agents) (`build`, `plan`, …) |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
 | `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
 | `Ctrl+S` | `stash` | Park the draft; on an empty input, bring the last parked draft back |
@@ -858,6 +859,7 @@ Models, permissions and setup:
 | `/model [name [fallback …]]` | Pick the model, or set a chain; part of a name or `@role` works too |
 | `/thinking [level]` | Pick or set the thinking level: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` |
 | `/mode [mode]` | Pick or set the permission mode. `bypass` opens a warning box that starts on `No`; see [permissions](permissions.md#bypass) |
+| `/agent [name]` | Pick the [primary agent](team.md#primary-agents) the lead is, or switch to one: `/agent plan`. `Tab` in an empty input steps through them |
 | `/permissions` | The permission rules in effect and where they come from. `d` removes a rule added in this session or remembered with "always allow"; `a` adds one (`allow shell(cargo test:*)`), for the session or saved. Rules from config files are shown with the file to edit |
 | `/forget-approvals` | Forget every remembered approval and every rule added in this session |
 | `/trust [yes\|no]` | Whether this project is trusted and what that covers; `yes` or `no` records the decision, a restart applies it |

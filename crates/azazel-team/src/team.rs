@@ -420,7 +420,13 @@ impl Inner {
             }
             None => deps.paths.cwd.clone(),
         };
-        if def.plan_mode {
+        // An agent started by one that is kept in plan mode plans too: the session mode would
+        // otherwise let it do what its parent may not (the `plan` primary agent).
+        let parent_plans = info
+            .parent
+            .as_deref()
+            .is_some_and(|parent| deps.permissions.kept_in_plan_mode(parent));
+        if def.plan_mode || parent_plans {
             deps.permissions.keep_in_plan_mode(id);
         }
         if let Some(grants) = &def.tools {
@@ -884,13 +890,13 @@ impl Team {
     ) -> Result<String, String> {
         let inner = &self.inner;
         let deps = &inner.deps;
-        let def = deps.defs.get(&request.def).ok_or_else(|| {
-            let known: Vec<String> = deps.defs.list().iter().map(|def| def.name.clone()).collect();
-            format!(
-                "no agent definition named `{}`; there are: {}",
-                request.def,
-                known.join(", ")
-            )
+        let def = deps.defs.subagent(&request.def).ok_or_else(|| {
+            let known: Vec<String> = deps.defs.subagents().iter().map(|def| def.name.clone()).collect();
+            let what = match deps.defs.get(&request.def) {
+                Some(_) => format!("`{}` is a primary agent, which only the lead can be", request.def),
+                None => format!("no agent definition named `{}`", request.def),
+            };
+            format!("{what}; there are: {}", known.join(", "))
         })?;
         if !self.may_spawn(parent, &request.def) {
             return Err(format!(
@@ -1142,7 +1148,7 @@ impl Team {
                 started: false,
             }));
         }
-        self.inner.deps.defs.get(name)?;
+        self.inner.deps.defs.subagent(name)?;
         let Some((lead, _)) = self.inner.lead() else {
             return Some(Err("no session is open".to_string()));
         };

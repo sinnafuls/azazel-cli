@@ -7,6 +7,14 @@ GitHub are its section here.
 
 ### Added
 
+- Primary agents: the lead is one of several personas. `build` is the lead as before; `plan` investigates
+  read-only, writes its plan under `.azazel/plans/` and hands over to `build` once you approve the plan.
+  `tab` in an empty input switches between them, `/agent [name]` picks one, `--agent <name>` starts a run
+  as one, and `[agents] default` sets the one sessions start as. A definition of your own with `mode: primary`
+  (or `all`) is one more: its body replaces the lead's identity, and its `tools`, limits, `model`,
+  `thinking`, `skills` and `color` apply to the lead while it is selected. The status line has an `agent`
+  segment in its colour, the input's rules take the colour too, and the switch is kept in the session.
+  RPC clients switch with `set_agent`, ACP clients with the session option `agent`.
 - `/open` (and `azazel open` in the shell) lists the recent sessions of every project, newest first, each with
   its directory; opening one of another project starts azazel again there, in the same terminal, with that
   project's trust, configuration and context files.
@@ -26,9 +34,12 @@ GitHub are its section here.
 
 ### Changed
 
+- In an agent definition `mode` now says what the definition is (`subagent`, `primary` or `all`); keeping an
+  agent in plan mode is `permission-mode: plan`. A definition that still says `mode: plan` is listed by
+  `/agents` with that message. `azazel migrate` writes `permission-mode`.
+- Agents started by an agent kept in plan mode are kept in plan mode too.
 - `/open` alone opens the session picker; the last link of the last reply is now `/open link` (`/open <n>`,
   `/open <path>` and `/open diagram` are unchanged).
-
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or

@@ -6,6 +6,7 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Tool, ToolSource};
+use azazel_core::agents::LeadAgent;
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Entry, EntryKind, ExtCtx, ExtError, Extension, Registrar,
     SystemPartProvider,
@@ -127,12 +128,14 @@ impl Coordinator {
     }
 }
 
-/// The lead's tools: everything the session offers, cut down to what a coordinator keeps while
-/// the mode is on, plus `report` when the run owes a typed result.
+/// The lead's tools: everything the session offers, cut down to what the primary agent it is
+/// grants and to what a coordinator keeps while the mode is on, plus `report` when the run owes
+/// a typed result.
 pub struct LeadTools {
     tools: Arc<dyn ToolSource>,
     coordinator: Arc<Coordinator>,
     typed: Option<Arc<Typed>>,
+    lead: Option<Arc<LeadAgent>>,
 }
 
 impl LeadTools {
@@ -140,11 +143,13 @@ impl LeadTools {
         tools: Arc<dyn ToolSource>,
         coordinator: Arc<Coordinator>,
         typed: Option<Arc<Typed>>,
+        lead: Option<Arc<LeadAgent>>,
     ) -> LeadTools {
         LeadTools {
             tools,
             coordinator,
             typed,
+            lead,
         }
     }
 }
@@ -152,6 +157,18 @@ impl LeadTools {
 impl ToolSource for LeadTools {
     fn tools(&self, agent: &AgentInfo) -> Vec<Arc<dyn Tool>> {
         let mut tools = self.tools.tools(agent);
+        // The primary agent's `tools` and `disallowed-tools`, as for a sub-agent; the patterns
+        // of its grants are the permission state's to enforce.
+        if let Some(def) = self.lead.as_ref().and_then(|lead| lead.def()) {
+            tools.retain(|tool| {
+                let name = tool.name();
+                !def.disallowed_tools.iter().any(|denied| denied == name)
+                    && def
+                        .tools
+                        .as_ref()
+                        .is_none_or(|grants| grants.iter().any(|grant| grant.matches_tool(name)))
+            });
+        }
         if self.coordinator.is_on() {
             tools.retain(|tool| offers(tool.name()));
         }
@@ -304,7 +321,7 @@ mod tests {
     #[test]
     fn a_coordinating_lead_keeps_the_team_tools_and_what_looks_things_up() {
         let coordinator = Arc::new(Coordinator::new(false));
-        let tools = LeadTools::new(Arc::new(Fixed(ALL.to_vec())), coordinator.clone(), None);
+        let tools = LeadTools::new(Arc::new(Fixed(ALL.to_vec())), coordinator.clone(), None, None);
         assert_eq!(names(&tools), ALL);
 
         assert!(coordinator.set(true));
@@ -320,7 +337,12 @@ mod tests {
     fn a_typed_run_gets_its_own_report_tool_in_either_mode() {
         let coordinator = Arc::new(Coordinator::new(true));
         let typed = Arc::new(Typed::new(json!({ "type": "object" })).unwrap());
-        let tools = LeadTools::new(Arc::new(Fixed(ALL.to_vec())), coordinator.clone(), Some(typed));
+        let tools = LeadTools::new(
+            Arc::new(Fixed(ALL.to_vec())),
+            coordinator.clone(),
+            Some(typed),
+            None,
+        );
         let offered = tools.tools(&lead());
         assert_eq!(offered.iter().filter(|tool| tool.name() == "report").count(), 1);
         // The one offered is the run's: its schema asks for `result`.
@@ -330,6 +352,37 @@ mod tests {
         coordinator.set(false);
         assert_eq!(names(&tools).iter().filter(|name| *name == "report").count(), 1);
         assert!(names(&tools).contains(&"write".to_string()));
+    }
+
+    #[test]
+    fn the_lead_is_offered_what_its_primary_agent_grants() {
+        let defs = azazel_core::agents::discover(
+            &[
+                (
+                    "build.md",
+                    "---\nname: build\ndescription: b\nmode: primary\n---\nB",
+                ),
+                (
+                    "look.md",
+                    "---\nname: look\ndescription: l\nmode: primary\ntools: read, grep, task, \
+                     write(notes/**)\ndisallowed-tools: task\n---\nL",
+                ),
+            ],
+            &[],
+        );
+        let lead = Arc::new(LeadAgent::new(Arc::new(defs), "build").unwrap());
+        let coordinator = Arc::new(Coordinator::new(false));
+        let tools = LeadTools::new(
+            Arc::new(Fixed(ALL.to_vec())),
+            coordinator,
+            None,
+            Some(lead.clone()),
+        );
+        assert_eq!(names(&tools), ALL);
+        lead.set("look").unwrap();
+        assert_eq!(names(&tools), ["read", "write", "grep"]);
+        lead.set("build").unwrap();
+        assert_eq!(names(&tools), ALL);
     }
 
     #[test]

@@ -3,8 +3,10 @@
 /// `(file name, text)` of every built-in definition, in name order.
 pub const BUILTIN_AGENTS: &[(&str, &str)] = &[
     ("artist.md", include_str!("../agents/artist.md")),
+    ("build.md", include_str!("../agents/build.md")),
     ("coder.md", include_str!("../agents/coder.md")),
     ("designer.md", include_str!("../agents/designer.md")),
+    ("plan.md", include_str!("../agents/plan.md")),
     ("planner.md", include_str!("../agents/planner.md")),
     ("playtester.md", include_str!("../agents/playtester.md")),
     ("researcher.md", include_str!("../agents/researcher.md")),
@@ -16,14 +18,16 @@ pub const BUILTIN_AGENTS: &[(&str, &str)] = &[
 
 #[cfg(test)]
 mod tests {
-    use azazel_core::agents::{AgentDef, AgentDefs, DefSource, discover};
+    use azazel_core::agents::{AgentDef, AgentDefs, AgentMode, DefSource, discover};
 
     use super::*;
 
-    const NAMES: [&str; 10] = [
+    const NAMES: [&str; 12] = [
         "artist",
+        "build",
         "coder",
         "designer",
+        "plan",
         "planner",
         "playtester",
         "researcher",
@@ -48,14 +52,21 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_parses_and_the_set_is_the_documented_ten() {
+    fn every_builtin_parses_and_the_set_is_the_documented_ten_and_two_primaries() {
         let defs = builtins();
         assert!(defs.invalid().is_empty(), "{:?}", defs.invalid());
         let names: Vec<String> = defs.list().iter().map(|def| def.name.clone()).collect();
         assert_eq!(names, NAMES);
+        let primaries: Vec<String> = defs.primaries().iter().map(|def| def.name.clone()).collect();
+        assert_eq!(primaries, ["build", "plan"]);
         for def in defs.list() {
             assert_eq!(def.source, DefSource::Builtin, "{}", def.name);
             assert!(!def.body.is_empty(), "{} has no system prompt", def.name);
+            if def.mode == AgentMode::Primary {
+                // The lead keeps the model and the turns the session gives it.
+                assert!(def.model.is_none() && def.max_turns.is_none(), "{}", def.name);
+                continue;
+            }
             assert!(def.model.is_some(), "{} names no model role", def.name);
             assert!(def.max_turns.is_some(), "{} has no turn limit", def.name);
             // Every built-in needs shell, web or write tools, which plan mode denies.
@@ -80,6 +91,18 @@ mod tests {
         assert!(patterns(&verifier, "write").is_empty());
         assert!(patterns(&verifier, "edit").is_empty());
         assert_eq!(patterns(&verifier, "shell"), [None]);
+    }
+
+    #[test]
+    fn the_plan_agent_is_today_s_plan_mode_and_build_is_unlimited() {
+        let defs = builtins();
+        let plan = defs.primary("plan").unwrap();
+        assert!(plan.plan_mode);
+        assert!(plan.tools.is_none() && plan.disallowed_tools.is_empty());
+        assert!(plan.color.is_some());
+        let build = defs.primary("build").unwrap();
+        assert!(!build.plan_mode && build.tools.is_none() && build.color.is_none());
+        assert!(defs.subagent("plan").is_none() && defs.subagent("build").is_none());
     }
 
     #[test]

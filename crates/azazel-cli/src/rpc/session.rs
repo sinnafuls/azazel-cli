@@ -86,6 +86,7 @@ fn kind_name(kind: &EntryKind) -> &'static str {
         EntryKind::Custom { .. } => "custom",
         EntryKind::SessionInfo { .. } => "session_info",
         EntryKind::ThinkingChange { .. } => "thinking_change",
+        EntryKind::AgentChange { .. } => "agent_change",
         EntryKind::Pin { .. } => "pin",
         EntryKind::Archive { .. } => "archive",
         EntryKind::RunStarted { .. } => "run_started",
@@ -205,6 +206,18 @@ impl Session {
             agents: self.roster(),
             branch: azazel_core::prompt::git_branch(&self.app.paths.project_root),
             coordinator: self.app.coordinator.is_on(),
+            agent: self.app.lead_agent.name(),
+            primary_agents: self
+                .app
+                .lead_agent
+                .primaries()
+                .iter()
+                .map(|def| azazel_protocol::PrimaryAgent {
+                    name: def.name.clone(),
+                    description: def.description.clone(),
+                    color: def.color.clone(),
+                })
+                .collect(),
             goal: services
                 .get::<Goals>()
                 .and_then(|goals| goals.current())
