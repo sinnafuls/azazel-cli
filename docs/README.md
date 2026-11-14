@@ -8,10 +8,11 @@ New here? Read [getting started](getting-started.md) first.
 |---|---|
 | [Getting started](getting-started.md) | Install, first run, a first prompt, print mode, updating, uninstalling |
 | [The terminal UI](tui.md) | Layout, keys, input prefixes, every slash command, themes |
-| [Configuration](configuration.md) | Config files, load order, every setting, trace export, trust, command-line flags |
+| [Configuration](configuration.md) | Config files, load order, every setting, trace export, trust, command-line flags, subcommands |
 | [Models and logins](models-and-logins.md) | Providers, roles and fallback chains, thinking levels, API keys, subscription and cloud sign-in |
 | [Permissions](permissions.md) | Permission modes, rules, the approval prompt, destructive commands, the git push guard, plan mode |
 | [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, exporting and sharing, bug reports, compaction, `/rewind` |
+| [Migrating from another harness](migrating.md) | `azazel migrate` and `/migrate`: models, keys, skills, commands, MCP servers, settings, conversations and memory from pi, omp, jcode, Claude Code and Codex CLI |
 | [Background sessions, schedules and remote work](background-and-remote.md) | `azazel bg`, `ps`, `logs`, `attach`, `kill`; `azazel schedule` and triggers; working on another machine with `--ssh` |
 
 ## Working as a team

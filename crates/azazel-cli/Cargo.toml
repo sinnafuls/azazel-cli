@@ -38,7 +38,9 @@ default = [
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
 acp = ["dep:agent-client-protocol"]
-memory = ["dep:azazel-memory"]
+# `rusqlite` reads the SQLite stores of other harnesses for `azazel migrate`; the memory store
+# already links it.
+memory = ["dep:azazel-memory", "dep:rusqlite"]
 browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
@@ -95,8 +97,10 @@ mimalloc.workspace = true
 notify-rust = { workspace = true, optional = true }
 reqwest.workspace = true
 resvg = { workspace = true, optional = true }
+rusqlite = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml_ng.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tokio.workspace = true

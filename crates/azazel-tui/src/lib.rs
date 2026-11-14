@@ -18,13 +18,14 @@ pub mod text;
 pub mod theme;
 
 pub use components::composer::Composer;
-pub use components::editor::{Draft, Editor, EditorView};
+pub use components::editor::{Atom, Draft, Editor, EditorView};
 pub use components::markdown::StreamingMarkdown;
 pub use components::overlay::{Hint, Scroll};
 pub use components::pager::Pager;
 pub use components::roster::{RosterRow, RosterState};
 pub use components::select::{SelectItem, SelectList};
 pub use components::spinner::Spinner;
+pub use components::tabs::Tab;
 pub use components::todo::TodoState;
 pub use components::tool_card::{Card, CardState};
 pub use components::vim::Vim;

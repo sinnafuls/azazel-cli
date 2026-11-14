@@ -997,8 +997,10 @@ dependencies = [
  "reqwest",
  "resvg",
  "rmcp",
+ "rusqlite",
  "serde",
  "serde_json",
+ "serde_yaml_ng",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
@@ -2303,6 +2305,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab8ecd87370524b461f8557c119c405552c396ed91fc0a8eec68679eab26f94a"
 dependencies = [
  "libloading",
+]
+
+[[package]]
+name = "docs-check"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "azazel-cli",
+ "azazel-core",
+ "azazel-protocol",
+ "azazel-tui",
+ "clap",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "xtask",
 ]
 
 [[package]]

@@ -102,6 +102,8 @@ azazel memory export > memories.jsonl    # every memory, superseded ones include
 
 All of these work on the project found from the current directory (or `--cwd <dir>`), and exit with code 1 on failure.
 
+`azazel migrate --only memory` brings over what omp, jcode and Claude Code remember, each memory for the project it belongs to and tagged `imported`; see [migrating](migrating.md#memory).
+
 ## Quick add
 
 In the interactive UI, a one-line input that starts with `# ` is remembered instead of sent:

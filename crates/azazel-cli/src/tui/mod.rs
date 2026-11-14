@@ -12,15 +12,19 @@ mod form;
 mod gitcmd;
 mod input;
 mod loops;
+mod migrate;
 mod overlay;
 mod pager;
 mod panels;
+mod paste;
 mod popup;
 mod probe;
 mod quick;
 mod rate;
 mod remote;
+mod resize;
 mod sessions;
+mod setup;
 mod share;
 mod slash;
 mod statusline;
@@ -41,7 +45,6 @@ use std::time::{Duration, Instant};
 
 use azazel_agent::AgentEvent;
 use azazel_ai::{Block, ModelSpec, StopReason, StreamEvent};
-use azazel_core::media::{MAX_IMAGE_SIDE, image_block};
 use azazel_core::{
     ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
@@ -52,7 +55,7 @@ use azazel_tui::components::{
 use azazel_tui::modal;
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
 use azazel_tui::{
-    ColorDepth, Composer, Draft, Editor, Floor, Frame, Glyph, GlyphLevel, HistoryItem, Keymap, Line,
+    Atom, ColorDepth, Composer, Draft, Editor, Floor, Frame, Glyph, GlyphLevel, HistoryItem, Keymap, Line,
     Renderer, Role, SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim,
     disable_enhanced_keys, enable_enhanced_keys, text,
 };
@@ -77,7 +80,7 @@ use overlay::{Action, ApprovalRow, Outcome, Overlay, approval_rows};
 #[cfg(test)]
 pub(crate) use remote::agent_event;
 pub(crate) use remote::{Place, Remote};
-pub(crate) use slash::{REWIND_NOTE, is_note};
+pub(crate) use slash::{REWIND_NOTE, builtin_names as builtin_command_names, is_note};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
 const MAX_COMPLETION_FILES: usize = 20_000;
@@ -244,6 +247,8 @@ enum Internal {
     Files(Vec<String>),
     /// A setting the settings menu saved that applies to the running UI at once.
     Setting { path: String, value: toml::Value },
+    /// Something a command of this process shows in a box of its own: the settings screen.
+    Request(UiRequest),
     #[cfg(feature = "voice")]
     Voice(voice::Done),
     /// Text of a side question's answer, or its end.
@@ -262,6 +267,12 @@ enum Internal {
     Trigger(crate::schedule::triggers::Event),
     /// A session was shared, a bug report written or its issue opened; or not.
     Sent(share::Sent),
+    /// What the clipboard held when a paste key was pressed.
+    Clipboard(paste::Clip),
+    /// The clipboard's text, for the key that pastes text only.
+    ClipboardText(Option<String>),
+    /// A step of `/migrate` finished beside the UI loop.
+    Migrate(migrate::Step),
 }
 
 pub struct Tui {
@@ -306,9 +317,11 @@ pub struct Tui {
     /// How many loops were started, to tell them apart.
     loop_serial: u64,
     /// Drafts parked with `ctrl+s`, each with the images that were attached to it.
-    stashed: Vec<(Draft, Vec<Block>)>,
+    stashed: Vec<(Draft, Vec<(Atom, Block)>)>,
     /// Keeps the input and the status line on the last rows of the screen.
     floor: Floor,
+    /// A change of the window's size that has not settled yet.
+    resize: resize::Resize,
     /// Transcript rows and blocks waiting to be written above the live region.
     transcript: Vec<HistoryItem>,
     /// The last thing written to the transcript is a tool card, so the next card joins it
@@ -350,7 +363,10 @@ pub struct Tui {
     rate: rate::Rate,
     show_thinking: bool,
     expand_tools: bool,
-    images: Vec<Block>,
+    /// The images attached to the draft, each with the chip that stands for it there.
+    images: Vec<(Atom, Block)>,
+    /// Images typed with a slash command, for the prompt that command may turn into.
+    carried: Vec<Block>,
     prompts: Vec<String>,
     notice: Option<String>,
     last_escape: Option<Instant>,
@@ -465,6 +481,16 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
                     });
                 },
             ))));
+        let screen_tx = internal_tx.clone();
+        local
+            .app
+            .registry
+            .services
+            .insert(Arc::new(crate::settings::SettingsHost(Arc::new(move |screen| {
+                let (reply, back) = tokio::sync::oneshot::channel();
+                let _ = screen_tx.send(Internal::Request(UiRequest::Settings { screen, reply }));
+                back
+            }))));
     }
     let (width, height) = crossterm::terminal::size().unwrap_or((80, 24));
     // Asked before anything reads keys: the answers come in on the same channel.
@@ -484,6 +510,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     backend.list_files(internal_tx.clone());
     let editor_config = env.config.editor.clone();
     let tui_config = env.config.tui.clone();
+    let mut renderer = Renderer::new(io::stdout(), width, height);
+    renderer.set_rewraps(azazel_tui::term::rewraps(&|name| std::env::var(name).ok()));
     let mut tui = Tui {
         backend,
         session,
@@ -492,7 +520,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         terminal: Some(EventStream::new()),
         internal_tx,
         internal_rx,
-        renderer: Renderer::new(io::stdout(), width, height),
+        renderer,
         caps,
         attention,
         run_failed: false,
@@ -510,6 +538,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         loop_serial: 0,
         stashed: Vec::new(),
         floor: Floor::new(height),
+        resize: resize::Resize::default(),
         transcript: Vec::new(),
         after_card: false,
         branch,
@@ -535,6 +564,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         show_thinking: tui_config.show_thinking,
         expand_tools: tui_config.expand_tools,
         images: Vec::new(),
+        carried: Vec::new(),
         prompts: Vec::new(),
         notice: None,
         last_escape: None,
@@ -736,6 +766,7 @@ impl Tui {
             }
             let popup_deadline = self.popup_deadline();
             let loop_deadline = self.loop_deadline();
+            let resize_deadline = self.resize.deadline();
             tokio::select! {
                 event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
@@ -772,6 +803,8 @@ impl Tui {
                 _ = wake_at(self.attention.next_wake()) => {}
                 // The popup screen is left a moment after its box closed.
                 _ = wake_at(popup_deadline) => {}
+                // The window has stopped changing size: the frame at its new size is due.
+                _ = wake_at(resize_deadline) => {}
                 // The next round of a `/loop` is due.
                 _ = wake_at(loop_deadline) => self.loop_tick().await,
                 // A program in a terminal drew something, or started, or ended.
@@ -819,9 +852,10 @@ impl Tui {
             }
             Incoming::Closed(why) => {
                 self.fail(&why);
-                let _ = self.draw();
+                // Ending: the last frame is drawn whatever the window is doing.
                 self.ended = true;
                 self.quit = true;
+                let _ = self.draw();
             }
         }
     }
@@ -831,6 +865,11 @@ impl Tui {
     /// into them.
     fn draw(&mut self) -> io::Result<()> {
         self.tell_terminal();
+        // A window that is still changing size is not drawn in: one frame follows at the size
+        // it comes to rest at.
+        if !self.settle_resize() {
+            return Ok(());
+        }
         // An overlay shown as a popup has the whole window; the transcript waits.
         if self.draw_popup()? {
             return Ok(());
@@ -997,10 +1036,6 @@ impl Tui {
             }
             bottom.extend(self.waiting_lines(width));
             bottom.extend(self.terminal_lines(width));
-            if !self.images.is_empty() {
-                let label = format!("[{} image(s) attached to the next prompt]", self.images.len());
-                bottom.push(self.theme.paint(Role::Muted, &label));
-            }
             let rule = self.rule_role();
             let activity = self.voice_status().or_else(|| self.rule_status());
             let prompt = self.theme.glyphs().prefix(Glyph::Prompt);
@@ -1293,6 +1328,7 @@ impl Tui {
             Internal::Shell { output, status } => (output, status),
             Internal::Files(files) => return self.files = Some(files),
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
+            Internal::Request(request) => return self.waiting.push_back(request),
             Internal::Btw(update) => return self.on_btw(update),
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Side(event) => return self.on_side(event).await,
@@ -1300,6 +1336,9 @@ impl Tui {
             #[cfg(feature = "detach")]
             Internal::Trigger(event) => return self.on_trigger(event).await,
             Internal::Sent(sent) => return self.on_sent(sent),
+            Internal::Clipboard(clip) => return self.on_clipboard(clip),
+            Internal::ClipboardText(text) => return self.on_clipboard_text(text),
+            Internal::Migrate(step) => return self.on_migrate(step).await,
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1377,6 +1416,8 @@ impl Tui {
                 request.agent.id, request.tool
             )),
             UiRequest::Plan { .. } => Some("a plan is ready for review".to_string()),
+            // Opened by the user a moment ago.
+            UiRequest::Settings { .. } => None,
         };
         if let Some(text) = needs_you {
             self.announce(Level::Info, text.clone());
@@ -1474,6 +1515,9 @@ impl Tui {
                         .markdown(),
                 );
             }
+            UiRequest::Settings { screen, reply } => {
+                self.overlay = Some(Overlay::settings(screen, Action::Settings { reply }));
+            }
         }
     }
 
@@ -1511,10 +1555,7 @@ impl Tui {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key).await,
             Event::Paste(pasted) => self.on_paste(&pasted),
-            Event::Resize(width, height) => {
-                self.renderer.resize(width, height);
-                self.floor.resize(height);
-            }
+            Event::Resize(width, height) => self.resize.note((width, height), Instant::now()),
             Event::FocusGained => self.attention.focus(true),
             Event::FocusLost => self.attention.focus(false),
             _ => {}
@@ -1589,10 +1630,12 @@ impl Tui {
                     return;
                 }
                 KeyCode::Enter if completion.slash => {
-                    // Enter on a half-typed command completes it; a complete one runs.
+                    // Enter on a half-typed command completes it; a complete one runs, even when
+                    // a longer command that starts with it (`/mode`, `/model`) is highlighted.
                     let typed = self.editor.text().trim().to_string();
+                    let complete = completion.list.items().iter().any(|item| item.label == typed);
                     let chosen = completion.list.selected_item().map(|item| item.label.clone());
-                    if chosen.is_some_and(|label| label != typed) {
+                    if !complete && chosen.is_some_and(|label| label != typed) {
                         return self.accept_completion();
                     }
                 }
@@ -1644,6 +1687,7 @@ impl Tui {
             Some("model_picker") => self.open_model_picker().await,
             Some("history_search") => self.open_history(),
             Some("paste_image") => self.paste_image(),
+            Some("paste_text") => self.paste_text(),
             Some("complete") => {
                 self.refresh_completion();
                 if self.completion.as_ref().is_some_and(|c| c.list.len() == 1) {
@@ -1723,18 +1767,23 @@ impl Tui {
     }
 
     async fn submit(&mut self, follow_up: bool) {
-        if self.editor.is_empty() && self.images.is_empty() {
+        if self.editor.is_empty() {
             return;
         }
-        // What is echoed keeps a folded paste as its token; what is sent has the text.
-        let shown = self.editor.text().to_string();
+        // What is echoed keeps a folded paste as its token; what is sent has the text. An
+        // attached image is its label, `[Image #1]`, in both.
+        let shown = self.editor.shown();
+        let images = self.claim_images();
         let entered = self.editor.take();
         self.completion = None;
         let trimmed = entered.trim();
         if let Some(command) = trimmed.strip_prefix('/') {
             let command = command.to_string();
+            // A command that turns into a prompt takes the images along.
+            self.carried = images;
             return self.slash(&command).await;
         }
+        self.carried.clear();
         if let Some(command) = trimmed.strip_prefix('!') {
             // `!!command` runs the same way but its output stays out of the agent's context.
             let (command, share) = match command.strip_prefix('!') {
@@ -1769,28 +1818,26 @@ impl Tui {
         }
         // Nothing can answer yet: keep what was typed and set a model up first.
         if !self.busy && !self.backend.has_model() {
-            self.editor.set_text(&entered);
+            self.set_draft(&entered, images);
             self.warn("no model is set up yet: sign in or add an API key, then choose a default model");
             return self.other_command("settings", "");
         }
         if self.busy && follow_up {
             // Held here, not by the agent, so that it is sent like any typed prompt.
-            return self.queue_message(entered);
+            return self.queue_message(entered, images);
         }
         self.prompts.push(entered.clone());
         self.remember(&entered);
         let lines = view::user_prompt(&shown, self.width(), &self.theme);
         self.say(lines);
         if self.busy {
-            let images = std::mem::take(&mut self.images);
             self.backend.steer(entered, images);
             return;
         }
-        self.send_prompt(entered).await;
+        self.send_prompt(entered, images).await;
     }
 
-    async fn send_prompt(&mut self, prompt: String) {
-        let images = std::mem::take(&mut self.images);
+    async fn send_prompt(&mut self, prompt: String, images: Vec<Block>) {
         if let Err(reason) = self.backend.prompt(prompt, images).await {
             self.fail(&format!("prompt rejected: {reason}"));
             if let Some(chain) = self.restore_chain.take() {
@@ -1813,30 +1860,6 @@ impl Tui {
             self.theme.glyph(Glyph::Ellipsis)
         ));
         self.backend.shell(command, share, self.internal_tx.clone());
-    }
-
-    fn paste_image(&mut self) {
-        let image = arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_image());
-        let Ok(image) = image else {
-            self.notice = Some("the clipboard holds no image".to_string());
-            return;
-        };
-        let (width, height) = (image.width as u32, image.height as u32);
-        let encoded =
-            image::RgbaImage::from_raw(width, height, image.bytes.into_owned()).and_then(|pixels| {
-                let mut png = Vec::new();
-                pixels
-                    .write_to(&mut io::Cursor::new(&mut png), image::ImageFormat::Png)
-                    .ok()?;
-                image_block(&png, MAX_IMAGE_SIDE).ok()
-            });
-        match encoded {
-            Some(block) => {
-                self.images.push(block);
-                self.notice = Some(format!("attached a {width}×{height} image"));
-            }
-            None => self.notice = Some("could not read the clipboard image".to_string()),
-        }
     }
 
     // ------------------------------------------------------------ completion
@@ -1911,7 +1934,7 @@ impl Tui {
     // ------------------------------------------------------------ overlays
 
     async fn finish_overlay(&mut self, overlay: Overlay, outcome: Outcome) {
-        let Overlay { action, .. } = overlay;
+        let Overlay { action, kind, .. } = overlay;
         let (choice, typed) = match outcome {
             Outcome::Pending => return,
             Outcome::Cancelled => return action.cancel(),
@@ -1922,6 +1945,7 @@ impl Tui {
                 return match action {
                     Action::Ask { reply } => drop(reply.send(Ok(answers.pop().unwrap_or_default()))),
                     Action::Form { reply } => drop(reply.send(Ok(answers))),
+                    Action::Migrate(offer) => self.migrate_picked(*offer, &answers),
                     other => other.cancel(),
                 };
             }
@@ -1930,8 +1954,15 @@ impl Tui {
         };
         match action {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
-            action @ (Action::Ask { .. } | Action::Form { .. }) => action.cancel(),
+            action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
+            Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
             Action::AgentPane => {}
+            // The screen goes back to the command that showed it, which knows what it asked for.
+            Action::Settings { reply } => {
+                if let overlay::Kind::Settings(screen) = kind {
+                    let _ = reply.send(screen);
+                }
+            }
             Action::Confirm { reply } => drop(reply.send(Ok(choice == 0))),
             Action::UiSelect { reply } => drop(reply.send(Ok(choice))),
             Action::UiInput { reply } => drop(reply.send(Ok(typed))),
@@ -2077,6 +2108,7 @@ impl Tui {
             action @ (Action::Share(_) | Action::Bug { .. } | Action::BugIssue(_)) => {
                 self.finish_share(action, choice)
             }
+            Action::TerminalSetup(change) => self.finish_terminal_setup(&change, choice),
             action @ (Action::CopyCode(_)
             | Action::Context(_)
             | Action::Jobs(_)
@@ -2167,20 +2199,28 @@ impl Tui {
     }
 
     fn set_theme(&mut self, name: &str) {
+        if self.apply_theme(name) {
+            self.info(&format!("theme: {name}"));
+        }
+    }
+
+    /// Draws with the theme `name` from now on, without a word about it: the settings screen
+    /// tries themes on while one is being chosen. False when there is no such theme, which is
+    /// said.
+    fn apply_theme(&mut self, name: &str) -> bool {
         let depth = self.theme.depth();
         let (theme, problem) = named_theme(&self.env.paths, name);
-        match problem {
-            Some(problem) => self.fail(&problem),
-            None => {
-                let glyphs = self.theme.glyphs().level();
-                self.theme = theme
-                    .with_depth(depth)
-                    .with_links(self.caps.links)
-                    .with_glyphs(glyphs);
-                self.theme_name = name.to_string();
-                self.info(&format!("theme: {name}"));
-            }
+        if let Some(problem) = problem {
+            self.fail(&problem);
+            return false;
         }
+        let glyphs = self.theme.glyphs().level();
+        self.theme = theme
+            .with_depth(depth)
+            .with_links(self.caps.links)
+            .with_glyphs(glyphs);
+        self.theme_name = name.to_string();
+        true
     }
 }
 

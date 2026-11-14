@@ -50,17 +50,98 @@ struct Paste {
     text: String,
 }
 
+/// Something in the text that is not text, such as an attached image. The cursor steps over
+/// it and the delete keys remove it as one character. It is shown as `[<name> #N]`, where N
+/// counts the atoms of that name from the start of the text, so the numbers have no gaps
+/// however atoms come and go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Atom(char);
+
+/// The character that stands for an atom in the text, and what the atom is called.
+#[derive(Clone)]
+struct Named {
+    ch: char,
+    name: String,
+}
+
+/// Atoms are characters of a private-use plane no font and no text uses.
+const ATOM_FIRST: u32 = 0x10_0000;
+const ATOM_COUNT: u32 = 0xFFFE;
+
+fn is_atom(c: char) -> bool {
+    (ATOM_FIRST..ATOM_FIRST + ATOM_COUNT).contains(&u32::from(c))
+}
+
+/// How an atom called `name` is shown when it is the `number`th of that name in the text.
+pub fn atom_label(name: &str, number: usize) -> String {
+    format!("[{name} #{number}]")
+}
+
+/// `text` with every atom written as its label.
+fn labelled(text: &str, atoms: &[Named]) -> String {
+    if atoms.is_empty() || !text.contains(is_atom) {
+        return text.to_string();
+    }
+    let mut numbers: Vec<(&str, usize)> = Vec::new();
+    let mut out = String::with_capacity(text.len() + 16);
+    for c in text.chars() {
+        let Some(atom) = atoms.iter().find(|atom| atom.ch == c) else {
+            out.push(c);
+            continue;
+        };
+        let at = match numbers.iter().position(|(name, _)| *name == atom.name) {
+            Some(at) => at,
+            None => {
+                numbers.push((&atom.name, 0));
+                numbers.len() - 1
+            }
+        };
+        numbers[at].1 += 1;
+        out.push_str(&atom_label(&atom.name, numbers[at].1));
+    }
+    out
+}
+
 /// What an editor held, taken out to be put back later (a stashed draft).
 #[derive(Clone, Default)]
 pub struct Draft {
     text: String,
     pastes: Vec<Paste>,
+    atoms: Vec<Named>,
 }
 
 impl Draft {
-    /// The draft as it was shown, folded pastes as their tokens.
-    pub fn shown(&self) -> &str {
-        &self.text
+    /// The draft as it was shown: folded pastes as their tokens, atoms as their labels.
+    pub fn shown(&self) -> String {
+        labelled(&self.text, &self.atoms)
+    }
+}
+
+/// One row of the content as it is drawn, and where its atoms are in it.
+#[derive(Default)]
+struct Row {
+    text: String,
+    chips: Vec<(usize, usize)>,
+}
+
+impl Row {
+    fn paint(&self, theme: &Theme) -> String {
+        if self.chips.is_empty() {
+            return theme.paint(Role::Text, &self.text);
+        }
+        let mut out = String::new();
+        let mut at = 0;
+        for &(start, end) in &self.chips {
+            if at < start {
+                out.push_str(&theme.paint(Role::Text, &self.text[at..start]));
+            }
+            out.push_str(&theme.paint(Role::Accent, &self.text[start..end]));
+            at = end;
+        }
+        if at < self.text.len() {
+            out.push_str(&theme.paint(Role::Text, &self.text[at..]));
+        }
+        out
     }
 }
 
@@ -101,6 +182,10 @@ pub struct Editor {
     pastes: Vec<Paste>,
     /// Number of the last folded paste.
     paste_seq: usize,
+    /// Atoms whose characters may be in the text, or in what undo brings back.
+    atoms: Vec<Named>,
+    /// Atoms made so far: each has a character of its own for as long as the editor lives.
+    atom_seq: u32,
 }
 
 impl Editor {
@@ -108,16 +193,22 @@ impl Editor {
         Editor::default()
     }
 
-    /// The content as shown: a folded paste is its token.
+    /// The content as it is kept: a folded paste is its token, an atom one private character.
+    /// [`Editor::shown`] is what the user sees.
     pub fn text(&self) -> &str {
         &self.text
     }
 
-    /// The content with every folded paste written out.
+    /// The content as shown: a folded paste is its token, an atom its label.
+    pub fn shown(&self) -> String {
+        labelled(&self.text, &self.atoms)
+    }
+
+    /// The content with every folded paste written out and every atom as its label.
     pub fn expanded(&self) -> String {
         let spans = self.token_spans();
         if spans.is_empty() {
-            return self.text.clone();
+            return self.shown();
         }
         let mut out = String::with_capacity(self.text.len());
         let mut at = 0;
@@ -127,7 +218,94 @@ impl Editor {
             at = end;
         }
         out.push_str(&self.text[at..]);
-        out
+        labelled(&out, &self.atoms)
+    }
+
+    /// Inserts an atom called `name` at the cursor as one undo step.
+    pub fn insert_atom(&mut self, name: &str) -> Atom {
+        let atom = self.new_atom(name);
+        self.begin_edit(Run::None);
+        self.text.insert(self.cursor, atom.0);
+        self.cursor += atom.0.len_utf8();
+        atom
+    }
+
+    /// Makes the first `literal` in the text an atom called `name`: how a draft that was
+    /// written out (a queued message, the file an editor saved) gets its atoms back. `None`
+    /// when the text does not have it.
+    pub fn atomize(&mut self, literal: &str, name: &str) -> Option<Atom> {
+        let start = self.text.find(literal).filter(|_| !literal.is_empty())?;
+        let end = start + literal.len();
+        let atom = self.new_atom(name);
+        let mut utf8 = [0u8; 4];
+        let written = atom.0.encode_utf8(&mut utf8);
+        self.text.replace_range(start..end, written);
+        if self.cursor >= end {
+            self.cursor = self.cursor - literal.len() + written.len();
+        } else if self.cursor > start {
+            self.cursor = start + written.len();
+        }
+        Some(atom)
+    }
+
+    /// The atoms in the text, in the order they stand in it.
+    pub fn atoms(&self) -> Vec<Atom> {
+        self.text
+            .chars()
+            .filter(|c| self.atoms.iter().any(|atom| atom.ch == *c))
+            .map(Atom)
+            .collect()
+    }
+
+    fn new_atom(&mut self, name: &str) -> Atom {
+        let ch = char::from_u32(ATOM_FIRST + self.atom_seq % ATOM_COUNT).unwrap_or('\u{100000}');
+        self.atom_seq += 1;
+        self.atoms.push(Named {
+            ch,
+            name: name.to_string(),
+        });
+        Atom(ch)
+    }
+
+    /// The label of the atom at `pos`, when one is there.
+    fn label_at(&self, pos: usize) -> Option<String> {
+        let c = self.text[pos..].chars().next()?;
+        let name = &self.atoms.iter().find(|atom| atom.ch == c)?.name;
+        let same = |c: &char| self.atoms.iter().any(|atom| atom.ch == *c && atom.name == *name);
+        Some(atom_label(
+            name,
+            self.text[..pos].chars().filter(same).count() + 1,
+        ))
+    }
+
+    /// Display columns of the grapheme cluster at `pos`: an atom is as wide as its label.
+    fn cell_width(&self, pos: usize, grapheme: &str) -> usize {
+        match self.label_at(pos) {
+            Some(label) => text::width(&label),
+            None => grapheme_width(grapheme),
+        }
+    }
+
+    /// Display columns of `start..end`, which lie on one line.
+    fn columns(&self, start: usize, end: usize) -> usize {
+        self.text[start..end]
+            .grapheme_indices(true)
+            .map(|(i, grapheme)| self.cell_width(start + i, grapheme))
+            .sum()
+    }
+
+    /// Byte offset of the grapheme boundary of the line `start..end` closest to display
+    /// column `col` without passing it.
+    fn offset_at_col(&self, start: usize, end: usize, col: usize) -> usize {
+        let mut used = 0usize;
+        for (i, grapheme) in self.text[start..end].grapheme_indices(true) {
+            let w = self.cell_width(start + i, grapheme);
+            if used + w > col {
+                return start + i;
+            }
+            used += w;
+        }
+        end
     }
 
     pub fn is_empty(&self) -> bool {
@@ -185,8 +363,8 @@ impl Editor {
         self.cursor += 1;
     }
 
-    /// Returns the content with folded pastes written out, records it in the prompt history and
-    /// clears the editor.
+    /// Returns the content with folded pastes written out and atoms as their labels, records
+    /// it in the prompt history and clears the editor.
     pub fn take(&mut self) -> String {
         let text = self.expanded();
         self.push_history(text.clone());
@@ -194,12 +372,13 @@ impl Editor {
         text
     }
 
-    /// Takes the content out without recording it, folded pastes included, so that
+    /// Takes the content out without recording it, folded pastes and atoms included, so that
     /// [`Editor::restore_draft`] can put it back.
     pub fn take_draft(&mut self) -> Draft {
         let draft = Draft {
             text: std::mem::take(&mut self.text),
             pastes: std::mem::take(&mut self.pastes),
+            atoms: std::mem::take(&mut self.atoms),
         };
         self.clear();
         draft
@@ -209,6 +388,7 @@ impl Editor {
     pub fn restore_draft(&mut self, draft: Draft) {
         self.begin_edit(Run::None);
         self.pastes.extend(draft.pastes);
+        self.atoms.extend(draft.atoms);
         self.text = draft.text;
         self.cursor = self.text.len();
     }
@@ -216,6 +396,7 @@ impl Editor {
     fn clear(&mut self) {
         self.text.clear();
         self.pastes.clear();
+        self.atoms.clear();
         self.cursor = 0;
         self.undo.clear();
         self.redo.clear();
@@ -322,14 +503,18 @@ impl Editor {
         };
         let avail = width - prompt_width;
 
-        let mut rows: Vec<String> = Vec::new();
+        let mut rows: Vec<Row> = Vec::new();
         let mut cursor = (0usize, 0usize);
         let mut offset = 0usize;
         for line in self.text.split('\n') {
-            let mut row = String::new();
+            let mut row = Row::default();
             let mut col = 0usize;
             for (i, grapheme) in line.grapheme_indices(true) {
-                let w = grapheme_width(grapheme);
+                // An atom is drawn as its label, which stays in one piece.
+                let chip = self.label_at(offset + i);
+                let w = chip
+                    .as_ref()
+                    .map_or_else(|| grapheme_width(grapheme), |label| text::width(label));
                 if col + w > avail && col > 0 {
                     rows.push(std::mem::take(&mut row));
                     col = 0;
@@ -337,7 +522,13 @@ impl Editor {
                 if offset + i <= self.cursor {
                     cursor = (rows.len(), col);
                 }
-                row.push_str(grapheme);
+                match chip {
+                    Some(label) => {
+                        row.chips.push((row.text.len(), row.text.len() + label.len()));
+                        row.text.push_str(&label);
+                    }
+                    None => row.text.push_str(grapheme),
+                }
                 col += w;
             }
             if offset + line.len() == self.cursor {
@@ -370,7 +561,7 @@ impl Editor {
             .take(shown)
             .map(|(i, row)| {
                 let lead = if i == 0 { prompt } else { indent.as_str() };
-                let line = format!("{lead}{}", theme.paint(Role::Text, row));
+                let line = format!("{lead}{}", row.paint(theme));
                 if text::width(&line) > width {
                     text::truncate(&line, width, "")
                 } else {
@@ -601,10 +792,10 @@ impl Editor {
         }
         let col = self
             .preferred_col
-            .unwrap_or_else(|| text::width(&self.text[start..self.cursor]));
+            .unwrap_or_else(|| self.columns(start, self.cursor));
         let previous_end = start - 1;
         let previous_start = self.line_start(previous_end);
-        let target = previous_start + offset_at_col(&self.text[previous_start..previous_end], col);
+        let target = self.offset_at_col(previous_start, previous_end, col);
         self.cursor = self.snap(target, false);
         self.run = Run::None;
         self.preferred_col = Some(col);
@@ -619,10 +810,10 @@ impl Editor {
         let start = self.line_start(self.cursor);
         let col = self
             .preferred_col
-            .unwrap_or_else(|| text::width(&self.text[start..self.cursor]));
+            .unwrap_or_else(|| self.columns(start, self.cursor));
         let next_start = end + 1;
         let next_end = self.line_end(next_start);
-        let target = next_start + offset_at_col(&self.text[next_start..next_end], col);
+        let target = self.offset_at_col(next_start, next_end, col);
         self.cursor = self.snap(target, false);
         self.run = Run::None;
         self.preferred_col = Some(col);
@@ -756,27 +947,19 @@ fn is_word(grapheme: &str) -> bool {
         .is_some_and(|c| c.is_alphanumeric() || c == '_')
 }
 
-/// Byte offset in `line` of the grapheme boundary closest to display column `col` without
-/// passing it.
-fn offset_at_col(line: &str, col: usize) -> usize {
-    let mut used = 0usize;
-    for (i, grapheme) in line.grapheme_indices(true) {
-        let w = grapheme_width(grapheme);
-        if used + w > col {
-            return i;
-        }
-        used += w;
-    }
-    line.len()
-}
-
 /// Normalises inserted text: line endings become `\n`, tabs become spaces, escape sequences and
-/// other control characters are dropped.
+/// other control characters are dropped, and so are the characters that stand for atoms (only
+/// the editor puts those in).
 fn clean(input: &str) -> String {
-    if input.contains('\r') {
+    let cleaned = if input.contains('\r') {
         text::sanitize(&input.replace("\r\n", "\n").replace('\r', "\n"))
     } else {
         text::sanitize(input)
+    };
+    if cleaned.contains(is_atom) {
+        cleaned.replace(is_atom, "")
+    } else {
+        cleaned
     }
 }
 
@@ -1275,5 +1458,126 @@ mod tests {
             assert!(usize::from(row) < lines.len());
             assert!(usize::from(col) < width, "width {width}: column {col}");
         }
+    }
+
+    #[test]
+    fn an_atom_is_one_character_to_the_keys_and_a_numbered_label_to_the_eye() {
+        let mut editor = with_text("see ");
+        let first = editor.insert_atom("Image");
+        typed(&mut editor, " and ");
+        let second = editor.insert_atom("Image");
+        assert_eq!(editor.shown(), "see [Image #1] and [Image #2]");
+        assert_eq!(editor.expanded(), "see [Image #1] and [Image #2]");
+        assert_eq!(editor.atoms(), [first, second]);
+        assert_ne!(first, second);
+
+        // One press of left is on the far side of the label, one backspace removes it whole.
+        let end = editor.cursor();
+        editor.handle_key(&key(KeyCode::Left));
+        assert_eq!(
+            end - editor.cursor(),
+            editor.text().chars().last().unwrap().len_utf8()
+        );
+        editor.handle_key(&key(KeyCode::Right));
+        editor.handle_key(&key(KeyCode::Backspace));
+        assert_eq!(editor.shown(), "see [Image #1] and ");
+        assert_eq!(editor.atoms(), [first]);
+
+        // Removing the first one renumbers what follows; undo brings it back as it was.
+        let third = editor.insert_atom("Image");
+        assert_eq!(editor.shown(), "see [Image #1] and [Image #2]");
+        editor.handle_key(&key(KeyCode::Home));
+        press(&mut editor, key(KeyCode::Right), 4);
+        editor.handle_key(&key(KeyCode::Delete));
+        assert_eq!(editor.shown(), "see  and [Image #1]");
+        assert_eq!(editor.atoms(), [third]);
+        editor.handle_key(&ctrl('z'));
+        assert_eq!(editor.shown(), "see [Image #1] and [Image #2]");
+        assert_eq!(editor.atoms(), [first, third]);
+
+        // An atom put in front of the others takes the first number.
+        editor.handle_key(&key(KeyCode::Home));
+        let fourth = editor.insert_atom("Image");
+        assert_eq!(editor.shown(), "[Image #1]see [Image #2] and [Image #3]");
+        assert_eq!(editor.atoms(), [fourth, first, third]);
+    }
+
+    #[test]
+    fn atoms_are_sent_as_their_labels_and_survive_a_stash() {
+        let mut editor = with_text("look ");
+        let atom = editor.insert_atom("Image");
+        let draft = editor.take_draft();
+        assert!(editor.is_empty() && editor.atoms().is_empty());
+        assert_eq!(draft.shown(), "look [Image #1]");
+
+        // An atom made meanwhile is not confused with the one in the draft.
+        let other = editor.insert_atom("Image");
+        assert_ne!(other, atom);
+        editor.take_draft();
+        editor.restore_draft(draft);
+        assert_eq!(editor.atoms(), [atom]);
+        assert_eq!(editor.shown(), "look [Image #1]");
+
+        // Taking the content writes the label out, and that is what the history has.
+        assert_eq!(editor.take(), "look [Image #1]");
+        assert!(editor.atoms().is_empty());
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), "look [Image #1]");
+        assert!(editor.atoms().is_empty(), "a label that was written out is text");
+    }
+
+    #[test]
+    fn labels_that_were_written_out_become_atoms_again() {
+        let mut editor = with_text("a [Image #1] b [Image #2] c");
+        let first = editor.atomize("[Image #1]", "Image").unwrap();
+        let second = editor.atomize("[Image #2]", "Image").unwrap();
+        assert_eq!(editor.atoms(), [first, second]);
+        assert_eq!(editor.shown(), "a [Image #1] b [Image #2] c");
+        assert_eq!(editor.cursor(), editor.text().len());
+        assert_eq!(editor.atomize("[Image #3]", "Image"), None);
+        assert_eq!(editor.atomize("", "Image"), None);
+
+        // Text from outside cannot bring an atom in: its character is dropped.
+        let forged: String = editor.text().chars().filter(|c| is_atom(*c)).take(1).collect();
+        let mut other = Editor::new();
+        other.insert_str(&format!("x{forged}y"));
+        assert_eq!(other.text(), "xy");
+        other.set_text(&forged);
+        assert!(other.is_empty());
+    }
+
+    #[test]
+    fn a_label_is_drawn_in_one_piece_and_the_cursor_counts_its_columns() {
+        let theme = Theme::dark();
+        let mut editor = with_text("ab ");
+        editor.insert_atom("Image");
+        let (lines, cursor) = editor.render(40, &theme, "> ");
+        assert_eq!(text::strip_ansi(&lines[0]), "> ab [Image #1]");
+        assert_eq!(cursor, (0, 15));
+        assert!(lines[0].contains(&theme.paint(Role::Accent, "[Image #1]")));
+
+        // Too narrow for the label after the text: it goes to the next row whole.
+        let (lines, cursor) = editor.render(12, &theme, "> ");
+        let plain: Vec<String> = lines.iter().map(|line| text::strip_ansi(line)).collect();
+        assert_eq!(plain, ["> ab ", "  [Image #1]", "  "]);
+        assert_eq!(cursor, (2, 2));
+        for width in 1..30 {
+            for line in editor.render(width, &theme, "> ").0 {
+                assert!(text::width(&line) <= width, "width {width}: {line:?}");
+            }
+        }
+
+        // Up and down keep the column on the screen, where the label is ten cells wide.
+        let mut editor = Editor::new();
+        editor.insert_atom("Image");
+        typed(&mut editor, "xy");
+        editor.insert_newline();
+        typed(&mut editor, "0123456789ab");
+        editor.handle_key(&key(KeyCode::Left));
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.render(40, &theme, "").1, (0, 11));
+        editor.handle_key(&key(KeyCode::Home));
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.render(40, &theme, "").1, (1, 0));
     }
 }

@@ -5,6 +5,100 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `azazel migrate [--from pi|omp|jcode|claude|codex|all] [--only <kinds>] [--dry-run] [--overwrite]
+  [--project <dir>]` and `/migrate` bring over what another harness holds on this machine: providers,
+  models, roles and fallbacks (to `models.yml` and `[roles]`), API keys (to `auth.json`), skills, custom
+  commands (placeholders converted), agent definitions (frontmatter mapped), MCP servers of the user and the
+  project, rule and context files azazel does not read where they are, settings that have an equivalent,
+  the conversations of every project (as sessions named `imported from <source>: <title>`, with thinking,
+  images, tool calls and results, the model of each reply, compactions and sub-agents' transcripts) and
+  memories. The source is only read; nothing that is there is replaced without `--overwrite`; sign-ins are
+  never copied but listed with the `azazel login <provider>` to run, and a key of a provider the source
+  signs in to is left out, so that nothing is billed to a key by surprise; a second run skips what is
+  already there. A report lists everything imported, skipped and lost. `/migrate` shows the harnesses found with
+  their counts, lets you untick sources and kinds, and shows the plan of a dry run before it writes. See
+  `docs/migrating.md`.
+- `/settings` is one screen of ten pages behind a row of tabs (Accounts, Models, Appearance, Status line,
+  Input, Permissions, Tools, Sessions, Usage, Advanced) and reaches every configuration key. `Tab` and the
+  arrows change pages, `/` searches all of them, `r` puts a setting back on its default, and `p` saves to the
+  project's config instead of the home config in a trusted project.
+- Each settings row shows the value in effect, a mark when it is not the default, and the layer it comes from
+  (`home`, `project`, `local`, `env`, `flag`); the tabs count what is changed on each page, and the selected
+  setting is described under the list with its key and default.
+- Settings are edited in place: switches flip, choices open a list that shows each value in the running UI
+  while it is being chosen (theme, symbols, indicator, tool call style), numbers and texts are typed, and
+  lists and tables (favourite models, permission rules, formatters, checkers, language servers, account order,
+  agent overrides) have an editor that adds, changes, removes and reorders entries.
+- Images in the draft: `Ctrl+V` and `Alt+V` take what is on the clipboard. An image is attached and shows as
+  a chip, `[Image #1]`, where the cursor was; copied files and text that is nothing but paths of image files
+  attach those images (other files become `@path` mentions); other text is pasted. The chip is one character
+  to the cursor and the delete keys, the numbers always run from 1 without gaps, undo brings a deleted image
+  back, and the prompt is sent with the labels in the text and the images in that order. Where the system
+  clipboard cannot be read directly, PowerShell (Windows, WSL), `osascript` (macOS) or `wl-paste`/`xclip`
+  (Linux) is asked. BMP images are converted to PNG. `Ctrl+Shift+V` and `Alt+Shift+V` (`paste_text`) paste
+  the clipboard's text as text.
+- Pasted paths: one path a line, quoted paths and Windows paths (`C:\...`, read as `/mnt/c/...` under WSL)
+  are recognised as dropped files.
+- `/terminal-setup`: says whether `Shift+Enter` adds a line in the terminal azazel runs in, and where it does
+  not, adds the key binding that makes it to VS Code's `keybindings.json`, Windows Terminal's `settings.json`
+  (from WSL) or `alacritty.toml`, after asking and with a copy of the file kept beside it; for kitty, WezTerm,
+  Ghostty and iTerm2 it shows what to put in.
+- `/keys` reports key conflicts under the bindings: keys the key bindings file gives to two actions, keys the
+  terminal keeps for itself (`alt+enter` in Windows Terminal, `ctrl+j` in VS Code, the tmux prefix), and keys
+  a terminal without enhanced key reporting cannot tell apart.
+- `cargo xtask docs-check` compares the docs with the code and fails with one line per difference, naming
+  the page and the name: configuration tables and keys with their defaults, trust-gated settings, hook
+  events, keymap actions and their default keys, flags, subcommands and their actions, RPC commands and
+  frames, the Luau API, slash commands and tools, in both directions. It also checks every `azazel …`
+  command line the docs show, that every page is linked from `docs/README.md`, that relative links lead to
+  a file and a heading that exist, that `docs/rpc.schema.json` is current, and that `FEATURES.md` is
+  stamped with the newest release. CI runs it after the tests.
+- `AGENTS.md` at the root of the repository, the guide for people and coding agents who change azazel: the
+  layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
+  scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a
+  release. `CLAUDE.md` points to it.
+- `docs/configuration.md` documents `[limits]` (`max_cost_usd`, `warn_cost_usd`, `max_turns`), the role of
+  each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
+  actions.
+
+### Changed
+
+- `/settings`: signing in, adding an API key and signing out are on the Accounts page, the default model and
+  the model of every role on the Models page. A value set back to its default is taken out of `config.toml`
+  instead of being written. Where there is no screen (a session in another process, RPC clients) the same pages
+  are a chain of menus.
+- Choosing a theme in `/settings` no longer writes a `theme:` line into the transcript for each theme tried.
+- `Ctrl+Enter` adds a line, like `Shift+Enter` and `Ctrl+J` (`newline`).
+- A change of the window's size (dragging, or zooming the font) is taken in once the size has been still for
+  60 ms and drawn once. The live region grows with a taller window, so the input stays on the last rows; on
+  Windows it is placed from where the console has its cursor, which is exact. The image row above the input
+  (`[N image(s) attached to the next prompt]`) is gone: the chips in the draft say it.
+
+- The built-in skill `azazel-extensions` describes the current version: the hook events `file_changed`,
+  `config_change`, `worktree_create`, `worktree_remove` and `setup`, the hook options `once` and `wake`,
+  `output-schema` in agent definitions, `allowed-tools` in skills, npm packages, and the whole Luau API
+  (`azazel.wrap`, `azazel.prompt`, `azazel.router`, `azazel.classify`, `azazel.session`, `azazel.tools.call`,
+  `replaces`).
+- `docs/tools.md` lists the `report` tool and `tools.redact_output`; `docs/extensions.md` lists
+  `azazel.fs.data_dir` and `before_agent_start` in their tables.
+- `FEATURES.md`: the azazel column was checked row by row against 0.5.0. 77 rows changed, among them
+  `/queue`, which was marked as a command and is a key (`Alt+Enter`); features without a row are in a new
+  section; the list of biggest gaps is new.
+
+### Fixed
+
+- Typing a whole command such as `/mode` and pressing Enter runs it, instead of completing to a longer
+  command that starts with it (`/model`).
+- After the window got taller (or the font smaller) the input and the status line no longer stay above the
+  bottom of the window.
+- On Windows the size taken after a resize was one column and one row too large, so lines were cut one column
+  late and wrapped.
+- After the window got narrower in a terminal that re-wraps its content, part of the old input box (a rule,
+  a blank row) no longer stays behind in the transcript.
+- The transcript viewer lays its text out once after a drag instead of at every size on the way.
+
 ## [0.5.0] - 2026-11-13
 
 ### Added

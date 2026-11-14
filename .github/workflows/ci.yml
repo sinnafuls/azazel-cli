@@ -32,6 +32,9 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --no-fail-fast
+      # The docs list what the code registers, name for name. The check is the same on every
+      # system and needs a build of its own, so it runs here only.
+      - run: cargo xtask docs-check
       - run: cargo build --no-default-features -p azazel-cli
 
   hosted:

@@ -575,6 +575,7 @@ See [team](team.md). The lead has all of these. A sub-agent always has `agent_se
 | `agent_list` | none | Id, definition, state, activity, time, tokens and cost of every agent |
 | `worktree_apply` | `agent` | Brings an isolated agent's changes into the main tree and removes its worktree. On a conflict the worktree is kept |
 | `worktree_discard` | `agent` | Removes an isolated agent's worktree and branch |
+| `report` | `result` | Hands in the agent's result as a value that matches the schema it was given; a value that does not match is refused with what is wrong. Offered only to an agent that owes a [typed result](team.md#typed-results) |
 
 ## Goals
 
@@ -688,6 +689,7 @@ secrets = true                        # scan the project with gitleaks once per 
 | `check` | `{}` | Checker command per file extension, replacing the built-in one; empty turns the check off. Project config: trusted projects only |
 | `check_report` | `"delta"` | What the lead is told when it stops: findings on the lines the turn changed (`delta`), every finding (`all`), or nothing (`off`) |
 | `read_guard` | `"range"` | What an agent must have read of a file before it changes it: the lines an edit changes (`range`), any part of the file (`file`), or nothing (`off`); see [the read guard](#the-read-guard) |
+| `redact_output` | `false` | Replaces what looks like a secret in a tool result with `[redacted:<kind>]` before the model and the session file get it; see [permissions](permissions.md#secrets-in-tool-results) |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).

@@ -71,7 +71,7 @@ install anything on their own, and nothing is downloaded when the release cannot
 repository without a token).
 
 The first time the UI starts after an update it says so, with the number of changes. `azazel changelog` (or
-`/changelog`) shows what changed in each release; `--since 0.2.0` shows only what is newer.
+`/changelog`) shows what changed in each release; `azazel changelog --since 0.2.0` shows only what is newer.
 
 ## First run
 
@@ -82,16 +82,17 @@ cd my-project
 azazel
 ```
 
-Azazel needs a model before it can answer. When none is usable, the UI opens `/settings` straight away:
+Azazel needs a model before it can answer. When none is usable, the UI opens `/settings` straight away, on
+its Accounts page:
 
-| Menu entry | What it does |
+| Row | What it does |
 |---|---|
-| Sign in with a subscription (Claude, ChatGPT) | Signs in with a Claude or ChatGPT account |
+| Sign in with a subscription | Signs in with a Claude or ChatGPT account, or another account a provider signs in with |
 | Add an API key | Stores a provider key in `~/.azazel/auth.json` |
-| Choose the default model | Lists a provider's models and saves your pick as `roles.default` in `~/.azazel/config.toml` |
 | Sign out or forget a key | Removes a stored login or key (shown once something is stored) |
 
-After the first sign-in or key, the menu goes straight on to choosing a default model. Come back any time with
+After the first sign-in or key, it goes straight on to choosing a default model, which is saved as
+`roles.default` in `~/.azazel/config.toml`; the Models page (`Tab`) changes it later. Come back any time with
 `/settings`. Providers, roles and fallback chains are described in [models and logins](models-and-logins.md).
 
 Two commands do the same from the shell:
@@ -104,6 +105,10 @@ azazel doctor    # report what was found: config files, credentials, roles, shel
 `azazel init` offers the providers that are ready: those with a key in the environment (for example
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`) or in `auth.json`, and local servers such as Ollama
 that answer. `azazel doctor` exits with code 1 when it finds an error.
+
+Coming from pi, omp, jcode, Claude Code or Codex CLI? `azazel migrate --dry-run` shows what `azazel migrate`
+would bring over: models and roles, API keys, skills, commands, MCP servers, settings, conversations and
+memory. See [migrating](migrating.md).
 
 To try a model without saving anything:
 

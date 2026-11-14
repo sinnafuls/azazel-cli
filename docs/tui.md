@@ -70,9 +70,41 @@ The colour of the rules tells you what `Enter` will do:
 | `error` colour | Permission mode `bypass`: nothing is asked and no guard applies |
 | `bash` colour (pink) | The input starts with `!`: it runs as a shell command |
 
+### Window size
+
+When the window changes size, or the font is zoomed (which changes how many rows and columns fit), the input
+and the status line stay on the last rows and everything azazel is still drawing is laid out again for the new
+width.
+
+- A drag reports dozens of sizes. azazel waits until the size has been still for 60 ms and then draws once, at
+  the size the window has by then. Nothing is drawn in between.
+- Laid out again at the new width: the reply that is being written, tool cards that are still running (and in
+  the [compact style](#compact-style) the group that is still growing), the agents at work, the todo list, the
+  input and the status line. A [popup](#popups) is centred again, and the
+  [transcript viewer](#transcript-viewer) wraps its text again.
+- Left as they are: transcript lines that were already written. They belong to the terminal's scrollback; the
+  terminal re-wraps or cuts them when the window gets narrower, and azazel does not write them again. Lines
+  said while a popup is open are written when it closes, cut to the width the window has then.
+- A window that gets taller: the live region takes the rows the window gained, so the input is on the last row
+  again. In a terminal that fills new rows from its scrollback instead of adding them below, blank rows stand
+  between the transcript and the input until the transcript grows into them.
+- A window that gets shorter: the terminal keeps its last rows, where the input is, and moves the rows at the
+  top into its scrollback. Nothing is written again, so after a large change the rows above the input can be
+  blank until the transcript grows into them; what was said is in the scrollback.
+- A window that gets narrower: most terminals re-wrap what is on screen, which puts the rules and the status
+  line on two rows each. azazel works out how many rows the old live region takes now and erases all of it.
+  Where it cannot be sure it counts too few rows rather than too many: a row of the old input box can then
+  stay behind in the transcript, and no transcript line is erased. xterm, rxvt, st, GNU screen and the Linux
+  console cut rows instead, and are treated that way.
+- On Windows azazel also reads where the console has its cursor after the size settled and after a popup or
+  the viewer closes, so the live region gets exactly the rows down to the bottom of the window whatever the
+  terminal did with the transcript.
+- A popup that is open when the window gets smaller than 44 columns by 12 rows becomes a box in place of the
+  input, and a popup again when the window is large enough.
+
 ### Popups
 
-Questions from agents, approval prompts, plan reviews, pickers and every step of `/settings` open as a box in
+Questions from agents, approval prompts, plan reviews, pickers and the `/settings` screen open as a box in
 the middle of the window, over the transcript, which is dimmed behind it:
 
 ```
@@ -312,7 +344,7 @@ always stays. Only then is the model shortened, and after that left out.
 |---|---|---|
 | `Enter` | `submit` | Send the prompt. While the agent is working: steer it (the message is delivered before its next step) |
 | `Alt+Enter` | `follow_up` | While the agent is working: queue the message until it finishes; see [queued messages](#queued-messages-and-stashed-drafts) |
-| `Shift+Enter`, `Ctrl+J` | `newline` | Insert a line break |
+| `Shift+Enter`, `Ctrl+J`, `Ctrl+Enter` | `newline` | Insert a line break. Where the terminal sends `Shift+Enter` and `Ctrl+Enter` as plain `Enter`, `Ctrl+J` does it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `Esc` | `abort` | Interrupt the lead agent. Twice within a second on an empty, idle input: open `/rewind` |
 | `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits |
 | `Ctrl+D` | `exit` | Exit when the input is empty |
@@ -322,7 +354,8 @@ always stays. Only then is the model shortened, and after that left out.
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L` | `model_picker` | Pick the model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
-| `Ctrl+V` | `paste_image` | Attach the clipboard image to the next prompt |
+| `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). Windows Terminal and VS Code paste with `Ctrl+V` themselves, so there the key for an image is `Alt+V` |
+| `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
 | `Tab` | `complete` | Open or accept completion |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
 | `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
@@ -409,7 +442,44 @@ keeps the queue; the next message goes after the next run that finishes on its o
 `Ctrl+S` parks a draft (with its attached images) and clears the input; a line above the input counts what is
 parked. `Ctrl+S` on an empty input brings the last parked draft back.
 
-### Pastes and dropped files
+### Pastes, images and dropped files
+
+`Ctrl+V` (or `Alt+V`) reads the clipboard:
+
+| The clipboard holds | What happens |
+|---|---|
+| An image (a screenshot, a copied picture) | It is attached to the draft |
+| Files (copied in Explorer, Finder or a file manager) | Images among them are attached; the others become `@path` mentions |
+| Text that is nothing but paths of existing image files | Those images are attached |
+| Other text | It is pasted, as the terminal's own paste would |
+| Nothing of these | `the clipboard holds no image, file or text` |
+
+An attached image shows in the draft as a chip, `[Image #1]`, where the cursor was. The chip is one character
+to the keys: the cursor steps over it, and `Backspace` or `Delete` removes it and with it the image. The
+numbers always run from 1 without gaps in the order the chips stand in the draft, so deleting `[Image #1]`
+turns `[Image #2]` into `[Image #1]`, and `Ctrl+Z` brings a deleted image back. Text can go before, between and
+after the chips ("compare [Image #1] with [Image #2]"). When the prompt is sent, the agent gets the text with
+the labels in it and the images in the same order; the transcript shows the labels. A chip that is in the draft
+when you run a slash command goes along if the command turns into a prompt, and is dropped otherwise.
+
+Images are sent as PNG, JPEG, WebP or GIF. Anything else that can be decoded (BMP, which is what Windows hands
+to WSL) is converted to PNG, and an image whose longer side is over 1568 pixels is scaled down to that.
+
+The clipboard is read through the system's own interface. Where that finds nothing it understands, or there
+is none (WSL has no way to an image on the Windows clipboard), azazel runs the platform's program instead:
+
+| System | Program | Notes |
+|---|---|---|
+| Windows, WSL | `powershell.exe` | Reads the image as PNG, else the copied files, else the text; allowed 8 seconds. Under WSL, `C:\...` paths are read as `/mnt/c/...` |
+| macOS | `osascript`, `pbpaste` | The image as PNG, else the files copied in Finder, else the text |
+| Linux | `wl-paste` under Wayland, else `xclip` | The image in the best type offered, else the copied files (`text/uri-list`), else the text |
+
+These programs run only when you press the key, with fixed arguments: nothing from the clipboard becomes part
+of a command. When the program is missing the answer is that the clipboard holds nothing.
+
+`Ctrl+Shift+V` (or `Alt+Shift+V`) pastes the clipboard's text and nothing else: a path stays a path. Most
+terminals keep `Ctrl+Shift+V` for their own paste, which arrives as pasted text and is treated as described
+next.
 
 A paste of more than 10 lines (`editor.fold_paste_lines`) or 800 characters goes into the input as one token,
 `[paste #2 +41 lines]`. The cursor steps over the token as over one character, `Backspace` after it removes it
@@ -419,14 +489,19 @@ Windows consoles do not mark pasted text, so there azazel treats keys that arriv
 paste: line breaks inside it do not send the prompt. One short line that ends with a line break is taken as
 typed and sent, as in a shell.
 
-Files dropped on the terminal arrive as pasted paths. When a paste is nothing but absolute paths of existing
-files (quoted, backslash-escaped or `file://` forms included), images are attached to the next prompt and other
-files are inserted as `@path` mentions; a path with spaces is written `@"my notes/a file.md"`.
+Files dropped on the terminal arrive as pasted paths, and so does a path you paste yourself. When a paste is
+nothing but absolute paths of existing files, images are attached as chips and other files are inserted as
+`@path` mentions; a path with spaces is written `@"my notes/a file.md"`. The paths may be one on a line or
+separated by spaces, bare, in single or double quotes, backslash-escaped (outside Windows), `~/...`,
+`file://` addresses, or Windows paths (`C:\Users\me\shot.png`; under WSL they are read as `/mnt/c/...`).
+At most 32 files are taken from one paste and an image file may be 20 MB; a paste with anything else in it is
+text.
 
 ### External editor
 
-`Ctrl+G` writes the draft (folded pastes written out) to a file, opens it in your editor and puts what you
-saved back into the input. The editor is `[editor] command`, else `$VISUAL`, else `$EDITOR`, else `notepad` on
+`Ctrl+G` writes the draft (folded pastes written out, attached images as their labels) to a file, opens it in
+your editor and puts what you saved back into the input. An image whose label is still in the text stays
+attached; deleting the label takes the image off. The editor is `[editor] command`, else `$VISUAL`, else `$EDITOR`, else `notepad` on
 Windows and `vi` elsewhere; a command may carry arguments (`code --wait`). If the program cannot be started you
 get `no editor found: set $VISUAL or $EDITOR, or [editor] command`.
 
@@ -465,10 +540,44 @@ exit = []                      # an empty list unbinds the action
   `enter`, `esc`, `tab`, `space`, `backspace`, `delete`, `insert`, `home`, `end`, `pageup`, `pagedown`, `up`,
   `down`, `left`, `right`, `f1` to `f24`.
 - An unknown action or an invalid key makes azazel ignore the whole file and show a warning at startup.
-- `/keys` lists the bindings in effect.
+- `/keys` lists the bindings in effect and, under them, the key conflicts it finds.
+
+`/keys` reports three kinds of conflict, each with the key, the action and, where the action has another key
+that is fine, that key:
+
+| Conflict | Example line |
+|---|---|
+| A key the file gives to two actions. The action that comes first in the table above gets it | `ctrl+o is bound to toggle_thinking and stash: toggle_thinking gets it` |
+| A key the terminal azazel runs in keeps for itself in its default setup. Known for Windows Terminal, VS Code, kitty, WezTerm, Alacritty, Ghostty, iTerm2, Terminal and, inside tmux, its prefix key | `alt+enter (follow_up) does not reach azazel: Windows Terminal toggles full screen` |
+| A key the terminal cannot tell from another because it does not report keys the enhanced way: `Shift+Enter` and `Ctrl+Enter` (plain `Enter`), `Ctrl+Shift+letter` (`Ctrl+letter`), `Ctrl+I` (`Tab`), `Ctrl+M` (`Enter`), `Ctrl+[` (`Esc`), `Ctrl+Tab` (`Tab`). Not reported on Windows, where the console tells every key apart | `shift+enter (newline) arrives as plain enter in this terminal; /terminal-setup can change that (ctrl+j works)` |
+
+The terminal is recognised from its environment variables (`TERM_PROGRAM`, `WT_SESSION`, `KITTY_WINDOW_ID`,
+`WEZTERM_EXECUTABLE`, `ALACRITTY_WINDOW_ID`, `GHOSTTY_RESOURCES_DIR`, `TERM`); what it keeps for itself is its
+default key bindings, so keys you have changed in the terminal are not known.
+
+### Shift+Enter and `/terminal-setup`
 
 When the terminal supports the kitty keyboard protocol, azazel enables it so chords such as `Shift+Enter` are
-reported reliably. Where `Shift+Enter` does not arrive, use `Ctrl+J`.
+reported reliably; Windows Terminal and WezTerm report them to a Windows program without it. Where `Shift+Enter` arrives
+as plain `Enter`, `Ctrl+J` adds a line, and `/terminal-setup` makes `Shift+Enter` do it: it adds a key binding
+to the terminal that types a line feed for `Shift+Enter`. A line feed is `Ctrl+J`; a Windows console hands it
+to azazel as `Ctrl+Enter`. `/terminal-setup` therefore needs `ctrl+j` (on Windows `ctrl+enter`) to be a key of
+`newline`, as both are unless you changed them.
+
+| Terminal | What `/terminal-setup` does |
+|---|---|
+| Any terminal that reports keys the enhanced way; on Windows also Windows Terminal and WezTerm | Says that `Shift+Enter` works; changes nothing |
+| VS Code, Cursor, Windsurf, VSCodium | Adds the binding to the editor's `keybindings.json` (`workbench.action.terminal.sendSequence` with `\n`, when the terminal has the focus). When the window is on another machine (SSH, WSL, a container) the binding is shown instead, because the file is there |
+| Windows Terminal from WSL | Adds a `sendInput` action for `shift+enter` to `settings.json`, when exactly one is found under `/mnt/c/Users`; else shows it |
+| Alacritty | Adds a `[[keyboard.bindings]]` entry to `alacritty.toml` (or to the list, when the bindings are written as one); a new file when there is none, unless Alacritty is still set up with `alacritty.yml` |
+| kitty, WezTerm, Ghostty, iTerm2 (when they do not report keys the enhanced way, as inside tmux) | Shows the line or the steps to put in: `kitty.conf`, `wezterm.lua`, Ghostty's config file, iTerm2's key mappings |
+| Others | Says that there is no fix and that `Ctrl+J` adds a line |
+
+Before a file is changed you are shown the binding and the file and asked: `Add the key binding` or
+`Show it and change nothing`. The file as it was is copied to `<name>.azazel-backup` beside it first. Comments
+and everything else in the file stay as they are, a file that already has a `Shift+Enter` binding for the
+terminal is left alone, and a file azazel cannot make sense of is not touched: the binding is shown instead.
+The terminals named above read their file again by themselves.
 
 ## Input prefixes
 
@@ -526,7 +635,8 @@ Session and display:
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
-| `/keys` | List key bindings |
+| `/keys` | List key bindings and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
+| `/terminal-setup` | Make `Shift+Enter` add a line in this terminal: says whether it already does, else adds the key binding to the terminal's file (after asking, with a backup) or shows it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `/quit`, `/exit` | Exit |
 
 `/resume`, `/name`, `/session`, `/search`, `/tree`, `/fork`, `/retry`, `/continue`, `/handoff`, `/consult`,
@@ -546,7 +656,7 @@ Models, permissions and setup:
 | `/add-dir <path>` | Let agents work in another directory too, until azazel exits |
 | `/dirs` | List the directories agents may work in |
 | `/changelog [version]` | What changed in each release, or only since `version`, in the [viewer](#transcript-viewer) |
-| `/settings` | Sign in, add API keys, choose models and change settings; see [settings menu](#settings-menu) |
+| `/settings` | Sign in, add API keys, choose models and change every setting; see [settings](#settings) |
 | `/login [provider] [account]` | Sign in to a provider or store its API key, as another account when a label is given |
 | `/logout <provider> [account]` | Forget the stored key or login of a provider |
 | `/account [provider]` | The provider's accounts and their usage: use one for this session, make it the default, sign it out, add another |
@@ -558,6 +668,7 @@ Models, permissions and setup:
 | `/terminals` | Programs agents run in [terminals](#terminals); choose one to watch it, type into it or stop it |
 | `/todo [add <text> \| done <n> \| clear]` | Show the agent's task list, or change it |
 | `/init` | Have the agent explore the repository and write `AGENTS.md` |
+| `/migrate` | Bring over what pi, omp, jcode, Claude Code and Codex CLI hold: tick the harnesses and the kinds (models, keys, skills, commands, agents, MCP servers, rules, settings, chats, memory), read the plan, confirm; see [migrating](migrating.md) |
 | `/doctor` | Check the installation and this project's setup |
 | `/rules` | List the rule files, when each applies and whether it has in this session; see [rules](rules.md) |
 | `/hooks` | List the hooks, where they come from and how each last ran; see [hooks](hooks.md) |
@@ -781,7 +892,7 @@ so and the request is shown when you return.
 
 azazel tells the terminal what the session is doing, and calls for you when it needs you and you are looking
 elsewhere. Everything here is in the `[notify]` table of the [configuration](configuration.md) and in the
-Notifications section of the [settings menu](#settings-menu).
+Appearance page of the [settings](#settings).
 
 | What | When | Setting |
 |---|---|---|
@@ -872,28 +983,100 @@ With the feature:
 - The first diagram of a run takes a moment longer than the next: the layout measures its text once with a
   font of the system.
 
-## Settings menu
+## Settings
 
-`/settings` opens with signing in, API keys and models, followed by one section per group of everyday settings.
-Each change is saved at once in `~/.azazel/config.toml` (comments and everything else in the file are kept).
-Typing nothing for a text setting puts it back on its default. A project's own configuration still wins over
-these values inside that project.
+`/settings` opens one screen with every setting azazel has, on ten pages behind a row of tabs:
 
-| Section | Settings |
+```
+╭─ Settings ───────────────────────────────────────────────────────────────────────────────────────╮
+│ … Models  Appearance 2  Status line  Input  Permissions  Tools  Sessions  Usage  Advanced        │
+│ Colours, symbols, the working indicator and how azazel gets your atte…  saves to the home config │
+│                                                                                                  │
+│ Interface                                                                                       ┃│
+│ ▌ Theme                            tokyo-night                                          ●  home ┃│
+│   Symbols                          auto                                                         ┃│
+│   Working indicator                shimmer                                                      ┃│
+│   Indicator phrases                (none)                                                       ┃│
+│   Session colour in the indicator  off                                                          ┃│
+│   Tool calls                       card                                                         ┃│
+│   Hide secrets in what is shown    on                                                       env ┃│
+│   Menus and questions as popups    off                                                  ●  flag ┃│
+│   Inline images                    auto                                                         ┃│
+│   Show the model's thinking        off                                                          ┃│
+│   Show tool output in full         off                                                          ┃│
+│ Notifications                                                                                   ┃│
+│   Ring the terminal bell           on                                                           ││
+│   Desktop notifications            auto                                                         ││
+│   Session in the terminal title    on                                                           ││
+│                                                                                                  │
+│ The colours of the UI: a built-in theme or a file in ~/.azazel/themes.                           │
+│                                                                                                  │
+│ tui.theme · default dark · set in the home config                                                │
+╰─ tab page · ↑↓ move · enter edit · / search · r reset · p to project · esc close ────────────────╯
+```
+
+| Page | What is on it |
 |---|---|
-| Appearance | theme\*, symbols\*, working indicator\*, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\* |
-| Editor | emacs or Vim keys\*, external editor command\*, paste fold length\* |
-| Permissions | the mode sessions start in, what destructive commands need |
-| Notifications | bell, desktop notifications, terminal title, tab progress, minimum run length, keep awake |
-| Limits | cost cap, cost warning, turn cap |
-| Sessions | automatic names, restoring model and thinking on resume, retention |
-| Memory | on or off, saving memories from conversations, indexing the project |
-| Updates | daily check, automatic install |
-| Voice | transcription and speech models, voice, send at once, longest recording |
-| Team | coordinator mode, agents at the same time, advisor and its model |
+| Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
+| Models | The default model and the model of every role, favourite models, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
+| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
+| Status line | Preset, left and right segments, separator, segment options, command |
+| Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
+| Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |
+| Tools | Disabled tools, result size, shell and its time limit, redaction for the model; formatters and checkers after a write, the findings report, the read guard, the secret scan; language servers; MCP; web search and the browser; media models; verification and goals |
+| Sessions | Automatic names, restoring model and thinking on resume, retention, interrupted runs; checkpoints; compaction; memory; nested context files and the rule files of other tools |
+| Usage | Subscription usage (spending resets unattended, how often usage is fetched, e-mail addresses) and the cost and turn limits |
+| Advanced | Coordinator mode and team size, schedules and loops, updates, trace export, and the tables only the config file edits |
 
-Settings marked \* change the running UI at once. The others are saved and say "applies to the next session".
-The keys behind each row are described in [configuration](configuration.md).
+Settings marked \* change the running UI at once. The others are saved and apply to the next session; the last
+row under the list says so. The keys behind each row are described in [configuration](configuration.md).
+
+A row shows the name of a setting, the value in effect, `●` when that is not the default, and the layer the
+value comes from: `home` (`~/.azazel/config.toml`), `project`, `local` (`config.local.toml`), `env` (an
+`AZAZEL_<TABLE>__<KEY>` variable) or `flag` (`--set` and the other flags); a value no layer sets has none. The
+number beside a tab is how many settings of that page are not on their default. Under the list stand what the
+selected setting does, then its key, its default and who sets it.
+
+| Key | What it does |
+|---|---|
+| `Tab`, `Right` | The next page. Each page keeps the row it was left on |
+| `Shift+Tab`, `Left` | The page before |
+| `Up`, `Down`, `PgUp`, `PgDn`, `Home`, `End` | Move over the settings of the page |
+| `Enter`, `Space` | Edit the selected setting (below) |
+| `/` | Search all pages: what you type is looked for in the names, keys, values and descriptions of every setting, every word of it. The matches stand under the name of their page and the tabs count them. `Enter` edits a match; `Esc` ends the search on the page of the selected match, with it selected |
+| `r` | Reset: take the setting out of the file changes go to, which puts it back on its default unless another layer sets it |
+| `p` | Save changes to `<project>/.azazel/config.toml` instead of `~/.azazel/config.toml`, and back. Only in a [trusted](configuration.md#trust) project |
+| `Esc` | Close. What changed is listed in the transcript |
+
+What `Enter` does depends on the setting:
+
+| Setting | Editor |
+|---|---|
+| On or off | Flips at once |
+| One of several values (theme, symbols, modes) | A list of the values, starting on the one in use. For the settings marked \* each value is shown in the running UI as you move over it; `Enter` keeps it, `Esc` puts back what applied |
+| A number or a text | An input holding the value in use. `Enter` saves; a value the configuration refuses stays in the input with the reason. Nothing typed puts a text back on its default |
+| A list (favourites, rules, phrases) | Its entries. `Enter` edits an entry, or adds one on the last row; `a` adds, `d` removes, `[` and `]` move the entry up and down. Every change is saved as it is made |
+| A table (formatters, checkers, language servers, account order) | Its entries as `name = value`, edited like a list. A value is text, or TOML where the key takes more: `rust = { command = "rust-analyzer", extensions = ["rs"] }` |
+| A role on the Models page | The model picker: a provider, then one of its models. Every role but `default` also offers to go back to the role it falls back to |
+
+Each change is saved at once (comments and everything else in the file are kept). A value that is the default
+is taken out of the file instead of written, unless a file below says something else. Where a layer above the
+file sets the same key (the project's config, an `AZAZEL_` variable, a flag), the row keeps showing what applies
+and the line that confirms the change says who sets it. The permission rules of all layers are joined, so their
+editors hold only the rules of the file changes go to. Making `bypass` the mode every session starts in is asked
+about, with `No` first.
+
+Signing in, adding a key, signing out and choosing a model ask their questions in boxes of their own and come
+back to the screen where it was. After the first sign-in or key, it goes straight on to choosing a default
+model. Credentials are kept in `~/.azazel/auth.json` and a model chosen for a role in `~/.azazel/config.toml`,
+whichever file `p` has chosen for the other settings.
+
+`[providers]`, `[models]`, `[presets]`, `[hooks]`, `[[stream_rules]]` and `[embeddings]` are tables of tables
+or lists of tables: the Advanced page lists them with what sets them and why they are edited in the file.
+
+In a session that runs in another process (`azazel attach`, SSH) and for RPC clients, `/settings` shows the same
+pages as a chain of menus: the pages, then the settings of one with their values, then the value. There a list
+is typed with commas between its entries and a table one `name = value` at a time (`name =` removes an entry).
 
 ## Symbols
 

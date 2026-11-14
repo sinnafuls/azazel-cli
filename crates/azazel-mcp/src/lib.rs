@@ -14,7 +14,7 @@ pub mod oauth;
 pub mod serve;
 pub mod sse;
 
-pub use ext::{McpExt, status_report};
+pub use ext::{McpExt, TOOL_SEARCH, status_report};
 pub use manager::{McpManager, Options, SearchHit, ServerStatus, State};
 
 /// One segment of a proxied tool name: characters outside `[A-Za-z0-9_-]` become `_`.

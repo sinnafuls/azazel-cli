@@ -247,6 +247,10 @@ kept.
 A Markdown export holds your prompts, the assistant's text and one line per tool call; tool output and thinking are
 left out. Compacted history appears under the heading `Earlier (summarised)` in Markdown and HTML.
 
+Conversations held in pi, omp, jcode, Claude Code or Codex CLI become sessions with `azazel migrate --only chats`
+(or `/migrate`): each in the project it was held in, named `imported from <source>: <title>`, with the times
+of the original. See [migrating](migrating.md#conversations).
+
 ## Sharing a session
 
 `/share` uploads the current branch of the conversation to GitHub as a **secret gist** and prints its link. It

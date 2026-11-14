@@ -1,0 +1,35 @@
+{
+  "theme": "dark-daltonized",
+  "primaryApiKey": "test-key-anthropic-console",
+  "oauthAccount": {
+    "accountUuid": "00000000-0000-4000-8000-000000000000",
+    "emailAddress": "dev@example.com",
+    "organizationName": "Example"
+  },
+  "mcpServers": {
+    "search": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": {
+        "X-Key": "${env:SEARCH_KEY}"
+      }
+    }
+  },
+  "projects": {
+    "/work/site": {
+      "allowedTools": [],
+      "mcpServers": {
+        "db": {
+          "command": "npx",
+          "args": [
+            "-y",
+            "db-mcp"
+          ],
+          "env": {
+            "DB_URL": "postgres://localhost/site"
+          }
+        }
+      }
+    }
+  }
+}

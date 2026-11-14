@@ -1,0 +1,26 @@
+{
+  "$schema": "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/coding-agent/src/config/mcp-schema.json",
+  "mcpServers": {
+    "files": {
+      "command": "files-mcp",
+      "args": [
+        "--root",
+        "/data"
+      ],
+      "env": {
+        "FILES_KEY": "test-key-files"
+      },
+      "timeout": 30000
+    },
+    "docs": {
+      "type": "http",
+      "url": "https://docs.example.com/mcp",
+      "headers": {
+        "User-Agent": "docs-client"
+      }
+    }
+  },
+  "disabledServers": [
+    "docs"
+  ]
+}

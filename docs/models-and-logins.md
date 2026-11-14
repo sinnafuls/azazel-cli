@@ -44,7 +44,7 @@ slow    = ["anthropic/claude-opus-4-5:high", "@default"]
 | `verifier` | `@verify` | The `verifier` agent |
 | `playtester` | `@vision` | The `playtester` agent |
 
-The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: `/settings` → "Models for each role" writes `[roles] <name> = ["provider/model"]`, and you can write the same by hand.
+The lead starts on `@lead`, and each built-in agent on the role named after it, so any one of them can be given its own model without touching the others: `/settings` → Models → the role's row writes `[roles] <name> = ["provider/model"]`, and you can write the same by hand.
 
 You may define further roles and use them anywhere a spec is accepted. When a chain is resolved, roles are expanded in order, a model that already appeared is dropped, and an unknown role or a role that refers back to itself is skipped.
 
@@ -74,7 +74,7 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 | Where | Effect |
 |---|---|
 | `azazel init` | Asks for a provider and model, writes `roles.default` to `~/.azazel/config.toml` |
-| `/settings` → "Choose the default model" | Same, from inside the TUI; takes effect at once |
+| `/settings` → Models → `default` | Same, from inside the TUI; takes effect at once |
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `--provider <id>` | Only this provider's models for this run: part of a name given to `--model` or `/model` is looked up among them, `provider/model` of another provider is refused, and the `/model` picker lists only them. Without `--model` the lead keeps the models of its configured chain that are this provider's, and the run ends with status 2 when there are none. Roles that name their own models (`smol`, `verify`, agent definitions) are not changed. A [virtual model](#virtual-models) picks among every provider's models, so it is refused and left out of the picker while `--provider` is given |
 | `/model` or `Ctrl+L` | Picker over roles, [virtual models](#virtual-models) and the models of providers that have a credential |
@@ -617,7 +617,7 @@ In the TUI:
 
 - `/login [provider] [account]` signs in, or asks for the key of a provider without a sign-in; with an account label it is kept as another account. `/logout <provider> [account]` forgets it.
 - `/account [provider]` lists a provider's accounts with their usage and switches between them.
-- `/settings` opens a menu: sign in with a subscription, add an API key, choose the default model, sign out or forget a key. After the first credential it goes straight on to choosing a default model.
+- `/settings` has an Accounts page (sign in with a subscription, add an API key, sign out or forget a key, the credentials in use) and a Models page (the default model and the model of every role). After the first credential it goes straight on to choosing a default model. See [settings](tui.md#settings).
 
 ## Bedrock, Vertex and Azure
 

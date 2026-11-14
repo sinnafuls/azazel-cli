@@ -56,11 +56,13 @@ azazel bg "fix the flaky test"       # in the background; azazel attach <id> ope
 azazel schedule add every 1h "triage new issues"   # on a clock, or --on ci-failure / file:<glob>
 azazel --ssh build-box               # the same UI on a session that runs on another machine
 azazel doctor                        # what is configured and what is missing
+azazel migrate --dry-run             # what would come over from pi, omp, jcode, Claude Code, Codex CLI
 ```
 
 ## Documentation
 
 Start with [getting started](docs/getting-started.md); every feature has its own page in [docs/](docs/README.md).
+To work on azazel itself, read [AGENTS.md](AGENTS.md).
 
 ## Licence
 

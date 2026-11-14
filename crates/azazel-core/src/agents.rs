@@ -243,7 +243,7 @@ fn result_schema(key: &str, value: &Value) -> Result<Option<Value>, String> {
 }
 
 /// The azazel tool a Claude Code tool name stands for; other names are kept as written.
-pub(crate) fn compat_tool(name: &str) -> &str {
+pub fn compat_tool(name: &str) -> &str {
     match name {
         "Read" => "read",
         "Write" => "write",
@@ -260,7 +260,7 @@ pub(crate) fn compat_tool(name: &str) -> &str {
 }
 
 /// The role a Claude Code model alias stands for; other values are kept as written.
-fn compat_model(name: &str) -> &str {
+pub fn compat_model(name: &str) -> &str {
     match name {
         "haiku" => "@smol",
         "sonnet" => "@default",

@@ -8,6 +8,7 @@ use anyhow::{Context, Result, bail};
 use azazel_ai::catalog::{CatalogFile, Cost, ModelInfo};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use xtask::TASKS;
 
 const CATALOG_SOURCE: &str = "https://models.dev/api.json";
 /// The cloud providers, as `(name in the source, provider id here)`.
@@ -22,7 +23,6 @@ const MAX_VERSION: Duration = Duration::from_millis(30);
 const MAX_PROMPT: Duration = Duration::from_millis(150);
 const MAX_BINARY_BYTES: u64 = 56 * 1024 * 1024;
 const BENCH_RUNS: usize = 20;
-const TASKS: &str = "catalog, bench-startup, dist, rpc-schema";
 
 fn main() -> ExitCode {
     let task = std::env::args().nth(1);
@@ -31,8 +31,15 @@ fn main() -> ExitCode {
         Some("bench-startup") => bench_startup(),
         Some("dist") => dist(),
         Some("rpc-schema") => rpc_schema(),
-        Some(other) => Err(anyhow::anyhow!("unknown task `{other}`; tasks: {TASKS}")),
-        None => Err(anyhow::anyhow!("usage: cargo xtask <task>; tasks: {TASKS}")),
+        Some("docs-check") => docs_check(),
+        Some(other) => Err(anyhow::anyhow!(
+            "unknown task `{other}`; tasks: {}",
+            TASKS.join(", ")
+        )),
+        None => Err(anyhow::anyhow!(
+            "usage: cargo xtask <task>; tasks: {}",
+            TASKS.join(", ")
+        )),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -48,6 +55,21 @@ fn workspace_root() -> PathBuf {
         .parent()
         .map(Path::to_path_buf)
         .unwrap_or_default()
+}
+
+/// Compares the docs with the code and fails with the list of what differs. The check is the
+/// package `docs-check`: it links the whole program to ask it what it registers, which the other
+/// tasks should not have to wait for.
+fn docs_check() -> Result<()> {
+    let status = Command::new(env!("CARGO"))
+        .args(["run", "--quiet", "--package", "docs-check"])
+        .current_dir(workspace_root())
+        .status()
+        .context("could not run cargo")?;
+    if !status.success() {
+        bail!("docs-check failed");
+    }
+    Ok(())
 }
 
 /// The median wall time of [`BENCH_RUNS`] runs of `command`, after one run that is not counted

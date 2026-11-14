@@ -359,7 +359,7 @@ impl Tui {
         if self.busy {
             self.backend.steer(message, Vec::new());
         } else {
-            self.send_prompt(message).await;
+            self.send_prompt(message, Vec::new()).await;
         }
     }
 }

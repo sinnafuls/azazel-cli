@@ -49,6 +49,9 @@ impl PermissionMode {
         PermissionMode::Auto,
     ];
 
+    /// The modes as they are written in config files, in the order of [`PermissionMode::ALL`].
+    pub const NAMES: &[&str] = &["plan", "manual", "accept-edits", "auto", "bypass"];
+
     pub fn as_str(self) -> &'static str {
         match self {
             PermissionMode::Plan => "plan",
@@ -503,6 +506,8 @@ macro_rules! config_enum {
 
         impl $name {
             pub const ALL: &[$name] = &[$($name::$variant),+];
+            /// The values as they are written in config files, in the order of `ALL`.
+            pub const NAMES: &[&str] = &[$($text),+];
 
             pub fn as_str(self) -> &'static str {
                 match self {
@@ -727,7 +732,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-const TABLES: [&str; 39] = [
+pub const TABLES: [&str; 39] = [
     "roles",
     "providers",
     "models",
@@ -936,7 +941,7 @@ impl Config {
         }
         for (name, value) in &options.env {
             let Some(path) = env_key_path(name) else { continue };
-            let table = nest(&path, parse_env_value(value));
+            let table = nest(&path, parse_literal(value));
             validate(&table).map_err(|message| ConfigError::Override {
                 source_name: name.clone(),
                 message,
@@ -1035,7 +1040,9 @@ fn merge(base: &mut Table, layer: Table, path: &mut Vec<String>) {
     }
 }
 
-fn concatenates(path: &[String]) -> bool {
+/// Whether the lists at `path` (`permissions.allow`) of every layer are joined, where any other
+/// value replaces the one below it.
+pub fn concatenates(path: &[String]) -> bool {
     match path {
         [table, key] if table == "permissions" => matches!(key.as_str(), "allow" | "ask" | "deny"),
         [table, _] => table == "hooks",
@@ -1070,6 +1077,20 @@ const TRUST_GATED: [(&str, Option<&str>); 19] = [
     // `allow` would lift the question about commands that destroy work.
     ("permissions", Some("destructive")),
 ];
+
+/// Every trust-gated setting as the docs name it (`hooks`, `permissions.allow`), `permissions.mode`
+/// included, which is gated only for `bypass`. For `cargo xtask docs-check`.
+pub fn trust_gated_names() -> Vec<String> {
+    let mut names: Vec<String> = TRUST_GATED
+        .iter()
+        .map(|(table, key)| match key {
+            Some(key) => format!("{table}.{key}"),
+            None => table.to_string(),
+        })
+        .collect();
+    names.push("permissions.mode".to_string());
+    names
+}
 
 /// The trust-gated settings a configuration file gives a value to, as they are written in
 /// messages (`hooks`, `permissions.allow`). An empty list, table or string sets nothing.
@@ -1120,6 +1141,18 @@ fn strip_untrusted(table: &mut Table, file: &Path, ignored: &mut Vec<String>) {
     }
 }
 
+/// What the environment overrides, shaped like a config file: each `AZAZEL_<TABLE>__<KEY>`
+/// variable with the name of the variable that sets it, as `(variable, table)`. Values are not
+/// checked here; [`Config::load`] does that.
+pub fn env_overrides(env: &[(String, String)]) -> Vec<(String, Table)> {
+    env.iter()
+        .filter_map(|(name, value)| {
+            let path = env_key_path(name)?;
+            Some((name.clone(), nest(&path, parse_literal(value))))
+        })
+        .collect()
+}
+
 /// `AZAZEL_PERMISSIONS__MODE` → `["permissions", "mode"]`. Variables that do not name a config
 /// table (`AZAZEL_HOME`, `AZAZEL_SESSION_ID`, …) are not overrides.
 fn env_key_path(name: &str) -> Option<Vec<String>> {
@@ -1139,16 +1172,12 @@ pub fn set_override(overrides: &mut Table, assignment: &str) -> Result<(), Strin
     if path.len() < 2 || path.iter().any(String::is_empty) {
         return Err(format!("`{key}`: expected table.key"));
     }
-    merge(
-        overrides,
-        nest(&path, parse_env_value(raw.trim())),
-        &mut Vec::new(),
-    );
+    merge(overrides, nest(&path, parse_literal(raw.trim())), &mut Vec::new());
     Ok(())
 }
 
 /// A TOML literal when the text is one (`true`, `3`, `["a"]`), otherwise a string.
-fn parse_env_value(raw: &str) -> Value {
+pub fn parse_literal(raw: &str) -> Value {
     match toml::from_str::<Table>(&format!("v = {raw}")) {
         Ok(mut table) => table
             .remove("v")

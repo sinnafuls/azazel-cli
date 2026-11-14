@@ -8,17 +8,20 @@ use std::path::{Path, PathBuf};
 use azazel_ai::{Block, ThinkingLevel};
 use azazel_core::commands::split_args;
 use azazel_core::config::EditorMode;
-use azazel_core::media::{MAX_IMAGE_SIDE, image_block, image_mime};
 use azazel_tools::Foreground;
-use azazel_tui::{Draft, Glyph, GlyphLevel, Line, Role, Vim};
+use azazel_tui::components::editor::atom_label;
+use azazel_tui::{Atom, Editor, Glyph, GlyphLevel, Line, Role, Vim};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
-use super::{Tui, first_line, view};
+use super::paste::{self, Clip};
+use super::{Internal, Tui, first_line, view};
 
 /// Files larger than this are mentioned, never read to see whether they are images.
 const MAX_DROPPED_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 /// More paths than this in one paste is text about files, not a drop.
 const MAX_DROPPED_FILES: usize = 32;
+/// What an image attached to the draft is called in it: `[Image #1]`.
+const IMAGE: &str = "Image";
 /// The models the cycling keys step through when no favourite is set.
 const DEFAULT_CYCLE: [&str; 3] = ["@default", "@smol", "@slow"];
 pub(super) const NO_EDITOR: &str = "no editor found: set $VISUAL or $EDITOR, or [editor] command";
@@ -216,10 +219,24 @@ fn shell_words(text: &str) -> Vec<String> {
     words
 }
 
+/// A Windows path (`C:\dir\file`, `C:/dir/file`) as WSL has it, under `/mnt/c`. `None` for
+/// anything that does not start with a drive.
+pub(super) fn wsl_path(windows: &str) -> Option<PathBuf> {
+    let mut chars = windows.chars();
+    let drive = chars.next().filter(char::is_ascii_alphabetic)?;
+    let rest = chars.as_str().strip_prefix(':')?;
+    let rest = rest.strip_prefix(['\\', '/'])?;
+    Some(PathBuf::from(format!(
+        "/mnt/{}/{}",
+        drive.to_ascii_lowercase(),
+        rest.replace('\\', "/")
+    )))
+}
+
 /// One dropped word as a path: `file://` URLs are decoded and `~/` is the home directory.
 /// `None` for anything that is not an absolute path, because a pasted word that happens to name
 /// a file in the project is far more often just text.
-fn dropped_path(word: &str, home: Option<&Path>) -> Option<PathBuf> {
+pub(super) fn dropped_path(word: &str, home: Option<&Path>) -> Option<PathBuf> {
     let path = if let Some(rest) = word.strip_prefix("file://") {
         let decoded = percent_decode(rest.strip_prefix("localhost").unwrap_or(rest));
         // `file:///C:/x` on Windows: the slash before the drive letter is not part of the path.
@@ -227,10 +244,22 @@ fn dropped_path(word: &str, home: Option<&Path>) -> Option<PathBuf> {
         PathBuf::from(if windows_drive { &decoded[1..] } else { &decoded })
     } else if let Some(rest) = word.strip_prefix("~/") {
         home?.join(rest)
+    } else if let Some(mounted) = wsl_path(word).filter(|_| cfg!(unix)) {
+        // A path copied on the Windows side of WSL.
+        mounted
     } else {
         PathBuf::from(word)
     };
     (path.is_absolute() && path.is_file()).then_some(path)
+}
+
+/// A line of a paste without the quotes around it, when it has them at both ends.
+fn unquoted(line: &str) -> &str {
+    let line = line.trim();
+    ['"', '\'']
+        .into_iter()
+        .find_map(|quote| line.strip_prefix(quote)?.strip_suffix(quote))
+        .unwrap_or(line)
 }
 
 /// The files a paste names, when it is nothing but existing files: what a terminal types when
@@ -245,6 +274,18 @@ pub(super) fn dropped_files(pasted: &str, home: Option<&Path>) -> Option<Vec<Pat
         && let Some(path) = dropped_path(pasted, home)
     {
         return Some(vec![path]);
+    }
+    // One path a line, as they are copied from a file manager or written in a list: spaces
+    // and (on Windows paths) backslashes are part of the path.
+    let lines: Vec<&str> = pasted.lines().filter(|line| !line.trim().is_empty()).collect();
+    if lines.len() > 1
+        && lines.len() <= MAX_DROPPED_FILES
+        && let Some(files) = lines
+            .iter()
+            .map(|line| dropped_path(unquoted(line), home))
+            .collect::<Option<Vec<_>>>()
+    {
+        return Some(files);
     }
     let words = shell_words(pasted);
     if words.is_empty() || words.len() > MAX_DROPPED_FILES {
@@ -296,6 +337,36 @@ pub(super) fn next_model<'a>(cycle: &'a [String], current: &str, forward: bool) 
     cycle.get(next).map(String::as_str)
 }
 
+/// The images of `attached` whose chips are among `chips`, in the order of the chips.
+fn claim(chips: &[Atom], mut attached: Vec<(Atom, Block)>) -> Vec<Block> {
+    let mut images = Vec::with_capacity(chips.len());
+    for (at, chip) in chips.iter().enumerate() {
+        let Some(found) = attached.iter().position(|(owner, _)| owner == chip) else {
+            continue;
+        };
+        // A chip that was cut and pasted back twice stands for its image twice.
+        images.push(if chips[at + 1..].contains(chip) {
+            attached[found].1.clone()
+        } else {
+            attached.swap_remove(found).1
+        });
+    }
+    images
+}
+
+/// Puts `text` in `editor` and makes the label of each image it has (`[Image #1]` for the
+/// first of `images`, and so on) that image's chip. Returns the images that are attached.
+fn reattach(editor: &mut Editor, text: &str, images: Vec<Block>) -> Vec<(Atom, Block)> {
+    editor.set_text(text);
+    let mut attached = Vec::with_capacity(images.len());
+    for (index, block) in images.into_iter().enumerate() {
+        if let Some(chip) = editor.atomize(&atom_label(IMAGE, index + 1), IMAGE) {
+            attached.push((chip, block));
+        }
+    }
+    attached
+}
+
 impl Tui {
     // ------------------------------------------------------------ the rule above the input
 
@@ -345,8 +416,7 @@ impl Tui {
     // ------------------------------------------------------------ queue and stash
 
     /// Holds a message typed while the agent works until it finishes.
-    pub(super) fn queue_message(&mut self, text: String) {
-        let images = std::mem::take(&mut self.images);
+    pub(super) fn queue_message(&mut self, text: String, images: Vec<Block>) {
         self.queued.push(text, images);
         self.notice = Some(format!(
             "queued until the agent finishes ({} waiting){}alt+up takes it back",
@@ -376,21 +446,21 @@ impl Tui {
 
     /// Takes the last queued message back into the input, with its images.
     pub(super) fn dequeue(&mut self) {
-        let Some((text, mut images)) = self.queued.pop_last() else {
+        let Some((text, images)) = self.queued.pop_last() else {
             return;
         };
         // What was being typed is not lost: it waits in the stash.
         if !self.editor.is_empty() {
-            self.stashed.push((self.editor.take_draft(), Vec::new()));
+            let draft = self.editor.take_draft();
+            self.stashed.push((draft, std::mem::take(&mut self.images)));
         }
-        self.editor.set_text(&text);
-        self.images.append(&mut images);
+        self.set_draft(&text, images);
         self.completion = None;
     }
 
     /// `ctrl+s`: parks the draft, or on an empty input brings the last parked one back.
     pub(super) fn stash(&mut self) {
-        if self.editor.is_empty() && self.images.is_empty() {
+        if self.editor.is_empty() {
             match self.stashed.pop() {
                 Some((draft, images)) => {
                     self.editor.restore_draft(draft);
@@ -401,12 +471,97 @@ impl Tui {
             return;
         }
         // The row above the input counts what is parked.
-        let draft: Draft = self.editor.take_draft();
+        let draft = self.editor.take_draft();
         self.stashed.push((draft, std::mem::take(&mut self.images)));
         self.completion = None;
     }
 
+    // ------------------------------------------------------------ attached images
+
+    /// Attaches an image to the draft: a chip at the cursor, `[Image #1]`, stands for it and
+    /// goes with the text when it is sent. Deleting the chip takes the image off again.
+    pub(super) fn attach_image(&mut self, block: Block) {
+        let chip = self.editor.insert_atom(IMAGE);
+        self.editor.insert_str(" ");
+        self.images.push((chip, block));
+    }
+
+    /// Takes the images whose chips are in the draft, in the order of the chips, which is the
+    /// order their numbers have. Images whose chips were deleted are let go.
+    pub(super) fn claim_images(&mut self) -> Vec<Block> {
+        claim(&self.editor.atoms(), std::mem::take(&mut self.images))
+    }
+
+    /// Puts a message that was written out back in the input with its images: each
+    /// `[Image #N]` it still has for one of them is that image's chip again, and an image
+    /// whose label is gone is let go.
+    pub(super) fn set_draft(&mut self, text: &str, images: Vec<Block>) {
+        self.images = reattach(&mut self.editor, text, images);
+    }
+
     // ------------------------------------------------------------ pastes
+
+    /// `ctrl+v`, `alt+v`: reads the clipboard in the background; [`Tui::on_clipboard`] gets
+    /// what it held.
+    pub(super) fn paste_image(&mut self) {
+        self.notice = Some(format!(
+            "reading the clipboard{}",
+            self.theme.glyph(Glyph::Ellipsis)
+        ));
+        let done = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let _ = done.send(Internal::Clipboard(paste::read().await));
+        });
+    }
+
+    /// `ctrl+shift+v`, `alt+shift+v`: the clipboard's text, as text whatever it says.
+    pub(super) fn paste_text(&mut self) {
+        let done = self.internal_tx.clone();
+        tokio::spawn(async move {
+            let _ = done.send(Internal::ClipboardText(paste::read_text().await));
+        });
+    }
+
+    /// What the clipboard held when a paste key was pressed: an image is attached, files are
+    /// attached or mentioned, text is pasted.
+    pub(super) fn on_clipboard(&mut self, clip: Clip) {
+        self.notice = None;
+        match clip {
+            Clip::Image(block) => {
+                self.fleet.focus = None;
+                self.attach_image(block);
+                self.refresh_completion();
+            }
+            Clip::Files(files) => {
+                self.fleet.focus = None;
+                self.drop_files(&files);
+                self.refresh_completion();
+            }
+            Clip::Text(text) => self.on_paste(&text),
+            Clip::Empty => self.notice = Some("the clipboard holds no image, file or text".to_string()),
+        }
+    }
+
+    /// The clipboard's text for the key that pastes text only: it goes in as it is, a path
+    /// in it stays a path.
+    pub(super) fn on_clipboard_text(&mut self, text: Option<String>) {
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            self.notice = Some("the clipboard holds no text".to_string());
+            return;
+        };
+        if let Some(overlay) = &mut self.overlay {
+            return overlay.on_paste(&text);
+        }
+        if self.term_paste(&text) {
+            return;
+        }
+        if let Some(panel) = &mut self.btw {
+            return panel.on_paste(&text);
+        }
+        self.fleet.focus = None;
+        self.editor.insert_paste(&text, self.fold_paste_lines);
+        self.refresh_completion();
+    }
 
     /// Pasted text: dropped files become attachments and mentions, a long paste folds into a
     /// token, anything else goes in as typed.
@@ -437,11 +592,10 @@ impl Tui {
             let image = small
                 .then(|| std::fs::read(path).ok())
                 .flatten()
-                .filter(|bytes| image_mime(bytes).is_some())
-                .and_then(|bytes| image_block(&bytes, MAX_IMAGE_SIDE).ok());
+                .and_then(|bytes| paste::image_from(&bytes));
             match image {
                 Some(block) => {
-                    self.images.push(block);
+                    self.attach_image(block);
                     attached += 1;
                 }
                 None => {
@@ -508,6 +662,7 @@ impl Tui {
             .await;
         self.guard.resume();
         self.terminal = Some(EventStream::new());
+        self.recheck_size();
 
         let edited = std::fs::read_to_string(&file);
         let _ = std::fs::remove_file(&file);
@@ -532,7 +687,10 @@ impl Tui {
                 }
             }
             None => {
-                self.editor.set_text(edited);
+                // The file has the labels of the attached images; those it still has are
+                // their chips again.
+                let images = self.claim_images();
+                self.set_draft(edited, images);
                 self.completion = None;
             }
         }
@@ -673,13 +831,15 @@ impl Tui {
 
     // ------------------------------------------------------------ settings that apply at once
 
-    /// Applies a setting the settings menu just saved to the running UI. The appearance
-    /// settings are kept in the UI's own copy of the configuration, where whatever draws reads
-    /// them.
+    /// Applies a setting the settings screen just saved, or is trying on, to the running UI.
+    /// The appearance settings are kept in the UI's own copy of the configuration, where
+    /// whatever draws reads them.
     pub(super) fn apply_setting(&mut self, path: &str, value: &toml::Value) {
         let tui = &mut self.env.config.tui;
         match (path, value) {
-            ("tui.theme", toml::Value::String(name)) => self.set_theme(name),
+            ("tui.theme", toml::Value::String(name)) => {
+                self.apply_theme(name);
+            }
             ("tui.glyphs", toml::Value::String(set)) => {
                 if let Ok(setting) = set.parse() {
                     tui.glyphs = setting;
@@ -785,6 +945,119 @@ mod tests {
         assert_eq!(dropped_files("notes.txt", None), None);
         assert_eq!(dropped_files(&format!("look at {plain_text}"), None), None);
         assert_eq!(dropped_files("", None), None);
+    }
+
+    #[test]
+    fn pasted_paths_may_be_one_a_line_and_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("shot one.png");
+        let second = dir.path().join("b.png");
+        std::fs::write(&first, "x").unwrap();
+        std::fs::write(&second, "y").unwrap();
+        let (first_text, second_text) = (first.to_string_lossy(), second.to_string_lossy());
+        let both = Some(vec![first.clone(), second.clone()]);
+
+        // One a line, where a space (and on Windows a backslash) is part of the path.
+        assert_eq!(
+            dropped_files(&format!("{first_text}\n{second_text}\n"), None),
+            both
+        );
+        assert_eq!(
+            dropped_files(&format!("  \"{first_text}\"\r\n\n'{second_text}'"), None),
+            both
+        );
+        // One quoted path, as "Copy as path" in Explorer writes it.
+        assert_eq!(
+            dropped_files(&format!("\"{first_text}\""), None),
+            Some(vec![first.clone()])
+        );
+        // A line that is no file makes the whole paste text.
+        assert_eq!(
+            dropped_files(&format!("{first_text}\nand some words"), None),
+            None
+        );
+        assert_eq!(unquoted(" 'a b' "), "a b");
+        assert_eq!(unquoted("\"a b"), "\"a b");
+    }
+
+    #[test]
+    fn windows_paths_are_found_under_mnt_in_wsl() {
+        assert_eq!(
+            wsl_path("C:\\Users\\me\\shot one.png"),
+            Some(PathBuf::from("/mnt/c/Users/me/shot one.png"))
+        );
+        assert_eq!(
+            wsl_path("d:/pics/a.png"),
+            Some(PathBuf::from("/mnt/d/pics/a.png"))
+        );
+        for other in ["/home/me/a.png", "C:", "C:relative.png", "notes.txt", "1:\\a", ""] {
+            assert_eq!(wsl_path(other), None, "{other:?}");
+        }
+    }
+
+    fn image(name: &str) -> Block {
+        Block::Image {
+            mime: "image/png".to_string(),
+            data: name.to_string(),
+        }
+    }
+
+    #[test]
+    fn the_chips_in_the_draft_say_which_images_go_and_in_which_order() {
+        let mut editor = Editor::new();
+        let mut attached = Vec::new();
+        for name in ["one", "two", "three"] {
+            attached.push((editor.insert_atom(IMAGE), image(name)));
+            editor.insert_str(" ");
+        }
+        assert_eq!(editor.shown(), "[Image #1] [Image #2] [Image #3] ");
+        assert_eq!(
+            claim(&editor.atoms(), attached.clone()),
+            [image("one"), image("two"), image("three")]
+        );
+
+        // The second chip is deleted, and a fourth image is put in front of the others.
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        editor.handle_key(&key(KeyCode::Home));
+        for _ in 0..2 {
+            editor.handle_key(&key(KeyCode::Right));
+        }
+        editor.handle_key(&key(KeyCode::Delete));
+        editor.handle_key(&key(KeyCode::Home));
+        attached.push((editor.insert_atom(IMAGE), image("four")));
+        assert_eq!(editor.shown(), "[Image #1][Image #2]  [Image #3] ");
+        assert_eq!(
+            claim(&editor.atoms(), attached.clone()),
+            [image("four"), image("one"), image("three")]
+        );
+
+        // A chip cut and pasted back twice sends its image twice; no chip, no image.
+        editor.handle_key(&KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        editor.handle_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        editor.handle_key(&KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL));
+        assert_eq!(
+            claim(&editor.atoms(), attached.clone()),
+            [image("four"), image("four"), image("one"), image("three")]
+        );
+        editor.take();
+        assert!(claim(&editor.atoms(), attached).is_empty());
+    }
+
+    #[test]
+    fn a_draft_that_was_written_out_gets_its_images_back_by_their_labels() {
+        let mut editor = Editor::new();
+        let images = vec![image("one"), image("two"), image("three")];
+        // As a queued message or the file of the external editor has it: the second label
+        // was deleted and the other two changed places.
+        let attached = reattach(&mut editor, "see [Image #3] before [Image #1]", images);
+        assert_eq!(attached.len(), 2);
+        // The numbers follow the places in the text; the images follow their chips.
+        assert_eq!(editor.shown(), "see [Image #1] before [Image #2]");
+        assert_eq!(claim(&editor.atoms(), attached), [image("three"), image("one")]);
+
+        let attached = reattach(&mut editor, "no labels here", vec![image("one")]);
+        assert!(attached.is_empty() && editor.atoms().is_empty());
+        assert_eq!(editor.text(), "no labels here");
     }
 
     #[cfg(not(windows))]

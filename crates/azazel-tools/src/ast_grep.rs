@@ -72,6 +72,9 @@ fn is_ast_grep(program: &Path) -> bool {
     })
 }
 
+/// The tool's name. It is registered only when ast-grep is installed.
+pub const NAME: &str = "ast_grep";
+
 /// Where the ast-grep program is, when it is installed.
 pub fn program() -> Option<PathBuf> {
     which::which("ast-grep")
@@ -589,7 +592,7 @@ fn writes(input: &Value) -> bool {
 #[async_trait]
 impl Tool for AstGrepTool {
     fn name(&self) -> &str {
-        "ast_grep"
+        NAME
     }
 
     fn description(&self) -> &str {

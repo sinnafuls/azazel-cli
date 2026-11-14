@@ -86,7 +86,14 @@ const BUILTIN: &[(&str, &str)] = &[
         "glyphs",
         "Pick the symbols the UI draws with, or set them: /glyphs nerd|unicode|ascii|auto",
     ),
-    ("keys", "List key bindings"),
+    (
+        "keys",
+        "List key bindings, and those that clash or that the terminal keeps for itself",
+    ),
+    (
+        "terminal-setup",
+        "Make Shift+Enter add a line in this terminal, where it does not already",
+    ),
     (
         "rewind",
         "Go back to before an earlier prompt: files, conversation or both",
@@ -168,6 +175,11 @@ const BUILTIN: &[(&str, &str)] = &[
          /loop stop ends it",
     ),
     ("init", "Have the agent write AGENTS.md for this project"),
+    (
+        "migrate",
+        "Bring over models, keys, skills, commands, MCP servers, chats and memory from pi, omp, jcode, Claude Code \
+         and Codex CLI",
+    ),
     ("doctor", "Check the installation and this project's setup"),
     #[cfg(feature = "voice")]
     (
@@ -178,6 +190,16 @@ const BUILTIN: &[(&str, &str)] = &[
     ("speak", "Read replies aloud: /speak on|off|stop"),
     ("quit", "Exit"),
 ];
+
+/// Other names a built-in command answers to, as `(alias, command)`. `/help` and completion
+/// list the command only.
+const ALIASES: &[(&str, &str)] = &[("exit", "quit")];
+
+/// Every name the UI answers to by itself: the built-in commands and their aliases.
+pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
+    let commands = BUILTIN.iter().map(|(name, _)| *name);
+    commands.chain(ALIASES.iter().map(|(alias, _)| *alias))
+}
 
 /// How the note about a files-only rewind starts in the agent's context.
 pub(crate) const REWIND_NOTE: &str = "I rewound the project files";
@@ -207,6 +229,10 @@ impl Tui {
             Some((name, args)) => (name, args.trim()),
             None => (line, ""),
         };
+        let name = ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == name)
+            .map_or(name, |(_, command)| command);
         let echo = view::user_prompt(&format!("/{line}"), self.width(), &self.theme);
         self.say(echo);
         // What the commands read of the session is as the session is now.
@@ -284,6 +310,7 @@ impl Tui {
                 )),
             },
             "keys" => self.show_keys(),
+            "terminal-setup" => self.terminal_setup(),
             "rewind" => self.open_rewind().await,
             "permissions" => match args.strip_prefix("add") {
                 Some(rule) if !rule.trim().is_empty() => self.add_rule(rule),
@@ -308,10 +335,11 @@ impl Tui {
             "diff" => self.diff_command(args).await,
             "commit" => self.commit_command(args).await,
             "loop" => self.loop_command(args).await,
-            "init" => self.send_prompt(INIT_PROMPT.to_string()).await,
+            "init" => self.send_prompt(INIT_PROMPT.to_string(), Vec::new()).await,
+            "migrate" => self.migrate_command(),
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
-            "quit" | "exit" => self.quit = true,
+            "quit" => self.quit = true,
             #[cfg(feature = "mcp")]
             "mcp" if args.is_empty() && self.backend.local().is_some() => self.open_mcp(),
             // What the session says about itself, then what extensions added.
@@ -344,7 +372,8 @@ impl Tui {
                 self.warn("the command's model resolves to nothing; using the current one");
             }
         }
-        self.send_prompt(prompt).await;
+        let images = std::mem::take(&mut self.carried);
+        self.send_prompt(prompt, images).await;
     }
 
     /// Whether the lead is idle; says what cannot be done otherwise.
@@ -631,6 +660,11 @@ impl Tui {
             self.env.paths.keybindings_file().display()
         ));
         self.info(&out);
+        // What stands in the way of a binding, apart from the file itself.
+        let conflicts = self.key_conflicts();
+        if !conflicts.is_empty() {
+            self.warn(&format!("key conflicts:\n  {}", conflicts.join("\n  ")));
+        }
     }
 }
 
