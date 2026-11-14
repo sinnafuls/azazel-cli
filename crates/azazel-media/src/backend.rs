@@ -70,6 +70,16 @@ impl MediaKind {
             MediaKind::Audio => "audio",
         }
     }
+
+    /// The tool that generates this kind; registered only when a media backend is configured.
+    pub fn tool_name(self) -> &'static str {
+        match self {
+            MediaKind::Image => "generate_image",
+            MediaKind::Video => "generate_video",
+            MediaKind::Model3d => "generate_3d",
+            MediaKind::Audio => "generate_audio",
+        }
+    }
 }
 
 impl std::fmt::Display for MediaKind {

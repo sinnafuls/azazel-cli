@@ -256,12 +256,7 @@ async fn save(path: &Path, file: &MediaFile, sidecar: &Value) -> Result<(), Stri
 #[async_trait]
 impl Tool for GenerateTool {
     fn name(&self) -> &str {
-        match self.kind {
-            MediaKind::Image => "generate_image",
-            MediaKind::Video => "generate_video",
-            MediaKind::Model3d => "generate_3d",
-            MediaKind::Audio => "generate_audio",
-        }
+        self.kind.tool_name()
     }
 
     fn description(&self) -> &str {

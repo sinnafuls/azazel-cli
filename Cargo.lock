@@ -2272,6 +2272,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "docs-check"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "azazel-cli",
+ "azazel-core",
+ "azazel-protocol",
+ "azazel-tui",
+ "clap",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "xtask",
+]
+
+[[package]]
 name = "doctest-file"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"

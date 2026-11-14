@@ -186,6 +186,16 @@ const BUILTIN: &[(&str, &str)] = &[
     ("quit", "Exit"),
 ];
 
+/// Other names a built-in command answers to, as `(alias, command)`. `/help` and completion
+/// list the command only.
+const ALIASES: &[(&str, &str)] = &[("exit", "quit")];
+
+/// Every name the UI answers to by itself: the built-in commands and their aliases.
+pub(crate) fn builtin_names() -> impl Iterator<Item = &'static str> {
+    let commands = BUILTIN.iter().map(|(name, _)| *name);
+    commands.chain(ALIASES.iter().map(|(alias, _)| *alias))
+}
+
 /// How the note about a files-only rewind starts in the agent's context.
 pub(crate) const REWIND_NOTE: &str = "I rewound the project files";
 
@@ -214,6 +224,10 @@ impl Tui {
             Some((name, args)) => (name, args.trim()),
             None => (line, ""),
         };
+        let name = ALIASES
+            .iter()
+            .find(|(alias, _)| *alias == name)
+            .map_or(name, |(_, command)| command);
         let echo = view::user_prompt(&format!("/{line}"), self.width(), &self.theme);
         self.say(echo);
         // What the commands read of the session is as the session is now.
@@ -319,7 +333,7 @@ impl Tui {
             "init" => self.send_prompt(INIT_PROMPT.to_string(), Vec::new()).await,
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
-            "quit" | "exit" => self.quit = true,
+            "quit" => self.quit = true,
             #[cfg(feature = "mcp")]
             "mcp" if args.is_empty() && self.backend.local().is_some() => self.open_mcp(),
             // What the session says about itself, then what extensions added.

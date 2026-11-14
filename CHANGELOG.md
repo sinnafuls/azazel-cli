@@ -35,6 +35,20 @@ GitHub are its section here.
 - `/keys` reports key conflicts under the bindings: keys the key bindings file gives to two actions, keys the
   terminal keeps for itself (`alt+enter` in Windows Terminal, `ctrl+j` in VS Code, the tmux prefix), and keys
   a terminal without enhanced key reporting cannot tell apart.
+- `cargo xtask docs-check` compares the docs with the code and fails with one line per difference, naming
+  the page and the name: configuration tables and keys with their defaults, trust-gated settings, hook
+  events, keymap actions and their default keys, flags, subcommands and their actions, RPC commands and
+  frames, the Luau API, slash commands and tools, in both directions. It also checks every `azazel …`
+  command line the docs show, that every page is linked from `docs/README.md`, that relative links lead to
+  a file and a heading that exist, that `docs/rpc.schema.json` is current, and that `FEATURES.md` is
+  stamped with the newest release. CI runs it after the tests.
+- `AGENTS.md` at the root of the repository, the guide for people and coding agents who change azazel: the
+  layout of the workspace, the commands that must pass, how to try a change with a scratch home and the
+  scripted provider, the rules for tests and docs, the checklist for adding a feature and the steps of a
+  release. `CLAUDE.md` points to it.
+- `docs/configuration.md` documents `[limits]` (`max_cost_usd`, `warn_cost_usd`, `max_turns`), the role of
+  each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
+  actions.
 
 ### Changed
 
@@ -48,6 +62,17 @@ GitHub are its section here.
   60 ms and drawn once. The live region grows with a taller window, so the input stays on the last rows; on
   Windows it is placed from where the console has its cursor, which is exact. The image row above the input
   (`[N image(s) attached to the next prompt]`) is gone: the chips in the draft say it.
+
+- The built-in skill `azazel-extensions` describes the current version: the hook events `file_changed`,
+  `config_change`, `worktree_create`, `worktree_remove` and `setup`, the hook options `once` and `wake`,
+  `output-schema` in agent definitions, `allowed-tools` in skills, npm packages, and the whole Luau API
+  (`azazel.wrap`, `azazel.prompt`, `azazel.router`, `azazel.classify`, `azazel.session`, `azazel.tools.call`,
+  `replaces`).
+- `docs/tools.md` lists the `report` tool and `tools.redact_output`; `docs/extensions.md` lists
+  `azazel.fs.data_dir` and `before_agent_start` in their tables.
+- `FEATURES.md`: the azazel column was checked row by row against 0.5.0. 77 rows changed, among them
+  `/queue`, which was marked as a command and is a key (`Alt+Enter`); features without a row are in a new
+  section; the list of biggest gaps is new.
 
 ### Fixed
 

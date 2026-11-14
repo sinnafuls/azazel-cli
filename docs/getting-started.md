@@ -71,7 +71,7 @@ install anything on their own, and nothing is downloaded when the release cannot
 repository without a token).
 
 The first time the UI starts after an update it says so, with the number of changes. `azazel changelog` (or
-`/changelog`) shows what changed in each release; `--since 0.2.0` shows only what is newer.
+`/changelog`) shows what changed in each release; `azazel changelog --since 0.2.0` shows only what is newer.
 
 ## First run
 

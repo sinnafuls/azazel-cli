@@ -61,6 +61,7 @@ azazel doctor                        # what is configured and what is missing
 ## Documentation
 
 Start with [getting started](docs/getting-started.md); every feature has its own page in [docs/](docs/README.md).
+To work on azazel itself, read [AGENTS.md](AGENTS.md).
 
 ## Licence
 

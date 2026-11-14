@@ -42,6 +42,7 @@ Body: instructions in Markdown. Supporting files sit beside it (a `references/` 
 | `agent` | Definition used for `fork` (default `coder`) |
 | `model` | Model chain used for the prompt `/skill:<name>` sends |
 | `hooks` | Hooks active from the skill's first use until the session ends |
+| `allowed-tools` | Permission rules such as `read, shell(git diff:*)`: allowed without asking while an `inline` skill is in use, and the whole grant of the sub-agent of a `fork` skill |
 
 `$ARGUMENTS` in the body is replaced by the arguments. Files beside `SKILL.md` are read as `skill://<name>/<relative path>`. `/skills` lists valid skills and the parse error of each invalid one. Keep bodies under 500 lines and move detail into `references/`.
 
@@ -87,6 +88,7 @@ max-turns: 40
 skills: [testing]
 spawns: []
 isolation: none
+output-schema: { type: object, properties: { files: { type: array } }, required: [files] }
 ---
 You write migrations for …
 ```
@@ -103,6 +105,7 @@ You write migrations for …
 | `skills` | Skills whose bodies are appended to the system prompt |
 | `spawns` | Definitions this agent may start itself |
 | `isolation` | `none`, or `worktree` to work in its own git worktree and hand back a patch |
+| `output-schema` | A JSON Schema the agent's result must match. The agent gets a `report` tool and finishes by calling it; its report is that value as JSON |
 
 `[agents.<name>]` in `config.toml` overrides `model` and `thinking` without editing the file. `/agents` lists definitions and running agents. The built-in definitions are `scout`, `planner`, `coder`, `tester`, `reviewer`, `verifier`, `researcher`, `designer`, `artist` and `playtester`; a file with the same `name` replaces one.
 
@@ -130,14 +133,21 @@ command = "date +'Today is %A, %F.'"
 | `session_start` | Start, resume, clear, compact | Plain output is added as context |
 | `session_end` | Session closes | (cannot block) |
 | `stop` | The lead is about to finish a turn | The agent continues with the reason as a message |
-| `subagent_start` / `subagent_stop` | A sub-agent starts or is about to finish | Spawn refused / the sub-agent continues |
-| `pre_compact` / `post_compact` | Around context compaction | Manual compaction cancelled |
+| `subagent_start` | A sub-agent is about to start | Spawn refused |
+| `subagent_stop` | A sub-agent is about to finish | The sub-agent continues |
+| `pre_compact` | Before context compaction | Manual compaction cancelled |
+| `post_compact` | After context compaction | (cannot block) |
 | `permission_request` | Before the user would be asked | The hook's decision is used |
 | `notification` | Something wants the user's attention | (cannot block) |
+| `file_changed` | After a `write` or `edit` succeeded | (cannot block) |
+| `config_change` | The settings menu or `/reload` changed the configuration | (cannot block) |
+| `worktree_create` | The worktree of an isolated agent was made | (cannot block) |
+| `worktree_remove` | That worktree was removed | (cannot block) |
+| `setup` | `azazel init` finished, or a project runs trusted for the first time | (cannot block) |
 
-Fields: `matcher`, `if`, `type` (`command` default, `http`, `prompt`, `agent`), `command`, `url`, `headers`, `prompt`, `model`, `timeout`, `async` (`true`: do not wait).
+Fields: `matcher`, `if`, `type` (`command` default, `http`, `prompt`, `agent`), `command`, `url`, `headers`, `prompt`, `model`, `timeout`, `async` (`true`: do not wait), `once` (`true`: at most one run per session), `wake` (with `async`: give what the hook printed to the lead when it finishes).
 
-The hook receives JSON on stdin: `hook_event_name` (`PreToolUse`, `Stop`, …), `session_id`, `transcript_path`, `cwd`, `agent_id`, `permission_mode`, plus per event `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `prompt`, `source`, `stop_hook_active`, `agent_type`, `trigger`, `message`.
+The hook receives JSON on stdin: `hook_event_name` (`PreToolUse`, `Stop`, …), `session_id`, `transcript_path`, `cwd`, `agent_id`, `permission_mode`, plus per event `tool_name`, `tool_input`, `tool_use_id`, `tool_response`, `prompt`, `source`, `stop_hook_active`, `agent_type`, `agent_transcript_path`, `trigger`, `message`, `file_path`, `worktree_path`.
 
 Results:
 
@@ -174,24 +184,30 @@ end)
 
 | Function | Contract |
 |---|---|
-| `azazel.tool{ name, description, parameters, access?, execute }` | `parameters` is JSON Schema as a table. `access`: `"read"`, `"write"`, `"exec"` (default), `"net"`. `execute(args, ctx)` returns a string or `{ content, is_error }` |
+| `azazel.tool{ name, description, parameters?, access?, replaces?, execute }` | `parameters` is JSON Schema as a table. `access`: `"read"`, `"write"`, `"exec"` (default), `"net"`. `execute(args, ctx)` returns a string or `{ content, is_error }`. `replaces = true` puts the tool in the place of the one that has its name, a built-in one included |
+| `azazel.wrap(name, { before?, after? })` | Runs `before(input, ctx)` and `after(result, input, ctx)` around every call of the tool `name`. `before` may return `{ input }`, `{ block = true, reason }` or `{ content, is_error? }`; `after` a string or `{ content?, is_error? }` |
 | `azazel.on(event, handler)` | `handler(ev, ctx)` returns `nil`, `{ block = true, reason }`, or replacement fields |
-| `azazel.command{ name, description, run }` | Slash command; `run(args, ctx)` may return text to show |
-| `azazel.shortcut(key, fn)` | Key binding in the terminal UI |
+| `azazel.command{ name, description?, argument_hint?, run }` | Slash command; `run(args, ctx)` may return text to show |
+| `azazel.prompt(name, render)` | Adds a part to every agent's system prompt; `render(ctx)` returns its text or `nil`. Keep it stable: text that changes per request defeats the prompt cache |
+| `azazel.shortcut(key, handler)` | Key binding in the terminal UI |
+| `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Adds a model provider |
+| `azazel.router(name, route)` | Makes `virtual/<name>` a model; `route(request)` returns where each request goes: `"provider/model[:thinking]"`, `"@role"`, a list, or `{ model, thinking }` |
+| `azazel.mcp{ name, … }` | Adds an MCP server (fields as in `mcp.json`) |
 | `azazel.status(key, text)`, `azazel.widget(key, lines)` | Status-line segment; lines above the editor (`nil` removes) |
 | `azazel.notify(text, level?)` | `"info"`, `"warn"`, `"error"` |
-| `azazel.send(text, { deliver })` | Message the lead as the user: `"follow_up"` (default) or `"steer"` |
-| `azazel.exec(cmd, args, { cwd?, timeout? })` | Runs a program; returns `{ code, stdout, stderr }` |
+| `azazel.send(text, { deliver? })` | Message the lead as the user: `"follow_up"` (default) or `"steer"` |
+| `azazel.exec(program, args?, { cwd?, timeout? })` | Runs a program without a shell; returns `{ code, stdout, stderr }` |
 | `azazel.http{ url, method?, headers?, body?, timeout? }` | Returns `{ status, headers, body }` |
-| `azazel.fs.read / write / list / exists` | Confined to the project, the configured additional directories and `azazel.fs.data_dir` |
-| `azazel.json.encode / decode` | |
-| `azazel.state.get / set` | Per-script store that survives restarts |
-| `azazel.agent.spawn{ agent, prompt, wait? }`, `.send`, `.stop`, `.list` | Sub-agents |
-| `azazel.memory.save / search` | Project memory |
-| `azazel.provider{ id, api, base_url, api_key_env?, headers? }` | Adds a model provider |
-| `azazel.mcp{ name, … }` | Adds an MCP server (fields as in `mcp.json`) |
-| `ctx.ui.confirm / select / input` | Ask the user |
-| `ctx.cwd`, `ctx.session_id`, `ctx.agent_id`, `ctx.mode` | Read-only |
+| `azazel.fs.read(path)`, `.write(path, content)`, `.list(path)`, `.exists(path)`, `azazel.fs.data_dir` | Confined to the project, the configured additional directories and the script's own directory, whose path is `azazel.fs.data_dir` |
+| `azazel.json.encode(value, pretty?)`, `.decode(text)` | |
+| `azazel.state.get(key)`, `.set(key, value)` | Per-script store that survives restarts |
+| `azazel.agent.spawn{ agent, prompt, wait? }`, `.send(to, message)`, `.stop(id)`, `.list()` | Sub-agents |
+| `azazel.classify(question, choices, { model? })` | A small model (the `judge` role) picks one of 2 to 20 choices; returns `{ choice, index, confidence, reason, model }` |
+| `azazel.memory.save(text, kind?, tags?)`, `.search(query, limit?)` | Project memory |
+| `azazel.session.name()`, `.set_name(text)`, `.set_model(specs)`, `.set_thinking(level)`, `.compact(instructions?)`, `.messages()` | The open session: its name, the lead's model and thinking level, compaction, and the conversation so far as `{ id, role, text, content }` entries |
+| `azazel.tools.call(name, args?)` | Calls any tool as the lead and returns the text of its result; the call passes the permission rules and hooks |
+
+`ctx`, the last argument of every tool, handler and command, is read-only: `ctx.cwd`, `ctx.session_id`, `ctx.agent_id`, `ctx.mode`, and `ctx.ui.confirm(prompt)`, `ctx.ui.select(prompt, options)`, `ctx.ui.input(prompt)` to ask the user.
 
 Events and the fields a handler may replace:
 
@@ -199,14 +215,15 @@ Events and the fields a handler may replace:
 |---|---|---|
 | `session_start`, `session_end`, `turn_start`, `turn_end`, `agent_end`, `post_compact`, `notification` | | |
 | `user_prompt` | `text` | yes |
-| `before_agent_start` | `system_append` | |
+| `before_agent_start` | `system_append` | accepted, but the current version never emits it |
 | `tool_call` (`ev.tool`, `ev.input`, `ev.agent`) | `input`, `skip_prompt` | yes |
 | `tool_result` | `content`, `is_error` | |
 | `context` | `messages` | |
 | `agent_spawn` | `prompt` | yes |
 | `pre_compact`, `stop` | | yes |
+| `file_changed` (`ev.path`, `ev.tool`), `config_change` (`ev.source`), `worktree_create`, `worktree_remove` (`ev.agent_id`, `ev.path`), `setup` (`ev.trigger`) | | |
 
-Rules of the sandbox: registering functions (`tool`, `on`, `command`, `shortcut`, `provider`, `mcp`) work only while the script loads. A handler has 5 seconds of its own running time; a handler that errors or overruns disables its script, and the session continues. Functions that wait (`exec`, `http`, `fs`, `agent`, `memory`, `ctx.ui`) are available inside tools, handlers and commands, not at load.
+Rules of the sandbox: registering functions (`tool`, `wrap`, `on`, `command`, `prompt`, `shortcut`, `provider`, `router`, `mcp`) work only while the script loads. A handler has 5 seconds of its own running time; a handler that errors or overruns disables its script, and the session continues. Functions that wait or need a session (`exec`, `http`, `fs`, `agent`, `classify`, `memory`, `session`, `tools.call`, `ctx.ui`) are available inside tools, handlers and commands, not at load.
 
 ## Packages
 
@@ -225,7 +242,7 @@ Without an `azazel.toml`, a Claude plugin manifest (`.claude-plugin/marketplace.
 
 | Command | Does |
 |---|---|
-| `azazel pkg add <source> [--name <name>]` | Installs from a git URL, `github:<owner>/<repo>[@ref]`, a directory (used in place, never copied) or a registry name |
+| `azazel pkg add <source> [--name <name>]` | Installs from a git URL, `github:<owner>/<repo>[@ref]`, `npm:<name>[@version]`, a directory (used in place, never copied) or a registry name |
 | `azazel pkg list`, `pkg update [name]`, `pkg remove <name>` | Shows, refreshes, uninstalls |
 | `azazel skills add <source>` | The same install, for packages of skills |
 | `azazel skills add <package>/<skill>` | Offers one skill of a package to the model, installing the package first if needed |

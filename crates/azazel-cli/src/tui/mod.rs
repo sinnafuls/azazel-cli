@@ -79,7 +79,7 @@ use overlay::{Action, ApprovalRow, Outcome, Overlay, approval_rows};
 #[cfg(test)]
 pub(crate) use remote::agent_event;
 pub(crate) use remote::{Place, Remote};
-pub(crate) use slash::{REWIND_NOTE, is_note};
+pub(crate) use slash::{REWIND_NOTE, builtin_names as builtin_command_names, is_note};
 
 const DOUBLE_PRESS: Duration = Duration::from_millis(1000);
 const MAX_COMPLETION_FILES: usize = 20_000;

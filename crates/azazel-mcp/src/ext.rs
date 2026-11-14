@@ -20,12 +20,15 @@ use crate::manager::{McpManager, State};
 const DEFAULT_SEARCH_LIMIT: usize = 8;
 const MAX_SEARCH_LIMIT: usize = 25;
 
+/// The tool that finds MCP tools; offered only while there are too many of them to list.
+pub const TOOL_SEARCH: &str = "tool_search";
+
 struct ToolSearchTool(McpManager);
 
 #[async_trait]
 impl Tool for ToolSearchTool {
     fn name(&self) -> &str {
-        "tool_search"
+        TOOL_SEARCH
     }
 
     fn description(&self) -> &str {

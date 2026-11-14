@@ -122,7 +122,7 @@ Only inside a tool, handler, command or shortcut (they wait, or need a running s
 | `azazel.agent.list()` | `{ id, def, parent, depth, state, elapsed_secs, tokens, cost_usd }` per agent |
 | `azazel.exec(program, args?, { cwd?, timeout? })` | Runs a program directly, without a shell. `cwd` is relative to the project root; `timeout` in seconds, default 60. Returns `{ code, stdout, stderr }` |
 | `azazel.http{ url, method?, headers?, body?, timeout? }` | Default `GET`, timeout 30 s. Returns `{ status, headers, body }`; an HTTP error status is a response, not an error |
-| `azazel.fs.read(path)`, `.write(path, content)`, `.list(path)`, `.exists(path)` | Files inside the project root, the `permissions.additional_dirs` and the script's own data directory `azazel.fs.data_dir` (`~/.azazel/extensions/.data/<id>`). Relative paths start at the project root. A path that leads elsewhere, also through `..` or a symlink, is an error. `list` returns `{ name, is_dir }` entries |
+| `azazel.fs.read(path)`, `.write(path, content)`, `.list(path)`, `.exists(path)`, `azazel.fs.data_dir` | Files inside the project root, the `permissions.additional_dirs` and the script's own data directory, whose path is the string `azazel.fs.data_dir` (`~/.azazel/extensions/.data/<id>`). Relative paths start at the project root. A path that leads elsewhere, also through `..` or a symlink, is an error. `list` returns `{ name, is_dir }` entries |
 | `azazel.agent.spawn{ agent, prompt, wait? }` | Starts a sub-agent of the lead. With `wait` (default true) returns its report and its id; with `wait = false` returns the id at once |
 | `azazel.classify(question, choices, { model? })` | Has a small model pick the one of `choices` (2 to 20 strings) that answers `question`; returns `{ choice, index, confidence, reason, model }`. The `judge` role answers unless `model` names a model, a role or a list of them. Errors when no model can be asked or the reply cannot be read. The same as `classify` in [`run_code`](tools.md#code-execution) |
 | `azazel.memory.save(text, kind?, tags?)` | Saves a project memory; `kind` defaults to `"fact"`. Returns the id. Errors with `memory unavailable` when memory is off |
@@ -208,6 +208,7 @@ azazel.wrap("shell", {
 | `session_start` | `source`: `startup`, `resume`, `clear`, `compact` | | |
 | `session_end` | | | |
 | `user_prompt` | `text`, `images` (a count) | `text` | yes: the prompt is rejected |
+| `before_agent_start` | `agent`, `system` | `system_append` | never fires: the name is accepted and the current version does not emit the event |
 | `turn_start`, `turn_end` | `agent` | | |
 | `tool_call` | `agent`, `call_id`, `tool`, `input`, `skip_prompt` | `input`, `skip_prompt` (true runs the call without asking you) | yes: the call is denied and the model sees the reason |
 | `tool_result` | `agent`, `call_id`, `tool`, `content`, `is_error` | `content`, `is_error` | |
@@ -223,7 +224,7 @@ azazel.wrap("shell", {
 | `worktree_create`, `worktree_remove` | `agent_id`, `path` | | |
 | `setup` | `trigger`: `init` or `trust` | | |
 
-`notification` fires in the terminal UI when something wants your attention. `file_changed` fires after a `write` or `edit` succeeded, `config_change` after `/settings` or a reload changed the configuration, the worktree events when an isolated agent's worktree is made or removed, and `setup` the first time a project runs trusted (`azazel init` runs no scripts, so a script sees only `trust`). `azazel.on` also accepts `before_agent_start`, but the current version never emits that event.
+`notification` fires in the terminal UI when something wants your attention. `file_changed` fires after a `write` or `edit` succeeded, `config_change` after `/settings` or a reload changed the configuration, the worktree events when an isolated agent's worktree is made or removed, and `setup` the first time a project runs trusted (`azazel init` runs no scripts, so a script sees only `trust`). A handler for `before_agent_start` registers without an error and is never called.
 
 A `tool_call` handler cannot override deny rules, the git push guard or protected paths; they are checked before it runs and again on a rewritten input.
 
