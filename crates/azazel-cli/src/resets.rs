@@ -23,14 +23,16 @@ use azazel_ai::providers::resets::{self, Desk, Entry, Offers, Outcome, Pending, 
 use azazel_ai::providers::usage::{self, ResetOffer, UsageReport};
 use azazel_ai::{AiError, LimitBlock, ModelRef, ModelSpec, ProviderConfig, Router, Window};
 use azazel_core::{
-    AskKind, Command, CommandHandler, CommandOutcome, EntryKind, ExtCtx, ExtError, Extension, Level,
-    Question, Registrar, SessionStore, Ui, UiError,
+    Command, CommandHandler, CommandOutcome, EntryKind, ExtCtx, ExtError, Extension, Level, Registrar,
+    SessionStore, Ui, UiError,
 };
 use tokio_util::sync::CancellationToken;
 
 use crate::accounts::clock;
 use crate::usage::Source;
 
+/// The title of the question a run asks when its account is out of allowance.
+const TITLE: &str = "Usage limit reached";
 const USE: &str = "Use the reset";
 const AGAIN: &str = "Send the same reset request again";
 const WAIT: &str = "Wait until reset";
@@ -40,7 +42,7 @@ const AUTO_EVERY_SECS: u64 = 5 * 60;
 /// The wait looks this often whether the limit is gone before its time.
 const LOOK_EVERY: Duration = Duration::from_secs(15);
 /// Waited past the reset time, for the provider's clock.
-const PAST_RESET_SECS: u64 = 3;
+const PAST_RESET_SECS: u64 = 1;
 
 /// Where the journal of redemptions is kept.
 pub fn journal_dir(paths: &azazel_core::Paths) -> PathBuf {
@@ -194,21 +196,8 @@ impl Resets {
     /// Asks the provider for the account's usage now and keeps the answer.
     async fn fresh(&self, provider: &ProviderConfig, account: &str) -> Option<UsageReport> {
         let client = azazel_ai::providers::http::http_client();
-        match usage::fetch(&client, provider, &self.source.credentials, account, true).await {
-            Ok(mut report) => {
-                // What is known of the resets is as old as it was.
-                if let Some(kept) = usage::cached(&self.source.cache_file)
-                    .remove(&azazel_ai::credentials::account_key(&provider.id, account))
-                    .filter(|_| report.resets_asked_at.is_none() && report.resets.is_empty())
-                {
-                    report.resets = kept.resets;
-                    report.resets_asked_at = kept.resets_asked_at;
-                }
-                usage::keep(&self.source.cache_file, &report);
-                // A redemption whose outcome was open is settled by the room this shows.
-                self.desk().journal().settle(&report);
-                Some(report)
-            }
+        match crate::usage::fetch(&self.source, &client, provider, account, true).await {
+            Ok(report) => Some(report),
             Err(why) => {
                 tracing::debug!("usage of {} ({account}) was not fetched: {why}", provider.id);
                 None
@@ -220,7 +209,7 @@ impl Resets {
     /// fetched afterwards settles it in the journal when it shows room.
     async fn spend(&self, provider: &ProviderConfig, pending: &Pending) -> Spent {
         let (id, account) = (provider.id.as_str(), pending.account.as_str());
-        let who = format!("{id} (account {})", self.who(id, account));
+        let who = format!("{id}, account {}", self.who(id, account));
         let outcome = self.desk().redeem(pending).await;
         let limits = self.source.credentials.limits();
         let sent = !matches!(
@@ -228,10 +217,13 @@ impl Resets {
             Outcome::Refused(_) | Outcome::NotSpent(_) | Outcome::Open(_)
         );
         let room = match sent {
-            true => self
-                .fresh(provider, account)
-                .await
-                .map(|report| has_room(&report, pending.clears.as_deref())),
+            true => {
+                // What the account was known to hold is no longer true: the next look asks.
+                usage::forget_resets(&self.source.cache_file, id, account);
+                self.fresh(provider, account)
+                    .await
+                    .map(|report| has_room(&report, pending.clears.as_deref()))
+            }
             false => None,
         };
         let done = |back: bool, level: Level, line: String| Spent { back, level, line };
@@ -266,7 +258,9 @@ impl Resets {
                 done(
                     true,
                     Level::Info,
-                    format!("{who}: the provider says this reset was spent before, and the window has room again."),
+                    format!(
+                        "{who}: the provider says this reset was spent before, and the window has room again."
+                    ),
                 )
             }
             Outcome::AlreadySpent { next_available_at } => {
@@ -424,7 +418,7 @@ impl LimitFlow {
     }
 
     /// The reset to offer for `hit`: one that gives back every window in the way.
-    fn usable<'a>(prepared: &'a Prepared) -> Option<&'a Pending> {
+    fn usable(prepared: &Prepared) -> Option<&Pending> {
         let offers = prepared.offers.as_ref().ok()?;
         // Without knowing which window is full there is no telling what a reset would do.
         if prepared.full.is_empty() {
@@ -556,7 +550,7 @@ impl LimitFlow {
             self.notify(
                 Level::Warn,
                 &format!(
-                    "{id} (account {account}): no banked reset is spent automatically: one was sent {} and {}",
+                    "{id}, account {account}: no banked reset is spent automatically: one was sent {} and {}",
                     clock(entry.at),
                     match entry.open(now) {
                         true => "its outcome is not settled yet; /usage shows what the account has left",
@@ -675,19 +669,14 @@ impl LimitFlow {
                     }
                 }
             }
-            let question = Question {
-                header: Some("Usage limit".to_string()),
-                context: Some(context.join("\n")),
-                kind: AskKind::Select,
-                options,
-                ..Question::text(text)
-            };
+            // The first line is the title of the box, the rest what it says.
+            let prompt = format!("{TITLE}\n{text}\n\n{}", context.join("\n"));
             let answer = tokio::select! {
                 _ = cancel.cancelled() => return Recovery::Fail,
-                answer = ui.0.ask(&question) => answer,
+                answer = ui.0.select(&prompt, &options) => answer,
             };
             let answer = match answer {
-                Ok(answer) => answer.into_iter().next().unwrap_or_default(),
+                Ok(index) => options.get(index).cloned().unwrap_or_default(),
                 // Nobody is there after all.
                 Err(UiError::NoUser) => {
                     drop(turn);
@@ -910,9 +899,9 @@ impl ResetCommand {
                 .filter_map(|offer| offer_text(offer, now))
                 .collect();
             return Ok(Some(match known.is_empty() {
-                true => format!("{id} (account {who}) holds no banked reset"),
+                true => format!("{id}, account {who}, holds no banked reset"),
                 false => format!(
-                    "{id} (account {who}) holds no reset that can be spent now: {}",
+                    "{id}, account {who}, holds no reset that can be spent now: {}",
                     known.join("; ")
                 ),
             }));
@@ -1018,13 +1007,452 @@ impl Extension for ResetsExt {
         }))));
         r.command(Command {
             name: "reset-usage".to_string(),
-            description: "Spend a banked reset of a Claude or ChatGPT subscription, after showing what it gives back"
-                .to_string(),
+            description:
+                "Spend a banked reset of a Claude or ChatGPT subscription, after showing what it gives back"
+                    .to_string(),
             argument_hint: Some("[provider]".to_string()),
             handler: Arc::new(ResetCommand {
                 resets: self.resets.clone(),
             }),
         });
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::collections::{BTreeMap, VecDeque};
+    use std::sync::atomic::AtomicUsize;
+
+    use azazel_ai::providers::resets::State;
+    use azazel_ai::{Catalog, Credential, Credentials, RetryPolicy};
+    use azazel_core::{ApprovalDecision, ApprovalRequest, Question, UiBridge};
+    use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    use super::*;
+
+    const RESET_PATH: &str = "/api/organizations/org-1/reset_rate_limits";
+
+    /// A user who answers from a list, and what they were shown.
+    #[derive(Default)]
+    struct Asked {
+        answers: Mutex<VecDeque<Result<String, UiError>>>,
+        /// Each question as its prompt and its options.
+        questions: Mutex<Vec<(String, Vec<String>)>>,
+        notes: Mutex<Vec<(Level, String)>>,
+    }
+
+    impl Asked {
+        fn answering(answers: &[Result<&str, UiError>]) -> Arc<Asked> {
+            Arc::new(Asked {
+                answers: Mutex::new(
+                    answers
+                        .iter()
+                        .map(|answer| answer.clone().map(str::to_string))
+                        .collect(),
+                ),
+                ..Asked::default()
+            })
+        }
+
+        fn notes(&self, level: Level) -> Vec<String> {
+            self.notes
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(of, _)| *of == level)
+                .map(|(_, text)| text.clone())
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl UiBridge for Asked {
+        async fn ask(&self, _: &Question) -> Result<Vec<String>, UiError> {
+            Err(UiError::NoUser)
+        }
+        async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+            Err(UiError::NoUser)
+        }
+        async fn select(&self, prompt: &str, options: &[String]) -> Result<usize, UiError> {
+            self.questions
+                .lock()
+                .unwrap()
+                .push((prompt.to_string(), options.to_vec()));
+            let answer = self.answers.lock().unwrap().pop_front();
+            let answer = answer.unwrap_or(Err(UiError::Cancelled))?;
+            Ok(options.iter().position(|option| *option == answer).unwrap())
+        }
+        async fn input(&self, _: &str) -> Result<String, UiError> {
+            Err(UiError::NoUser)
+        }
+        fn notify(&self, level: Level, text: &str) {
+            self.notes.lock().unwrap().push((level, text.to_string()));
+        }
+        async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+            None
+        }
+    }
+
+    /// A Claude subscription at `server` whose 5-hour window ran out a moment ago.
+    struct Bench {
+        dir: tempfile::TempDir,
+        flow: LimitFlow,
+        credentials: Arc<Credentials>,
+    }
+
+    impl Bench {
+        async fn new(
+            server: &MockServer,
+            ui: Option<Arc<Asked>>,
+            auto_reset: bool,
+            unattended: bool,
+        ) -> Bench {
+            let dir = tempfile::tempdir().unwrap();
+            let credentials = Arc::new(Credentials::with_env(
+                dir.path().join("auth.json"),
+                Arc::new(|_: &str| None),
+            ));
+            credentials
+                .store(
+                    "anthropic",
+                    Credential::OAuth {
+                        access: "access-token".into(),
+                        refresh: "refresh-token".into(),
+                        expires: now_ms() + 3_600_000,
+                        extra: BTreeMap::from([
+                            ("org_id".to_string(), json!("org-1")),
+                            ("email".to_string(), json!("jane@example.com")),
+                        ]),
+                    },
+                )
+                .unwrap();
+            let mut providers = crate::login::key_providers(&azazel_core::Config::default()).unwrap();
+            for provider in &mut providers {
+                if provider.id == "anthropic" {
+                    provider.base_url = server.uri();
+                    // A request was made with the stored login.
+                    credentials.resolve_account(provider).await.unwrap();
+                }
+            }
+            let model = ModelRef::new("anthropic", "claude-test");
+            let roles = BTreeMap::from([("default".to_string(), vec![ModelSpec::Model(model)])]);
+            let router = Arc::new(
+                Router::new(
+                    Vec::new(),
+                    Catalog::load(None, &BTreeMap::new()),
+                    roles,
+                    RetryPolicy::default(),
+                )
+                .with_accounts(credentials.clone()),
+            );
+            let services = Arc::new(Services::new());
+            services.insert(router);
+            if let Some(ui) = ui {
+                services.insert(Arc::new(Ui(ui)));
+            }
+            let flow = LimitFlow {
+                resets: Resets {
+                    source: Source {
+                        providers: providers.clone(),
+                        credentials: credentials.clone(),
+                        cache_file: dir.path().join("cache").join("limits.json"),
+                        desk: Desk::new(dir.path().join("resets"))
+                            .with_spend_timeout(Duration::from_millis(300)),
+                    },
+                    redact_email: true,
+                },
+                services,
+                auto_reset,
+                unattended,
+                only: None,
+                providers,
+                waits: Arc::default(),
+                turn: tokio::sync::Mutex::new(()),
+                waited: Mutex::default(),
+            };
+            let bench = Bench {
+                dir,
+                flow,
+                credentials,
+            };
+            bench.run_out();
+            bench
+        }
+
+        /// The provider refused a request for the 5-hour window.
+        fn run_out(&self) {
+            let until = now_ms() / 1000 + 3 * 3600;
+            let window = Window::new("5h", 1.0, Some(until), "rejected");
+            let limits = self.credentials.limits();
+            limits.record("anthropic", "default", vec![window.clone()]);
+            limits.block_on("anthropic", "default", until, Some(&window));
+        }
+
+        fn blocked(&self) -> bool {
+            self.credentials
+                .limits()
+                .blocked_for("anthropic", "default", "claude-test")
+                .is_some()
+        }
+
+        async fn hit(&self) -> Recovery {
+            let agent = AgentInfo {
+                id: "lead".into(),
+                def: "lead".into(),
+                parent: None,
+                depth: 0,
+                session_id: "s".into(),
+            };
+            let error = AiError::Quota {
+                resets_at: None,
+                message: "the 5-hour limit of this account is used up".into(),
+            };
+            self.flow
+                .out_of_allowance(
+                    &agent,
+                    &[ModelSpec::Role("default".into())],
+                    &error,
+                    &CancellationToken::new(),
+                )
+                .await
+        }
+
+        fn journal(&self) -> Option<Entry> {
+            self.flow.resets.desk().journal().entry("anthropic", "default")
+        }
+    }
+
+    /// The usage endpoint of an account that holds its session reset; `used` is what its
+    /// 5-hour window shows each time it is asked.
+    async fn usage_shows(server: &MockServer, used: impl Fn() -> f64 + Send + Sync + 'static) {
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .respond_with(move |_: &Request| {
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "five_hour": { "utilization": used(), "resets_at": "2099-01-01T00:00:00Z" },
+                    "cedar_ember": null,
+                    "juniper_tide": { "eligible": true, "arm": "reset", "available": true }
+                }))
+            })
+            .mount(server)
+            .await;
+    }
+
+    async fn redemptions(server: &MockServer) -> Vec<Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.url.path() == RESET_PATH)
+            .map(|request| serde_json::from_slice(&request.body).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_reset_whose_answer_is_lost_is_said_to_be_uncertain_and_only_the_same_one_goes_out_again() {
+        let server = MockServer::start().await;
+        usage_shows(&server, || 100.0).await;
+        // The first redemption gets no answer in time; the provider had honoured it.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counted = calls.clone();
+        Mock::given(method("POST"))
+            .and(path(RESET_PATH))
+            .respond_with(move |_: &Request| match counted.fetch_add(1, Ordering::SeqCst) {
+                0 => ResponseTemplate::new(200)
+                    .set_body_json(json!({ "result": "reset" }))
+                    .set_delay(Duration::from_secs(30)),
+                _ => ResponseTemplate::new(200).set_body_json(json!({ "result": "already_used" })),
+            })
+            .mount(&server)
+            .await;
+        let user = Asked::answering(&[Ok(USE), Ok(AGAIN), Err(UiError::Cancelled)]);
+        let bench = Bench::new(&server, Some(user.clone()), false, false).await;
+
+        // The window never shows room, so nothing lets the run go on.
+        assert_eq!(bench.hit().await, Recovery::Fail);
+
+        let questions = user.questions.lock().unwrap().clone();
+        let options: Vec<&[String]> = questions.iter().map(|(_, options)| options.as_slice()).collect();
+        assert_eq!(
+            options,
+            [
+                [USE, WAIT, PICK].map(str::to_string).as_slice(),
+                // The outcome is open: what is offered is the same request, not another reset.
+                [AGAIN, WAIT, PICK].map(str::to_string).as_slice(),
+                [USE, WAIT, PICK].map(str::to_string).as_slice(),
+            ]
+        );
+        let mut first = questions[0].0.lines();
+        assert_eq!(first.next(), Some("Usage limit reached"));
+        let said = first.next().unwrap();
+        assert!(
+            said.starts_with("anthropic: 5-hour limit reached until ")
+                && said.ends_with(" You have 1 banked reset."),
+            "{said}"
+        );
+        let told = questions[1].0.clone();
+        assert!(told.contains("it is not known whether it was spent"), "{told}");
+        assert!(told.contains("cannot spend a second one"), "{told}");
+        // After the provider said it was spent, another one is offered with that said.
+        let told = questions[2].0.clone();
+        assert!(told.contains("was already spent"), "{told}");
+
+        let warned = user.notes(Level::Warn);
+        assert_eq!(warned.len(), 2, "{warned:?}");
+        assert!(warned[0].contains("it is not known whether the reset was spent"));
+        assert!(warned[0].contains("did not answer within"), "{}", warned[0]);
+        assert!(warned[0].starts_with("anthropic, account default (j***@example.com): "));
+        assert!(warned[1].contains("spent before"), "{}", warned[1]);
+        // Two requests reached the provider, and they were the same redemption.
+        assert_eq!(
+            redemptions(&server).await,
+            [
+                json!({ "program": "juniper_tide" }),
+                json!({ "program": "juniper_tide" })
+            ]
+        );
+        assert_eq!(bench.journal().unwrap().state, State::Spent);
+        assert!(bench.blocked());
+    }
+
+    #[tokio::test]
+    async fn with_nobody_there_a_reset_is_spent_only_when_allowed_and_nothing_earlier_is_open() {
+        // Not allowed: the provider is not even asked what the account holds.
+        let server = MockServer::start().await;
+        let bench = Bench::new(&server, None, false, true).await;
+        assert_eq!(bench.hit().await, Recovery::Fail);
+        assert!(server.received_requests().await.unwrap().is_empty());
+
+        // Allowed, and a redemption with an unknown outcome is in the journal: none is sent.
+        let server = MockServer::start().await;
+        usage_shows(&server, || 100.0).await;
+        let user = Asked::answering(&[]);
+        let bench = Bench::new(&server, Some(user.clone()), true, true).await;
+        let journal = bench.dir.path().join("resets");
+        std::fs::create_dir_all(&journal).unwrap();
+        std::fs::write(
+            journal.join("anthropic.default.json"),
+            json!({
+                "provider": "anthropic", "account": "default", "kind": "session", "title": "Session reset",
+                "body": { "program": "juniper_tide" }, "request_id": "r-1", "clears": ["5h"],
+                "at": now_ms() / 1000 - 3600, "state": "uncertain"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert_eq!(bench.hit().await, Recovery::Fail);
+        assert!(redemptions(&server).await.is_empty());
+        let warned = user.notes(Level::Warn);
+        assert!(warned[0].contains("its outcome is not settled yet"), "{warned:?}");
+        // A background session asks nobody, whatever is there to ask.
+        assert!(user.questions.lock().unwrap().is_empty());
+
+        // Allowed and nothing open: one reset, and the run goes on.
+        let server = MockServer::start().await;
+        let spent = Arc::new(AtomicUsize::new(0));
+        let shown = spent.clone();
+        usage_shows(&server, move || match shown.load(Ordering::SeqCst) {
+            0 => 100.0,
+            _ => 2.0,
+        })
+        .await;
+        let counted = spent.clone();
+        Mock::given(method("POST"))
+            .and(path(RESET_PATH))
+            .respond_with(move |_: &Request| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({ "result": "reset" }))
+            })
+            .mount(&server)
+            .await;
+        let bench = Bench::new(&server, None, true, true).await;
+        assert_eq!(bench.hit().await, Recovery::Retry);
+        assert_eq!(redemptions(&server).await.len(), 1);
+        assert!(!bench.blocked());
+        assert_eq!(bench.journal().unwrap().state, State::Confirmed);
+
+        // The limit is there again minutes later: a second reset is not tried so soon.
+        spent.store(0, Ordering::SeqCst);
+        bench.run_out();
+        assert_eq!(bench.hit().await, Recovery::Fail);
+        assert_eq!(redemptions(&server).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_limit_that_is_gone_when_looked_at_needs_no_answer() {
+        // The usage report shows room: somebody reset the window elsewhere. The block is a
+        // minute old, so the report is believed.
+        let server = MockServer::start().await;
+        usage_shows(&server, || 4.0).await;
+        let user = Asked::answering(&[]);
+        let bench = Bench::new(&server, Some(user.clone()), false, false).await;
+        let limits = bench.credentials.limits();
+        limits.unblock("anthropic", "default");
+        let file = bench.dir.path().join("cache").join("limits.json");
+        let until = now_ms() / 1000 + 3600;
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(
+            &file,
+            json!({ "anthropic": { "provider": "anthropic", "account": "default", "windows": [], "fetched_at": 0,
+                "blocks": [{ "until": until, "since": now_ms() / 1000 - 120, "window": "5h" }] } })
+            .to_string(),
+        )
+        .unwrap();
+        limits.persist(file);
+        assert!(bench.blocked());
+
+        assert_eq!(bench.hit().await, Recovery::Retry);
+        assert!(user.questions.lock().unwrap().is_empty());
+        assert!(redemptions(&server).await.is_empty());
+    }
+
+    #[test]
+    fn offers_read_as_what_the_account_holds_and_when() {
+        let now = 1_800_000_000;
+        let held = |kind: &str, count: u32| ResetOffer::held(kind, count);
+        assert_eq!(
+            offer_text(&held(resets::CREDITS, 2), now).as_deref(),
+            Some("2 banked resets")
+        );
+        assert_eq!(offer_text(&held(resets::CREDITS, 0), now), None);
+        let lapsing = ResetOffer {
+            expires_at: Some(now + 60),
+            usable: Some(true),
+            ..held(resets::SESSION, 1)
+        };
+        let text = offer_text(&lapsing, now).unwrap();
+        assert!(text.starts_with("1 session reset · lapses "), "{text}");
+        let later = ResetOffer {
+            usable: Some(false),
+            ..held(resets::WEEKLY, 3)
+        };
+        assert_eq!(
+            offer_text(&later, now).as_deref(),
+            Some("3 weekly resets · usable once the window it gives back is full")
+        );
+        let used = ResetOffer {
+            next_available_at: Some(now + 60),
+            usable: Some(false),
+            ..held(resets::SESSION, 0)
+        };
+        assert!(
+            offer_text(&used, now)
+                .unwrap()
+                .starts_with("session reset used; the next one comes ")
+        );
+        let outside = ResetOffer {
+            eligible: false,
+            ..held(resets::WEEKLY, 0)
+        };
+        assert_eq!(
+            offer_text(&outside, now).as_deref(),
+            Some("weekly resets: not offered to this account")
+        );
     }
 }

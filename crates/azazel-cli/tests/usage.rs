@@ -8,8 +8,8 @@ use std::process::Output;
 
 use assert_cmd::Command;
 use serde_json::{Value, json};
-use wiremock::matchers::{header, method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::matchers::{header, method, path, query_param};
+use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 struct Sandbox {
     dir: tempfile::TempDir,
@@ -63,8 +63,34 @@ fn login(email: &str, account_id: &str) -> Value {
 #[tokio::test(flavor = "multi_thread")]
 async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
     let server = MockServer::start().await;
+    // The resets the Claude login holds take a question each, with a flag of their own.
+    for (flag, member, block) in [
+        (
+            "cedar_ember",
+            "cedar_ember",
+            json!({ "eligible": true, "at_limit": true, "grants": [
+                { "id": "fable_launch", "resets_left": 2, "ends_at": "2099-03-09T07:59:00Z",
+                  "clears": ["seven_day_overage_included"], "usable_now": true }
+            ] }),
+        ),
+        (
+            "at_wall",
+            "juniper_tide",
+            json!({ "eligible": true, "arm": "reset", "available": true }),
+        ),
+    ] {
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/usage"))
+            .and(query_param(flag, "1"))
+            .and(query_param("skip_spend", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ member: block })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
     Mock::given(method("GET"))
         .and(path("/api/oauth/usage"))
+        .and(|request: &Request| request.url.query().is_none())
         .and(header("authorization", "Bearer access-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "five_hour": { "utilization": 42.0, "resets_at": "2099-01-01T00:00:00Z" },
@@ -148,14 +174,20 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
         "{out}"
     );
     assert_eq!(lines[5], "     extra usage off");
-    assert_eq!(lines[6], "");
-    assert_eq!(lines[7], "openai-codex");
-    assert_eq!(lines[8], " ● default  c***@example.com · plus plan · in use");
+    // The resets the account holds, and until when.
+    assert_eq!(lines[6], "     1 session reset");
     assert!(
-        lines[9].starts_with("     5h        ━───────────────────   5%  resets in 4 h 2"),
+        lines[7].starts_with("     2 weekly resets · first lapses "),
         "{out}"
     );
-    assert!(lines[10].contains(" 14%  resets in 5 d 1"), "{out}");
+    assert_eq!(lines[8], "");
+    assert_eq!(lines[9], "openai-codex");
+    assert_eq!(lines[10], " ● default  c***@example.com · plus plan · in use");
+    assert!(
+        lines[11].starts_with("     5h        ━───────────────────   5%  resets in 4 h 2"),
+        "{out}"
+    );
+    assert!(lines[12].contains(" 14%  resets in 5 d 1"), "{out}");
     assert!(!out.contains("groq"), "{out}");
 
     // The answers are kept per provider and account, without anything secret in them.
@@ -176,6 +208,14 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
     assert_eq!(accounts[0]["in_use"], true);
     assert_eq!(accounts[0]["extra_usage"], false);
     assert_eq!(accounts[0]["windows"][2]["label"], "7-day Fable limit");
+    assert_eq!(
+        accounts[0]["resets"],
+        json!([
+            { "kind": "session", "available": 1, "eligible": true, "usable": true },
+            { "kind": "weekly", "available": 2, "expires_at": 4_076_726_340u64, "eligible": true, "usable": true }
+        ])
+    );
+    assert_eq!(accounts[1]["resets"], json!([]));
     assert_eq!(accounts[1]["windows"][1]["name"], "7d");
     assert_eq!(accounts[1]["error"], Value::Null);
 

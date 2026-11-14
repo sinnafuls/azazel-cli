@@ -7,6 +7,18 @@ GitHub are its section here.
 
 ### Added
 
+- When a subscription runs out in the middle of a run and no other account or model of the chain can take
+  the request, azazel asks instead of failing: "Use the reset" (when the account holds a banked reset that
+  gives back what is full), "Wait until reset" (the run waits with a countdown and goes on at the reset
+  time; `esc` stops it) or "Pick another model" (the agent goes on with the model you pick). An RPC or ACP
+  client gets the same choice as a question. With nobody to ask the run fails as before, unless
+  `[usage] auto_reset = true` lets a banked reset be spent.
+- Banked resets: `/usage` and `azazel usage` show the resets each login holds, with how many, when the
+  first lapses and whether one can be spent now: the reset credits of a ChatGPT plan, and the session
+  reset and the weekly resets of a Claude subscription. `/reset-usage [provider]` spends one after showing
+  what it gives back. A redemption is written to `~/.azazel/resets/` before it is sent, is sent once and
+  never again by itself, and an answer that does not come is reported as "not known", not as "not spent";
+  the next usage report settles it. See `docs/models-and-logins.md`.
 - `azazel migrate [--from pi|omp|jcode|claude|codex|all] [--only <kinds>] [--dry-run] [--overwrite]
   [--project <dir>]` and `/migrate` bring over what another harness holds on this machine: providers,
   models, roles and fallbacks (to `models.yml` and `[roles]`), API keys (to `auth.json`), skills, custom

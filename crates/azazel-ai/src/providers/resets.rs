@@ -56,9 +56,14 @@ pub fn supported(provider: &ProviderConfig) -> bool {
     super::usage::supported(provider)
 }
 
-/// Whether the resets of `provider` take a question of their own, beside the usage report.
+/// Whether the resets of `provider` take a question of their own, beside the usage report:
+/// the report itself says nothing about them.
 pub fn asked_apart(provider: &ProviderConfig) -> bool {
-    provider.id == ANTHROPIC
+    asked_apart_of(&provider.id)
+}
+
+pub(crate) fn asked_apart_of(provider: &str) -> bool {
+    provider == ANTHROPIC
 }
 
 /// Whether `report` shows room in the windows named `windows` (in every window that fills,
@@ -347,7 +352,12 @@ pub struct Pending {
     /// second reset while the outcome of the first is not settled.
     pub over: Option<String>,
     request_id: String,
-    url: String,
+    /// Where the redemption goes. `None` for a Claude login that does not say which
+    /// organisation it belongs to: the provider is asked, with this login, before anything
+    /// is sent.
+    url: Option<String>,
+    /// The address of the provider.
+    base_url: String,
     body: Value,
     login: Arc<Login>,
 }
@@ -415,7 +425,7 @@ pub enum Outcome {
     Uncertain(String),
     /// Nothing was sent: the journal holds another redemption for the account whose outcome
     /// is not settled.
-    Open(Entry),
+    Open(Box<Entry>),
 }
 
 /// How far a redemption written to the journal got.
@@ -558,7 +568,8 @@ impl Journal {
         let Some(mut entry) = self.open(provider, account) else {
             return false;
         };
-        if report.fetched_at <= entry.at || !has_room(report, entry.clears.as_deref()) {
+        // Times are whole seconds: a report of the very second the reset was sent in counts.
+        if report.fetched_at < entry.at || !has_room(report, entry.clears.as_deref()) {
             return false;
         }
         entry.state = State::Confirmed;
@@ -601,7 +612,7 @@ impl Desk {
     fn client(&self) -> &reqwest::Client {
         self.client.get_or_init(|| {
             // A redirect is never followed with a login on the request.
-            reqwest::Client::builder()
+            crate::tls::client_builder()
                 .redirect(reqwest::redirect::Policy::none())
                 .connect_timeout(Duration::from_secs(30))
                 .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
@@ -659,8 +670,8 @@ impl Desk {
         let id = provider.id.as_str();
         let url = format!("{}/wham/rate-limit-reset-credits", chatgpt_root(provider));
         let body = self.get(&login, url.clone(), id, "its reset credits").await?;
-        let (count, credits) =
-            parse_credits(&body, now).ok_or_else(|| format!("{id} sent reset credits that cannot be read"))?;
+        let (count, credits) = parse_credits(&body, now)
+            .ok_or_else(|| format!("{id} sent reset credits that cannot be read"))?;
         // No more than the account is said to hold, whatever the list has.
         let count = count.min(u32::try_from(credits.len()).unwrap_or(u32::MAX));
         let shown = vec![ResetOffer {
@@ -685,7 +696,8 @@ impl Desk {
                     over: None,
                     body: json!({ "redeem_request_id": request_id, "credit_id": credit.id }),
                     request_id,
-                    url: format!("{url}/consume"),
+                    url: Some(format!("{url}/consume")),
+                    base_url: provider.base_url.clone(),
                     login: login.clone(),
                 }
             })
@@ -722,8 +734,30 @@ impl Desk {
         let session = parse_session(&session[JUNIPER]);
 
         let mut shown = Vec::new();
-        // (kind, title, description, lapses, how many, what it gives back, what is sent)
-        let mut found: Vec<(&str, String, Option<String>, Option<u64>, u32, Vec<String>, Value)> = Vec::new();
+        let mut spendable = Vec::new();
+        // The organisation the reset is claimed against is the one the login was made for.
+        let url = stored_organisation(&login).map(|org| claim_url(&provider.base_url, &org));
+        let pending = |kind: &str, title: String, body: Value| Pending {
+            provider: id.to_string(),
+            account: account.to_string(),
+            kind: kind.to_string(),
+            title,
+            description: None,
+            expires_at: None,
+            available: 1,
+            clears: None,
+            over: None,
+            // The session reset has no id of its own: the provider spends at most one a week
+            // whatever is sent.
+            request_id: body["request_id"]
+                .as_str()
+                .map(str::to_string)
+                .unwrap_or_else(request_id),
+            url: url.clone(),
+            base_url: provider.base_url.clone(),
+            body,
+            login: login.clone(),
+        };
         if let Some(session) = &session {
             match (session.eligible, session.offered) {
                 (false, _) => shown.push(ResetOffer {
@@ -740,19 +774,20 @@ impl Desk {
                         ..ResetOffer::held(SESSION, u32::from(session.available))
                     });
                     if session.available {
-                        found.push((
-                            SESSION,
-                            "Session reset".to_string(),
-                            Some(
+                        spendable.push(Pending {
+                            description: Some(
                                 "Gives the 5-hour window back now. The weekly windows stay as they are. \
                                  There is one a week."
                                     .to_string(),
                             ),
-                            session.week_ends_at,
-                            1,
-                            vec!["5h".to_string()],
-                            json!({ "program": JUNIPER }),
-                        ));
+                            expires_at: session.week_ends_at,
+                            clears: Some(vec!["5h".to_string()]),
+                            ..pending(
+                                SESSION,
+                                "Session reset".to_string(),
+                                json!({ "program": JUNIPER }),
+                            )
+                        });
                     }
                 }
             }
@@ -760,14 +795,17 @@ impl Desk {
         if let Some(weekly) = &weekly {
             let cooling = weekly.cooldown_until.filter(|at| *at > now);
             let held: Vec<&Grant> = weekly.grants.iter().filter(|grant| grant.held(now)).collect();
-            let count = held.iter().map(|grant| grant.left).fold(0u32, u32::saturating_add);
-            let mut spendable: Vec<&Grant> = held
+            let count = held
+                .iter()
+                .map(|grant| grant.left)
+                .fold(0u32, u32::saturating_add);
+            let mut ready: Vec<&Grant> = held
                 .iter()
                 .copied()
                 .filter(|grant| weekly.eligible && cooling.is_none() && grant.spendable(now))
                 .collect();
             // The one the provider would spend leads, then the one that lapses first.
-            spendable.sort_by_key(|grant| {
+            ready.sort_by_key(|grant| {
                 (
                     weekly.next.as_deref() != Some(grant.id.as_str()),
                     grant.ends_at.unwrap_or(u64::MAX),
@@ -782,87 +820,37 @@ impl Desk {
                 shown.push(ResetOffer {
                     expires_at: held.iter().filter_map(|grant| grant.ends_at).min(),
                     next_available_at: cooling,
-                    usable: Some(!spendable.is_empty() && weekly.at_limit != Some(false)),
+                    usable: Some(!ready.is_empty() && weekly.at_limit != Some(false)),
                     ..ResetOffer::held(WEEKLY, count)
                 });
             }
             // A grant is spent against a full window only: asked for at any other time, the
             // provider has nothing to give back.
             if weekly.at_limit != Some(false) {
-                for grant in spendable {
+                for grant in ready {
                     let windows = grant.windows();
                     let gives: Vec<String> = windows
                         .iter()
                         .map(|name| crate::limits::Window::new(name.as_str(), 1.0, None, "").label())
                         .collect();
-                    found.push((
-                        WEEKLY,
-                        match &grant.label {
-                            Some(label) => format!("Weekly reset ({})", shown_text(label)),
-                            None => "Weekly reset".to_string(),
-                        },
-                        (!gives.is_empty()).then(|| format!("Gives back: {}.", gives.join(", "))),
-                        grant.ends_at,
-                        count,
-                        windows,
-                        json!({ "program": CEDAR, "grant_id": grant.id, "request_id": request_id() }),
-                    ));
+                    spendable.push(Pending {
+                        description: (!gives.is_empty())
+                            .then(|| format!("Gives back: {}.", gives.join(", "))),
+                        expires_at: grant.ends_at,
+                        available: count,
+                        clears: Some(windows),
+                        ..pending(
+                            WEEKLY,
+                            match &grant.label {
+                                Some(label) => format!("Weekly reset ({})", shown_text(label)),
+                                None => "Weekly reset".to_string(),
+                            },
+                            json!({ "program": CEDAR, "grant_id": grant.id, "request_id": request_id() }),
+                        )
+                    });
                 }
             }
         }
-        if found.is_empty() {
-            return Ok(Offers {
-                shown,
-                spendable: Vec::new(),
-            });
-        }
-        // The organisation the reset is claimed against: the one the login was made for.
-        let org = match login.fields.get("org_id").filter(|org| plain_id(org, 128)) {
-            Some(org) => org.clone(),
-            None => {
-                let profile = self
-                    .get(
-                        &login,
-                        format!("{}/api/oauth/profile", provider.base_url),
-                        id,
-                        "the account's organisation",
-                    )
-                    .await?;
-                profile["organization"]["uuid"]
-                    .as_str()
-                    .filter(|org| plain_id(org, 128))
-                    .map(str::to_string)
-                    .ok_or_else(|| {
-                        format!("the login of account {account} of {id} names no organisation to reset the limits of")
-                    })?
-            }
-        };
-        let url = format!("{}/api/organizations/{org}/reset_rate_limits", provider.base_url);
-        let spendable = found
-            .into_iter()
-            .map(
-                |(kind, title, description, expires_at, available, clears, body)| Pending {
-                    provider: id.to_string(),
-                    account: account.to_string(),
-                    kind: kind.to_string(),
-                    title,
-                    description,
-                    expires_at,
-                    available,
-                    clears: Some(clears),
-                    over: None,
-                    // The session reset has no id of its own: the provider spends at most one
-                    // a week whatever is sent.
-                    request_id: body["request_id"]
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(request_id),
-                    url: url.clone(),
-                    body,
-                    login: login.clone(),
-                },
-            )
-            .collect();
         Ok(Offers { shown, spendable })
     }
 
@@ -888,36 +876,11 @@ impl Desk {
         }
         let login = Arc::new(Login::of(provider, credentials, account, true).await?);
         let url = match id {
-            CHATGPT => format!(
+            CHATGPT => Some(format!(
                 "{}/wham/rate-limit-reset-credits/consume",
                 chatgpt_root(provider)
-            ),
-            ANTHROPIC => {
-                let org = login
-                    .fields
-                    .get("org_id")
-                    .filter(|org| plain_id(org, 128))
-                    .cloned();
-                let org = match org {
-                    Some(org) => org,
-                    None => {
-                        let profile = self
-                            .get(
-                                &login,
-                                format!("{}/api/oauth/profile", provider.base_url),
-                                id,
-                                "the account's organisation",
-                            )
-                            .await?;
-                        profile["organization"]["uuid"]
-                            .as_str()
-                            .filter(|org| plain_id(org, 128))
-                            .map(str::to_string)
-                            .ok_or_else(|| format!("the login of account {account} of {id} names no organisation"))?
-                    }
-                };
-                format!("{}/api/organizations/{org}/reset_rate_limits", provider.base_url)
-            }
+            )),
+            ANTHROPIC => stored_organisation(&login).map(|org| claim_url(&provider.base_url, &org)),
             id => return Err(format!("{id} has no banked resets")),
         };
         Ok(Pending {
@@ -932,6 +895,7 @@ impl Desk {
             over: None,
             request_id: entry.request_id,
             url,
+            base_url: provider.base_url.clone(),
             body: entry.body,
             login,
         })
@@ -943,9 +907,20 @@ impl Desk {
     /// name it.
     pub async fn redeem(&self, pending: &Pending) -> Outcome {
         let (provider, account) = (pending.provider.as_str(), pending.account.as_str());
+        let url = match &pending.url {
+            Some(url) => url.clone(),
+            None => match self.organisation(pending).await {
+                Ok(org) => claim_url(&pending.base_url, &org),
+                Err(why) => return Outcome::Refused(format!("the reset was not sent: {why}")),
+            },
+        };
         let lock = match self.journal.lock(provider, account).await {
             Ok(lock) => lock,
-            Err(e) => return Outcome::Refused(format!("the reset was not sent: the journal could not be locked ({e})")),
+            Err(e) => {
+                return Outcome::Refused(format!(
+                    "the reset was not sent: the journal could not be locked ({e})"
+                ));
+            }
         };
         let now = now_ms() / 1000;
         let earlier = self.journal.entry(provider, account);
@@ -953,7 +928,7 @@ impl Desk {
             && open.request_id != pending.request_id
             && pending.over.as_deref() != Some(open.request_id.as_str())
         {
-            return Outcome::Open(open.clone());
+            return Outcome::Open(Box::new(open.clone()));
         }
         let mut entry = Entry {
             provider: provider.to_string(),
@@ -977,7 +952,7 @@ impl Desk {
                 self.journal.dir.display()
             ));
         }
-        let outcome = self.send(pending).await;
+        let outcome = self.send(pending, &url).await;
         let (state, detail) = match &outcome {
             Outcome::Reset { .. } => (State::Spent, None),
             Outcome::AlreadySpent { .. } => (
@@ -1002,12 +977,33 @@ impl Desk {
         outcome
     }
 
+    /// The organisation of the login `pending` was pinned with, asked from the provider with
+    /// that same login.
+    async fn organisation(&self, pending: &Pending) -> Result<String, String> {
+        let (id, account) = (pending.provider.as_str(), pending.account.as_str());
+        let profile = self
+            .get(
+                &pending.login,
+                format!("{}/api/oauth/profile", pending.base_url),
+                id,
+                "the account's organisation",
+            )
+            .await?;
+        profile["organization"]["uuid"]
+            .as_str()
+            .filter(|org| plain_id(org, 128))
+            .map(str::to_string)
+            .ok_or_else(|| {
+                format!("the login of account {account} of {id} names no organisation to reset the limits of")
+            })
+    }
+
     /// The one request that spends. Whatever comes back, it is not sent again.
-    async fn send(&self, pending: &Pending) -> Outcome {
+    async fn send(&self, pending: &Pending, url: &str) -> Outcome {
         let id = pending.provider.as_str();
         let request = pending
             .login
-            .on(self.client().post(&pending.url).timeout(self.spend_timeout))
+            .on(self.client().post(url).timeout(self.spend_timeout))
             .json(&pending.body);
         let response = match request.send().await {
             Ok(response) => response,
@@ -1057,6 +1053,20 @@ impl Desk {
     }
 }
 
+/// The organisation a Claude login was made for, when the login says.
+fn stored_organisation(login: &Login) -> Option<String> {
+    login
+        .fields
+        .get("org_id")
+        .filter(|org| plain_id(org, 128))
+        .cloned()
+}
+
+/// Where a Claude reset is claimed.
+fn claim_url(base_url: &str, organisation: &str) -> String {
+    format!("{base_url}/api/organizations/{organisation}/reset_rate_limits")
+}
+
 fn unreadable(provider: &str, account: &str, why: &str) -> Entry {
     Entry {
         provider: provider.to_string(),
@@ -1071,5 +1081,889 @@ fn unreadable(provider: &str, account: &str, why: &str) -> Entry {
         expires_at: None,
         state: State::Uncertain,
         detail: Some(format!("the journal of the account cannot be read ({why})")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::sync::Mutex;
+
+    use wiremock::matchers::{body_json, body_partial_json, header, headers, method, path, query_param};
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    use super::*;
+    use crate::credentials::{Credential, account_key};
+    use crate::limits::Window;
+    use crate::providers::presets;
+
+    const LATER: &str = "2099-03-09T07:59:00Z";
+    const LATER_SECS: u64 = 4_076_726_340;
+
+    fn login(extra: &[(&str, &str)]) -> Credential {
+        Credential::OAuth {
+            access: "access-token".into(),
+            refresh: "refresh-token".into(),
+            expires: now_ms() + 3_600_000,
+            extra: extra
+                .iter()
+                .map(|(name, value)| (name.to_string(), json!(value)))
+                .collect(),
+        }
+    }
+
+    fn preset(id: &str, base_url: String) -> ProviderConfig {
+        let mut provider = presets::resolve(&Default::default())
+            .unwrap()
+            .into_iter()
+            .find(|provider| provider.id == id)
+            .unwrap();
+        provider.base_url = base_url;
+        provider
+    }
+
+    /// A scratch home with one ChatGPT login and one Claude login, both at `server`.
+    struct Bench {
+        _dir: tempfile::TempDir,
+        credentials: Credentials,
+        chatgpt: ProviderConfig,
+        claude: ProviderConfig,
+        desk: Desk,
+    }
+
+    fn bench(server: &MockServer) -> Bench {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials = Credentials::with_env(dir.path().join("auth.json"), Arc::new(|_: &str| None));
+        credentials
+            .store("openai-codex", login(&[("account_id", "acct-7")]))
+            .unwrap();
+        credentials
+            .store("anthropic", login(&[("org_id", "org-1")]))
+            .unwrap();
+        Bench {
+            desk: Desk::new(dir.path().join("resets")),
+            _dir: dir,
+            credentials,
+            chatgpt: preset("openai-codex", format!("{}/backend-api/codex", server.uri())),
+            claude: preset("anthropic", server.uri()),
+        }
+    }
+
+    fn report(provider: &str, windows: Vec<Window>) -> UsageReport {
+        UsageReport {
+            provider: provider.to_string(),
+            account: "default".to_string(),
+            plan: None,
+            windows,
+            extra_usage: None,
+            spend: None,
+            resets: Vec::new(),
+            resets_asked_at: None,
+            fetched_at: now_ms() / 1000,
+        }
+    }
+
+    async fn credits_listed(server: &MockServer) {
+        Mock::given(method("GET"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits"))
+            .and(header("authorization", "Bearer access-token"))
+            .and(header("chatgpt-account-id", "acct-7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "available_count": 2,
+                "credits": [
+                    { "id": "gone", "status": "available", "reset_type": "weekly",
+                      "expires_at": "2020-01-01T00:00:00Z" },
+                    { "id": "used", "status": "redeemed", "reset_type": "weekly", "expires_at": null },
+                    { "id": "keeps", "status": "available", "reset_type": "weekly", "expires_at": null },
+                    { "id": "soon", "status": "available", "reset_type": "weekly", "expires_at": LATER,
+                      "title": "Weekly reset", "description": "Resets every window of the plan." }
+                ]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// The POSTs the server got, as `(path, body)`.
+    async fn posts(server: &MockServer) -> Vec<(String, Value)> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|request| request.method.as_str() == "POST")
+            .map(|request| {
+                (
+                    request.url.path().to_string(),
+                    serde_json::from_slice(&request.body).unwrap(),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn request_ids_are_random_uuids_and_windows_take_this_programs_names() {
+        let id = request_id();
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
+            [8, 4, 4, 4, 12]
+        );
+        assert!(parts[2].starts_with('4') && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
+        assert_ne!(id, request_id());
+
+        assert_eq!(window_name("five_hour"), "5h");
+        assert_eq!(window_name("seven_day"), "7d");
+        assert_eq!(window_name("seven_day_overage_included"), "7d-fable");
+        assert_eq!(window_name("seven_day_opus"), "7d-opus");
+    }
+
+    #[tokio::test]
+    async fn reset_credits_are_read_and_the_one_that_lapses_first_is_the_one_to_spend() {
+        let server = MockServer::start().await;
+        credits_listed(&server).await;
+        let bench = bench(&server);
+
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            offers.shown,
+            [ResetOffer {
+                expires_at: Some(LATER_SECS),
+                usable: Some(true),
+                ..ResetOffer::held(CREDITS, 2)
+            }]
+        );
+        // The lapsed and the redeemed one are not on offer; the one with a date leads.
+        let titles: Vec<(&str, Option<u64>)> = offers
+            .spendable
+            .iter()
+            .map(|pending| (pending.title.as_str(), pending.expires_at))
+            .collect();
+        assert_eq!(titles, [("Weekly reset", Some(LATER_SECS)), ("weekly", None)]);
+        let first = &offers.spendable[0];
+        assert_eq!(
+            (first.kind.as_str(), first.available, first.clears.clone()),
+            (CREDITS, 2, None)
+        );
+        assert!(first.gives_back(&["7d".to_string()]));
+        // Reading spends nothing, and the token is not in what a log would print.
+        assert!(posts(&server).await.is_empty());
+        assert!(!format!("{first:?}").contains("access-token"));
+        assert_eq!(bench.desk.journal().entry("openai-codex", "default"), None);
+    }
+
+    #[tokio::test]
+    async fn a_credit_is_written_down_before_it_is_sent_and_sent_once() {
+        let server = MockServer::start().await;
+        credits_listed(&server).await;
+        let bench = bench(&server);
+        // What the journal held at the moment the redemption reached the provider.
+        let seen: Arc<Mutex<Option<Entry>>> = Arc::default();
+        let (journal, at_arrival) = (bench.desk.journal().clone(), seen.clone());
+        Mock::given(method("POST"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits/consume"))
+            .and(header("authorization", "Bearer access-token"))
+            .and(header("chatgpt-account-id", "acct-7"))
+            .and(body_partial_json(json!({ "credit_id": "soon" })))
+            .respond_with(move |_: &Request| {
+                *at_arrival.lock().unwrap() = journal.entry("openai-codex", "default");
+                ResponseTemplate::new(200).set_body_json(json!({ "code": "reset", "windows_reset": 2 }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        let pending = &offers.spendable[0];
+        let outcome = bench.desk.redeem(pending).await;
+        assert_eq!(
+            outcome,
+            Outcome::Reset {
+                cleared: None,
+                next_available_at: None
+            }
+        );
+        let sent = posts(&server).await;
+        assert_eq!(sent.len(), 1);
+        assert_eq!(
+            sent[0].1,
+            json!({ "redeem_request_id": pending.request_id(), "credit_id": "soon" })
+        );
+        let before = seen.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            (before.state, before.request_id.as_str()),
+            (State::Pending, pending.request_id())
+        );
+        let after = bench.desk.journal().entry("openai-codex", "default").unwrap();
+        assert_eq!(after.state, State::Spent);
+        assert_eq!(after.body, sent[0].1);
+        // Spent, and still open until a usage report shows the room it made.
+        assert!(after.open(now_ms() / 1000));
+        let full = report("openai-codex", vec![Window::new("7d", 1.0, None, "rejected")]);
+        assert!(!bench.desk.journal().settle(&full));
+        let roomy = report("openai-codex", vec![Window::new("7d", 0.0, None, "allowed")]);
+        assert!(bench.desk.journal().settle(&roomy));
+        assert_eq!(
+            bench
+                .desk
+                .journal()
+                .entry("openai-codex", "default")
+                .unwrap()
+                .state,
+            State::Confirmed
+        );
+        assert_eq!(bench.desk.journal().open("openai-codex", "default"), None);
+    }
+
+    #[tokio::test]
+    async fn every_answer_to_a_credit_has_its_outcome() {
+        let cases = [
+            (
+                json!({ "code": "nothing_to_reset", "windows_reset": 0 }),
+                State::NotSpent,
+            ),
+            (json!({ "code": "no_credit" }), State::NotSpent),
+            (json!({ "code": "already_redeemed" }), State::Spent),
+            (json!({ "code": "on_its_way" }), State::Uncertain),
+            (json!({ "windows_reset": 1 }), State::Uncertain),
+            (json!("reset"), State::Uncertain),
+        ];
+        for (answer, state) in cases {
+            let server = MockServer::start().await;
+            credits_listed(&server).await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer.clone()))
+                .mount(&server)
+                .await;
+            let bench = bench(&server);
+            let offers = bench
+                .desk
+                .offers(&bench.chatgpt, &bench.credentials, "default", true)
+                .await
+                .unwrap();
+            let outcome = bench.desk.redeem(&offers.spendable[0]).await;
+            match (answer["code"].as_str(), &outcome) {
+                (Some("nothing_to_reset"), Outcome::NothingToReset)
+                | (Some("no_credit"), Outcome::NotSpent(_))
+                | (Some("already_redeemed"), Outcome::AlreadySpent { .. })
+                | (Some("on_its_way") | None, Outcome::Uncertain(_)) => {}
+                (_, other) => panic!("{answer}: {other:?}"),
+            }
+            let entry = bench.desk.journal().entry("openai-codex", "default").unwrap();
+            assert_eq!(entry.state, state, "{answer}");
+            assert_eq!(posts(&server).await.len(), 1, "{answer}");
+        }
+
+        // A status that says the request was turned away spends nothing; any other leaves
+        // the outcome open. Neither names the address or what the server wrote.
+        for (status, refused) in [
+            (401, true),
+            (403, true),
+            (404, true),
+            (429, false),
+            (500, false),
+            (502, false),
+        ] {
+            let server = MockServer::start().await;
+            credits_listed(&server).await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(status).set_body_string("token=secret"))
+                .mount(&server)
+                .await;
+            let bench = bench(&server);
+            let offers = bench
+                .desk
+                .offers(&bench.chatgpt, &bench.credentials, "default", true)
+                .await
+                .unwrap();
+            let outcome = bench.desk.redeem(&offers.spendable[0]).await;
+            let (why, state) = match (&outcome, refused) {
+                (Outcome::Refused(why), true) => (why, State::NotSpent),
+                (Outcome::Uncertain(why), false) => (why, State::Uncertain),
+                other => panic!("{status}: {other:?}"),
+            };
+            assert!(why.contains(&status.to_string()), "{why}");
+            assert!(!why.contains("secret") && !why.contains("127.0.0.1"), "{why}");
+            assert_eq!(
+                bench
+                    .desk
+                    .journal()
+                    .entry("openai-codex", "default")
+                    .unwrap()
+                    .state,
+                state
+            );
+            assert_eq!(posts(&server).await.len(), 1, "{status}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_redemption_without_an_answer_is_uncertain_and_never_becomes_a_second_spend() {
+        let server = MockServer::start().await;
+        credits_listed(&server).await;
+        // The provider takes the request and answers too late.
+        let slow = Mock::given(method("POST"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits/consume"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({ "code": "reset", "windows_reset": 2 }))
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount_as_scoped(&server)
+            .await;
+        let mut bench = bench(&server);
+        bench.desk = bench.desk.with_spend_timeout(Duration::from_millis(300));
+
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        let first = offers.spendable[0].clone();
+        let Outcome::Uncertain(why) = bench.desk.redeem(&first).await else {
+            panic!("a timeout is not an answer");
+        };
+        assert!(why.contains("did not answer"), "{why}");
+        let entry = bench.desk.journal().open("openai-codex", "default").unwrap();
+        assert!(entry.uncertain());
+        assert_eq!(entry.request_id, first.request_id());
+        assert_eq!(posts(&server).await.len(), 1);
+        drop(slow);
+
+        // From here on the provider answers at once, as one that honoured the first request.
+        Mock::given(method("POST"))
+            .and(path("/backend-api/wham/rate-limit-reset-credits/consume"))
+            .and(body_json(
+                json!({ "redeem_request_id": first.request_id(), "credit_id": "soon" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": "already_redeemed" })))
+            .mount(&server)
+            .await;
+
+        // Another reset of the account is not spent while the first is open: nothing is sent.
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        let second = offers.spendable[0].clone();
+        assert_ne!(second.request_id(), first.request_id());
+        assert_eq!(
+            bench.desk.redeem(&second).await,
+            Outcome::Open(Box::new(entry.clone()))
+        );
+        assert_eq!(posts(&server).await.len(), 1);
+
+        // Asked for knowingly, the very same redemption goes out once more, with the same id.
+        let again = bench
+            .desk
+            .again(&bench.chatgpt, &bench.credentials, "default")
+            .await
+            .unwrap();
+        assert_eq!(again.request_id(), first.request_id());
+        assert_eq!(
+            bench.desk.redeem(&again).await,
+            Outcome::AlreadySpent {
+                next_available_at: None
+            }
+        );
+        let sent = posts(&server).await;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[0].1, sent[1].1);
+        assert_eq!(sent[1].1["redeem_request_id"], first.request_id());
+        let settled = bench.desk.journal().entry("openai-codex", "default").unwrap();
+        assert_eq!((settled.state, settled.at), (State::Spent, entry.at));
+        // Nothing is left to send again.
+        assert!(
+            bench
+                .desk
+                .again(&bench.chatgpt, &bench.credentials, "default")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reset_that_cannot_be_written_down_is_not_sent() {
+        let server = MockServer::start().await;
+        credits_listed(&server).await;
+        let mut bench = bench(&server);
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        // The journal's directory is a file: nothing can be written into it.
+        let blocked = bench._dir.path().join("blocked");
+        std::fs::write(&blocked, "").unwrap();
+        bench.desk = Desk::new(blocked);
+        let Outcome::Refused(why) = bench.desk.redeem(&offers.spendable[0]).await else {
+            panic!("sent without a journal");
+        };
+        assert!(why.contains("was not sent"), "{why}");
+        assert!(posts(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_journal_that_cannot_be_read_counts_as_an_open_redemption() {
+        let server = MockServer::start().await;
+        credits_listed(&server).await;
+        let bench = bench(&server);
+        let dir = bench._dir.path().join("resets");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("openai-codex.default.json"), "{ not json").unwrap();
+
+        let open = bench.desk.journal().open("openai-codex", "default").unwrap();
+        assert!(open.uncertain());
+        let offers = bench
+            .desk
+            .offers(&bench.chatgpt, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert!(matches!(
+            bench.desk.redeem(&offers.spendable[0]).await,
+            Outcome::Open(_)
+        ));
+        // There is nothing in it to send again either.
+        assert!(
+            bench
+                .desk
+                .again(&bench.chatgpt, &bench.credentials, "default")
+                .await
+                .is_err()
+        );
+        assert!(posts(&server).await.is_empty());
+    }
+
+    #[test]
+    fn a_redemption_is_open_until_it_is_settled_lapses_or_a_week_has_passed() {
+        let entry = |state: State, expires_at: Option<u64>| Entry {
+            provider: "anthropic".into(),
+            account: "default".into(),
+            kind: SESSION.into(),
+            title: "Session reset".into(),
+            body: json!({ "program": JUNIPER }),
+            request_id: "r".into(),
+            clears: Some(vec!["5h".into()]),
+            at: 1_000_000,
+            expires_at,
+            state,
+            detail: None,
+        };
+        for state in [State::Pending, State::Uncertain, State::Spent] {
+            assert!(entry(state, None).open(1_000_001), "{state:?}");
+        }
+        for state in [State::NotSpent, State::Confirmed] {
+            assert!(!entry(state, None).open(1_000_001), "{state:?}");
+        }
+        assert!(entry(State::Uncertain, None).open(1_000_000 + OPEN_SECS - 1));
+        assert!(!entry(State::Uncertain, None).open(1_000_000 + OPEN_SECS));
+        // The week the session reset belonged to is over: sending it again would spend the
+        // next one.
+        assert!(!entry(State::Uncertain, Some(1_000_500)).open(1_000_500));
+        assert!(!entry(State::Spent, None).uncertain() && entry(State::Pending, None).uncertain());
+    }
+
+    async fn programs(server: &MockServer, weekly: Value, session: Value) {
+        for (flag, member, block) in [("cedar_ember", CEDAR, weekly), ("at_wall", JUNIPER, session)] {
+            Mock::given(method("GET"))
+                .and(path("/api/oauth/usage"))
+                .and(query_param(flag, "1"))
+                .and(query_param("skip_spend", "1"))
+                .and(header("authorization", "Bearer access-token"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "five_hour": { "utilization": 100.0, "resets_at": null },
+                    member: block
+                })))
+                .mount(server)
+                .await;
+        }
+    }
+
+    fn fable_grant() -> Value {
+        json!({
+            "eligible": true, "at_limit": true, "exhausted": ["seven_day_overage_included"],
+            "next_grant_id": "fable_launch",
+            "grants": [
+                { "id": "spent", "resets_left": 0, "starts_at": null, "ends_at": LATER,
+                  "clears": ["five_hour"], "paused": false, "usable_now": true, "blocking": [] },
+                { "id": "fable_launch", "label": "Fable launch", "resets_left": 2, "starts_at": null,
+                  "ends_at": LATER, "clears": ["five_hour", "seven_day_overage_included"],
+                  "paused": false, "usable_now": true, "gives_back_weekly": true, "blocking": [] }
+            ]
+        })
+    }
+
+    fn session_ready() -> Value {
+        json!({ "eligible": true, "arm": "reset", "available": true, "next_available_at": null,
+                "resets_per_week": 1, "weekly_resets_at": LATER })
+    }
+
+    #[tokio::test]
+    async fn both_claude_programs_are_read_and_each_reset_says_what_it_gives_back() {
+        let server = MockServer::start().await;
+        programs(&server, fable_grant(), session_ready()).await;
+        let bench = bench(&server);
+
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            offers.shown,
+            [
+                ResetOffer {
+                    expires_at: Some(LATER_SECS),
+                    usable: Some(true),
+                    ..ResetOffer::held(SESSION, 1)
+                },
+                ResetOffer {
+                    expires_at: Some(LATER_SECS),
+                    usable: Some(true),
+                    ..ResetOffer::held(WEEKLY, 2)
+                },
+            ]
+        );
+        let [session, weekly] = offers.spendable.as_slice() else {
+            panic!("{:?}", offers.spendable);
+        };
+        assert_eq!(
+            (session.kind.as_str(), session.clears.clone()),
+            (SESSION, Some(vec!["5h".to_string()]))
+        );
+        assert_eq!(
+            (weekly.kind.as_str(), weekly.title.as_str(), weekly.available),
+            (WEEKLY, "Weekly reset (Fable launch)", 2)
+        );
+        assert_eq!(
+            weekly.clears,
+            Some(vec!["5h".to_string(), "7d-fable".to_string(), "7d".to_string()])
+        );
+        // The session reset does nothing for the weekly window of the Fable models.
+        let fable = ["7d-fable".to_string()];
+        assert!(!session.gives_back(&fable) && weekly.gives_back(&fable));
+        assert!(session.gives_back(&["5h".to_string()]));
+        assert!(posts(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn claude_resets_are_claimed_against_the_organisation_of_the_login() {
+        let server = MockServer::start().await;
+        programs(&server, fable_grant(), session_ready()).await;
+        Mock::given(method("POST"))
+            .and(path("/api/organizations/org-1/reset_rate_limits"))
+            .and(header("authorization", "Bearer access-token"))
+            .and(headers(
+                "anthropic-beta",
+                vec!["claude-code-20250219", "oauth-2025-04-20"],
+            ))
+            .and(body_json(json!({ "program": "juniper_tide" })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "reset", "next_available_at": LATER
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/organizations/org-1/reset_rate_limits"))
+            .and(body_partial_json(
+                json!({ "program": "cedar_ember", "grant_id": "fable_launch" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "result": "reset", "cleared": ["seven_day_overage_included"]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let bench = bench(&server);
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        let [session, weekly] = offers.spendable.as_slice() else {
+            panic!("{:?}", offers.spendable);
+        };
+
+        assert_eq!(
+            bench.desk.redeem(session).await,
+            Outcome::Reset {
+                cleared: Some(vec!["5h".to_string()]),
+                next_available_at: Some(LATER_SECS)
+            }
+        );
+        // The session reset is spent and not settled: the weekly one goes only over it.
+        assert!(matches!(bench.desk.redeem(weekly).await, Outcome::Open(_)));
+        let mut weekly = weekly.clone();
+        weekly.over = Some(session.request_id().to_string());
+        assert_eq!(
+            bench.desk.redeem(&weekly).await,
+            Outcome::Reset {
+                cleared: Some(vec!["7d-fable".to_string()]),
+                next_available_at: None
+            }
+        );
+        let sent = posts(&server).await;
+        assert_eq!(sent.len(), 2);
+        assert_eq!(sent[1].1["request_id"], weekly.request_id());
+        let entry = bench.desk.journal().entry("anthropic", "default").unwrap();
+        assert_eq!(
+            (entry.kind.as_str(), entry.state, entry.expires_at),
+            (WEEKLY, State::Spent, Some(LATER_SECS))
+        );
+    }
+
+    #[tokio::test]
+    async fn every_answer_to_a_claude_reset_has_its_outcome() {
+        for (answer, expected) in [
+            (
+                json!({ "result": "already_used", "next_available_at": LATER }),
+                Outcome::AlreadySpent {
+                    next_available_at: Some(LATER_SECS),
+                },
+            ),
+            (json!({ "result": "not_limited" }), Outcome::NothingToReset),
+            (
+                json!({ "result": "ineligible" }),
+                Outcome::NotSpent("anthropic says this account cannot use the reset".into()),
+            ),
+            (
+                json!({ "result": "queued" }),
+                Outcome::Uncertain("anthropic answered `queued`".into()),
+            ),
+        ] {
+            let server = MockServer::start().await;
+            programs(&server, Value::Null, session_ready()).await;
+            Mock::given(method("POST"))
+                .and(path("/api/organizations/org-1/reset_rate_limits"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(answer.clone()))
+                .mount(&server)
+                .await;
+            let bench = bench(&server);
+            let offers = bench
+                .desk
+                .offers(&bench.claude, &bench.credentials, "default", true)
+                .await
+                .unwrap();
+            assert_eq!(
+                bench.desk.redeem(&offers.spendable[0]).await,
+                expected,
+                "{answer}"
+            );
+            assert_eq!(posts(&server).await.len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn what_cannot_be_spent_is_shown_and_not_offered() {
+        // Not in the group that is offered the session reset; a grant held but the account
+        // not at its limit.
+        let server = MockServer::start().await;
+        let mut weekly = fable_grant();
+        weekly["at_limit"] = json!(false);
+        programs(
+            &server,
+            weekly,
+            json!({ "eligible": true, "arm": "control", "available": true }),
+        )
+        .await;
+        let bench = bench(&server);
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            offers.shown,
+            [ResetOffer {
+                expires_at: Some(LATER_SECS),
+                usable: Some(false),
+                ..ResetOffer::held(WEEKLY, 2)
+            }]
+        );
+        assert!(offers.spendable.is_empty());
+
+        // The session reset is used up; the provider says the account takes no part in the
+        // weekly program.
+        let server = MockServer::start().await;
+        programs(
+            &server,
+            json!({ "eligible": false, "ineligible_reason": "plan" }),
+            json!({ "eligible": true, "arm": "reset", "available": false, "next_available_at": LATER }),
+        )
+        .await;
+        let bench = self::bench(&server);
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            offers.shown,
+            [
+                ResetOffer {
+                    next_available_at: Some(LATER_SECS),
+                    usable: Some(false),
+                    ..ResetOffer::held(SESSION, 0)
+                },
+                ResetOffer {
+                    eligible: false,
+                    ..ResetOffer::held(WEEKLY, 0)
+                },
+            ]
+        );
+        assert!(offers.spendable.is_empty());
+
+        // Members that were not evaluated, and a grant that cannot be read, are unknown:
+        // nothing is shown, nothing is offered.
+        let server = MockServer::start().await;
+        let mut broken = fable_grant();
+        broken["grants"][1]["resets_left"] = json!("two");
+        programs(&server, broken, Value::Null).await;
+        let bench = self::bench(&server);
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "default", true)
+            .await
+            .unwrap();
+        assert!(offers.shown.is_empty() && offers.spendable.is_empty());
+
+        // A grant that is paused, not yet started, or blocked is held and not spendable.
+        for (field, value) in [
+            ("paused", json!(true)),
+            ("usable_now", json!(false)),
+            ("starts_at", json!(LATER)),
+            ("blocking", json!(["seven_day"])),
+            ("gives_back_weekly", json!(false)),
+        ] {
+            let server = MockServer::start().await;
+            let mut weekly = fable_grant();
+            weekly["grants"][1][field] = value;
+            programs(&server, weekly, Value::Null).await;
+            let bench = self::bench(&server);
+            let offers = bench
+                .desk
+                .offers(&bench.claude, &bench.credentials, "default", true)
+                .await
+                .unwrap();
+            assert_eq!(offers.shown[0].available, 2, "{field}");
+            assert_eq!(offers.shown[0].usable, Some(false), "{field}");
+            assert!(offers.spendable.is_empty(), "{field}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_login_without_an_organisation_asks_the_profile_and_refusals_are_plain() {
+        let server = MockServer::start().await;
+        programs(&server, Value::Null, session_ready()).await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "account": { "email": "a@example.com" },
+                "organization": { "uuid": "org-from-profile" }
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/organizations/org-from-profile/reset_rate_limits"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "result": "reset" })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let bench = bench(&server);
+        bench
+            .credentials
+            .store(&account_key("anthropic", "work"), login(&[]))
+            .unwrap();
+        let offers = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "work", true)
+            .await
+            .unwrap();
+        assert!(matches!(
+            bench.desk.redeem(&offers.spendable[0]).await,
+            Outcome::Reset { .. }
+        ));
+        assert!(bench.desk.journal().entry("anthropic", "work").is_some());
+        assert_eq!(bench.desk.journal().entry("anthropic", "default"), None);
+
+        // A login whose organisation the provider does not name spends nothing: nothing is
+        // sent, nothing is written down.
+        let nameless = MockServer::start().await;
+        programs(&nameless, Value::Null, session_ready()).await;
+        Mock::given(method("GET"))
+            .and(path("/api/oauth/profile"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "account": {} })))
+            .mount(&nameless)
+            .await;
+        bench
+            .credentials
+            .store(&account_key("anthropic", "lost"), login(&[]))
+            .unwrap();
+        let offers = bench
+            .desk
+            .offers(
+                &preset("anthropic", nameless.uri()),
+                &bench.credentials,
+                "lost",
+                true,
+            )
+            .await
+            .unwrap();
+        let Outcome::Refused(why) = bench.desk.redeem(&offers.spendable[0]).await else {
+            panic!("claimed without an organisation");
+        };
+        assert!(why.contains("names no organisation"), "{why}");
+        assert!(posts(&nameless).await.is_empty());
+        assert_eq!(bench.desk.journal().entry("anthropic", "lost"), None);
+
+        // An account that is a stored key holds no resets, and a refusal to read names
+        // neither the address nor what the server wrote.
+        bench
+            .credentials
+            .store(
+                &account_key("anthropic", "key"),
+                Credential::ApiKey { key: "k".into() },
+            )
+            .unwrap();
+        let refused = bench
+            .desk
+            .offers(&bench.claude, &bench.credentials, "key", true)
+            .await
+            .unwrap_err();
+        assert!(refused.contains("not a login"), "{refused}");
+        let gone = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("token=secret"))
+            .mount(&gone)
+            .await;
+        let refused = bench
+            .desk
+            .offers(
+                &preset("anthropic", gone.uri()),
+                &bench.credentials,
+                "default",
+                true,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("401") && refused.contains("sign in again"),
+            "{refused}"
+        );
+        assert!(
+            !refused.contains("secret") && !refused.contains("127.0.0.1"),
+            "{refused}"
+        );
     }
 }

@@ -257,9 +257,10 @@ pub fn keep(file: &Path, report: &UsageReport) {
             if let Some(blocks) = stored.get("blocks") {
                 value["blocks"] = blocks.clone();
             }
-            // An answer that did not ask about the resets leaves what is known of them.
-            if report.resets_asked_at.is_none()
-                && report.resets.is_empty()
+            // An answer that could not say anything about the resets leaves what is known of
+            // them.
+            if super::resets::asked_apart_of(&report.provider)
+                && report.resets_asked_at.is_none()
                 && let Some(asked_at) = stored.get("resets_asked_at").filter(|at| !at.is_null())
             {
                 value["resets_asked_at"] = asked_at.clone();
@@ -269,6 +270,20 @@ pub fn keep(file: &Path, report: &UsageReport) {
             }
         }
         all.insert(key, value);
+    });
+}
+
+/// Drops what `file` holds about the resets of an account: it is no longer true once one of
+/// them was sent to be spent, and the next look asks the provider again.
+pub fn forget_resets(file: &Path, provider: &str, account: &str) {
+    update_file(file, |all| {
+        if let Some(stored) = all
+            .get_mut(&account_key(provider, account))
+            .and_then(Value::as_object_mut)
+        {
+            stored.remove("resets");
+            stored.remove("resets_asked_at");
+        }
     });
 }
 
@@ -813,10 +828,7 @@ mod tests {
         assert_eq!(spark.scope.as_deref(), Some("GPT-5.3-Codex-Spark"));
         assert!(spark.exhausted() && spark.counts("gpt-5.3-codex-spark") && !spark.counts("gpt-5.3-codex"));
         assert!(!report.windows[3].exhausted());
-        assert_eq!(
-            report.resets,
-            [ResetOffer::held("credits", 2)]
-        );
+        assert_eq!(report.resets, [ResetOffer::held("credits", 2)]);
 
         // A plan the backend refuses for as a whole, said at the top of the answer.
         let refused = parse_chatgpt(
@@ -921,6 +933,53 @@ mod tests {
         let old = cached(&file);
         assert_eq!(old["openai-codex"].plan.as_deref(), Some("plus"));
         assert_eq!(old["openai-codex"].windows[0].scope, None);
+    }
+
+    #[test]
+    fn what_is_known_of_the_resets_stays_when_a_claude_answer_cannot_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("limits.json");
+        let answer = |provider: &str, fetched_at: u64| {
+            let mut report =
+                parse_anthropic(&json!({ "five_hour": { "utilization": 10.0, "resets_at": null } }));
+            report.provider = provider.into();
+            report.account = "default".into();
+            report.fetched_at = fetched_at;
+            report
+        };
+        let session = ResetOffer {
+            usable: Some(true),
+            ..ResetOffer::held("session", 1)
+        };
+        for provider in ["anthropic", "openai-codex"] {
+            let mut asked = answer(provider, 1_700_000_000);
+            asked.resets = vec![session.clone()];
+            asked.resets_asked_at = Some(1_700_000_000);
+            keep(&file, &asked);
+            // The next usage answer, which does not say what the account holds.
+            keep(&file, &answer(provider, 1_700_000_300));
+        }
+        let kept = cached(&file);
+        // Claude's usage report never says; ChatGPT's does, and said nothing this time.
+        let claude = &kept["anthropic"];
+        assert_eq!(
+            (
+                claude.fetched_at,
+                claude.resets_asked_at,
+                claude.resets.as_slice()
+            ),
+            (1_700_000_300, Some(1_700_000_000), [session].as_slice())
+        );
+        let chatgpt = &kept["openai-codex"];
+        assert_eq!((chatgpt.resets_asked_at, chatgpt.resets.len()), (None, 0));
+
+        // Once a reset was sent to be spent, what was known is no longer true.
+        forget_resets(&file, "anthropic", "default");
+        let claude = &cached(&file)["anthropic"];
+        assert_eq!(
+            (claude.fetched_at, claude.resets_asked_at, claude.resets.len()),
+            (1_700_000_300, None, 0)
+        );
     }
 
     fn login(email: &str, extra: &[(&str, &str)]) -> Credential {

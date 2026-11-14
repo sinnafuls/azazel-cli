@@ -7,8 +7,8 @@ mod discovery;
 pub mod http;
 mod logins;
 pub mod presets;
-mod table;
 pub mod resets;
+mod table;
 pub mod usage;
 #[cfg(feature = "vertex")]
 pub mod vertex;

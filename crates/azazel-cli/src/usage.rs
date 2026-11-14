@@ -150,34 +150,31 @@ pub async fn collect(source: &Source, ask: Ask) -> Vec<Entry> {
                     }
                     (kept, None)
                 }
-                Ask::Stale | Ask::All => {
-                    match usage::fetch(&client, provider, credentials, label, true).await {
-                        Ok(mut report) => {
-                            // What was last heard about the resets is as old as it was.
-                            if let Some(kept) = kept.filter(|_| report.resets_asked_at.is_none()) {
-                                report.resets = kept.resets;
-                                report.resets_asked_at = kept.resets_asked_at;
-                            }
-                            usage::keep(&source.cache_file, &report);
-                            source.desk.journal().settle(&report);
-                            (Some(report), None)
-                        }
-                        Err(why) => (kept, Some(why)),
-                    }
-                }
+                Ask::Stale | Ask::All => match fetch(source, &client, provider, label, true).await {
+                    Ok(report) => (Some(report), None),
+                    Err(why) => (kept, Some(why)),
+                },
             };
             // The resets an account holds take a question of their own, asked when somebody
             // looks and the last answer is older than five minutes.
             let report = match report {
-                Some(mut report) if ask != Ask::Known && problem.is_none() && asks_resets(provider, &report, now) => {
+                Some(mut report)
+                    if ask != Ask::Known && problem.is_none() && asks_resets(provider, &report, now) =>
+                {
                     match source.desk.offers(provider, credentials, label, true).await {
-                        Ok(offers) => {
-                            report.resets = offers.shown;
-                            report.resets_asked_at = Some(now);
-                            usage::keep(&source.cache_file, &report);
+                        Ok(offers) => report.resets = offers.shown,
+                        Err(why) => {
+                            tracing::debug!("resets of {} ({label}) were not read: {why}", provider.id);
+                            // What the account holds is not known; what the usage report
+                            // itself counted stays.
+                            if resets::asked_apart(provider) {
+                                report.resets.clear();
+                            }
                         }
-                        Err(why) => tracing::debug!("resets of {} ({label}) were not read: {why}", provider.id),
                     }
+                    // Asked, with or without an answer: not again for five minutes.
+                    report.resets_asked_at = Some(now);
+                    usage::keep(&source.cache_file, &report);
                     Some(report)
                 }
                 report => report,
@@ -198,6 +195,29 @@ pub async fn collect(source: &Source, ask: Ask) -> Vec<Entry> {
         }
     }
     entries
+}
+
+/// Asks `provider` for the usage of the login stored as `account` and keeps the answer: in
+/// the limit store, in `cache/limits.json`, and in the journal of resets, where an answer
+/// that shows room settles a redemption whose outcome was open. What was last heard about
+/// the account's resets stays with the answer when the usage report itself cannot say.
+pub async fn fetch(
+    source: &Source,
+    client: &reqwest::Client,
+    provider: &ProviderConfig,
+    account: &str,
+    renew: bool,
+) -> Result<UsageReport, String> {
+    let mut report = usage::fetch(client, provider, &source.credentials, account, renew).await?;
+    if resets::asked_apart(provider)
+        && let Some(kept) = usage::cached(&source.cache_file).remove(&account_key(&provider.id, account))
+    {
+        report.resets = kept.resets;
+        report.resets_asked_at = kept.resets_asked_at;
+    }
+    usage::keep(&source.cache_file, &report);
+    source.desk.journal().settle(&report);
+    Ok(report)
 }
 
 /// Whether the provider is to be asked which resets the account of `report` holds: it tells
@@ -661,13 +681,8 @@ async fn poll_once(source: &Source, client: &reqwest::Client, every: u64, heard:
                 }
             }
             if now.saturating_sub(latest) >= every {
-                match usage::fetch(client, provider, credentials, label, false).await {
-                    Ok(report) => {
-                        latest = report.fetched_at;
-                        usage::keep(&source.cache_file, &report);
-                        // A reset whose outcome was open is settled by the room this shows.
-                        source.desk.journal().settle(&report);
-                    }
+                match fetch(source, client, provider, label, false).await {
+                    Ok(report) => latest = report.fetched_at,
                     Err(why) => tracing::debug!("usage of {key} was not fetched: {why}"),
                 }
             }
@@ -816,6 +831,7 @@ mod tests {
                         currency: "USD".into(),
                     }),
                     resets: Vec::new(),
+                    resets_asked_at: None,
                     fetched_at: NOW,
                 }),
                 seen: Vec::new(),
@@ -838,12 +854,8 @@ mod tests {
                     windows: vec![window("5h", 0.05, None, "allowed")],
                     extra_usage: Some(false),
                     spend: None,
-                    resets: vec![ResetOffer {
-                        kind: "credits".into(),
-                        available: 2,
-                        expires_at: None,
-                        next_available_at: None,
-                    }],
+                    resets: vec![ResetOffer::held("credits", 2)],
+                    resets_asked_at: None,
                     // Asked twelve minutes ago, and not since.
                     fetched_at: NOW - 12 * 60,
                 }),
@@ -1068,6 +1080,7 @@ mod tests {
             providers,
             credentials,
             cache_file: dir.join("cache").join("limits.json"),
+            desk: Desk::new(dir.join("resets")),
         }
     }
 
