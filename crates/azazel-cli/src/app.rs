@@ -669,6 +669,7 @@ impl App {
             shell_timeout: Duration::from_secs(config.tools.shell_timeout_secs),
             artifacts_dir: paths.artifacts_dir(),
             read_guard: config.tools.read_guard,
+            patch: config.tools.patch,
         })?;
         #[cfg(feature = "test-support")]
         if std::env::var_os("AZAZEL_MOCK_TOOLS").is_some() {
@@ -920,6 +921,8 @@ impl App {
         if config.tools.format_on_write {
             services.insert(Arc::new(azazel_tools::format::Formatters::new(
                 config.tools.format.clone(),
+                paths.project_root.clone(),
+                trusted,
             )));
         }
         // Results lose their secrets before the model and the session file get them.
@@ -1240,8 +1243,9 @@ impl App {
             return Ok(Open::File(original.fork(&dir, None)?.path()));
         }
         if cli.resume_latest {
-            return match SessionStore::list(&dir).first() {
-                Some(latest) => Ok(Open::File(latest.path.clone())),
+            // An archived session (`-p --archived`) is not one to go on with.
+            return match SessionStore::list(&dir).into_iter().find(|s| !s.archived) {
+                Some(latest) => Ok(Open::File(latest.path)),
                 None => bail!("this project has no session to continue"),
             };
         }

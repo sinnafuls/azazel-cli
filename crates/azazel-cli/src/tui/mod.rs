@@ -21,6 +21,7 @@ mod overlay;
 mod pager;
 mod panels;
 mod paste;
+mod places;
 mod popup;
 mod probe;
 mod quick;
@@ -250,6 +251,8 @@ struct Completion {
     list: SelectList,
     /// Completing a `/command` rather than an `@file`.
     slash: bool,
+    /// Completing the directory of `/cd`.
+    dirs: bool,
 }
 
 /// Results of work the UI started in the background.
@@ -2011,7 +2014,27 @@ impl Tui {
                 .collect();
             let mut list = SelectList::new(items);
             list.set_filter(&typed[1..]);
-            self.completion = (!list.is_empty()).then_some(Completion { list, slash: true });
+            self.completion = (!list.is_empty()).then_some(Completion {
+                list,
+                slash: true,
+                dirs: false,
+            });
+            return;
+        }
+        if let Some(partial) = typed.strip_prefix("/cd ") {
+            let items: Vec<SelectItem> = self
+                .local_cwd()
+                .map(|cwd| places::directories(&cwd, partial))
+                .unwrap_or_default()
+                .into_iter()
+                .map(|dir| SelectItem::new(dir, ""))
+                .collect();
+            let list = SelectList::new(items);
+            self.completion = (!list.is_empty()).then_some(Completion {
+                list,
+                slash: false,
+                dirs: true,
+            });
             return;
         }
         let token = self.editor.token_before_cursor().to_string();
@@ -2019,7 +2042,7 @@ impl Tui {
             self.completion = None;
             return;
         };
-        if !matches!(&self.completion, Some(c) if !c.slash) {
+        if !matches!(&self.completion, Some(c) if !c.slash && !c.dirs) {
             // At the start of a prompt `@` may name an agent: those come before the files.
             let mut items = match typed.len() == token.len() {
                 true => self.mention_items(),
@@ -2033,6 +2056,7 @@ impl Tui {
             self.completion = Some(Completion {
                 list: SelectList::new(items),
                 slash: false,
+                dirs: false,
             });
         }
         if let Some(completion) = &mut self.completion {
@@ -2050,7 +2074,11 @@ impl Tui {
         let Some(item) = completion.list.selected_item() else {
             return;
         };
-        if completion.slash {
+        if completion.dirs {
+            // What is below the directory is offered next.
+            self.editor.set_text(&format!("/cd {}", item.label));
+            self.refresh_completion();
+        } else if completion.slash {
             self.editor.set_text(&format!("{} ", item.label));
         } else {
             self.editor

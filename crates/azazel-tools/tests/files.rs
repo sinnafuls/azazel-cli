@@ -42,6 +42,7 @@ fn bench_with(read_guard: ReadGuard) -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: dir.path().join(".artifacts"),
             read_guard,
+            patch: Default::default(),
         })
         .unwrap();
     Bench { dir, registry }
@@ -128,6 +129,7 @@ async fn the_extension_registers_the_core_tool_set() {
             "read",
             "write",
             "edit",
+            "patch",
             "glob",
             "grep",
             "shell",

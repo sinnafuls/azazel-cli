@@ -605,8 +605,9 @@ async fn an_async_hook_is_not_waited_for_and_its_result_is_ignored() {
     let started = Instant::now();
     let mut event = tool_call("shell", json!({"command": "ls"}));
     assert_eq!(registry.bus.emit(&mut event).await, Outcome::Continue);
+    // The hook takes 5 s; well under that, it was not waited for, however slow the runner.
     assert!(
-        started.elapsed() < Duration::from_secs(1),
+        started.elapsed() < Duration::from_secs(4),
         "{:?}",
         started.elapsed()
     );

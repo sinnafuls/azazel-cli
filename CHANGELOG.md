@@ -21,6 +21,40 @@ GitHub are its section here.
   variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
   `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
 - `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+- Tool calls are mended before they run: a tool called by another harness's name (`bash`, `str_replace`,
+  `apply_edit`, `grep_search`, `list_dir`, `ls`, `todowrite`) or in another case runs as the real tool, and
+  an object or array sent as a JSON string, a number or boolean sent as a string, `null` for an optional
+  field and an unknown field of a closed input are put right against the tool's schema. The result gets one
+  `note:` line saying what was mended, and the session file keeps it with the call.
+- A `patch` tool for OpenAI GPT and Codex models: one patch in the `*** Begin Patch` format adds, changes
+  (with `@@` hunks), moves and deletes files. Every file is checked before any is written, permission is
+  asked as for `write` for each file, and each file goes through the read guard, format on write, checks on
+  write and the language server. `[tools] patch = "auto"` offers it in place of `edit` to those models;
+  `"on"` offers both to every model, `"off"` none.
+- Format on write knows 26 formatters and uses the one the file's project uses: `gofmt`, `rustfmt`, `zig
+  fmt`, `terraform fmt`, `shfmt`, `dart format`, `mix format`, `gleam format`, `nixfmt`, `ktlint`,
+  `cljfmt`, `dfmt`, `latexindent`, `htmlbeautifier` and `ormolu` when installed; `prettier` and `oxfmt`
+  when `package.json` depends on them (the project's `node_modules/.bin` copy first), `biome` with a
+  `biome.json`, `clang-format` with a `.clang-format`, `ocamlformat` with an `.ocamlformat`, `ruff format`
+  with a ruff config or dependency, `uv format` with a `uv.lock`, `standardrb` or `rubocop` from the
+  `Gemfile`, `pint` from `composer.json`, and `air` for R. Those that run the project's code wait for the
+  project to be trusted. `azazel doctor` lists the formatters it would use for the project.
+- `/open` (and `azazel open` in the shell) lists the recent sessions of every project, newest first, each with
+  its directory; opening one of another project starts azazel again there, in the same terminal, with that
+  project's trust, configuration and context files.
+- `/cd <dir>` goes on in another directory, with `Tab` completing directory names; a directory of another
+  project moves the session into that project's sessions.
+- `/worktree [name]` makes a git worktree under `.azazel/worktrees/` on a new branch `azazel/<name>` from HEAD,
+  moves the uncommitted changes into it (through `git stash`) and goes on there; `/worktree list` and
+  `/worktree remove <name> [--force]` manage them.
+- `azazel sessions import <file|URL> [--project <dir>]` makes a session from a session file or a JSON lines
+  export, from disk or an `https://` address.
+- `azazel export --sanitize` and `/export --sanitize` hide secrets in every format and replace what files held
+  (the results of `read`, `grep`, `edit` and the like, and the text given to `write`) with
+  `[file content removed]`.
+- Print mode takes `-f/--file <path>` (up to 100: text inlined, images attached), `--worktree[=name]` (the run
+  happens in a new worktree, whose path is printed at the end) and `--archived` (the session stays out of
+  `/resume`, `/open`, `-c` and `azazel sessions list`, which lists it with `--all`).
 - A diff viewer: `/diff` lists the changed files on the left (what happened to each, lines added and removed)
   beside the selected file's diff with its code coloured, in one column or old beside new (`s`, and
   `tui.diff_view = "auto" | "split" | "unified"`; auto is split from 140 columns). `n`/`p` step through the
@@ -45,6 +79,11 @@ GitHub are its section here.
 - `opencode-zen` and `opencode-go` use OpenCode's current addresses (`https://opencode.ai/inference/openai/v1`
   and `https://opencode.ai/inference/go/openai/v1`), and `minimax-code-cn` MiniMax's new mainland-China
   host, `https://api.minimax.cn/anthropic`.
+- `[tools] format_on_write` is on by default: a file is formatted only by a formatter its project uses,
+  and a missing or failing formatter is a note in the result, never a failed write. An empty
+  `[tools.format]` command turns formatting off for that extension.
+- `/open` alone opens the session picker; the last link of the last reply is now `/open link` (`/open <n>`,
+  `/open <path>` and `/open diagram` are unchanged).
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or
@@ -57,6 +96,15 @@ GitHub are its section here.
   width and the row they had, and no rule or status line drawn at the old width is left above them. A
   window narrowed while a popup or the viewer is open no longer has the end of the transcript written over
   when it closes.
+- A path an agent names through a symbolic link or a Windows short name (`/var/…` on macOS, which is
+  `/private/var/…`; `C:\Users\RUNNER~1\…`) is checked as the file it is: a secret file, a protected file or
+  a path outside the project is asked about as it is when named the usual way, and `grep` leaves secret
+  files out of a directory named that way too.
+- Two agents started at the same moment (from `parallel` in a script, or two `task` calls) no longer take
+  the same name, which failed one of them with `cannot write …: File exists`.
+- `azazel rpc` writes its frames in the order things happened: a notice given during a run (such as a
+  cache miss) comes before the run's `idle`, and what a sub-agent did comes before the run of the lead its
+  report starts.
 
 ## [0.6.0] - 2026-11-14
 

@@ -100,6 +100,18 @@ impl Paths {
     pub fn worktrees_dir(&self) -> PathBuf {
         self.project_dir().join("worktrees")
     }
+    /// The project this one is a worktree of, when it is one azazel made: the directory that
+    /// holds `.azazel/worktrees/<name>`. Otherwise this project's root.
+    pub fn main_project_root(&self) -> PathBuf {
+        let root = &self.project_root;
+        let parent = root.parent();
+        let azazel = parent.and_then(Path::parent);
+        let named = |dir: Option<&Path>, name: &str| dir.and_then(Path::file_name).is_some_and(|n| n == name);
+        match azazel.and_then(Path::parent) {
+            Some(main) if named(parent, "worktrees") && named(azazel, ".azazel") => main.to_path_buf(),
+            _ => root.clone(),
+        }
+    }
 
     pub fn sessions_dir(&self) -> PathBuf {
         self.sessions_override
@@ -233,5 +245,23 @@ mod tests {
         let home = base.join("elsewhere");
         let paths = Paths::discover(&loose, home.to_str());
         assert_eq!(paths.project_root, loose);
+    }
+
+    #[test]
+    fn a_worktree_azazel_made_belongs_to_the_project_that_holds_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = canonical(tmp.path());
+        let main = base.join("repo");
+        let worktree = main.join(".azazel").join("worktrees").join("feature");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        // A worktree has a `.git` file of its own, which makes it a project.
+        std::fs::write(worktree.join(".git"), "gitdir: elsewhere").unwrap();
+        let home = base.join("home");
+        let inside = Paths::discover(&worktree, home.to_str());
+        assert_eq!(inside.project_root, worktree);
+        assert_eq!(inside.main_project_root(), main);
+        let outside = Paths::discover(&main, home.to_str());
+        assert_eq!(outside.main_project_root(), main);
     }
 }

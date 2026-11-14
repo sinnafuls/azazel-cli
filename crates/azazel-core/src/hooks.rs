@@ -20,7 +20,7 @@ use crate::config::{HookConfig, HookKind, Layer, PermissionMode};
 use crate::ext::{
     Event, EventHandler, EventKind, ExtCtx, ExtError, Extension, Level, Outcome, Registrar, StartSource,
 };
-use crate::paths::Paths;
+use crate::paths::{Paths, canonical};
 use crate::permissions::shell::analyze;
 use crate::permissions::{MatchCtx, PermissionState, Rule};
 use crate::process::{self, AgentEnv, Shell};
@@ -1021,7 +1021,7 @@ impl Inner {
                 })
                 .map_or("", PermissionMode::as_str),
         };
-        let home = std::env::home_dir();
+        let home = std::env::home_dir().map(|home| canonical(&home));
         let scope = MatchCtx {
             project_root: &self.paths.project_root,
             cwd: &cwd,

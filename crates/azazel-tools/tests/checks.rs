@@ -90,6 +90,7 @@ fn bench(setup: Setup) -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: root.join(".artifacts"),
             read_guard: Default::default(),
+            patch: Default::default(),
         })
         .unwrap();
     let fixture = format!("\"{}\"", FIXTURE.display());
@@ -411,6 +412,12 @@ async fn a_checker_that_outlasts_the_write_goes_on_and_what_it_finds_is_in_the_r
             )
             .await;
         assert_eq!(edited, format!("edited b.slow (1 replacement); {behind}"));
+    }
+    // The checker notes its start when it runs, which on a busy machine is a moment after the
+    // write returned; there is never a second run beside it.
+    let started = std::time::Instant::now();
+    while bench.runs() == 0 && started.elapsed() < Duration::from_secs(10) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(bench.runs(), 1);
     assert!(!bench.path("finished.log").exists());

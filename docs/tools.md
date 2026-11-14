@@ -1,6 +1,6 @@
 # Tools
 
-Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the read guard for edits, format on write, checks on write, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
+Tools are what an agent can do besides writing text: read and change files, run commands, search the web, drive a browser, start other agents. This page lists every built-in tool with its input fields and what it does, and covers the rules they share: read limits, the read guard for edits, format on write, checks on write, calls that are mended, output truncation, the URL schemes `read` understands, and the `[tools]` settings.
 
 Every call goes through the permission engine first; see [permissions](permissions.md). Each tool declares what a call touches (`read`, `write`, `exec` or `net`), and the permission mode decides from that whether you are asked. When all the calls in one assistant message are read-only they run at the same time; otherwise they run one after another in order.
 
@@ -13,6 +13,7 @@ Fields marked `?` are optional.
 | `read` | `path`, `offset?`, `limit?`, `pages?` | Reads a text file, an image, a PDF, a notebook, an Office or mail file, a directory or a `scheme://` address |
 | `write` | `path`, `content` | Creates a file or replaces its whole content. Parent directories are created |
 | `edit` | `path`, `edits: [{old, new, replace_all?}]` | Exact text replacement in an existing file |
+| `patch` | `patch_text` | Adds, changes, moves and deletes files with one patch in the `*** Begin Patch` format; see [patch](#patch). Offered in place of `edit` to OpenAI GPT and Codex models |
 
 `read`:
 
@@ -86,11 +87,36 @@ When one agent writes a file another agent has read, the other agent is told to 
 
 `edit` applies its edits in order and writes nothing if any of them fails. Each `old` must occur exactly once unless `replace_all` is true; the errors are `old text not found (edit #N)` and `old text matches N times (edit #N); add surrounding lines or set replace_all`. CRLF line endings and a byte-order mark are preserved. Both tools write through a temporary file and a rename. `write` refuses a file name whose stem is a Windows device name (`con`, `prn`, `aux`, `nul`, `com1` to `com9`, `lpt1` to `lpt9`, so `aux.c` and `NUL` too) with `` `aux.c` is a reserved Windows device name; pick another file name ``, on every system: such a file cannot be opened on Windows, where the project may be cloned. When a language server covers the file, its errors for the new content are appended to the result; see [lsp](lsp.md). When a checker covers it, so are the checker's errors; see [checks on write](#checks-on-write).
 
+### Patch
+
+`patch` takes one patch in the envelope OpenAI's GPT and Codex models are trained to write:
+
+```text
+*** Begin Patch
+*** Add File: docs/new.md
++# New
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-    print("Hi")
++    print("Hello")
+*** Delete File: old.txt
+*** End Patch
+```
+
+- `*** Add File:` creates a file from the `+` lines that follow. An existing file is replaced, which needs it read whole, as for `write`.
+- `*** Update File:` changes a file with `@@` hunks: lines starting with a space are context, `-` lines are removed and `+` lines added. The text after `@@` is a line looked for first, to tell apart places that look alike; a hunk's lines are looked for after it and after the previous hunk, exactly, then ignoring spaces at the ends of lines. `*** End of File` after a hunk ties it to the end of the file. A hunk of only `+` lines adds them after its `@@` line, or at the end of the file. `*** Move to:` right after the header moves the file as well; the new path must not exist.
+- `*** Delete File:` deletes a file the agent has read.
+
+Every file is checked before any is written: a hunk whose lines are not found fails the whole patch with the file and the hunk named (`src/app.py, hunk 2: its lines were not found, starting with ...; nothing was changed`), and so does a file the [read guard](#the-read-guard) stops. Each file then goes the way of a `write` or an `edit`: under its lock, through format on write, checks on write and the language server, and the agents that had read it are told. The result names each file with a letter (`A` added, `M` changed, `R` moved, `D` deleted) and carries what the formatter, the checker and the language server said of it. Permission is asked as for `write`, for every file the patch names, move targets included: the rules of `write` and `edit` apply to `patch` too, and the patch is allowed only when each file is.
+
+`[tools] patch` decides who is offered it: with `auto` (the default), a lead or agent whose first model is an OpenAI GPT model (GPT-5 and later; not `gpt-4*` or `gpt-oss`) or a Codex model gets `patch` and no `edit`, every other model `edit` and no `patch`; `on` offers both to every model, `off` never offers `patch`.
+
 ### Format on write
 
-With `[tools] format_on_write = true`, a successful `write` or `edit` runs the formatter for the file's extension on the file. The result then ends with `; formatted with rustfmt`, the diff shown is of the formatted file, and the agent is taken to know the formatted content, so its next edit is not refused as stale. A formatter gets 5 seconds. One that fails, times out or is missing adds a one-line note such as `; rustfmt failed: ...` and never fails the edit.
+A successful `write`, `edit` or `patch` runs the formatter for the file on the file (`[tools] format_on_write = true`, the default). The result then ends with `; formatted with rustfmt`, the diff shown is of the formatted file, and the agent is taken to know the formatted content, so its next edit is not refused as stale. A formatter gets 5 seconds. One that fails, times out or is missing adds a one-line note such as `; rustfmt failed: ...` and never fails the edit.
 
-The formatter for an extension comes from `[tools.format]`:
+The formatter for an extension comes from `[tools.format]` when it has an entry:
 
 ```toml
 [tools]
@@ -100,17 +126,48 @@ format_on_write = true
 rs = "rustfmt --edition 2024"
 py = "black -q"
 sql = "sqlfluff fix {file}"
+md = ""                     # no formatter for Markdown
 ```
 
-The command is run directly, without a shell. The file's path is appended, or put where `{file}` stands. Quote a program path that has spaces. For an extension with no entry, these defaults apply when the program is on `PATH`:
+The command is run directly, without a shell. The file's path is appended, or put where `{file}` stands. Quote a program path that has spaces. An empty command leaves files of that extension alone.
 
-| Extensions | Command |
-|---|---|
-| `rs` | `rustfmt`, with `--edition` from the nearest `Cargo.toml` that states one |
-| `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `json`, `css`, `scss`, `less`, `html`, `vue` | `prettier --write` |
-| `go` | `gofmt -w` |
-| `py`, `pyi` | `ruff format` |
-| `c`, `h`, `cc`, `cpp`, `cxx`, `hpp`, `hh` | `clang-format -i` |
+For an extension with no entry, the first formatter of this table that takes the extension, that the file's project uses and that is installed formats the file. What the project uses is looked for from the file's directory up to the project root. The first group is used whenever the program is on `PATH`:
+
+| Formatter | Extensions | Command |
+|---|---|---|
+| rustfmt | `rs` | `rustfmt <file>`, with `--edition` from the nearest `Cargo.toml` that states one |
+| gofmt | `go` | `gofmt -w <file>` |
+| zig | `zig`, `zon` | `zig fmt <file>` |
+| terraform | `tf`, `tfvars` | `terraform fmt <file>` |
+| shfmt | `sh`, `bash` | `shfmt -w <file>` |
+| dart | `dart` | `dart format <file>` |
+| mix (trusted projects) | `ex`, `exs`, `eex`, `heex`, `leex`, `neex`, `sface` | `mix format <file>` |
+| gleam | `gleam` | `gleam format <file>` |
+| nixfmt | `nix` | `nixfmt <file>` |
+| ktlint | `kt`, `kts` | `ktlint -F <file>` |
+| cljfmt | `clj`, `cljs`, `cljc`, `edn` | `cljfmt fix --quiet <file>` |
+| dfmt | `d` | `dfmt -i <file>` |
+| latexindent | `tex` | `latexindent -s <file>`; the file is written from what it prints, so it leaves no backup files |
+| htmlbeautifier | `erb` | `htmlbeautifier <file>` |
+| ormolu | `hs` | `ormolu -i <file>` |
+
+The second group is used only when the project uses it:
+
+| Formatter | Extensions | When | Command |
+|---|---|---|---|
+| biome | scripts, styles, `html`, `vue`, `svelte`, `json`, `jsonc`, `yaml`, `toml`, `xml`, `md`, `mdx`, `graphql` | a `biome.json` or `biome.jsonc` | `biome format --write <file>` |
+| oxfmt | `js`, `jsx`, `mjs`, `cjs`, `ts`, `tsx`, `mts`, `cts` | the nearest `package.json` depends on `oxfmt` | `oxfmt <file>` |
+| prettier (trusted projects) | as biome | the nearest `package.json` depends on `prettier` | `prettier --write <file>` |
+| ruff | `py`, `pyi` | `ruff.toml`, `.ruff.toml`, ruff in `pyproject.toml`, or ruff in `requirements.txt` or `Pipfile` | `ruff format <file>` |
+| uv | `py`, `pyi` | a `uv.lock`, and a uv that has `uv format` | `uv format -- <file>` |
+| clang-format | `c`, `cc`, `cpp`, `cxx`, `c++`, `h`, `hh`, `hpp`, `hxx`, `h++`, `ino` | a `.clang-format` or `_clang-format` | `clang-format -i <file>` |
+| ocamlformat | `ml`, `mli` | an `.ocamlformat` | `ocamlformat -i <file>` |
+| standardrb (trusted projects) | `rb`, `rake`, `gemspec`, `ru` | the `Gemfile` names the gem `standard` | `standardrb --fix <file>` |
+| rubocop (trusted projects) | `rb`, `rake`, `gemspec`, `ru` | the `Gemfile` names the gem `rubocop` | `rubocop -a <file>` |
+| pint (trusted projects) | `php` | the nearest `composer.json` requires `laravel/pint` | `vendor/bin/pint <file>` |
+| air | `r` | the program's `--help` says it is the R formatter, not another program called `air` | `air format <file>` |
+
+biome, oxfmt and prettier are taken from the project's `node_modules/.bin` first, and pint only from its `vendor/bin`; such a copy is the project's code, so it runs only in a trusted project, and an untrusted one falls back to the program on `PATH`. The formatters marked "trusted projects" run code of the project to format a file (a `prettier.config.js`, `.formatter.exs`, a `require` in `.rubocop.yml`) and are left out of an untrusted project. `azazel doctor` lists the formatters it would use for the project, and those it leaves out until the project is trusted.
 
 Both settings name programs to run, so a project's config can set them only when the project is trusted.
 
@@ -627,6 +684,25 @@ A tool result whose text exceeds `max_result_bytes` (default 50000) is cut at th
 
 The agent reads the rest with `read artifact://<call id>`. The same directory holds other files tools produce: screenshots, recordings, downloads that are not text, worktree patches.
 
+## Calls that are mended
+
+A model sometimes calls a tool by the name another harness gives it, or sends its input in a slightly wrong shape. Before the permission check, such a call is mended against the tool's input schema:
+
+| The model sends | The call runs with |
+|---|---|
+| `bash`, `str_replace`, `apply_edit`, `grep_search`, `list_dir`, `ls`, `todowrite` | `shell`, `edit`, `edit`, `grep`, `read`, `read`, `todo` |
+| A tool's name in another case (`Read`) | That tool (`read`) |
+| An object or array as a JSON string (`"edits": "[{...}]"`) where the schema wants one | The parsed object or array |
+| A number or boolean as a string (`"limit": "20"`, `"replace_all": "true"`) where the schema wants one | The number or boolean |
+| `null` for a field that may be left out | The field left out |
+| A field the tool does not have, where its schema allows no others | The field left out |
+
+A value that already fits its schema is never changed: `"20"` stays a string where a string is wanted. What was mended is added to the result as one line, so the model learns the real shape, and is kept with the call in the session file (the `repairs` of its `tool_started` entry):
+
+```text
+note: called as `bash`; the tool is `shell`; `timeout` was a number in a string, read as a number
+```
+
 ## URL schemes `read` accepts
 
 | Address | Returns |
@@ -661,7 +737,8 @@ disabled = ["web_search", "screen"]   # tool names no agent is offered
 max_result_bytes = 50000              # text kept from one tool result
 shell_timeout_secs = 120              # default timeout of the shell tool
 shell = ""                            # program name or path; empty means auto-resolve
-format_on_write = false               # run the file's formatter after write and edit
+format_on_write = true                # run the file's formatter after write, edit and patch
+patch = "auto"                        # who gets patch: auto (GPT and Codex models, instead of edit), on or off
 check_on_write = true                 # run the file's checker after write and edit
 check_report = "delta"                # what the lead is told when it stops: delta, all or off
 read_guard = "range"                  # what must have been read before an edit: range, file or off
@@ -683,8 +760,9 @@ secrets = true                        # scan the project with gitleaks once per 
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
 | `shell` | `""` | Shell to use instead of the resolved one. In a project config this is honoured only when the project is trusted |
-| `format_on_write` | `false` | Runs the file's formatter after `write` and `edit`; see [format on write](#format-on-write). Project config: trusted projects only |
-| `format` | `{}` | Formatter command per file extension. Project config: trusted projects only |
+| `format_on_write` | `true` | Runs the file's formatter after `write`, `edit` and `patch`: the configured one, else one the project uses; see [format on write](#format-on-write). Project config: trusted projects only |
+| `format` | `{}` | Formatter command per file extension, in place of the built-in one; empty turns formatting off for the extension. Project config: trusted projects only |
+| `patch` | `"auto"` | Which models are offered [`patch`](#patch): `auto` offers it in place of `edit` to OpenAI GPT and Codex models, `on` offers both to every model, `off` offers it to none |
 | `check_on_write` | `true` | Runs the file's checker after `write` and `edit` when it is installed; see [checks on write](#checks-on-write) |
 | `check` | `{}` | Checker command per file extension, replacing the built-in one; empty turns the check off. Project config: trusted projects only |
 | `check_report` | `"delta"` | What the lead is told when it stops: findings on the lines the turn changed (`delta`), every finding (`all`), or nothing (`off`) |
