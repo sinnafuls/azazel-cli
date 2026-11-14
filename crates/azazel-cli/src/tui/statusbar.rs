@@ -160,6 +160,7 @@ impl Tui {
             true => self.extras().map(|extras| extras.status()).unwrap_or_default(),
             false => Vec::new(),
         };
+        let (agent, agent_color) = self.agent();
         let usage = &status.usage;
         let prompt_tokens = usage.input + usage.cache_read + usage.cache_write;
         let done = facts
@@ -170,6 +171,8 @@ impl Tui {
         statusline::StatusLine {
             mode: self.backend.mode(),
             coordinator: facts.coordinator,
+            agent: &agent,
+            agent_color,
             branch: self.branch.as_deref(),
             dirty: self.status.dirty.changed,
             cwd: &cwd,

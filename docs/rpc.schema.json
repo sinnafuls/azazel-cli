@@ -171,6 +171,23 @@
           "properties": {
             "type": {
               "type": "string",
+              "const": "set_agent"
+            },
+            "agent": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ],
+          "description": "Makes the lead another primary agent (`build`, `plan`, or one of the user's\ndefinitions with `mode: primary`): its identity, tools, limits, model and thinking level\napply to the lead from the next request. `primary_agents` of [`State`] lists them."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
               "const": "agent_send"
             },
             "to": {
@@ -2022,6 +2039,19 @@
           "description": "Whether coordinator mode is on.",
           "default": false
         },
+        "agent": {
+          "type": "string",
+          "description": "The primary agent the lead is (`build`, `plan`, ...).",
+          "default": ""
+        },
+        "primary_agents": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/PrimaryAgent"
+          },
+          "description": "The primary agents `set_agent` takes, in the order a client steps through them.",
+          "default": []
+        },
         "goal": {
           "type": [
             "string",
@@ -2112,6 +2142,29 @@
         }
       },
       "description": "Token and cost totals."
+    },
+    "PrimaryAgent": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "color": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "`#rrggbb`, when the definition gives the agent a colour."
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "description": "A primary agent: a persona the lead can be."
     },
     "Todo": {
       "type": "object",

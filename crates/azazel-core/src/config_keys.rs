@@ -79,6 +79,10 @@ fn walk(
         .find(|(entry, _)| entry.strip_suffix(".*").unwrap_or(entry) == path)
     {
         out.extend(fields.iter().map(|field| (format!("{entry}.{field}"), None)));
+        // Keys of its own beside the entries the user names (`agents.default`).
+        for (key, member) in value.as_object().into_iter().flatten() {
+            walk(&format!("{path}.{key}"), member, &[], out);
+        }
         return;
     }
     match value {
@@ -146,6 +150,7 @@ mod tests {
         assert!(has("providers.*.base_url"));
         assert!(has("models.*.context_window"));
         assert!(has("agents.*.thinking"));
+        assert_eq!(default("agents.default"), Some("\"build\""));
         assert!(has("presets.*.roles"));
         assert!(has("hooks.*.if"));
         assert!(has("hooks.*.async"));

@@ -137,17 +137,29 @@ impl SystemPartProvider for StaticPart {
     }
 }
 
-/// The lead agent's identity. Sub-agents get theirs from their definition.
-pub struct LeadIdentity;
-
-pub const LEAD_IDENTITY: &str = "You are azazel, a coding agent working in the user's terminal. You lead a team: \
-you can do the work yourself or delegate parts of it to specialist agents and combine their results. Work \
-towards what the user asked for, verify what you change, and report plainly what you did and what you could not do.";
+/// The lead's identity: the body of the primary agent it is, with the skills that definition
+/// names. Sub-agents get theirs from their own definition.
+pub struct LeadIdentity {
+    pub lead: Arc<crate::agents::LeadAgent>,
+    pub services: Arc<azazel_agent::Services>,
+}
 
 #[async_trait]
 impl SystemPartProvider for LeadIdentity {
     async fn render(&self, agent: &AgentInfo) -> Option<String> {
-        (agent.depth == 0).then(|| LEAD_IDENTITY.to_string())
+        if agent.depth != 0 {
+            return None;
+        }
+        let def = self.lead.def()?;
+        let mut text = def.body.trim().to_string();
+        if let Some(skills) = self.services.get::<crate::skills::SkillRegistry>() {
+            for name in &def.skills {
+                if let Some(skill) = skills.get(name) {
+                    text.push_str(&format!("\n\n# Skill: {}\n{}", skill.name, skill.body.trim()));
+                }
+            }
+        }
+        Some(text)
     }
 }
 
@@ -225,6 +237,8 @@ pub struct BasePromptExt {
     pub project_root: PathBuf,
     /// Name of the shell agents' commands run in.
     pub shell: String,
+    /// The primary agent the lead is, whose body is the lead's identity.
+    pub lead: Arc<crate::agents::LeadAgent>,
     /// Replaces the lead's identity and rules (`--system-prompt`); sub-agents keep the rules.
     pub system: Option<String>,
     /// Added to the lead's prompt after the context files (`--append-system-prompt`).
@@ -255,7 +269,13 @@ impl crate::ext::Extension for BasePromptExt {
                 );
             }
             None => {
-                r.system_part("identity", Arc::new(LeadIdentity));
+                r.system_part(
+                    "identity",
+                    Arc::new(LeadIdentity {
+                        lead: self.lead.clone(),
+                        services: r.services().clone(),
+                    }),
+                );
                 r.system_part("rules", Arc::new(StaticPart(RULES.to_string())));
             }
         }
@@ -319,6 +339,30 @@ mod tests {
         }
     }
 
+    fn lead() -> Arc<crate::agents::LeadAgent> {
+        let defs = crate::agents::discover(
+            &[
+                (
+                    "build.md",
+                    "---\nname: build\ndescription: b\nmode: primary\n---\nYou build.",
+                ),
+                (
+                    "plan.md",
+                    "---\nname: plan\ndescription: p\nmode: primary\n---\nYou plan.",
+                ),
+            ],
+            &[],
+        );
+        Arc::new(crate::agents::LeadAgent::new(Arc::new(defs), "build").unwrap())
+    }
+
+    fn identity(lead: &Arc<crate::agents::LeadAgent>) -> Arc<LeadIdentity> {
+        Arc::new(LeadIdentity {
+            lead: lead.clone(),
+            services: Arc::new(azazel_agent::Services::new()),
+        })
+    }
+
     #[tokio::test]
     async fn parts_render_in_fixed_order_with_the_boundary_on_the_last_stable_part_and_the_rest_in_the_tail()
     {
@@ -329,7 +373,7 @@ mod tests {
         builder.add("x", "environment", Arc::new(Maybe(Some("ENV"))));
         builder.add("x", "skills", Arc::new(Maybe(None)));
         builder.add("x", "rules", Arc::new(Maybe(Some("RULES"))));
-        builder.add("x", "identity", Arc::new(LeadIdentity));
+        builder.add("x", "identity", identity(&lead()));
         builder.add("y", "rules", Arc::new(Maybe(Some("MORE RULES\n"))));
         builder.add("y", "memory", Arc::new(Maybe(Some("  "))));
 
@@ -339,7 +383,7 @@ mod tests {
         let prompt = builder.prompt(&info(0)).await;
         let parts = &prompt.system;
         let texts: Vec<&str> = parts.iter().map(|p| p.text.as_str()).collect();
-        assert_eq!(texts, [LEAD_IDENTITY, "RULES\n\nMORE RULES", "ENV", "MCP"]);
+        assert_eq!(texts, ["You build.", "RULES\n\nMORE RULES", "ENV", "MCP"]);
         let names = |parts: &[SystemPart]| -> Vec<String> { parts.iter().map(|p| p.name.clone()).collect() };
         assert_eq!(names(parts), ["identity", "rules", "environment", "mcp"]);
         assert_eq!(
@@ -359,6 +403,24 @@ mod tests {
 
         builder.remove_owner("y");
         assert_eq!(builder.render(&info(0)).await[1].text, "RULES");
+    }
+
+    #[tokio::test]
+    async fn a_primary_agent_replaces_the_identity_and_nothing_else() {
+        let lead = lead();
+        let builder = PromptBuilder::default();
+        builder.add("x", "identity", identity(&lead));
+        builder.add("x", "rules", Arc::new(StaticPart(RULES.to_string())));
+        builder.add("x", "environment", Arc::new(Maybe(Some("ENV"))));
+        builder.add("x", "context_files", Arc::new(Maybe(Some("AGENTS.md"))));
+        let before = builder.render(&info(0)).await;
+        lead.set("plan").unwrap();
+        let after = builder.render(&info(0)).await;
+        assert_eq!(before[0].text, "You build.");
+        assert_eq!(after[0].text, "You plan.");
+        assert_eq!(before[1..], after[1..]);
+        // A sub-agent has its own identity, whichever agent the lead is.
+        assert_eq!(builder.render(&info(1)).await[0].name, "rules");
     }
 
     #[test]

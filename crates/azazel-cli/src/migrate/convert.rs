@@ -958,9 +958,9 @@ pub fn add_agents(found: &mut Found, dir: &Path, scope: &Scope, providers: &Prov
                 "maxTurns" | "max-turns" => {
                     kept.insert("max-turns".to_string(), value.clone());
                 }
-                "permissionMode" | "mode" => match value.as_str() {
+                "permissionMode" | "permission-mode" | "mode" => match value.as_str() {
                     Some("plan") => {
-                        kept.insert("mode".to_string(), Value::String("plan".to_string()));
+                        kept.insert("permission-mode".to_string(), Value::String("plan".to_string()));
                     }
                     Some("inherit" | "default") | None => {}
                     Some(other) => notes.push(format!(
