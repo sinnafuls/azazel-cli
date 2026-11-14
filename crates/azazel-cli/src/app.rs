@@ -982,7 +982,7 @@ impl App {
                     settings.and_then(|s| s.region.clone()),
                     settings.and_then(|s| s.profile.clone()),
                 )
-                .with_stall(stall),
+                .with_stall(settings.map_or(stall, |s| s.timeouts().over(stall))),
             ));
         }
         #[cfg(feature = "vertex")]
@@ -994,7 +994,7 @@ impl App {
                     settings.and_then(|s| s.location.clone()),
                     client.clone(),
                 )
-                .with_stall(stall),
+                .with_stall(settings.map_or(stall, |s| s.timeouts().over(stall))),
             ));
         }
         providers.extend(registry.providers());

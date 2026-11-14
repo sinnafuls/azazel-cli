@@ -92,6 +92,9 @@ const COPILOT_HEADERS: &[(&str, &str)] = &[
     ("Openai-Intent", "conversation-agent"),
     ("X-GitHub-Api-Version", "2026-08-01"),
 ];
+/// OpenCode's gateways refuse a request that names no session (`400 MissingSessionID`), and ask
+/// the client to say who it is.
+const OPENCODE_HEADERS: &[(&str, &str)] = &[("x-opencode-session", "{session_id}"), ("x-opencode-client", "azazel")];
 
 #[rustfmt::skip]
 pub(super) static PRESETS: &[Preset] = &[
@@ -143,8 +146,8 @@ pub(super) static PRESETS: &[Preset] = &[
     row("ollama-cloud", "Ollama Cloud", OllamaChat, "https://ollama.com", &["OLLAMA_CLOUD_API_KEY", "OLLAMA_API_KEY"]).discovery(Discovery::Ollama),
     row("openai", "OpenAI", OpenAiResponses, "https://api.openai.com/v1", &["OPENAI_API_KEY"]),
     row("openai-codex", "ChatGPT (Codex)", OpenAiResponses, "https://chatgpt.com/backend-api/codex", &[]).catalog(""),
-    row("opencode-go", "OpenCode Go", OpenAiChat, "https://opencode.ai/inference/go/openai/v1", &["OPENCODE_API_KEY"]),
-    row("opencode-zen", "OpenCode Zen", OpenAiChat, "https://opencode.ai/inference/openai/v1", &["OPENCODE_API_KEY"]).catalog("opencode"),
+    row("opencode-go", "OpenCode Go", OpenAiChat, "https://opencode.ai/inference/go/openai/v1", &["OPENCODE_API_KEY"]).headers(OPENCODE_HEADERS),
+    row("opencode-zen", "OpenCode Zen", OpenAiChat, "https://opencode.ai/inference/openai/v1", &["OPENCODE_API_KEY"]).headers(OPENCODE_HEADERS).catalog("opencode"),
     row("openrouter", "OpenRouter", OpenRouter, "https://openrouter.ai/api/v1", &["OPENROUTER_API_KEY"]).headers(ATTRIBUTION),
     row("otari", "Otari", OpenAiChat, "${OTARI_BASE_URL:-https://api.otari.ai/api/v1}", &["OTARI_API_KEY"]).catalog(""),
     row("qianfan", "Qianfan", OpenAiChat, "https://qianfan.baidubce.com/v2", &["QIANFAN_API_KEY"]).catalog(""),

@@ -55,6 +55,16 @@ GitHub are its section here.
 - Print mode takes `-f/--file <path>` (up to 100: text inlined, images attached), `--worktree[=name]` (the run
   happens in a new worktree, whose path is printed at the end) and `--archived` (the session stays out of
   `/resume`, `/open`, `-c` and `azazel sessions list`, which lists it with `--all`).
+- `{env:VAR}` and `{file:path}` in any string value of `config.toml`, `models.yml` and `mcp.json`, filled
+  once when the file is read: `api_key = "{file:~/.secrets/gateway.key}"`. A `{file:}` path is relative to
+  the file that names it. A variable that is not set or a file that cannot be read stops azazel with the
+  file and the key named instead of becoming an empty value. A project's files read neither until the
+  project is trusted.
+- Client certificates per provider for gateways that require mutual TLS: `[providers.<id>.tls]` with
+  `cert`, `key` and `ca`, as PEM paths or `{file:}` references. Only that provider's client uses them.
+- Per-provider limits: `timeout_secs` (the whole request), `first_event_secs` and `stall_secs` in
+  `[providers.<id>]` replace the `[retry]` ones for that provider.
+- `{session_id}` in a provider's `headers` becomes the id of the conversation a request belongs to.
 
 ### Changed
 
@@ -78,6 +88,8 @@ GitHub are its section here.
 
 ### Fixed
 
+- `opencode-go` and `opencode-zen` send the `x-opencode-session` header OpenCode's gateways now require; they
+  refused every request with `400 MissingSessionID` before.
 - In Windows Terminal the input, its rules and the status line follow the window again when it is resized,
   maximised or zoomed (`ctrl+-`, `ctrl+=`): they span the new width on the last rows instead of keeping the
   width and the row they had, and no rule or status line drawn at the old width is left above them. A

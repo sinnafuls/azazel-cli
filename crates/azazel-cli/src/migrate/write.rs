@@ -72,7 +72,8 @@ impl Run<'_> {
         let options = LoadOptions {
             trusted: false,
             overrides: toml::Table::new(),
-            env: Vec::new(),
+            // `{env:}` references in the files are filled from it.
+            env: std::env::vars().collect(),
         };
         Config::load(&paths, &options)
             .map(|loaded| loaded.config)

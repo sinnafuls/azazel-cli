@@ -20,6 +20,8 @@ use crate::oauth::OAuthSettings;
 use crate::providers::generated::GENERATED;
 use crate::providers::logins;
 use crate::providers::table::{PRESETS, Preset};
+use crate::stall::Timeouts;
+use crate::tls::{ClientTls, TlsSettings};
 use crate::types::WireApi;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +54,10 @@ pub struct ProviderConfig {
     /// Members written into every request body after the wire API has built it, replacing what
     /// it wrote under the same name: routing preferences and vendor switches.
     pub extra_body: Map<String, Value>,
+    /// The provider's own HTTPS client, when `tls` gives it a client certificate or an authority.
+    pub tls: Option<ClientTls>,
+    /// The provider's own limits over those of `[retry]`.
+    pub timeouts: Timeouts,
 }
 
 impl ProviderConfig {
@@ -74,6 +80,8 @@ impl ProviderConfig {
             oauth: None,
             discovery: Discovery::Auto,
             extra_body: Map::new(),
+            tls: None,
+            timeouts: Timeouts::default(),
         }
     }
 
@@ -215,6 +223,29 @@ pub struct ProviderSettings {
     /// when unset. See `Credentials::prefer`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// `[providers.<id>.tls]`: a client certificate, and the authority the server's comes from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls: Option<TlsSettings>,
+    /// Seconds the whole request may take; 0 or unset waits as long as it streams.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
+    /// `retry.first_event_secs` for this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_event_secs: Option<u64>,
+    /// `retry.stall_secs` for this provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stall_secs: Option<u64>,
+}
+
+impl ProviderSettings {
+    /// The provider's own limits.
+    pub fn timeouts(&self) -> Timeouts {
+        Timeouts {
+            total: self.timeout_secs,
+            first_event: self.first_event_secs,
+            stall: self.stall_secs,
+        }
+    }
 }
 
 /// Looks an environment variable up; the process environment in production.
@@ -373,6 +404,11 @@ pub fn resolve_with(
     for (id, s) in settings {
         // The cloud providers are not HTTP endpoints with a key; they read their own settings.
         if id == BEDROCK || id == VERTEX {
+            if s.tls.is_some() {
+                return Err(format!(
+                    "[providers.{id}] tls: {id} connects with its own client, which takes no certificate"
+                ));
+            }
             continue;
         }
         if let Some(oauth) = &s.oauth {
@@ -428,6 +464,12 @@ pub fn resolve_with(
             provider.discovery = discovery;
         }
         provider.extra_body.extend(s.extra_body.clone());
+        if let Some(tls) = &s.tls {
+            let client = ClientTls::new(tls, crate::providers::http::client_builder())
+                .map_err(|why| format!("[providers.{id}] {why}"))?;
+            provider.tls = Some(client);
+        }
+        provider.timeouts = s.timeouts();
     }
     Ok(providers.into_values().collect())
 }

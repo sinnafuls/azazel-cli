@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use azazel_agent::CompactionSettings;
+use azazel_ai::substitute::{self, Substitute};
 use azazel_ai::{ModelOverride, ModelSpec, ProviderSettings, ThinkingLevel};
 use serde::{Deserialize, Serialize};
 use toml::{Table, Value};
@@ -874,12 +875,12 @@ fn read_optional(path: &Path) -> Result<Option<String>, ConfigError> {
 
 /// The providers and models of a `models.yml` as the `[providers]` and `[models]` tables of a
 /// config layer, and what the file held.
-fn parse_models_file(path: &Path, text: &str) -> Result<(Table, ModelsLayer), ConfigError> {
+fn parse_models_file(path: &Path, text: &str, fill: &Substitute<'_>) -> Result<(Table, ModelsLayer), ConfigError> {
     let fail = |message: String| ConfigError::File {
         file: path.to_path_buf(),
         message,
     };
-    let file = azazel_ai::models_file::parse(text).map_err(fail)?;
+    let file = azazel_ai::models_file::read(text, fill).map_err(fail)?;
     let mut table = Table::new();
     let as_table = |value: Result<Value, toml::ser::Error>| {
         value.map_err(|e| fail(format!("a value cannot be kept: {e}")))
@@ -945,18 +946,26 @@ impl Config {
                 mentioned.insert(id.clone(), file.to_path_buf());
             }
         };
+        let lookup = |name: &str| {
+            options
+                .env
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.clone())
+        };
         for (kind, path, models) in files {
             if path == paths.home_config() && kind != LayerKind::Home {
                 continue;
             }
+            let trusted = kind == LayerKind::Home || options.trusted;
             if let Some(models) = models
                 && let Some(text) = read_optional(&models)?
             {
                 // A project's file can name endpoints and key commands, like its `[providers]`.
-                if kind != LayerKind::Home && !options.trusted {
+                if !trusted {
                     ignored.push(format!("{}: the whole file", models.display()));
                 } else {
-                    let (table, layer) = parse_models_file(&models, &text)?;
+                    let (table, layer) = parse_models_file(&models, &text, &Substitute::new(&models, &lookup))?;
                     note(&table, &models);
                     merge(&mut merged, table, &mut Vec::new());
                     models_files.push(layer);
@@ -965,12 +974,20 @@ impl Config {
             let Some(text) = read_optional(&path)? else {
                 continue;
             };
+            // The layer keeps the file as written; what is merged has its references filled.
             let mut table = parse_layer(&path, &text)?;
-            if kind != LayerKind::Home && !options.trusted {
-                strip_untrusted(&mut table, &path, &mut ignored);
+            if !trusted {
+                // An untrusted project could send what the environment or a file holds to a
+                // server of its choosing.
+                drop_references(&mut table, "", &path, &mut ignored);
             }
-            note(&table, &path);
-            merge(&mut merged, table.clone(), &mut Vec::new());
+            let mut filled = fill_layer(table.clone(), &path, &Substitute::new(&path, &lookup))?;
+            if !trusted {
+                strip_untrusted(&mut table, &path, &mut ignored);
+                strip_untrusted(&mut filled, &path, &mut Vec::new());
+            }
+            note(&filled, &path);
+            merge(&mut merged, filled, &mut Vec::new());
             layers.push(Layer { kind, path, table });
         }
         for (name, value) in &options.env {
@@ -1024,13 +1041,90 @@ impl Config {
 }
 
 fn parse_layer(path: &Path, text: &str) -> Result<Table, ConfigError> {
+    toml::from_str(text).map_err(|e| ConfigError::File {
+        file: path.to_path_buf(),
+        message: e.message().to_string(),
+    })
+}
+
+/// `table`, read from `path`, with every `{env:}` and `{file:}` reference filled and its `tls`
+/// paths taken relative to the file, checked against the schema.
+fn fill_layer(mut table: Table, path: &Path, fill: &Substitute<'_>) -> Result<Table, ConfigError> {
     let fail = |message: String| ConfigError::File {
         file: path.to_path_buf(),
         message,
     };
-    let table: Table = toml::from_str(text).map_err(|e| fail(e.message().to_string()))?;
+    fill_table(&mut table, "", fill).map_err(fail)?;
+    let providers = table.get_mut("providers").and_then(Value::as_table_mut);
+    for (_, entry) in providers.into_iter().flat_map(|providers| providers.iter_mut()) {
+        let Some(tls) = entry.get_mut("tls").and_then(Value::as_table_mut) else {
+            continue;
+        };
+        for (_, value) in tls.iter_mut() {
+            if let Value::String(text) = value
+                && !text.trim().is_empty()
+                && !azazel_ai::tls::is_pem(text.as_str())
+            {
+                *text = fill.path(text.as_str()).to_string_lossy().into_owned();
+            }
+        }
+    }
     validate(&table).map_err(fail)?;
     Ok(table)
+}
+
+fn fill_table(table: &mut Table, at: &str, fill: &Substitute<'_>) -> Result<(), String> {
+    for (key, value) in table.iter_mut() {
+        fill_value(value, &substitute::join(at, key), fill)?;
+    }
+    Ok(())
+}
+
+fn fill_value(value: &mut Value, at: &str, fill: &Substitute<'_>) -> Result<(), String> {
+    match value {
+        Value::String(text) => {
+            if let Some(filled) = fill.text(text, at)? {
+                *text = filled;
+            }
+        }
+        Value::Array(items) => {
+            for (index, item) in items.iter_mut().enumerate() {
+                fill_value(item, &format!("{at}[{index}]"), fill)?;
+            }
+        }
+        Value::Table(inner) => fill_table(inner, at, fill)?,
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Removes, and notes, every value of an untrusted project's file that holds a `{env:}` or
+/// `{file:}` reference.
+fn drop_references(table: &mut Table, at: &str, file: &Path, ignored: &mut Vec<String>) {
+    fn mentions(value: &Value) -> bool {
+        match value {
+            Value::String(text) => substitute::mentions(text),
+            Value::Array(items) => items.iter().any(mentions),
+            Value::Table(inner) => inner.values().any(mentions),
+            _ => false,
+        }
+    }
+    let keys: Vec<String> = table.keys().cloned().collect();
+    for key in keys {
+        let path = substitute::join(at, &key);
+        let referenced = match table.get_mut(&key) {
+            Some(Value::Table(inner)) => {
+                drop_references(inner, &path, file, ignored);
+                false
+            }
+            Some(value) => mentions(value),
+            None => false,
+        };
+        if referenced {
+            table.remove(&key);
+            ignored.push(format!("{}: {path} (reads the environment or a file)", file.display()));
+        }
+    }
 }
 
 /// Checks one layer against the schema so a mistake is reported against the file that holds it.
@@ -1353,6 +1447,73 @@ mod tests {
 
         let f = fixture("[roles]\ndefault = [\"not-a-model\"]\n", "", "");
         assert!(Config::load(&f.paths, &trusted()).is_err());
+    }
+
+    #[test]
+    fn env_and_file_references_are_filled_once_and_the_layer_keeps_what_was_written() {
+        let f = fixture(
+            "[providers.gateway]\napi = \"openai-chat\"\nbase_url = \"{env:GW_URL}/v1\"\n\
+             api_key = \"{file:keys/gw.key}\"\ntls = { cert = \"certs/client.pem\", ca = \"{file:keys/ca.pem}\" }\n\
+             [permissions]\nallow = [\"shell({env:TOOL}:*)\"]\n",
+            "",
+            "",
+        );
+        let home = f.paths.home.clone();
+        std::fs::create_dir_all(home.join("keys")).unwrap();
+        std::fs::write(home.join("keys").join("gw.key"), "sk-from-file\n").unwrap();
+        let ca = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
+        std::fs::write(home.join("keys").join("ca.pem"), format!("{ca}\n")).unwrap();
+        let mut options = trusted();
+        options.env = vec![
+            ("GW_URL".into(), "https://gw.example".into()),
+            ("TOOL".into(), "cargo".into()),
+        ];
+
+        let loaded = Config::load(&f.paths, &options).unwrap();
+        let gateway = &loaded.config.providers["gateway"];
+        assert_eq!(gateway.base_url.as_deref(), Some("https://gw.example/v1"));
+        assert_eq!(gateway.api_key.as_deref(), Some("sk-from-file"));
+        let tls = gateway.tls.as_ref().unwrap();
+        // A path is taken beside the file; PEM text from a `{file:}` stays as it is.
+        let cert = home.join("certs/client.pem");
+        assert_eq!(tls.cert.as_deref(), Some(cert.to_string_lossy().as_ref()));
+        assert_eq!(tls.ca.as_deref(), Some(ca));
+        assert_eq!(loaded.config.permissions.allow, ["shell(cargo:*)"]);
+        let written = &loaded.layers[0].table["providers"]["gateway"]["api_key"];
+        assert_eq!(written.as_str(), Some("{file:keys/gw.key}"));
+
+        // A variable that is not set is an error naming the file and the key, not an empty value.
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(
+            error.contains("config.toml") && error.contains("providers.gateway.base_url: {env:GW_URL}"),
+            "{error}"
+        );
+        std::fs::remove_file(home.join("keys").join("gw.key")).unwrap();
+        let error = Config::load(&f.paths, &options).unwrap_err().to_string();
+        assert!(error.contains("providers.gateway.api_key: {file:keys/gw.key}"), "{error}");
+    }
+
+    #[test]
+    fn an_untrusted_project_reads_no_variable_or_file() {
+        let f = fixture("", "[permissions]\nadditional_dirs = [\"{env:SECRET}\", \"/plain\"]\n", "");
+        let mut options = LoadOptions {
+            env: vec![("SECRET".into(), "/from-env".into())],
+            ..LoadOptions::default()
+        };
+        let loaded = Config::load(&f.paths, &options).unwrap();
+        assert!(loaded.config.permissions.additional_dirs.is_empty());
+        assert!(
+            loaded.ignored.iter().any(|note| note.contains("permissions.additional_dirs")),
+            "{:?}",
+            loaded.ignored
+        );
+
+        options.trusted = true;
+        let loaded = Config::load(&f.paths, &options).unwrap();
+        assert_eq!(
+            loaded.config.permissions.additional_dirs,
+            [PathBuf::from("/from-env"), PathBuf::from("/plain")]
+        );
     }
 
     #[test]

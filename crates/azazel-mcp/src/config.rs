@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use azazel_ai::substitute::Substitute;
 use azazel_core::trust::fingerprint;
 use azazel_core::{Paths, TrustStore};
 use regex::Regex;
@@ -264,8 +265,17 @@ fn resolve(
     source: &Path,
     base: &Path,
     env: &dyn Fn(&str) -> Option<String>,
+    fill: bool,
 ) -> Result<ServerConfig, String> {
+    // Approval is of the entry as written, so a key that changes behind a reference does not
+    // ask again.
     let fingerprint = fingerprint(&entry);
+    let mut entry = entry;
+    if fill {
+        Substitute::new(source, env)
+            .json(&mut entry, &format!("mcpServers.{name}"))
+            .map_err(|e| format!("{}: {e}", source.display()))?;
+    }
     let raw: RawServer = serde_json::from_value(entry).map_err(|e| e.to_string())?;
     let unset = |variable: String| format!("${{{variable}}} is not set");
     let one = |text: &str| expand(text, env).map_err(unset);
@@ -345,7 +355,7 @@ pub fn server_from_entry(
     base: &Path,
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Result<ServerConfig, String> {
-    resolve(name, entry, Path::new(EXTENSION_SOURCE), base, env)
+    resolve(name, entry, Path::new(EXTENSION_SOURCE), base, env, false)
 }
 
 /// Reads `files` in order; an entry in a later file replaces one of the same name. Relative `cwd`
@@ -364,7 +374,7 @@ pub fn load(files: &[PathBuf], base: &Path, env: &dyn Fn(&str) -> Option<String>
         }
     }
     for (name, (entry, source)) in merged {
-        match resolve(&name, entry, source, base, env) {
+        match resolve(&name, entry, source, base, env, true) {
             Ok(server) => loaded.servers.push(server),
             Err(problem) => loaded.problems.push((name, problem)),
         }
@@ -661,5 +671,34 @@ mod tests {
         assert!(!remove_server(&file, "echo").unwrap());
         assert!(!remove_server(&dir.path().join("absent.json"), "echo").unwrap());
         assert!(!dir.path().join("absent.json").exists());
+    }
+
+    #[test]
+    fn env_and_file_references_are_filled_from_beside_the_file_and_a_missing_one_is_a_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("mcp.json");
+        std::fs::write(dir.path().join("token.txt"), "from-file\n").unwrap();
+        std::fs::write(
+            &file,
+            r#"{ "mcpServers": {
+                "docs": { "url": "https://example.com/mcp",
+                          "headers": { "Authorization": "Bearer {file:token.txt}", "X-Env": "{env:TOKEN}" } },
+                "gone": { "command": "srv", "env": { "K": "{env:NOT_SET}" } }
+            } }"#,
+        )
+        .unwrap();
+
+        let loaded = load(std::slice::from_ref(&file), dir.path(), &env);
+        let Transport::Http { headers, .. } = &loaded.servers[0].transport else {
+            panic!("{:?}", loaded.servers);
+        };
+        assert_eq!(headers["Authorization"], "Bearer from-file");
+        assert_eq!(headers["X-Env"], "s3cret");
+        let (name, problem) = &loaded.problems[0];
+        assert_eq!(name, "gone");
+        assert!(problem.contains("mcp.json") && problem.contains("mcpServers.gone.env.K"), "{problem}");
+        // Approval stays with what the file says, not what the references held.
+        let written: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(loaded.servers[0].fingerprint, fingerprint(&written["mcpServers"]["docs"]));
     }
 }

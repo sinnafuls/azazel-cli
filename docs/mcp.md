@@ -64,7 +64,7 @@ Keys Azazel does not know are ignored, so a file shared with other MCP clients l
 
 ### Variable expansion
 
-`${VAR}` and `${VAR:-default}` are expanded from the environment in `command`, `args`, `env` values, `cwd`, `url`, `headers` values and the `oauth` `clientId` and `scope`. A variable that is unset and has no default disables that server; `azazel mcp list`, `/mcp` and `azazel doctor` report it as `${VAR} is not set`. Keep secrets in the environment, not in the file.
+`${VAR}` and `${VAR:-default}` are expanded from the environment in `command`, `args`, `env` values, `cwd`, `url`, `headers` values and the `oauth` `clientId` and `scope`. A variable that is unset and has no default disables that server; `azazel mcp list`, `/mcp` and `azazel doctor` report it as `${VAR} is not set`. Keep secrets in the environment, not in the file. `{env:VAR}` and `{file:path}` work in every string of an entry too ([references](configuration.md#references-to-the-environment-and-to-files)); one that cannot be filled disables the server with the file and the key named.
 
 ## Transports
 

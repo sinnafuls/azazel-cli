@@ -15,6 +15,7 @@ pub mod services;
 pub mod sse;
 pub mod stall;
 pub mod stream;
+pub mod substitute;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
 pub mod tls;
@@ -32,7 +33,7 @@ pub use provider::Provider;
 pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
 pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
 pub use services::{Service, ServiceStore};
-pub use stall::StallLimits;
+pub use stall::{StallLimits, Timeouts};
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
     AssistantMeta, Block, HostedTool, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request,
