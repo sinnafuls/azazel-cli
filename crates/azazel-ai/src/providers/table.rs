@@ -1,8 +1,10 @@
-//! The built-in providers, one row each, sorted by id.
+//! The hand-written built-in providers, one row each, sorted by id.
 //!
 //! A row is data only: where the endpoint is, which wire API it speaks, where its key comes
 //! from and how its models are found. `${VAR}` and `${VAR:-default}` in an address are filled
-//! from the environment when the providers are resolved.
+//! from the environment when the providers are resolved. The providers models.dev lists beyond
+//! these are in `generated.rs`; a row here replaces a generated one with the same id or for the
+//! same models.dev provider, so a provider that needs a sign-in, headers or a quirk is written here.
 
 use crate::providers::presets::{AuthStyle, Discovery};
 use crate::types::WireApi;
@@ -30,7 +32,7 @@ pub(super) struct Preset {
 }
 
 impl Preset {
-    const fn keyless(mut self) -> Self {
+    pub(super) const fn keyless(mut self) -> Self {
         self.keyless = true;
         self
     }
@@ -50,7 +52,7 @@ impl Preset {
         self
     }
 
-    const fn catalog(mut self, name: &'static str) -> Self {
+    pub(super) const fn catalog(mut self, name: &'static str) -> Self {
         self.catalog = name;
         self
     }
@@ -58,7 +60,7 @@ impl Preset {
 
 /// A provider that takes a bearer key, lists its models at the wire API's usual address and is
 /// called the same on models.dev.
-const fn row(
+pub(super) const fn row(
     id: &'static str,
     name: &'static str,
     api: WireApi,
@@ -116,7 +118,7 @@ pub(super) static PRESETS: &[Preset] = &[
     row("fireworks", "Fireworks", OpenAiChat, "https://api.fireworks.ai/inference/v1", &["FIREWORKS_API_KEY"]).catalog("fireworks-ai"),
     row("github-copilot", "GitHub Copilot", OpenAiChat, "https://api.githubcopilot.com", &["COPILOT_GITHUB_TOKEN"]).headers(COPILOT_HEADERS),
     row("gmi-cloud", "GMI Cloud", OpenAiChat, "https://api.gmi-serving.com/v1", &["GMI_API_KEY"]).catalog("gmicloud"),
-    row("google", "Google Gemini API", GoogleGenerative, "https://generativelanguage.googleapis.com/v1beta", &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+    row("google", "Google Gemini API", GoogleGenerative, "https://generativelanguage.googleapis.com/v1beta", &["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY"]),
     row("google-gemini-cli", "Google Cloud Code Assist (Gemini CLI)", GoogleGeminiCli, "https://cloudcode-pa.googleapis.com", &[]).discovery(Discovery::Off).catalog(""),
     row("groq", "Groq", OpenAiChat, "https://api.groq.com/openai/v1", &["GROQ_API_KEY"]),
     row("helmcode", "Helmcode", OpenAiChat, "https://api.helmcode.com/v1", &["HELMCODE_API_KEY"]),
@@ -130,7 +132,7 @@ pub(super) static PRESETS: &[Preset] = &[
     row("meta", "Meta Model API", OpenAiResponses, "https://api.meta.ai/v1", &["MODEL_API_KEY", "META_API_KEY", "META_MODEL_API_KEY"]),
     row("minimax", "MiniMax", AnthropicMessages, "https://api.minimax.io/anthropic", &["MINIMAX_API_KEY"]).discovery(Discovery::Off),
     row("minimax-code", "MiniMax Code", AnthropicMessages, "https://api.minimax.io/anthropic", &["MINIMAX_CODE_API_KEY"]).discovery(Discovery::Off).catalog("minimax-coding-plan"),
-    row("minimax-code-cn", "MiniMax Code CN", AnthropicMessages, "https://api.minimaxi.com/anthropic", &["MINIMAX_CODE_CN_API_KEY"]).discovery(Discovery::Off).catalog("minimax-cn-coding-plan"),
+    row("minimax-code-cn", "MiniMax Code CN", AnthropicMessages, "https://api.minimax.cn/anthropic", &["MINIMAX_CODE_CN_API_KEY"]).discovery(Discovery::Off).catalog("minimax-cn-coding-plan"),
     row("mistral", "Mistral", OpenAiChat, "https://api.mistral.ai/v1", &["MISTRAL_API_KEY"]),
     row("modular", "Modular", OpenAiChat, "https://api.modular.com/v1", &["MODULAR_API_KEY"]),
     row("moonshot", "Moonshot", OpenAiChat, "${MOONSHOT_BASE_URL:-https://api.moonshot.ai/v1}", &["MOONSHOT_API_KEY"]).catalog("moonshotai"),
@@ -141,8 +143,8 @@ pub(super) static PRESETS: &[Preset] = &[
     row("ollama-cloud", "Ollama Cloud", OllamaChat, "https://ollama.com", &["OLLAMA_CLOUD_API_KEY", "OLLAMA_API_KEY"]).discovery(Discovery::Ollama),
     row("openai", "OpenAI", OpenAiResponses, "https://api.openai.com/v1", &["OPENAI_API_KEY"]),
     row("openai-codex", "ChatGPT (Codex)", OpenAiResponses, "https://chatgpt.com/backend-api/codex", &[]).catalog(""),
-    row("opencode-go", "OpenCode Go", OpenAiChat, "https://opencode.ai/zen/go/v1", &["OPENCODE_API_KEY"]),
-    row("opencode-zen", "OpenCode Zen", OpenAiChat, "https://opencode.ai/zen/v1", &["OPENCODE_API_KEY"]).catalog("opencode"),
+    row("opencode-go", "OpenCode Go", OpenAiChat, "https://opencode.ai/inference/go/openai/v1", &["OPENCODE_API_KEY"]),
+    row("opencode-zen", "OpenCode Zen", OpenAiChat, "https://opencode.ai/inference/openai/v1", &["OPENCODE_API_KEY"]).catalog("opencode"),
     row("openrouter", "OpenRouter", OpenRouter, "https://openrouter.ai/api/v1", &["OPENROUTER_API_KEY"]).headers(ATTRIBUTION),
     row("otari", "Otari", OpenAiChat, "${OTARI_BASE_URL:-https://api.otari.ai/api/v1}", &["OTARI_API_KEY"]).catalog(""),
     row("qianfan", "Qianfan", OpenAiChat, "https://qianfan.baidubce.com/v2", &["QIANFAN_API_KEY"]).catalog(""),
@@ -163,7 +165,7 @@ pub(super) static PRESETS: &[Preset] = &[
     row("vercel-ai-gateway", "Vercel AI Gateway", OpenAiChat, "https://ai-gateway.vercel.sh/v1", &["AI_GATEWAY_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"]).headers(ATTRIBUTION).catalog("vercel"),
     row("vllm", "vLLM", OpenAiChat, "${VLLM_BASE_URL:-http://localhost:8000/v1}", &["VLLM_API_KEY"]).keyless().catalog(""),
     row("wafer-serverless", "Wafer Serverless", OpenAiChat, "https://pass.wafer.ai/v1", &["WAFER_SERVERLESS_API_KEY", "WAFER_API_KEY"]).catalog("wafer.ai"),
-    row("xai", "xAI", OpenAiChat, "https://api.x.ai/v1", &["XAI_API_KEY"]),
+    row("xai", "xAI", OpenAiResponses, "https://api.x.ai/v1", &["XAI_API_KEY"]),
     row("xai-oauth", "xAI Grok (SuperGrok)", OpenAiResponses, "https://api.x.ai/v1", &["XAI_OAUTH_TOKEN"]).catalog("xai"),
     row("xiaomi", "Xiaomi MiMo", OpenAiChat, "https://api.xiaomimimo.com/v1", &["XIAOMI_API_KEY"]),
     row("xiaomi-token-plan-ams", "Xiaomi Token Plan (AMS)", OpenAiChat, "https://token-plan-ams.xiaomimimo.com/v1", &["XIAOMI_TOKEN_PLAN_AMS_API_KEY"]),

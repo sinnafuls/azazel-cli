@@ -5,8 +5,21 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- About 160 more built-in providers: every provider models.dev lists that speaks a wire API azazel has
+  (`anthropic-messages`, `openai-responses`, `openai-chat`, `google-generative`), with its models in the
+  catalogue. Set its key variable and its models appear in `/model` and `azazel models`. Each reads a
+  variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
+  `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
+- `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+
 ### Changed
 
+- `xai` talks to xAI's Responses API, which xAI names its primary API; Chat Completions is its legacy one.
+- `opencode-zen` and `opencode-go` use OpenCode's current addresses (`https://opencode.ai/inference/openai/v1`
+  and `https://opencode.ai/inference/go/openai/v1`), and `minimax-code-cn` MiniMax's new mainland-China
+  host, `https://api.minimax.cn/anthropic`.
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or

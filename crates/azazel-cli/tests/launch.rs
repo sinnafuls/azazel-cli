@@ -403,3 +403,39 @@ fn models_and_completions_print_for_scripts() {
     assert!(completions.status.success());
     assert!(String::from_utf8_lossy(&completions.stdout).contains("_azazel"));
 }
+
+#[test]
+fn a_provider_from_models_dev_is_listed_once_its_key_variable_is_set() {
+    // `requesty` has no hand-written row: it comes from the rows generated from models.dev.
+    let sandbox = Sandbox::new();
+    let models = |key: Option<&str>, args: &[&str]| {
+        let mut command = Command::cargo_bin("azazel").unwrap();
+        command
+            .env("AZAZEL_HOME", sandbox.dir.path().join("home"))
+            .env_remove("REQUESTY_API_KEY")
+            .arg("--cwd")
+            .arg(sandbox.project())
+            .args(["models", "--json"])
+            .args(args);
+        if let Some(key) = key {
+            command.env("REQUESTY_API_KEY", key);
+        }
+        let output = command.write_stdin("").output().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<Value>(line).unwrap()["model"]
+                    .as_str()
+                    .unwrap()
+                    .to_string()
+            })
+            .filter(|model| model.starts_with("requesty/"))
+            .count()
+    };
+    assert_eq!(models(None, &[]), 0, "listed without a key");
+    let listed = models(Some("rq-test"), &[]);
+    assert!(listed > 0);
+    assert_eq!(models(Some("rq-test"), &["--all"]), listed);
+    assert_eq!(models(None, &["--all", "--provider", "requesty"]), listed);
+}
