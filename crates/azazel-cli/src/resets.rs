@@ -462,9 +462,7 @@ impl LimitFlow {
             if !usable || self.only.as_deref().is_some_and(|only| only != provider) {
                 continue;
             }
-            let login = config
-                .and_then(|config| credentials.source(config))
-                .is_some_and(|source| source.starts_with("auth.json (login"));
+            let login = config.is_some_and(|config| crate::models::login(credentials, config));
             for info in router.catalog().for_provider(provider) {
                 let model = ModelRef::new(info.provider.as_str(), info.id.as_str());
                 if out(&model) {
