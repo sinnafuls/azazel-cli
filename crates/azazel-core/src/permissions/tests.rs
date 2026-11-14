@@ -1370,7 +1370,7 @@ fn the_secret_files_are_the_built_in_list_and_what_the_config_adds() {
     ] {
         assert!(prompts(&verdict(&f, "read", Access::Read, path)), "{path}");
         assert!(
-            f.state.is_secret(&f.state.ctx(&f.paths.cwd).resolve(path)),
+            f.state.is_secret(&f.state.ctx(&f.paths.cwd).absolute(path)),
             "{path}"
         );
     }

@@ -138,22 +138,37 @@ pub struct MatchCtx<'a> {
 }
 
 impl MatchCtx<'_> {
-    /// A path subject as written by the model, made absolute and canonical: the form the roots,
-    /// the homes and the plans directory are kept in, so `/var/…` on macOS is `/private/var/…`
-    /// and a Windows short name (`RUNNER~1`) is the long one.
-    pub fn resolve(&self, subject: &str) -> PathBuf {
+    /// A path subject as written by the model, made absolute, with nothing on disk looked at.
+    pub fn absolute(&self, subject: &str) -> PathBuf {
         let subject = subject.trim();
         if let Some(rest) = subject.strip_prefix("~/")
             && let Some(home) = self.home
         {
-            return canonical(&home.join(rest));
+            return home.join(rest);
         }
         let path = Path::new(subject);
         if path.is_absolute() {
-            canonical(path)
+            path.to_path_buf()
         } else {
-            canonical(&self.cwd.join(path))
+            self.cwd.join(path)
         }
+    }
+
+    /// The file a path subject stands for: [`MatchCtx::absolute`] made canonical, the form the
+    /// roots, the homes and the plans directory are kept in. `/var/…` on macOS is
+    /// `/private/var/…`, a Windows short name (`RUNNER~1`) is the long one, and a symbolic link
+    /// is where it leads.
+    pub fn resolve(&self, subject: &str) -> PathBuf {
+        canonical(&self.absolute(subject))
+    }
+
+    /// Both forms of a path subject, as written and canonical. What is known by its name (a
+    /// rule, a secret file, a protected one) is matched against either: the name a link has is
+    /// gone from where it leads, and a path written through a link has not the name it leads to.
+    pub fn forms(&self, subject: &str) -> [PathBuf; 2] {
+        let written = self.absolute(subject);
+        let real = canonical(&written);
+        [written, real]
     }
 }
 
@@ -178,7 +193,10 @@ impl Rule {
                 }
                 None => glob(pattern, false).is_some_and(|g| g.is_match(subject)),
             },
-            SubjectKind::Path => path_matches(pattern, &normal(&ctx.resolve(subject)), ctx),
+            SubjectKind::Path => ctx
+                .forms(subject)
+                .iter()
+                .any(|path| path_matches(pattern, &normal(path), ctx)),
             SubjectKind::Domain => match (pattern.strip_prefix("domain:"), subject.strip_prefix("domain:")) {
                 (Some(wanted), Some(host)) => {
                     let (wanted, host) = (wanted.to_ascii_lowercase(), host.to_ascii_lowercase());
@@ -771,7 +789,10 @@ impl PermissionState {
         let protected = !self.bypass()
             && call.access == Access::Write
             && subject_kind(call.tool) == SubjectKind::Path
-            && call.subjects.iter().any(|s| self.is_protected(&ctx.resolve(s)));
+            && call
+                .subjects
+                .iter()
+                .any(|s| ctx.forms(s).iter().any(|path| self.is_protected(path)));
         Ok(protected)
     }
 
@@ -832,17 +853,24 @@ impl PermissionState {
 
     /// Whether `path` is one of the files that hold credentials: the built-in list (`.env`,
     /// `*.pem`, `*.key`, SSH keys, the cloud and package credentials under the home directory,
-    /// azazel's own login file) or a match of `permissions.secret_paths`. `path` is canonical,
-    /// as [`MatchCtx::resolve`] makes it; a walk makes its root canonical once.
+    /// azazel's own login file) or a match of `permissions.secret_paths`. `path` is absolute and
+    /// checked as it is written and as the file it stands for (see [`MatchCtx::forms`]).
     pub fn is_secret(&self, path: &Path) -> bool {
+        self.secret_as_written(path) || self.secret_as_written(&canonical(path))
+    }
+
+    fn secret_as_written(&self, path: &Path) -> bool {
         secrets::is_secret(path, &self.secret_patterns, &self.home, &self.ctx(&self.cwd))
     }
 
     /// Whether a tool that reads the files of a directory has to leave `path` out: it is a
     /// secret file the user has not allowed for this session, and the session is not in
-    /// `bypass` mode. Naming the file itself is what gets the user asked.
+    /// `bypass` mode. Naming the file itself is what gets the user asked. A walk passes the
+    /// path below its root made canonical once, so nothing on disk is looked at per file.
     pub fn withholds(&self, path: &Path) -> bool {
-        !self.bypass() && self.is_secret(path) && !read(&self.secret_grants).contains(&Self::secret_key(path))
+        !self.bypass()
+            && self.secret_as_written(path)
+            && !read(&self.secret_grants).contains(&Self::secret_key(path))
     }
 
     /// The secret files a call names, as written and resolved: the path of a file tool, and the
@@ -859,8 +887,9 @@ impl PermissionState {
         words
             .into_iter()
             .filter_map(|word| {
-                let path = ctx.resolve(&word);
-                secrets::is_secret(&path, &self.secret_patterns, &self.home, ctx).then_some((word, path))
+                let [written, real] = ctx.forms(&word);
+                let secret = |path: &Path| secrets::is_secret(path, &self.secret_patterns, &self.home, ctx);
+                (secret(&written) || secret(&real)).then_some((word, real))
             })
             .collect()
     }
@@ -999,7 +1028,7 @@ impl PermissionState {
                 let [subject] = call.subjects else {
                     return None;
                 };
-                let path = ctx.resolve(subject);
+                let path = ctx.absolute(subject);
                 let dir = normal(path.parent()?);
                 let root = normal(&self.project_root);
                 Some(match dir.strip_prefix(&root) {
