@@ -4,11 +4,13 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use azazel_ai::{Block, ThinkingLevel};
 use azazel_core::commands::split_args;
 use azazel_core::config::EditorMode;
 use azazel_tools::Foreground;
+use azazel_tui::components::chips;
 use azazel_tui::components::editor::atom_label;
 use azazel_tui::{Atom, Editor, Glyph, GlyphLevel, Line, Role, Vim};
 use crossterm::event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -22,8 +24,16 @@ const MAX_DROPPED_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
 const MAX_DROPPED_FILES: usize = 32;
 /// What an image attached to the draft is called in it: `[Image #1]`.
 const IMAGE: &str = "Image";
-/// The models the cycling keys step through when no favourite is set.
-const DEFAULT_CYCLE: [&str; 3] = ["@default", "@smol", "@slow"];
+/// How long the models the cycling keys step through stay in view after a step.
+const STRIP_SHOWN: Duration = Duration::from_secs(2);
+
+/// What the cycling keys step through, in view above the input for a moment.
+pub(super) struct Strip {
+    names: Vec<String>,
+    /// The one the lead is on now.
+    at: usize,
+    until: Instant,
+}
 pub(super) const NO_EDITOR: &str = "no editor found: set $VISUAL or $EDITOR, or [editor] command";
 
 /// Messages typed while the agent works, waiting for it to finish. The UI holds them, so that
@@ -324,17 +334,43 @@ pub(super) fn next_thinking(current: ThinkingLevel, supported: &[ThinkingLevel])
     }
 }
 
-/// The model to switch to from `current` among `cycle`, a step forwards or backwards. From a
-/// model that is not in the cycle, the first (or last) one.
-pub(super) fn next_model<'a>(cycle: &'a [String], current: &str, forward: bool) -> Option<&'a str> {
-    let count = cycle.len();
-    let next = match cycle.iter().position(|spec| spec == current) {
-        Some(at) if forward => (at + 1) % count.max(1),
-        Some(at) => (at + count - 1) % count.max(1),
+/// The entry of a cycle of `count` entries to go to from the one at `at`, a step forwards or
+/// backwards. From a model that is not in the cycle (`None`): its first entry, or its last.
+pub(super) fn step(count: usize, at: Option<usize>, forward: bool) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(match at {
+        Some(at) if forward => (at + 1) % count,
+        Some(at) => (at + count - 1) % count,
         None if forward => 0,
-        None => count.saturating_sub(1),
-    };
-    cycle.get(next).map(String::as_str)
+        None => count - 1,
+    })
+}
+
+/// `tui.favourites` as `file` has it; empty when the file has none.
+fn saved_favourites(file: &Path) -> Vec<String> {
+    let config = std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| text.parse::<toml::Table>().ok());
+    config
+        .as_ref()
+        .and_then(|config| config.get("tui")?.get("favourites")?.as_array())
+        .map(|list| {
+            list.iter()
+                .filter_map(|spec| spec.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `list` with `spec` in it (`added`) or without it.
+fn toggled(mut list: Vec<String>, spec: &str, added: bool) -> Vec<String> {
+    list.retain(|other| other != spec);
+    if added {
+        list.push(spec.to_string());
+    }
+    list
 }
 
 /// The images of `attached` whose chips are among `chips`, in the order of the chips.
@@ -740,42 +776,93 @@ impl Tui {
         }
     }
 
-    /// The models the cycling keys step through.
-    fn model_cycle(&self) -> Vec<String> {
-        if self.favourites.is_empty() {
-            DEFAULT_CYCLE.iter().map(|spec| spec.to_string()).collect()
-        } else {
-            self.favourites.clone()
-        }
-    }
-
-    /// Switches to the next or previous favourite model.
-    pub(super) async fn cycle_model(&mut self, forward: bool) {
-        let cycle: Vec<String> = self
-            .model_cycle()
+    /// What the cycling keys step through: the favourites (models and `@roles`), or with none
+    /// the roles that were given a model. What resolves to no model is left out.
+    pub(super) fn model_cycle(&self) -> Vec<String> {
+        let cycle = match self.favourites.is_empty() {
+            true => self.backend.cycle_roles(),
+            false => self.favourites.clone(),
+        };
+        cycle
             .into_iter()
             .filter(|spec| self.backend.resolves(spec))
-            .collect();
-        let chain = self.backend.status().chain;
-        let current = match chain.as_slice() {
-            [only] => only.to_string(),
-            _ => String::new(),
+            .collect()
+    }
+
+    /// Puts the lead on the next or the previous entry of the cycle, and shows the cycle
+    /// above the input for a moment with the entry it is on now.
+    pub(super) async fn cycle_model(&mut self, forward: bool) {
+        let cycle = self.model_cycle();
+        let at = self.backend.place_in(&cycle);
+        let Some(next) = step(cycle.len(), at, forward) else {
+            self.notice = Some(format!(
+                "no favourite model can be used; ctrl+f in the model picker ({}) adds one",
+                self.key_of("model_picker")
+            ));
+            return;
         };
-        match next_model(&cycle, &current, forward) {
-            Some(spec) if spec != current => {
-                let spec = spec.to_string();
-                self.set_model(&[spec.as_str()]).await;
+        if at == Some(next) {
+            self.notice = Some(format!(
+                "there is one model to cycle through; ctrl+f in the model picker ({}) adds favourites",
+                self.key_of("model_picker")
+            ));
+            return;
+        }
+        match self.backend.set_model(std::slice::from_ref(&cycle[next])).await {
+            Ok(_) => {
+                self.remember_model(&cycle[next]);
+                self.strip = Some(Strip {
+                    names: cycle,
+                    at: next,
+                    until: Instant::now() + STRIP_SHOWN,
+                });
             }
-            Some(_) => {
-                self.notice =
-                    Some("there is one model to cycle through; ctrl+f in /model adds favourites".into())
-            }
-            None => self.notice = Some("no favourite model can be used; ctrl+f in /model adds one".into()),
+            Err(why) => self.fail(&why),
         }
     }
 
-    /// Adds `spec` to the favourites or removes it, and saves the list. Returns whether it is a
-    /// favourite now.
+    /// The first key bound to `action`, as the key table writes it; `unbound` without one.
+    pub(super) fn key_of(&self, action: &str) -> String {
+        self.keymap
+            .keys_for(action)
+            .first()
+            .map_or_else(|| "unbound".to_string(), ToString::to_string)
+    }
+
+    /// The cycle and where the lead is in it, while it is in view.
+    pub(super) fn strip_line(&self, width: usize) -> Option<Line> {
+        let strip = self.strip.as_ref()?;
+        let separator = self.theme.glyph(Glyph::Separator);
+        let hint = format!(
+            "{} next{separator}{} all",
+            self.key_of("cycle_model"),
+            self.key_of("model_picker")
+        );
+        Some(chips::strip(&strip.names, strip.at, &hint, width, &self.theme))
+    }
+
+    /// Takes the cycle out of view once it has been shown long enough.
+    pub(super) fn fold_strip(&mut self) {
+        if self
+            .strip
+            .as_ref()
+            .is_some_and(|strip| strip.until <= Instant::now())
+        {
+            self.strip = None;
+        }
+    }
+
+    pub(super) fn strip_deadline(&self) -> Option<Instant> {
+        self.strip.as_ref().map(|strip| strip.until)
+    }
+
+    /// Keeps `spec` among the models chosen lately, for the model picker.
+    pub(super) fn remember_model(&self, spec: &str) {
+        super::recent::remember(&super::recent::file(&self.env.paths), spec);
+    }
+
+    /// Adds `spec` to the favourites or removes it, and saves the change. Returns whether it
+    /// is a favourite now.
     pub(super) fn toggle_favourite(&mut self, spec: &str) -> bool {
         let added = match self.favourites.iter().position(|favourite| favourite == spec) {
             Some(at) => {
@@ -787,12 +874,14 @@ impl Tui {
                 true
             }
         };
-        let list = toml_edit::Array::from_iter(self.favourites.iter().map(String::as_str));
-        if let Err(e) = crate::init::set_config_value(
-            &self.env.paths.home_config(),
-            &["tui", "favourites"],
-            Some(toml_edit::value(list)),
-        ) {
+        // The list of the file is what changes: the one in use may be this run's alone
+        // (`--models`).
+        let file = self.env.paths.home_config();
+        let saved = toggled(saved_favourites(&file), spec, added);
+        let list = toml_edit::Array::from_iter(saved.iter().map(String::as_str));
+        if let Err(e) =
+            crate::init::set_config_value(&file, &["tui", "favourites"], Some(toml_edit::value(list)))
+        {
             self.warn(&format!("the favourites were not saved: {e:#}"));
         }
         added
@@ -868,7 +957,17 @@ impl Tui {
             ("editor.fold_paste_lines", toml::Value::Integer(lines)) => {
                 self.fold_paste_lines = usize::try_from(*lines).unwrap_or(0);
             }
-            _ => {}
+            ("tui.favourites", toml::Value::Array(list)) => {
+                self.favourites = list
+                    .iter()
+                    .filter_map(|spec| spec.as_str().map(str::to_string))
+                    .collect();
+            }
+            (path, value) => {
+                if let Some(key) = path.strip_prefix("statusline.") {
+                    self.apply_statusline_setting(key, value);
+                }
+            }
         }
         self.restyle_calls();
     }
@@ -1117,16 +1216,38 @@ mod tests {
     }
 
     #[test]
-    fn models_cycle_both_ways_through_the_favourites() {
-        let cycle = vec!["@default".to_string(), "@smol".to_string(), "@slow".to_string()];
-        assert_eq!(next_model(&cycle, "@default", true), Some("@smol"));
-        assert_eq!(next_model(&cycle, "@slow", true), Some("@default"));
-        assert_eq!(next_model(&cycle, "@default", false), Some("@slow"));
-        assert_eq!(next_model(&cycle, "@smol", false), Some("@default"));
-        // From a model outside the cycle: the first going forwards, the last going back.
-        assert_eq!(next_model(&cycle, "anthropic/x", true), Some("@default"));
-        assert_eq!(next_model(&cycle, "anthropic/x", false), Some("@slow"));
-        assert_eq!(next_model(&[], "@default", true), None);
+    fn the_cycle_is_stepped_both_ways_and_entered_from_its_ends() {
+        assert_eq!(step(3, Some(0), true), Some(1));
+        assert_eq!(step(3, Some(2), true), Some(0));
+        assert_eq!(step(3, Some(0), false), Some(2));
+        assert_eq!(step(3, Some(1), false), Some(0));
+        // From a model that is not in the cycle, the cycle is entered at an end.
+        assert_eq!(step(3, None, true), Some(0));
+        assert_eq!(step(3, None, false), Some(2));
+        // One entry is where the lead already is, or is gone to.
+        assert_eq!(step(1, Some(0), true), Some(0));
+        assert_eq!(step(1, None, false), Some(0));
+        assert_eq!(step(0, None, true), None);
+    }
+
+    #[test]
+    fn a_favourite_is_added_to_what_the_file_holds_or_taken_out_of_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("config.toml");
+        assert_eq!(saved_favourites(&file), Vec::<String>::new());
+        std::fs::write(&file, "[tui]\ntheme = \"light\"\n").unwrap();
+        assert_eq!(saved_favourites(&file), Vec::<String>::new());
+        std::fs::write(&file, "[tui]\nfavourites = [\"@default\", \"mock/a\"]\n").unwrap();
+        let saved = saved_favourites(&file);
+        assert_eq!(saved, ["@default", "mock/a"]);
+        assert_eq!(
+            toggled(saved.clone(), "mock/b", true),
+            ["@default", "mock/a", "mock/b"]
+        );
+        assert_eq!(toggled(saved.clone(), "@default", false), ["mock/a"]);
+        // What this run alone steps through (`--models`) is not what the file holds.
+        assert_eq!(toggled(saved.clone(), "mock/a", true), ["@default", "mock/a"]);
+        assert_eq!(toggled(saved, "mock/z", false), ["@default", "mock/a"]);
     }
 
     #[test]

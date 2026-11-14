@@ -74,7 +74,31 @@ GitHub are its section here.
 - `docs/configuration.md` documents `[limits]` (`max_cost_usd`, `warn_cost_usd`, `max_turns`), the role of
   each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
   actions.
-
+- The status line is made of segments you choose: `mode`, `model`, `thinking`, `tier`, `path`, `branch`,
+  `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`,
+  `git_dirty`, `account` and `cache`. `[statusline]` takes a `preset` (`default`, `minimal`, `powerline`,
+  `full`), your own `left` and `right` lists, a `separator` (`dot`, `bar`, `space`, `powerline`) and options
+  per segment under `[statusline.segments.<name>]` (`priority`, `icon`, `max`, `style`, the clock's `format`
+  and `seconds`, the bar's `cells` and `min_width`). `powerline` draws every segment as a block of colour,
+  ended by an arrow with Nerd Font symbols. On a narrow terminal the segment with the lowest priority leaves
+  first, on either side.
+- `/statusline` sets the status line up in a popup: a preset, a separator, and each segment switched on or
+  off, moved to the other side and reordered, with the resulting line shown above the list and on the status
+  line itself; `Enter` saves it to `~/.azazel/config.toml`. `/statusline <preset>` takes a preset at once. The
+  Status line page of `/settings` applies its changes to the running UI.
+- `statusline.command` (home config or a trusted project): a program that is given the session as JSON on its
+  standard input (the model, the directory, the session, the context window and the cost, under the names
+  Claude Code uses, plus the mode, the thinking level and the branch) and whose first line of output, colours
+  kept, replaces the left side of the status line. It runs when the session changed, at most once a second,
+  and is ended after two seconds; when it fails the segments come back.
+- `Ctrl+P` puts the lead on the next favourite model or role and `Ctrl+Shift+P` or `Alt+Shift+P` on the
+  previous one, and the cycle shows above the input for two seconds with the current entry marked. Favourites
+  may be roles (`@smol`): a step onto a role makes that role's chain the lead's. With no favourites the keys
+  step through the roles that were given models. `Alt+M` and `Alt+Shift+M` still work.
+- `Alt+P` opens the model picker (`Ctrl+L` and `/model` still do). It lists the roles first, then the
+  favourites, then the models chosen lately, then every other model, and opens on the row of what the lead is
+  on.
+- `--models a,b,c` names what the cycling keys step through for one run.
 - `/usage` is a box in the middle of the window: per provider and account every usage window with a bar, the
   share used, the reset time and what it counts, the plan, extra usage and what it cost, banked resets, the
   account in use, and until when an account is left alone. `r` asks the providers again. `azazel usage`

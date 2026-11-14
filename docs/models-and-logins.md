@@ -77,7 +77,8 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 | `/settings` → Models → `default` | Same, from inside the TUI; takes effect at once |
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `--provider <id>` | Only this provider's models for this run: part of a name given to `--model` or `/model` is looked up among them, `provider/model` of another provider is refused, and the `/model` picker lists only them. Without `--model` the lead keeps the models of its configured chain that are this provider's, and the run ends with status 2 when there are none. Roles that name their own models (`smol`, `verify`, agent definitions) are not changed. A [virtual model](#virtual-models) picks among every provider's models, so it is refused and left out of the picker while `--provider` is given |
-| `/model` or `Ctrl+L` | Picker over roles, [virtual models](#virtual-models) and the models of providers that have a credential |
+| `/model`, `Ctrl+L` or `Alt+P` | Picker over roles, favourites, the models chosen lately, [virtual models](#virtual-models) and the models of providers that have a credential |
+| `Ctrl+P`, `Ctrl+Shift+P` | The next or previous favourite model or role (`tui.favourites`, or `--models a,b,c` for one run); a step onto a role makes its chain the lead's. See [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
 | `/preset <name>`, `--preset <name>` | Re-points every role a [preset](#presets) names |
 | `model:` in an agent definition, `[agents.<name>] model` | Per-agent chain (see [team](team.md)) |

@@ -590,6 +590,11 @@ pub struct Cli {
     #[arg(long = "model", value_name = "SPEC", global = true)]
     pub model: Vec<String>,
 
+    /// What the model-cycling keys (ctrl+p) step through in this run, in place of the
+    /// favourites: models and @roles, separated by commas
+    #[arg(long = "models", value_name = "SPECS", value_delimiter = ',', global = true)]
+    pub models: Vec<String>,
+
     /// Thinking level: off, minimal, low, medium, high, xhigh, max
     #[arg(long, value_name = "LEVEL", global = true)]
     pub thinking: Option<String>,

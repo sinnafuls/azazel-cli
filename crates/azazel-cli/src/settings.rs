@@ -792,6 +792,7 @@ mod tests {
         assert_eq!(
             live,
             [
+                "tui.favourites",
                 "tui.theme",
                 "tui.glyphs",
                 "tui.indicator",
@@ -801,6 +802,12 @@ mod tests {
                 "tui.popups",
                 "tui.show_thinking",
                 "tui.expand_tools",
+                "statusline.preset",
+                "statusline.left",
+                "statusline.right",
+                "statusline.separator",
+                "statusline.segments",
+                "statusline.command",
                 "editor.mode",
                 "editor.command",
                 "editor.fold_paste_lines",

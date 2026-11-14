@@ -21,12 +21,15 @@ mod popup;
 mod probe;
 mod quick;
 mod rate;
+mod recent;
 mod remote;
 mod resize;
 mod sessions;
 mod setup;
 mod share;
 mod slash;
+mod statusbar;
+mod statusedit;
 mod statusline;
 mod team;
 mod term;
@@ -276,6 +279,10 @@ enum Internal {
     ClipboardText(Option<String>),
     /// A step of `/migrate` finished beside the UI loop.
     Migrate(migrate::Step),
+    /// The program of `statusline.command` printed its line, or did not.
+    StatusCommand(statusbar::CommandLine),
+    /// How many files differ from the last commit; none where git cannot say.
+    ChangedFiles(Option<usize>),
 }
 
 pub struct Tui {
@@ -311,6 +318,10 @@ pub struct Tui {
     editor_command: String,
     /// Models the cycling keys step through, as written in `tui.favourites`.
     favourites: Vec<String>,
+    /// What the cycling keys step through, shown above the input for a moment after a step.
+    strip: Option<input::Strip>,
+    /// The status line: its layout and what feeds it from outside the session.
+    status: statusbar::StatusBar,
     /// Messages waiting for the agent to finish.
     queued: Queue,
     /// The lead just finished a run without being interrupted: the next queued message may go.
@@ -456,7 +467,21 @@ pub(crate) fn env_here(cli: &crate::cli::Cli, paths: Paths) -> anyhow::Result<En
         overrides: crate::app::config_overrides(cli, &paths)?,
         env: std::env::vars().collect(),
     };
-    let config = azazel_core::Config::load(&paths, &options)?.config;
+    let mut config = azazel_core::Config::load(&paths, &options)?.config;
+    if !cli.models.is_empty() {
+        // Which models there are is known where the session runs: here a name is taken whole.
+        config.tui.favourites = cli
+            .models
+            .iter()
+            .map(|text| {
+                text.trim().parse::<ModelSpec>().map_err(|e| {
+                    crate::app::UsageError(format!(
+                        "--models {text}: {e} (for a session elsewhere, name a provider/model or an @role)"
+                    ))
+                })
+            })
+            .collect::<Result<_, _>>()?;
+    }
     Ok(Env {
         #[cfg(feature = "voice")]
         credentials: Arc::new(crate::app::credentials(&paths, false).configured(&config.providers)),
@@ -519,6 +544,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     backend.list_files(internal_tx.clone());
     let editor_config = env.config.editor.clone();
     let tui_config = env.config.tui.clone();
+    let (status, status_problems) = statusbar::StatusBar::new(&env.config.statusline);
     let mut renderer = Renderer::new(io::stdout(), width, height);
     renderer.set_rewraps(azazel_tui::term::rewraps(&|name| std::env::var(name).ok()));
     let mut tui = Tui {
@@ -541,6 +567,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         fold_paste_lines: editor_config.fold_paste_lines,
         editor_command: editor_config.command,
         favourites: tui_config.favourites.iter().map(ToString::to_string).collect(),
+        strip: None,
+        status,
         queued: Queue::default(),
         run_ended: false,
         looping: None,
@@ -592,7 +620,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     tui.write_out(opening);
     tui.seed_history();
     tui.welcome();
-    for problem in [theme_problem, key_problem, images_problem].into_iter().flatten() {
+    let problems = [theme_problem, key_problem, images_problem].into_iter().flatten();
+    for problem in problems.chain(status_problems) {
         tui.warn(&problem);
     }
     tui.backend.started().await;
@@ -769,6 +798,8 @@ impl Tui {
             self.show_next_request();
             self.follow_terminals();
             self.voice_tick();
+            self.feed_status();
+            self.fold_strip();
             if let Err(e) = self.draw() {
                 tracing::error!("terminal write failed: {e}");
                 break;
@@ -776,6 +807,8 @@ impl Tui {
             let popup_deadline = self.popup_deadline();
             let loop_deadline = self.loop_deadline();
             let resize_deadline = self.resize.deadline();
+            let status_deadline = self.status_deadline();
+            let strip_deadline = self.strip_deadline();
             tokio::select! {
                 event = next_terminal(&mut self.terminal) => match event {
                     Some(Ok(event)) => self.on_terminal(event).await,
@@ -814,6 +847,10 @@ impl Tui {
                 _ = wake_at(popup_deadline) => {}
                 // The window has stopped changing size: the frame at its new size is due.
                 _ = wake_at(resize_deadline) => {}
+                // The clock of the status line moved on, or its program may run again.
+                _ = wake_at(status_deadline) => {}
+                // The models the cycling keys step through have been shown long enough.
+                _ = wake_at(strip_deadline) => {}
                 // The next round of a `/loop` is due.
                 _ = wake_at(loop_deadline) => self.loop_tick().await,
                 // A program in a terminal drew something, or started, or ended.
@@ -900,32 +937,6 @@ impl Tui {
             viewport,
             cursor: cursor.map(|(row, column)| (row + offset, column)),
         })
-    }
-
-    /// Session facts on the left, the model and its thinking level against the right edge.
-    fn status_line(&self, width: usize) -> Line {
-        let status = self.backend.status();
-        let facts = self.backend.facts();
-        let cwd = statusline::display_path(&self.backend.cwd(), std::env::home_dir().as_deref());
-        let model = self.model_label();
-        statusline::StatusLine {
-            mode: self.backend.mode(),
-            coordinator: facts.coordinator,
-            branch: self.branch.as_deref(),
-            cwd: &cwd,
-            context: (status.context_tokens * 100).checked_div(status.context_window),
-            rate: self.rate.current(Instant::now()),
-            busy: self.busy,
-            cost: status.usage.cost_usd,
-            warn_cost: self.env.config.limits.warn_cost_usd,
-            billing: &facts.billing,
-            agents: self.active_agents(),
-            goal: facts.goal.as_deref(),
-            model: &model,
-            tier: facts.tier.map(crate::routing::tier_word),
-            thinking: &status.thinking.to_string(),
-        }
-        .render(width, &self.theme)
     }
 
     /// How the working indicator moves, as `tui.indicator` says.
@@ -1054,6 +1065,7 @@ impl Tui {
             if let Some(notice) = &self.notice {
                 bottom.extend(view::notice(notice, width, &self.theme));
             }
+            bottom.extend(self.strip_line(width));
             bottom.extend(self.waiting_lines(width));
             bottom.extend(self.terminal_lines(width));
             let rule = self.rule_role();
@@ -1310,8 +1322,9 @@ impl Tui {
         self.tools.clear();
         self.stream = StreamView::default();
         self.rate.abandon();
-        // The agent may have switched branches.
+        // The agent may have switched branches, and has probably changed files.
         self.branch = self.backend.branch();
+        self.status.files_changed();
         if let Some(chain) = self.restore_chain.take() {
             self.backend.set_chain(chain);
         }
@@ -1366,6 +1379,8 @@ impl Tui {
             Internal::Clipboard(clip) => return self.on_clipboard(clip),
             Internal::ClipboardText(text) => return self.on_clipboard_text(text),
             Internal::Migrate(step) => return self.on_migrate(step).await,
+            Internal::StatusCommand(line) => return self.on_status_command(line),
+            Internal::ChangedFiles(changed) => return self.on_changed_files(changed),
             Internal::Command(outcome) => {
                 return match outcome {
                     CommandOutcome::Done => {}
@@ -1379,6 +1394,7 @@ impl Tui {
         };
         self.notice = None;
         self.branch = self.backend.branch();
+        self.status.files_changed();
         let shown: Vec<&str> = output.lines().collect();
         let from = shown.len().saturating_sub(40);
         let mut display = shown[from..].join("\n");
@@ -1592,6 +1608,8 @@ impl Tui {
     async fn on_key(&mut self, key: KeyEvent) {
         self.notice = None;
         self.run_failed = false;
+        // Another step of the cycle shows it again.
+        self.strip = None;
         if self.voice_key(&key) {
             return;
         }
@@ -1601,6 +1619,11 @@ impl Tui {
                 return self.external_editor().await;
             }
             let outcome = overlay.on_key(&key);
+            // `/statusline` shows on the line itself what is being chosen.
+            if let overlay::Kind::Status(editor) = &overlay.kind {
+                let trying = editor.config();
+                self.set_statusline(trying, false);
+            }
             if let Outcome::Hotkey { index, key } = outcome {
                 return self.overlay_hotkey(index, key).await;
             }
@@ -1964,7 +1987,13 @@ impl Tui {
         let Overlay { action, kind, .. } = overlay;
         let (choice, typed) = match outcome {
             Outcome::Pending => return,
-            Outcome::Cancelled => return action.cancel(),
+            Outcome::Cancelled => {
+                // The status line goes back to what it was before `/statusline` tried others on.
+                if let overlay::Kind::Status(editor) = kind {
+                    self.set_statusline(editor.before(), false);
+                }
+                return action.cancel();
+            }
             Outcome::Chosen(index) => (index, String::new()),
             Outcome::Text(typed) => (0, typed),
             // The answers of a form go to whoever asked.
@@ -2024,6 +2053,11 @@ impl Tui {
             Action::Model(specs) => {
                 if let Some(spec) = specs.get(choice) {
                     self.set_model(&[spec.as_str()]).await;
+                }
+            }
+            Action::Statusline => {
+                if let overlay::Kind::Status(editor) = kind {
+                    self.save_statusline(editor.config());
                 }
             }
             Action::Thinking => {
@@ -2214,6 +2248,9 @@ impl Tui {
         let texts: Vec<String> = specs.iter().map(|s| s.to_string()).collect();
         match self.backend.set_model(&texts).await {
             Ok(chain) => {
+                if let [only] = chain.as_slice() {
+                    self.remember_model(&only.to_string());
+                }
                 let label = chain
                     .iter()
                     .map(ModelSpec::to_string)

@@ -921,7 +921,12 @@ impl App {
                 chain
             }
             (only, false) => {
-                let lists = known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
+                let lists = known_and_usable(
+                    provider_ids.clone(),
+                    &endpoints,
+                    &credentials,
+                    cli.api_key.is_some(),
+                );
                 let (known, usable) = only_provider(lists, only.as_deref());
                 let chain = crate::models::resolve_specs(&cli.model, router.catalog(), &known, &usable)
                     .map_err(|why| UsageError(provider_note(why, only.as_deref())))?;
@@ -929,6 +934,17 @@ impl App {
                 chain
             }
         };
+        // `--models` names what the model-cycling keys step through in this run, in the words
+        // `--model` takes.
+        if !cli.models.is_empty() {
+            let only = cli.provider.as_deref();
+            let lists = known_and_usable(provider_ids, &endpoints, &credentials, cli.api_key.is_some());
+            let (known, usable) = only_provider(lists, only);
+            config.tui.favourites =
+                crate::models::resolve_specs(&cli.models, router.catalog(), &known, &usable).map_err(
+                    |why| UsageError(provider_note(why.replacen("--model ", "--models ", 1), only)),
+                )?;
+        }
         let chosen = !cli.model.is_empty() || cli.provider.is_some();
         if chosen && chain.iter().all(|spec| matches!(spec, ModelSpec::Model(_))) {
             config.roles.insert("default".to_string(), chain.clone());

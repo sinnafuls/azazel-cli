@@ -101,6 +101,11 @@ pub(crate) struct Facts {
     /// What a run is waiting for while its account is out of allowance, and the Unix seconds
     /// at which the wait is over.
     pub waiting: Option<(String, u64)>,
+    /// The stored account of the lead's provider that requests go out with: a sign-in or a
+    /// stored key. None for a key from elsewhere.
+    pub account: Option<String>,
+    /// The e-mail address that account signed in with, as `usage.redact_email` shows it.
+    pub account_email: Option<String>,
 }
 
 /// How the lead's model is paid for, which decides what the status line says about money.
@@ -115,10 +120,9 @@ pub(crate) enum Billing {
     Subscription { window: Option<(String, f32)> },
 }
 
-/// The account of `provider` whose sign-in the next request would use; `None` when the
-/// request would carry an API key (from a flag, the environment, a command, the configuration
-/// or the credential store) or no credential at all.
-pub(crate) fn login_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<String> {
+/// The stored account of `provider` the next request would use, a sign-in or a stored key;
+/// `None` when the credential comes from elsewhere or there is none.
+fn account_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<azazel_ai::Account> {
     // Anything that is not in the credential store is a key and wins over what is stored.
     let stored = credentials
         .source(provider)
@@ -127,16 +131,50 @@ pub(crate) fn login_in_use(credentials: &Credentials, provider: &ProviderConfig)
     credentials
         .accounts(&provider.id)
         .into_iter()
-        .find(|account| account.label == label && account.login)
-        .map(|account| account.label)
+        .find(|account| account.label == label)
+}
+
+/// The roles the cycling keys step through when there are no favourites, as `@role`: those of
+/// `roles` that answer with a model (each comes with the models it resolves to), `default`,
+/// `smol` and `slow` first and the others by name. A role that answers with the same models as
+/// one before it is left out: a step onto it would change nothing.
+pub(crate) fn cycle_of(mut roles: Vec<(String, Vec<String>)>) -> Vec<String> {
+    const FIRST: [&str; 3] = ["default", "smol", "slow"];
+    let rank = |role: &str| {
+        FIRST
+            .iter()
+            .position(|first| *first == role)
+            .unwrap_or(FIRST.len())
+    };
+    roles.sort_by(|(a, _), (b, _)| rank(a).cmp(&rank(b)).then_with(|| a.cmp(b)));
+    let mut seen: Vec<Vec<String>> = Vec::new();
+    let mut cycle = Vec::new();
+    for (role, models) in roles {
+        if models.is_empty() || seen.contains(&models) {
+            continue;
+        }
+        seen.push(models);
+        cycle.push(format!("@{role}"));
+    }
+    cycle
+}
+
+/// The stored account requests go out with.
+#[derive(Clone)]
+struct InUse {
+    label: String,
+    /// A sign-in: a subscription.
+    login: bool,
+    /// Its e-mail address, as it is shown.
+    email: Option<String>,
 }
 
 /// Who pays for a provider, as it was last looked up.
 struct Payer {
     provider: String,
     asked: Instant,
-    /// The account signed in to, when it is a subscription.
-    login: Option<String>,
+    /// The stored account in use.
+    account: Option<InUse>,
 }
 
 /// The answer is read from files: often enough to follow a sign-in, not on every frame.
@@ -200,6 +238,20 @@ pub(crate) trait Backend: Send {
 
     /// Whether `spec` names a model the session can use.
     fn resolves(&self, spec: &str) -> bool;
+
+    /// The roles that were given models, as `@role`: what the cycling keys step through when
+    /// there are no favourites.
+    fn cycle_roles(&self) -> Vec<String>;
+
+    /// Where the lead is in `cycle`: the entry it was put on.
+    fn place_in(&self, cycle: &[String]) -> Option<usize> {
+        let chain = self.status().chain;
+        let [only] = chain.as_slice() else {
+            return None;
+        };
+        let current = only.to_string();
+        cycle.iter().position(|spec| *spec == current)
+    }
 
     /// What the open session holds, to read. Changes go through the methods below.
     async fn session(&mut self) -> Arc<SessionStore>;
@@ -357,44 +409,55 @@ impl Local {
         *self.payer.lock().unwrap_or_else(PoisonError::into_inner) = None;
     }
 
-    /// How the lead's model is paid for: a subscription with its fullest usage window, or by
-    /// the token.
-    fn billing(&self) -> Billing {
+    /// How the lead's model is paid for (a subscription with its fullest usage window, or by
+    /// the token), and the stored account that pays: its label and its e-mail address.
+    fn billing(&self) -> (Billing, Option<String>, Option<String>) {
         let status = self.active.lead.status();
         let Some(model) = status
             .model
             .or_else(|| self.app.router.resolve(&status.chain).into_iter().next())
         else {
-            return Billing::Metered;
+            return (Billing::Metered, None, None);
         };
         let (provider, model) = (model.provider, model.model);
         let mut payer = self.payer.lock().unwrap_or_else(PoisonError::into_inner);
         let known = payer
             .as_ref()
             .filter(|payer| payer.provider == provider && payer.asked.elapsed() < PAYER_FRESH);
-        let login = match known {
-            Some(payer) => payer.login.clone(),
+        let account = match known {
+            Some(payer) => payer.account.clone(),
             None => {
                 let providers = self
                     .providers
                     .get_or_init(|| presets::resolve(&self.app.config.providers).unwrap_or_default());
-                let login = providers
+                let account = providers
                     .iter()
                     .find(|config| config.id == provider)
-                    .and_then(|config| login_in_use(&self.app.credentials, config));
+                    .and_then(|config| account_in_use(&self.app.credentials, config))
+                    .map(|account| InUse {
+                        email: crate::usage::shown_email(&account, self.app.config.usage.redact_email),
+                        label: account.label,
+                        login: account.login,
+                    });
                 *payer = Some(Payer {
                     provider: provider.clone(),
                     asked: Instant::now(),
-                    login: login.clone(),
+                    account: account.clone(),
                 });
-                login
+                account
             }
         };
-        match login {
-            Some(account) => Billing::Subscription {
-                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, &account), &model),
+        let billing = match &account {
+            Some(InUse {
+                label, login: true, ..
+            }) => Billing::Subscription {
+                window: crate::usage::fullest(&self.app.router.limits().windows(&provider, label), &model),
             },
-            None => Billing::Metered,
+            _ => Billing::Metered,
+        };
+        match account {
+            Some(account) => (billing, Some(account.label), account.email),
+            None => (billing, None, None),
         }
     }
 
@@ -510,6 +573,7 @@ impl Backend for Local {
 
     fn facts(&self) -> Facts {
         let services = &self.app.registry.services;
+        let (billing, account, account_email) = self.billing();
         Facts {
             coordinator: self.app.coordinator.is_on(),
             tier: self.app.router.tier(),
@@ -522,10 +586,12 @@ impl Backend for Local {
                 .get::<TodoStore>()
                 .map(|store| store.get(&self.active.lead.id))
                 .unwrap_or_default(),
-            billing: self.billing(),
+            billing,
             waiting: services
                 .get::<crate::resets::Waits>()
                 .and_then(|waits| waits.current()),
+            account,
+            account_email,
         }
     }
 
@@ -569,6 +635,33 @@ impl Backend for Local {
     fn resolves(&self, spec: &str) -> bool {
         spec.parse::<ModelSpec>()
             .is_ok_and(|spec| !self.app.router.resolve(&[spec]).is_empty())
+    }
+
+    fn cycle_roles(&self) -> Vec<String> {
+        let router = &self.app.router;
+        let roles = router.roles().into_keys().map(|role| {
+            let models = router.resolve(&[ModelSpec::Role(role.clone())]);
+            (role, models.iter().map(ToString::to_string).collect())
+        });
+        cycle_of(roles.collect())
+    }
+
+    /// The entry the lead was put on, or else the first one that answers with the model the
+    /// lead answers with: a lead on `@default` is on the favourite that names its model.
+    fn place_in(&self, cycle: &[String]) -> Option<usize> {
+        let chain = self.active.lead.status().chain;
+        if let [only] = chain.as_slice() {
+            let current = only.to_string();
+            if let Some(at) = cycle.iter().position(|spec| *spec == current) {
+                return Some(at);
+            }
+        }
+        let router = &self.app.router;
+        let answers = router.resolve(&chain).into_iter().next()?;
+        cycle.iter().position(|spec| {
+            spec.parse::<ModelSpec>()
+                .is_ok_and(|spec| router.resolve(&[spec]).first() == Some(&answers))
+        })
     }
 
     async fn session(&mut self) -> Arc<SessionStore> {
@@ -955,6 +1048,41 @@ mod tests {
         }
     }
 
+    #[test]
+    fn the_roles_to_step_through_are_those_that_answer_with_models_of_their_own() {
+        let role = |name: &str, models: &[&str]| {
+            (
+                name.to_string(),
+                models
+                    .iter()
+                    .map(|model| (*model).to_string())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let cycle = cycle_of(vec![
+            role("commit", &["mock/small"]),
+            role("default", &["mock/lead", "mock/spare"]),
+            role("lead", &["mock/lead", "mock/spare"]),
+            role("plan", &["mock/lead"]),
+            role("slow", &["mock/deep"]),
+            role("smol", &["mock/small"]),
+            role("vision", &[]),
+        ]);
+        // `default`, `smol` and `slow` come first, the others by name. `commit` and `lead`
+        // answer with what `smol` and `default` answer with, and `vision` with nothing.
+        assert_eq!(cycle, ["@default", "@smol", "@slow", "@plan"]);
+        assert_eq!(cycle_of(Vec::new()), Vec::<String>::new());
+    }
+
+    /// The account of `provider` whose sign-in the next request would use; `None` when the
+    /// request would carry an API key (from a flag, the environment, a command, the
+    /// configuration or the credential store) or no credential at all.
+    fn login_in_use(credentials: &Credentials, provider: &ProviderConfig) -> Option<String> {
+        account_in_use(credentials, provider)
+            .filter(|account| account.login)
+            .map(|account| account.label)
+    }
+
     fn credentials(dir: &std::path::Path, env: &'static [(&'static str, &'static str)]) -> Credentials {
         Credentials::with_env(
             dir.join("auth.json"),
@@ -997,6 +1125,11 @@ mod tests {
         let keyed = credentials(other.path(), &[]);
         keyed.store("anthropic", key()).unwrap();
         assert_eq!(login_in_use(&keyed, &anthropic), None);
+        // It is an account all the same: the `account` segment names it.
+        let account = account_in_use(&keyed, &anthropic).unwrap();
+        assert_eq!((account.label.as_str(), account.login), ("default", false));
+        // A key from elsewhere belongs to no stored account.
+        assert!(account_in_use(&with_key, &anthropic).is_none());
     }
 
     #[test]

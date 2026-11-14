@@ -197,7 +197,7 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
         ("agent_hub", vec![alt(KeyCode::Char('a'))]),
         ("toggle_tool_output", vec![ctrl('o')]),
         ("toggle_thinking", vec![ctrl('t')]),
-        ("model_picker", vec![ctrl('l')]),
+        ("model_picker", vec![ctrl('l'), alt(KeyCode::Char('p'))]),
         ("history_search", vec![ctrl('r')]),
         // Windows Terminal and others paste with `ctrl+v` themselves, and with an image on the
         // clipboard that pastes nothing: `alt+v` reaches azazel there.
@@ -217,13 +217,16 @@ fn default_bindings() -> Vec<(&'static str, Vec<KeyCombo>)> {
         ),
         ("stash", vec![ctrl('s')]),
         ("cycle_thinking", vec![alt(KeyCode::Char('t'))]),
-        ("cycle_model", vec![alt(KeyCode::Char('m'))]),
+        ("cycle_model", vec![ctrl('p'), alt(KeyCode::Char('m'))]),
+        // A terminal without the enhanced key reports sends `ctrl+shift+p` as `ctrl+p`, and
+        // several terminals keep it for their command palette: `alt+shift+p` always arrives.
         (
             "cycle_model_back",
-            vec![KeyCombo::new(
-                KeyCode::Char('m'),
-                KeyModifiers::ALT | KeyModifiers::SHIFT,
-            )],
+            vec![
+                KeyCombo::new(KeyCode::Char('p'), KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+                KeyCombo::new(KeyCode::Char('p'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+                KeyCombo::new(KeyCode::Char('m'), KeyModifiers::ALT | KeyModifiers::SHIFT),
+            ],
         ),
         ("transcript", vec![plain(KeyCode::F(2))]),
         ("retry", vec![plain(KeyCode::F(5))]),
@@ -552,7 +555,7 @@ mod tests {
             ("agent_hub", &["alt+a"]),
             ("toggle_tool_output", &["ctrl+o"]),
             ("toggle_thinking", &["ctrl+t"]),
-            ("model_picker", &["ctrl+l"]),
+            ("model_picker", &["ctrl+l", "alt+p"]),
             ("history_search", &["ctrl+r"]),
             ("paste_image", &["ctrl+v", "alt+v"]),
             ("paste_text", &["ctrl+shift+v", "alt+shift+v"]),
@@ -561,8 +564,11 @@ mod tests {
             ("dequeue", &["alt+up", "shift+up"]),
             ("stash", &["ctrl+s"]),
             ("cycle_thinking", &["alt+t"]),
-            ("cycle_model", &["alt+m"]),
-            ("cycle_model_back", &["alt+shift+m"]),
+            ("cycle_model", &["ctrl+p", "alt+m"]),
+            (
+                "cycle_model_back",
+                &["ctrl+shift+p", "alt+shift+p", "alt+shift+m"],
+            ),
             ("transcript", &["f2"]),
             ("retry", &["f5"]),
             ("background", &["ctrl+b"]),
