@@ -421,6 +421,9 @@ config_table!(UpdateConfig {
 config_table!(SessionConfig {
     /// Ask a small model for a session title after the first reply.
     auto_name: bool = true,
+    /// What the interactive UI opens when no session is named: a new one, or the project's
+    /// most recent one, as `-c` does.
+    resume: SessionResume = SessionResume::New,
     /// Sessions not used for this many days are deleted at start; 0 keeps everything.
     retention_days: u32 = 0,
     /// A resumed session starts on the model and thinking level it last used.
@@ -558,6 +561,7 @@ config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "i
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
+config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
 config_enum!(QueueMode { One = "one", All = "all" } default One);

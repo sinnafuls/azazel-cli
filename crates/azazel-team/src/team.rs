@@ -11,7 +11,7 @@ use azazel_agent::{
     Agent, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, ArtifactSink, CompactionSettings,
     Gate, Limits, Services, Tool, ToolSource, UserInput,
 };
-use azazel_ai::{ModelSpec, Router, StopReason, ThinkingLevel};
+use azazel_ai::{ModelSpec, Router, StopReason};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
 use azazel_core::transcript::activity;
 use azazel_core::{
@@ -476,7 +476,7 @@ impl Inner {
             system,
             tools,
             chain,
-            thinking: def.thinking.unwrap_or(ThinkingLevel::Off),
+            thinking: def.thinking,
             router: deps.router.clone(),
             gate: self.gate.clone(),
             bus: deps.hooks.clone(),

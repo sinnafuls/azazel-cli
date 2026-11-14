@@ -356,17 +356,18 @@ pub(super) fn mention(path: &Path, cwd: &Path) -> String {
     }
 }
 
-/// The level after `current` among those `supported`, wrapping around. `off` is always one of
-/// them; a model that says nothing about its levels is offered every level.
+/// The levels a model that takes `supported` is offered, lowest first: `off` is always one of
+/// them, and a model that says nothing about its levels is offered every level.
+pub(super) fn offered_thinking(supported: &[ThinkingLevel]) -> Vec<ThinkingLevel> {
+    ThinkingLevel::ALL
+        .into_iter()
+        .filter(|level| supported.is_empty() || *level == ThinkingLevel::Off || supported.contains(level))
+        .collect()
+}
+
+/// The level after `current` among those offered (see [`offered_thinking`]), wrapping around.
 pub(super) fn next_thinking(current: ThinkingLevel, supported: &[ThinkingLevel]) -> ThinkingLevel {
-    let levels: Vec<ThinkingLevel> = if supported.is_empty() {
-        ThinkingLevel::ALL.to_vec()
-    } else {
-        ThinkingLevel::ALL
-            .into_iter()
-            .filter(|level| *level == ThinkingLevel::Off || supported.contains(level))
-            .collect()
-    };
+    let levels = offered_thinking(supported);
     let at = levels.iter().position(|level| *level >= current).unwrap_or(0);
     if levels.get(at) == Some(&current) {
         levels[(at + 1) % levels.len()]

@@ -12,7 +12,7 @@ use azazel_agent::{
     Agent, AgentConfig, AgentEvent, AgentHandle, AgentInfo, CompactionSettings, Limits, Services, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
-use azazel_ai::{Block, Catalog, Provider, RetryPolicy, Router, ThinkingLevel};
+use azazel_ai::{Block, Catalog, Provider, RetryPolicy, Router};
 use azazel_core::agents::{DefSource, discover};
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
@@ -156,7 +156,7 @@ impl Bench {
             info,
             tools: registry.tools.clone(),
             chain: vec!["mock/lead".parse().unwrap()],
-            thinking: ThinkingLevel::Off,
+            thinking: None,
             router,
             gate: Arc::new(gate),
             bus: registry.agent_hooks(),

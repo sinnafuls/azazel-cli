@@ -72,7 +72,8 @@ pub enum AgentCmd {
     Resume(Resume),
     Abort,
     SetModel(Vec<ModelSpec>),
-    SetThinking(ThinkingLevel),
+    /// The thinking level for the session; `None` goes back to the `:level` of the model.
+    SetThinking(Option<ThinkingLevel>),
     Compact {
         instructions: Option<String>,
     },

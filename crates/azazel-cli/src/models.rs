@@ -131,25 +131,105 @@ pub fn listed<'a>(
     models
 }
 
-fn model_line(m: &ModelInfo) -> String {
-    let price = m.cost.as_ref().map(price).unwrap_or_else(|| "-".to_string());
-    format!(
-        "{:<44} {:>9} {:>9}  {:<6} {:<8} {price}",
-        format!("{}/{}", m.provider, m.id),
+/// Whether `provider` is used through a sign-in (a subscription), not paid for by the token:
+/// the credential it would be asked with is a stored login, not a key from the flags, the
+/// environment or the configuration.
+pub fn login(credentials: &Credentials, provider: &ProviderConfig) -> bool {
+    let Some(label) = credentials.selected(&provider.id) else {
+        return false;
+    };
+    let keyed_elsewhere = credentials
+        .source(provider)
+        .is_none_or(|source| !source.starts_with("auth.json"));
+    !keyed_elsewhere
+        && credentials
+            .accounts(&provider.id)
+            .iter()
+            .any(|account| account.label == label && account.login)
+}
+
+/// The cells of one row of `azazel models`: model, context, out, price, thinking, vision and
+/// the roles that answer with it.
+fn model_cells(m: &ModelInfo, login: bool, roles: &[String]) -> [String; 7] {
+    let price = match (login, m.cost.as_ref()) {
+        (true, _) => "subscription".to_string(),
+        (false, Some(cost)) if cost.input == 0.0 && cost.output == 0.0 => "free".to_string(),
+        (false, Some(cost)) => price(cost),
+        (false, None) => "-".to_string(),
+    };
+    let thinking = match (m.reasoning, m.thinking_levels.is_empty()) {
+        (false, _) => "-".to_string(),
+        (true, true) => "yes".to_string(),
+        (true, false) => m
+            .thinking_levels
+            .iter()
+            .filter(|level| **level != azazel_ai::ThinkingLevel::Off)
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" "),
+    };
+    let or_dash = |text: String| if text.is_empty() { "-".to_string() } else { text };
+    [
+        m.key(),
         compact(m.context_window),
         compact(u64::from(m.max_output)),
-        if m.vision { "vision" } else { "" },
-        if m.reasoning { "thinking" } else { "" },
-    )
+        price,
+        or_dash(thinking),
+        if m.vision { "yes" } else { "-" }.to_string(),
+        or_dash(roles.join(", ")),
+    ]
+}
+
+/// The rows of `azazel models` under one heading per provider, the columns lined up across
+/// all of them.
+fn model_table(groups: &[(String, Vec<[String; 7]>)]) -> String {
+    const HEAD: [&str; 7] = [
+        "model", "context", "out", "price", "thinking", "vision", "used by",
+    ];
+    // Numbers are right-aligned, words left.
+    const RIGHT: [bool; 7] = [false, true, true, false, false, false, false];
+    let mut widths = HEAD.map(|head| head.chars().count());
+    for row in groups.iter().flat_map(|(_, rows)| rows) {
+        for (width, cell) in widths.iter_mut().zip(row) {
+            *width = (*width).max(cell.chars().count());
+        }
+    }
+    let line = |cells: [&str; 7]| {
+        let text: Vec<String> = cells
+            .iter()
+            .zip(widths)
+            .zip(RIGHT)
+            .map(|((cell, width), right)| match right {
+                true => format!("{cell:>width$}"),
+                false => format!("{cell:<width$}"),
+            })
+            .collect();
+        format!("  {}\n", text.join("  ").trim_end())
+    };
+    let mut out = String::new();
+    for (index, (heading, rows)) in groups.iter().enumerate() {
+        if index > 0 {
+            out.push('\n');
+        }
+        out.push_str(heading);
+        out.push('\n');
+        out.push_str(&line(HEAD));
+        for row in rows {
+            out.push_str(&line(row.each_ref().map(String::as_str)));
+        }
+    }
+    out
 }
 
 pub(crate) fn model_json(m: &ModelInfo) -> Value {
     json!({
         "model": format!("{}/{}", m.provider, m.id),
+        "name": m.name,
         "context_window": m.context_window,
         "max_output": m.max_output,
         "vision": m.vision,
         "reasoning": m.reasoning,
+        "thinking_levels": m.thinking_levels,
         "cost": m.cost.map(|c| json!({ "input": c.input, "output": c.output })),
     })
 }
@@ -174,11 +254,26 @@ pub fn trim(number: f64) -> String {
     text.trim_end_matches('0').trim_end_matches('.').to_string()
 }
 
-/// `azazel models`: one line (or JSON object) per model.
+/// The roles that answer with each model first, by `provider/id`, in the order `roles` lists
+/// them.
+pub fn used_by(roles: &[azazel_protocol::RoleRow]) -> BTreeMap<String, Vec<String>> {
+    let mut used: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for row in roles {
+        if let Some(ModelSpec::Model(model)) = row.resolved.first().and_then(|text| text.parse().ok()) {
+            used.entry(model.key()).or_default().push(row.role.clone());
+        }
+    }
+    used
+}
+
+/// `azazel models`: the models under a heading per provider (or one JSON object per model),
+/// with the roles that use each.
+#[expect(clippy::too_many_arguments, reason = "the flags of the command, one by one")]
 pub fn run_models(
     catalog: &Catalog,
     providers: &[ProviderConfig],
     credentials: &Credentials,
+    roles: &[azazel_protocol::RoleRow],
     query: Option<&str>,
     provider: Option<&str>,
     all: bool,
@@ -191,12 +286,41 @@ pub fn run_models(
         return EXIT_FAILED;
     }
     let models = listed(catalog, providers, credentials, query, provider, all);
-    for m in &models {
-        if json {
-            println!("{}", model_json(m));
-        } else {
-            println!("{}", model_line(m));
+    let used = used_by(roles);
+    let none = Vec::new();
+    let mut groups: Vec<(String, Vec<[String; 7]>)> = Vec::new();
+    for p in providers {
+        let mine: Vec<&&ModelInfo> = models.iter().filter(|m| m.provider == p.id).collect();
+        if mine.is_empty() {
+            continue;
         }
+        let usable = usable(credentials, p);
+        let subscription = usable && login(credentials, p);
+        if json {
+            for m in mine {
+                let mut row = model_json(m);
+                row["roles"] = json!(used.get(&m.key()).unwrap_or(&none));
+                row["login"] = json!(subscription);
+                row["usable"] = json!(usable);
+                println!("{row}");
+            }
+            continue;
+        }
+        let credential = match (usable, subscription, credentials.source(p)) {
+            (false, _, _) => "no credential".to_string(),
+            (true, true, _) => "subscription".to_string(),
+            (true, false, Some(source)) => source,
+            (true, false, None) => "no key needed".to_string(),
+        };
+        let heading = format!("{} · {credential}", p.id);
+        let rows = mine
+            .into_iter()
+            .map(|m| model_cells(m, subscription, used.get(&m.key()).unwrap_or(&none)))
+            .collect();
+        groups.push((heading, rows));
+    }
+    if !json {
+        print!("{}", model_table(&groups));
     }
     if models.is_empty() && !json {
         eprintln!(
@@ -394,11 +518,83 @@ mod tests {
             )),
             ["claude-fable-5"]
         );
-        let line = model_line(&catalog.get("openai", "gpt-6-sol"));
-        assert!(
-            line.starts_with("openai/gpt-6-sol") && line.contains("128k"),
-            "{line}"
+    }
+
+    #[test]
+    fn the_listing_has_a_heading_per_provider_and_says_which_roles_use_a_model() {
+        use azazel_ai::{Cost, ThinkingLevel};
+        let thinker = ModelInfo {
+            name: Some("Big".into()),
+            context_window: 200_000,
+            max_output: 64_000,
+            vision: true,
+            reasoning: true,
+            thinking_levels: vec![ThinkingLevel::Off, ThinkingLevel::Low, ThinkingLevel::High],
+            cost: Some(Cost {
+                input: 3.0,
+                output: 15.0,
+                cache_read: 0.3,
+                cache_write: 3.75,
+            }),
+            ..ModelInfo::unknown("a", "big")
+        };
+        let plain = ModelInfo {
+            context_window: 1_000_000,
+            max_output: 8_000,
+            cost: Some(Cost {
+                input: 0.0,
+                output: 0.0,
+                cache_read: 0.0,
+                cache_write: 0.0,
+            }),
+            ..ModelInfo::unknown("b", "small-free")
+        };
+        let roles = ["default".to_string(), "smol".to_string()];
+        let table = model_table(&[
+            (
+                "a · env A_KEY".to_string(),
+                vec![model_cells(&thinker, false, &roles)],
+            ),
+            (
+                "b · subscription".to_string(),
+                vec![model_cells(&plain, true, &[])],
+            ),
+        ]);
+        assert_eq!(
+            table.lines().collect::<Vec<_>>(),
+            [
+                "a · env A_KEY",
+                "  model         context  out  price         thinking  vision  used by",
+                "  a/big            200k  64k  $3/$15        low high  yes     default, smol",
+                "",
+                "b · subscription",
+                "  model         context  out  price         thinking  vision  used by",
+                "  b/small-free       1M   8k  subscription  -         -       -",
+            ]
         );
+        assert_eq!(model_cells(&plain, false, &[])[3], "free");
+        let json = model_json(&thinker);
+        assert_eq!(json["thinking_levels"], json!(["off", "low", "high"]));
+        assert_eq!(json["name"], "Big");
+    }
+
+    #[test]
+    fn roles_are_counted_against_the_model_they_answer_with_first() {
+        let row = |role: &str, resolved: &[&str]| azazel_protocol::RoleRow {
+            role: role.into(),
+            chain: Vec::new(),
+            source: azazel_protocol::RoleSource::Builtin,
+            builtin: Vec::new(),
+            resolved: resolved.iter().map(ToString::to_string).collect(),
+            thinking: None,
+        };
+        let used = used_by(&[
+            row("default", &["a/big:high", "b/other"]),
+            row("smol", &["a/big"]),
+            row("vision", &[]),
+        ]);
+        assert_eq!(used.len(), 1);
+        assert_eq!(used["a/big"], ["default", "smol"]);
     }
 
     #[test]

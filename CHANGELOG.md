@@ -13,10 +13,24 @@ GitHub are its section here.
   scrolling work everywhere else. `tui.mouse = false` (or `/settings` → Appearance) leaves the mouse to the
   terminal.
 - RPC: `list_roles`, `set_role`, `save_preset` and `apply_preset` list the model roles with where each value comes from (built-in, home, project, session) and change them for the session or in a config file.
+- `azazel roles` lists every model role with its chain, the model it resolves to, its thinking level and where
+  it is set. `azazel roles set <role> <model> [fallback…] [--thinking LEVEL] [--project]`, `azazel roles clear
+  <role>` and `azazel roles preset save|load <name>` change them in the home or project config; `--json` on each.
+- `[session] resume = "last"` (or `/settings` → Sessions → Open at start) makes the interactive UI open the
+  project's most recent session, as `-c` does; `--new` starts a new one anyway. Print mode is not affected.
 
 ### Changed
 
 - Model lists write a context window of 1.5 million tokens as `1.5M`, not `1500k`.
+- A thinking level chosen for the session (`/thinking`, `Alt+T`, `--thinking`, RPC `set_thinking`, an agent's
+  `thinking`) now wins over the `:level` of the role's model, so `/thinking low` lowers a lead whose role is
+  written `:high`; without one, the role's level applies. The status line and `get_state` show the level
+  requests go out at.
+- `/thinking` offers only `off` and the levels the model takes, starting on the one in use; a typed level the
+  model lacks is set to the nearest one it takes, with a note.
+- `azazel models` heads the models per provider with where its credential comes from (`no credential` with
+  `--all`), and has columns for the price (`subscription`, `free`), the thinking levels, vision and the roles
+  that use each model. `--json` adds `name`, `thinking_levels`, `roles`, `login` and `usable`.
 
 ### Fixed
 

@@ -24,6 +24,7 @@ use crate::cli::Cli;
 /// gets none of them: it opens the session that was open, and nothing is sent.
 const SESSION_OPTIONS: &[&str] = &[
     "resume_latest",
+    "new",
     "session",
     "continue_run",
     "fork",

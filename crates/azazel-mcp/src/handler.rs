@@ -73,6 +73,7 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         messages,
         tools: Vec::new(),
         thinking: Default::default(),
+        thinking_explicit: false,
         max_output: Some(params.max_tokens),
         temperature: params.temperature,
         cache_key: None,

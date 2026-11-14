@@ -63,27 +63,9 @@ impl ModelInfo {
         format!("{}/{}", self.provider, self.id)
     }
 
-    /// The level a request for `wanted` is made at: `wanted` itself when the model accepts it,
-    /// otherwise the nearest accepted level below it, otherwise the lowest one above. `Off`
-    /// stays `Off`: a model is never made to think by asking it not to.
+    /// The level a request for `wanted` is made at (see [`ThinkingLevel::nearest`]).
     pub fn thinking_level(&self, wanted: ThinkingLevel) -> ThinkingLevel {
-        if self.thinking_levels.is_empty()
-            || wanted == ThinkingLevel::Off
-            || self.thinking_levels.contains(&wanted)
-        {
-            return wanted;
-        }
-        let accepted = || {
-            self.thinking_levels
-                .iter()
-                .copied()
-                .filter(|l| *l != ThinkingLevel::Off)
-        };
-        accepted()
-            .filter(|level| *level < wanted)
-            .max()
-            .or_else(|| accepted().min())
-            .unwrap_or(ThinkingLevel::Off)
+        wanted.nearest(&self.thinking_levels)
     }
 }
 

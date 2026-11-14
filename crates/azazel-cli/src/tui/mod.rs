@@ -2218,8 +2218,13 @@ impl Tui {
                 }
             }
             Action::Thinking => {
-                if let Some(level) = azazel_ai::ThinkingLevel::ALL.get(choice) {
-                    self.set_thinking(*level).await;
+                // The list holds the levels the model takes, by name.
+                let picked = match &kind {
+                    overlay::Kind::Select { list, .. } => list.items().get(choice),
+                    _ => None,
+                };
+                if let Some(level) = picked.and_then(|item| item.label.parse().ok()) {
+                    self.set_thinking(level).await;
                 }
             }
             Action::Mode => {

@@ -471,6 +471,7 @@ pub(crate) fn prepare(req: &Request, target: &Target<'_>) -> Request {
         messages: normalize(&req.messages, target),
         tools,
         thinking: target.model.thinking_level(req.thinking),
+        thinking_explicit: req.thinking_explicit,
         max_output: req.max_output,
         temperature: req.temperature,
         cache_key: req.cache_key.clone(),

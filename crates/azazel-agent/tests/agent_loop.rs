@@ -15,7 +15,7 @@ use azazel_agent::{
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
     AiError, Block, Catalog, Message, ModelOverride, ModelSpec, Request, RetryPolicy, Role, Router,
-    StopReason, StreamEvent, ThinkingLevel, Usage,
+    StopReason, StreamEvent, Usage,
 };
 use serde_json::{Value, json};
 use tokio::sync::{Notify, mpsc};
@@ -274,7 +274,7 @@ fn start(setup: Setup) -> Session {
         }],
         tools: Arc::new(setup.tools),
         chain: vec!["mock/a".parse().unwrap()],
-        thinking: ThinkingLevel::Off,
+        thinking: None,
         router,
         gate: setup.gate,
         bus: setup.hooks,
