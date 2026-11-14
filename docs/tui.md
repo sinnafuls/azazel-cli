@@ -177,6 +177,27 @@ A window smaller than 44 columns by 12 rows has no room for a popup: there the s
 input until it is answered. `popups = false` under `[tui]` in [configuration](configuration.md) makes that the
 rule in every window.
 
+#### The mouse in popups
+
+While a popup is open the mouse works in its box; it only does what a key there does.
+
+- In a list, moving over a row sets it apart with a band, a click selects the row, and a click on the selected
+  row picks it, as `Enter` does. A check box ticks at the first click. The wheel moves the selection.
+- In `/settings`, a click on a tab opens its page, a click selects a row and a second click on it acts as
+  `Enter` (flips a switch, opens the editor of a value, saves the option clicked twice in a list of values).
+  The wheel moves the selection.
+- In a form, a click on a tab brings its question into view; the options work as in a list, and a second click
+  on `Other…` opens the line to type on.
+- In `/usage`, which is rows to read, the wheel scrolls.
+- In `/statusline`, a click on a segment turns it on or off and a second click on the preset or the separator
+  steps it.
+
+The terminal reports the mouse to azazel only while a popup or the [transcript viewer](#transcript-viewer) is
+up. Everywhere else, and in the box that takes the place of the input in a small window, the terminal's own
+selection and scrolling work as usual; when a popup closes, or azazel hands the terminal to your editor or
+ends, reporting is turned off. In a popup, most terminals still select text with `Shift` held down.
+`mouse = false` under `[tui]` leaves the mouse to the terminal at all times.
+
 ### Terminals
 
 When an agent starts a program in a terminal (`shell` with `interactive`; see
@@ -1124,9 +1145,9 @@ while the viewer is open; if it needs you, the last row says so and the request 
 `F2` or `/transcript` opens the conversation of the current branch full screen: your prompts, the replies, tool
 calls with their results as full cards, and thinking when it is shown in the transcript. What looks like a
 secret is [hidden](#hiding-secrets) here as in the cards. It uses the terminal's alternate
-screen, so the scrollback is as you left it when you return. This is the only place where azazel takes the
-mouse: the wheel scrolls here, and text selection with the mouse works everywhere else as usual. The same
-viewer shows the text of a [popup](#popups) that is too long for its box (`Ctrl+O`).
+screen, so the scrollback is as you left it when you return. Like a [popup](#the-mouse-in-popups) it takes
+the mouse while it is open (unless `tui.mouse` is off): the wheel scrolls here, and text selection with the
+mouse works everywhere outside the two as usual. The same viewer shows the text of a [popup](#popups) that is too long for its box (`Ctrl+O`).
 
 | Key | Effect |
 |---|---|
@@ -1277,7 +1298,7 @@ With the feature:
 |---|---|
 | Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
 | Models | The default model and the model of every role, favourite models\*, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
-| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
+| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, the mouse in popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
 | Status line | Preset\*, left and right segments\*, separator\*, segment options\*, command\*; [`/statusline`](#setting-it-up) sets the same line up with the segments in a list |
 | Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
 | Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |

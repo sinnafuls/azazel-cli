@@ -259,6 +259,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[tui]` | `theme` | `"dark"` | A built-in theme (`auto`, `dark`, `light`, `catppuccin`, `dracula`, `nord`, `solarized`, `github`, …) or a file in `~/.azazel/themes/`. A built-in theme with a dark and a light palette follows the terminal's background (`auto` is `light` or `dark`); `<name>-dark` and `<name>-light` pin one; see [the terminal UI](tui.md#themes) |
 | | `glyphs` | `"auto"` | Symbols the UI draws with: `unicode`, `nerd` (needs a Nerd Font) or `ascii`; `auto` is `unicode` unless the locale is not UTF-8. `AZAZEL_GLYPHS` overrides it |
 | | `popups` | `true` | Menus, pickers and questions open as a box in the middle of the window |
+| | `mouse` | `true` | Click, hover and scroll in a popup; see [the mouse in popups](tui.md#the-mouse-in-popups). `false` leaves the mouse to the terminal at all times |
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
 | | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing. A running tool is always named |
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |

@@ -63,15 +63,16 @@ use azazel_tui::components::{
     composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo, tool_card,
 };
 use azazel_tui::modal;
-use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON};
+use azazel_tui::mouse::Mouse;
+use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON, MouseCapture};
 use azazel_tui::{
     Atom, ColorDepth, Composer, Draft, Editor, Floor, Frame, Glyph, GlyphLevel, HistoryItem, Keymap, Line,
     Renderer, Role, SelectItem, SelectList, Spinner, StreamingMarkdown, Theme, TodoState, Vim,
     disable_enhanced_keys, enable_enhanced_keys, text,
 };
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event, EventStream,
-    KeyCode, KeyEvent, KeyEventKind,
+    DisableBracketedPaste, EnableBracketedPaste, Event, EventStream, KeyCode, KeyEvent, KeyEventKind,
+    MouseEvent, MouseEventKind,
 };
 use crossterm::terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode};
 use futures::StreamExt;
@@ -107,8 +108,9 @@ struct TerminalGuard {
     active: bool,
     /// The alternate screen is showing.
     alt: bool,
-    /// The mouse is reported to azazel (the wheel, in the full-screen viewer).
-    mouse: bool,
+    /// The mouse is reported to azazel while a popup or the full-screen viewer is up, and only
+    /// then: reporting takes the terminal's own selection and scrolling away.
+    mouse: MouseCapture<io::Stdout>,
     /// Changes of the window's size are reported because azazel asked (a Windows console).
     sizes: bool,
 }
@@ -119,7 +121,7 @@ impl TerminalGuard {
             enhanced_keys: false,
             active: false,
             alt: false,
-            mouse: false,
+            mouse: MouseCapture::native(io::stdout()),
             sizes: false,
         };
         guard.take()?;
@@ -153,16 +155,12 @@ impl TerminalGuard {
         self.alt
     }
 
-    /// Has the terminal report the mouse to azazel, or stops that.
+    /// Has the terminal report the mouse to azazel, or stops that. Leaving the alternate
+    /// screen stops it, and so does handing the terminal over or dropping the guard.
     fn capture_mouse(&mut self, on: bool) {
-        if self.mouse == on {
-            return;
+        if let Err(e) = self.mouse.set(on) {
+            tracing::warn!("cannot change mouse reporting: {e}");
         }
-        self.mouse = on;
-        let _ = match on {
-            true => crossterm::execute!(io::stdout(), EnableMouseCapture),
-            false => crossterm::execute!(io::stdout(), DisableMouseCapture),
-        };
     }
 
     fn take(&mut self) -> io::Result<()> {
@@ -1734,8 +1732,32 @@ impl Tui {
             Event::Resize(width, height) => self.size_reported((width, height)),
             Event::FocusGained => self.attention.focus(true),
             Event::FocusLost => self.attention.focus(false),
+            Event::Mouse(event) => self.on_mouse(event).await,
             _ => {}
         }
+    }
+
+    /// The mouse, which the terminal reports only while a popup is up: what it does inside the
+    /// box goes to the overlay as a key would; outside the box it does nothing.
+    async fn on_mouse(&mut self, event: MouseEvent) {
+        let Some(placed) = self.popup.as_ref().and_then(popup::Popup::placed) else {
+            return;
+        };
+        let Some(overlay) = &mut self.overlay else {
+            return;
+        };
+        let Some(mouse) = Mouse::within(&event, placed) else {
+            if event.kind == MouseEventKind::Moved {
+                overlay.pointer_left();
+            }
+            return;
+        };
+        let outcome = overlay.on_mouse(mouse);
+        if let overlay::Kind::Status(editor) = &overlay.kind {
+            let trying = editor.config();
+            self.set_statusline(trying, false);
+        }
+        self.overlay_outcome(outcome).await;
     }
 
     async fn on_key(&mut self, key: KeyEvent) {

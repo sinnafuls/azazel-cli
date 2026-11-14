@@ -272,6 +272,8 @@ settings! {
             "Hide what looks like a secret (API keys, tokens, private keys) in what the UI shows; the model still sees it.", live;
         "tui.popups": Switch, "Menus and questions as popups",
             "Menus, pickers and questions open as a box in the middle of the window.", live;
+        "tui.mouse": Switch, "Mouse in popups",
+            "Click, hover and scroll in popups; the terminal's own selection works again once a popup closes.", live;
         "tui.images": Choice(ImageMode::NAMES), "Inline images",
             "auto shows images where the terminal can; off never does; kitty, iterm and sixel force a protocol.";
         "tui.show_thinking": Switch, "Show the model's thinking", "Show the model's thinking as it is written.", live;

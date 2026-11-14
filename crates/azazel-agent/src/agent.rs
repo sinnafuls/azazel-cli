@@ -767,7 +767,10 @@ impl Actor {
                     }
                     return Err(AiError::Aborted);
                 }
-                AiError::ContextOverflow | AiError::InvalidRequest(_) => return Err(error),
+                // Another model is not asked on its own: a refusal says what the user is to decide.
+                AiError::ContextOverflow | AiError::InvalidRequest(_) | AiError::Refused { .. } => {
+                    return Err(error);
+                }
                 error => {
                     router.report_stream_failure(&model, &error, &mut route);
                     self.core.forward_route_events(&mut route_rx);

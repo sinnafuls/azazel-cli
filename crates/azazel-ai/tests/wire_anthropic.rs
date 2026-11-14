@@ -438,7 +438,6 @@ fn stop_reason_maps_to_length_only_when_output_was_cut() {
         ("end_turn", StopReason::Stop),
         ("stop_sequence", StopReason::Stop),
         ("pause_turn", StopReason::Stop),
-        ("refusal", StopReason::Stop),
     ];
     for (stop_reason, expected) in cases {
         let mut records = vec![message_start()];
@@ -1562,4 +1561,55 @@ fn the_tail_follows_the_cache_marks_so_a_changed_note_leaves_the_cached_prefix_a
         build(&empty)["messages"][0]["content"].as_array().unwrap().len(),
         1
     );
+}
+
+#[test]
+fn a_reply_the_safety_system_stopped_is_an_error_that_says_why() {
+    // As the API sent it for a conversation its cyber safeguards flagged: no block, no tokens.
+    let refusal = json!({
+        "type": "message_delta",
+        "delta": {
+            "stop_reason": "refusal",
+            "stop_sequence": null,
+            "stop_details": {
+                "type": "refusal",
+                "category": "cyber",
+                "explanation": "Cyber safeguards flagged this message."
+            }
+        },
+        "usage": {"output_tokens": 0}
+    });
+    let events = decode(&sse(&[message_start(), refusal.clone(), message_stop()]));
+    let Some(StreamEvent::Error { error, partial }) = events.last() else {
+        panic!("{events:?}");
+    };
+    assert_eq!(
+        *error,
+        AiError::Refused {
+            category: Some("cyber".to_string()),
+            explanation: "Cyber safeguards flagged this message.".to_string(),
+        }
+    );
+    assert_eq!(*partial, None);
+    assert_eq!(
+        error.to_string(),
+        "the model declined to answer (cyber): Cyber safeguards flagged this message."
+    );
+    assert!(!error.is_retryable());
+
+    // Without details the error still names the refusal; text already written is kept.
+    let mut bare = refusal;
+    bare["delta"]["stop_details"] = Value::Null;
+    let mut records = vec![message_start()];
+    records.extend(text_block(0, "I can"));
+    records.extend([bare, message_stop()]);
+    let events = decode(&sse(&records));
+    let Some(StreamEvent::Error { error, partial }) = events.last() else {
+        panic!("{events:?}");
+    };
+    assert!(
+        matches!(error, AiError::Refused { category: None, .. }),
+        "{error:?}"
+    );
+    assert_eq!(partial.as_ref().map(|m| m.text()), Some("I can".to_string()));
 }

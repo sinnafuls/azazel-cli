@@ -9,6 +9,9 @@ use azazel_core::session::SessionSummary;
 use azazel_core::{ApprovalDecision, PermissionMode, PlanDecision, UiError};
 use azazel_tui::components::markdown;
 use azazel_tui::components::overlay::Frame;
+use azazel_tui::components::pager::WHEEL_ROWS;
+use azazel_tui::components::select::ListMouse;
+use azazel_tui::mouse::{Mouse, MouseKind};
 use azazel_tui::{
     Editor, Glyph, GlyphLevel, Hint, KeyCombo, Line, Role, Scroll, SelectItem, SelectList, Theme, text,
 };
@@ -285,6 +288,17 @@ pub struct Widget {
     pub scroll: Option<(usize, Scroll)>,
 }
 
+/// Where the last render put what the mouse can point at, in rows and columns of the box.
+#[derive(Debug, Clone, Copy, Default)]
+struct Areas {
+    /// The row of a form's tabs, while they are shown.
+    tabs: Option<usize>,
+    /// The first row of the list, the settings or the widget, and how many rows it has.
+    widget: (usize, usize),
+    /// The column the text inside the box starts at.
+    left: usize,
+}
+
 pub struct Overlay {
     pub title: String,
     /// Text shown above the list or input: plain paragraphs, or Markdown when `markdown` is set.
@@ -297,6 +311,7 @@ pub struct Overlay {
     pub destructive: bool,
     /// The last render had to cut the body, so `ctrl+o` shows all of it.
     cut: Cell<bool>,
+    areas: Cell<Areas>,
     pub kind: Kind,
     pub action: Action,
     /// Keys that act on the selected row without closing the overlay, each with the word the
@@ -402,6 +417,7 @@ impl Overlay {
             warning: None,
             destructive: false,
             cut: Cell::new(false),
+            areas: Cell::new(Areas::default()),
             kind,
             action,
             keys: Vec::new(),
@@ -621,6 +637,7 @@ impl Overlay {
                 filterable,
                 filter,
             } => {
+                list.clear_hover();
                 match key.code {
                     KeyCode::Up => list.move_up(),
                     KeyCode::Down | KeyCode::Tab => list.move_down(),
@@ -680,6 +697,63 @@ impl Overlay {
                 Outcome::Pending
             }
         }
+    }
+
+    /// The mouse over the box, in its coordinates (row 0 is its top edge). It does only what a
+    /// key could: in a list a press selects a row and a press on the selected row picks it, a
+    /// check box toggles at the first press, the wheel moves through a list and scrolls rows
+    /// to read; the settings and forms take it on their own terms.
+    pub fn on_mouse(&mut self, mouse: Mouse) -> Outcome {
+        let areas = self.areas.get();
+        let (first, count) = areas.widget;
+        let row = mouse.row.checked_sub(first).filter(|row| *row < count);
+        let column = mouse.column.checked_sub(areas.left);
+        match &mut self.kind {
+            Kind::Select { list, .. } => match list.on_mouse(mouse.kind, row) {
+                ListMouse::Again(index) => Outcome::Chosen(index),
+                ListMouse::Selected(_) | ListMouse::Nothing => Outcome::Pending,
+            },
+            Kind::Report(report) => {
+                match mouse.kind {
+                    MouseKind::ScrollUp => report.scroll(-WHEEL_ROWS),
+                    MouseKind::ScrollDown => report.scroll(WHEEL_ROWS),
+                    MouseKind::Press | MouseKind::Drag | MouseKind::Move => {}
+                }
+                Outcome::Pending
+            }
+            Kind::Settings(screen) => {
+                let at = row.zip(column);
+                match screen.on_mouse(mouse.kind, at) {
+                    true => Outcome::Chosen(0),
+                    false => Outcome::Pending,
+                }
+            }
+            Kind::Form(form) => {
+                let tab = column.filter(|_| areas.tabs == Some(mouse.row));
+                match form.on_mouse(mouse.kind, tab, row) {
+                    Step::Pending => Outcome::Pending,
+                    Step::Cancelled => Outcome::Cancelled,
+                    Step::Done(answers) => Outcome::Answers(answers),
+                }
+            }
+            Kind::Status(editor) => match editor.on_mouse(mouse.kind, row) {
+                EditorStep::Pending => Outcome::Pending,
+                EditorStep::Cancelled => Outcome::Cancelled,
+                EditorStep::Save => Outcome::Chosen(0),
+            },
+            // One field to type into, which has the keyboard already; an agent at work.
+            Kind::Input { .. } | Kind::Pane(_) => Outcome::Pending,
+        }
+    }
+
+    /// The pointer left the box: no row is under it any more.
+    pub fn pointer_left(&mut self) {
+        let away = Mouse {
+            kind: MouseKind::Move,
+            row: usize::MAX,
+            column: usize::MAX,
+        };
+        self.on_mouse(away);
     }
 
     pub fn on_paste(&mut self, pasted: &str) {
@@ -772,6 +846,7 @@ impl Overlay {
         }
         let inner = Frame::inner_width(width).max(1);
         let total = max_rows.saturating_sub(frame.chrome_rows()).max(1);
+        let (top, left) = frame.origin();
         // The tabs of a form stay whatever else is cut, as long as the box has rows for more
         // than them.
         let head: Vec<Line> = match &self.kind {
@@ -780,6 +855,11 @@ impl Overlay {
         };
         let head = if head.len() + 2 > total { Vec::new() } else { head };
         let head_rows = head.len();
+        let mut areas = Areas {
+            tabs: (head_rows > 0).then_some(top),
+            widget: (0, 0),
+            left,
+        };
         let interior = total - head_rows;
 
         let mut body: Vec<Line> = if let Kind::Form(form) = &self.kind {
@@ -867,6 +947,7 @@ impl Overlay {
                 let room = total.saturating_sub(rows.len()).clamp(1, MAX_LIST_ROWS);
                 let view = list.view(inner, room, theme);
                 frame.scrollbar = view.scroll.map(|scroll| (rows.len(), scroll));
+                areas.widget = (top + rows.len(), view.lines.len());
                 rows.extend(view.lines);
             }
             Kind::Input {
@@ -894,6 +975,7 @@ impl Overlay {
                 let widget = form.widget(inner, room, &prompt, theme);
                 cursor = widget.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                areas.widget = (top + rows.len(), widget.lines.len());
                 rows.extend(widget.lines);
             }
             Kind::Pane(pane) => {
@@ -908,6 +990,7 @@ impl Overlay {
                 let view = screen.view(inner, room, &prompt, theme);
                 cursor = view.cursor.map(|(row, column)| (rows.len() + row, column));
                 frame.scrollbar = view.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                areas.widget = (top + rows.len(), view.lines.len());
                 rows.extend(view.lines);
             }
             Kind::Models(screen) => {
@@ -921,6 +1004,7 @@ impl Overlay {
                 let room = total.saturating_sub(rows.len()).max(1);
                 let widget = editor.widget(inner, room, theme);
                 frame.scrollbar = widget.scroll.map(|(first, scroll)| (rows.len() + first, scroll));
+                areas.widget = (top + rows.len(), widget.lines.len());
                 rows.extend(widget.lines);
             }
             Kind::Report(report) => {
@@ -942,9 +1026,9 @@ impl Overlay {
             }
         }
 
+        self.areas.set(areas);
         let hints = self.hints(theme);
         frame.hints = &hints;
-        let (top, left) = frame.origin();
         let cursor = cursor.map(|(row, column)| ((row + top) as u16, (column + left) as u16));
         (frame.render(&rows, theme), cursor)
     }
@@ -1906,6 +1990,146 @@ mod tests {
         assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Chosen(0)));
         drop(back);
         assert!(overlay.action.abandoned());
+    }
+
+    /// A mouse event at `(row, column)` of the box.
+    fn mouse(kind: MouseKind, row: usize, column: usize) -> Mouse {
+        Mouse { kind, row, column }
+    }
+
+    /// The box row whose text contains `label`, after a render `width` wide.
+    fn row_of(overlay: &Overlay, width: usize, label: &str) -> usize {
+        let lines = shown(&overlay.render(width, 20, &Theme::dark()).0);
+        lines
+            .iter()
+            .position(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("{label} in {lines:#?}"))
+    }
+
+    #[test]
+    fn a_press_selects_a_row_a_second_picks_it_and_the_wheel_moves() {
+        let mut overlay = Overlay::select(
+            "Theme",
+            vec!["Pick one.".to_string()],
+            items(&["dark", "light", "dusk"]),
+            false,
+            Action::Mode,
+        );
+        let light = row_of(&overlay, 60, "light");
+        let body = row_of(&overlay, 60, "Pick one.");
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, body, 5)),
+            Outcome::Pending
+        ));
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, light, 5)),
+            Outcome::Pending
+        ));
+        assert_eq!(selected(&overlay), Some(1));
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, light, 30)),
+            Outcome::Chosen(1)
+        ));
+        // The wheel moves the selection and stops at the last row; enter picks where it is.
+        for _ in 0..3 {
+            overlay.on_mouse(mouse(MouseKind::ScrollDown, 0, 0));
+        }
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(2)));
+
+        // In a filtered list a row stands for the item it shows.
+        let mut overlay = Overlay::select(
+            "Model",
+            Vec::new(),
+            items(&["alpha", "beta", "gamma"]),
+            true,
+            Action::Mode,
+        );
+        overlay.on_key(&key(KeyCode::Char('a')));
+        overlay.on_key(&key(KeyCode::Char('m')));
+        let gamma = row_of(&overlay, 60, "gamma");
+        overlay.on_mouse(mouse(MouseKind::Press, gamma, 4));
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, gamma, 4)),
+            Outcome::Chosen(2)
+        ));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_rows_to_read() {
+        let rows: ReportRows = Box::new(|_, _| (0..40).map(|row| format!("line {row}")).collect());
+        let mut overlay = Overlay::report("Usage", rows, Action::Mode);
+        let theme = Theme::dark();
+        // The first row of text, without the border and the scrollbar.
+        let first = |overlay: &Overlay| {
+            let row = shown(&overlay.render(60, 12, &theme).0)[1].clone();
+            row.split_whitespace()
+                .skip(1)
+                .take(2)
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        assert_eq!(first(&overlay), "line 0");
+        overlay.on_mouse(mouse(MouseKind::ScrollDown, 5, 10));
+        overlay.on_mouse(mouse(MouseKind::ScrollDown, 5, 10));
+        assert_eq!(first(&overlay), format!("line {}", 2 * WHEEL_ROWS));
+        overlay.on_mouse(mouse(MouseKind::ScrollUp, 5, 10));
+        assert_eq!(first(&overlay), format!("line {WHEEL_ROWS}"));
+    }
+
+    #[test]
+    fn a_form_takes_presses_on_its_tabs_its_options_and_its_check_boxes() {
+        let colour = Question {
+            kind: AskKind::Select,
+            options: vec!["red".to_string(), "blue".to_string()],
+            allow_freeform: true,
+            ..Question::text("Which colour?")
+        };
+        let parts = Question {
+            kind: AskKind::Multiselect,
+            options: vec!["tests".to_string(), "docs".to_string()],
+            ..Question::text("What should change?")
+        };
+        let (reply, _answer) = tokio::sync::oneshot::channel();
+        let mut overlay = Overlay::form(Form::new(vec![colour, parts], "Other…"), Action::Ask { reply });
+        // The second tab, by a press on its name.
+        let tabs = row_of(&overlay, 70, "Send");
+        let line = shown(&overlay.render(70, 20, &Theme::dark()).0)[tabs].clone();
+        let column = line
+            .find("2 What")
+            .map(|byte| line[..byte].chars().count())
+            .expect("the tab");
+        overlay.on_mouse(mouse(MouseKind::Press, tabs, column + 2));
+        // A box ticks at the first press; `Done` sends at the second.
+        let docs = row_of(&overlay, 70, "docs");
+        overlay.on_mouse(mouse(MouseKind::Press, docs, 6));
+        let done = row_of(&overlay, 70, "Done");
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, done, 6)),
+            Outcome::Pending
+        ));
+        assert!(matches!(
+            overlay.on_mouse(mouse(MouseKind::Press, done, 6)),
+            Outcome::Pending
+        ));
+        // Back on the first question, which is still open: `Other…` opens the input.
+        let other = row_of(&overlay, 70, "Other…");
+        overlay.on_mouse(mouse(MouseKind::Press, other, 6));
+        overlay.on_mouse(mouse(MouseKind::Press, other, 6));
+        overlay.on_paste("green");
+        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Pending));
+        // Every question is answered: the tab that sends is in view.
+        let Outcome::Answers(answers) = overlay.on_key(&key(KeyCode::Enter)) else {
+            panic!("a pending form");
+        };
+        assert_eq!(answers, [vec!["green".to_string()], vec!["docs".to_string()]]);
+    }
+
+    /// The item index of the selected row of a list overlay.
+    fn selected(overlay: &Overlay) -> Option<usize> {
+        match &overlay.kind {
+            Kind::Select { list, .. } => list.selected(),
+            _ => None,
+        }
     }
 
     fn panels_text_input(overlay: &Overlay) -> bool {
