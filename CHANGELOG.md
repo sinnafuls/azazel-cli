@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-14
+
 ### Added
 
 - Primary agents: the lead is one of several personas. `build` is the lead as before; `plan` investigates
@@ -938,7 +940,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.3.0...v0.4.0
