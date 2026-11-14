@@ -1,0 +1,75 @@
+---
+source: crates/azazel-ai/tests/it/wire_openai_chat.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "tool_call_start",
+    "index": 0,
+    "id": "call_Zx81QmN2vLr7TtWc",
+    "name": "read"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 0,
+    "delta": "{\"pa"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 0,
+    "delta": "th\":\"src"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 0,
+    "delta": "/main.rs\",\"limit\":40}"
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "tool_call",
+      "id": "call_Zx81QmN2vLr7TtWc",
+      "name": "read",
+      "input": {
+        "path": "src/main.rs",
+        "limit": 40
+      }
+    }
+  },
+  {
+    "type": "done",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_call",
+          "id": "call_Zx81QmN2vLr7TtWc",
+          "name": "read",
+          "input": {
+            "path": "src/main.rs",
+            "limit": 40
+          }
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "openai-chat",
+        "usage": {
+          "input": 156,
+          "output": 21,
+          "cache_read": 256,
+          "cache_write": 0,
+          "reasoning": 0
+        },
+        "stop": "tool_use",
+        "response_id": "chatcmpl-C3nWpE8rTz5HkQ0vJd6YbL2a",
+        "duration_ms": 0
+      }
+    }
+  }
+]
