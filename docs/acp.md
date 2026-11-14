@@ -35,6 +35,7 @@ Each editor session is an azazel session in the directory the editor names, stor
 | `session/prompt` | Runs the prompt to its end. Text, images and embedded files become one message; an embedded text file is attached the way an `@path` mention attaches one |
 | `session/cancel` | Stops the work; the prompt ends as `cancelled` |
 | `session/set_mode` | Changes the permission mode |
+| `session/set_config_option` | Changes the option `agent`: the [primary agent](team.md#primary-agents) the lead is (`build`, `plan`, …) |
 
 A prompt that arrives while another runs cancels that one first.
 
@@ -64,6 +65,8 @@ The work of sub-agents shows as the lead's `task` call and its result, not step 
 The prompt's answer carries why the lead stopped: `end_turn`, `max_tokens`, `max_turn_requests` (the turn cap was reached while tools were still wanted), `cancelled`, or `refusal` when the model's reply ended in an error. A run that fails outright is a JSON-RPC error with the reason.
 
 ## Permissions and questions
+
+The primary agents are offered as the session's configuration option `agent`, a choice of their names with the one the lead is selected; `session/set_config_option` switches it and answers with the options as they are then.
 
 The permission modes are offered as the session's modes: `plan`, `manual`, `accept-edits` and `auto`. `bypass` is offered, and accepted by `session/set_mode`, only when azazel was started in it (`azazel --mode bypass acp`, or your own configuration): the protocol has no way to ask you for the confirmation that mode needs. A permission request about a secret file offers `Allow`, `Allow this file for this session` and `Reject`. See [permissions](permissions.md).
 

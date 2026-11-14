@@ -8,6 +8,7 @@ use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput};
 use serde_json::{Value, json};
 
 use super::PermissionState;
+use crate::agents::LeadAgent;
 use crate::config::PermissionMode;
 use crate::ext::{ExtError, Extension, Registrar};
 use crate::prompt::SystemPartProvider;
@@ -81,6 +82,14 @@ impl Tool for PlanSubmitTool {
                 // plan mode does not change the mode the session is in.
                 if self.state.mode() == PermissionMode::Plan {
                     self.state.set_mode(PermissionMode::AcceptEdits);
+                }
+                // A lead that planned as a primary agent kept in plan mode (`plan`) goes on as
+                // the agent sessions start as, which can carry the plan out.
+                if ctx.agent.depth == 0
+                    && let Some(lead) = ctx.services.get::<LeadAgent>()
+                    && lead.def().is_some_and(|def| def.plan_mode)
+                {
+                    let _ = lead.set(lead.default_name());
                 }
                 ToolOutput::text(PLAN_APPROVED)
             }

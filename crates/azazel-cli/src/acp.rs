@@ -43,6 +43,8 @@ type Connection = ConnectionTo<Client>;
 
 /// The one way to authenticate: there is nothing to do, azazel uses what it already has.
 const AUTH_METHOD: &str = "azazel";
+/// The configuration option that names the primary agent the lead is.
+const AGENT_OPTION: &str = "agent";
 /// How long a permission request waits for the client to be told of the call it is about. The
 /// call was announced before permission was asked, so this passes only for calls that are not
 /// announced at all (those a script makes for the lead).
@@ -492,6 +494,24 @@ impl Session {
         acp::SessionModeState::new(self.app.permissions.mode().to_string(), modes)
     }
 
+    /// The session's configuration options: the primary agent the lead is (`agent`), which the
+    /// client switches with `session/set_config_option`.
+    fn config_options(&self) -> Vec<acp::SessionConfigOption> {
+        let lead = &self.app.lead_agent;
+        let options: Vec<acp::SessionConfigSelectOption> = lead
+            .primaries()
+            .iter()
+            .map(|def| {
+                acp::SessionConfigSelectOption::new(def.name.clone(), def.name.clone())
+                    .description(def.description.clone())
+            })
+            .collect();
+        vec![
+            acp::SessionConfigOption::select(AGENT_OPTION, "Agent", lead.name(), options)
+                .description("The primary agent the lead is: its instructions, tools and limits".to_string()),
+        ]
+    }
+
     /// Tells the client what the lead does. The work of sub-agents shows as the lead's `task`
     /// call, not event by event.
     fn on_event(&self, agent: &str, event: &AgentEvent) {
@@ -785,7 +805,8 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
         sessions: Mutex::default(),
     });
     let transport = ByteStreams::new(tokio::io::stdout().compat_write(), tokio::io::stdin().compat());
-    let (new, load, mode, prompt, cancel) = (
+    let (new, load, mode, option, prompt, cancel) = (
+        server.clone(),
         server.clone(),
         server.clone(),
         server.clone(),
@@ -829,7 +850,9 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
                         .open(&connection, request.cwd, request.mcp_servers, None)
                         .await
                         .map(|session| {
-                            acp::NewSessionResponse::new(session.shared.session_id.clone()).modes(session.modes())
+                            acp::NewSessionResponse::new(session.shared.session_id.clone())
+                                .modes(session.modes())
+                                .config_options(session.config_options())
                         });
                     let _ = responder.respond_with_result(opened);
                 });
@@ -847,7 +870,9 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
                         .await
                         .map(|session| {
                             session.replay();
-                            acp::LoadSessionResponse::new().modes(session.modes())
+                            acp::LoadSessionResponse::new()
+                                .modes(session.modes())
+                                .config_options(session.config_options())
                         });
                     let _ = responder.respond_with_result(opened);
                 });
@@ -871,6 +896,24 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
                     }
                     session.app.permissions.set_mode(wanted);
                     Ok(acp::SetSessionModeResponse::new())
+                });
+                responder.respond_with_result(changed)
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: acp::SetSessionConfigOptionRequest, responder, _connection| {
+                let changed = option.session(&request.session_id).and_then(|session| {
+                    let invalid = |why: String| Error::invalid_params().data(Value::String(why));
+                    if request.config_id.0.as_ref() != AGENT_OPTION {
+                        return Err(invalid(format!("there is no option `{}`", request.config_id.0)));
+                    }
+                    let agent = request
+                        .value
+                        .as_value_id()
+                        .ok_or_else(|| invalid("`agent` takes the name of an agent".to_string()))?;
+                    session.app.set_agent(&agent.0).map_err(invalid)?;
+                    Ok(acp::SetSessionConfigOptionResponse::new(session.config_options()))
                 });
                 responder.respond_with_result(changed)
             },

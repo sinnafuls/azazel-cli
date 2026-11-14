@@ -438,6 +438,27 @@ fn commands_change_the_session_and_mistakes_are_answered() {
     // Back to the model the script answers as.
     let (_, model) = client.ask(50, json!({ "type": "set_model", "chain": ["@default"] }));
     assert_eq!(model["data"]["models"], json!(["mock/lead"]));
+    // The lead becomes another primary agent; one that is not is refused with the ones there are.
+    let (_, agent) = client.ask(51, json!({ "type": "set_agent", "agent": "plan" }));
+    assert_eq!(agent["data"], json!({ "agent": "plan" }));
+    let (_, bad_agent) = client.ask(52, json!({ "type": "set_agent", "agent": "scout" }));
+    assert!(
+        bad_agent["error"]
+            .as_str()
+            .unwrap()
+            .contains("the primary agents are: build, plan"),
+        "{bad_agent}"
+    );
+    let (_, state) = client.ask(53, json!({ "type": "get_state" }));
+    assert_eq!(state["data"]["agent"], "plan");
+    let primaries: Vec<&str> = state["data"]["primary_agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|agent| agent["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(primaries, ["build", "plan"]);
+    client.ask(54, json!({ "type": "set_agent", "agent": "build" }));
 
     for (id, command, error) in [
         (6, json!({ "type": "dance" }), "unknown command `dance`"),

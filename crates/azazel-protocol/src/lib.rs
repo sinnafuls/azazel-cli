@@ -131,6 +131,10 @@ pub enum Command {
     /// `manual`, `accept-edits`, `auto` or `bypass`. `bypass` lifts every guard but deny rules
     /// and the push guard; a client that offers it should have the user confirm first.
     SetMode { mode: String },
+    /// Makes the lead another primary agent (`build`, `plan`, or one of the user's
+    /// definitions with `mode: primary`): its identity, tools, limits, model and thinking level
+    /// apply to the lead from the next request. `primary_agents` of [`State`] lists them.
+    SetAgent { agent: String },
     /// Messages a sub-agent by id, or `all`.
     AgentSend { to: String, message: String },
     /// Stops a sub-agent and the agents it started, or `all`.
@@ -755,6 +759,12 @@ pub struct State {
     /// Whether coordinator mode is on.
     #[serde(default)]
     pub coordinator: bool,
+    /// The primary agent the lead is (`build`, `plan`, ...).
+    #[serde(default)]
+    pub agent: String,
+    /// The primary agents `set_agent` takes, in the order a client steps through them.
+    #[serde(default)]
+    pub primary_agents: Vec<PrimaryAgent>,
     /// The open goal, in a few words.
     #[serde(default)]
     pub goal: Option<String>,
@@ -768,6 +778,16 @@ pub struct State {
     /// `continue_run` can go on with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interrupted: Option<String>,
+}
+
+/// A primary agent: a persona the lead can be.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PrimaryAgent {
+    pub name: String,
+    pub description: String,
+    /// `#rrggbb`, when the definition gives the agent a colour.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
 }
 
 /// The data of a `prompt` that carries a `request_id`, and of `continue_run`: where a run

@@ -7,6 +7,14 @@ GitHub are its section here.
 
 ### Added
 
+- Primary agents: the lead is one of several personas. `build` is the lead as before; `plan` investigates
+  read-only, writes its plan under `.azazel/plans/` and hands over to `build` once you approve the plan.
+  `tab` in an empty input switches between them, `/agent [name]` picks one, `--agent <name>` starts a run
+  as one, and `[agents] default` sets the one sessions start as. A definition of your own with `mode: primary`
+  (or `all`) is one more: its body replaces the lead's identity, and its `tools`, limits, `model`,
+  `thinking`, `skills` and `color` apply to the lead while it is selected. The status line has an `agent`
+  segment in its colour, the input's rules take the colour too, and the switch is kept in the session.
+  RPC clients switch with `set_agent`, ACP clients with the session option `agent`.
 - About 160 more built-in providers: every provider models.dev lists that speaks a wire API azazel has
   (`anthropic-messages`, `openai-responses`, `openai-chat`, `google-generative`), with its models in the
   catalogue. Set its key variable and its models appear in `/model` and `azazel models`. Each reads a
@@ -16,6 +24,10 @@ GitHub are its section here.
 
 ### Changed
 
+- In an agent definition `mode` now says what the definition is (`subagent`, `primary` or `all`); keeping an
+  agent in plan mode is `permission-mode: plan`. A definition that still says `mode: plan` is listed by
+  `/agents` with that message. `azazel migrate` writes `permission-mode`.
+- Agents started by an agent kept in plan mode are kept in plan mode too.
 - `xai` talks to xAI's Responses API, which xAI names its primary API; Chat Completions is its legacy one.
 - `opencode-zen` and `opencode-go` use OpenCode's current addresses (`https://opencode.ai/inference/openai/v1`
   and `https://opencode.ai/inference/go/openai/v1`), and `minimax-code-cn` MiniMax's new mainland-China

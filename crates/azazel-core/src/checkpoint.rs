@@ -510,6 +510,19 @@ mod tests {
                 use std::os::unix::fs::PermissionsExt;
                 std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
             }
+            // A test running beside this one may fork while the file is still open for writing;
+            // until that child execs, running the script fails with "text file busy". Once one
+            // run starts, no such copy of the write handle is left.
+            for _ in 0..100 {
+                match std::process::Command::new(&path).arg("probe").spawn() {
+                    Ok(mut child) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        break;
+                    }
+                    Err(_) => std::thread::sleep(Duration::from_millis(20)),
+                }
+            }
             path
         }
     }
