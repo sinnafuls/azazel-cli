@@ -1381,7 +1381,8 @@ mod tests {
     #[test]
     fn a_lone_release_of_ctrl_v_is_the_paste_windows_terminal_kept() {
         use std::time::Duration;
-        let ctrl_v = |modifiers| KeyEvent::new_with_kind(KeyCode::Char('v'), modifiers, KeyEventKind::Release);
+        let ctrl_v =
+            |modifiers| KeyEvent::new_with_kind(KeyCode::Char('v'), modifiers, KeyEventKind::Release);
         assert!(is_paste_key(&ctrl_v(KeyModifiers::CONTROL)));
         assert!(is_paste_key(&ctrl_v(KeyModifiers::CONTROL | KeyModifiers::SHIFT)));
         assert!(!is_paste_key(&ctrl_v(KeyModifiers::ALT)));

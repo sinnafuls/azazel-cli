@@ -189,7 +189,12 @@ pub fn counts(found: &Found) -> String {
 pub fn fix_chats(paths: &Paths) -> u8 {
     let projects = paths.home.join("projects");
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(&projects)
-        .map(|entries| entries.flatten().map(|entry| entry.path().join("sessions")).collect())
+        .map(|entries| {
+            entries
+                .flatten()
+                .map(|entry| entry.path().join("sessions"))
+                .collect()
+        })
         .unwrap_or_default();
     dirs.sort();
     let (mut files, mut calls, mut failed) = (0, 0, false);

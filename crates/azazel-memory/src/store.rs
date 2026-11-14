@@ -392,7 +392,8 @@ impl MemoryStore {
                 )?;
                 tx.execute("UPDATE pending_extractions SET attempts = attempts + 1", [])?;
                 let sessions: Vec<String> = {
-                    let mut statement = tx.prepare("SELECT session FROM pending_extractions ORDER BY rowid")?;
+                    let mut statement =
+                        tx.prepare("SELECT session FROM pending_extractions ORDER BY rowid")?;
                     let rows = statement.query_map([], |row| row.get(0))?;
                     rows.collect::<rusqlite::Result<_>>()?
                 };
@@ -406,7 +407,12 @@ impl MemoryStore {
     pub(crate) async fn extracted(&self, session: &Path) -> Result<(), String> {
         let session = session.to_string_lossy().into_owned();
         self.project
-            .call(move |conn| conn.execute("DELETE FROM pending_extractions WHERE session = ?1", params![session]))
+            .call(move |conn| {
+                conn.execute(
+                    "DELETE FROM pending_extractions WHERE session = ?1",
+                    params![session],
+                )
+            })
             .await
             .map(drop)
     }

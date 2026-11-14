@@ -607,7 +607,9 @@ async fn a_session_that_ends_is_extracted_by_the_next_one_storing_what_is_new() 
     registry.bus.emit(&mut start()).await;
     eventually("the session that ended is extracted", || async {
         store.list(Scope::Project).await.unwrap().len() == 2
-            && store.list(Scope::Project).await.unwrap()[0].text.contains("GitHub")
+            && store.list(Scope::Project).await.unwrap()[0]
+                .text
+                .contains("GitHub")
     })
     .await;
 

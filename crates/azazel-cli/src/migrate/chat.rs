@@ -320,7 +320,9 @@ pub fn fix_chats(dir: &Path) -> io::Result<Vec<Fixed>> {
     for path in files {
         let text = std::fs::read_to_string(&path)?;
         let mut lines = text.lines();
-        let header = lines.next().and_then(|line| serde_json::from_str::<Value>(line).ok());
+        let header = lines
+            .next()
+            .and_then(|line| serde_json::from_str::<Value>(line).ok());
         let source = lines
             .next()
             .and_then(|line| serde_json::from_str::<Value>(line).ok())
@@ -758,15 +760,19 @@ mod tests {
         assert_eq!(results, ["c1", "c2"]);
         let claude = chat(turns("Bash"));
         let other = tempfile::tempdir().unwrap();
-        let written_claude = write_chat(other.path(), Source::Claude, &claude, Path::new("/src/b.jsonl")).unwrap();
+        let written_claude =
+            write_chat(other.path(), Source::Claude, &claude, Path::new("/src/b.jsonl")).unwrap();
         assert_eq!(calls_in(&written_claude.path).0[0].1, "shell");
 
         // A session imported before names were mapped is fixed in place, its sub-agents' too,
         // with a copy of each file as it was.
-        let transcript = PathBuf::from(&SessionStore::open(&written.path).unwrap().facts().agents[0].transcript);
+        let transcript =
+            PathBuf::from(&SessionStore::open(&written.path).unwrap().facts().agents[0].transcript);
         let mut old = Vec::new();
         for file in [&written.path, &transcript] {
-            let text = std::fs::read_to_string(file).unwrap().replace(r#""name":"shell""#, r#""name":"bash""#);
+            let text = std::fs::read_to_string(file)
+                .unwrap()
+                .replace(r#""name":"shell""#, r#""name":"bash""#);
             std::fs::write(file, &text).unwrap();
             old.push(text);
         }
@@ -782,7 +788,10 @@ mod tests {
         assert_eq!(fixed.len(), 1);
         assert_eq!(fixed[0].path, written.path);
         assert_eq!(fixed[0].calls, 2);
-        assert_eq!(calls_in(&written.path).0, pairs(&[("c1", "shell"), ("c2", "mcp__files_list")]));
+        assert_eq!(
+            calls_in(&written.path).0,
+            pairs(&[("c1", "shell"), ("c2", "mcp__files_list")])
+        );
         assert_eq!(calls_in(&transcript).0[0].1, "shell");
         let backups: Vec<String> = fixed[0]
             .backups
