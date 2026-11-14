@@ -1,2 +1,10 @@
 [alias]
 xtask = "run -p xtask --"
+
+# The bundled SQLite serves azazel-memory (plain tables, WAL, FTS5) and `azazel migrate`, which
+# reads plain tables from the stores of other harnesses. What neither uses is left out of the
+# build: loadable extensions, the deprecated and tracing interfaces, the progress callback, the
+# shared cache, and the FTS3, R-Tree, dbstat and soundex modules. The SQL dialect is untouched,
+# so a schema written by another program still parses.
+[env]
+LIBSQLITE3_FLAGS = "-DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_OMIT_DEPRECATED -DSQLITE_OMIT_PROGRESS_CALLBACK -DSQLITE_OMIT_TRACE -DSQLITE_OMIT_SHARED_CACHE -USQLITE_ENABLE_FTS3 -USQLITE_ENABLE_FTS3_PARENTHESIS -USQLITE_ENABLE_RTREE -USQLITE_ENABLE_DBSTAT_VTAB -USQLITE_SOUNDEX"
