@@ -592,6 +592,22 @@ fn providers_are_asked_once_in_the_background_and_answers_keep_the_selection() {
 }
 
 #[test]
+fn a_refresh_that_drops_rows_before_the_selection_keeps_it() {
+    // The rows of a provider listed earlier shrink: the selected row of a later provider moves
+    // down the list, and the selection must go with it.
+    let mut screen = screen(Opening::default());
+    press(&mut screen, KeyCode::End);
+    let before = screen.selected_model().unwrap().model.clone();
+    assert_eq!(before, "openai/gpt-old");
+    screen.refreshed("anthropic", Ok(vec![model(OPUS, &["high"], true)]));
+    assert_eq!(screen.selected_model().unwrap().model, before);
+    // A provider that grows does not move it either.
+    let more = (0..5).map(|n| model(&format!("anthropic/extra-{n}"), &[], true));
+    screen.refreshed("anthropic", Ok(more.chain([model(OPUS, &[], true)]).collect()));
+    assert_eq!(screen.selected_model().unwrap().model, before);
+}
+
+#[test]
 fn the_mouse_scrolls_selects_activates_and_picks_chips() {
     let mut screen = screen(Opening::default());
     // A frame places what the mouse finds.

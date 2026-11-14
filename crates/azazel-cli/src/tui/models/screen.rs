@@ -302,6 +302,8 @@ impl Models {
 
     /// A provider listed its models, or could not. The selection stays where it was.
     pub(crate) fn refreshed(&mut self, provider: &str, result: Result<Vec<ModelRow>, String>) {
+        // Taken before the rows change: the list's entries point into the rows as they were.
+        let selected = self.selected_model().map(|row| row.model.clone());
         match result {
             Ok(rows) => {
                 if let Some(entry) = self.data.providers.iter_mut().find(|p| p.id == provider) {
@@ -322,20 +324,30 @@ impl Models {
                 self.fetch.insert(provider.to_string(), Fetch::Failed(why));
             }
         }
+        self.items.clear();
         self.refilter();
+        self.select_model(selected.as_deref());
+        self.settle_cursor();
     }
 
     /// The session's models, providers and roles, read again after a sign-in; the screen goes
     /// to `provider`.
     pub(crate) fn reload(&mut self, data: Data, provider: Option<&str>) {
+        let selected = self.selected_model().map(|row| row.model.clone());
         self.data = data;
+        // The list's entries point into the rows that were just replaced.
+        self.items.clear();
         if let Some(provider) = provider {
             self.fetch.remove(provider);
             self.scope = Scope::Provider(provider.to_string());
             self.focus = Focus::Body;
             self.cursor = 0;
+            self.refilter();
+            return;
         }
         self.refilter();
+        self.select_model(selected.as_deref());
+        self.settle_cursor();
     }
 
     /// The roles as a change left them, or why the change was refused. `current` is the model
