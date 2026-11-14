@@ -915,7 +915,13 @@ fn a_schedule_is_paused_out_of_the_systems_scheduler_and_resumed_into_it() {
         "{row}"
     );
     assert!(row["next"].is_string(), "{row}");
-    assert!(sandbox.scheduler_calls().len() > created + 1);
+    // The fake `crontab` keeps no call log: on Linux the entry is checked in the table itself.
+    if cfg!(any(windows, target_os = "macos")) {
+        assert!(sandbox.scheduler_calls().len() > created + 1);
+    } else {
+        let table = std::fs::read_to_string(sandbox.path("sched/crontab")).unwrap();
+        assert!(table.contains(&id), "{table}");
+    }
     if cfg!(windows) {
         assert_eq!(sandbox.scheduler_calls().last().unwrap()["args"][0], "/Create");
     }
