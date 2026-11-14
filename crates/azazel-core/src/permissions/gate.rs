@@ -95,23 +95,34 @@ impl PermissionGate {
         (!text.is_empty()).then(|| self.command(text.to_string()))
     }
 
-    /// The call's subject and what it types, after the checks nothing overrides. The flag says
-    /// whether the call writes to a protected path.
-    fn checked(
-        &self,
-        agent: &AgentInfo,
-        tool: &dyn Tool,
-        input: &Value,
-    ) -> Result<(Subject, Option<Subject>, bool), String> {
+    /// The command lines the call has run later, unattended, each as the command line of a
+    /// `shell` call.
+    fn later(&self, tool: &dyn Tool, input: &Value) -> Vec<Subject> {
+        tool.commands(input)
+            .into_iter()
+            .filter(|command| !command.trim().is_empty())
+            .map(|command| self.command(command))
+            .collect()
+    }
+
+    /// The call's subject, what it types and what it has run later, after the checks nothing
+    /// overrides. The flag says whether the call writes to a protected path.
+    fn checked(&self, agent: &AgentInfo, tool: &dyn Tool, input: &Value) -> Result<Checked, String> {
         let subject = self.subject(tool, input);
         let protected = self.state.precheck(&call(agent, tool, input, &subject))?;
         let typed = self.typed(tool, input);
         if let Some(typed) = &typed {
             self.state.precheck_typed(&call(agent, tool, input, typed))?;
         }
-        Ok((subject, typed, protected))
+        let later = self.later(tool, input);
+        for command in &later {
+            self.state.precheck(&call(agent, tool, input, command))?;
+        }
+        Ok((subject, typed, later, protected))
     }
 }
+
+type Checked = (Subject, Option<Subject>, Vec<Subject>, bool);
 
 fn call<'a>(agent: &'a AgentInfo, tool: &'a dyn Tool, input: &Value, subject: &'a Subject) -> Call<'a> {
     let access = tool.access(input);
@@ -140,7 +151,7 @@ impl Gate for PermissionGate {
         let deny = |reason: String| GateDecision::Deny { reason };
 
         // Deny rules, the push guard, protected paths.
-        let (mut subject, mut typed, mut protected) = match self.checked(agent, tool, input) {
+        let (mut subject, mut typed, mut later, mut protected) = match self.checked(agent, tool, input) {
             Ok(checked) => checked,
             Err(reason) => return deny(reason),
         };
@@ -168,7 +179,7 @@ impl Gate for PermissionGate {
         let input = rewritten.as_ref().unwrap_or(input);
         if rewritten.is_some() {
             // What a handler turned the call into is held to the same hard limits.
-            (subject, typed, protected) = match self.checked(agent, tool, input) {
+            (subject, typed, later, protected) = match self.checked(agent, tool, input) {
                 Ok(checked) => checked,
                 Err(reason) => return deny(reason),
             };
@@ -181,21 +192,38 @@ impl Gate for PermissionGate {
             .as_ref()
             .and_then(|typed| self.state.destructive(typed));
         let typed_secret = typed_call.as_ref().and_then(|typed| self.state.secret(typed));
-        let risk = self.state.destructive(&the_call).or(typed_risk);
+        // What runs later is decided as `shell` calls of it would be; the call is asked about
+        // when any of them would be.
+        let later_calls: Vec<Call<'_>> = later
+            .iter()
+            .map(|command| call(agent, tool, input, command))
+            .collect();
+        let mut later_asked = false;
+        for later_call in &later_calls {
+            match self.state.decide(later_call, false, skip_prompt) {
+                Verdict::Allow => {}
+                Verdict::Deny(reason) => return deny(reason),
+                Verdict::Prompt { .. } => later_asked = true,
+            }
+        }
+        let later_risk = later_calls.iter().find_map(|later| self.state.destructive(later));
+        let later_secret = later_calls.iter().find_map(|later| self.state.secret(later));
+        let risk = self.state.destructive(&the_call).or(typed_risk).or(later_risk);
         // A secret file is asked about like a destructive command, but may be allowed for the
         // session; a command that is both is the stricter of the two.
         let secret = self
             .state
             .secret(&the_call)
             .or(typed_secret.clone())
+            .or(later_secret)
             .filter(|_| risk.is_none());
-        let asked_for_typed = typed_risk.is_some() || typed_secret.is_some();
+        let asked_beside = typed_risk.is_some() || typed_secret.is_some() || later_asked;
         let rule = match self.state.decide(&the_call, protected, skip_prompt) {
-            // The program may be typed into; this text is asked about all the same.
-            Verdict::Allow if asked_for_typed => None,
+            // The call itself may go ahead; what it types or runs later is asked about all the same.
+            Verdict::Allow if asked_beside => None,
             Verdict::Allow => return GateDecision::Allow { input: rewritten },
             Verdict::Deny(reason) => return deny(reason),
-            Verdict::Prompt { rule } => rule.filter(|_| !asked_for_typed),
+            Verdict::Prompt { rule } => rule.filter(|_| !asked_beside),
         };
 
         let mut request = Event::PermissionRequest {
@@ -274,6 +302,9 @@ impl Gate for PermissionGate {
                     self.state.allow_secrets_for_session(&the_call);
                     if let Some(typed) = &typed_call {
                         self.state.allow_secrets_for_session(typed);
+                    }
+                    for later in &later_calls {
+                        self.state.allow_secrets_for_session(later);
                     }
                 } else if let Some(rule) = rule.and_then(|text| text.parse::<Rule>().ok()) {
                     self.state.allow_for_session(&rule);

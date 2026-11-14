@@ -461,7 +461,7 @@ unknown tier or preset) exits with status 2.
 | `azazel logs` | | Show what a background session has done |
 | `azazel attach` | | Open a background session in the UI |
 | `azazel kill` | | Stop a background session |
-| `azazel schedule` | `add`, `list`, `rm`, `run` | Run prompts at a time or when something happens; see [schedules](background-and-remote.md#schedules) |
+| `azazel schedule` | `add`, `list`, `rm`, `pause`, `resume`, `run` | Run prompts at a time or when something happens; see [schedules](background-and-remote.md#schedules) |
 | `azazel mcp` | `list`, `add`, `remove`, `login`, `logout`, `approve`, `reject`, `serve`, `import` | Manage MCP servers, or serve azazel as one; see [MCP](mcp.md) |
 | `azazel pkg` | `add`, `list`, `update`, `remove` | Install and manage packages; see [packages](packages.md) |
 | `azazel skills` | `add`, `list`, `remove` | Install and list skills; see [packages](packages.md#azazel-skills) |

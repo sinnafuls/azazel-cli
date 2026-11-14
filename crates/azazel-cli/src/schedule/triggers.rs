@@ -11,9 +11,9 @@ use std::time::{Duration, Instant, SystemTime};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 
-use super::fire::{self, Fired};
+use super::fire::{self, Admit, Fired};
 use super::when::When;
-use super::{Schedule, Scheduler, Target};
+use super::{Schedule, Scheduler, State, Target};
 use crate::running::{self, Lock};
 
 /// How often the watcher looks at what it owns.
@@ -210,7 +210,7 @@ impl Watcher {
             .store()
             .list()
             .into_iter()
-            .filter(|schedule| schedule.when.is_trigger())
+            .filter(|schedule| schedule.when.is_trigger() && schedule.state == State::Active)
             .collect();
         let still = |owned: &Schedule| {
             triggers.iter().any(|schedule| {
@@ -301,10 +301,13 @@ impl Watcher {
                     if !pending.is_empty() {
                         let text = files_text(&owned.schedule.prompt, pending);
                         pending.clear();
-                        let _ = self.events.send(Event::Fire {
-                            schedule: Box::new(owned.schedule.clone()),
-                            text,
-                        });
+                        if let Some(schedule) = admitted(&self.scheduler, &self.events, &owned.schedule).await
+                        {
+                            let _ = self.events.send(Event::Fire {
+                                schedule: Box::new(schedule),
+                                text,
+                            });
+                        }
                     }
                 }
                 Watch::Ci {
@@ -338,9 +341,13 @@ impl Watcher {
                     };
                     // Oldest first, as they happened. A run still going is looked at again.
                     for run in runs.iter().rev().filter(|run| run.status == "completed") {
-                        if known.insert(run.database_id) && run.failed() {
+                        if known.insert(run.database_id)
+                            && run.failed()
+                            && let Some(schedule) =
+                                admitted(&self.scheduler, &self.events, &owned.schedule).await
+                        {
                             let _ = self.events.send(Event::Fire {
-                                schedule: Box::new(owned.schedule.clone()),
+                                schedule: Box::new(schedule),
                                 text: ci_text(&owned.schedule.prompt, run),
                             });
                         }
@@ -360,6 +367,42 @@ impl Watcher {
                 self.claim();
             }
             self.look().await;
+        }
+    }
+}
+
+/// The trigger `owned` as the store has it now, when its end and its checks let it run. Here,
+/// away from the session's own work, because a check may take a while; a check that did not
+/// hold is noted with the schedule, an end is said to the session.
+async fn admitted(
+    scheduler: &Scheduler,
+    events: &mpsc::UnboundedSender<Event>,
+    owned: &Schedule,
+) -> Option<Schedule> {
+    let schedule = scheduler
+        .store()
+        .list()
+        .into_iter()
+        .find(|schedule| schedule.id == owned.id && schedule.state == State::Active)?;
+    let now = jiff::Zoned::now();
+    match fire::admit(scheduler, &schedule, &now).await {
+        Admit::Go => Some(schedule),
+        Admit::Skip(why) => {
+            scheduler.store().record(
+                &schedule.id,
+                now.timestamp(),
+                &format!("skipped: {why}"),
+                None,
+                false,
+            );
+            None
+        }
+        Admit::End(why) => {
+            let _ = events.send(Event::Note(format!(
+                "the trigger {} ({}) {why}",
+                schedule.id, schedule.when
+            )));
+            None
         }
     }
 }
@@ -413,11 +456,14 @@ pub async fn dispatch(scheduler: &Scheduler, schedule: &Schedule, text: &str) ->
             scheduler
                 .store()
                 .record(&schedule.id, at, "ran in the open session", None, true);
+            fire::count_run(scheduler, schedule, at, true);
             Dispatch::Here
         }
         Target::New => {
             let fired = fire::deliver(scheduler, schedule, text).await;
             let result = fire::record(scheduler, schedule, at, &fired);
+            let ran = matches!(fired, Ok(Fired::Started(_) | Fired::Sent(_)));
+            fire::count_run(scheduler, schedule, at, ran);
             Dispatch::Done(match fired {
                 Ok(Fired::Started(host)) => format!(
                     "trigger {} ({}): started background session {host}",

@@ -47,6 +47,11 @@ pub trait Tool: Send + Sync {
     fn approval_note(&self, _input: &Value) -> Option<String> {
         None
     }
+    /// Command lines this call has run later, with nobody there to ask (the checks of a
+    /// schedule). The permission gate holds each to what a `shell` call of it would need.
+    fn commands(&self, _input: &Value) -> Vec<String> {
+        Vec::new()
+    }
     /// Whether the tool is offered in a request to `model`, the first model the agent asks. A
     /// tool meant for some model families says no to the others (`patch` and `edit`).
     fn offered_to(&self, _model: &ModelRef) -> bool {

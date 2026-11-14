@@ -115,6 +115,49 @@ pub enum SessionsAction {
     },
 }
 
+/// The checks, the end and the time zone of a schedule (`azazel schedule add`).
+#[cfg(feature = "detach")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct ScheduleLimits {
+    /// At each due time, run the prompt only when this shell command holds (exits 0)
+    #[arg(long = "if", value_name = "COMMAND")]
+    pub if_run: Option<String>,
+    /// The exit code the --if command holds with, instead of 0
+    #[arg(long, value_name = "CODE", requires = "if_run", allow_hyphen_values = true)]
+    pub if_is: Option<i32>,
+    /// The --if command holds only when what it prints matches this regular expression
+    #[arg(long, value_name = "REGEX", requires = "if_run")]
+    pub if_matches: Option<String>,
+    /// The --if command holds only when it prints something else than the time before
+    #[arg(long, requires = "if_run")]
+    pub if_changes: bool,
+    /// At each due time, before anything else, run this shell command: once it holds, the
+    /// schedule ends
+    #[arg(long = "until", value_name = "COMMAND")]
+    pub until_run: Option<String>,
+    /// The exit code the --until command holds with, instead of 0
+    #[arg(long, value_name = "CODE", requires = "until_run", allow_hyphen_values = true)]
+    pub until_is: Option<i32>,
+    /// The --until command holds only when what it prints matches this regular expression
+    #[arg(long, value_name = "REGEX", requires = "until_run")]
+    pub until_matches: Option<String>,
+    /// The --until command holds only when it prints something else than the time before
+    #[arg(long, requires = "until_run")]
+    pub until_changes: bool,
+    /// End the schedule this long after it is added: 2h, 7d
+    #[arg(long, value_name = "LENGTH")]
+    pub ends_after: Option<String>,
+    /// End the schedule at this time, written as `at` takes it
+    #[arg(long, value_name = "TIME")]
+    pub ends_at: Option<String>,
+    /// End the schedule once its prompt has run this many times
+    #[arg(long, value_name = "N")]
+    pub times: Option<u32>,
+    /// The time zone the cron expression or `at` time is in: Europe/Berlin, UTC
+    #[arg(long, value_name = "ZONE")]
+    pub tz: Option<String>,
+}
+
 #[cfg(feature = "detach")]
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ScheduleAction {
@@ -133,8 +176,10 @@ pub enum ScheduleAction {
         /// When to run (five cron fields, `every 10m`, `at +2h`), then the prompt as the last word
         #[arg(required = true, value_name = "WHEN… PROMPT")]
         spec: Vec<String>,
+        #[command(flatten)]
+        limits: Box<ScheduleLimits>,
     },
-    /// The schedules of this project, when each runs next and what it last did
+    /// The schedules of this project: state, next run, what the last run and the checks came to
     List {
         /// One JSON object per schedule
         #[arg(long)]
@@ -142,6 +187,16 @@ pub enum ScheduleAction {
     },
     /// Remove a schedule, from the system's scheduler too
     Rm {
+        /// Its id as `azazel schedule list` shows it (the start of it is enough)
+        id: String,
+    },
+    /// Stop a schedule from running until it is resumed; it leaves the system's scheduler
+    Pause {
+        /// Its id as `azazel schedule list` shows it (the start of it is enough)
+        id: String,
+    },
+    /// Let a paused schedule run again
+    Resume {
         /// Its id as `azazel schedule list` shows it (the start of it is enough)
         id: String,
     },

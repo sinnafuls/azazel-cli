@@ -187,6 +187,22 @@ fn every(text: &str) -> Result<Duration, String> {
     Ok(every)
 }
 
+/// A moment as `at` takes it (`+2h`, `17:30`, `2026-12-01 09:00`, a full timestamp), in the zone
+/// of `now`; it must lie ahead.
+pub fn moment(text: &str, now: &Zoned) -> Result<Timestamp, String> {
+    at(text.trim(), now, false)
+}
+
+/// The time zone named `name`, as the IANA database names it (`Europe/Berlin`, `UTC`).
+pub fn zone(name: &str) -> Result<jiff::tz::TimeZone, String> {
+    jiff::tz::TimeZone::get(name.trim()).map_err(|_| {
+        format!(
+            "`{}` is no time zone: a name such as Europe/Berlin, America/New_York or UTC",
+            name.trim()
+        )
+    })
+}
+
 fn at(text: &str, now: &Zoned, may_have_passed: bool) -> Result<Timestamp, String> {
     let zone = now.time_zone().clone();
     let local = |at: DateTime| {
@@ -383,6 +399,40 @@ impl Cron {
             values(self.months, 1, 12, false),
             values(self.weekdays, 0, 6, self.any_weekday),
         ]
+    }
+
+    /// Every time of day the expression matches, moved by `minutes` and by an hour either way,
+    /// on any day: what wakes a run often enough when the expression is in another zone than the
+    /// scheduler's clock, whose distance from it changes by an hour when either changes to or from
+    /// summer time. Whether a run is due is decided in the expression's own zone.
+    pub fn shifted(&self, minutes: i32) -> Cron {
+        let mut hours = 0u64;
+        let mut minutes_set = 0u64;
+        for (hour, minute) in self.times_of_day() {
+            for change in [-60, 0, 60] {
+                let at = (hour as i32 * 60 + minute as i32 + minutes + change).rem_euclid(24 * 60);
+                hours |= 1 << (at / 60);
+                minutes_set |= 1 << (at % 60);
+            }
+        }
+        let list = |set: u64, high: u32| {
+            (0..=high)
+                .filter(|value| set & (1 << value) != 0)
+                .map(|value| value.to_string())
+                .collect::<Vec<String>>()
+                .join(",")
+        };
+        let text = format!("{} {} * * *", list(minutes_set, 59), list(hours, 23));
+        Cron {
+            text,
+            minutes: minutes_set,
+            hours,
+            days: (1..=31).fold(0, |set, day| set | 1 << day),
+            months: (1..=12).fold(0, |set, month| set | 1 << month),
+            weekdays: 0b111_1111,
+            any_day: true,
+            any_weekday: true,
+        }
     }
 
     /// The first minute after `after` the expression matches, within the next five years.
@@ -591,6 +641,38 @@ mod tests {
             due("2026-11-13T12:03:00+00:00", stamp("2026-11-13T12:00:01Z")),
             Due::No
         );
+    }
+
+    #[test]
+    fn an_expression_in_another_zone_wakes_at_its_times_moved_and_an_hour_either_side() {
+        let cron = Cron::parse("30 9 * * 1-5").unwrap();
+        // Nine thirty five and a half hours on, give or take an hour.
+        let moved = cron.shifted(330);
+        assert_eq!(moved.text(), "0 14,15,16 * * *");
+        assert_eq!(moved.times_of_day(), [(14, 0), (15, 0), (16, 0)]);
+        assert_eq!(Cron::parse(moved.text()).unwrap(), moved);
+        // Across midnight, both ways.
+        assert_eq!(
+            Cron::parse("15 23 * * *").unwrap().shifted(60).text(),
+            "15 0,1,23 * * *"
+        );
+        assert_eq!(
+            Cron::parse("0 0 * * *").unwrap().shifted(-120).text(),
+            "0 21,22,23 * * *"
+        );
+    }
+
+    #[test]
+    fn a_moment_and_a_zone_are_read_or_refused() {
+        let now = zoned("2026-11-13T10:00:00+00:00");
+        assert_eq!(moment("+1h", &now), Ok("2026-11-13T11:00:00Z".parse().unwrap()));
+        assert!(
+            moment("2020-01-01 00:00", &now)
+                .unwrap_err()
+                .contains("in the past")
+        );
+        assert!(zone("Europe/Berlin").is_ok());
+        assert!(zone("Mars/Olympus").unwrap_err().contains("no time zone"));
     }
 
     #[test]

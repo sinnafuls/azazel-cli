@@ -537,7 +537,7 @@ With `async: true` the agent does not wait. The call returns `The question is wi
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `schedule` | `action` (`add`, `list`, `remove`), `when?`, `prompt?`, `session?` (`new`, `this`), `id?` | Adds, lists and removes the [schedules](background-and-remote.md#schedules) of the project |
+| `schedule` | `action` (`add`, `list`, `pause`, `resume`, `remove`), `when?`, `prompt?`, `session?` (`new`, `this`), `if?`, `until?` (each `{run, is?, matches?, changes?}`), `ends?` (`{after?, at?, times?}`), `tz?`, `id?` | Adds, lists, pauses, resumes and removes the [schedules](background-and-remote.md#schedules) of the project |
 
 `add` takes `when` as `azazel schedule add` does (five cron fields, `every 10m`, `at +2h`, `at 17:30`),
 or `on ci-failure` and `on file:<glob>` for a [trigger](background-and-remote.md#triggers), and the
@@ -546,9 +546,17 @@ the prompt has to stand on its own; `session: "this"` sends every run to the ses
 instead. The runs work as the session does at that moment: its model, thinking level, permission mode
 and settings.
 
-`add` and `remove` run things later with nobody watching, so they are asked about like a command
-(access `exec`): in `manual` and `accept-edits` mode you approve them, plan mode refuses them, and a
-run without a user refuses them unless a rule allows `schedule`. `list` only reads. The tool is not in
+`if`, `until`, `ends` and `tz` are the [checks and ends](background-and-remote.md#checks-and-ends) of
+`azazel schedule add`: `if` lets the prompt run at a due time only when its command holds, `until` ends the
+schedule once its command holds, `ends` stops it after a length of time (`after`), at a time (`at`) or
+after a number of runs (`times`), and `tz` is the zone of a cron expression or `at` time.
+
+`add`, `pause`, `resume` and `remove` run things later with nobody watching, so they are asked about like a
+command (access `exec`): in `manual` and `accept-edits` mode you approve them, plan mode refuses them, and a
+run without a user refuses them unless a rule allows `schedule`. The command of each check of an `add` is
+asked about besides, as a `shell` call of it would be: the rules for `shell` and the mode decide, a deny
+rule for `shell` refuses the call, and a destructive command is asked about in every mode. `list` only
+reads. The tool is not in
 builds without background sessions.
 
 ## Recalling the conversation
