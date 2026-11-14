@@ -582,7 +582,7 @@ Some subscriptions hold resets: each gives a usage window back before its time, 
 | `anthropic` (a Claude login) | The session reset: one a week, for accounts Anthropic offers it to | The 5-hour window; the weekly windows stay | `1 session reset`, `session reset used; the next one comes Tue 09:00`, `session resets: not offered to this account` |
 | `anthropic` (a Claude login) | Weekly resets: grants an account earned | The windows the grant names, such as the weekly window of the Fable models; usable only while one of them is full | `2 weekly resets · first lapses Mon 08:59 · usable once the window it gives back is full` |
 
-`/usage` and `azazel usage` ask the provider which resets an account holds when somebody looks and the last answer is older than five minutes; an answer older than an hour is no longer shown, so that nothing is offered from what was true yesterday. Asking spends nothing.
+`/usage` and `azazel usage` ask the provider which resets an account holds when somebody looks and the last answer is older than five minutes; an answer older than an hour is no longer shown, so that nothing is offered from what was true yesterday, and what was known is dropped the moment a reset of the account is sent. Asking spends nothing.
 
 `/reset-usage [provider]` spends one on purpose. It reads what the account holds, shows the reset (what it gives back, how many are left, when it lapses) and asks; the row a stray `enter` lands on is "Cancel". With several logins of the provider it asks which account; with several resets, which one.
 
@@ -591,12 +591,12 @@ A reset that is spent cannot be taken back, so every redemption goes the same wa
 1. What the account holds is read fresh, and the account, the reset and a request id are fixed before the question is put. Switching accounts while the question is open cannot spend another account's reset.
 2. The redemption is written to `~/.azazel/resets/<provider>.<account>.json` (the reset, the request id, the time; never a token) before it is sent. If that file cannot be written, nothing is sent.
 3. It is sent once. azazel never sends it a second time by itself.
-4. An answer that does not come (a timeout after 30 seconds, a lost connection, a server error, an answer that cannot be read) means the outcome is not known. azazel says so and does not count the reset as unspent.
+4. An answer that does not come (a timeout after 30 seconds, a lost connection, a server error, an answer that cannot be read) means the outcome is not known. azazel says so and does not count the reset as unspent. Only a request that never reached the provider, or one it turned away outright (HTTP 400, 401, 403, 404 or 422), is taken as not spent.
 5. The usage report fetched afterwards settles it: when it shows room in the windows the reset was for, the redemption is closed. Until then it is open.
 
 While a redemption of an account is open, no reset of that account is spent automatically. When its outcome is not known, the question and `/reset-usage` offer "Send the same reset request again" in place of a new reset: the same reset with the same request id, which a provider that already honoured it answers without spending another. An open redemption closes by itself when the reset it was about would have lapsed anyway, and after a week at the latest.
 
-What the provider answers decides what is said: the window was reset; the reset was already spent; no window is full (nothing is spent); the account holds none or cannot use it (nothing is spent). Only the first three let a waiting request go on, and "already spent" only when the usage report shows room.
+What the provider answers decides what is said: the window was reset; the reset was already spent; no window is full (nothing is spent); the account holds none or cannot use it (nothing is spent). A waiting request goes on after "reset" and after "no window is full"; after "already spent" and after an outcome that is not known, only when the usage report shows room. Otherwise the question is put again with what is known now.
 
 Reading uses `GET /wham/rate-limit-reset-credits` on the ChatGPT backend, and Anthropic's usage endpoint with `?cedar_ember=1&skip_spend=1` (weekly resets) and `?at_wall=1&skip_spend=1` (the session reset). Spending uses `POST /wham/rate-limit-reset-credits/consume` and `POST /api/organizations/<organisation>/reset_rate_limits`. As with the usage endpoints, none of this is documented by the vendors; it is what their own clients do.
 

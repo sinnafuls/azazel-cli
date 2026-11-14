@@ -212,6 +212,13 @@ async fn a_run_with_nobody_there_spends_a_reset_only_when_the_settings_say_so() 
     assert!(said.contains("usage limit reached"), "{said}");
     assert!(claude.redemptions().await.is_empty());
     assert_eq!(sandbox.journal(), None);
+    // Nothing was even read for a question nobody could be asked.
+    let read = claude.server.received_requests().await.unwrap();
+    assert!(
+        read.iter()
+            .all(|request| request.url.path() != "/api/oauth/usage"),
+        "{read:?}"
+    );
 
     // With `usage.auto_reset` the reset is spent, once, and the run goes on.
     let mut args = PRINT.to_vec();

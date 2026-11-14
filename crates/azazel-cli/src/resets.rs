@@ -769,7 +769,12 @@ impl LimitHandler for LimitFlow {
         let Some(hit) = self.hit(chain) else {
             return Recovery::Fail;
         };
-        match self.services.get::<Ui>().filter(|_| !self.unattended) {
+        // A run nobody watches is not asked, and nothing is read for a question.
+        match self
+            .services
+            .get::<Ui>()
+            .filter(|ui| ui.0.present() && !self.unattended)
+        {
             Some(ui) => self.attended(&ui, agent, &hit, cancel).await,
             None => self.unattended(&hit, cancel).await,
         }
@@ -1410,6 +1415,76 @@ mod tests {
         assert_eq!(bench.hit().await, Recovery::Retry);
         assert!(user.questions.lock().unwrap().is_empty());
         assert!(redemptions(&server).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reset_usage_says_what_it_would_spend_and_spends_it_only_when_told_to() {
+        let server = MockServer::start().await;
+        let spent = Arc::new(AtomicUsize::new(0));
+        let shown = spent.clone();
+        usage_shows(&server, move || match shown.load(Ordering::SeqCst) {
+            0 => 100.0,
+            _ => 2.0,
+        })
+        .await;
+        let counted = spent.clone();
+        Mock::given(method("POST"))
+            .and(path(RESET_PATH))
+            .respond_with(move |_: &Request| {
+                counted.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200).set_body_json(json!({ "result": "reset" }))
+            })
+            .mount(&server)
+            .await;
+        let user = Asked::answering(&[Ok("Cancel"), Ok("Spend the reset")]);
+        let bench = Bench::new(&server, Some(user.clone()), false, false).await;
+        let command = ResetCommand {
+            resets: bench.flow.resets.clone(),
+        };
+        let ctx = ExtCtx {
+            services: bench.flow.services.clone(),
+            cwd: PathBuf::from("."),
+            session_id: String::new(),
+        };
+
+        // Shown, and turned down: nothing is sent.
+        assert!(matches!(
+            command.run("anthropic", &ctx).await,
+            CommandOutcome::Done
+        ));
+        assert!(redemptions(&server).await.is_empty());
+        assert_eq!(bench.journal(), None);
+        let (prompt, rows) = user.questions.lock().unwrap()[0].clone();
+        // The row a stray enter lands on spends nothing.
+        assert_eq!(rows, ["Cancel", "Spend the reset"]);
+        assert!(
+            prompt.starts_with("Spend a banked reset?\nanthropic · account default (j***@example.com)\n")
+        );
+        assert!(
+            prompt.contains("Session reset: Gives the 5-hour window back now."),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains("It is the only one the account holds."),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("Spending it cannot be undone."), "{prompt}");
+
+        // The provider is the only one of this run with such a login, so it need not be named.
+        let CommandOutcome::Show(line) = command.run("", &ctx).await else {
+            panic!("the reset was not spent");
+        };
+        assert!(line.contains("one reset spent (Session reset)"), "{line}");
+        assert_eq!(redemptions(&server).await, [json!({ "program": "juniper_tide" })]);
+        assert_eq!(bench.journal().unwrap().state, State::Confirmed);
+        assert!(!bench.blocked());
+
+        // A provider without such a login is said to have none.
+        let CommandOutcome::Error(why) = command.run("groq", &ctx).await else {
+            panic!("groq has no resets");
+        };
+        assert!(why.contains("no subscription login with banked resets"), "{why}");
+        assert_eq!(redemptions(&server).await.len(), 1);
     }
 
     #[test]
