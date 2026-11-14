@@ -114,7 +114,7 @@ pub fn shared_settings(found: &mut Found, settings: &Map<String, Value>) {
 /// A theme of a source, when azazel has one of that name.
 pub fn theme_setting(found: &mut Found, from: &str, name: &str) {
     let value = Value::String(name.to_string());
-    let known = azazel_tui::Theme::BUILTINS.contains(&name);
+    let known = azazel_tui::Theme::is_builtin(name);
     setting(
         found,
         from,

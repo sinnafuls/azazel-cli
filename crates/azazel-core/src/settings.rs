@@ -11,7 +11,7 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::config::{
-    AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, EditorMode,
+    AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView, EditorMode,
     GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, StatusPreset,
     StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
@@ -266,6 +266,8 @@ settings! {
             "Tint the working indicator with a colour derived from the session's name.", live;
         "tui.tool_style": Choice(ToolStyle::NAMES), "Tool calls",
             "card frames each tool call; compact shows a finished call on one row.", live;
+        "tui.diff_view": Choice(DiffView::NAMES), "Diff layout",
+            "How /diff shows a file: split (old beside new), unified (one column), or auto (split from 140 columns on).";
         "tui.redact": Switch, "Hide secrets in what is shown",
             "Hide what looks like a secret (API keys, tokens, private keys) in what the UI shows; the model still sees it.", live;
         "tui.popups": Switch, "Menus and questions as popups",
