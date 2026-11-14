@@ -1,6 +1,6 @@
-//! Commands about sessions: `/name`, `/session`, the `/resume` picker and its keys, labels and
-//! filters in `/tree`, `/retry`, `/handoff`, `/search`, `/consult`, and the prompt history that
-//! is kept across sessions.
+//! Commands about sessions: `/name`, `/session`, the `/resume` and `/open` pickers and their
+//! keys, labels and filters in `/tree`, `/retry`, `/handoff`, `/search`, `/consult`, and the
+//! prompt history that is kept across sessions.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -45,6 +45,8 @@ above. Answer from that conversation only, and say so when it does not hold the 
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickFor {
     Resume,
+    /// `/open`: the sessions of every project.
+    Open,
     /// `/consult`, with the question when it was typed with the command.
     Consult(Option<String>),
 }
@@ -129,6 +131,7 @@ fn tree_keys() -> Vec<(KeyCombo, &'static str)> {
 
 /// The sessions a picker lists: pinned ones first, then the most recently used. `open` is the
 /// session in use; it is left out while it is still empty, and when `with_open` is off.
+/// Archived sessions are never listed.
 fn picker_rows(
     mut sessions: Vec<SessionSummary>,
     named_only: bool,
@@ -136,7 +139,9 @@ fn picker_rows(
     with_open: bool,
 ) -> Vec<SessionSummary> {
     sessions.retain(|session| {
-        (!named_only || session.name.is_some()) && (session.id != open || (with_open && session.messages > 0))
+        !session.archived
+            && (!named_only || session.name.is_some())
+            && (session.id != open || (with_open && session.messages > 0))
     });
     // The list arrives most recently used first; the sort keeps that order within each group.
     sessions.sort_by_key(|session| !session.pinned);
@@ -154,9 +159,16 @@ fn session_label(session: &SessionSummary) -> String {
     )
 }
 
-/// `background` is the id of the background session that has the session open, if one does.
-fn session_item(session: &SessionSummary, open: bool, background: Option<&str>) -> SelectItem {
+/// `background` is the id of the background session that has the session open, if one does;
+/// `place`, the directory it works in, when the picker lists those of every project.
+fn session_item(
+    session: &SessionSummary,
+    open: bool,
+    background: Option<&str>,
+    place: Option<String>,
+) -> SelectItem {
     let mut detail = Vec::new();
+    detail.extend(place);
     if session.pinned {
         detail.push("pinned".to_string());
     }
@@ -313,7 +325,7 @@ impl Tui {
 
     /// Opens a session picker with the row of session `select` selected and `note` above the
     /// list. What was typed into the filter of the picker it replaces is kept.
-    async fn open_sessions(
+    pub(super) async fn open_sessions(
         &mut self,
         purpose: PickFor,
         named_only: bool,
@@ -329,20 +341,25 @@ impl Tui {
             _ => String::new(),
         };
         let open = self.session.id();
-        let listed = match self.backend.sessions(None).await {
-            Ok(listed) => listed.into_iter().map(|(session, _)| session).collect(),
-            Err(why) => return self.fail(&why),
+        let everywhere = purpose == PickFor::Open;
+        let listed = match everywhere {
+            true => super::places::every_session(&self.env.paths),
+            false => match self.backend.sessions(None).await {
+                Ok(listed) => listed.into_iter().map(|(session, _)| session).collect(),
+                Err(why) => return self.fail(&why),
+            },
         };
-        let rows = picker_rows(listed, named_only, &open, purpose == PickFor::Resume);
+        let rows = picker_rows(listed, named_only, &open, !matches!(purpose, PickFor::Consult(_)));
         if rows.is_empty() {
             self.overlay = None;
             if let Some(note) = note {
                 self.info(&note);
             }
-            return self.info(if named_only {
-                "no session of this project has a name"
-            } else {
-                "this project has no other sessions"
+            return self.info(match (named_only, everywhere) {
+                (true, false) => "no session of this project has a name",
+                (true, true) => "no session has a name",
+                (false, false) => "this project has no other sessions",
+                (false, true) => "there are no other sessions",
             });
         }
         let home = &self.env.paths.home;
@@ -353,7 +370,8 @@ impl Tui {
                 let background = Some(&session.id)
                     .filter(|id| **id != open)
                     .and_then(|id| crate::running::host_of(home, id));
-                session_item(session, session.id == open, background.as_deref())
+                let place = everywhere.then(|| super::places::shown_dir(&session.cwd));
+                session_item(session, session.id == open, background.as_deref(), place)
             })
             .collect();
         let mut body = vec![SESSION_KEYS.to_string()];
@@ -363,6 +381,7 @@ impl Tui {
         body.extend(note);
         let title = match purpose {
             PickFor::Resume => "Resume a session",
+            PickFor::Open => "Open a session of any project",
             PickFor::Consult(_) => "Ask a saved session",
         };
         let selected = select.and_then(|id| rows.iter().position(|session| session.id == id));
@@ -555,6 +574,7 @@ impl Tui {
                 };
                 match purpose {
                     PickFor::Resume => self.resume_file(row.path).await,
+                    PickFor::Open => self.open_anywhere(row).await,
                     PickFor::Consult(Some(question)) => self.consult(&row, &question),
                     PickFor::Consult(None) => {
                         let body = vec![format!("What do you want to know from: {}", session_label(&row))];
@@ -1116,6 +1136,8 @@ mod tests {
             prompts: 1,
             models: BTreeMap::new(),
             tools: BTreeMap::new(),
+            cwd: "/work/app".to_string(),
+            archived: false,
         }
     }
 
@@ -1153,12 +1175,22 @@ mod tests {
             ids(&picker_rows(fresh, false, "open", true)),
             ["pinned", "newest", "oldest"]
         );
+        // An archived session is in no picker.
+        let mut archived = listed();
+        archived[0].archived = true;
+        assert_eq!(
+            ids(&picker_rows(archived, false, "open", true)),
+            ["pinned", "open", "oldest"]
+        );
 
-        let item = session_item(&summary("pinned", Some("kept"), true, 9), true, None);
+        let item = session_item(&summary("pinned", Some("kept"), true, 9), true, None, None);
         assert_eq!(item.label, "kept");
         assert!(item.detail.starts_with("pinned · open now · "), "{}", item.detail);
         assert!(item.detail.ends_with("9 messages"), "{}", item.detail);
-        let item = session_item(&summary("x", None, false, 1), false, Some("ab12"));
+        // `/open` says where each session works.
+        let item = session_item(&summary("y", None, false, 3), false, None, Some("~/app".into()));
+        assert!(item.detail.starts_with("~/app · "), "{}", item.detail);
+        let item = session_item(&summary("x", None, false, 1), false, Some("ab12"), None);
         assert_eq!(item.label, "prompt of x");
         assert!(
             item.detail

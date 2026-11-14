@@ -39,6 +39,22 @@ GitHub are its section here.
   with a ruff config or dependency, `uv format` with a `uv.lock`, `standardrb` or `rubocop` from the
   `Gemfile`, `pint` from `composer.json`, and `air` for R. Those that run the project's code wait for the
   project to be trusted. `azazel doctor` lists the formatters it would use for the project.
+- `/open` (and `azazel open` in the shell) lists the recent sessions of every project, newest first, each with
+  its directory; opening one of another project starts azazel again there, in the same terminal, with that
+  project's trust, configuration and context files.
+- `/cd <dir>` goes on in another directory, with `Tab` completing directory names; a directory of another
+  project moves the session into that project's sessions.
+- `/worktree [name]` makes a git worktree under `.azazel/worktrees/` on a new branch `azazel/<name>` from HEAD,
+  moves the uncommitted changes into it (through `git stash`) and goes on there; `/worktree list` and
+  `/worktree remove <name> [--force]` manage them.
+- `azazel sessions import <file|URL> [--project <dir>]` makes a session from a session file or a JSON lines
+  export, from disk or an `https://` address.
+- `azazel export --sanitize` and `/export --sanitize` hide secrets in every format and replace what files held
+  (the results of `read`, `grep`, `edit` and the like, and the text given to `write`) with
+  `[file content removed]`.
+- Print mode takes `-f/--file <path>` (up to 100: text inlined, images attached), `--worktree[=name]` (the run
+  happens in a new worktree, whose path is printed at the end) and `--archived` (the session stays out of
+  `/resume`, `/open`, `-c` and `azazel sessions list`, which lists it with `--all`).
 
 ### Changed
 
@@ -53,6 +69,8 @@ GitHub are its section here.
 - `[tools] format_on_write` is on by default: a file is formatted only by a formatter its project uses,
   and a missing or failing formatter is a note in the result, never a failed write. An empty
   `[tools.format]` command turns formatting off for that extension.
+- `/open` alone opens the session picker; the last link of the last reply is now `/open link` (`/open <n>`,
+  `/open <path>` and `/open diagram` are unchanged).
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or

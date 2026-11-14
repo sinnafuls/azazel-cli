@@ -345,6 +345,8 @@ fn summary(row: SessionRow) -> (SessionSummary, Vec<String>) {
         prompts: row.prompts as usize,
         models: Default::default(),
         tools: Default::default(),
+        cwd: String::new(),
+        archived: false,
     };
     (summary, row.matches)
 }

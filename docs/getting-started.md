@@ -134,7 +134,9 @@ Type a request and press `Enter`:
 - `Ctrl+C` twice, `Ctrl+D` on an empty line, or `/quit` exits.
 
 All keys and commands are listed in [the terminal UI](tui.md). To continue where you left off next time, run
-`azazel -c`.
+`azazel -c`. `azazel open` (or `/open` in the UI) lists the recent sessions of every project, and opening one
+takes you to its project; `/cd <dir>` and `/worktree` take the session elsewhere. See
+[projects and directories](sessions-and-checkpoints.md#projects-and-directories).
 
 Words after `azazel` are sent as the first message: `azazel fix the failing test` opens the UI and starts on it.
 Quote the prompt or put `--` before it when it contains something that looks like a flag or starts with a
@@ -152,6 +154,8 @@ azazel -p "what is wrong in @screenshot.png"
 git diff | azazel -p "review this diff"
 azazel -p "fix the failing test" --mode auto
 azazel -p "list the TODO comments" --output json
+azazel -p "compare these" -f before.png -f after.png -f notes.md
+azazel -p "try the upgrade" --mode auto --worktree=upgrade --archived
 ```
 
 | Flag | Effect |
@@ -162,6 +166,9 @@ azazel -p "list the TODO comments" --output json
 | `--trust` | Trust the project's configuration for this run |
 | `--max-cost <USD>` | Stop once the run has spent this much |
 | `--json-schema <FILE\|JSON>` | Print only JSON that matches this schema; exit 1 when the run produced none (see [typed results](team.md#typed-results)) |
+| `-f`, `--file <PATH>` | Give the prompt a file, up to 100: a text file is added as `@path` adds it, an image is attached |
+| `--worktree[=NAME]` | Run in a new git worktree on a branch `azazel/<NAME>` from HEAD; its path is printed at the end (see [worktrees](sessions-and-checkpoints.md#worktrees)) |
+| `--archived` | Keep the run's session out of `/resume`, `/open`, `-c` and `azazel sessions list` |
 | `--tools`, `--system-prompt`, `--bare`, ... | See [command-line flags](configuration.md#command-line-flags) |
 
 Nobody is there to approve a tool call in print mode, so a call that would prompt is denied with
