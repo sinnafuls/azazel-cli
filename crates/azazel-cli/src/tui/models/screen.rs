@@ -986,8 +986,9 @@ impl Models {
         step
     }
 
-    /// The thinking levels of `model` for entry `entry` of `role`, with `inherit` first; none
-    /// for a model that does not think.
+    /// The thinking levels of `model` for entry `entry` of `role`: `inherit`, `off`, then the
+    /// levels the model takes (every one when the catalogue names none); none for a model that
+    /// does not think.
     fn thinking_strip(&self, role: &str, entry: usize, model: &str) -> Option<Strip> {
         let row = self.data.rows.iter().find(|row| row.model == list::bare(model))?;
         if !row.reasoning {
@@ -1001,8 +1002,13 @@ impl Models {
                 .filter_map(|level| level.parse().ok())
                 .collect(),
         };
-        let mut options = vec![None];
-        options.extend(levels.into_iter().map(Some));
+        let mut options = vec![None, Some(ThinkingLevel::Off)];
+        options.extend(
+            levels
+                .into_iter()
+                .filter(|level| *level != ThinkingLevel::Off)
+                .map(Some),
+        );
         let now = level_of(model);
         let at = options.iter().position(|option| *option == now).unwrap_or(0);
         Some(Strip::Thinking {

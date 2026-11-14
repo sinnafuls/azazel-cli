@@ -274,9 +274,15 @@ fn assigning_a_model_keeps_the_fallbacks_and_offers_its_thinking_levels() {
         Some(set_role("slow", &[OPUS, HAIKU]))
     );
     answered(&mut screen, "slow", &[OPUS, HAIKU]);
-    // `inherit`, then the model's own levels; enter on one writes it as the suffix.
+    // `inherit`, `off`, then the model's own levels and no others; enter on one writes it as
+    // the suffix.
     let strip = shown(&screen, 140, 20).pop().unwrap();
-    assert!(strip.contains("inherit") && strip.contains("medium"), "{strip}");
+    assert!(
+        strip.contains("inherit") && strip.contains(" off ") && strip.contains("medium"),
+        "{strip}"
+    );
+    assert!(!strip.contains("xhigh") && !strip.contains("minimal"), "{strip}");
+    press(&mut screen, KeyCode::Right);
     press(&mut screen, KeyCode::Right);
     press(&mut screen, KeyCode::Right);
     assert_eq!(
