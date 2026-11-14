@@ -803,6 +803,7 @@ mod tests {
                 "tui.tool_style",
                 "tui.redact",
                 "tui.popups",
+                "tui.mouse",
                 "tui.show_thinking",
                 "tui.expand_tools",
                 "statusline.preset",

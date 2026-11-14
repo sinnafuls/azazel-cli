@@ -96,6 +96,11 @@ pub(super) struct Popup {
 }
 
 impl Popup {
+    /// Where the box was last painted, as `(top, left, rows, width)` in the window.
+    pub(super) fn placed(&self) -> Option<(usize, usize, usize, usize)> {
+        self.screen.placed()
+    }
+
     fn new(columns: u16, rows: u16) -> Popup {
         Popup {
             screen: Modal::new(columns, rows),
@@ -158,6 +163,9 @@ impl Tui {
         if self.guard.enter_alt() {
             popup.screen.invalidate();
         }
+        // The mouse works in the box while it is up (and again after the full-screen viewer
+        // or another program had it); leaving the alternate screen stops that.
+        self.guard.capture_mouse(self.env.config.tui.mouse);
         popup.closing = None;
         popup.screen.resize(columns, rows);
         popup.catch_up(&self.transcript);

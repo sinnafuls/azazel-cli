@@ -668,6 +668,8 @@ pub(super) async fn show(tui: &mut Tui, title: &str, files: Vec<FileDiff>) {
     tui.leaving_main();
     // A popup may have the alternate screen already; then it stays when the viewer closes.
     let entered = tui.guard.enter_alt();
+    // The view takes no mouse; a popup under it asks for the mouse again when it is back.
+    tui.guard.capture_mouse(false);
     let mut dirty = true;
     loop {
         if tui.settle_resize() || dirty {

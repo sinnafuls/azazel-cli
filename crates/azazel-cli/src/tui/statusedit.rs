@@ -1,7 +1,11 @@
 //! `/statusline`: a preset, a separator and the segments of each side, chosen in a list with
 //! the line they make in view above it.
 
+use std::cell::Cell;
+
 use azazel_core::config::{StatusPreset, StatusSeparator, StatuslineConfig};
+use azazel_tui::components::select::ListMouse;
+use azazel_tui::mouse::MouseKind;
 use azazel_tui::{Glyph, Hint, SelectItem, SelectList, Theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -34,6 +38,8 @@ pub struct StatusEditor {
     left: Vec<Name>,
     right: Vec<Name>,
     list: SelectList,
+    /// The row of the last widget the list started on, under the sample line.
+    list_from: Cell<usize>,
     /// The lead is on a subscription: the sample line shows a usage window, not a cost.
     subscription: bool,
 }
@@ -71,6 +77,7 @@ impl StatusEditor {
             left: layout.left,
             right: layout.right,
             list: SelectList::new(Vec::new()),
+            list_from: Cell::new(0),
             subscription,
         };
         editor.list.set_items(editor.items());
@@ -209,6 +216,7 @@ impl StatusEditor {
     pub fn on_key(&mut self, key: &KeyEvent) -> Step {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        self.list.clear_hover();
         let Some(row) = self.list.selected().and_then(|at| self.rows().get(at).copied()) else {
             return Step::Cancelled;
         };
@@ -238,6 +246,23 @@ impl StatusEditor {
             _ => return Step::Pending,
         }
         self.refresh(row);
+        Step::Pending
+    }
+
+    /// The mouse over the widget, `row` its row there. A press selects a row; a segment's
+    /// box ticks at the first press, and a second press on the preset or the separator steps
+    /// it, as `space` does. The wheel moves through the list.
+    pub fn on_mouse(&mut self, kind: MouseKind, row: Option<usize>) -> Step {
+        let row = row.and_then(|row| row.checked_sub(self.list_from.get()));
+        let (index, again) = match self.list.on_mouse(kind, row) {
+            ListMouse::Selected(index) => (index, false),
+            ListMouse::Again(index) => (index, true),
+            ListMouse::Nothing => return Step::Pending,
+        };
+        let segment = matches!(self.rows().get(index), Some(Row::Segment(_)));
+        if segment || again {
+            return self.on_key(&KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE));
+        }
         Step::Pending
     }
 
@@ -275,6 +300,7 @@ impl StatusEditor {
             lines.push(String::new());
         }
         let first = lines.len();
+        self.list_from.set(first);
         let view = self.list.view(width, rows.saturating_sub(first).max(1), theme);
         lines.extend(view.lines);
         Widget {

@@ -1,8 +1,13 @@
 //! The form an agent's questions are answered in: one question, or several with a row of tabs
 //! to move between them and a last tab that shows the answers before they are sent.
 
+use std::cell::RefCell;
+use std::ops::Range;
+
 use azazel_core::{AskKind, Excerpt, Question};
+use azazel_tui::components::select::ListMouse;
 use azazel_tui::components::{code, diff};
+use azazel_tui::mouse::MouseKind;
 use azazel_tui::{Editor, Glyph, Hint, Line, Role, SelectItem, SelectList, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -14,6 +19,8 @@ const EDITOR_ROWS: usize = 3;
 const KEPT_FOR_LIST: usize = 6;
 /// The longest name a question without a `header` gets in the row of tabs.
 const TAB_WIDTH: usize = 16;
+/// Between two tabs.
+const TAB_GAP: &str = "  ";
 
 /// One question and what has been answered to it so far.
 struct Field {
@@ -44,6 +51,8 @@ pub struct Form {
     at: usize,
     /// The row that lets the user type an answer, drawn in the symbols in use: `Other…`.
     other: String,
+    /// The columns of each tab in the row of tabs last drawn.
+    spans: RefCell<Vec<Range<usize>>>,
 }
 
 impl Field {
@@ -217,6 +226,7 @@ impl Form {
                 .collect(),
             at: 0,
             other: other.to_string(),
+            spans: RefCell::new(Vec::new()),
         }
     }
 
@@ -320,6 +330,7 @@ impl Form {
                 _ => Step::Pending,
             };
         };
+        field.list.clear_hover();
         if field.types() {
             match key.code {
                 // Back to the options; a question that only takes text is dismissed.
@@ -381,6 +392,37 @@ impl Form {
         }
     }
 
+    /// The mouse over the form: `tab` is its column when it is on the row of tabs, `row` the
+    /// row of the list or input it is on. A press on a tab brings that question into view; in
+    /// a list a press selects an option and a press on the selected one answers with it, while
+    /// a check box toggles at the first press; the wheel moves through the options.
+    pub fn on_mouse(&mut self, kind: MouseKind, tab: Option<usize>, row: Option<usize>) -> Step {
+        if let Some(column) = tab {
+            let spans = self.spans.borrow();
+            if kind == MouseKind::Press
+                && let Some(at) = spans.iter().position(|span| span.contains(&column))
+            {
+                self.at = at;
+            }
+            return Step::Pending;
+        }
+        let other = self.other.clone();
+        // The tab that sends, and a question being typed: their keys go to the input.
+        let Some(field) = self.fields.get_mut(self.at).filter(|field| !field.types()) else {
+            return Step::Pending;
+        };
+        let multiple = field.question.kind == AskKind::Multiselect;
+        let chosen = match field.list.on_mouse(kind, row) {
+            ListMouse::Again(index) => Some(index),
+            ListMouse::Selected(index) if multiple && index < field.picked.len() => Some(index),
+            ListMouse::Selected(_) | ListMouse::Nothing => None,
+        };
+        match chosen {
+            Some(index) if field.choose(index, &other) => self.advance(),
+            _ => Step::Pending,
+        }
+    }
+
     pub fn on_paste(&mut self, pasted: &str) {
         if let Some(editor) = self.editor_mut() {
             editor.insert_str(pasted);
@@ -418,14 +460,26 @@ impl Form {
                 })
                 .collect();
             parts.push(tab(self.fields.len(), "Send", false));
-            parts.join(&theme.paint(Role::BorderMuted, "  "))
+            parts
         };
         // The names give way to the numbers alone where the row is too narrow for them.
-        let mut line = row(true);
-        if text::width(&line) > width {
-            line = row(false);
+        let joined = |parts: &[String]| parts.join(&theme.paint(Role::BorderMuted, TAB_GAP));
+        let mut parts = row(true);
+        if text::width(&joined(&parts)) > width {
+            parts = row(false);
         }
-        vec![text::truncate(&line, width, ellipsis), String::new()]
+        let mut start = 0;
+        let spans = parts
+            .iter()
+            .map(|part| {
+                let end = start + text::width(part);
+                let span = start.min(width)..end.min(width);
+                start = end + TAB_GAP.len();
+                span
+            })
+            .collect();
+        self.spans.replace(spans);
+        vec![text::truncate(&joined(&parts), width, ellipsis), String::new()]
     }
 
     /// The text of the tab in view: what the question is about and the question, or on the

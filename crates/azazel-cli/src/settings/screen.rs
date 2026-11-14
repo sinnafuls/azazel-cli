@@ -2,11 +2,14 @@
 //! them, and the editors of a value, all inside one box. It holds no terminal: the UI gives it
 //! keys and asks it for rows.
 
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
 
 use azazel_core::settings::{Kind, NOT_EDITABLE, Page, SETTINGS, Setting};
 use azazel_core::{Level, PermissionMode};
+use azazel_tui::components::select::ListMouse;
 use azazel_tui::components::tabs;
+use azazel_tui::mouse::MouseKind;
 use azazel_tui::{Editor, Glyph, Hint, Line, RESET, Role, Scroll, SelectItem, SelectList, Tab, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use toml::Value;
@@ -165,6 +168,8 @@ struct Body {
     lines: Vec<Line>,
     cursor: Option<(usize, usize)>,
     scroll: Option<Scroll>,
+    /// The rows of `lines` that are rows of a list, which the mouse can point at.
+    list: Range<usize>,
 }
 
 impl Body {
@@ -173,8 +178,20 @@ impl Body {
             lines,
             cursor: None,
             scroll: None,
+            list: 0..0,
         }
     }
+}
+
+/// Where the last view put what the mouse can point at, in its rows.
+#[derive(Debug, Clone, Default)]
+struct Areas {
+    /// The row of the tabs, while they are shown.
+    tabs: Option<usize>,
+    /// The rows of the list or of the editor's list.
+    list: Range<usize>,
+    /// Each tab shown, with its columns.
+    spans: Vec<(usize, Range<usize>)>,
 }
 
 pub(crate) struct Screen {
@@ -198,6 +215,7 @@ pub(crate) struct Screen {
     /// What the last change came to, shown in place of the description until the next key.
     notice: Option<(Level, String)>,
     request: Option<Request>,
+    areas: RefCell<Areas>,
 }
 
 /// Text from a config file as one plain line.
@@ -231,6 +249,7 @@ impl Screen {
             edit: None,
             notice: None,
             request: None,
+            areas: RefCell::new(Areas::default()),
         };
         screen.rebuild();
         screen
@@ -520,6 +539,112 @@ impl Screen {
     fn hand_over(&mut self, request: Request) -> bool {
         self.request = Some(request);
         true
+    }
+
+    /// The mouse over the screen, `at` the `(row, column)` of the last [`Screen::view`] it is
+    /// on. A press on a tab opens its page; a press on a row selects it and a second press acts
+    /// as `enter`; the wheel moves the selection. Only what a key could do is done: no tab is
+    /// opened while a search or an editor has the keys. True as for [`Screen::on_key`].
+    pub(crate) fn on_mouse(&mut self, kind: MouseKind, at: Option<(usize, usize)>) -> bool {
+        let (row, tab) = {
+            let areas = self.areas.borrow();
+            let row = at.and_then(|(row, _)| areas.list.contains(&row).then(|| row - areas.list.start));
+            let tab = at
+                .filter(|(row, _)| areas.tabs == Some(*row))
+                .and_then(|(_, column)| areas.spans.iter().find(|(_, span)| span.contains(&column)))
+                .map(|(page, _)| *page);
+            (row, tab)
+        };
+        if kind == MouseKind::Press {
+            self.notice = None;
+        }
+        if let Some(edit) = self.edit.take() {
+            self.edit = self.edit_mouse(edit, kind, row);
+            return false;
+        }
+        match kind {
+            MouseKind::ScrollUp | MouseKind::ScrollDown => {
+                let before = self.cursor;
+                let down = kind == MouseKind::ScrollDown;
+                self.step(down);
+                // The wheel stops at the ends where the arrows go round.
+                if (self.cursor > before) != down {
+                    self.cursor = before;
+                }
+            }
+            MouseKind::Press => {
+                if let Some(page) = tab.filter(|_| self.search.is_none()) {
+                    self.open_page(page);
+                    return false;
+                }
+                let Some(index) = row.map(|row| self.scroll.get() + row) else {
+                    return false;
+                };
+                if !self.rows.get(index).is_some_and(Row::selectable) {
+                    return false;
+                }
+                if index == self.cursor {
+                    return self.activate();
+                }
+                self.cursor = index;
+            }
+            MouseKind::Drag | MouseKind::Move => {}
+        }
+        false
+    }
+
+    /// The mouse over the editor that is open. Returns the editor, or `None` when it is done.
+    fn edit_mouse(&mut self, mut edit: Edit, kind: MouseKind, row: Option<usize>) -> Option<Edit> {
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        match &mut edit {
+            Edit::Choice {
+                setting,
+                options,
+                list,
+            } => {
+                let before = list.selected();
+                if let ListMouse::Again(_) = list.on_mouse(kind, row) {
+                    return self.edit_key(edit, &enter);
+                }
+                if list.selected() != before
+                    && let Some(option) = list.selected().and_then(|index| options.get(index))
+                {
+                    self.store.preview(setting, &Value::String(option.clone()));
+                }
+            }
+            Edit::Confirm { list, .. } => {
+                if let ListMouse::Again(_) = list.on_mouse(kind, row) {
+                    return self.edit_key(edit, &enter);
+                }
+            }
+            Edit::Entries {
+                entries,
+                at,
+                typing: None,
+                scroll,
+                ..
+            } => {
+                let last = entries.len();
+                match kind {
+                    MouseKind::ScrollUp => *at = at.saturating_sub(1),
+                    MouseKind::ScrollDown => *at = (*at + 1).min(last),
+                    MouseKind::Press => {
+                        let Some(index) = row.map(|row| scroll.get() + row).filter(|index| *index <= last)
+                        else {
+                            return Some(edit);
+                        };
+                        if index == *at {
+                            return self.edit_key(edit, &enter);
+                        }
+                        *at = index;
+                    }
+                    MouseKind::Drag | MouseKind::Move => {}
+                }
+            }
+            // Text being typed has the keys.
+            Edit::Text { .. } | Edit::Entries { .. } => {}
+        }
+        Some(edit)
     }
 
     fn search_key(&mut self, key: &KeyEvent) -> bool {
@@ -1056,8 +1181,12 @@ impl Screen {
 
         let mut lines: Vec<Line> = Vec::with_capacity(total);
         let mut cursor = None;
+        let mut areas = Areas::default();
         if tabs {
-            lines.push(self.tabs_row(width, theme));
+            let (line, spans) = self.tabs_row(width, theme);
+            areas.tabs = Some(lines.len());
+            areas.spans = spans;
+            lines.push(line);
         }
         if lead {
             let (line, column) = self.lead_row(width, theme);
@@ -1074,6 +1203,9 @@ impl Screen {
         };
         cursor = body.cursor.map(|(row, column)| (first + row, column)).or(cursor);
         let scroll = body.scroll.map(|scroll| (first, scroll));
+        let listed = body.list.start.min(list_rows)..body.list.end.min(list_rows);
+        areas.list = first + listed.start..first + listed.end;
+        self.areas.replace(areas);
         lines.extend(body.lines.into_iter().take(list_rows));
         lines.resize(first + list_rows, String::new());
         if gaps {
@@ -1087,7 +1219,8 @@ impl Screen {
         }
     }
 
-    fn tabs_row(&self, width: usize, theme: &Theme) -> Line {
+    /// The row of tabs, and where each tab on it is.
+    fn tabs_row(&self, width: usize, theme: &Theme) -> (Line, Vec<(usize, Range<usize>)>) {
         let searching = self.search.is_some();
         let tabs: Vec<Tab> = Page::ALL
             .iter()
@@ -1103,7 +1236,9 @@ impl Screen {
                 Tab::new(page.title(), badge)
             })
             .collect();
-        tabs::row(&tabs, self.tab_in_view(), width, theme)
+        let current = self.tab_in_view();
+        let spans = tabs::spans(&tabs, current, width, theme);
+        (tabs::row(&tabs, current, width, theme), spans)
     }
 
     /// The page the selection is on: the page in view, or while searching the page of the
@@ -1389,6 +1524,7 @@ impl Screen {
                 visible,
                 total,
             }),
+            list: 0..visible,
         }
     }
 
@@ -1399,6 +1535,7 @@ impl Screen {
             Edit::Choice { list, .. } => {
                 let view = list.view(width, rows, theme);
                 Body {
+                    list: 0..view.lines.len(),
                     lines: view.lines,
                     cursor: None,
                     scroll: view.scroll,
@@ -1416,11 +1553,15 @@ impl Screen {
                 if !lines.is_empty() {
                     lines.push(String::new());
                 }
+                let first = lines.len();
                 lines.extend(
                     list.view(width, rows.saturating_sub(lines.len()).max(1), theme)
                         .lines,
                 );
-                Body::plain(lines)
+                Body {
+                    list: first..lines.len(),
+                    ..Body::plain(lines)
+                }
             }
             Edit::Text {
                 setting,
@@ -1461,6 +1602,7 @@ impl Screen {
                     lines,
                     cursor,
                     scroll: None,
+                    list: 0..0,
                 }
             }
             Edit::Entries {
@@ -1532,6 +1674,7 @@ impl Screen {
                     lines,
                     cursor,
                     scroll: list_scroll,
+                    list: 0..visible,
                 }
             }
         }
@@ -1717,6 +1860,66 @@ mod tests {
         let at = tabs.find("\x1b[1;4m").unwrap();
         assert!(tabs[at..].contains("Appearance") && !tabs[..at].contains("Appearance"));
         assert_eq!(tabs.matches("\x1b[1;4m").count(), 1);
+    }
+
+    /// The row of the last view whose label starts with `label`, and a column inside it.
+    fn spot(screen: &Screen, label: &str) -> (usize, usize) {
+        let shown = rows(screen, 110, 30);
+        let row = shown
+            .iter()
+            .position(|row| row.trim_start_matches(['▌', ' ']).starts_with(label))
+            .unwrap_or_else(|| panic!("no row starts with {label:?} in {shown:#?}"));
+        (row, 4)
+    }
+
+    #[test]
+    fn the_mouse_opens_pages_selects_rows_and_acts_on_a_second_press() {
+        let f = fixture("", "");
+        let mut screen = screen(&f);
+        let tabs = rows(&screen, 110, 30)[0].clone();
+        let column = tabs.find("Appearance").expect("the tab");
+        assert!(!screen.on_mouse(MouseKind::Press, Some((0, column + 3))));
+        assert_eq!(screen.page(), Page::Appearance);
+        // The gap between two tabs is no tab.
+        rows(&screen, 110, 30);
+        screen.on_mouse(MouseKind::Press, Some((0, column - 1)));
+        assert_eq!(screen.page(), Page::Appearance);
+
+        // A press selects a row; a second press is enter, which flips a switch.
+        let accent = spot(&screen, "Session colour");
+        screen.on_mouse(MouseKind::Press, Some(accent));
+        assert_eq!(selected_name(&screen), "tui.session_accent");
+        assert_eq!(f.home_text(), "");
+        assert!(!screen.on_mouse(MouseKind::Press, Some(accent)));
+        assert!(
+            f.home_text().contains("session_accent = true"),
+            "{}",
+            f.home_text()
+        );
+        // A heading takes no press.
+        let heading = spot(&screen, "Notifications");
+        screen.on_mouse(MouseKind::Press, Some(heading));
+        assert_eq!(selected_name(&screen), "tui.session_accent");
+
+        // The wheel moves the selection and stops at the ends, where the arrows go round.
+        screen.go_to("tui.theme");
+        rows(&screen, 110, 30);
+        screen.on_mouse(MouseKind::ScrollUp, None);
+        assert_eq!(selected_name(&screen), "tui.theme");
+        screen.on_mouse(MouseKind::ScrollDown, None);
+        assert_eq!(selected_name(&screen), "tui.glyphs");
+
+        // In a choice a press tries the option on and a second press saves it.
+        screen.go_to("tui.theme");
+        press(&mut screen, KeyCode::Enter);
+        let light = spot(&screen, "light");
+        screen.on_mouse(MouseKind::Press, Some(light));
+        let theme = |name: &str| ("tui.theme".to_string(), Value::String(name.to_string()));
+        assert_eq!(f.applied().last(), Some(&theme("light")));
+        assert!(!f.home_text().contains("theme"));
+        screen.on_mouse(MouseKind::Press, Some(light));
+        assert!(f.home_text().contains("theme = \"light\""), "{}", f.home_text());
+        assert_eq!(selected_name(&screen), "tui.theme", "the editor closed");
     }
 
     #[test]

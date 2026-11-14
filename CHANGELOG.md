@@ -7,6 +7,11 @@ GitHub are its section here.
 
 ### Added
 
+- The mouse works in popups: move over a row to highlight it, click to select, click the selected row (or
+  tick a check box) to pick it, scroll with the wheel; in `/settings` a click on a tab opens its page. The
+  terminal reports the mouse only while a popup or the transcript viewer is open, so its own selection and
+  scrolling work everywhere else. `tui.mouse = false` (or `/settings` → Appearance) leaves the mouse to the
+  terminal.
 - RPC: `list_roles`, `set_role`, `save_preset` and `apply_preset` list the model roles with where each value comes from (built-in, home, project, session) and change them for the session or in a config file.
 
 ### Changed
