@@ -358,6 +358,7 @@ impl Tui {
             "quit" => self.quit = true,
             #[cfg(feature = "mcp")]
             "mcp" if args.is_empty() && self.backend.local().is_some() => self.open_mcp(),
+            "usage" if self.backend.local().is_some() => self.open_usage().await,
             // What the session says about itself, then what extensions added.
             _ => match self.backend.report(name, args).await {
                 Some(Ok(report)) => self.info(&report),

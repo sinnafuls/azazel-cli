@@ -1,8 +1,10 @@
 //! Model metadata: context window, output limit, capabilities and prices.
 
 use std::collections::{BTreeMap, HashMap};
+use std::io::Read;
 use std::path::Path;
 
+use flate2::read::DeflateDecoder;
 use nucleo_matcher::pattern::{AtomKind, CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use serde::{Deserialize, Serialize};
@@ -114,16 +116,28 @@ pub struct CatalogFile {
     pub models: Vec<ModelInfo>,
 }
 
+/// `catalog/models.json` as the build script deflated it. It is the largest piece of data in the
+/// binary, and a fifth of its size this way.
+static SNAPSHOT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/models.json.deflate"));
+
+/// The JSON of the snapshot compiled into the binary.
+fn snapshot() -> std::io::Result<Vec<u8>> {
+    let mut json = Vec::with_capacity(SNAPSHOT.len() * 8);
+    DeflateDecoder::new(SNAPSHOT).read_to_end(&mut json)?;
+    Ok(json)
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Catalog {
     models: HashMap<String, ModelInfo>,
 }
 
 impl Catalog {
-    /// The snapshot compiled into the binary.
+    /// The snapshot compiled into the binary, inflated and read when it is asked for.
     pub fn embedded() -> Self {
         let mut catalog = Catalog::default();
-        match serde_json::from_str::<CatalogFile>(include_str!("../catalog/models.json")) {
+        let file = snapshot().and_then(|json| Ok(serde_json::from_slice::<CatalogFile>(&json)?));
+        match file {
             Ok(file) => catalog.merge(file.models),
             Err(e) => tracing::warn!("embedded model catalogue is invalid: {e}"),
         }
@@ -305,8 +319,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn embedded_snapshot_parses() {
-        serde_json::from_str::<CatalogFile>(include_str!("../catalog/models.json")).unwrap();
+    fn embedded_snapshot_is_the_catalogue_file_and_parses() {
+        let json = snapshot().unwrap();
+        let file = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/catalog/models.json")).unwrap();
+        assert!(
+            json == file,
+            "the snapshot in the binary is not catalog/models.json"
+        );
+        serde_json::from_slice::<CatalogFile>(&json).unwrap();
+        assert!(!Catalog::embedded().is_empty());
     }
 
     #[test]

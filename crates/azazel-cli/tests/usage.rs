@@ -70,6 +70,11 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
             "five_hour": { "utilization": 42.0, "resets_at": "2099-01-01T00:00:00Z" },
             "seven_day": { "utilization": 9.0, "resets_at": "2099-01-03T00:00:00Z" },
             "seven_day_opus": null,
+            "limits": [
+                { "kind": "weekly_all", "percent": 9, "resets_at": "2099-01-03T00:00:00Z", "is_active": false },
+                { "kind": "weekly_scoped", "percent": 100, "resets_at": "2099-01-03T00:00:00Z",
+                  "scope": { "model": { "display_name": "Fable" } }, "is_active": true }
+            ],
             "extra_usage": { "is_enabled": false }
         })))
         .expect(1)
@@ -122,30 +127,42 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
 
     let shown = sandbox.azazel(&["usage"]).await;
     assert_eq!(shown.status.code(), Some(0), "{}", text(&shown.stderr));
+    // Into a pipe the rows of the box come as plain text.
     let out = text(&shown.stdout);
     let lines: Vec<&str> = out.lines().collect();
-    assert_eq!(lines[0], "anthropic · default (a@example.com)");
+    assert_eq!(lines[0], "anthropic");
+    // The address is hidden but for its first letter and its domain.
+    assert_eq!(lines[1], " ● default  a***@example.com · in use");
     assert!(
-        lines[1].starts_with("  5h         [████████░░░░░░░░░░░░]  42%  resets in "),
+        lines[2].starts_with("     5h        ━━━━━━━━────────────  42%  resets in "),
         "{out}"
     );
     assert!(
-        lines[2].starts_with("  7d         [██░░░░░░░░░░░░░░░░░░]   9%  resets in "),
+        lines[3].starts_with("     7d        ━━──────────────────   9%  resets in "),
         "{out}"
     );
-    assert_eq!(lines[3], "  extra usage: off");
-    assert_eq!(lines[4], "openai-codex · default (c@example.com) · plus plan");
+    // The weekly window of one model family, with what it counts.
     assert!(
-        lines[5].starts_with("  5h         [█░░░░░░░░░░░░░░░░░░░]   5%  resets in 4 h 2"),
+        lines[4].starts_with("     7d Fable  ━━━━━━━━━━━━━━━━━━━━ 100%  no requests for ")
+            && lines[4].ends_with("  Fable only"),
         "{out}"
     );
-    assert!(lines[6].contains(" 14%  resets in 5 d 1"), "{out}");
+    assert_eq!(lines[5], "     extra usage off");
+    assert_eq!(lines[6], "");
+    assert_eq!(lines[7], "openai-codex");
+    assert_eq!(lines[8], " ● default  c***@example.com · plus plan · in use");
+    assert!(
+        lines[9].starts_with("     5h        ━───────────────────   5%  resets in 4 h 2"),
+        "{out}"
+    );
+    assert!(lines[10].contains(" 14%  resets in 5 d 1"), "{out}");
     assert!(!out.contains("groq"), "{out}");
 
     // The answers are kept per provider and account, without anything secret in them.
     let cache = std::fs::read_to_string(sandbox.home().join("cache").join("limits.json")).unwrap();
     let cached: Value = serde_json::from_str(&cache).unwrap();
     assert_eq!(cached["anthropic"]["windows"][0]["name"], "5h");
+    assert_eq!(cached["anthropic"]["windows"][2]["scope"], "Fable");
     assert_eq!(cached["openai-codex"]["plan"], "plus");
     assert!(!cache.contains("access-token") && !cache.contains("refresh-token"));
 
@@ -155,10 +172,27 @@ async fn usage_asks_both_subscriptions_and_remembers_the_answers() {
     let accounts: Value = serde_json::from_str(&text(&listed.stdout)).unwrap();
     assert_eq!(accounts.as_array().unwrap().len(), 2);
     assert_eq!(accounts[0]["provider"], "anthropic");
-    assert_eq!(accounts[0]["email"], "a@example.com");
+    assert_eq!(accounts[0]["email"], "a***@example.com");
+    assert_eq!(accounts[0]["in_use"], true);
     assert_eq!(accounts[0]["extra_usage"], false);
+    assert_eq!(accounts[0]["windows"][2]["label"], "7-day Fable limit");
     assert_eq!(accounts[1]["windows"][1]["name"], "7d");
     assert_eq!(accounts[1]["error"], Value::Null);
+
+    // With the setting off the address is shown whole, in both forms.
+    let whole = sandbox
+        .azazel(&["usage", "--set", "usage.redact_email=false"])
+        .await;
+    assert!(
+        text(&whole.stdout).contains(" ● default  a@example.com · in use"),
+        "{}",
+        text(&whole.stdout)
+    );
+    let whole = sandbox
+        .azazel(&["usage", "--json", "--set", "usage.redact_email=false"])
+        .await;
+    let accounts: Value = serde_json::from_str(&text(&whole.stdout)).unwrap();
+    assert_eq!(accounts[1]["email"], "c@example.com");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -183,7 +217,10 @@ async fn usage_that_cannot_be_asked_for_says_why_and_fails() {
     let shown = sandbox.azazel(&["usage"]).await;
     assert_eq!(shown.status.code(), Some(1));
     let out = text(&shown.stdout);
-    assert!(out.contains("anthropic · default (a@example.com)"), "{out}");
+    assert!(
+        out.starts_with("anthropic\n ● default  a***@example.com · in use"),
+        "{out}"
+    );
     assert!(
         out.contains("anthropic answered HTTP 503 Service Unavailable when asked for its usage"),
         "{out}"

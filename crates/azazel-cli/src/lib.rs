@@ -102,6 +102,9 @@ impl Builder {
             .name("azazel".to_string())
             .stack_size(RUN_STACK)
             .spawn(move || {
+                // Before anything can build an HTTPS client: also those inside libraries, which do
+                // not go through `azazel_ai::tls`.
+                azazel_ai::tls::install();
                 let cli = Cli::parse();
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(runtime) => runtime,
@@ -367,10 +370,18 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return models::run_auth_status(&providers, &credentials, *json);
         }
         Some(Sub::Usage { json }) => {
-            let Some((_, providers, credentials)) = provider_setup(&cli, &paths, trusted) else {
+            let Some((config, _, credentials)) = provider_setup(&cli, &paths, trusted) else {
                 return print::EXIT_FAILED;
             };
-            return usage::run(&providers, &credentials, &usage::cache_file(&paths), *json).await;
+            credentials.limits().persist(usage::cache_file(&paths));
+            let source = match usage::Source::of(&config, Arc::new(credentials), &paths) {
+                Ok(source) => source,
+                Err(e) => {
+                    eprintln!("azazel: {e}");
+                    return print::EXIT_FAILED;
+                }
+            };
+            return usage::run(&source, &config, &paths, *json).await;
         }
         Some(Sub::Migrate {
             from,

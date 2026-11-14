@@ -135,7 +135,7 @@ pub trait SearchBackend: Send + Sync {
 
 /// The client `web_search` sends its requests with.
 pub(crate) fn http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
+    azazel_ai::tls::client_builder()
         .timeout(TIMEOUT)
         .user_agent(USER_AGENT)
         .build()
@@ -692,7 +692,7 @@ impl WebSearchTool {
     /// reports (see [`backend_from_config`]). The provider's own search is not used; see
     /// [`WebSearchTool::with_provider`].
     pub fn new(backend: Result<Arc<dyn SearchBackend>, String>, client: reqwest::Client) -> Self {
-        let unfollowed = reqwest::Client::builder()
+        let unfollowed = azazel_ai::tls::client_builder()
             .timeout(LINK_TIMEOUT)
             .user_agent(USER_AGENT)
             .redirect(reqwest::redirect::Policy::none())

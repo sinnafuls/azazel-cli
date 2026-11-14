@@ -116,7 +116,7 @@ pub(super) fn wire_for(api: WireApi) -> Result<Wire, AiError> {
 /// response that goes silent is given up by the provider's stall watchdog ([`StallLimits`]); the
 /// read timeout is what is left when that is turned off.
 pub fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
+    crate::tls::client_builder()
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(300))
         .user_agent(concat!("azazel/", env!("CARGO_PKG_VERSION")))
@@ -219,40 +219,80 @@ impl HttpProvider {
         self.send_as(wire, request, cancel, None).await
     }
 
-    /// Sends `request`. When it was made with stored account `account`, what the answer's
-    /// headers say about that account's usage windows is kept, and an answer that means the
-    /// account is out of allowance marks it so.
+    /// Sends `request`. When it asks model `model` with stored account `account` (given as
+    /// `(account, model)`), what the answer's headers say about that account's usage windows is
+    /// kept, and an answer that means the account is out of allowance marks it so: for the
+    /// models the window that ran out counts, or for all of them.
     async fn send_as(
         &self,
         wire: &Wire,
         request: reqwest::RequestBuilder,
         cancel: &CancellationToken,
-        account: Option<&str>,
+        account: Option<(&str, &str)>,
     ) -> Result<reqwest::Response, AiError> {
         let limits = self.credentials.limits();
+        let id = &self.config.id;
         match send_request(request, wire.classify_error, cancel).await {
             Ok(response) => {
-                if let Some(account) = account {
-                    limits.record(&self.config.id, account, (wire.limits)(response.headers()));
-                    limits.unblock(&self.config.id, account);
+                if let Some((account, model)) = account {
+                    limits.record(id, account, (wire.limits)(response.headers()));
+                    limits.unblock_for(id, account, model);
                 }
                 Ok(response)
             }
             Err(failed) => {
                 if failed.status == Some(401) {
-                    self.credentials.invalidate(&self.config.id);
+                    self.credentials.invalidate(id);
                 }
-                let Some(account) = account else {
+                let Some((account, model)) = account else {
                     return Err(failed.error);
                 };
-                limits.record(&self.config.id, account, (wire.limits)(&failed.headers));
-                let error = name_full_window(failed.error, limits.full(&self.config.id, account));
+                limits.record(id, account, (wire.limits)(&failed.headers));
+                let full = limits.full_for(id, account, model);
+                let error = name_full_window(failed.error, full.clone());
                 if let Some(until) = blocked_until(&error) {
-                    limits.block(&self.config.id, account, until);
+                    limits.block_on(id, account, until, full.as_ref());
                 }
                 Err(error)
             }
         }
+    }
+
+    /// Before a request to `model` goes out on stored account `account`: when that account is
+    /// known to be out of allowance for the model (blocked, or a usage report shows a window
+    /// the provider refuses for) and another stored account is not, the refusal the provider
+    /// would give, so that the router moves the request there without asking. With nowhere
+    /// else to go, or no router to move it, the provider is asked, and its answer is the last
+    /// word.
+    fn known_refusal(&self, account: &str, model: &str) -> Option<AiError> {
+        if !self.credentials.moved() {
+            return None;
+        }
+        let limits = self.credentials.limits();
+        let id = &self.config.id;
+        let now = now_ms() / 1000;
+        let (until, limit) = match limits.blocked_for(id, account, model) {
+            Some(block) => (block.until, block.limit()),
+            None => {
+                let window = limits.spent(id, account, model)?;
+                (
+                    window
+                        .resets_at
+                        .filter(|at| *at > now)
+                        .unwrap_or(now + UNKNOWN_RESET.as_secs()),
+                    window.label(),
+                )
+            }
+        };
+        let elsewhere = self
+            .credentials
+            .rotation(id)
+            .iter()
+            .any(|other| other.label != account && limits.open(id, &other.label, model));
+        elsewhere.then(|| AiError::Quota {
+            resets_at: Some(until),
+            message: format!("the {limit} of account {account} is used up"),
+        })
     }
 
     /// Sends `request` and reads the answer as JSON.
@@ -475,6 +515,12 @@ impl Provider for HttpProvider {
         };
         let wire = wire_for(config.api)?;
         let (auth, account) = self.authorise().await?;
+        if let Some(refusal) = account
+            .as_deref()
+            .and_then(|account| self.known_refusal(account, &model.id))
+        {
+            return Err(refusal);
+        }
         let target = Target {
             provider: &config.id,
             model,
@@ -487,7 +533,7 @@ impl Provider for HttpProvider {
         let request = (wire.build_request)(&self.client, &config, model, &prepared, &auth);
         let response = tokio::select! {
             biased;
-            sent = self.send_as(&wire, request, &cancel, account.as_deref()) => sent?,
+            sent = self.send_as(&wire, request, &cancel, account.as_deref().map(|account| (account, model.id.as_str()))) => sent?,
             stalled = watchdog.expired() => return Err(stalled),
         };
         let decoder = (wire.decoder)(&config, model);
@@ -697,12 +743,7 @@ mod tests {
     #[test]
     fn a_refusal_for_lack_of_allowance_names_the_full_window() {
         let now = now_ms() / 1000;
-        let full = Window {
-            name: "5h".to_string(),
-            used: 1.0,
-            resets_at: Some(now + 2 * 3600 + 10 * 60 + 30),
-            status: "allowed".to_string(),
-        };
+        let full = Window::new("5h", 1.0, Some(now + 2 * 3600 + 10 * 60 + 30), "allowed");
         let refusal = || AiError::Quota {
             resets_at: None,
             message: "You're out of extra usage. Add more at claude.ai/settings/usage and keep going."

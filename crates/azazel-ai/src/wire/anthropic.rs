@@ -249,17 +249,22 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 /// The usage windows of a subscription, from the unified rate-limit headers of a response:
-/// `5h` and `7d` with their utilisation and reset time, the window the answer's status is about
-/// when it is another one, and `overage` (extra usage) when the account has a say on it.
+/// `5h` and `7d` with their utilisation and reset time; `7d_oi`, the weekly window of the Fable
+/// models, as `7d-fable`; the window the answer's status is about when it is another one; and
+/// `overage` (extra usage) when the account has a say on it.
 pub fn limits(headers: &HeaderMap) -> Vec<Window> {
     let unified = |name: &str| header(headers, &format!("{UNIFIED}{name}"));
     let status = unified("status").unwrap_or("allowed");
     // The window the status speaks about; the others are within their allowance.
     let claim = unified("representative-claim");
     let mut windows = Vec::new();
-    for (name, claimed) in [("5h", "five_hour"), ("7d", "seven_day")] {
-        let used = unified(&format!("{name}-utilization")).and_then(|used| used.parse::<f32>().ok());
-        let resets_at = unified(&format!("{name}-reset")).and_then(|at| at.parse().ok());
+    for (prefix, name, claimed, scope) in [
+        ("5h", "5h", "five_hour", None),
+        ("7d", "7d", "seven_day", None),
+        ("7d_oi", "7d-fable", "seven_day_overage_included", Some("Fable")),
+    ] {
+        let used = unified(&format!("{prefix}-utilization")).and_then(|used| used.parse::<f32>().ok());
+        let resets_at = unified(&format!("{prefix}-reset")).and_then(|at| at.parse().ok());
         let is_claim = claim == Some(claimed);
         if used.is_none() && resets_at.is_none() && !is_claim {
             continue;
@@ -269,19 +274,21 @@ pub fn limits(headers: &HeaderMap) -> Vec<Window> {
             used: used.unwrap_or(if is_claim && status == REJECTED { 1.0 } else { 0.0 }),
             resets_at: resets_at.or_else(|| unified("reset").filter(|_| is_claim)?.parse().ok()),
             status: if is_claim { status } else { "allowed" }.to_string(),
+            scope: scope.map(str::to_string),
         });
     }
     let other = match claim {
-        Some("seven_day_opus") => Some("7d-opus"),
-        Some("seven_day_sonnet") => Some("7d-sonnet"),
+        Some("seven_day_opus") => Some(("7d-opus", "Opus")),
+        Some("seven_day_sonnet") => Some(("7d-sonnet", "Sonnet")),
         _ => None,
     };
-    if let Some(name) = other.filter(|_| status != "allowed") {
+    if let Some((name, scope)) = other.filter(|_| status != "allowed") {
         windows.push(Window {
             name: name.to_string(),
             used: if status == REJECTED { 1.0 } else { 0.0 },
             resets_at: unified("reset").and_then(|at| at.parse().ok()),
             status: status.to_string(),
+            scope: Some(scope.to_string()),
         });
     }
     let overage = unified("overage-status");
@@ -299,6 +306,7 @@ pub fn limits(headers: &HeaderMap) -> Vec<Window> {
                 (None, Some(reason)) => format!("disabled ({reason})"),
                 (None, None) => String::new(),
             },
+            scope: None,
         });
     }
     windows

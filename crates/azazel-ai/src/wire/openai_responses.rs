@@ -131,6 +131,7 @@ pub fn limits(headers: &reqwest::header::HeaderMap) -> Vec<Window> {
             }),
             // A refusal comes as an error of its own; the headers only count.
             status: "allowed".to_string(),
+            scope: None,
         });
     }
     windows
@@ -915,12 +916,7 @@ mod tests {
         assert_eq!(windows.len(), 2);
         assert_eq!(
             windows[0],
-            Window {
-                name: "5h".to_string(),
-                used: 0.815,
-                resets_at: Some(1_794_506_400),
-                status: "allowed".to_string(),
-            }
+            Window::new("5h", 0.815, Some(1_794_506_400), "allowed")
         );
         assert_eq!((windows[1].name.as_str(), windows[1].used), ("7d", 0.12));
         let now = crate::credentials::now_ms() / 1000;

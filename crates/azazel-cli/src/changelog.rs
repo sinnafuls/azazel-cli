@@ -1,11 +1,26 @@
 //! The changelog shipped inside the binary: `azazel changelog`, `/changelog`, and the one-line
 //! notice on the first start after an update.
 
+use std::io::Read;
+use std::sync::LazyLock;
+
 use azazel_core::Paths;
+use flate2::read::DeflateDecoder;
 
 use crate::print::{EXIT_OK, EXIT_USAGE};
 
-pub const CHANGELOG: &str = include_str!("../../../CHANGELOG.md");
+/// `CHANGELOG.md` as it ships: deflated by the build script, inflated the first time it is read.
+pub fn shipped() -> &'static str {
+    static PACKED: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/CHANGELOG.md.deflate"));
+    static TEXT: LazyLock<String> = LazyLock::new(|| {
+        let mut text = String::new();
+        if let Err(e) = DeflateDecoder::new(PACKED).read_to_string(&mut text) {
+            tracing::warn!("the changelog in the binary is damaged: {e}");
+        }
+        text
+    });
+    &TEXT
+}
 
 /// One `## [version]` section: its version (`Unreleased` too) and its text, heading included.
 #[derive(Debug, PartialEq)]
@@ -84,7 +99,7 @@ pub fn update_notice(paths: &Paths) -> Option<String> {
     if previous == current {
         return None;
     }
-    let count = since(CHANGELOG, &previous).map(|s| changes(&s)).unwrap_or(0);
+    let count = since(shipped(), &previous).map(|s| changes(&s)).unwrap_or(0);
     Some(match count {
         0 => format!("updated {previous} to {current}"),
         n => format!("updated {previous} to {current}: {n} changes, /changelog shows them"),
@@ -94,9 +109,9 @@ pub fn update_notice(paths: &Paths) -> Option<String> {
 /// The text `/changelog` and `azazel changelog` show: everything, or what is newer than `since`.
 pub fn text(since_version: Option<&str>) -> Result<String, String> {
     match since_version {
-        None => Ok(CHANGELOG.to_string()),
+        None => Ok(shipped().to_string()),
         Some(version) => {
-            let newer = since(CHANGELOG, version)?;
+            let newer = since(shipped(), version)?;
             if newer.is_empty() {
                 return Ok(format!("nothing has changed since {version}"));
             }
@@ -144,8 +159,14 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_changelog_parses() {
-        assert!(sections(CHANGELOG).iter().any(|s| s.version == "0.1.0"));
+    fn the_shipped_changelog_is_the_file_and_parses() {
+        let file =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md")).unwrap();
+        assert!(
+            shipped() == file,
+            "the changelog in the binary is not CHANGELOG.md"
+        );
+        assert!(sections(shipped()).iter().any(|s| s.version == "0.1.0"));
     }
 
     #[test]

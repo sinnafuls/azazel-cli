@@ -167,6 +167,12 @@ impl Tui {
         if self.session_hotkey(index, key).await {
             return;
         }
+        if matches!(
+            self.overlay.as_ref().map(|overlay| &overlay.action),
+            Some(Action::Usage(_))
+        ) {
+            return self.ask_usage(crate::usage::Ask::All);
+        }
         // What the key acts on is copied out first: acting on it may replace the overlay.
         enum Target {
             Agent(String),
@@ -674,7 +680,7 @@ pub(super) fn is_text_input(overlay: &Overlay) -> bool {
         Kind::Input { secret, .. } => !secret,
         Kind::Form(form) => form.is_typing(),
         Kind::Pane(_) => true,
-        Kind::Select { .. } | Kind::Settings(_) => false,
+        Kind::Select { .. } | Kind::Settings(_) | Kind::Report(_) => false,
     }
 }
 

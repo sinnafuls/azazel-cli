@@ -672,7 +672,7 @@ mod tests {
     async fn authorized_client_is_none_without_a_stored_login() {
         let dir = tempfile::tempdir().unwrap();
         let credentials = Arc::new(Credentials::new(dir.path().join("auth.json")));
-        let client = authorized_client(SERVER, credentials, reqwest::Client::new())
+        let client = authorized_client(SERVER, credentials, azazel_ai::tls::client())
             .await
             .unwrap();
         assert!(client.is_none());

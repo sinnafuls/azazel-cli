@@ -6,7 +6,9 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_ai::credentials::{check_label, now_ms};
-use azazel_ai::{Account, Credentials, DEFAULT_ACCOUNT, LimitStore, ProviderConfig, Router, Window};
+use azazel_ai::{
+    Account, Credentials, DEFAULT_ACCOUNT, LimitBlock, LimitStore, ProviderConfig, Router, Window,
+};
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, EntryKind, ExtCtx, ExtError, Extension, Level, Registrar,
     SessionStore, Ui,
@@ -58,33 +60,37 @@ fn window_text(window: &Window, now: u64) -> String {
         return format!("extra usage {}", window.status);
     }
     let percent = (window.used * 100.0).round().clamp(0.0, 999.0) as u32;
+    let name = crate::usage::window_name(window);
     match window.resets_at.filter(|at| *at > now) {
-        Some(at) => format!("{} {percent}% (resets {})", window.name, clock(at)),
-        None => format!("{} {percent}%", window.name),
+        Some(at) => format!("{name} {percent}% (resets {})", clock(at)),
+        None => format!("{name} {percent}%"),
     }
 }
 
-/// One row of the account list.
+/// One row of the account list. `who` is the account as [`crate::usage::describe`] shows it.
 fn account_row(
-    account: &Account,
+    who: String,
     in_use: bool,
     is_default: bool,
     windows: &[Window],
-    blocked_until: Option<u64>,
+    blocks: &[LimitBlock],
     now: u64,
 ) -> String {
-    let mut parts = vec![account.describe()];
+    let mut parts = vec![who];
     if in_use {
         parts.push("in use".to_string());
     }
     if is_default {
         parts.push("default".to_string());
     }
-    if let Some(until) = blocked_until {
-        parts.push(format!("out of allowance until {}", clock(until)));
+    for block in blocks {
+        parts.push(match &block.scope {
+            Some(scope) => format!("out of allowance for {scope} until {}", clock(block.until)),
+            None => format!("out of allowance until {}", clock(block.until)),
+        });
     }
     parts.extend(windows.iter().map(|window| window_text(window, now)));
-    if windows.is_empty() && blocked_until.is_none() {
+    if windows.is_empty() && blocks.is_empty() {
         parts.push("no usage seen yet".to_string());
     }
     parts.join(" · ")
@@ -94,6 +100,8 @@ struct AccountCommand {
     providers: Vec<ProviderConfig>,
     credentials: Arc<Credentials>,
     home_config: PathBuf,
+    /// `[usage] redact_email`: e-mail addresses are shown as `j***@example.com`.
+    redact_email: bool,
 }
 
 /// What can be done with one account, in menu order.
@@ -152,11 +160,11 @@ impl AccountCommand {
             .iter()
             .map(|account| {
                 account_row(
-                    account,
+                    crate::usage::describe(account, self.redact_email),
                     in_use.as_deref() == Some(&account.label),
                     default.as_deref() == Some(&account.label),
                     &limits.windows(&provider.id, &account.label),
-                    limits.blocked_until(&provider.id, &account.label),
+                    &limits.blocks(&provider.id, &account.label),
                     now,
                 )
             })
@@ -229,6 +237,8 @@ impl AccountCommand {
         match action {
             Action::Use => {
                 self.credentials.select(id, label);
+                // Chosen knowingly: the account is asked even if it was out of allowance.
+                self.credentials.limits().unblock(id, label);
                 if let Some(session) = ctx.services.get::<SessionStore>() {
                     session.append(EntryKind::Custom {
                         custom_type: ACCOUNT_ENTRY.to_string(),
@@ -295,7 +305,11 @@ impl CommandHandler for AccountCommand {
                     ];
                     let mut names: Vec<String> = actions.iter().map(|(name, _)| name.to_string()).collect();
                     names.push("Back".to_string());
-                    let title = format!("{} · {}", provider.id, account.describe());
+                    let title = format!(
+                        "{} · {}",
+                        provider.id,
+                        crate::usage::describe(account, self.redact_email)
+                    );
                     match ui.0.select(&title, &names).await {
                         Ok(index) => match actions.get(index) {
                             Some((_, action)) => self.act(provider, account, *action, ctx).map(Some),
@@ -329,6 +343,8 @@ pub struct AccountsExt {
     pub providers: Vec<ProviderConfig>,
     pub credentials: Arc<Credentials>,
     pub home_config: PathBuf,
+    /// `[usage] redact_email`.
+    pub redact_email: bool,
 }
 
 impl Extension for AccountsExt {
@@ -345,6 +361,7 @@ impl Extension for AccountsExt {
                 providers: self.providers.clone(),
                 credentials: self.credentials.clone(),
                 home_config: self.home_config.clone(),
+                redact_email: self.redact_email,
             }),
         });
         Ok(())
@@ -376,6 +393,7 @@ mod tests {
             providers: crate::login::key_providers(&azazel_core::Config::default()).unwrap(),
             credentials,
             home_config: dir.join("config.toml"),
+            redact_email: true,
         }
     }
 
@@ -397,26 +415,31 @@ mod tests {
         let account = Account {
             label: "work".into(),
             login: true,
-            email: Some("w@example.com".into()),
+            email: Some("wanda@example.com".into()),
             org: None,
         };
         let windows = [
-            Window {
-                name: "5h".into(),
-                used: 0.424,
-                resets_at: Some(now - 5),
-                status: "allowed".into(),
-            },
-            Window {
-                name: "overage".into(),
-                used: 0.0,
-                resets_at: None,
-                status: "rejected (org_level_disabled)".into(),
-            },
+            Window::new("5h", 0.424, Some(now - 5), "allowed"),
+            Window::new("7d-fable", 0.9, None, "allowed").scoped("Fable"),
+            Window::new("overage", 0.0, None, "rejected (org_level_disabled)"),
         ];
+        // The address is hidden but for its first letter and its domain unless the setting
+        // says otherwise.
         assert_eq!(
-            account_row(&account, true, false, &windows, None, now),
-            "work (w@example.com) · in use · 5h 42% · extra usage rejected (org_level_disabled)"
+            account_row(
+                crate::usage::describe(&account, true),
+                true,
+                false,
+                &windows,
+                &[],
+                now
+            ),
+            "work (w***@example.com) · in use · 5h 42% · 7d Fable 90% · extra usage rejected \
+             (org_level_disabled)"
+        );
+        assert_eq!(
+            crate::usage::describe(&account, false),
+            "work (wanda@example.com)"
         );
         let key = Account {
             label: "default".into(),
@@ -425,13 +448,24 @@ mod tests {
             org: None,
         };
         assert_eq!(
-            account_row(&key, false, true, &[], None, now),
+            account_row(crate::usage::describe(&key, true), false, true, &[], &[], now),
             "default (API key) · default · no usage seen yet"
         );
-        let blocked = account_row(&key, false, false, &[], Some(now + 3600), now);
+        let block = |scope: Option<&str>| LimitBlock {
+            until: now + 3600,
+            since: now,
+            window: None,
+            scope: scope.map(str::to_string),
+        };
+        let blocked = account_row("default".into(), false, false, &[], &[block(None)], now);
         assert!(
-            blocked.starts_with("default (API key) · out of allowance until "),
+            blocked.starts_with("default · out of allowance until "),
             "{blocked}"
+        );
+        let fable = account_row("default".into(), false, false, &[], &[block(Some("Fable"))], now);
+        assert!(
+            fable.starts_with("default · out of allowance for Fable until "),
+            "{fable}"
         );
         let line = switch_line("anthropic", "work", "personal", now + 60, "5-hour limit");
         assert!(
@@ -452,6 +486,15 @@ mod tests {
             .unwrap();
         let session = Arc::new(SessionStore::create(&dir.path().join("sessions"), dir.path(), None).unwrap());
         let work = command.credentials.accounts("anthropic").remove(1);
+        // The account ran out earlier; picking it knowingly has it asked again.
+        let limits = command.credentials.limits();
+        limits.block("anthropic", "work", now_ms() / 1000 + 600);
+        limits.record(
+            "anthropic",
+            "work",
+            vec![Window::new("5h", 1.0, Some(now_ms() / 1000 + 600), "rejected")],
+        );
+        assert!(!limits.open("anthropic", "work", "claude-opus-5-5"));
 
         let line = command
             .act(anthropic, &work, Action::Use, &context(Some(session.clone())))
@@ -461,6 +504,7 @@ mod tests {
             "{line}"
         );
         assert_eq!(command.credentials.selected("anthropic").as_deref(), Some("work"));
+        assert!(limits.open("anthropic", "work", "claude-opus-5-5"));
 
         // Another process resuming the session ends up on the same account.
         let reopened = SessionStore::open(&session.path()).unwrap();

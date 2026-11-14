@@ -525,48 +525,81 @@ Which account a request uses, first match:
 2. `[providers.<id>] account = "<label>"`, which `/account` → "Make default" writes to `~/.azazel/config.toml`.
 3. The default account.
 
-`/account [provider]` lists the provider's accounts: which is in use, which is the default, and what each has left of its usage windows as far as the provider has said in this run (`5h 42% (resets 14:05) · 7d 7%`). Pick one to use it for this session, make it the default, or sign it out; "Add another account" signs in or stores a key under a new label.
+`/account [provider]` lists the provider's accounts: which is in use, which is the default, until when one is out of allowance, and what each has left of its usage windows (`5h 42% (resets 14:05) · 7d 7% · 7d Fable 90%`). Pick one to use it for this session, make it the default, or sign it out; "Add another account" signs in or stores a key under a new label. An account picked there is asked even when it was marked as out of allowance. E-mail addresses are shown as `j***@example.com` unless `[usage] redact_email = false`.
 
-Usage windows come from response headers. Anthropic subscriptions report a 5-hour and a 7-day window, which of them a refusal is about, and whether extra usage is on.
+Usage windows come from response headers and, for subscriptions, from the provider's usage endpoint (see [usage](#usage)). Anthropic subscriptions report a 5-hour and a 7-day window, a weekly window per model family where the plan has one (`7d Fable`), which of them a refusal is about, and whether extra usage is on. A window that counts one model family says nothing about requests to other models: an account whose Fable allowance is used up still answers for Opus and Sonnet.
 
-**When an account runs out.** A response that says the account's allowance is used up (Anthropic: a 429 whose unified rate-limit status is `rejected`, or the 400 about extra usage; ChatGPT: `usage_limit_reached`), or a rate limit that asks to wait more than a minute, marks that account as out of allowance until the reset time the provider gave (15 minutes when it gave none). If the provider has another stored account that is not marked, azazel selects it and asks the same model again:
+**When an account runs out.** A response that says the account's allowance is used up (Anthropic: a 429 whose unified rate-limit status is `rejected`, or the 400 about extra usage; ChatGPT: `usage_limit_reached`), or a rate limit that asks to wait more than a minute, marks that account as out of allowance until the reset time the provider gave (15 minutes when it gave none): for the models the window that ran out counts, or for all of them. If the provider has another stored account with room for the model, azazel selects it and asks the same model again. The line names the account and the window that ran out:
 
 ```text
 anthropic: account work reached its 5-hour limit (resets 14:05); now using personal
+anthropic: account default reached its 7-day Fable limit (resets Tue 09:00); now using work
 ```
 
 Otherwise the chain falls back as for any other failure. An account is never switched for any other reason, and work stays on the account it moved to. Accounts apply to credentials in `auth.json` only: a key from the environment, a command or the configuration is used whatever is selected.
 
-### Usage
+**Which account is next.** The first with room, in this order: the accounts `[accounts] order` lists for the provider, as listed; then the account a new session starts on (`[providers.<id>] account`, else the default account); then the rest by label.
 
-`/usage` in the UI and `azazel usage [--json]` in the shell show what each signed-in subscription has left:
-
-```text
-anthropic · default (you@example.com)
-  5h         [████████░░░░░░░░░░░░]  42%  resets in 2 h 10 min
-  7d         [██░░░░░░░░░░░░░░░░░░]   9%  resets in 3 d 4 h
-  extra usage: off
-openai-codex · default (you@example.com) · plus plan
-  5h         [█░░░░░░░░░░░░░░░░░░░]   5%  resets in 4 h 31 min
-  7d         [███░░░░░░░░░░░░░░░░░]  14%  resets in 6 d 2 h
+```toml
+[accounts]
+order = { anthropic = ["work", "personal"] }
 ```
 
-One block per stored login, labelled accounts included. The numbers come from the provider: Anthropic is asked
-at `/api/oauth/usage` for a Claude login, the ChatGPT backend at `/wham/usage` for a ChatGPT login. Neither
-address is documented by its vendor; they are what the vendors' own clients ask. An answer is kept for five
-minutes in `~/.azazel/cache/limits.json`, per provider and account, so looking again does not ask again. When a
-provider cannot be asked (no network, an expired login, a changed endpoint), the block shows what the headers of
-this session's responses said about the account instead, and why. Providers used with an API key have no usage
-windows to show.
+An account has room for a model when it is not marked as out of allowance for that model and the last usage report shows no window that the provider refuses for and that counts the model.
 
-Between looks, the windows are kept up to date from response headers: Anthropic's unified rate-limit headers
-and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend. While the lead answers on
-a subscription, the status line shows the fullest window of the account in use in place of a cost
-(`◔ 61% 5h`), in the warning colour once it is at least 80 % full; see
-[the status line](tui.md#status-line).
+**Before a request.** The same check is made before a request is sent: when the account in use is known to be out of allowance for the model and another stored account has room, the request goes there without asking the first one, and the same line is shown. When no account has room the request is sent on the account in use, and what the provider answers counts, not what azazel remembered.
 
-A subscription whose window is full is refused by Anthropic with "You're out of extra usage", which names
-neither the window nor the wait. azazel adds what it knows as a second line:
+**Across runs.** The marks are kept in `~/.azazel/cache/limits.json` with their reset times, so a new run does not start on an account that ran out an hour ago. A mark ends at its reset time, when the account answers a request for a model it held back, when you pick the account in `/account`, or when a usage report fetched at least a minute after the refusal shows room in the window that ran out.
+
+**In the background.** While a session is open, azazel asks the usage endpoint of every stored subscription login every `[usage] poll_secs` seconds (300; never less than 60; `0` turns it off), so that the windows of the accounts that are not in use are known too. A login is never renewed for this: an account whose token has run out is asked again after a request has renewed it. Accounts with an API key have no usage endpoint; for them azazel knows only what their responses said.
+
+### Usage
+
+`/usage` in the UI and `azazel usage [--json]` in the shell show what each signed-in subscription has left. In the UI it is a box in the middle of the window; in a terminal the command prints the same box, into a pipe (or with `NO_COLOR` set) the same rows as plain text:
+
+```text
+╭─ Usage ──────────────────────────────────────────────────────────────────────────────────────────╮
+│ anthropic                                                                                        │
+│  ● default  y***@example.com · max plan · in use                                                 │
+│      5h        ━━━━━━━━────────────  42%  resets in 2 h 10 min (14:05)                           │
+│      7d        ━━━━━━━━━━━━━━──────  71%  resets in 3 d 4 h (Tue 09:00)                          │
+│      7d Fable  ━━━━━━━━━━━━━━━━━━━━ 100%  no requests for 3 d 4 h (Tue 09:00)  Fable only        │
+│      extra usage off                                                                             │
+│      Fable models are not asked on this account until Tue 09:00 (7-day Fable limit)              │
+│    work  w***@example.com · pro plan                                                             │
+│      5h        ━───────────────────   5%  resets in 4 h 31 min (16:26)                           │
+│      7d        ━━━─────────────────  14%  resets in 6 d 2 h (Fri 07:00)                          │
+│      7d Fable  ━━━━────────────────  20%  resets in 6 d 2 h (Fri 07:00)  Fable only              │
+│      extra usage on · $12.50 of $50.00 used                                                      │
+│                                                                                                  │
+│ openai-codex                                                                                     │
+│  ● default  y***@example.com · plus plan · in use                                                │
+│      5h        ━───────────────────   5%  resets in 4 h 31 min (16:26)                           │
+│      7d        ━━━─────────────────  14%  resets in 6 d 2 h (Fri 07:00)                          │
+│      2 banked resets                                                                             │
+╰─ r refresh · esc close ──────────────────────────────────────────────────────────────────────────╯
+```
+
+Per provider, one block per stored login, labelled accounts included:
+
+- The account requests go to is marked (`●`, `in use`). The e-mail address is shown as `j***@example.com`; `[usage] redact_email = false` shows it whole.
+- The plan, when the provider names it.
+- Every window the provider reports, with a bar, the share used, the time to its reset and the time of day, and what it counts when that is not every request (`Fable only`). The bar turns to the warning colour from 80 % and to the error colour when the window is full; a window the provider refuses for says `no requests for 3 d 4 h` in place of `resets in`. A narrow box drops the note, then the time of day, then the bar; the share stays.
+- Extra usage: on or off, and what it has cost when the provider says. While it is on and has money left, a full window does not stop requests and is not marked as refusing them.
+- Banked resets the account holds, when the provider's usage answer counts them (ChatGPT reset credits).
+- Until when the account is left alone, and for which models (see [several accounts](#several-accounts)).
+
+`r` asks the providers again; the arrows, `PgUp`/`PgDn`, `Home` and `End` scroll when the box is too short; `esc` or `enter` closes it. In a session that runs in another process (`azazel attach`, an RPC client) `/usage` answers with the same rows as text.
+
+The numbers come from the provider: Anthropic is asked at `/api/oauth/usage` for a Claude login, the ChatGPT backend at `/wham/usage` for a ChatGPT login. Neither address is documented by its vendor; they are what the vendors' own clients ask. From Anthropic's answer azazel reads `five_hour`, `seven_day`, every row of `limits` (`weekly_scoped` rows are the weekly windows of single model families, named by `scope.model.display_name`), any other window member, and `spend` or `extra_usage`; from ChatGPT's, `plan_type`, `rate_limit`, `additional_rate_limits` (the windows of single models), `credits` and `rate_limit_reset_credits`.
+
+An answer is kept in `~/.azazel/cache/limits.json`, per provider and account. `/usage` and `azazel usage` ask again when the answer is older than five minutes; `r` asks at once. When a provider cannot be asked (no network, an expired login, a changed endpoint), the block shows its last answer with its age and the reason, or, when there has never been one, what the headers of this session's responses said about the account. Providers used with an API key have no usage windows to show.
+
+`azazel usage --json` prints one array with an object per account: `provider`, `account`, `email` (hidden the same way), `in_use`, `plan`, `windows` (`name`, `label`, `scope`, `used` from 0 to 1, `resets_at` in Unix seconds, `status`), `extra_usage`, `spend` (`used`, `limit`, `currency`), `resets` (`kind`, `available`), `blocks` (`until`, `since`, `window`, `scope`), `fetched_at` and `error`. The command exits with 1 when there are logins and nothing could be shown for any of them.
+
+Between looks, the windows are kept up to date from response headers (Anthropic's unified rate-limit headers, its `7d_oi` headers for the weekly window of the Fable models included, and the `x-codex-primary-*` and `x-codex-secondary-*` headers of the ChatGPT backend) and by the background asking described above. While the lead answers on a subscription, the status line shows the fullest window that counts the lead's model in place of a cost (`◔ 61% 5h`), in the warning colour once it is at least 80 % full; see [the status line](tui.md#status-line).
+
+A subscription whose window is full is refused by Anthropic with "You're out of extra usage", which names neither the window nor the wait. azazel adds what it knows as a second line:
 
 ```text
 usage limit reached: You're out of extra usage. Add more at claude.ai/settings/usage and keep going.

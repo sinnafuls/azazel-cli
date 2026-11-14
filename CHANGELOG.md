@@ -84,8 +84,40 @@ GitHub are its section here.
   each built-in agent with its default, and `--continue-run`; every subcommand is in a table with its
   actions.
 
+- `/usage` is a box in the middle of the window: per provider and account every usage window with a bar, the
+  share used, the reset time and what it counts, the plan, extra usage and what it cost, banked resets, the
+  account in use, and until when an account is left alone. `r` asks the providers again. `azazel usage`
+  prints the same box in a terminal.
+- Usage windows of single model families: Anthropic's `limits` rows (`weekly_scoped`, such as the weekly
+  allowance of the Fable models) and its `7d_oi` headers, and ChatGPT's `additional_rate_limits`, are read
+  and shown (`7d Fable`). Every other window the usage endpoints return is shown too.
+- A request no longer starts on an account that is known to be out of allowance for its model when another
+  stored account has room: the usage of every stored subscription login is fetched in the background while a
+  session is open (`[usage] poll_secs`), and accounts that ran out stay marked across runs in
+  `~/.azazel/cache/limits.json` until their reset, a successful request or a usage report with room.
+- `[accounts] order` sets the order in which work moves through the accounts of a provider.
+- `[usage] redact_email` (on by default) shows e-mail addresses as `j***@example.com` in `/usage`,
+  `azazel usage` and `/account`.
+
 ### Changed
 
+- An account that ran out of the allowance of one model family (Fable) is left alone for those models only; it
+  keeps answering for the others. The line about moving to another account names that window
+  (`7-day Fable limit`), and the status line shows the fullest window that counts the lead's model.
+- `azazel usage --json` has `in_use`, `spend`, `resets`, `blocks` and, per window, `label` and `scope`; its
+  `email` is hidden like everywhere else unless `usage.redact_email = false`. The plain output is laid out
+  like the box.
+- `get_usage` (RPC): windows carry `scope`, accounts carry `blocks`.
+- A full usage window of an account with extra usage on and money left is no longer shown as refusing
+  requests.
+- The binary is smaller with every feature kept (the Windows build by 8.8 MB, 16%). What changed
+  underneath: one TLS library instead of two (rustls on `ring` for every HTTPS connection, Bedrock
+  included; aws-lc is gone), dependencies built for size except where the time goes (drawing, Markdown and
+  highlighting, regular expressions, JSON, the async runtime, the allocator), the model catalogue, the
+  built-in skills and the changelog stored compressed and unpacked when first needed, and SQLite built
+  without the modules nothing uses. Start-up is unchanged.
+- HTTPS no longer offers the post-quantum hybrid key exchange (X25519MLKEM768), which only aws-lc
+  provided. TLS 1.2 and 1.3, the system's certificate store and proxy settings work as before.
 - `/settings`: signing in, adding an API key and signing out are on the Accounts page, the default model and
   the model of every role on the Models page. A value set back to its default is taken out of `config.toml`
   instead of being written. Where there is no screen (a session in another process, RPC clients) the same pages
@@ -125,6 +157,8 @@ GitHub are its section here.
 - On Windows `azazel update` no longer fails with `cannot move ... aside` when the binary an earlier update
   retired is still in use by an azazel that keeps running (as after `/restart`): the binary is retired under
   another name.
+- After requests moved to another account, the status line shows that account's usage window at once, not
+  the window of the account that ran out.
 
 ## [0.5.0] - 2026-11-13
 
