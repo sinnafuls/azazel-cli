@@ -956,3 +956,126 @@ fn a_popup_that_is_open_while_the_size_changes_is_centred_again_and_returns_to_t
     let said: Vec<&String> = all.iter().filter(|row| !row.is_empty()).collect();
     assert_eq!(said, ["h1", "h2", "h3", "said meanwhile", "rule", ">", "status"]);
 }
+
+/// The bottom of the screen holds the input between two rules and the status line, each of
+/// them one row as wide as the screen, and nothing of a rule or a status line drawn at another
+/// width is left above them.
+fn assert_chrome_fits(term: &Harness) {
+    let (cols, rows) = term.renderer.size();
+    let width = usize::from(cols);
+    let screen = term.screen();
+    assert_eq!(screen.len(), usize::from(rows));
+    let rule = "-".repeat(width);
+    let status = format!("{:<1$}think", "model", width - 5);
+    let bottom = screen.len() - 4;
+    assert_eq!(
+        screen[bottom..],
+        [rule.clone(), "> hello".to_string(), rule, status],
+        "{screen:#?}"
+    );
+    for row in &screen[..bottom] {
+        assert!(
+            !row.starts_with('-') && !row.contains("think") && !row.starts_with("model"),
+            "a stale row above the input: {row:?} in {screen:#?}"
+        );
+    }
+}
+
+/// A window that changes size and zoom in every way a user can make it, on a terminal that
+/// re-wraps (Windows Terminal), with and without the application learning where the cursor is.
+#[test]
+fn after_any_change_of_size_the_rules_and_status_line_span_the_new_width_on_the_last_rows() {
+    let above = ["h1", "h2", "a transcript row as wide as it gets!", "h4"];
+    // Wider, narrower (the wide rules and status line re-wrap onto two rows each), more rows
+    // and columns (zoomed out), fewer rows and columns (zoomed in), and back.
+    let sizes = [(60, 12), (24, 12), (70, 20), (30, 7), (40, 12)];
+    for anchored in [false, true] {
+        let mut term = Harness::new(40, 12);
+        let mut floor = Floor::new(12);
+        wide_frame(&mut term, &mut floor, &above, &["streaming"]);
+        assert_chrome_fits(&term);
+        for (cols, rows) in sizes {
+            term.rewrap(cols, rows);
+            term.settle(&mut floor);
+            if anchored {
+                term.anchor(&mut floor);
+            }
+            wide_frame(&mut term, &mut floor, &[], &["streaming"]);
+            assert_chrome_fits(&term);
+            // What is in flight is on the screen once. (A re-wrap that grows the screen past its
+            // height pushes the first rows of the region into the scrollback, where they stay.)
+            assert_eq!(count(&term.screen(), "streaming"), 1, "{cols}x{rows}");
+            let all = term.everything();
+            for line in ["h1", "h2", "h4"] {
+                assert!(count(&all, line) <= 1, "{line} twice at {cols}x{rows}: {all:#?}");
+            }
+            // An unchanged size writes nothing.
+            let before = term.renderer.get_ref().len();
+            term.settle(&mut floor);
+            wide_frame(&mut term, &mut floor, &[], &["streaming"]);
+            assert_eq!(term.renderer.get_ref().len(), before);
+        }
+    }
+}
+
+impl Harness {
+    /// What Windows Terminal does to the main screen when it shows it again after the window
+    /// changed size behind the alternate screen: it re-wraps it, then puts the cursor back on
+    /// the row and column it had when the alternate screen was entered.
+    fn rewrap_behind_alt(&mut self, cols: u16, rows: u16) {
+        let (row, col) = self.parser.screen().cursor_position();
+        self.rewrap(cols, rows);
+        let row = row.min(rows - 1);
+        let col = col.min(cols - 1);
+        self.parser
+            .process(format!("\x1b[{};{}H", row + 1, col + 1).as_bytes());
+    }
+}
+
+#[test]
+fn a_transcript_re_wrapped_behind_a_popup_is_not_written_over_when_the_popup_closes() {
+    let long = "a row of the transcript that is wider than the screen will be";
+    for (cols, rows) in [(30, 14), (30, 9), (50, 14)] {
+        let mut term = Harness::new(64, 14);
+        let mut floor = Floor::new(14);
+        let above = ["h1", long, "h3", long, "h5"];
+        wide_frame(&mut term, &mut floor, &above, &[]);
+
+        // A popup opens: the region leaves the screen; the cursor is where it began.
+        term.renderer.suspend().unwrap();
+        term.flush();
+        let (top, _) = term.parser.screen().cursor_position();
+        assert_eq!(top, 5);
+
+        // The window changes size while the popup is up, and the popup closes.
+        term.rewrap_behind_alt(cols, rows);
+        term.settle(&mut floor);
+        term.renderer
+            .follow_rewrap(above.into_iter(), usize::from(top), 64)
+            .unwrap();
+        term.flush();
+        term.anchor(&mut floor);
+        wide_frame(&mut term, &mut floor, &["said meanwhile"], &[]);
+
+        assert_chrome_fits(&term);
+        let all = term.everything();
+        let said: Vec<&String> = all
+            .iter()
+            .take_while(|row| !row.starts_with('-'))
+            .filter(|row| !row.is_empty())
+            .collect();
+        let wrapped: Vec<String> = long
+            .chars()
+            .collect::<Vec<_>>()
+            .chunks(usize::from(cols))
+            .map(|chunk| chunk.iter().collect::<String>().trim_end().to_string())
+            .collect();
+        let mut expected = vec!["h1".to_string()];
+        expected.extend(wrapped.iter().cloned());
+        expected.push("h3".to_string());
+        expected.extend(wrapped.iter().cloned());
+        expected.extend(["h5".to_string(), "said meanwhile".to_string()]);
+        let expected: Vec<&String> = expected.iter().filter(|row| !row.is_empty()).collect();
+        assert_eq!(said, expected, "{cols}x{rows}");
+    }
+}

@@ -265,6 +265,48 @@ impl<W: io::Write> Renderer<W> {
         above + within
     }
 
+    /// The terminal changed width while its alternate screen was showing, and has just shown
+    /// the main screen again; the region was taken off it ([`Renderer::suspend`]) before.
+    ///
+    /// A terminal that re-wraps does so to the main screen when it shows it again, and some
+    /// (Windows Terminal) then put the cursor back on the row and column it had before, where
+    /// rows the re-wrap added above it now are: the next frame would be written over the end of
+    /// the transcript. This moves the cursor down past them, worked out from `above`, the rows
+    /// of the transcript as plain text (oldest first), `top`, the row of the screen the cursor
+    /// was on, and `width`, the width the screen had then. Where it cannot be sure it moves too
+    /// far: a blank row may be left above the region, and nothing of the transcript is lost.
+    pub fn follow_rewrap<'a>(
+        &mut self,
+        above: impl DoubleEndedIterator<Item = &'a str>,
+        top: usize,
+        width: u16,
+    ) -> io::Result<()> {
+        let width = width.max(1);
+        if !self.rewraps || width == self.width || !self.drawn.is_empty() {
+            return Ok(());
+        }
+        let rows_at =
+            |row: &str, columns: u16| text::width(row.trim_end()).div_ceil(usize::from(columns)).max(1);
+        let (mut seen, mut added) = (0, 0);
+        for row in above.rev() {
+            if seen >= top {
+                break;
+            }
+            let before = rows_at(row, width);
+            seen += before;
+            added += rows_at(row, self.width).saturating_sub(before);
+        }
+        // The screen keeps its first row while the transcript grows into the rows below it,
+        // and scrolls when it runs out of them; either way the cursor was put back at most on
+        // the last row.
+        let last = usize::from(self.height) - 1;
+        let down = (top + added).min(last) - top.min(last);
+        if down == 0 {
+            return Ok(());
+        }
+        self.write(&"\r\n".repeat(down))
+    }
+
     /// Rows of the screen a row drawn earlier takes at the width the terminal has now. A
     /// terminal re-wraps a row up to its last character that is not a space, whatever colour
     /// the spaces after it have; where one counts those too, a row of the old region is left

@@ -12,6 +12,14 @@ GitHub are its section here.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or
   `GH_TOKEN` is still used when set, which lifts GitHub's limit on anonymous requests.
 
+### Fixed
+
+- In Windows Terminal the input, its rules and the status line follow the window again when it is resized,
+  maximised or zoomed (`ctrl+-`, `ctrl+=`): they span the new width on the last rows instead of keeping the
+  width and the row they had, and no rule or status line drawn at the old width is left above them. A
+  window narrowed while a popup or the viewer is open no longer has the end of the transcript written over
+  when it closes.
+
 ## [0.6.0] - 2026-11-14
 
 ### Added
