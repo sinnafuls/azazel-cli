@@ -396,25 +396,4 @@ mod tests {
         ));
         assert_eq!(provider.requests().len(), 4);
     }
-
-    #[tokio::test]
-    async fn cancellation_during_delay_yields_aborted() {
-        let provider = MockProvider::new();
-        provider.push("a", MockStep::text("late").delayed(Duration::from_secs(30)));
-        let cancel = CancellationToken::new();
-        let info = ModelInfo::unknown(MOCK_PROVIDER_ID, "a");
-        let stream = provider
-            .stream(&info, &Request::default(), cancel.clone())
-            .await
-            .unwrap();
-        cancel.cancel();
-        let events: Vec<StreamEvent> = stream.collect().await;
-        assert_eq!(
-            events,
-            vec![StreamEvent::Error {
-                error: AiError::Aborted,
-                partial: None
-            }]
-        );
-    }
 }

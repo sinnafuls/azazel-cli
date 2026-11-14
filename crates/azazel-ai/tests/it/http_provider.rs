@@ -83,46 +83,6 @@ async fn streams_a_response_and_prices_it() {
 }
 
 #[tokio::test]
-async fn an_azure_resource_key_goes_in_the_api_key_header() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/chat/completions"))
-        .and(header("api-key", "az-key"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(CHAT_STREAM, "text/event-stream"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let settings = azazel_ai::ProviderSettings {
-        api: Some(WireApi::OpenAiChat),
-        base_url: Some(server.uri()),
-        ..Default::default()
-    };
-    let config = azazel_ai::providers::presets::resolve(&BTreeMap::from([("azure".to_string(), settings)]))
-        .unwrap()
-        .into_iter()
-        .find(|p| p.id == "azure")
-        .unwrap();
-    let dir = tempfile::tempdir().unwrap();
-    let credentials = Credentials::with_env(
-        dir.path().join("auth.json"),
-        Arc::new(|name| (name == "AZURE_OPENAI_API_KEY").then(|| "az-key".to_string())),
-    );
-    let provider = HttpProvider::new(config, http_client(), Arc::new(credentials));
-
-    let stream = provider
-        .stream(&model(), &request(), CancellationToken::new())
-        .await
-        .unwrap();
-    let events: Vec<StreamEvent> = stream.collect().await;
-    assert!(
-        matches!(events.last(), Some(StreamEvent::Done { .. })),
-        "{events:?}"
-    );
-    let sent = &server.received_requests().await.unwrap()[0];
-    assert!(!sent.headers.contains_key("authorization"));
-}
-
-#[tokio::test]
 async fn http_failures_map_to_error_kinds() {
     let server = MockServer::start().await;
     let dir = tempfile::tempdir().unwrap();

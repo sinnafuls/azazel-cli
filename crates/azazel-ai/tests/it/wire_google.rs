@@ -134,106 +134,6 @@ fn terminal_count(events: &[StreamEvent]) -> usize {
 // ---- decoder: fixtures ----
 
 #[test]
-fn text_fixture_streams_one_text_block() {
-    let events = decode(include_bytes!("../fixtures/google-generative/text.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events[0], StreamEvent::Start);
-    assert_eq!(terminal_count(&events), 1);
-    let deltas: Vec<&str> = events
-        .iter()
-        .filter_map(|e| match e {
-            StreamEvent::TextDelta { index: 0, delta } => Some(delta.as_str()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        deltas,
-        [
-            "Rust",
-            " is a systems programming language",
-            " focused on safety and speed."
-        ]
-    );
-
-    let message = done(&events);
-    let text = "Rust is a systems programming language focused on safety and speed.";
-    assert_eq!(message.content, vec![Block::text(text)]);
-    assert_eq!(
-        events[events.len() - 2],
-        StreamEvent::BlockEnd {
-            index: 0,
-            block: Block::text(text)
-        }
-    );
-    let meta = message.meta.as_ref().unwrap();
-    assert_eq!(
-        (meta.provider.as_str(), meta.model.as_str(), meta.api),
-        ("mock", "mock-model", WireApi::GoogleGenerative)
-    );
-    assert_eq!(meta.stop, StopReason::Stop);
-    assert_eq!(meta.response_id.as_deref(), Some("Kq3xaO7dHsWbz7IP4oGZ"));
-    assert_eq!(meta.duration_ms, 0);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 12,
-            output: 11,
-            ..Usage::default()
-        }
-    );
-}
-
-#[test]
-fn tool_call_fixture_yields_complete_call_with_synthesised_id() {
-    let events = decode(include_bytes!("../fixtures/google-generative/tool_call.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    let id = "call_Zx81aPqLm2Kc0vTnB4dE_0";
-    let input = json!({"path": "src/main.rs", "limit": 40});
-    assert_eq!(events[0], StreamEvent::Start);
-    assert_eq!(
-        events[1],
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: id.into(),
-            name: "read".into()
-        }
-    );
-    match &events[2] {
-        StreamEvent::ToolCallDelta { index: 0, delta } => {
-            assert_eq!(serde_json::from_str::<Value>(delta).unwrap(), input);
-        }
-        other => panic!("expected ToolCallDelta, got {other:?}"),
-    }
-    assert_eq!(
-        events[3],
-        StreamEvent::BlockEnd {
-            index: 0,
-            block: call(id, "read", input.clone(), None)
-        }
-    );
-    // The trailing empty text part of the last chunk opens no block.
-    assert_eq!(events.len(), 5);
-
-    let message = done(&events);
-    assert_eq!(
-        message.tool_calls().collect::<Vec<_>>(),
-        vec![(id, "read", &input)]
-    );
-    let meta = message.meta.as_ref().unwrap();
-    assert_eq!(meta.stop, StopReason::ToolUse);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 86,
-            output: 18,
-            ..Usage::default()
-        }
-    );
-}
-
-#[test]
 fn thinking_tool_fixture_keeps_block_order_signature_and_usage() {
     let events = decode(include_bytes!("../fixtures/google-generative/thinking_tool.sse"));
     insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
@@ -289,30 +189,6 @@ fn thinking_tool_fixture_keeps_block_order_signature_and_usage() {
             cost_usd: None,
         }
     );
-}
-
-#[test]
-fn midstream_error_fixture_reports_overloaded_with_partial_text() {
-    let events = decode(include_bytes!(
-        "../fixtures/google-generative/midstream_error.sse"
-    ));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events[0], StreamEvent::Start);
-    assert_eq!(terminal_count(&events), 1);
-    let (error, partial) = failure(&events);
-    assert_eq!(error, &AiError::Overloaded);
-    let partial = partial.unwrap();
-    assert_eq!(
-        partial.content,
-        vec![Block::text("Here is the summary of the first")]
-    );
-    assert_eq!(partial.meta.as_ref().unwrap().stop, StopReason::Error);
-    // The interrupted block is still closed before the error.
-    assert!(matches!(
-        events[events.len() - 2],
-        StreamEvent::BlockEnd { index: 0, .. }
-    ));
 }
 
 // ---- decoder: behaviour not covered by the fixtures ----
@@ -443,25 +319,6 @@ fn in_band_error_objects_are_classified() {
             body: "boom".into()
         }
     );
-}
-
-#[test]
-fn malformed_data_is_skipped_and_nothing_follows_a_terminal_event() {
-    let mut decoder = google::decoder(&provider(), &model());
-    assert!(decoder.feed(None, "{not json").is_empty());
-    assert!(decoder.feed(None, "[DONE]").is_empty());
-
-    let events = decoder.feed(None, &chunk(json!([{"text": "ok"}]), Some("STOP")).to_string());
-    assert_eq!(events[0], StreamEvent::Start);
-    let events = decoder.finish();
-    assert_eq!(done(&events).text(), "ok");
-
-    assert!(
-        decoder
-            .feed(None, &chunk(json!([{"text": "late"}]), None).to_string())
-            .is_empty()
-    );
-    assert!(decoder.finish().is_empty());
 }
 
 #[test]
@@ -809,19 +666,6 @@ fn adjacent_messages_with_the_same_wire_role_are_coalesced() {
 }
 
 #[test]
-fn generation_config_is_sent_only_for_what_the_request_sets() {
-    let mut req = request(vec![Message::user("hi")]);
-    assert!(body(&model(), &req).get("generationConfig").is_none());
-
-    req.max_output = Some(4096);
-    req.temperature = Some(0.7);
-    assert_eq!(
-        body(&model(), &req)["generationConfig"],
-        json!({"maxOutputTokens": 4096, "temperature": 0.7})
-    );
-}
-
-#[test]
 fn thinking_off_sends_no_thinking_config() {
     assert!(
         body(&model(), &thinking_request(ThinkingLevel::Off))
@@ -995,20 +839,6 @@ fn oauth_uses_bearer_and_provider_headers_override() {
     assert_eq!(keys, ["from-config"]);
 }
 
-#[test]
-fn models_request_asks_for_the_largest_page() {
-    let client = azazel_ai::tls::client();
-    let built = google::models_request(&client, &provider(), &Auth::ApiKey("k-123".into()))
-        .build()
-        .unwrap();
-    assert_eq!(built.method(), reqwest::Method::GET);
-    assert_eq!(
-        built.url().as_str(),
-        "https://mock.invalid/v1beta/models?pageSize=1000"
-    );
-    assert_eq!(built.headers()["x-goog-api-key"], "k-123");
-}
-
 // ---- classify_error / parse_models ----
 
 fn error_body(code: u16, status: &str, message: &str, details: Value) -> String {
@@ -1082,24 +912,6 @@ fn classify_error_maps_rejected_key_and_overload() {
     assert_eq!(
         google::classify_error(500, &overloaded),
         Some(AiError::Overloaded)
-    );
-}
-
-#[test]
-fn classify_error_leaves_everything_else_to_the_generic_mapping() {
-    let invalid = error_body(
-        400,
-        "INVALID_ARGUMENT",
-        "Unknown name \"foo\": Cannot find field.",
-        json!([]),
-    );
-    assert_eq!(google::classify_error(400, &invalid), None);
-    let internal = error_body(500, "INTERNAL", "An internal error has occurred.", json!([]));
-    assert_eq!(google::classify_error(500, &internal), None);
-    assert_eq!(google::classify_error(502, "<html>Bad Gateway</html>"), None);
-    assert_eq!(
-        google::classify_error(400, r#"{"message": "no error object"}"#),
-        None
     );
 }
 

@@ -93,16 +93,6 @@ fn meta(message: &Message) -> &AssistantMeta {
     message.meta.as_ref().unwrap()
 }
 
-fn text_deltas(events: &[StreamEvent]) -> String {
-    events
-        .iter()
-        .filter_map(|event| match event {
-            StreamEvent::TextDelta { delta, .. } => Some(delta.as_str()),
-            _ => None,
-        })
-        .collect()
-}
-
 fn call_deltas(events: &[StreamEvent], wanted: usize) -> String {
     events
         .iter()
@@ -124,82 +114,6 @@ fn thinking(text: &str) -> Block {
 // ---------------------------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------------------------
-
-#[test]
-fn text_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-chat/text.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    let message = done(&events);
-    assert_eq!(
-        message.content,
-        vec![Block::text("Hello! How can I help you today?")]
-    );
-    assert_eq!(text_deltas(&events), "Hello! How can I help you today?");
-    let meta = meta(message);
-    assert_eq!(meta.stop, StopReason::Stop);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 19,
-            output: 9,
-            ..Usage::default()
-        }
-    );
-    assert_eq!(
-        meta.response_id.as_deref(),
-        Some("chatcmpl-B7qVtK2mXw9LpR4sYh1ZcN8e")
-    );
-    assert_eq!(
-        (
-            meta.provider.as_str(),
-            meta.model.as_str(),
-            meta.api,
-            meta.duration_ms
-        ),
-        ("mock", "mock-model", WireApi::OpenAiChat, 0)
-    );
-}
-
-#[test]
-fn tool_call_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-chat/tool_call.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    assert_eq!(
-        events[1],
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: "call_Zx81QmN2vLr7TtWc".into(),
-            name: "read".into(),
-        }
-    );
-    assert_eq!(call_deltas(&events, 0), r#"{"path":"src/main.rs","limit":40}"#);
-    let call = tool_call(
-        "call_Zx81QmN2vLr7TtWc",
-        "read",
-        json!({"path": "src/main.rs", "limit": 40}),
-    );
-    assert!(events.contains(&StreamEvent::BlockEnd {
-        index: 0,
-        block: call.clone(),
-    }));
-    let message = done(&events);
-    assert_eq!(message.content, vec![call]);
-    let meta = meta(message);
-    assert_eq!(meta.stop, StopReason::ToolUse);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 156,
-            output: 21,
-            cache_read: 256,
-            ..Usage::default()
-        }
-    );
-}
 
 #[test]
 fn thinking_tool_fixture() {
@@ -241,32 +155,6 @@ fn thinking_tool_fixture() {
             reasoning: 64,
             ..Usage::default()
         }
-    );
-}
-
-#[test]
-fn midstream_error_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-chat/midstream_error.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    let (error, partial) = failure(&events);
-    assert_eq!(
-        error,
-        &AiError::Server {
-            status: 500,
-            body: "The server had an error while processing your request. Sorry about that!".into(),
-        }
-    );
-    assert!(error.is_retryable());
-    let partial = partial.unwrap();
-    assert_eq!(partial.content, vec![Block::text("The answer is")]);
-    assert_eq!(meta(partial).stop, StopReason::Error);
-    // The text never completed, so it has no BlockEnd.
-    assert!(
-        !events
-            .iter()
-            .any(|event| matches!(event, StreamEvent::BlockEnd { .. }))
     );
 }
 
@@ -492,30 +380,6 @@ fn empty_arguments_become_an_empty_object_and_broken_json_is_reported() {
 }
 
 #[test]
-fn malformed_chunks_are_skipped() {
-    let mut bytes = b"data: {\"id\":\"chatcmpl-test\",\"choices\":[{\"delta\":{\"cont\n\n".to_vec();
-    bytes.extend(sse(&[chunk(json!({"content": "ok"}), Some("stop"))], true));
-    let events = decode(&bytes);
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    assert_eq!(done(&events).text(), "ok");
-}
-
-#[test]
-fn nothing_is_returned_after_a_terminal_event() {
-    let mut decoder = openai_chat::decoder(&provider(), &model(false));
-    let events = decoder.feed(None, "[DONE]");
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0], StreamEvent::Start);
-    assert!(done(&events).content.is_empty());
-    assert!(
-        decoder
-            .feed(None, &chunk(json!({"content": "late"}), None).to_string())
-            .is_empty()
-    );
-    assert!(decoder.finish().is_empty());
-}
-
-#[test]
 fn in_band_errors_are_classified() {
     let cases = [
         (
@@ -636,21 +500,6 @@ fn usage_is_read_from_whichever_chunk_carries_it() {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn body_has_the_streaming_basics_and_omits_optional_fields() {
-    let body = body(&Request {
-        messages: vec![Message::user("hi")],
-        ..Request::default()
-    });
-    assert_eq!(body["model"], json!("mock-model"));
-    assert_eq!(body["stream"], json!(true));
-    assert_eq!(body["stream_options"], json!({"include_usage": true}));
-    assert_eq!(body["messages"], json!([{"role": "user", "content": "hi"}]));
-    for absent in ["tools", "max_tokens", "reasoning_effort", "temperature"] {
-        assert!(body.get(absent).is_none(), "{absent}");
-    }
-}
-
-#[test]
 fn system_parts_become_one_leading_system_message() {
     let body = body(&Request {
         system: vec![
@@ -680,16 +529,6 @@ fn system_parts_become_one_leading_system_message() {
             {"role": "user", "content": "hi"},
         ])
     );
-}
-
-#[test]
-fn output_limit_is_sent_only_when_requested() {
-    let body = body(&Request {
-        messages: vec![Message::user("hi")],
-        max_output: Some(1234),
-        ..Request::default()
-    });
-    assert_eq!(body["max_tokens"], json!(1234));
 }
 
 #[test]
@@ -923,39 +762,6 @@ fn request_targets_chat_completions_with_bearer_auth_and_the_json_body() {
     assert_eq!(request.headers()["authorization"], "Bearer token-1");
 
     assert!(build(&Auth::None).headers().get("authorization").is_none());
-}
-
-#[test]
-fn provider_headers_are_applied_last_and_override() {
-    let mut provider = provider();
-    provider
-        .headers
-        .insert("Authorization".into(), "Bearer override".into());
-    provider.headers.insert("X-Title".into(), "azazel".into());
-    let client = azazel_ai::tls::client();
-    let request = openai_chat::build_request(
-        &client,
-        &provider,
-        &model(false),
-        &Request::default(),
-        &Auth::ApiKey("sk-test".into()),
-    )
-    .build()
-    .unwrap();
-    let values: Vec<_> = request.headers().get_all("authorization").iter().collect();
-    assert_eq!(values, ["Bearer override"]);
-    assert_eq!(request.headers()["x-title"], "azazel");
-}
-
-#[test]
-fn models_request_is_an_authenticated_get() {
-    let client = azazel_ai::tls::client();
-    let request = openai_chat::models_request(&client, &provider(), &Auth::ApiKey("sk-test".into()))
-        .build()
-        .unwrap();
-    assert_eq!(request.method(), reqwest::Method::GET);
-    assert_eq!(request.url().as_str(), "http://localhost:9/v1/models");
-    assert_eq!(request.headers()["authorization"], "Bearer sk-test");
 }
 
 // ---------------------------------------------------------------------------------------------

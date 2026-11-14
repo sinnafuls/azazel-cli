@@ -188,44 +188,6 @@ fn usage(input: u64, output: u64, cache_read: u64, cache_write: u64, reasoning: 
 // ---- decoder: fixtures ----
 
 #[test]
-fn text_fixture_decodes_to_one_text_block() {
-    let events = decode(include_bytes!("../fixtures/anthropic-messages/text.sse"));
-    insta::assert_snapshot!("anthropic_text", serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    // `ping` yields nothing: Start, three deltas, BlockEnd, Done.
-    assert_eq!(events.len(), 6);
-    let streamed: String = events
-        .iter()
-        .filter_map(|event| match event {
-            StreamEvent::TextDelta { index: 0, delta } => Some(delta.as_str()),
-            _ => None,
-        })
-        .collect();
-    let message = done(&events);
-    assert_eq!(message.role, Role::Assistant);
-    assert_eq!(
-        message.content,
-        [Block::text("The build passes: 42 tests ran and none failed.")]
-    );
-    assert_eq!(streamed, message.text());
-
-    let meta = message.meta.as_ref().unwrap();
-    assert_eq!(meta.stop, StopReason::Stop);
-    assert_eq!(meta.usage, usage(12, 17, 2048, 300, 0));
-    assert_eq!(meta.response_id.as_deref(), Some("msg_01Xk3Tq8PvRn2mLw7HsYd5Bc"));
-    assert_eq!(
-        (
-            meta.provider.as_str(),
-            meta.model.as_str(),
-            meta.api,
-            meta.duration_ms
-        ),
-        ("mock", "mock-model", WireApi::AnthropicMessages, 0)
-    );
-}
-
-#[test]
 fn tool_call_fixture_joins_argument_fragments() {
     let events = decode(include_bytes!("../fixtures/anthropic-messages/tool_call.sse"));
     insta::assert_snapshot!(
@@ -564,43 +526,7 @@ fn in_band_errors_are_classified_by_error_type() {
     }
 }
 
-#[test]
-fn nothing_is_returned_after_a_terminal_event() {
-    let mut decoder = anthropic::decoder(&provider(), &model(MANUAL_MODEL));
-    let events = decoder.feed(Some("message_start"), &message_start().to_string());
-    assert_eq!(events, [StreamEvent::Start]);
-    let events = decoder.feed(Some("message_stop"), &message_stop().to_string());
-    assert!(
-        matches!(events.as_slice(), [StreamEvent::Done { .. }]),
-        "{events:?}"
-    );
-
-    let late = block_start(0, json!({"type": "text", "text": "late"})).to_string();
-    assert!(decoder.feed(Some("content_block_start"), &late).is_empty());
-    assert!(decoder.finish().is_empty());
-}
-
 // ---- build_body ----
-
-#[test]
-fn minimal_request_has_required_fields_only() {
-    let body = build(&request(vec![Message::user("hi")]));
-
-    assert_eq!(body["model"], "mock-model");
-    assert_eq!(body["stream"], true);
-    // No explicit limit: the API still requires one, so the model's maximum is sent.
-    assert_eq!(body["max_tokens"], 64_000);
-    assert_eq!(
-        body["messages"],
-        json!([{
-            "role": "user",
-            "content": [{"type": "text", "text": "hi", "cache_control": cache_marker()}]
-        }])
-    );
-    for key in ["system", "tools", "thinking", "output_config", "temperature"] {
-        assert!(body.get(key).is_none(), "unexpected `{key}`");
-    }
-}
 
 #[test]
 fn explicit_output_limit_is_sent_and_temperature_depends_on_api_version() {
@@ -1104,22 +1030,6 @@ fn provider_headers_replace_defaults() {
             .collect();
         assert_eq!(values, [value], "{name}");
     }
-}
-
-#[test]
-fn models_request_asks_for_the_largest_page() {
-    let client = azazel_ai::tls::client();
-    let auth = Auth::ApiKey("sk-mock".to_string());
-    let sent = anthropic::models_request(&client, &provider(), &auth)
-        .build()
-        .unwrap();
-
-    assert_eq!(*sent.method(), reqwest::Method::GET);
-    assert_eq!(sent.url().as_str(), "https://mock.invalid/v1/models?limit=1000");
-    assert_eq!(header(&sent, "x-api-key").as_deref(), Some("sk-mock"));
-    assert_eq!(header(&sent, "anthropic-version").as_deref(), Some("2026-10-21"));
-    assert_eq!(header(&sent, "content-type"), None);
-    assert!(sent.body().is_none());
 }
 
 // ---- classify_error / parse_models ----

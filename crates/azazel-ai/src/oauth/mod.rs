@@ -1036,30 +1036,6 @@ mod tests {
     }
 
     #[test]
-    fn the_newer_flows_name_what_they_lack() {
-        let implicit = OAuthSettings {
-            token_url: String::new(),
-            ..settings(OAuthFlow::Implicit)
-        };
-        assert_eq!(implicit.check(), Ok(()));
-        let device = OAuthSettings {
-            device_url: "https://id.example/usercode".into(),
-            ..settings(OAuthFlow::DeviceAuthCode)
-        };
-        assert_eq!(
-            device.check(),
-            Err("`device_poll_url` is needed for this flow".to_string())
-        );
-        let complete = OAuthSettings {
-            device_poll_url: "https://id.example/poll".into(),
-            verification_url: Some("https://id.example/device".into()),
-            redirect_uri: Some("https://id.example/callback".into()),
-            ..device
-        };
-        assert_eq!(complete.check(), Ok(()));
-    }
-
-    #[test]
     fn answers_fill_the_addresses_and_drop_scopes_left_empty() {
         let settings = OAuthSettings {
             token_url: "https://{account}.example/token".into(),

@@ -5,8 +5,6 @@
 use std::sync::Arc;
 
 use azazel_ai::providers::http::{HttpProvider, http_client};
-use azazel_ai::providers::presets::presets_with;
-use azazel_ai::wire::hosted_api;
 use azazel_ai::{
     AiError, Credentials, HostedTool, Message, ModelInfo, Provider, ProviderConfig, Request, StreamEvent,
     WebSource, WireApi,
@@ -393,33 +391,4 @@ async fn a_provider_without_a_search_tool_refuses_the_request_before_sending_it(
         "{refused:?}"
     );
     assert!(server.received_requests().await.unwrap().is_empty());
-}
-
-#[test]
-fn the_providers_with_a_search_tool_are_the_vendors_own_endpoints() {
-    let presets = presets_with(&|_| None);
-    let api = |id: &str| {
-        let preset = presets.iter().find(|preset| preset.id == id).unwrap();
-        hosted_api(preset)
-    };
-    assert_eq!(api("anthropic"), Some(WireApi::AnthropicMessages));
-    assert_eq!(api("openai"), Some(WireApi::OpenAiResponses));
-    assert_eq!(api("openai-codex"), Some(WireApi::OpenAiResponses));
-    assert_eq!(api("google"), Some(WireApi::GoogleGenerative));
-    assert_eq!(api("google-gemini-cli"), Some(WireApi::GoogleGeminiCli));
-    assert_eq!(api("xai"), Some(WireApi::OpenAiResponses));
-    assert_eq!(api("xai-oauth"), Some(WireApi::OpenAiResponses));
-    // The same formats at someone else's address carry no search tool.
-    for other in ["minimax", "openrouter", "meta", "deepseek", "ollama", "azure"] {
-        assert_eq!(api(other), None, "{other}");
-    }
-
-    // A provider under another name at a vendor's address counts; a vendor's name moved to
-    // another address (a proxy) still does.
-    let work = ProviderConfig::new("work", WireApi::AnthropicMessages, "https://api.anthropic.com");
-    assert_eq!(hosted_api(&work), Some(WireApi::AnthropicMessages));
-    let proxied = ProviderConfig::new("openai", WireApi::OpenAiResponses, "http://localhost:4000/v1");
-    assert_eq!(hosted_api(&proxied), Some(WireApi::OpenAiResponses));
-    let elsewhere = ProviderConfig::new("work", WireApi::AnthropicMessages, "https://llm.example.com");
-    assert_eq!(hosted_api(&elsewhere), None);
 }

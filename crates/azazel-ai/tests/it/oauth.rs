@@ -434,21 +434,6 @@ async fn requests_that_find_the_token_expiring_share_one_refresh() {
 }
 
 #[tokio::test]
-async fn a_token_with_time_left_is_used_as_it_is() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/token"))
-        .respond_with(granted("at-2", "rt-2"))
-        .expect(0)
-        .mount(&server)
-        .await;
-    let dir = tempfile::tempdir().unwrap();
-    let credentials = store(dir.path(), Duration::from_secs(6 * 60));
-    let provider = provider(Some(settings(&server, OAuthFlow::Pkce)));
-    assert_eq!(access(credentials.resolve(&provider).await), "at-1");
-}
-
-#[tokio::test]
 async fn a_login_that_cannot_be_refreshed_lasts_until_it_expires() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

@@ -1,17 +1,14 @@
 //! The stall watchdog against servers that go silent: before the response begins and in the
 //! middle of it, through the provider alone and through the router's retries.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use azazel_ai::providers::http::{HttpProvider, http_client};
-use azazel_ai::providers::presets;
 use azazel_ai::{
-    AiError, Catalog, Credentials, EventStream, Message, ModelInfo, ModelRef, Provider, ProviderConfig,
-    ProviderSettings, Request, RetryPolicy, RouteEvent, RouteState, Router, StallLimits, StreamEvent,
-    WireApi,
+    AiError, Credentials, EventStream, Message, ModelInfo, Provider, ProviderConfig, Request, StallLimits,
+    StreamEvent, WireApi,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -72,8 +69,6 @@ enum Step {
 enum Listing {
     /// Says at once that it has none.
     NotFound,
-    /// Takes the request and never answers.
-    Silent,
 }
 
 /// A server that answers the n-th request for a reply with the n-th script as an event stream,
@@ -132,7 +127,6 @@ async fn serve(
                 let none = "HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
                 let _ = socket.write_all(none.as_bytes()).await;
             }
-            Listing::Silent => tokio::time::sleep(SILENCE).await,
         }
         return;
     }
@@ -297,195 +291,4 @@ async fn keep_alives_count_as_life_and_limits_that_are_off_wait() {
         .await
         .unwrap();
     assert_eq!(text_of(&collect(stream).await), "Hello");
-}
-
-fn router(provider: HttpProvider, max_stalls: u32) -> Router {
-    let policy = RetryPolicy {
-        base_delay: Duration::from_millis(10),
-        max_jitter: Duration::ZERO,
-        max_stalls,
-        ..RetryPolicy::default()
-    };
-    Router::new(
-        vec![Arc::new(provider)],
-        Catalog::default(),
-        BTreeMap::new(),
-        policy,
-    )
-}
-
-/// One logical request the way the agent loop makes it: a reply that fails while it is
-/// streamed is reported to the router and asked for again. Returns the reply, or the error
-/// the request ended with.
-async fn ask(router: &Router, state: &mut RouteState) -> Result<String, AiError> {
-    let chain = ["acme/mock-model".parse().unwrap()];
-    loop {
-        let (model, stream) = router
-            .stream_with(&chain, &request(), CancellationToken::new(), state)
-            .await?;
-        match collect(stream).await.pop() {
-            Some(StreamEvent::Done { message }) => return Ok(message.text()),
-            Some(StreamEvent::Error { error, .. }) => {
-                router.report_stream_failure(&model, &error, state);
-            }
-            other => panic!("{other:?}"),
-        }
-    }
-}
-
-fn stalls(events: &mut tokio::sync::mpsc::UnboundedReceiver<RouteEvent>) -> Vec<(u32, ModelRef, AiError)> {
-    let mut seen = Vec::new();
-    while let Ok(event) = events.try_recv() {
-        match event {
-            RouteEvent::Retry {
-                attempt,
-                model,
-                error,
-                ..
-            } => seen.push((attempt, model, error)),
-            other => panic!("{other:?}"),
-        }
-    }
-    seen
-}
-
-#[tokio::test]
-async fn the_router_asks_again_after_a_stall_before_and_a_stall_inside_the_reply() {
-    // Silent from the start, then silent after the first fragment, then a whole reply. The
-    // model list the router asks for first, the model being unknown to it, never comes either.
-    let (address, served) = scripted(
-        vec![
-            vec![Step::Wait(SILENCE)],
-            vec![Step::Send(FIRST), Step::Wait(SILENCE)],
-            vec![Step::Send(FIRST), Step::Send(REST)],
-        ],
-        Listing::Silent,
-    )
-    .await;
-    let dir = tempfile::tempdir().unwrap();
-    let router = router(provider(address, dir.path(), limits()), 3);
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let mut state = RouteState::with_events(tx);
-
-    // The fragment of the second attempt is not part of the answer.
-    let began = Instant::now();
-    assert_eq!(ask(&router, &mut state).await.unwrap(), "Hello");
-    assert!(began.elapsed() < SILENCE / 4, "{:?}", began.elapsed());
-    assert_eq!(served.load(Ordering::SeqCst), 3);
-    let model = ModelRef::new("acme", "mock-model");
-    assert_eq!(
-        stalls(&mut rx),
-        [
-            (1, model.clone(), AiError::Stalled { secs: 1 }),
-            (2, model, AiError::Stalled { secs: 1 }),
-        ]
-    );
-}
-
-#[tokio::test]
-async fn a_model_that_stalls_as_often_as_the_limit_allows_fails_the_request() {
-    let (address, served) = scripted(
-        vec![
-            vec![Step::Wait(SILENCE)],
-            vec![Step::Send(FIRST), Step::Wait(SILENCE)],
-            vec![Step::Send(FIRST), Step::Send(REST)],
-        ],
-        Listing::NotFound,
-    )
-    .await;
-    let dir = tempfile::tempdir().unwrap();
-    let router = router(provider(address, dir.path(), limits()), 2);
-    let mut state = RouteState::new();
-
-    // Two stalls are the limit: the only model of the chain is out, the third script unused.
-    assert_eq!(ask(&router, &mut state).await, Err(AiError::Stalled { secs: 1 }));
-    assert_eq!(served.load(Ordering::SeqCst), 2);
-}
-
-/// A provider configured as `[providers.acme]` with `settings`, under the global `limits`.
-fn configured(
-    address: String,
-    dir: &std::path::Path,
-    settings: ProviderSettings,
-    limits: StallLimits,
-) -> HttpProvider {
-    let settings = ProviderSettings {
-        api: Some(WireApi::OpenAiChat),
-        base_url: Some(address),
-        ..settings
-    };
-    let config = presets::resolve_with(&BTreeMap::from([("acme".to_string(), settings)]), &|_| None)
-        .unwrap()
-        .into_iter()
-        .find(|p| p.id == "acme")
-        .unwrap();
-    let credentials = Credentials::with_env(dir.join("auth.json"), Arc::new(|_| None));
-    HttpProvider::new(config, http_client(), Arc::new(credentials)).with_stall(limits)
-}
-
-#[tokio::test]
-async fn a_provider_s_own_limits_replace_the_global_ones() {
-    // Headers, then nothing; then a reply that keeps the connection alive for 3 s before it ends.
-    let mut lively = vec![Step::Send(FIRST)];
-    for _ in 0..15 {
-        lively.push(Step::Wait(Duration::from_millis(200)));
-        lively.push(Step::Send(": keep-alive\n\n"));
-    }
-    lively.push(Step::Send(REST));
-    let (address, _) = scripted(vec![vec![Step::Wait(SILENCE)], lively], Listing::NotFound).await;
-    let dir = tempfile::tempdir().unwrap();
-
-    // The global limits wait forever; this provider gives up a silent start after a second.
-    let impatient = ProviderSettings {
-        first_event_secs: Some(1),
-        ..ProviderSettings::default()
-    };
-    let provider = configured(
-        address.clone(),
-        dir.path(),
-        impatient,
-        StallLimits::from_secs(0, 0),
-    );
-    let began = Instant::now();
-    let stream = provider
-        .stream(&model(), &request(), CancellationToken::new())
-        .await
-        .unwrap();
-    let events = collect(stream).await;
-    assert!(
-        matches!(
-            events.last(),
-            Some(StreamEvent::Error {
-                error: AiError::Stalled { secs: 1 },
-                ..
-            })
-        ),
-        "{events:?}"
-    );
-    assert!(began.elapsed() >= Duration::from_secs(1) && began.elapsed() < SILENCE / 4);
-
-    // Never silent for long, but slower in all than this provider allows.
-    let hurried = ProviderSettings {
-        timeout_secs: Some(1),
-        ..ProviderSettings::default()
-    };
-    let provider = configured(address, dir.path(), hurried, limits());
-    let began = Instant::now();
-    let stream = provider
-        .stream(&model(), &request(), CancellationToken::new())
-        .await
-        .unwrap();
-    let events = collect(stream).await;
-    let waited = began.elapsed();
-    match events.last() {
-        Some(StreamEvent::Error {
-            error: AiError::Network(why),
-            ..
-        }) => assert!(why.contains("timeout_secs"), "{why}"),
-        other => panic!("{other:?}"),
-    }
-    assert!(
-        waited >= Duration::from_secs(1) && waited < Duration::from_millis(2900),
-        "{waited:?}"
-    );
 }

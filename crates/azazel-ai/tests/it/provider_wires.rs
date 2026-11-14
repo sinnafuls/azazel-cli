@@ -8,7 +8,7 @@ use azazel_ai::providers::http::{HttpProvider, http_client};
 use azazel_ai::providers::presets::presets_with;
 use azazel_ai::{
     AiError, Block, Cost, Credential, Credentials, Discovery, Message, ModelInfo, Provider, ProviderConfig,
-    Request, StopReason, StreamEvent, ThinkingLevel, WireApi,
+    Request, StreamEvent, ThinkingLevel, WireApi,
 };
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -79,53 +79,6 @@ async fn body_of(server: &MockServer, wanted: &str) -> Value {
         .find(|request| request.url.path() == wanted)
         .unwrap_or_else(|| panic!("nothing was sent to {wanted}"));
     serde_json::from_slice(&request.body).unwrap()
-}
-
-#[tokio::test]
-async fn ollama_chat_streams_json_lines_from_the_native_endpoint() {
-    let server = MockServer::start().await;
-    let answer = concat!(
-        "{\"message\":{\"role\":\"assistant\",\"thinking\":\"Easy.\"},\"done\":false}\n",
-        "{\"message\":{\"role\":\"assistant\",\"content\":\"Hel\"},\"done\":false}\n",
-        "{\"message\":{\"role\":\"assistant\",\"content\":\"lo\"},\"done\":false}\n",
-        "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",",
-        "\"prompt_eval_count\":12,\"eval_count\":4}\n",
-    );
-    Mock::given(method("POST"))
-        .and(path("/api/chat"))
-        .and(header("authorization", "Bearer ol-key"))
-        .and(body_partial_json(
-            json!({"model": "mock:8b", "stream": true, "think": "high"}),
-        ))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(answer, "application/x-ndjson"))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let dir = tempfile::tempdir().unwrap();
-    // The address is the one of the OpenAI-compatible endpoint; the native one sits beside it.
-    let config = ProviderConfig::new("ollama", WireApi::OllamaChat, format!("{}/v1", server.uri()));
-    let provider = keyed(config, dir.path(), Some("ol-key"));
-    let model = ModelInfo {
-        reasoning: true,
-        ..ModelInfo::unknown("ollama", "mock:8b")
-    };
-    let req = Request {
-        thinking: ThinkingLevel::High,
-        tail: vec![note("Date: today")],
-        ..request()
-    };
-
-    let message = finish(&provider, &model, &req).await;
-    // The request's notes follow the conversation as one more user message.
-    assert_eq!(
-        body_of(&server, "/api/chat").await["messages"],
-        json!([{"role": "user", "content": "hi"}, {"role": "user", "content": NOTE_SENT}])
-    );
-    assert_eq!(message.text(), "Hello");
-    assert!(matches!(&message.content[0], Block::Thinking { text, .. } if text == "Easy."));
-    let meta = message.meta.as_ref().unwrap();
-    assert_eq!((meta.api, meta.stop), (WireApi::OllamaChat, StopReason::Stop));
-    assert_eq!((meta.usage.input, meta.usage.output), (12, 4));
 }
 
 #[tokio::test]

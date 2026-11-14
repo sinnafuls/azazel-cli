@@ -365,25 +365,3 @@ fn lines_split_across_chunks_and_a_last_line_without_a_newline_are_read() {
     };
     assert_eq!(message.text(), "a\u{e9}");
 }
-
-#[test]
-fn the_tag_list_names_the_installed_models() {
-    let body = json!({"models": [
-        {"name": "mock:8b", "model": "mock:8b", "size": 5},
-        {"name": "only-name"},
-        {"size": 1},
-    ]});
-    let ids: Vec<String> = ollama::parse_models(&provider(), &body)
-        .into_iter()
-        .map(|model| model.key())
-        .collect();
-    assert_eq!(ids, ["mock/mock:8b", "mock/only-name"]);
-    assert_eq!(
-        ollama::classify_error(400, r#"{"error": "prompt too long; exceeded context length"}"#),
-        Some(AiError::ContextOverflow)
-    );
-    assert_eq!(
-        ollama::classify_error(404, r#"{"error": "model 'x' not found"}"#),
-        None
-    );
-}

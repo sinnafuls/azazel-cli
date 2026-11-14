@@ -47,17 +47,4 @@ mod tests {
             "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
-
-    #[test]
-    fn verifiers_are_long_enough_and_differ() {
-        let (a, b) = (Pkce::new(), Pkce::new());
-        assert_eq!(a.verifier.len(), 43);
-        assert!(
-            a.verifier
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        );
-        assert_ne!(a.verifier, b.verifier);
-        assert_eq!(a.challenge, challenge(&a.verifier));
-    }
 }

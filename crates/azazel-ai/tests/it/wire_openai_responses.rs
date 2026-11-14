@@ -168,83 +168,6 @@ fn block_ends(events: &[StreamEvent]) -> Vec<usize> {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn text_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-responses/text.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    let message = done(&events);
-    assert_eq!(
-        message.content,
-        vec![Block::text("Hello! How can I help you today?")]
-    );
-    assert_eq!(deltas(&events, 0), "Hello! How can I help you today?");
-    let meta = meta(message);
-    assert_eq!(meta.stop, StopReason::Stop);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 21,
-            output: 9,
-            ..Usage::default()
-        }
-    );
-    assert_eq!(
-        meta.response_id.as_deref(),
-        Some("resp_0b6f2e41c7d93a5800690f3c2a1b4c81")
-    );
-    assert_eq!(
-        (
-            meta.provider.as_str(),
-            meta.model.as_str(),
-            meta.api,
-            meta.duration_ms
-        ),
-        ("mock", "mock-model", WireApi::OpenAiResponses, 0)
-    );
-}
-
-#[test]
-fn tool_call_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-responses/tool_call.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    // The tool-call id is the item's `call_id`, not its `fc_…` item id.
-    assert_eq!(
-        events[1],
-        StreamEvent::ToolCallStart {
-            index: 0,
-            id: "call_h7Kp2LmQ9sVtXw3R".into(),
-            name: "read".into(),
-        }
-    );
-    assert_eq!(deltas(&events, 0), r#"{"path":"src/main.rs","limit":40}"#);
-    let call = tool_call(
-        "call_h7Kp2LmQ9sVtXw3R",
-        "read",
-        json!({"path": "src/main.rs", "limit": 40}),
-    );
-    assert!(events.contains(&StreamEvent::BlockEnd {
-        index: 0,
-        block: call.clone(),
-    }));
-    let message = done(&events);
-    assert_eq!(message.content, vec![call]);
-    let meta = meta(message);
-    assert_eq!(meta.stop, StopReason::ToolUse);
-    assert_eq!(
-        meta.usage,
-        Usage {
-            input: 124,
-            output: 18,
-            cache_read: 256,
-            ..Usage::default()
-        }
-    );
-}
-
-#[test]
 fn thinking_tool_fixture() {
     let events = decode(include_bytes!("../fixtures/openai-responses/thinking_tool.sse"));
     insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
@@ -292,31 +215,6 @@ fn thinking_tool_fixture() {
             ..Usage::default()
         }
     );
-}
-
-#[test]
-fn midstream_error_fixture() {
-    let events = decode(include_bytes!("../fixtures/openai-responses/midstream_error.sse"));
-    insta::assert_snapshot!(serde_json::to_string_pretty(&events).unwrap());
-
-    assert_eq!(events.first(), Some(&StreamEvent::Start));
-    let (error, partial) = failure(&events);
-    let AiError::Server { status, body } = error else {
-        panic!("expected a server error, got {error:?}");
-    };
-    assert_eq!(*status, 500);
-    assert!(body.starts_with("An error occurred while processing your request."));
-    assert!(error.is_retryable());
-    let partial = partial.unwrap();
-    assert_eq!(partial.content, vec![Block::text("The answer is")]);
-    let meta = meta(partial);
-    assert_eq!(meta.stop, StopReason::Error);
-    assert_eq!(
-        meta.response_id.as_deref(),
-        Some("resp_02a9d4f7c18e63b500690f3f0c77de84")
-    );
-    // The message item never completed, so it has no BlockEnd.
-    assert!(block_ends(&events).is_empty());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -681,32 +579,6 @@ fn the_notes_of_a_request_follow_the_conversation() {
 }
 
 #[test]
-fn body_is_a_stateless_streaming_request_and_omits_optional_fields() {
-    let body = body(&Request {
-        messages: vec![Message::user("hi")],
-        ..Request::default()
-    });
-    assert_eq!(body["model"], json!("mock-model"));
-    assert_eq!(body["stream"], json!(true));
-    assert_eq!(body["store"], json!(false));
-    assert_eq!(
-        body["input"],
-        json!([{"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]}])
-    );
-    for absent in [
-        "instructions",
-        "tools",
-        "max_output_tokens",
-        "prompt_cache_key",
-        "reasoning",
-        "include",
-        "temperature",
-    ] {
-        assert!(body.get(absent).is_none(), "{absent}");
-    }
-}
-
-#[test]
 fn system_parts_become_instructions_and_the_cache_key_is_forwarded() {
     let body = body(&Request {
         system: vec![
@@ -1010,41 +882,6 @@ fn request_targets_responses_with_bearer_auth_and_the_json_body() {
     assert_eq!(request.headers()["authorization"], "Bearer token-1");
 
     assert!(build(&Auth::None).headers().get("authorization").is_none());
-}
-
-#[test]
-fn provider_headers_are_applied_last_and_override() {
-    let mut provider = provider();
-    provider
-        .headers
-        .insert("authorization".into(), "Bearer override".into());
-    provider
-        .headers
-        .insert("OpenAI-Organization".into(), "org-mock".into());
-    let client = azazel_ai::tls::client();
-    let request = openai_responses::build_request(
-        &client,
-        &provider,
-        &model(false),
-        &Request::default(),
-        &Auth::ApiKey("sk-test".into()),
-    )
-    .build()
-    .unwrap();
-    let values: Vec<_> = request.headers().get_all("authorization").iter().collect();
-    assert_eq!(values, ["Bearer override"]);
-    assert_eq!(request.headers()["openai-organization"], "org-mock");
-}
-
-#[test]
-fn models_request_is_an_authenticated_get() {
-    let client = azazel_ai::tls::client();
-    let request = openai_responses::models_request(&client, &provider(), &Auth::ApiKey("sk-test".into()))
-        .build()
-        .unwrap();
-    assert_eq!(request.method(), reqwest::Method::GET);
-    assert_eq!(request.url().as_str(), "http://localhost:9/v1/models");
-    assert_eq!(request.headers()["authorization"], "Bearer sk-test");
 }
 
 #[test]

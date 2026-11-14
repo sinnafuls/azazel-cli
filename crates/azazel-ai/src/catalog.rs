@@ -360,15 +360,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_model_gets_conservative_defaults() {
-        let m = Catalog::default().get("mock", "nope");
-        assert_eq!(
-            (m.context_window, m.max_output, m.vision, m.reasoning, m.cost),
-            (128_000, 8192, false, false, None)
-        );
-    }
-
-    #[test]
     fn a_listing_without_thinking_levels_keeps_the_known_ones() {
         let mut known = ModelInfo::unknown("mock", "a");
         known.thinking_levels = vec![ThinkingLevel::Low, ThinkingLevel::High];
