@@ -44,7 +44,7 @@ The live region, top to bottom:
 | Roster | sub-agents are active | One line per queued, working or approval-waiting agent; see [team](team.md) |
 | Todo list | the agent has unfinished todos | The lead agent's task list |
 | Input | always | The editor between two rules, with its completion list, notices, queued messages, stashed drafts and an attached-image count above it |
-| Status line | always | Session facts on the left, the model on the right |
+| Status line | always | Session facts on the left, the model on the right, or the [segments you choose](#status-line) |
 
 Your own messages appear in the transcript on a band that spans the terminal's width.
 
@@ -305,19 +305,165 @@ The file a `read`, `write` or `edit` card names is a link to that file in termin
 
 ### Status line
 
+The status line is made of named segments, some against the left edge and some against the right. Which ones,
+in which order and with what between them is yours to choose: [`/statusline`](#setting-it-up) sets it up, and
+`[statusline]` in the [configuration](configuration.md#features) holds it. A segment with nothing to say (no
+branch outside a repository, no cost on a subscription) is left out.
+
 | Segment | Shown when | Content |
 |---|---|---|
-| mode | always | The permission mode: `manual`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, `⚠ bypass`, in the colour of the input rules (`bypass` in the colour of errors) |
-| `coordinator` | [coordinator mode](team.md#coordinator-mode) is on | The lead plans and delegates only |
-| `⑂ branch` | the project is a git repository | The checked-out branch |
-| directory | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
-| `◫ N%` | the model's context window is known | How full the context window is; warning colour above 70 %, error colour above 90 %. On a terminal at least 100 columns wide a bar follows it: `◫ 42% [━━━╸────]` |
-| `↯ N tok/s` | the lead has streamed a reply since your last prompt | How fast the lead writes, in output tokens per second; see below |
-| `$cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
-| `◔ 61% 5h` | the lead answers on a subscription you signed in to | The fullest usage window of the account that counts the lead's model and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
-| `⇶ N agents` | sub-agents are active | How many are queued, working or waiting for approval |
-| `⚑ goal …` | a goal is open | The goal's state and the attempt number; see [goals](goals.md) |
-| `⬢ model · level` | always, against the right edge | The model answering and the thinking level. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
+| `mode` | always | The permission mode: `manual`, `⏸ plan`, `⏵ accept-edits`, `⏵⏵ auto`, `⚠ bypass`, in the colour of the input rules (`bypass` in the colour of errors). `coordinator` follows it while [coordinator mode](team.md#coordinator-mode) is on |
+| `branch` | the project is a git repository | `⑂ main`: the checked-out branch |
+| `git_dirty` | files differ from the last commit | `± 3`: how many files are changed or untracked. Counted again after every turn and every `!command`, and otherwise at most every five seconds |
+| `path` | always | The working directory, with `~` for your home directory. A long one keeps its end (`…/crates/azazel-tui`) and at most a third of the line |
+| `context` | the model's context window is known | `◫ 42%`: how full the context window is; warning colour above 70 %, error colour above 90 % |
+| `bar` | the context window is known and the terminal is at least 100 columns wide | `[━━━╸────]`: the context window as a bar. Right behind `context` it stands with it as one piece |
+| `rate` | the lead has streamed a reply since your last prompt | `↯ 78 tok/s`: how fast the lead writes, in output tokens per second; see below |
+| `cost` | the lead answers with an API key and the model's prices are known | Money spent in this session: `$0.42`, `$12.4`. In the warning colour from `limits.warn_cost_usd` on |
+| `usage` | the lead answers on a subscription you signed in to | `◔ 61% 5h`: the fullest usage window of the account in use that counts the lead's model (`7d-fable` for a window of one model family) and how full it is, in the warning colour from 80 % on; `/usage` shows them all |
+| `cache` | the provider has counted prompt tokens | `≋ 87%`: the share of this session's prompt tokens that were read from the provider's cache |
+| `agents` | sub-agents are active | `⇶ 2 agents`: how many are queued, working or waiting for approval |
+| `goal` | a goal is open | `⚑ goal …`: the goal's state and the attempt number; see [goals](goals.md) |
+| `todo` | the lead has a todo list | `☑ 2/5`: items done and items in all; in the colour of success once all are done |
+| `queue` | messages wait for the agent to finish | `⏵ 1 queued`; see [queued messages](#queued-messages-and-stashed-drafts) |
+| `session` | the session has a name | `❖ fix the build`, cut to 24 columns |
+| `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with. It follows the account when work [moves to another one](models-and-logins.md#several-accounts) |
+| `model` | always | `⬢ provider/model`: the model answering. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
+| `tier` | a [service tier](models-and-logins.md#service-tiers) is on | `fast` or `slow` |
+| `thinking` | always | The thinking level |
+| `time` | always | `◷ 14:05`: the time of day |
+
+The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is plain ASCII
+(`git: main | ctx 42% [===>----] | 78 tok/s`).
+
+**Presets.** A preset is a list of segments for each side:
+
+| Preset | Left | Right |
+|---|---|---|
+| `default` | `mode`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal` | `model`, `tier`, `thinking` |
+| `minimal` | `mode`, `path` | `model` |
+| `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents` | `cost`, `usage`, `thinking`, `model` |
+| `full` | `mode`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
+
+`statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
+preset's, less what the other list took, and `["none"]` is a side with nothing on it. A segment stands once: named
+on both sides, it stays where it is named first and a warning says so, as it does for a name that is no segment.
+
+**Separators.** `statusline.separator` is what stands between two segments: `dot` (` · `), `bar` (` │ `),
+`space` (two spaces) or `powerline`. With `powerline` every segment is a block of colour: the mode in the colour
+of the mode, the model in the accent colour, the others on two quiet backgrounds in turn. With
+`tui.glyphs = "nerd"` an arrow (``, ``) ends each block; without a Nerd Font the blocks stand side by side.
+The `powerline` preset is drawn in blocks unless you choose `bar` or `space` for it.
+
+**Segment options.** `[statusline.segments.<name>]` sets how one segment is written:
+
+| Option | Segments | Values |
+|---|---|---|
+| `priority` | all | `0` to `100`: how long the segment stays on a narrow line; see below |
+| `icon` | all | `false` leaves out the symbol before the text |
+| `max` | `path`, `model`, `branch`, `goal`, `session`, `account` | The most columns of its text, `4` to `200` |
+| `style` | `path` | `short` (the default: `~` and the end of a long path), `full`, `basename` (the directory's own name) |
+| `style` | `model` | `full` (the default), `short` (without the provider) |
+| `style` | `context` | `percent` (the default), `tokens` (`◫ 84.0k/200.0k`) |
+| `style` | `account` | `label` (the default), `email` (the address the account signed in with, hidden as `j***@example.com` unless `usage.redact_email` is off; the label for a stored key) |
+| `format`, `seconds` | `time` | `24h` (the default) or `12h`; `seconds = true` adds them |
+| `cells`, `min_width` | `bar` | Cells of the bar (`4` to `40`, default `8`); the narrowest terminal it is drawn on (default `100`, `0` for any) |
+
+```toml
+[statusline]
+preset = "minimal"
+right = ["context", "model", "time"]
+separator = "bar"
+
+[statusline.segments.path]
+style = "basename"
+
+[statusline.segments.model]
+style = "short"
+```
+
+An option a segment does not take, or a value it cannot be, is named in a warning when azazel starts and left
+at its default.
+
+**A narrow terminal.** When the line does not fit, whole segments leave it, the one with the lowest priority
+first: `bar` (5), `time` (15), `account` (20), `session` (25), `cache` (30), `todo` (35), `queue` (38), `tier`
+(40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70), `context` (75), `path`
+(80), `git_dirty` (84), `branch` (85), `model` (95), `mode` (100). The segment with the highest priority of each
+side stays; only then is the right side shortened, and after that left out.
+
+#### Setting it up
+
+`/statusline` opens a popup with the line it would make on its first row, for a session that has something to
+show in every segment. The status line under the popup follows what you choose as well. The rows are the
+preset, the separator, the segments of the left side and of the right side in their order, then the segments
+that are off (the sample shows some of them).
+
+```text
+╭─ Status line ────────────────────────────────────────────────────────────────────────────────────╮
+│ ⏵ accept-edits · ⑂ main · ~/src/app · ◫ 42% · ↯ 78 tok/s      ⬢ anthropic/claude-opus-5-5 · high │
+│                                                                                                  │
+│ ▌ Preset     default                                                                             │
+│   Separator  dot                                                                                 │
+│   ▣ mode       left   the permission mode                                                        │
+│   ▣ branch     left   the git branch                                                             │
+│   ▣ path       left   the working directory                                                      │
+│   ▣ model      right  the model that answers                                                     │
+│   ▣ thinking   right  the thinking level                                                         │
+│   □ time              the time of day                                                            │
+│   □ git_dirty         files changed since the last commit                                        │
+╰─ ↑↓ move · space on or off · left right side or value · [ ] reorder · enter save · esc cancel ───╯
+```
+
+| Key | On | Effect |
+|---|---|---|
+| `Left`, `Right`, `Space` | `Preset`, `Separator` | The next or previous value. Another preset puts its own segments on the line |
+| `Space` | a segment | Puts it on the line (at the end of the left side) or takes it off |
+| `Left`, `Right` | a segment | Moves it to the end of the left or the right side |
+| `[`, `]`, `Shift+Up`, `Shift+Down` | a segment on the line | Moves it one place towards the start or the end of the line; past the end of the left side is the start of the right side |
+| `Enter` | | Saves `preset`, `separator`, `left` and `right` under `[statusline]` in `~/.azazel/config.toml`. A side that is the preset's is not written, so it follows the preset |
+| `Esc` | | Puts the line back as it was |
+
+`/statusline minimal` (or `default`, `powerline`, `full`) takes a preset at once and saves it. The Status line
+page of [`/settings`](#settings) edits the same keys, the segment options and the command included.
+
+#### Your own command
+
+`statusline.command` names a program whose output stands in place of the left side. It is run in your shell,
+in the working directory, with the session as JSON on its standard input, and the first line it prints on its
+standard output is shown. Colours (SGR sequences) are kept; every other escape sequence and control character
+is removed. The right side stays, and gives way to a long line down to its last segment.
+
+```toml
+[statusline]
+command = "jq -r '.model.display_name + \" in \" + .workspace.current_dir'"
+```
+
+```json
+{
+  "hook_event_name": "Status",
+  "session_id": "01JD…",
+  "session": { "id": "01JD…", "name": "fix the build" },
+  "cwd": "/home/ann/src/app",
+  "workspace": { "current_dir": "/home/ann/src/app", "project_dir": "/home/ann/src/app" },
+  "model": { "id": "anthropic/claude-opus-5-5", "display_name": "claude-opus-5-5" },
+  "mode": "accept-edits",
+  "thinking": "high",
+  "branch": "main",
+  "context": { "used_tokens": 84000, "window": 200000, "used_percentage": 42 },
+  "context_window": { "context_window_size": 200000, "used_percentage": 42, "remaining_percentage": 58 },
+  "cost": { "total_cost_usd": 0.42 },
+  "version": "0.5.0"
+}
+```
+
+`session_id`, `cwd`, `workspace`, `model`, `context_window` and `cost.total_cost_usd` are named as Claude Code
+names them, so a program written for its status line reads the same fields here. A fact that is not known is
+`null`.
+
+The program runs when something it is given has changed, after every turn and every `!command`, and no more
+often than once a second. It is ended after two seconds. When it fails, takes too long or prints nothing, the
+segments are shown instead, and a failure is said once. The key is honoured in the home config and in a
+[trusted](configuration.md#trust) project only.
 
 **Speed.** Each reply of the lead is timed from its first text or thinking to its end, so the wait for the
 model to start is not part of the speed. While a reply streams, the number is an estimate (characters received,
@@ -332,11 +478,7 @@ the usage window is shown instead, as soon as the provider has reported one. Wit
 `--api-key`, the environment, `api_key_command`, the configuration or `auth.json`) the cost is shown. A key in
 the environment wins over a stored sign-in, as it does for the requests themselves. A session that runs in
 another process (`azazel attach`, `--ssh`) shows the cost that process reports, and nothing when it reports
-none.
-
-When the terminal is too narrow for both sides, whole segments leave the left side from its end: the goal
-first, then the agents, the cost or usage, the speed, the context, the directory and the branch. The mode
-always stays. Only then is the model shortened, and after that left out.
+none; `git_dirty` and `account` are not shown for it.
 
 ## Keys
 
@@ -352,7 +494,7 @@ always stays. Only then is the model shortened, and after that left out.
 | `Alt+A` | `agent_hub` | Open the agent hub |
 | `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output; in the [compact style](#compact-style), also write the last group of calls as full cards |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
-| `Ctrl+L` | `model_picker` | Pick the model |
+| `Ctrl+L`, `Alt+P` | `model_picker` | Open the [model picker](#models-and-roles-at-a-key): roles, favourites, recent models, then every model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
 | `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). Windows Terminal and VS Code paste with `Ctrl+V` themselves, so there the key for an image is `Alt+V` |
 | `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
@@ -361,7 +503,8 @@ always stays. Only then is the model shortened, and after that left out.
 | `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
 | `Ctrl+S` | `stash` | Park the draft; on an empty input, bring the last parked draft back |
 | `Alt+T` | `cycle_thinking` | Next thinking level the current model supports |
-| `Alt+M`, `Alt+Shift+M` | `cycle_model`, `cycle_model_back` | Next or previous favourite model |
+| `Ctrl+P`, `Alt+M` | `cycle_model` | Put the lead on the next favourite model or role; see [models and roles at a key](#models-and-roles-at-a-key) |
+| `Ctrl+Shift+P`, `Alt+Shift+P`, `Alt+Shift+M` | `cycle_model_back` | The previous one |
 | `F2` | `transcript` | Open the [transcript viewer](#transcript-viewer) |
 | `F5` | `retry` | Same as `/retry` |
 | `Ctrl+B` | `background` | While a `shell` command of the agent runs: move it to the background |
@@ -382,10 +525,42 @@ goes to the roster while sub-agents are at work; see [the fleet view](#the-fleet
 What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
 one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
 
-`Alt+T` steps through the thinking levels the current model supports, `off` included. `Alt+M` and `Alt+Shift+M`
-step through your favourite models: `Ctrl+F` in the model picker (`Ctrl+L`, `/model`) adds the selected model to
-the favourites or takes it out, and the list is saved as `tui.favourites` in `~/.azazel/config.toml`. With no
-favourites the keys step through `@default`, `@smol` and `@slow`.
+`Alt+T` steps through the thinking levels the current model supports, `off` included.
+
+### Models and roles at a key
+
+`Ctrl+P` puts the lead on the next entry of a cycle, `Ctrl+Shift+P` or `Alt+Shift+P` on the previous one. For a
+moment (two seconds, or until the next key) the cycle stands above the input with the entry the lead is on
+now in brackets:
+
+```text
+@default [@smol] @slow  ctrl+p next · ctrl+l all
+```
+
+- The cycle is `tui.favourites`: models (`anthropic/claude-x`) and roles (`@smol`), in the order of the list.
+  `Ctrl+F` in the model picker adds the selected row to the favourites or takes it out, and the list is saved
+  in `~/.azazel/config.toml`; the Models page of `/settings` edits it too.
+- With no favourites the cycle is the roles that were given models: `@default`, `@smol` and `@slow` first, the
+  others by name. A role that answers with the same models as one before it is left out.
+- `--models a,b,c` names the cycle for one run, in the words `--model` takes (part of a model's name is
+  enough). `Ctrl+F` still edits the saved list.
+- An entry that resolves to no model you can use is skipped.
+- A step onto a role makes that role's chain the lead's: the lead answers with the role's models and its
+  fallbacks, and follows the role when you change it. The choice is recorded in the session like one made with
+  `/model`, so `/resume` comes back on it. Sub-agents keep their own models.
+- The lead is on the entry it was put on, or else on the first entry that answers with the model the lead
+  answers with: a lead on `@default` counts as being on the favourite that names the model `@default` answers
+  with, and the first step goes to the entry after it.
+- A terminal that does not report keys the enhanced way sends `Ctrl+Shift+P` as `Ctrl+P`, and Windows Terminal
+  and VS Code keep it for their command palette: `Alt+Shift+P` always arrives. VS Code also keeps `Ctrl+P`;
+  `Alt+M` and `Alt+Shift+M` do the same there. `/keys` says which keys your terminal keeps.
+
+`Alt+P` or `Ctrl+L` (and `/model`) open the model picker with the row of what the lead is on selected. Typing
+filters it. The rows come in this order: the roles, each with the model it answers with first; your favourites
+(marked `★`), in the order of the list; the models chosen lately (marked `recent`), the latest first; then
+[virtual models](models-and-logins.md#virtual-models) and every other model of the providers you have a
+credential for. The last eight models you chose, with the picker, `/model <name>` or the cycling keys, are kept
+in `~/.azazel/cache/recent-models`.
 
 `Ctrl+B` works while a `shell` command the agent started is running. The command goes on as a background job
 (it is not started again), the agent's call returns at once with the job's id, and `/jobs` lists it.
@@ -635,6 +810,7 @@ Session and display:
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |
+| `/statusline [preset]` | Set up the [status line](#status-line): pick a preset and a separator, put segments on the line, take them off and order them, with the line they make in view. `/statusline minimal` takes a preset at once |
 | `/keys` | List key bindings and the [key conflicts](#changing-keys) found: keys given to two actions, keys the terminal keeps for itself, keys it cannot tell apart |
 | `/terminal-setup` | Make `Shift+Enter` add a line in this terminal: says whether it already does, else adds the key binding to the terminal's file (after asking, with a backup) or shows it; see [Shift+Enter](#shiftenter-and-terminal-setup) |
 | `/quit`, `/exit` | Exit |
@@ -1018,9 +1194,9 @@ With the feature:
 | Page | What is on it |
 |---|---|
 | Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
-| Models | The default model and the model of every role, favourite models, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
+| Models | The default model and the model of every role, favourite models\*, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
 | Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
-| Status line | Preset, left and right segments, separator, segment options, command |
+| Status line | Preset\*, left and right segments\*, separator\*, segment options\*, command\*; [`/statusline`](#setting-it-up) sets the same line up with the segments in a list |
 | Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
 | Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |
 | Tools | Disabled tools, result size, shell and its time limit, redaction for the model; formatters and checkers after a write, the findings report, the read guard, the secret scan; language servers; MCP; web search and the browser; media models; verification and goals |

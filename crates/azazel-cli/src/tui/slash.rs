@@ -13,6 +13,46 @@ use super::{SHELL_NOTE, Tui, first_line, view};
 /// Matching lines listed per session by `/search`.
 pub(super) const SEARCH_LINES: usize = 3;
 
+/// Where a row of the model picker stands: the groups follow each other in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Group {
+    Role,
+    Favourite,
+    Recent,
+    Other,
+}
+
+/// The rows of the model picker (`(spec, detail)`, as the session lists them) in the order
+/// they are offered: the roles, the favourites in their own order, the models chosen lately
+/// with the latest first, then every other model. Each row stands once, in its first group.
+pub(super) fn picker_order(
+    rows: Vec<(String, String)>,
+    favourites: &[String],
+    recent: &[String],
+) -> Vec<(Group, String, String)> {
+    let place = |list: &[String], spec: &str| list.iter().position(|known| known == spec);
+    let mut rows: Vec<(Group, usize, String, String)> = rows
+        .into_iter()
+        .enumerate()
+        .map(|(at, (spec, detail))| {
+            let (group, at) = if spec.starts_with('@') {
+                (Group::Role, at)
+            } else if let Some(at) = place(favourites, &spec) {
+                (Group::Favourite, at)
+            } else if let Some(at) = place(recent, &spec) {
+                (Group::Recent, at)
+            } else {
+                (Group::Other, at)
+            };
+            (group, at, spec, detail)
+        })
+        .collect();
+    rows.sort_by_key(|(group, at, ..)| (*group, *at));
+    rows.into_iter()
+        .map(|(group, _, spec, detail)| (group, spec, detail))
+        .collect()
+}
+
 const BUILTIN: &[(&str, &str)] = &[
     ("help", "List commands"),
     (
@@ -85,6 +125,11 @@ const BUILTIN: &[(&str, &str)] = &[
     (
         "glyphs",
         "Pick the symbols the UI draws with, or set them: /glyphs nerd|unicode|ascii|auto",
+    ),
+    (
+        "statusline",
+        "Set up the status line: its segments, their order and what stands between them; \
+         /statusline default|minimal|powerline|full takes a preset",
     ),
     (
         "keys",
@@ -309,6 +354,8 @@ impl Tui {
                     "unknown glyph set `{args}`: nerd, unicode, ascii or auto"
                 )),
             },
+            "statusline" if args.is_empty() => self.open_statusline(),
+            "statusline" => self.statusline_preset(args),
             "keys" => self.show_keys(),
             "terminal-setup" => self.terminal_setup(),
             "rewind" => self.open_rewind().await,
@@ -409,25 +456,32 @@ impl Tui {
 
     // ------------------------------------------------------------ pickers
 
+    /// The model picker: the roles, the favourites, the models chosen lately, then every
+    /// other model, with the row of what the lead is on selected.
     pub(super) async fn open_model_picker(&mut self) {
-        let (specs, mut items): (Vec<String>, Vec<SelectItem>) = self
-            .backend
-            .models()
-            .await
-            .into_iter()
-            .map(|(spec, detail)| (spec.clone(), SelectItem::new(spec, detail)))
-            .unzip();
+        let recent = super::recent::load(&super::recent::file(&self.env.paths));
+        let rows = picker_order(self.backend.models().await, &self.favourites, &recent);
         // Favourites are marked; ctrl+f on a row adds it to them or takes it out.
         let star = self.theme.glyph(Glyph::Favourite);
-        for (item, spec) in items.iter_mut().zip(&specs) {
-            if self.favourites.contains(spec) {
-                item.detail = format!("{star} {}", item.detail);
-            }
-        }
+        let separator = self.theme.glyph(Glyph::Separator);
+        let (specs, items): (Vec<String>, Vec<SelectItem>) = rows
+            .into_iter()
+            .map(|(group, spec, mut detail)| {
+                if self.favourites.contains(&spec) {
+                    detail = format!("{star} {detail}");
+                }
+                if group == Group::Recent {
+                    detail = format!("{detail}{separator}recent");
+                }
+                (spec.clone(), SelectItem::new(spec, detail))
+            })
+            .unzip();
+        let current = self.backend.place_in(&specs).unwrap_or(0);
         let body = vec![format!("current: {}", self.model_label()), self.favourites_line()];
         self.overlay = Some(
             Overlay::select("Model", body, items, true, Action::Model(specs))
-                .with_keys(super::panels::model_keys()),
+                .with_keys(super::panels::model_keys())
+                .starting_at(current),
         );
     }
 
@@ -749,6 +803,58 @@ mod tests {
     use azazel_tui::{RESET, SelectList, text};
 
     use super::*;
+
+    #[test]
+    fn the_model_picker_lists_roles_then_favourites_then_recent_models_then_the_rest() {
+        let row = |spec: &str| (spec.to_string(), format!("about {spec}"));
+        let list = |specs: &[&str]| specs.iter().map(|spec| (*spec).to_string()).collect::<Vec<_>>();
+        let rows = vec![
+            row("@default"),
+            row("@smol"),
+            row("virtual/auto"),
+            row("mock/a"),
+            row("mock/b"),
+            row("mock/c"),
+            row("mock/d"),
+            row("mock/e"),
+        ];
+        let order = picker_order(
+            rows.clone(),
+            // A favourite role stays among the roles; one that is not offered is not a row.
+            &list(&["mock/d", "@smol", "mock/gone", "mock/b"]),
+            // A favourite chosen lately stays among the favourites.
+            &list(&["mock/e", "mock/d", "mock/a"]),
+        );
+        let shown: Vec<(Group, &str)> = order
+            .iter()
+            .map(|(group, spec, _)| (*group, spec.as_str()))
+            .collect();
+        assert_eq!(
+            shown,
+            [
+                (Group::Role, "@default"),
+                (Group::Role, "@smol"),
+                (Group::Favourite, "mock/d"),
+                (Group::Favourite, "mock/b"),
+                (Group::Recent, "mock/e"),
+                (Group::Recent, "mock/a"),
+                (Group::Other, "virtual/auto"),
+                (Group::Other, "mock/c"),
+            ]
+        );
+        // Every row keeps its detail, and none is lost or doubled.
+        assert!(
+            order
+                .iter()
+                .all(|(_, spec, detail)| *detail == format!("about {spec}"))
+        );
+        // Without favourites and recent models the list is as the session gave it.
+        let plain: Vec<String> = picker_order(rows.clone(), &[], &[])
+            .into_iter()
+            .map(|(_, spec, _)| spec)
+            .collect();
+        assert_eq!(plain, rows.into_iter().map(|(spec, _)| spec).collect::<Vec<_>>());
+    }
 
     #[test]
     fn a_glyph_set_is_named_as_in_the_configuration() {
