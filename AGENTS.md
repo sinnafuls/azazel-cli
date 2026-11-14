@@ -84,7 +84,8 @@ That prints `Wrote and verified hello.txt.` and leaves `tmp/live/project/hello.t
 - **Settings for one run.** `--set table.key=value` (`--set tui.popups=false`,
   `--set 'roles.judge=["mock/judge"]'`), or `AZAZEL_<TABLE>__<KEY>`. The tests of scripted runs pass
   `--no-memory` and `--set session.auto_name=false`, so that extracting memories and naming the session
-  ask the script for nothing.
+  ask the script for nothing; a test that moves in the session tree also passes
+  `--set session.branch_summary=false`, or the summary of the branch it left takes a scripted reply.
 - **No real models and no real logins.** Do not copy `~/.azazel/auth.json` anywhere: a sign-in that is
   refreshed from a copy stops working in the original. A scripted run needs none of your provider keys;
   unset them (`ANTHROPIC_API_KEY`, …) so that no run can reach a real provider by mistake.
