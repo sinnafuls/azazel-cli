@@ -82,6 +82,7 @@ base64.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 crossterm.workspace = true
+flate2.workspace = true
 futures.workspace = true
 globset.workspace = true
 ignore.workspace = true
@@ -123,6 +124,9 @@ winsafe = { workspace = true, optional = true }
 # Starts a background session in a session of its own.
 [target.'cfg(unix)'.dependencies]
 process-wrap = { workspace = true, optional = true }
+
+[build-dependencies]
+flate2.workspace = true
 
 [dev-dependencies]
 assert_cmd.workspace = true

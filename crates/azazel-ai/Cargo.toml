@@ -28,6 +28,7 @@ aws-smithy-types = { workspace = true, optional = true }
 base64.workspace = true
 blake3.workspace = true
 bytes.workspace = true
+flate2.workspace = true
 futures.workspace = true
 gcp_auth = { workspace = true, optional = true }
 nucleo-matcher.workspace = true
@@ -42,6 +43,9 @@ thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true
+
+[build-dependencies]
+flate2.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
