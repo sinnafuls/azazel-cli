@@ -475,6 +475,49 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     } else {
         report.ok("checks on write: off");
     }
+    if config.tools.format_on_write {
+        use azazel_tools::format::{Formatters, Planned};
+        let formatters = Formatters::new(config.tools.format.clone(), paths.project_root.clone(), trusted);
+        let mut used = Vec::new();
+        for (extension, command) in config
+            .tools
+            .format
+            .iter()
+            .filter(|(_, command)| !command.trim().is_empty())
+        {
+            used.push(format!("{command} ({extension})"));
+        }
+        let mut untrusted = Vec::new();
+        for (name, extensions, planned) in formatters.planned() {
+            let kinds = match extensions.as_slice() {
+                few if few.len() <= 4 => few.join(", "),
+                many => format!("{}, … {} kinds", many[..3].join(", "), many.len()),
+            };
+            match planned {
+                Planned::Used { .. } => used.push(format!("{name} ({kinds})")),
+                // These run the project's code (a config file in JavaScript, its own copy of
+                // the program) to format a file.
+                Planned::Untrusted => untrusted.push(name),
+            }
+        }
+        if used.is_empty() {
+            report.ok("format on write: no formatter is installed that this project uses");
+        } else {
+            report.ok(format!("format on write: {}", used.join(", ")));
+        }
+        for name in untrusted {
+            report.ok(format!(
+                "format on write: {name}: off, the project is not trusted"
+            ));
+        }
+        for (extension, program) in formatters.missing() {
+            report.warn(format!(
+                "formatter for `{extension}` files: `{program}` was not found"
+            ));
+        }
+    } else {
+        report.ok("format on write: off");
+    }
     match azazel_tools::scan::scanner(config.tools.scan.secrets, config.tools.check_report, trusted) {
         Ok(gitleaks) => report.ok(format!("secret scan: {}", gitleaks.display())),
         Err(why) => report.ok(format!("secret scan: {why}")),

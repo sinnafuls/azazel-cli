@@ -90,6 +90,7 @@ fn bench(setup: Setup) -> Bench {
             shell_timeout: Duration::from_secs(30),
             artifacts_dir: root.join(".artifacts"),
             read_guard: Default::default(),
+            patch: Default::default(),
         })
         .unwrap();
     let fixture = format!("\"{}\"", FIXTURE.display());

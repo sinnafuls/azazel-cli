@@ -21,6 +21,24 @@ GitHub are its section here.
   variable of its own; the list, with addresses and variables, is in `docs/models-and-logins.md`.
   `cargo xtask catalog` writes these rows; a hand-written provider with the same id replaces one.
 - `google` also reads its key from `GOOGLE_GENERATIVE_AI_API_KEY`.
+- Tool calls are mended before they run: a tool called by another harness's name (`bash`, `str_replace`,
+  `apply_edit`, `grep_search`, `list_dir`, `ls`, `todowrite`) or in another case runs as the real tool, and
+  an object or array sent as a JSON string, a number or boolean sent as a string, `null` for an optional
+  field and an unknown field of a closed input are put right against the tool's schema. The result gets one
+  `note:` line saying what was mended, and the session file keeps it with the call.
+- A `patch` tool for OpenAI GPT and Codex models: one patch in the `*** Begin Patch` format adds, changes
+  (with `@@` hunks), moves and deletes files. Every file is checked before any is written, permission is
+  asked as for `write` for each file, and each file goes through the read guard, format on write, checks on
+  write and the language server. `[tools] patch = "auto"` offers it in place of `edit` to those models;
+  `"on"` offers both to every model, `"off"` none.
+- Format on write knows 26 formatters and uses the one the file's project uses: `gofmt`, `rustfmt`, `zig
+  fmt`, `terraform fmt`, `shfmt`, `dart format`, `mix format`, `gleam format`, `nixfmt`, `ktlint`,
+  `cljfmt`, `dfmt`, `latexindent`, `htmlbeautifier` and `ormolu` when installed; `prettier` and `oxfmt`
+  when `package.json` depends on them (the project's `node_modules/.bin` copy first), `biome` with a
+  `biome.json`, `clang-format` with a `.clang-format`, `ocamlformat` with an `.ocamlformat`, `ruff format`
+  with a ruff config or dependency, `uv format` with a `uv.lock`, `standardrb` or `rubocop` from the
+  `Gemfile`, `pint` from `composer.json`, and `air` for R. Those that run the project's code wait for the
+  project to be trusted. `azazel doctor` lists the formatters it would use for the project.
 
 ### Changed
 
@@ -32,6 +50,9 @@ GitHub are its section here.
 - `opencode-zen` and `opencode-go` use OpenCode's current addresses (`https://opencode.ai/inference/openai/v1`
   and `https://opencode.ai/inference/go/openai/v1`), and `minimax-code-cn` MiniMax's new mainland-China
   host, `https://api.minimax.cn/anthropic`.
+- `[tools] format_on_write` is on by default: a file is formatted only by a formatter its project uses,
+  and a missing or failing formatter is a note in the result, never a failed write. An empty
+  `[tools.format]` command turns formatting off for that extension.
 - Releases also have a Linux ARM64 archive (`azazel-linux-aarch64.tar.gz`); the install script picks it on
   ARM64 machines.
 - `azazel update` no longer needs a GitHub token: the repository is public. A token in `GITHUB_TOKEN` or

@@ -200,7 +200,11 @@ impl Side {
     async fn request(&self, question: &SideQuestion<'_>) -> Request {
         let mut messages = question.context.clone();
         let (prompt, tools, text) = if question.framed {
-            let tools = self.tools.tools(question.agent);
+            let mut tools = self.tools.tools(question.agent);
+            // The tools the agent's own request offers its first model, so the prefix matches.
+            if let Some(model) = self.router.resolve(&question.chain).first() {
+                tools.retain(|tool| tool.offered_to(model));
+            }
             (
                 self.prompt.prompt(question.agent).await,
                 tools.iter().map(|tool| tool_spec(tool.as_ref())).collect(),

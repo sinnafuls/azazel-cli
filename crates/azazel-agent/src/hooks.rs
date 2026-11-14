@@ -135,8 +135,10 @@ pub trait TranscriptSink: Send + Sync {
     /// Records that a request went out to `model`; `via` is the virtual model that picked it.
     fn request_started(&self, _model: &str, _via: Option<&str>) {}
 
-    /// Records that a tool call was let through and is about to run.
-    fn tool_started(&self, _call_id: &str, _name: &str, _input: &Value) {}
+    /// Records that a tool call was let through and is about to run. `name` is the tool's own
+    /// name and `input` what it runs with; `repairs` says what was mended in the call as the
+    /// model sent it (another name for the tool, a number sent as a string), empty when nothing.
+    fn tool_started(&self, _call_id: &str, _name: &str, _input: &Value, _repairs: &[String]) {}
 
     /// Records how the run `run_id` ended: a stop reason, or `failed`. A run without this
     /// record was cut short by the end of the process.

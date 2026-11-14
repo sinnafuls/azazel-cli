@@ -11,6 +11,7 @@ pub mod misc;
 pub mod notebook;
 #[cfg(feature = "office")]
 pub mod office;
+pub mod patch;
 #[cfg(feature = "pdf")]
 pub mod pdf;
 pub mod pty;
@@ -30,7 +31,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_core::config::ReadGuard;
+use azazel_core::config::{PatchMode, ReadGuard};
 use azazel_core::process::{AgentEnv, Shell};
 use azazel_core::{
     ArtifactScheme, ArtifactStore, Command, CommandHandler, CommandOutcome, EventKind, ExtCtx, ExtError,
@@ -39,6 +40,7 @@ use azazel_core::{
 
 pub use ast_grep::AstGrepTool;
 pub use misc::{AskUserTool, TodoItem, TodoStatus, TodoStore, TodoTool, todo_entry};
+pub use patch::PatchTool;
 pub use pty::{PtyTool, Terminal, TerminalEntry, TerminalState, Terminals};
 pub use read::ReadTool;
 pub use recall::SessionRecallTool;
@@ -46,8 +48,8 @@ pub use search::{GlobTool, GrepTool};
 pub use shell::{Foreground, JobEntry, JobTool, Jobs, ShellTool};
 pub use write::{EditTool, WriteTool};
 
-/// Registers the core tools (`session_recall` among them, and `ast_grep` when the ast-grep
-/// program is installed), the
+/// Registers the core tools (`session_recall` among them, `patch` unless `tools.patch` is off,
+/// and `ast_grep` when the ast-grep program is installed), the
 /// `artifact://`, `session://` and `job://` schemes (and `pr://` and `issue://` when the `gh`
 /// program is installed), `/allow-edit`, and the services they share: [`FileTracker`],
 /// [`ArtifactStore`], [`Jobs`], [`Foreground`], [`Terminals`], [`AgentEnv`] and [`TodoStore`].
@@ -57,6 +59,8 @@ pub struct CoreToolsExt {
     pub artifacts_dir: PathBuf,
     /// `tools.read_guard`: what an agent must have read of a file before it changes it.
     pub read_guard: ReadGuard,
+    /// `tools.patch`: which models are offered `patch`, and with it no `edit`.
+    pub patch: PatchMode,
 }
 
 /// `/allow-edit <path>`: lets the next edit of one file through the read guard.
@@ -123,7 +127,18 @@ impl Extension for CoreToolsExt {
 
         r.tool(Arc::new(ReadTool::new(tracker.clone(), schemes)));
         r.tool(Arc::new(WriteTool::new(tracker.clone(), self.read_guard)));
-        r.tool(Arc::new(EditTool::new(tracker.clone(), self.read_guard)));
+        r.tool(Arc::new(EditTool::new(
+            tracker.clone(),
+            self.read_guard,
+            self.patch,
+        )));
+        if self.patch != PatchMode::Off {
+            r.tool(Arc::new(PatchTool::new(
+                tracker.clone(),
+                self.read_guard,
+                self.patch,
+            )));
+        }
         r.tool(Arc::new(GlobTool));
         r.tool(Arc::new(GrepTool));
         r.tool(Arc::new(ShellTool::new(
