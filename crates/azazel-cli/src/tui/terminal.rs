@@ -172,7 +172,7 @@ impl Tui {
         if !items.is_empty() {
             // Whatever is said ends the group of tool calls that was growing.
             self.flush_calls();
-            self.after_card = false;
+            self.after_rows = false;
             self.transcript.extend(items);
         }
     }
@@ -209,7 +209,7 @@ impl Tui {
                     // The card stays the last thing above the picture; what follows starts apart.
                     self.flush_calls();
                     self.transcript.push(picture);
-                    self.after_card = false;
+                    self.after_rows = false;
                 }
             }
         }

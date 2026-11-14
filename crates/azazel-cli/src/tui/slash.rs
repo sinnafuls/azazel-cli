@@ -816,7 +816,7 @@ impl Tui {
     fn clear_screen(&mut self) {
         self.transcript.clear();
         self.backdrop.clear();
-        self.after_card = false;
+        self.after_rows = false;
         let _ = self.renderer.suspend();
         let out = self.renderer.get_mut();
         // Screen, scrollback, then home.

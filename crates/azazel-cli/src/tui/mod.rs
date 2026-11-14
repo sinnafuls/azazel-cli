@@ -21,6 +21,7 @@ mod models;
 mod overlay;
 mod pager;
 mod panels;
+mod partial_json;
 mod paste;
 mod places;
 mod popup;
@@ -30,6 +31,7 @@ mod rate;
 mod recent;
 mod remote;
 mod resize;
+mod running;
 mod sessions;
 mod setup;
 mod share;
@@ -238,14 +240,6 @@ struct StreamView {
     opened: bool,
 }
 
-struct RunningTool {
-    call_id: String,
-    name: String,
-    input: Value,
-    tail: Vec<String>,
-    started: Instant,
-}
-
 struct Completion {
     list: SelectList,
     /// Completing a `/command` rather than an `@file`.
@@ -361,9 +355,9 @@ pub struct Tui {
     alt_from: Option<(u16, usize)>,
     /// Transcript rows and blocks waiting to be written above the live region.
     transcript: Vec<HistoryItem>,
-    /// The last thing written to the transcript is a tool card, so the next card joins it
-    /// without a blank row between them.
-    after_card: bool,
+    /// The last thing written to the transcript is a group of compact tool rows, so the next
+    /// group joins it without a blank row between them. Cards always stand apart.
+    after_rows: bool,
     /// The checked-out branch, for the status line.
     branch: Option<String>,
     stream: StreamView,
@@ -648,7 +642,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         resize: resize::Resize::default(),
         alt_from: None,
         transcript: Vec::new(),
-        after_card: false,
+        after_rows: false,
         branch,
         stream: StreamView::default(),
         tools: Vec::new(),
@@ -768,13 +762,20 @@ impl Tui {
         self.say_items(lines.into_iter().map(HistoryItem::Line).collect());
     }
 
-    /// Writes a tool card to the transcript: a blank row above, unless it follows another card.
+    /// Writes a tool card to the transcript, with a blank row above it.
     fn say_card(&mut self, lines: Vec<Line>) {
-        if !self.after_card {
+        self.transcript.push(String::new().into());
+        self.transcript.extend(lines.into_iter().map(HistoryItem::Line));
+        self.after_rows = false;
+    }
+
+    /// Writes a group of compact tool rows: a blank row above, unless it follows another group.
+    fn say_rows(&mut self, lines: Vec<Line>) {
+        if !self.after_rows {
             self.transcript.push(String::new().into());
         }
         self.transcript.extend(lines.into_iter().map(HistoryItem::Line));
-        self.after_card = true;
+        self.after_rows = true;
     }
 
     fn info(&mut self, message: &str) {
@@ -1067,7 +1068,10 @@ impl Tui {
                     azazel_ai::limits::time_left(left)
                 ))
             }
-            None => self.tools.last().map(|tool| format!("running {}", tool.name)),
+            None => self.tools.last().map(|tool| match tool.writing() {
+                true => format!("writing a {} call", tool.name),
+                false => format!("running {}", tool.name),
+            }),
         };
         let (what, phase) = match &running {
             Some(running) => (running.as_str(), tick),
@@ -1241,14 +1245,10 @@ impl Tui {
                 let from = wrapped.len().saturating_sub(4);
                 top.extend(wrapped.into_iter().skip(from));
             }
-            // Calls in flight, and in the compact style the ones before them whose group is
-            // still growing.
-            let calls = self.live_calls(width);
-            if !calls.is_empty() && !self.after_card {
-                top.push(String::new());
-            }
-            top.extend(calls);
         }
+        // Calls in flight, and in the compact style the ones before them whose group is still
+        // growing; the followed sub-agent's calls among them, whether the lead works or not.
+        top.extend(self.live_calls(width));
         top
     }
 
@@ -1256,6 +1256,9 @@ impl Tui {
 
     fn on_agent(&mut self, event: AgentEvent) {
         let width = self.width();
+        if let Some(ended) = running::track(&mut self.tools, &event) {
+            self.tool_finished(calls::Finished::from_ended(None, ended));
+        }
         match event {
             AgentEvent::AgentStart => {
                 self.busy = true;
@@ -1353,38 +1356,6 @@ impl Tui {
                 self.rate.abandon();
                 self.info(&format!("rule {name} stopped the reply; retrying"));
             }
-            AgentEvent::ToolStart { call_id, name, input } => {
-                self.tools.push(RunningTool {
-                    call_id,
-                    name,
-                    input,
-                    tail: Vec::new(),
-                    started: Instant::now(),
-                });
-            }
-            AgentEvent::ToolUpdate { call_id, text } => {
-                if let Some(tool) = self.tools.iter_mut().find(|t| t.call_id == call_id) {
-                    tool.tail.push(text);
-                    let excess = tool.tail.len().saturating_sub(tool_card::MAX_OUTPUT_LINES);
-                    tool.tail.drain(..excess);
-                }
-            }
-            AgentEvent::ToolEnd {
-                call_id,
-                output,
-                duration_ms,
-            } => {
-                if let Some(at) = self.tools.iter().position(|t| t.call_id == call_id) {
-                    let tool = self.tools.remove(at);
-                    self.tool_finished(calls::Finished {
-                        agent: None,
-                        name: tool.name,
-                        input: tool.input,
-                        output,
-                        elapsed: Duration::from_millis(duration_ms),
-                    });
-                }
-            }
             AgentEvent::Compaction {
                 tokens_before,
                 tokens_after,
@@ -1417,7 +1388,12 @@ impl Tui {
                 self.attend_end(Some(&error), took);
                 self.fail(&error);
             }
-            AgentEvent::TurnStart { .. } | AgentEvent::TurnEnd | AgentEvent::Stream(_) => {}
+            AgentEvent::ToolStart { .. }
+            | AgentEvent::ToolUpdate { .. }
+            | AgentEvent::ToolEnd { .. }
+            | AgentEvent::TurnStart { .. }
+            | AgentEvent::TurnEnd
+            | AgentEvent::Stream(_) => {}
         }
     }
 
