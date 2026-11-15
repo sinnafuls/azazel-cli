@@ -1419,9 +1419,9 @@ mod tests {
         assert_eq!(terminal.id, "pty-1");
         assert_eq!(terminal.size(), DEFAULT_SIZE);
         assert!(any.has_changed().unwrap(), "an interface hears of a new terminal");
-        any.mark_unchanged();
         wait_for(&terminal, "name?").await;
-        assert!(any.has_changed().unwrap(), "and of what it draws");
+        // The program now waits for input, so the next change is what typing makes it draw.
+        any.mark_unchanged();
 
         // Reading waits for nothing by default and says how the program is doing.
         let read = tool.call(json!({"action": "read"}), &context).await;
@@ -1447,6 +1447,7 @@ mod tests {
             )
             .await;
         assert!(!sent.is_error, "{}", sent.text_content());
+        assert!(any.has_changed().unwrap(), "an interface hears of what it draws");
         let read = tool
             .call(
                 json!({"action": "read", "wait": "exit", "timeout_secs": 60}),
