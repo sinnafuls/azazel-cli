@@ -94,12 +94,21 @@ width.
   the [compact style](#compact-style) the group that is still growing), the agents at work, the todo list, the
   input and the status line. A [popup](#popups) is centred again, and the
   [transcript viewer](#transcript-viewer) wraps its text again.
-- Left as they are: transcript lines that were already written. They belong to the terminal's scrollback; the
-  terminal re-wraps or cuts them when the window gets narrower, and azazel does not write them again. Lines
-  said while a popup is open are written when it closes, cut to the width the window has then.
-- A window that gets taller: the live region takes the rows the window gained, so the input is on the last row
-  again. In a terminal that fills new rows from its scrollback instead of adding them below, blank rows stand
-  between the transcript and the input until the transcript grows into them.
+- Drawn again: the transcript, once the window has settled taller or at another width. azazel erases the
+  screen and the scrollback and writes the transcript again at the new size, as `Ctrl+O` does, so it sits
+  right above the input with no blank rows between. Inside tmux, screen or zellij the scrollback cannot be
+  erased, and the rest of this list holds there.
+- Left as they are: transcript lines that were already written, inside a multiplexer or when the window only
+  got shorter. They belong to the terminal's scrollback; the terminal re-wraps or cuts them when the window
+  gets narrower. Lines said while a popup is open are written when it closes, cut to the width the window has
+  then.
+- A window that gets taller, inside a multiplexer: the live region takes the rows the window gained, so the
+  input is on the last row again. In a terminal that fills new rows from its scrollback instead of adding them
+  below, blank rows stand between the transcript and the input until the transcript grows into them.
+- A menu or anything else that makes the live region taller for a while (the completion menu, a tall input,
+  the agents roster): it rises over the last rows of the transcript on the screen instead of scrolling them
+  away, and paints them back when it shrinks again. Where those rows hold a picture, it takes rows of its own
+  as before.
 - A window that gets shorter: the terminal keeps its last rows, where the input is, and moves the rows at the
   top into its scrollback. Nothing is written again, so after a large change the rows above the input can be
   blank until the transcript grows into them; what was said is in the scrollback.

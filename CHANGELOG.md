@@ -13,6 +13,11 @@ GitHub are its section here.
 
 - The lead may push again when you ask it to (`git push`, `gh pr create`, …); the push guard now holds for sub-agents only, whose commands and processes are still refused any push in every mode.
 
+### Fixed
+
+- No more band of blank rows between the transcript and the input after the `/` or `@` menu closes (or a tall input, the agents roster or the todo list shrinks): the menu now opens over the last transcript rows and gives them back when it closes.
+- Making the window taller or changing its width no longer leaves a gap above the input: once the window has settled, the transcript is drawn again at the new size, as `Ctrl+O` does. Inside tmux, screen and zellij, which keep what is erased, the old behaviour stays.
+
 ## [0.9.0] - 2026-11-15
 
 ### Added

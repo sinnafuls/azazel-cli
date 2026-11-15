@@ -1012,7 +1012,13 @@ impl Tui {
             self.pinned_rows = pinned.len();
         }
         let written = history.iter().map(HistoryItem::rows).sum();
-        let filler = self.floor.pad(written, viewport.len() + pinned.len(), rows);
+        // A region that grows for a while (a menu, a tall input) rises over the transcript on
+        // the screen and gives it back when it shrinks, instead of leaving blank rows.
+        let restorable = self.renderer.restorable(&history);
+        let (filler, cover) = self
+            .floor
+            .pad_over(written, viewport.len() + pinned.len(), rows, restorable);
+        self.renderer.cover(cover);
         viewport.resize(viewport.len() + filler, String::new());
         let offset = viewport.len() as u16;
         viewport.extend(pinned);
