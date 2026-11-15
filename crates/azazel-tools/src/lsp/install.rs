@@ -3,7 +3,7 @@
 //! install is asked for, so a plan always names something that exists.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{Cursor, Read, Write};
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

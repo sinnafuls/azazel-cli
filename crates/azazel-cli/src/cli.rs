@@ -599,6 +599,9 @@ pub enum Sub {
         #[arg(value_name = "PROMPT")]
         prompt: Vec<String>,
     },
+    /// Follow and steer the background sessions from a browser or a phone
+    #[cfg(feature = "remote")]
+    Remote(RemoteArgs),
     /// Run prompts at a time or when something happens: add, list, rm, run
     #[cfg(feature = "detach")]
     Schedule {
@@ -739,6 +742,33 @@ pub enum RulesAction {
         #[arg(long, value_name = "NAME")]
         tool: Option<String>,
     },
+}
+
+/// The flags of `azazel remote`.
+#[cfg(feature = "remote")]
+#[derive(Debug, Clone, Default, PartialEq, Eq, clap::Args)]
+pub struct RemoteArgs {
+    /// The port to listen on (7420 unless `[remote] port` says otherwise; 0 lets the system choose)
+    #[arg(long, value_name = "N")]
+    pub port: Option<u16>,
+    /// The address of your own tunnel or reverse proxy in front of the server
+    #[arg(long, value_name = "URL", conflicts_with_all = ["tunnel", "tailscale", "share"])]
+    pub public_url: Option<String>,
+    /// Reach it from other devices through a Cloudflare quick tunnel
+    #[arg(long, conflicts_with_all = ["tailscale", "share"])]
+    pub tunnel: bool,
+    /// Reach it from other devices through Tailscale
+    #[arg(long, conflicts_with = "share")]
+    pub tailscale: bool,
+    /// Reach it from other devices the way `[remote] access` says
+    #[arg(long)]
+    pub share: bool,
+    /// Make the first link a view link: it can watch but not steer
+    #[arg(long)]
+    pub view: bool,
+    /// Print the first line as JSON: {"url", "pair", "port"}
+    #[arg(long)]
+    pub json: bool,
 }
 
 #[derive(Debug, Parser)]
