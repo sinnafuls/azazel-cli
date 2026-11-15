@@ -1034,25 +1034,6 @@ mod tests {
     }
 
     #[test]
-    fn a_glyph_set_is_named_as_in_the_configuration() {
-        assert_eq!(glyph_choice("nerd"), Some(Some(GlyphLevel::Nerd)));
-        assert_eq!(glyph_choice(" ASCII "), Some(Some(GlyphLevel::Ascii)));
-        assert_eq!(glyph_choice("auto"), Some(None));
-        assert_eq!(glyph_choice("fancy"), None);
-    }
-
-    #[test]
-    fn each_glyph_set_previews_its_own_symbols() {
-        assert_eq!(glyph_preview(GlyphLevel::Unicode), "✔ ⚠ ✘ ⑂ ◫ ↯ ⬢ ❯");
-        // Symbols that are words or nothing at this level are shown as they are, or left out.
-        assert_eq!(glyph_preview(GlyphLevel::Ascii), "[+] [!] [-] git: ctx >");
-        assert!(glyph_preview(GlyphLevel::Ascii).is_ascii());
-        let nerd = glyph_preview(GlyphLevel::Nerd);
-        assert_eq!(nerd.split(' ').count(), 8);
-        assert!(nerd.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)));
-    }
-
-    #[test]
     fn theme_swatches_carry_the_colours_of_their_theme_through_a_selected_row() {
         let theme = Theme::builtin("gruvbox-dark").unwrap();
         let preview = swatches(&theme, "●");

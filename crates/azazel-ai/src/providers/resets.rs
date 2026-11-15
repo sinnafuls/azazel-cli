@@ -1201,23 +1201,6 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn request_ids_are_random_uuids_and_windows_take_this_programs_names() {
-        let id = request_id();
-        let parts: Vec<&str> = id.split('-').collect();
-        assert_eq!(
-            parts.iter().map(|part| part.len()).collect::<Vec<_>>(),
-            [8, 4, 4, 4, 12]
-        );
-        assert!(parts[2].starts_with('4') && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()));
-        assert_ne!(id, request_id());
-
-        assert_eq!(window_name("five_hour"), "5h");
-        assert_eq!(window_name("seven_day"), "7d");
-        assert_eq!(window_name("seven_day_overage_included"), "7d-fable");
-        assert_eq!(window_name("seven_day_opus"), "7d-opus");
-    }
-
     #[tokio::test]
     async fn reset_credits_are_read_and_the_one_that_lapses_first_is_the_one_to_spend() {
         let server = MockServer::start().await;

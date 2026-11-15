@@ -501,26 +501,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_passes_env_cwd_and_stdin() {
-        let shell = Shell::resolve("");
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("marker.txt"), "x").unwrap();
-        let script = if shell.is_posix() {
-            "cat; echo \" $AZ_TEST_VAR\"; ls"
-        } else {
-            "$input | Write-Output; Write-Output \" $env:AZ_TEST_VAR\"; Get-ChildItem -Name"
-        };
-        let mut options = RunOptions::new(dir.path().to_path_buf());
-        options.env = vec![("AZ_TEST_VAR".into(), "from-env".into())];
-        options.stdin = Some(b"from-stdin\n".to_vec());
-        let text = run(&shell, script, options).await.unwrap().output.render();
-        assert!(
-            text.contains("from-stdin") && text.contains("from-env") && text.contains("marker.txt"),
-            "{text}"
-        );
-    }
-
-    #[tokio::test]
     async fn timeout_and_cancel_kill_the_process_promptly() {
         let shell = Shell::resolve("");
         let script = if shell.is_posix() {

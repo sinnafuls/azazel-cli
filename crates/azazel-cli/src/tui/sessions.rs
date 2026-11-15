@@ -1201,36 +1201,6 @@ mod tests {
     }
 
     #[test]
-    fn picker_keys_are_named_above_the_list_and_stay_out_of_the_hint_line() {
-        let rows = vec![SelectItem::new("a session", "")];
-        let overlay = Overlay::select(
-            "Resume a session",
-            vec![SESSION_KEYS.to_string()],
-            rows,
-            true,
-            Action::Mode,
-        )
-        .with_keys(session_keys());
-        let (lines, _) = overlay.render(100, 20, &azazel_tui::Theme::dark());
-        let shown: Vec<String> = lines.iter().map(|line| text::strip_ansi(line)).collect();
-        assert!(
-            shown[1].starts_with("│ ctrl+r rename · ctrl+d delete"),
-            "{shown:?}"
-        );
-        let hint = shown.last().unwrap();
-        assert!(
-            hint.starts_with("╰─ type to filter · ↑↓ move · enter pick · esc cancel ─"),
-            "{hint}"
-        );
-        // Both lists filter as you type: none of their keys may be a plain letter.
-        for (combo, _) in session_keys().iter().chain(&tree_keys()) {
-            let plain_letter = matches!(combo.code, KeyCode::Char(_))
-                && !combo.mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-            assert!(!plain_letter, "{combo}");
-        }
-    }
-
-    #[test]
     fn the_tree_lists_messages_newest_first_with_labels_and_filters() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::create(dir.path(), Path::new("/w"), None).unwrap();

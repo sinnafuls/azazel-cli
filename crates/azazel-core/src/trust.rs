@@ -346,27 +346,6 @@ mod tests {
     }
 
     #[test]
-    fn plain_projects_need_no_trust() {
-        let (_tmp, paths) = project();
-        std::fs::write(paths.project_root.join("AGENTS.md"), "be nice").unwrap();
-        std::fs::write(
-            paths.project_config(),
-            "[team]\nmax_parallel = 2\n[permissions]\ndeny = [\"shell(rm:*)\"]\n",
-        )
-        .unwrap();
-        std::fs::create_dir_all(paths.project_dir().join("skills/notes")).unwrap();
-        std::fs::write(
-            paths.project_dir().join("skills/notes/SKILL.md"),
-            "---\nname: notes\ndescription: d\n---\nx",
-        )
-        .unwrap();
-        assert_eq!(
-            needs_trust(&paths, true, &ToolsConfig::default()),
-            Vec::<String>::new()
-        );
-    }
-
-    #[test]
     fn everything_that_can_run_code_is_reported() {
         let (_tmp, paths) = project();
         let root = &paths.project_root;

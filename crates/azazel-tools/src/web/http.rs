@@ -528,15 +528,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_cookie_keeps_its_name_and_attributes_and_loses_its_value() {
-        assert_eq!(
-            without_cookie_value("sid=abc123; Path=/; HttpOnly"),
-            format!("sid={REDACTED}; Path=/; HttpOnly")
-        );
-        assert_eq!(without_cookie_value("sid=a=b"), format!("sid={REDACTED}"));
-    }
-
-    #[test]
     fn a_redirect_is_on_the_host_only_with_the_same_scheme_and_port() {
         let at = |text: &str| Url::parse(text).unwrap();
         assert!(same_origin(

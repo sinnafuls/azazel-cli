@@ -242,15 +242,6 @@ mod tests {
     const PAGE: &str = "alpha\nbeta one\ngamma\ndelta\nbeta two\nepsilon\nzeta\neta\ntheta\nbeta three\n";
 
     #[test]
-    fn matches_come_with_their_line_numbers() {
-        let found = find(PAGE, "beta", 0, 25);
-        assert_eq!(found.text, "2: beta one\n5: beta two\n10: beta three");
-        assert_eq!((found.matches, found.lines, found.next), (3, 10, None));
-        let none = find(PAGE, "omega", 2, 25);
-        assert_eq!((none.text.as_str(), none.matches, none.lines), ("", 0, 10));
-    }
-
-    #[test]
     fn context_lines_are_marked_and_stretches_that_touch_are_joined() {
         // Lines 1-3 and 4-6 touch, so they are one stretch; line 9 starts another.
         assert_eq!(

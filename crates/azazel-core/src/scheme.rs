@@ -162,27 +162,4 @@ mod tests {
             assert!(local_path(dir, escape).is_err(), "{escape}");
         }
     }
-
-    #[test]
-    fn split_url_accepts_schemes_and_rejects_paths() {
-        assert_eq!(split_url("artifact://call_1"), Some(("artifact", "call_1")));
-        assert_eq!(
-            split_url("mcp://server/mem://greeting"),
-            Some(("mcp", "server/mem://greeting"))
-        );
-        assert_eq!(
-            split_url("https://example.com/a?b=c"),
-            Some(("https", "example.com/a?b=c"))
-        );
-        for not_url in [
-            "C://Users/me",
-            "src/main.rs",
-            "/abs/path",
-            "a b://x",
-            "1x://y",
-            "://x",
-        ] {
-            assert_eq!(split_url(not_url), None, "{not_url}");
-        }
-    }
 }

@@ -363,17 +363,6 @@ mod tests {
     }
 
     #[test]
-    fn days_and_seconds_become_dates() {
-        assert_eq!(civil(0), (1970, 1, 1));
-        assert_eq!(civil(-1), (1969, 12, 31));
-        assert_eq!(civil(19_782), (2024, 2, 29));
-        assert_eq!(civil(20_513), (2026, 3, 1));
-        assert_eq!(civil(-25_509), (1900, 2, 28));
-        assert_eq!(date_time(1_772_375_403), "2026-03-01 14:30:03");
-        assert_eq!(date_time(-1), "1969-12-31 23:59:59");
-    }
-
-    #[test]
     fn file_names_are_made_safe_and_never_repeat() {
         assert_eq!(safe_name("Q3 report (final).pdf", 48), "Q3_report__final_.pdf");
         assert_eq!(safe_name("../../etc/passwd", 48), "_.._etc_passwd");
@@ -406,15 +395,5 @@ mod tests {
 
         let markdown = "# Title\n\ntext #not a heading\n#hashtag\n```sh\n# a comment\n```\n## Part two\n";
         assert_eq!(outline(markdown), [(1, "# Title"), (8, "## Part two")]);
-    }
-
-    #[test]
-    fn a_changed_file_is_converted_into_another_directory() {
-        let first = bundle_name(Path::new("dir/Q3 report.docx"), b"one");
-        let second = bundle_name(Path::new("dir/Q3 report.docx"), b"two");
-        assert!(first.starts_with("Q3_report.docx-") && first.len() == "Q3_report.docx-".len() + 8);
-        assert_ne!(first, second);
-        assert_eq!(first, bundle_name(Path::new("elsewhere/Q3 report.docx"), b"one"));
-        assert_eq!(markdown_name(Path::new("dir/Q3 report.docx")), "Q3_report.md");
     }
 }

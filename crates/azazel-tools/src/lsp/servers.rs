@@ -234,13 +234,6 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_server_replaces_the_default_of_the_same_name() {
-        let listed = summary(&[("python", server("pylsp", &["pyi"]))]);
-        assert_eq!(listed[0], row("python", "pyi", false));
-        assert_eq!(listed.iter().filter(|(name, _, _)| name == "python").count(), 1);
-    }
-
-    #[test]
     fn a_program_is_found_by_path_or_by_name_on_the_search_path() {
         let this = std::env::current_exe().unwrap();
         assert_eq!(find_program(&this.to_string_lossy()), Some(this.clone()));

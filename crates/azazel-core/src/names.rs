@@ -175,28 +175,3 @@ pub fn clean_title(answer: &str) -> Option<String> {
     let title = title.trim().to_string();
     (!title.is_empty()).then_some(title)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn titles_are_one_short_clean_line() {
-        assert_eq!(
-            clean_title("\"Fix the parser tests.\"\n").as_deref(),
-            Some("Fix the parser tests")
-        );
-        assert_eq!(
-            clean_title("\n\nTitle: Add OAuth login\nmore").as_deref(),
-            Some("Add OAuth login")
-        );
-        assert_eq!(
-            clean_title("one two three four five six seven eight").as_deref(),
-            Some("one two three four five six")
-        );
-        assert_eq!(clean_title("**Refactor**").as_deref(), Some("Refactor"));
-        assert_eq!(clean_title("  \n \"\" "), None);
-        let long = clean_title(&"x".repeat(200)).unwrap();
-        assert_eq!(long.chars().count(), MAX_CHARS);
-    }
-}

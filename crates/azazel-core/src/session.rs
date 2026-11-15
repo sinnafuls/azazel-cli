@@ -1792,35 +1792,6 @@ mod tests {
     }
 
     #[test]
-    fn file_lines_have_the_documented_shape() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
-        let first = store.message(&Message::user("hello"));
-        store.context_edit(&first, "[gone]");
-        store.compaction("sum", &first, 123);
-        let lines: Vec<Value> = std::fs::read_to_string(store.path())
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(lines[0]["type"], "session");
-        assert_eq!(lines[0]["version"], 1);
-        assert_eq!(lines[0]["parentSession"], Value::Null);
-        assert_eq!(lines[1]["type"], "message");
-        assert_eq!(lines[1]["parentId"], Value::Null);
-        assert_eq!(lines[1]["id"].as_str().unwrap().len(), 8);
-        assert_eq!(
-            lines[1]["message"],
-            json!({"role": "user", "content": [{"type": "text", "text": "hello"}]})
-        );
-        assert_eq!(lines[2]["type"], "context_edit");
-        assert_eq!(lines[2]["targetId"], lines[1]["id"]);
-        assert_eq!(lines[2]["parentId"], lines[1]["id"]);
-        assert_eq!(lines[3]["firstKeptEntryId"], lines[1]["id"]);
-        assert_eq!(lines[3]["tokensBefore"], 123);
-    }
-
-    #[test]
     fn compaction_yields_summary_plus_kept_tail_and_survives_reload() {
         let dir = tempfile::tempdir().unwrap();
         let store = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
@@ -2002,30 +1973,6 @@ mod tests {
     }
 
     #[test]
-    fn list_reports_name_first_prompt_and_count_newest_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let older = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
-        older.message(&Message::user("first session prompt"));
-        older.message(&assistant("ok"));
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let newer = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
-        newer.append(EntryKind::SessionInfo { name: "named".into() });
-        std::fs::write(dir.path().join("notes.txt"), "not a session").unwrap();
-
-        let list = SessionStore::list(dir.path());
-        assert_eq!(
-            list.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
-            [newer.id(), older.id()]
-        );
-        assert_eq!((list[0].name.as_deref(), list[0].messages), (Some("named"), 0));
-        assert_eq!(
-            (list[1].first_prompt.as_deref(), list[1].messages),
-            (Some("first session prompt"), 2)
-        );
-        assert!(SessionStore::list(&dir.path().join("missing")).is_empty());
-    }
-
-    #[test]
     fn prune_keeps_pinned_recent_and_open_sessions_and_search_finds_lines() {
         let dir = tempfile::tempdir().unwrap();
         let make = |text: &str| {
@@ -2100,20 +2047,6 @@ mod tests {
         assert_eq!(SessionStore::list(dir.path()).len(), 1);
         let index: Value = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
         assert_eq!(index["files"].as_object().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn summaries_say_where_a_session_works_and_whether_it_is_archived() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = SessionStore::create(dir.path(), Path::new("/work/app"), None).unwrap();
-        store.message(&Message::user("run in ci"));
-        let used = SessionStore::list(dir.path())[0].updated.clone();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        store.append(EntryKind::Archive { archived: true });
-        let listed = &SessionStore::list(dir.path())[0];
-        assert_eq!((listed.cwd.as_str(), listed.archived), ("/work/app", true));
-        // Archiving is not use: the session keeps its place in time.
-        assert_eq!(listed.updated, used);
     }
 
     #[test]

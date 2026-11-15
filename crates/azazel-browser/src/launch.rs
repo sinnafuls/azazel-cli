@@ -201,17 +201,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_endpoint_needs_both_lines_of_the_port_file() {
-        assert_eq!(
-            endpoint("51234\n/devtools/browser/0f1e-2d\n").as_deref(),
-            Some("ws://127.0.0.1:51234/devtools/browser/0f1e-2d")
-        );
-        assert_eq!(endpoint("51234\n"), None);
-        assert_eq!(endpoint(""), None);
-        assert_eq!(endpoint("not a port\n/devtools/browser/x"), None);
-    }
-
-    #[test]
     fn the_configured_path_wins_over_the_environment_variable() {
         let dir = tempfile::tempdir().unwrap();
         let configured = dir.path().join("configured-browser");

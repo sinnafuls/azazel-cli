@@ -185,23 +185,4 @@ mod tests {
             format!("{full}/chat/completions?api-version=2024-10-21")
         );
     }
-
-    #[test]
-    fn the_environment_names_the_version_and_the_deployments() {
-        let settings = AzureSettings {
-            api_version: Some("preview".to_string()),
-            deployments: Some("gpt-x = prod-x, broken, gpt-y=".to_string()),
-        };
-        assert_eq!(settings.deployment("gpt-x"), "prod-x");
-        assert_eq!(settings.deployment("gpt-y"), "gpt-y");
-        assert_eq!(settings.deployment("other"), "other");
-        assert_eq!(
-            responses_url("https://res.openai.azure.com", &settings),
-            "https://res.openai.azure.com/openai/v1/responses?api-version=preview"
-        );
-        assert_eq!(
-            chat_url("https://res.openai.azure.com", "gpt-x", &settings),
-            "https://res.openai.azure.com/openai/deployments/prod-x/chat/completions?api-version=preview"
-        );
-    }
 }

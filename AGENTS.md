@@ -30,20 +30,34 @@ Rust 1.99, edition 2024, tokio. It builds and is tested on Windows, Linux and ma
 
 ## Build and test
 
-Run these from the repository root. All of them must pass before a change is done; CI
-(`.github/workflows/ci.yml`) runs the same.
+While working, run the tests of the crates a change touches, not the whole suite:
+
+```sh
+cargo test -p azazel-core               # one crate: its unit tests and its integration tests
+cargo test -p azazel-core --lib config  # its unit tests whose names contain `config`
+cargo test -p azazel-cli --test it rpc  # its integration tests in tests/it/rpc.rs
+```
+
+Before a change is handed over, run these from the repository root; they must pass:
 
 ```sh
 cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace --no-fail-fast
+cargo test -p <each crate the change touches>
 cargo build --no-default-features -p azazel-cli
 cargo xtask docs-check
 ```
 
+The whole suite (`cargo test --workspace --no-fail-fast`) runs in CI (`.github/workflows/ci.yml`) on
+every push and pull request, and before a release.
+
 - `cargo build --no-default-features -p azazel-cli` builds without any optional feature; code behind a
   feature (`mcp`, `lua`, `memory`, `browser`, `media`, `voice`, `detach`, …) must not be needed without it.
-- One test: `cargo test -p azazel-cli --test print_mode`, or `cargo test -p azazel-core config_keys`.
+- Each crate has one integration-test program, `tests/it/main.rs`, with a module per area
+  (`tests/it/rpc.rs`) and the helpers they share in `tests/it/common.rs`. Add a test to the module of
+  its area, or a unit test beside the code; do not add files directly under `tests/`, as each would be
+  another program linked against the whole crate.
+- One test: `cargo test -p azazel-cli --test it print_mode::`, or `cargo test -p azazel-core config_keys`.
 - A test that fails only when the whole suite runs: run it alone as well, and say so with both results.
 
 Other tasks:

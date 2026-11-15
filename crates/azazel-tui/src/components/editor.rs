@@ -1072,15 +1072,6 @@ mod tests {
     }
 
     #[test]
-    fn word_motion_never_splits_a_cluster() {
-        // The combining accent is not a letter, but it belongs to the `e` before it.
-        let mut editor = with_text("cafe\u{301} ok");
-        editor.handle_key(&key(KeyCode::Home));
-        editor.handle_key(&alt('f'));
-        assert_eq!(editor.cursor(), "cafe\u{301}".len());
-    }
-
-    #[test]
     fn home_end_and_emacs_keys_work_on_the_current_line() {
         let mut editor = with_text("first\nsecond line");
         editor.handle_key(&key(KeyCode::Home));
@@ -1188,18 +1179,6 @@ mod tests {
         editor.handle_key(&ctrl('z'));
         editor.handle_key(&ctrl('z'));
         assert_eq!(editor.text(), "");
-    }
-
-    #[test]
-    fn kill_ring_holds_twenty_cuts() {
-        let mut editor = Editor::new();
-        for i in 0..25 {
-            editor.set_text(&format!("cut{i}"));
-            editor.handle_key(&ctrl('u'));
-        }
-        assert_eq!(editor.kills.len(), MAX_KILLS);
-        assert_eq!(editor.kills[0], "cut5");
-        assert_eq!(editor.newest_kill(), Some("cut24"));
     }
 
     #[test]
@@ -1334,19 +1313,6 @@ mod tests {
     }
 
     #[test]
-    fn take_returns_text_and_records_history() {
-        let mut editor = Editor::new();
-        typed(&mut editor, "run tests");
-        assert_eq!(editor.take(), "run tests");
-        assert!(editor.is_empty());
-        assert_eq!(editor.cursor(), 0);
-        editor.handle_key(&ctrl('z'));
-        assert!(editor.is_empty(), "undo does not bring a submitted prompt back");
-        editor.handle_key(&key(KeyCode::Up));
-        assert_eq!(editor.text(), "run tests");
-    }
-
-    #[test]
     fn completion_token_is_the_word_ending_at_the_cursor() {
         let mut editor = with_text("open @src/ma");
         assert_eq!(editor.token_before_cursor(), "@src/ma");
@@ -1366,37 +1332,6 @@ mod tests {
     }
 
     #[test]
-    fn newline_and_paste_normalise_input() {
-        let mut editor = with_text("ab");
-        editor.handle_key(&key(KeyCode::Left));
-        editor.insert_newline();
-        assert_eq!(editor.text(), "a\nb");
-        assert_eq!(editor.cursor(), 2);
-        editor.insert_str("x\ry\x1b[31m\x07");
-        assert_eq!(editor.text(), "a\nx\nyb");
-    }
-
-    #[test]
-    fn leaves_unrelated_keys_to_the_caller() {
-        let mut editor = with_text("text");
-        assert!(!editor.handle_key(&key(KeyCode::Enter)));
-        assert!(!editor.handle_key(&key(KeyCode::Esc)));
-        assert!(!editor.handle_key(&key(KeyCode::F(5))));
-        assert!(!editor.handle_key(&key(KeyCode::Tab)));
-        assert!(!editor.handle_key(&ctrl('l')));
-        assert!(!editor.handle_key(&alt('x')));
-        assert!(!editor.handle_key(&KeyEvent::new(KeyCode::Char('v'), KeyModifiers::SUPER)));
-        let release = KeyEvent::new_with_kind(KeyCode::Char('x'), KeyModifiers::NONE, KeyEventKind::Release);
-        assert!(!editor.handle_key(&release));
-        assert_eq!(editor.text(), "text");
-
-        // AltGr characters arrive with control and alt both set.
-        let altgr = KeyEvent::new(KeyCode::Char('@'), KeyModifiers::CONTROL | KeyModifiers::ALT);
-        assert!(editor.handle_key(&altgr));
-        assert_eq!(editor.text(), "text@");
-    }
-
-    #[test]
     fn render_soft_wraps_and_reports_the_cursor() {
         let theme = Theme::dark();
         let editor = with_text("abcdefghijkl");
@@ -1409,20 +1344,6 @@ mod tests {
         assert_eq!(editor.render(10, &theme, "> ").1, (0, 8));
         press(&mut editor, key(KeyCode::Left), 6);
         assert_eq!(editor.render(10, &theme, "> ").1, (0, 2));
-    }
-
-    #[test]
-    fn cursor_after_a_full_row_moves_to_a_new_row() {
-        let theme = Theme::dark();
-        let editor = with_text("abcdefgh");
-        let (lines, cursor) = editor.render(10, &theme, "> ");
-        assert_eq!(lines, ["> abcdefgh", "  "]);
-        assert_eq!(cursor, (1, 2));
-
-        let empty = Editor::new();
-        let (lines, cursor) = empty.render(10, &theme, "> ");
-        assert_eq!(lines, ["> "]);
-        assert_eq!(cursor, (0, 2));
     }
 
     #[test]

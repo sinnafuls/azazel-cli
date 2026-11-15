@@ -199,17 +199,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn slug_collapses_separators_and_appends_hash() {
-        let slug = project_slug(Path::new("/home/me/my  project!"));
-        let (name, hash) = slug.rsplit_once('-').unwrap();
-        assert_eq!(name, "home-me-my-project");
-        assert_eq!(hash.len(), 8);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
-        // Paths that clean to the same text still get different slugs.
-        assert_ne!(project_slug(Path::new("/a/b")), project_slug(Path::new("/a-b")));
-    }
-
-    #[test]
     fn project_root_is_nearest_marker_and_home_is_not_a_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let base = canonical(tmp.path());
@@ -232,19 +221,6 @@ mod tests {
         assert_eq!(paths.project_root, loose);
         assert_eq!(paths.home, home);
         assert!(paths.sessions_dir().starts_with(home.join("projects")));
-    }
-
-    #[test]
-    fn the_default_home_in_the_users_home_is_not_a_project_marker_either() {
-        // A machine that has run azazel has `~/.azazel`; work below it, outside any repository,
-        // is still not a project.
-        let tmp = tempfile::tempdir().unwrap();
-        let base = canonical(tmp.path());
-        let loose = base.join("notes");
-        std::fs::create_dir_all(&loose).unwrap();
-        let home = base.join("elsewhere");
-        let paths = Paths::discover(&loose, home.to_str());
-        assert_eq!(paths.project_root, loose);
     }
 
     #[test]

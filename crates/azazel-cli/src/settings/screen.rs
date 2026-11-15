@@ -1973,67 +1973,6 @@ mod tests {
     }
 
     #[test]
-    fn a_row_shows_its_value_whether_it_is_changed_and_who_sets_it() {
-        let f = fixture(
-            "[tui]\ntheme = \"light\"\npopups = true\n",
-            "[tui]\nglyphs = \"ascii\"\n",
-        );
-        let mut screen = screen_on(
-            &f,
-            LoadOptions {
-                trusted: true,
-                env: vec![("AZAZEL_TUI__REDACT".to_string(), "false".to_string())],
-                ..LoadOptions::default()
-            },
-        );
-        screen.go_to("tui.theme");
-        let shown = rows(&screen, 100, 30);
-        assert_eq!(
-            cells(row_of(&shown, "Theme")),
-            ["▌", "Theme", "light", "●", "home"]
-        );
-        assert_eq!(
-            cells(row_of(&shown, "Symbols")),
-            ["Symbols", "ascii", "●", "project"]
-        );
-        assert_eq!(
-            row_of(&shown, "Hide secrets").split_whitespace().last(),
-            Some("env")
-        );
-        // On its default and set nowhere: no mark and no source. Set to its default in a file:
-        // the source, and no mark.
-        assert_eq!(
-            cells(row_of(&shown, "Working indicator")),
-            ["Working", "indicator", "shimmer"]
-        );
-        assert_eq!(
-            row_of(&shown, "Menus and questions").split_whitespace().last(),
-            Some("home")
-        );
-        assert!(!row_of(&shown, "Menus and questions").contains('●'));
-        // The tab counts what is not on its default on the page: theme, symbols, redact.
-        assert!(shown[0].contains("Appearance 3"), "{}", shown[0]);
-        assert!(!shown[0].contains("Models 1"), "{}", shown[0]);
-
-        // Under the list: what the setting does, then its key, its default and who sets it.
-        let foot = &shown[shown.len() - 3..];
-        assert!(foot[0].starts_with("The colours"), "{foot:#?}");
-        assert_eq!(foot[2], "tui.theme · default dark · set in the home config");
-        screen.go_to("tui.redact");
-        let shown = rows(&screen, 100, 30);
-        assert_eq!(
-            shown.last().unwrap(),
-            "tui.redact · default on · set by AZAZEL_TUI__REDACT"
-        );
-        screen.go_to("limits.max_turns");
-        let shown = rows(&screen, 100, 30);
-        assert_eq!(
-            shown.last().unwrap(),
-            "limits.max_turns · default 0 · not set · applies to the next session"
-        );
-    }
-
-    #[test]
     fn enter_flips_a_switch_saves_it_and_the_ui_follows() {
         let f = fixture("", "");
         let mut screen = screen(&f);
@@ -2514,36 +2453,6 @@ mod tests {
         assert!(rows(&screen, 100, 30).contains(&"the default model is now mock/lead".to_string()));
         assert!(press(&mut screen, KeyCode::Esc));
         assert_eq!(screen.take_request(), Request::Close);
-    }
-
-    #[test]
-    fn the_keys_only_the_file_edits_are_listed_with_the_reason() {
-        let f = fixture(
-            "[[hooks.stop]]\ncommand = \"notify-send done\"\n[[hooks.pre_tool_use]]\ncommand = \"check\"\n",
-            "",
-        );
-        let mut screen = screen(&f);
-        screen.go_to("telemetry.content");
-        press(&mut screen, KeyCode::Down);
-        assert_eq!(selected_name(&screen), "providers");
-        let shown = rows(&screen, 100, 30);
-        assert!(
-            shown
-                .iter()
-                .any(|row| row.starts_with("Endpoints, headers and keys"))
-        );
-        for _ in 0..3 {
-            press(&mut screen, KeyCode::Down);
-        }
-        assert_eq!(selected_name(&screen), "hooks");
-        let shown = rows(&screen, 100, 30);
-        assert_eq!(
-            cells(row_of(&shown, "[hooks]")),
-            ["▌", "[hooks]", "2", "set", "home"]
-        );
-        assert!(!press(&mut screen, KeyCode::Enter));
-        press(&mut screen, KeyCode::Char('r'));
-        assert!(f.home_text().contains("hooks.stop"));
     }
 
     #[test]

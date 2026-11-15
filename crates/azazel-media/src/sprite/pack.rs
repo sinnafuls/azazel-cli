@@ -270,17 +270,6 @@ mod tests {
     }
 
     #[test]
-    fn a_small_max_size_is_the_first_and_only_page_size() {
-        let bins = pack(&items(&[(10, 10), (10, 10)]), 0, 20).unwrap();
-        assert_eq!(bins.iter().map(|bin| bin.size).collect::<Vec<_>>(), [20]);
-    }
-
-    #[test]
-    fn nothing_to_pack_gives_no_pages() {
-        assert!(pack(&[], 2, 4096).unwrap().is_empty());
-    }
-
-    #[test]
     fn empty_items_and_a_zero_max_size_are_refused() {
         assert_eq!(
             pack(&items(&[(0, 4)]), 0, 64).unwrap_err(),

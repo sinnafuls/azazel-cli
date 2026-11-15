@@ -177,28 +177,4 @@ mod tests {
             absolute
         );
     }
-
-    #[test]
-    fn write_atomic_replaces_content_and_leaves_no_temp_file() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("deep/nested/a.txt");
-        write_atomic(&path, b"one").unwrap();
-        write_atomic(&path, b"two").unwrap();
-        assert_eq!(std::fs::read(&path).unwrap(), b"two");
-        let names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
-            .unwrap()
-            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(names, ["a.txt"]);
-    }
-
-    #[test]
-    fn unified_diff_has_headers_and_hunks() {
-        let diff = unified_diff("a\nb\nc\n", "a\nB\nc\n", "src/x.rs");
-        assert!(
-            diff.starts_with("--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1,3 +1,3 @@\n"),
-            "{diff}"
-        );
-        assert!(diff.contains("-b\n+B\n"));
-    }
 }

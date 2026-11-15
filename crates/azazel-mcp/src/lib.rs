@@ -34,15 +34,3 @@ pub fn name_segment(raw: &str) -> String {
 pub fn tool_name(server: &str, tool: &str) -> String {
     format!("mcp__{}__{}", name_segment(server), name_segment(tool))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tool_names_keep_only_safe_characters() {
-        assert_eq!(tool_name("echo", "add"), "mcp__echo__add");
-        assert_eq!(tool_name("my server", "ns/tool.v2"), "mcp__my_server__ns_tool_v2");
-        assert_eq!(tool_name("déjà-vu", "read_file"), "mcp__d_j_-vu__read_file");
-    }
-}

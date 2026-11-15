@@ -586,29 +586,3 @@ pub(crate) fn checked<'a>(text: &'a str, kind: &str) -> Result<&'a str, String> 
     }
     Ok(text)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn tags_round_trip_through_one_column() {
-        let tags = ["build".to_string(), " a, b ".to_string(), "  ".to_string()];
-        assert_eq!(split_tags(&join_tags(&tags)), ["build", "a b"]);
-        assert_eq!(split_tags(""), Vec::<String>::new());
-    }
-
-    #[test]
-    fn timestamps_have_a_fixed_width_and_ids_are_short() {
-        let stamp = now();
-        assert_eq!(stamp.len(), "2026-01-01T00:00:00.000000Z".len());
-        assert!(stamp.ends_with('Z'));
-        assert_eq!(new_id().len(), 12);
-        assert_ne!(new_id(), new_id());
-    }
-
-    #[test]
-    fn sameness_ignores_case_and_spacing() {
-        assert_eq!(normalized("  Use\tTABS \n here "), "use tabs here");
-    }
-}

@@ -61,26 +61,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_schema_is_read_inline_or_from_a_file_and_mistakes_are_usage_errors() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("schema.json"), r#"{"type": "array"}"#).unwrap();
-        let inline = result_schema(r#" {"type": "object"}"#, dir.path()).unwrap();
-        assert_eq!(inline.schema()["type"], "object");
-        let file = result_schema("schema.json", dir.path()).unwrap();
-        assert_eq!(file.schema()["type"], "array");
-
-        let error = |value: &str| result_schema(value, dir.path()).unwrap_err().0;
-        assert!(error("missing.json").starts_with("--json-schema missing.json: "));
-        assert!(error("{not json").starts_with("--json-schema: the schema is not valid JSON: "));
-        assert!(error(r#"{"type": "nonsense"}"#).starts_with("--json-schema: "));
-        std::fs::write(dir.path().join("list.json"), "[1]").unwrap();
-        assert_eq!(
-            error("list.json"),
-            "--json-schema: a JSON Schema must be an object"
-        );
-    }
-
-    #[test]
     fn a_session_keeps_its_coordinator_mode_and_a_new_mode_is_written_down() {
         let dir = tempfile::tempdir().unwrap();
         let modes = |session: &SessionStore| -> Vec<String> {

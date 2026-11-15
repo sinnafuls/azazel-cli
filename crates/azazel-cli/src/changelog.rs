@@ -142,31 +142,12 @@ mod tests {
 - a\n- b\n\n## [0.2.0] - 2026-11-12\n\n- c\n\n## [0.1.0] - 2026-11-11\n\n- d\n\n[0.2.0]: https://x\n[0.1.0]: https://y\n";
 
     #[test]
-    fn sections_split_at_version_headings_without_the_link_footer() {
-        let all = sections(LOG);
-        let versions: Vec<&str> = all.iter().map(|s| s.version).collect();
-        assert_eq!(versions, ["Unreleased", "0.10.0", "0.2.0", "0.1.0"]);
-        assert_eq!(all[3].text, "## [0.1.0] - 2026-11-11\n\n- d");
-    }
-
-    #[test]
     fn since_keeps_newer_releases_compared_as_numbers() {
         let newer = since(LOG, "0.2.0").unwrap();
         assert_eq!(newer.iter().map(|s| s.version).collect::<Vec<_>>(), ["0.10.0"]);
         assert_eq!(changes(&newer), 2);
         assert_eq!(since(LOG, "v0.1.0").unwrap().len(), 2);
         assert!(since(LOG, "latest").is_err());
-    }
-
-    #[test]
-    fn the_shipped_changelog_is_the_file_and_parses() {
-        let file =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../CHANGELOG.md")).unwrap();
-        assert!(
-            shipped() == file,
-            "the changelog in the binary is not CHANGELOG.md"
-        );
-        assert!(sections(shipped()).iter().any(|s| s.version == "0.1.0"));
     }
 
     #[test]

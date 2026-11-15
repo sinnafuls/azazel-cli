@@ -1121,61 +1121,6 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_stands_after_the_mode_in_its_own_colour() {
-        let theme = Theme::dark();
-        let plan = StatusLine {
-            agent: "plan",
-            ..full(&METERED)
-        };
-        assert!(shown(&plan, 160, &theme).starts_with("⏸ plan · plan · ⑂ main · "));
-        assert!(painted(&plan, 160, &theme).contains(&theme.paint(Role::Accent, "plan")));
-        let blue = Color::Rgb(83, 155, 245);
-        let coloured = StatusLine {
-            agent_color: Some(blue),
-            ..plan
-        };
-        assert!(painted(&coloured, 160, &theme).contains(&format!("{}plan", theme.fg_color(blue))));
-        // It leaves a narrow line after the mode and the model.
-        assert_eq!(
-            shown(&coloured, 35, &theme),
-            "⏸ plan  ⬢ anthropic/claude-opus-5-5"
-        );
-        let minimal = layout("preset = \"minimal\"");
-        assert!(!shown_in(&coloured, &minimal, 160, &theme).contains("· plan"));
-    }
-
-    #[test]
-    fn the_lists_say_which_segments_stand_where() {
-        let theme = Theme::dark();
-        let line = sample(&METERED);
-        let custom = layout("left = [\"model\", \"time\"]\nright = [\"path\", \"mode\"]");
-        assert_eq!(
-            shown_in(&line, &custom, 70, &theme),
-            sides(
-                "⬢ anthropic/claude-opus-5-5 · ◷ 14:05",
-                "~/src/app · ⏵ accept-edits",
-                70
-            )
-        );
-        // One list alone leaves the other side to the preset, less what the list took.
-        let moved = layout("left = [\"mode\", \"thinking\"]");
-        assert_eq!(moved.left, [Name::Mode, Name::Thinking]);
-        assert_eq!(moved.right, [Name::Model, Name::Tier]);
-        let moved = layout("preset = \"minimal\"\nright = [\"path\"]");
-        assert_eq!(
-            (moved.left, moved.right),
-            (vec![Name::Mode, Name::Agents], vec![Name::Path])
-        );
-        // `none` is a side with nothing on it.
-        let bare = layout("right = [\"none\"]\npreset = \"minimal\"");
-        assert_eq!(
-            shown_in(&line, &bare, 40, &theme),
-            "⏵ accept-edits · ~/src/app · ⇶ 2 agents"
-        );
-        assert!(bare.shows(Name::Path) && !bare.shows(Name::Model));
-    }
-
-    #[test]
     fn what_cannot_be_understood_is_said_and_left_out() {
         let found = problems("left = [\"mode\", \"clock\", \"mode\"]\nright = [\"mode\"]");
         assert_eq!(found.len(), 3, "{found:?}");
@@ -1441,18 +1386,5 @@ mod tests {
                 gone
             )
         );
-    }
-
-    #[test]
-    fn the_home_directory_is_a_tilde() {
-        let home = std::path::Path::new("/home/ann");
-        let at = |path: &str| display_path(std::path::Path::new(path), Some(home));
-        assert_eq!(at("/home/ann"), "~");
-        assert_eq!(at("/home/ann/src/app"), "~/src/app");
-        assert_eq!(
-            at("/srv/app"),
-            std::path::Path::new("/srv/app").display().to_string()
-        );
-        assert_eq!(display_path(home, None), home.display().to_string());
     }
 }

@@ -1,0 +1,68 @@
+---
+source: crates/azazel-ai/tests/it/wire_anthropic.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": "Let me run"
+  },
+  {
+    "type": "text_delta",
+    "index": 0,
+    "delta": " the tests."
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "text",
+      "text": "Let me run the tests."
+    }
+  },
+  {
+    "type": "tool_call_start",
+    "index": 1,
+    "id": "toolu_01Gv5Ks2RmPq7XwLd3ZnTb8H",
+    "name": "shell"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 1,
+    "delta": "{\"command\": \"cargo te"
+  },
+  {
+    "type": "error",
+    "error": {
+      "kind": "overloaded"
+    },
+    "partial": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "text",
+          "text": "Let me run the tests."
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "anthropic-messages",
+        "usage": {
+          "input": 88,
+          "output": 1,
+          "cache_read": 0,
+          "cache_write": 0,
+          "reasoning": 0
+        },
+        "stop": "error",
+        "response_id": "msg_01Bz6Jm4TyCw8QpN1XvKr9Dg",
+        "duration_ms": 0
+      }
+    }
+  }
+]

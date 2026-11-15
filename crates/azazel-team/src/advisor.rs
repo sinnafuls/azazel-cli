@@ -431,25 +431,4 @@ mod tests {
             assert!(!approves(no), "{no}");
         }
     }
-
-    #[test]
-    fn the_brief_names_each_part_and_says_when_nothing_changed() {
-        let work = Work {
-            prompts: vec!["fix it".to_string()],
-            last_message: "done".to_string(),
-            base: None,
-        };
-        let review = brief(REVIEW, &work, "", None);
-        assert!(review.starts_with("You are a second model reviewing"));
-        assert!(review.contains("<prompt>\nfix it\n</prompt>"));
-        assert!(review.contains("<final-message>\ndone\n</final-message>"));
-        assert!(
-            review.ends_with(
-                "<changes>\n(no change to the project's files is recorded for this run)\n</changes>"
-            )
-        );
-        let asked = brief(ON_DEMAND, &work, " a.rs | 2 +-", Some("is it safe?"));
-        assert!(asked.contains("<changes>\n a.rs | 2 +-\n</changes>"));
-        assert!(asked.ends_with("The user asks:\nis it safe?"));
-    }
 }

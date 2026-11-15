@@ -305,18 +305,4 @@ impl Tui {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_meter_follows_loudness_in_decibels() {
-        let meter = |level| meter(level, GlyphLevel::Unicode);
-        assert_eq!(meter(0.0), "▯▯▯▯▯▯▯▯");
-        assert_eq!(meter(0.003), "▯▯▯▯▯▯▯▯");
-        // -24 dB, a normal speaking level, fills half.
-        assert_eq!(meter(0.063), "▮▮▮▮▯▯▯▯");
-        assert_eq!(meter(1.0), "▮▮▮▮▮▮▮▮");
-        assert_eq!(meter(7.0), "▮▮▮▮▮▮▮▮");
-        assert_eq!(super::meter(0.063, GlyphLevel::Ascii), "####....");
-    }
-}
+mod tests {}

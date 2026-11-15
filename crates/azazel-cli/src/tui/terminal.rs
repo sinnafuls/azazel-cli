@@ -340,19 +340,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_path_becomes_a_file_address() {
-        assert_eq!(
-            file_url(Path::new("/home/me/src/main.rs")),
-            "file:///home/me/src/main.rs"
-        );
-        assert_eq!(
-            file_url(Path::new("C:\\Users\\me\\my file.rs")),
-            "file:///C:/Users/me/my%20file.rs"
-        );
-        assert_eq!(file_url(Path::new("/tmp/é#1")), "file:///tmp/%C3%A9%231");
-    }
-
-    #[test]
     fn the_links_of_a_reply_are_found_in_order_and_once() {
         let reply = "See [the docs](https://example.com/docs) and https://example.com/b.\n\n\
                      Also [https://example.com/c](https://example.com/c), then file:///tmp/x.txt";

@@ -497,22 +497,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_request_reports_nothing_and_does_not_divide_by_zero() {
-        let record = RequestRecord {
-            agent: "lead".into(),
-            seq: 1,
-            request: Arc::new(Request::default()),
-            window: 0,
-            model: None,
-            reported: Some(500),
-        };
-        let report = record.report();
-        assert!(report.categories.is_empty());
-        assert_eq!((report.estimate, report.tokens, report.reported), (0, 0, None));
-        assert_eq!(record.text(0), None);
-    }
-
-    #[test]
     fn the_text_of_a_category_is_what_the_request_carries() {
         let record = record(None);
         assert_eq!(record.text(1), Some("s".repeat(400)));

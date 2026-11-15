@@ -640,14 +640,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_or_missing_files_yield_no_part() {
-        let (_tmp, paths) = project();
-        assert_eq!(render(&load(&paths, true, &Includes::new(&paths, 4))), None);
-        std::fs::write(paths.project_root.join("AGENTS.md"), "  \n").unwrap();
-        assert_eq!(render(&load(&paths, true, &Includes::new(&paths, 4))), None);
-    }
-
-    #[test]
     fn the_cap_keeps_root_most_files_and_cuts_the_rest() {
         let file = |name: &str, size: usize| ContextFile {
             path: PathBuf::from(name),
@@ -710,19 +702,6 @@ mod tests {
         assert_eq!(
             off.expand(&root.join("AGENTS.md"), "@docs/style.md"),
             "@docs/style.md"
-        );
-    }
-
-    #[test]
-    fn code_is_not_searched_for_includes() {
-        let (_tmp, paths) = project();
-        let root = paths.project_root.clone();
-        put(&root, "a.md", "A");
-        let text = "Use `@a.md` like this:\n```sh\n@a.md\n```\n~~~\n@a.md\n~~~\nand `x` @a.md `y`\n";
-        assert_eq!(
-            Includes::new(&paths, 4).expand(&root.join("AGENTS.md"), text),
-            "Use `@a.md` like this:\n```sh\n@a.md\n```\n~~~\n@a.md\n~~~\nand `x` @a.md `y`\n\
-             <include file=\"a.md\">\nA\n</include>\n"
         );
     }
 

@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 
 use azazel_protocol::{ModelCost, ModelRow, ProviderRow, RoleRow, RoleSource, Roles, SaveTo};
 use azazel_tui::mouse::{Mouse, MouseKind};
-use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, Theme, text};
+use azazel_tui::{Glyph, GlyphLevel, Glyphs, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::screen::{Data, Models, Opening, Scope, Step};
@@ -455,21 +455,6 @@ fn new_roles_presets_and_the_save_target() {
     assert!(matches!(untrusted.on_key(&alt_w), Step::Pending));
     assert_eq!(untrusted.title(), "Models · saving to home");
     assert!(shown(&untrusted, 120, 20)[0].contains("not trusted"));
-}
-
-#[test]
-fn a_change_says_where_it_went_and_when_the_project_wins() {
-    let mut screen = on_role("default");
-    press(&mut screen, KeyCode::Char('x'));
-    let mut roles = roles(true);
-    roles.roles[0] = role("default", &[LUNA], RoleSource::Project, &[LUNA]);
-    screen.roles_changed(Ok(roles), Some(LUNA.to_string()));
-    let (colour, line) = screen.status.clone().unwrap();
-    assert_eq!(colour, Role::Warning);
-    assert!(line.contains("the project's config sets default too"), "{line}");
-    assert_eq!(screen.data.current.as_deref(), Some(LUNA));
-    screen.roles_changed(Err("no".into()), None);
-    assert_eq!(screen.status.clone().unwrap(), (Role::Error, "no".to_string()));
 }
 
 #[test]

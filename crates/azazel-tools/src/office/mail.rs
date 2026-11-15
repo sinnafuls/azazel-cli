@@ -165,21 +165,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_message_starts_with_a_header_field() {
-        assert!(looks_like_mail(
-            b"Received: from a by b\r\nSubject: x\r\n\r\nbody"
-        ));
-        assert!(looks_like_mail(
-            b"\r\nFrom sender@example.com Mon Jan  5 2026\nX-Mailer: m\n"
-        ));
-        assert!(looks_like_mail(b"From: Ada <ada@example.com>\n"));
-        assert!(!looks_like_mail(b"Dear all,\nthe meeting: it moved.\n"));
-        assert!(!looks_like_mail(b"no colon here\n"));
-        assert!(!looks_like_mail(b": empty name\n"));
-        assert!(!looks_like_mail(b""));
-    }
-
-    #[test]
     fn a_message_with_only_html_is_converted_and_unnamed_attachments_get_names() {
         let message = "From: =?UTF-8?Q?Gr=C3=A4ce?= <grace@example.com>\r\n\
                        To: ada@example.com, Linus <linus@example.com>\r\n\

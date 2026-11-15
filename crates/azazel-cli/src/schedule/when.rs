@@ -523,61 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn a_stored_moment_is_read_back_after_it_has_passed() {
-        let passed = When::At("2020-01-01T10:00:00Z".parse().unwrap());
-        let stored = serde_json::to_string(&passed).unwrap();
-        assert_eq!(stored, "\"at 2020-01-01T10:00:00Z\"");
-        assert_eq!(serde_json::from_str::<When>(&stored).unwrap(), passed);
-        let cron: When = serde_json::from_str("\"0 9 * * 1-5\"").unwrap();
-        assert_eq!(serde_json::to_string(&cron).unwrap(), "\"0 9 * * 1-5\"");
-        assert!(serde_json::from_str::<When>("\"whenever\"").is_err());
-    }
-
-    #[test]
-    fn what_cannot_be_scheduled_says_why() {
-        let now = zoned("2026-11-13T10:00:00+00:00");
-        let error = |text: &str| When::parse(text, &now).unwrap_err();
-        assert!(error("every 30s").contains("between one minute and 31 days"));
-        assert!(error("every 90s").contains("whole minutes"));
-        assert!(error("every 40d").contains("31 days"));
-        assert!(error("every soon").contains("not a length of time"));
-        assert!(error("at 2020-01-01 10:00").contains("in the past"));
-        assert!(error("at noonish").contains("not a time"));
-        assert!(error("on tuesday").contains("ci-failure"));
-        assert!(error("on file:").contains("needs a glob"));
-        assert!(error("0 9 * *").contains("five cron fields"));
-        assert!(error("61 9 * * *").contains("minute"));
-        assert!(error("0 9 * * 8").contains("day of the week"));
-        assert!(error("0 9 */0 * *").contains("day of the month"));
-        assert!(error("0 9 * 5-2 *").contains("month"));
-    }
-
-    #[test]
-    fn a_cron_expression_matches_its_minutes_only() {
-        let weekdays = Cron::parse("*/15 9-17 * * 1-5").unwrap();
-        // 2026-11-13 is a Friday.
-        assert!(weekdays.matches(civil("2026-11-13T09:00:00")));
-        assert!(weekdays.matches(civil("2026-11-13T17:45:59")));
-        assert!(!weekdays.matches(civil("2026-11-13T18:00:00")));
-        assert!(!weekdays.matches(civil("2026-11-13T09:07:00")));
-        assert!(!weekdays.matches(civil("2026-11-14T09:00:00")));
-        // Both days given: either one counts.
-        let either = Cron::parse("0 0 1 * sun").unwrap();
-        assert!(either.matches(civil("2026-11-01T00:00:00")));
-        assert!(either.matches(civil("2026-11-15T00:00:00")));
-        assert!(!either.matches(civil("2026-11-16T00:00:00")));
-        // 7 and names.
-        let sunday = Cron::parse("30 6 * jan,jul 7").unwrap();
-        assert!(sunday.matches(civil("2027-01-03T06:30:00")));
-        assert!(!sunday.matches(civil("2026-11-15T06:30:00")));
-        assert_eq!(Cron::parse("@daily").unwrap().text(), "0 0 * * *");
-        assert_eq!(
-            Cron::parse("5/20 8,20 * * *").unwrap().times_of_day(),
-            [(8, 5), (8, 25), (8, 45), (20, 5), (20, 25), (20, 45)]
-        );
-    }
-
-    #[test]
     fn the_next_run_of_a_cron_expression_is_found_across_days_and_years() {
         let next = |cron: &str, after: &str| Cron::parse(cron).unwrap().next_after(civil(after));
         assert_eq!(

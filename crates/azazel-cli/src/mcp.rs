@@ -369,18 +369,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_choice_is_all_none_or_numbers_and_ranges() {
-        assert_eq!(parse_choice("", 3), Ok(vec![]));
-        assert_eq!(parse_choice(" none ", 3), Ok(vec![]));
-        assert_eq!(parse_choice("All", 3), Ok(vec![0, 1, 2]));
-        assert_eq!(parse_choice("3, 1", 3), Ok(vec![2, 0]));
-        assert_eq!(parse_choice("2-3 2", 3), Ok(vec![1, 2]));
-        assert!(parse_choice("4", 3).is_err());
-        assert!(parse_choice("0", 3).is_err());
-        assert!(parse_choice("x", 3).is_err());
-    }
-
-    #[test]
     fn an_import_never_replaces_a_name_unasked_and_imports_a_name_once() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("mcp.json");

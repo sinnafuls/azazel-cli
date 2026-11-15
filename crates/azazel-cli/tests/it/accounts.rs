@@ -1,0 +1,254 @@
+//! Several accounts per provider, moving off an account that ran out of allowance, service tiers
+//! and model presets, as the binary does them.
+
+use std::path::PathBuf;
+use std::process::Output;
+
+use crate::common::trimmed;
+use assert_cmd::Command;
+use serde_json::{Value, json};
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+const REPLY: &str = concat!(
+    "data: {\"id\":\"r1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello from work\"}}]}\n\n",
+    "data: {\"id\":\"r1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n",
+);
+
+struct Sandbox {
+    dir: tempfile::TempDir,
+}
+
+impl Sandbox {
+    fn new() -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        std::fs::create_dir_all(dir.path().join("project/.git")).unwrap();
+        Sandbox { dir }
+    }
+
+    fn home(&self) -> PathBuf {
+        self.dir.path().join("home")
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::cargo_bin("azazel").unwrap();
+        command
+            .env("AZAZEL_HOME", self.home())
+            .env_remove("AZAZEL_MOCK_SCRIPT")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .args(args)
+            .arg("--cwd")
+            .arg(self.dir.path().join("project"))
+            .write_stdin("");
+        command
+    }
+
+    /// Runs `azazel` against real endpoints (the mock servers of a test).
+    async fn azazel(&self, args: &[&str]) -> Output {
+        let mut command = self.command(args);
+        tokio::task::spawn_blocking(move || command.output().unwrap())
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_second_account_is_signed_in_to_listed_and_signed_out_of() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/device"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "device_code": "dc-1",
+            "user_code": "WDJB-MJHT",
+            "verification_uri": "https://id.example/device",
+            "expires_in": 600,
+            "interval": 0
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "access_token": "at-1",
+            "refresh_token": "rt-1",
+            "expires_in": 3600
+        })))
+        .mount(&server)
+        .await;
+    let sandbox = Sandbox::new();
+    let uri = server.uri();
+    std::fs::write(
+        sandbox.home().join("config.toml"),
+        format!(
+            "[providers.gateway]\napi = \"openai-chat\"\nbase_url = \"{uri}/v1\"\n\n\
+             [providers.gateway.oauth]\nflow = \"device\"\nclient_id = \"app-1\"\n\
+             device_url = \"{uri}/device\"\ntoken_url = \"{uri}/token\"\n"
+        ),
+    )
+    .unwrap();
+    let auth_file = sandbox.home().join("auth.json");
+
+    // A label that cannot name an account is a usage error before anything is asked.
+    let bad = sandbox.azazel(&["login", "gateway", "--as", "a b"]).await;
+    assert_eq!(bad.status.code(), Some(2), "{}", trimmed(&bad.stderr));
+    assert!(
+        trimmed(&bad.stderr).contains("cannot name an account"),
+        "{}",
+        trimmed(&bad.stderr)
+    );
+
+    for (args, said) in [
+        (
+            vec!["login", "gateway"],
+            "signed in to gateway; the login is kept in".to_string(),
+        ),
+        (
+            vec!["login", "gateway", "--as", "work"],
+            "signed in to gateway as account `work`; the login is kept in".to_string(),
+        ),
+    ] {
+        let login = sandbox.azazel(&args).await;
+        assert_eq!(login.status.code(), Some(0), "{}", trimmed(&login.stderr));
+        assert!(
+            trimmed(&login.stdout).starts_with(&said),
+            "{}",
+            trimmed(&login.stdout)
+        );
+    }
+    let stored: Value = serde_json::from_slice(&std::fs::read(&auth_file).unwrap()).unwrap();
+    assert_eq!(stored["gateway"]["type"], "oauth");
+    assert_eq!(stored["gateway#work"]["refresh"], "rt-1");
+
+    let status = sandbox.azazel(&["auth", "status", "--json"]).await;
+    let row: Value = serde_json::from_str(trimmed(&status.stdout).lines().next().unwrap()).unwrap();
+    assert_eq!(row["provider"], "gateway");
+    assert_eq!(row["source"], "auth.json (login)");
+    assert_eq!(row["accounts"], json!(["default", "work"]));
+
+    // The configured account is the one in use.
+    let mut config = std::fs::read_to_string(sandbox.home().join("config.toml")).unwrap();
+    config = config.replace(
+        "api = \"openai-chat\"",
+        "api = \"openai-chat\"\naccount = \"work\"",
+    );
+    std::fs::write(sandbox.home().join("config.toml"), config).unwrap();
+    let status = trimmed(&sandbox.azazel(&["auth", "status"]).await.stdout);
+    assert!(status.contains("auth.json (login, account work)"), "{status}");
+    assert!(status.contains("accounts: default, work"), "{status}");
+
+    let logout = sandbox.azazel(&["logout", "gateway", "--account", "work"]).await;
+    assert_eq!(
+        trimmed(&logout.stdout),
+        "forgot the stored gateway login of account `work`"
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(&auth_file).unwrap()).unwrap();
+    assert!(stored.get("gateway#work").is_none() && stored.get("gateway").is_some());
+    let again = sandbox.azazel(&["logout", "gateway", "--account", "work"]).await;
+    assert_eq!(again.status.code(), Some(1));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_used_up_account_hands_the_run_over_to_the_next_one() {
+    let server = MockServer::start().await;
+    // The default account's plan is used up; the work account answers.
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer k-default"))
+        .respond_with(ResponseTemplate::new(429).set_body_json(json!({
+            "error": {
+                "type": "usage_limit_reached",
+                "message": "The usage limit has been reached",
+                "resets_in_seconds": 7200
+            }
+        })))
+        // Once in all: the second run knows the account is out until the reset.
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .and(header("authorization", "Bearer k-work"))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(REPLY, "text/event-stream"))
+        .expect(2)
+        .mount(&server)
+        .await;
+    let sandbox = Sandbox::new();
+    std::fs::write(
+        sandbox.home().join("config.toml"),
+        format!(
+            // No session naming: the server counts every request.
+            "[session]\nauto_name = false\n[providers.gateway]\napi = \"openai-chat\"\nbase_url = \"{}/v1\"\n",
+            server.uri()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        sandbox.home().join("auth.json"),
+        json!({
+            "gateway": {"type": "api_key", "key": "k-default"},
+            "gateway#work": {"type": "api_key", "key": "k-work"}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    // Memory would add requests of its own to the count.
+    let run = sandbox
+        .azazel(&["-p", "hi", "--model", "gateway/small", "--no-memory"])
+        .await;
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    assert_eq!(trimmed(&run.stdout), "hello from work");
+    let said = trimmed(&run.stderr);
+    assert!(
+        said.contains("gateway: account default reached its usage limit (resets ")
+            && said.contains("); now using work"),
+        "{said}"
+    );
+
+    // The account is marked as out of allowance for the runs that follow.
+    let kept = std::fs::read_to_string(sandbox.home().join("cache").join("limits.json")).unwrap();
+    let kept: Value = serde_json::from_str(&kept).unwrap();
+    assert!(kept["gateway"]["blocks"][0]["until"].as_u64().is_some(), "{kept}");
+    assert!(kept.get("gateway#work").is_none(), "{kept}");
+
+    // The next run does not ask the default account again: it starts on the one with room and
+    // says why. As events, for a program that drives azazel.
+    let run = sandbox
+        .azazel(&[
+            "-p",
+            "hi",
+            "--model",
+            "gateway/small",
+            "--no-memory",
+            "--output",
+            "json",
+        ])
+        .await;
+    assert_eq!(run.status.code(), Some(0), "{}", trimmed(&run.stderr));
+    let events: Vec<Value> = trimmed(&run.stdout)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let switch = events
+        .iter()
+        .find(|event| event["type"] == "account")
+        .unwrap_or_else(|| panic!("no account event in {events:?}"));
+    assert_eq!(
+        (
+            &switch["provider"],
+            &switch["from"],
+            &switch["to"],
+            &switch["limit"]
+        ),
+        (
+            &json!("gateway"),
+            &json!("default"),
+            &json!("work"),
+            &json!("usage limit")
+        )
+    );
+    assert!(switch["until"].as_u64().is_some());
+}

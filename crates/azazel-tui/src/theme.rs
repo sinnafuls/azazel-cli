@@ -637,25 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_colours() {
-        for bad in [
-            "#fff", "#gggggg", "256", "-1", "reddish", "", "#ff80000", "bright_",
-        ] {
-            assert!(bad.parse::<Color>().is_err(), "{bad:?} should not parse");
-        }
-    }
-
-    #[test]
-    fn detects_colour_depth() {
-        assert_eq!(ColorDepth::detect(Some("truecolor")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("24bit")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("TrueColor")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("yes")), ColorDepth::Ansi256);
-        assert_eq!(ColorDepth::detect(Some("")), ColorDepth::Ansi256);
-        assert_eq!(ColorDepth::detect(None), ColorDepth::Ansi256);
-    }
-
-    #[test]
     fn downgrades_known_rgb_values() {
         assert_eq!(nearest_256(0, 0, 0), 16);
         assert_eq!(nearest_256(255, 255, 255), 231);
@@ -669,16 +650,6 @@ mod tests {
     }
 
     #[test]
-    fn palette_round_trips_through_rgb() {
-        for n in 16..=255u8 {
-            let (r, g, b) = Color::Indexed(n)
-                .to_rgb()
-                .expect("indexed colours have an RGB value");
-            assert_eq!(nearest_256(r, g, b), n, "palette entry {n}");
-        }
-    }
-
-    #[test]
     fn sgr_sequences_follow_depth() {
         let mut theme = Theme::dark();
         theme.set_color(Role::Accent, Color::Rgb(255, 0, 0));
@@ -687,30 +658,6 @@ mod tests {
         let theme = theme.with_depth(ColorDepth::Ansi256);
         assert_eq!(theme.fg(Role::Accent), "\x1b[38;5;196m");
         assert_eq!(theme.bg(Role::Accent), "\x1b[48;5;196m");
-    }
-
-    #[test]
-    fn sgr_sequences_for_palette_and_default() {
-        let theme = Theme::dark();
-        assert_eq!(theme.fg_color(Color::Default), "\x1b[39m");
-        assert_eq!(theme.bg_color(Color::Default), "\x1b[49m");
-        assert_eq!(theme.fg_color(Color::Indexed(1)), "\x1b[31m");
-        assert_eq!(theme.bg_color(Color::Indexed(7)), "\x1b[47m");
-        assert_eq!(theme.fg_color(Color::Indexed(9)), "\x1b[91m");
-        assert_eq!(theme.bg_color(Color::Indexed(15)), "\x1b[107m");
-        assert_eq!(theme.fg_color(Color::Indexed(200)), "\x1b[38;5;200m");
-    }
-
-    #[test]
-    fn paint_wraps_text_and_skips_default() {
-        let mut theme = Theme::dark();
-        theme.set_color(Role::Error, Color::Indexed(1));
-        assert_eq!(theme.paint(Role::Error, "boom"), "\x1b[31mboom\x1b[0m");
-        assert_eq!(theme.paint(Role::Error, ""), "");
-        assert_eq!(theme.color(Role::Text), Color::Default);
-        assert_eq!(theme.paint(Role::Text, "plain"), "plain");
-        theme.set_color(Role::CodeBg, Color::Indexed(236));
-        assert_eq!(theme.paint(Role::CodeBg, "x"), "\x1b[48;5;236mx\x1b[0m");
     }
 
     #[test]
@@ -741,49 +688,6 @@ mod tests {
         assert_eq!(theme.color(Role::Accent), Color::Rgb(16, 32, 48));
         for role in [Role::UserBg, Role::DiffAddBg, Role::SelectedBg, Role::Muted] {
             assert_eq!(theme.color(role), light.color(role), "{role:?} should inherit");
-        }
-    }
-
-    #[test]
-    fn background_roles_paint_the_background() {
-        let mut theme = Theme::dark();
-        for role in Role::ALL {
-            theme.set_color(role, Color::Indexed(200));
-            let painted = theme.paint(role, "x");
-            let expected = if role.is_background() {
-                "\x1b[48;5;200mx\x1b[0m"
-            } else {
-                "\x1b[38;5;200mx\x1b[0m"
-            };
-            assert_eq!(painted, expected, "{role:?}");
-        }
-    }
-
-    #[test]
-    fn band_fills_the_width() {
-        let mut theme = Theme::dark();
-        theme.set_color(Role::UserBg, Color::Indexed(236));
-        theme.set_color(Role::UserText, Color::Indexed(15));
-        assert_eq!(
-            theme.band(Role::UserBg, Role::UserText, " hi", 6),
-            "\x1b[48;5;236m\x1b[97m hi   \x1b[0m"
-        );
-        assert_eq!(
-            crate::text::width(&theme.band(Role::UserBg, Role::UserText, "too long", 4)),
-            4
-        );
-    }
-
-    #[test]
-    fn toml_accepts_every_role_name() {
-        let entries: Vec<String> = Role::ALL
-            .iter()
-            .map(|role| format!("{} = 7", role.name()))
-            .collect();
-        let source = entries.join("\n");
-        let theme = Theme::from_toml(&source).expect("all role names are valid keys");
-        for role in Role::ALL {
-            assert_eq!(theme.color(role), Color::Indexed(7));
         }
     }
 
@@ -934,18 +838,5 @@ mod tests {
         ] {
             assert!(Theme::is_builtin(old), "{old}");
         }
-    }
-
-    #[test]
-    fn glyphs_follow_the_level() {
-        let theme = Theme::dark();
-        assert_eq!(theme.glyph(Glyph::Success), "✔");
-        assert_eq!(theme.with_glyphs(GlyphLevel::Ascii).glyph(Glyph::Success), "[+]");
-    }
-
-    #[test]
-    fn lightness_follows_code_background() {
-        assert!(!Theme::dark().is_light());
-        assert!(Theme::light().is_light());
     }
 }

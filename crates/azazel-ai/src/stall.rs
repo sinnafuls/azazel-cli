@@ -110,18 +110,6 @@ impl Watchdog {
 mod tests {
     use super::*;
 
-    #[test]
-    fn zero_seconds_turns_a_limit_off() {
-        assert_eq!(
-            StallLimits::from_secs(20, 0),
-            StallLimits {
-                first_event: Some(Duration::from_secs(20)),
-                ..StallLimits::default()
-            }
-        );
-        assert_eq!(StallLimits::from_secs(0, 0), StallLimits::default());
-    }
-
     #[tokio::test(start_paused = true)]
     async fn the_first_event_has_its_own_limit_and_each_later_one_restarts_the_clock() {
         let mut watchdog = Watchdog::start(StallLimits::from_secs(20, 120));

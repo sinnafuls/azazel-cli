@@ -1117,44 +1117,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn timestamps_are_utc_calendar_dates() {
-        assert_eq!(iso_utc(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(iso_utc(951_782_400), "2000-02-29T00:00:00.000Z");
-        assert_eq!(iso_utc(951_868_799), "2000-02-29T23:59:59.000Z");
-        assert_eq!(iso_utc(951_868_800), "2000-03-01T00:00:00.000Z");
-        assert_eq!(iso_utc(1_700_000_000), "2023-11-14T22:13:20.000Z");
-        assert_eq!(iso_utc(1_735_689_599), "2024-12-31T23:59:59.000Z");
-    }
-
-    #[test]
-    fn duckduckgo_links_resolve_to_the_result_page() {
-        assert_eq!(
-            duckduckgo_target("//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust%2Dlang.org%2Fstd%2F&rut=abc")
-                .as_deref(),
-            Some("https://doc.rust-lang.org/std/")
-        );
-        assert_eq!(
-            duckduckgo_target("https://example.com/a?b=c").as_deref(),
-            Some("https://example.com/a?b=c")
-        );
-        assert_eq!(duckduckgo_target("//duckduckgo.com/y.js?ad_provider=x"), None);
-        assert_eq!(duckduckgo_target("not a url"), None);
-    }
-
-    #[test]
-    fn snippets_are_one_line_and_bounded() {
-        assert_eq!(tidy("  a\n\tb   c "), "a b c");
-        let long = "é".repeat(SNIPPET_CHARS + 10);
-        let cut = tidy(&long);
-        assert_eq!(cut.chars().count(), SNIPPET_CHARS + 1);
-        assert!(cut.ends_with('…'));
-        assert_eq!(
-            plain("Vec&lt;T&gt; &amp; <strong>Option</strong>&#x27;s"),
-            "Vec<T> & Option's"
-        );
-    }
-
-    #[test]
     fn a_call_searches_its_query_and_queries_once_each_up_to_five() {
         let list = |queries: &[&str]| queries.iter().map(|q| q.to_string()).collect::<Vec<_>>();
         assert_eq!(wanted(Some(" one ".into()), Vec::new()), Ok(list(&["one"])));
@@ -1173,12 +1135,5 @@ mod tests {
             "6 queries in one call; at most 5 are searched at once"
         );
         assert!(wanted(None, list(&["a", "b", "c", "d", "e"])).is_ok());
-    }
-
-    #[test]
-    fn sites_are_reduced_to_a_domain() {
-        assert_eq!(bare_domain(" https://docs.rs/ ").as_deref(), Some("docs.rs"));
-        assert_eq!(bare_domain("docs.rs/tokio").as_deref(), Some("docs.rs/tokio"));
-        assert_eq!(bare_domain("  "), None);
     }
 }

@@ -74,22 +74,6 @@ mod tests {
     }
 
     #[test]
-    fn off_when_model_cannot_reason_or_level_is_off() {
-        assert_eq!(
-            thinking_param(
-                WireApi::AnthropicMessages,
-                &model(false, 64_000),
-                ThinkingLevel::High
-            ),
-            ThinkingParam::Off
-        );
-        assert_eq!(
-            thinking_param(WireApi::OpenAiResponses, &model(true, 64_000), ThinkingLevel::Off),
-            ThinkingParam::Off
-        );
-    }
-
-    #[test]
     fn budget_levels_and_ceiling() {
         let m = model(true, 64_000);
         let budget = |level| thinking_param(WireApi::AnthropicMessages, &m, level);

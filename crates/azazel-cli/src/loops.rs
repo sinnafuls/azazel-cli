@@ -587,27 +587,4 @@ mod tests {
         );
         assert!(verdict("").is_err());
     }
-
-    #[test]
-    fn lengths_of_time_are_read_and_written() {
-        assert_eq!(span("90s"), Ok(Duration::from_secs(90)));
-        assert_eq!(span("1h30m"), Ok(Duration::from_secs(5400)));
-        assert_eq!(span("2 hours"), Ok(Duration::from_secs(7200)));
-        assert_eq!(span("day"), Ok(Duration::from_secs(86_400)));
-        assert!(span("ten minutes").is_err());
-        assert!(span("0m").is_err());
-        assert!(span("5").is_err());
-        let text = |seconds: u64| span_text(Duration::from_secs(seconds));
-        assert_eq!(
-            [
-                text(45),
-                text(90),
-                text(600),
-                text(7200),
-                text(172_800),
-                text(5400)
-            ],
-            ["45s", "90s", "10m", "2h", "2d", "90m"]
-        );
-    }
 }

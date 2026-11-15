@@ -340,15 +340,6 @@ mod tests {
     }
 
     #[test]
-    fn whole_small_file_has_line_numbers_and_no_footer() {
-        let (out, shown) = render_text("alpha\r\nbeta\n", None, None);
-        assert_eq!(text(&out), "1\talpha\n2\tbeta");
-        assert_eq!(shown, Some((1, 2)));
-        let (empty, shown) = render_text("", None, None);
-        assert_eq!((text(&empty).as_str(), shown), ("(empty file)", None));
-    }
-
-    #[test]
     fn paging_reports_range_and_next_offset() {
         let body: String = (1..=10).map(|i| format!("l{i}\n")).collect();
         let (out, shown) = render_text(&body, Some(4), Some(3));

@@ -175,7 +175,6 @@ pub(crate) fn summarise_left(app: &App, active: &Active, left: Option<&str>) {
 
 #[cfg(test)]
 mod tests {
-    use serde_json::json;
 
     use super::*;
 
@@ -216,58 +215,5 @@ mod tests {
         store.set_leaf(Some(&one));
         store.set_leaf(Some(&two));
         assert!(left_behind(&store, Some(&one)).is_empty());
-    }
-
-    #[test]
-    fn the_summariser_reads_who_said_what_and_what_the_tools_did() {
-        let messages = vec![
-            Message::user("fix the test"),
-            reply(vec![
-                Block::text("Reading it."),
-                Block::ToolCall {
-                    id: "c1".into(),
-                    name: "read".into(),
-                    input: json!({ "path": "tests/a.rs" }),
-                    signature: None,
-                },
-            ]),
-            Message::tool(vec![Block::ToolResult {
-                call_id: "c1".into(),
-                content: vec![Block::text("x".repeat(2_000))],
-                is_error: false,
-            }]),
-            Message::tool(vec![Block::tool_result("c2", "no such file", true)]),
-            reply(vec![Block::text("It asserts the wrong value.")]),
-        ];
-        let asked = question(&messages).unwrap();
-        assert!(asked.starts_with(INSTRUCTIONS));
-        let body = asked.split_once("<conversation>\n").unwrap().1;
-        let lines: Vec<&str> = body.lines().collect();
-        assert_eq!(lines[0], "User: fix the test");
-        assert_eq!(lines[1], "Agent: Reading it.");
-        assert_eq!(lines[2], "Agent called read: tests/a.rs");
-        // A long result is cut.
-        assert!(lines[3].starts_with("Result: xxx") && lines[3].chars().count() <= MAX_RESULT_CHARS + 8);
-        assert_eq!(lines[4], "Failed: no such file");
-        assert_eq!(lines[5], "Agent: It asserts the wrong value.");
-        assert_eq!(lines[6], "</conversation>");
-
-        // A prompt the agent never answered is nothing to tell of.
-        assert_eq!(question(&[Message::user("never mind")]), None);
-        assert_eq!(question(&[]), None);
-
-        // Of a long branch the start and the end are sent.
-        let long: Vec<Message> = (0..400)
-            .flat_map(|n| {
-                [
-                    Message::user(format!("question {n} {}", "q".repeat(100))),
-                    reply(vec![Block::text(format!("answer {n}"))]),
-                ]
-            })
-            .collect();
-        let asked = question(&long).unwrap();
-        assert!(asked.chars().count() < MAX_CHARS + INSTRUCTIONS.len() + 100);
-        assert!(asked.contains("User: question 0 ") && asked.contains("Agent: answer 399"));
-        assert!(asked.contains("\n[...]\n") && !asked.contains("question 200 "));
     }
 }

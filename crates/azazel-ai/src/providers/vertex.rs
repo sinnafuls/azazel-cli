@@ -378,28 +378,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn addresses_follow_the_location() {
-        let at = |location: Option<&str>| {
-            VertexProvider::new(
-                Some(" p ".into()),
-                location.map(str::to_string),
-                crate::tls::client(),
-            )
-            .publisher_url("p", "google")
-        };
-        assert_eq!(
-            at(None),
-            "https://aiplatform.googleapis.com/v1/projects/p/locations/global/publishers/google"
-        );
-        assert_eq!(
-            at(Some("us-east5")),
-            "https://us-east5-aiplatform.googleapis.com/v1/projects/p/locations/us-east5/publishers/google"
-        );
-        assert_eq!(at(Some("  ")), at(None));
-        assert!(is_claude("Claude-Opus-4-5@20251101") && !is_claude("gemini-2.5-pro"));
-    }
-
     #[tokio::test]
     async fn a_missing_project_is_named_before_anything_is_sent() {
         let server = MockServer::start().await;

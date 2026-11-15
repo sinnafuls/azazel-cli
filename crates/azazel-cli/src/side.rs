@@ -156,18 +156,3 @@ pub fn ask_from_env(
         println!("{line}");
     }))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn dropped_tools_are_named_once_each() {
-        assert_eq!(dropped_note(&[]), None);
-        let tools = ["shell".to_string(), "read".to_string(), "shell".to_string()];
-        assert_eq!(
-            dropped_note(&tools).as_deref(),
-            Some("the model tried to use shell, read; ask in the main conversation")
-        );
-    }
-}

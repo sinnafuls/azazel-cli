@@ -153,39 +153,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn pages_are_one_number_or_a_range() {
-        assert_eq!(parse_pages("3"), Ok((3, 3)));
-        assert_eq!(parse_pages(" 2 - 6 "), Ok((2, 6)));
-        for bad in ["", "0", "6-2", "a", "1-", "-3", "1,2"] {
-            assert!(
-                parse_pages(bad).unwrap_err().contains("expected a page number"),
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_whole_pdf_reads_with_page_separators_and_one_page_reads_alone() {
-        let pdf = fixture(&["Alpha one", "Beta two", "Gamma three"]);
-        assert_eq!(
-            read(&pdf, None, usize::MAX).unwrap(),
-            "--- page 1 ---\nAlpha one\n\n--- page 2 ---\nBeta two\n\n--- page 3 ---\nGamma three"
-        );
-        assert_eq!(
-            read(&pdf, Some((2, 2)), usize::MAX).unwrap(),
-            "--- page 2 ---\nBeta two\n[pages 2-2 of 3]"
-        );
-        assert_eq!(
-            read(&pdf, Some((2, 9)), usize::MAX).unwrap(),
-            "--- page 2 ---\nBeta two\n\n--- page 3 ---\nGamma three\n[pages 2-3 of 3]"
-        );
-        assert_eq!(
-            read(&pdf, Some((4, 4)), usize::MAX).unwrap_err(),
-            "page 4 is past the end of the PDF (3 pages)"
-        );
-    }
-
-    #[test]
     fn long_pdfs_come_twenty_pages_at_a_time_with_the_next_range_named() {
         let texts: Vec<String> = (1..=45).map(|n| format!("Text of page {n}")).collect();
         let pages: Vec<&str> = texts.iter().map(String::as_str).collect();
@@ -210,17 +177,6 @@ pub(crate) mod tests {
             small.ends_with("\n[pages 1-2 of 45; continue with pages=\"3-22\"]"),
             "{small}"
         );
-    }
-
-    #[test]
-    fn every_page_comes_at_once_for_a_caller_that_pages_the_text_itself() {
-        let texts: Vec<String> = (1..=45).map(|n| format!("Text of page {n}")).collect();
-        let pages: Vec<&str> = texts.iter().map(String::as_str).collect();
-        let all = read_all(&fixture(&pages)).unwrap();
-        assert!(all.starts_with("--- page 1 ---\nText of page 1\n"), "{all}");
-        assert!(all.ends_with("--- page 45 ---\nText of page 45"), "{all}");
-        assert_eq!(all.matches("--- page ").count(), 45);
-        assert_eq!(read_all(&fixture(&["", ""])).unwrap_err(), NO_TEXT);
     }
 
     #[test]

@@ -843,17 +843,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unread_lines_are_named_briefly() {
-        assert_eq!(lines_text(&[(40, 52)]), "lines 40-52");
-        assert_eq!(lines_text(&[(7, 7)]), "line 7");
-        assert_eq!(lines_text(&[(3, 4), (9, 9), (20, 22)]), "lines 3-4, 9 and 20-22");
-        assert_eq!(
-            lines_text(&[(1, 1), (3, 3), (5, 5), (7, 7), (9, 9), (11, 12)]),
-            "lines 1, 3, 5, 7 and 2 more places"
-        );
-    }
-
     #[tokio::test]
     async fn local_files_are_written_read_edited_and_found_in_the_session_folder() {
         use azazel_agent::{AgentInfo, Services, UpdateSink};

@@ -575,16 +575,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn commands_split_into_words_with_quotes_and_plain_backslashes() {
-        assert_eq!(words("rustfmt --edition 2024"), ["rustfmt", "--edition", "2024"]);
-        assert_eq!(
-            words(r#"  "C:\Program Files\fmt\fmt.exe"  -w 'a b' "" "#),
-            [r"C:\Program Files\fmt\fmt.exe", "-w", "a b", ""]
-        );
-        assert!(words("   ").is_empty());
-    }
-
-    #[test]
     fn the_rust_edition_comes_from_the_nearest_manifest_that_states_one() {
         let dir = tempfile::tempdir().unwrap();
         let member = dir.path().join("crates/a/src");

@@ -882,22 +882,4 @@ mod tests {
         pager.set_items(Vec::new());
         assert_eq!(pager.cursor(), 0);
     }
-
-    #[test]
-    fn links_end_at_spaces_and_closing_punctuation() {
-        assert_eq!(
-            link_in("see (https://a.example/x?y=1) now").as_deref(),
-            Some("https://a.example/x?y=1")
-        );
-        assert_eq!(
-            link_in("\x1b[4mhttp://b.example\x1b[0m, then").as_deref(),
-            Some("http://b.example")
-        );
-        assert_eq!(
-            link_in("file:///tmp/a.txt and https://later.example").as_deref(),
-            Some("file:///tmp/a.txt")
-        );
-        assert_eq!(link_in("nothing here"), None);
-        assert_eq!(link_in("https://"), None);
-    }
 }

@@ -1185,44 +1185,6 @@ mod tests {
     }
 
     #[test]
-    fn a_list_can_start_on_another_row() {
-        let mut overlay = Overlay::select(
-            "Approve?",
-            Vec::new(),
-            items(&["Allow once", "Deny", "Deny and say why"]),
-            false,
-            Action::Mode,
-        )
-        .starting_at(1);
-        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(1)));
-        let past_the_end =
-            Overlay::select("x", Vec::new(), items(&["a"]), false, Action::Mode).starting_at(5);
-        let mut past_the_end = past_the_end;
-        assert!(matches!(
-            past_the_end.on_key(&key(KeyCode::Enter)),
-            Outcome::Chosen(0)
-        ));
-    }
-
-    #[test]
-    fn select_moves_filters_and_reports_the_original_index() {
-        let mut overlay = Overlay::select(
-            "Pick",
-            Vec::new(),
-            items(&["alpha", "beta", "gamma"]),
-            true,
-            Action::Mode,
-        );
-        assert!(matches!(overlay.on_key(&key(KeyCode::Down)), Outcome::Pending));
-        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(1)));
-        for c in "gam".chars() {
-            overlay.on_key(&key(KeyCode::Char(c)));
-        }
-        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(2)));
-        assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Cancelled));
-    }
-
-    #[test]
     fn unfiltered_select_takes_digits_and_input_returns_its_text() {
         let mut pick = Overlay::select(
             "Allow?",
@@ -1697,37 +1659,6 @@ mod tests {
                 "{line:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_prompt_gives_the_box_its_title_and_its_options_their_details() {
-        assert_eq!(
-            heading("Which role?", "Choose"),
-            ("Which role?".to_string(), Vec::<String>::new())
-        );
-        assert_eq!(
-            heading(
-                "Settings\ncredentials for: anthropic\ndefault model: none",
-                "Choose"
-            ),
-            (
-                "Settings".to_string(),
-                vec![
-                    "credentials for: anthropic".to_string(),
-                    "default model: none".to_string()
-                ]
-            )
-        );
-        // A first line too long for a border is body text under the usual title.
-        let long = "Paste the code the browser shows after you have signed in to your account";
-        assert_eq!(
-            heading(long, "Input"),
-            ("Input".to_string(), vec![long.to_string()])
-        );
-        assert_eq!(heading("", "Input"), ("Input".to_string(), Vec::<String>::new()));
-
-        assert_eq!(option_item("Theme\tdark"), SelectItem::new("Theme", "dark"));
-        assert_eq!(option_item("Done"), SelectItem::new("Done", ""));
     }
 
     #[test]

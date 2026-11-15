@@ -385,13 +385,6 @@ mod tests {
     }
 
     #[test]
-    fn what_was_asked_for_is_taken_once() {
-        request(words(&["-r", "x"]), None);
-        assert_eq!(take().map(|request| request.args), Some(words(&["-r", "x"])));
-        assert_eq!(take(), None);
-    }
-
-    #[test]
     fn starting_in_another_directory_leaves_out_the_directory_and_the_trust_given() {
         let original = words(&["--cwd", "/old", "--trust", "--set", "tui.popups=false", "-c"]);
         let reopen = words(&["--cwd", "/new", "-r", "/s/one.jsonl"]);

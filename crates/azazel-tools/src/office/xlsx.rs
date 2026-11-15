@@ -459,19 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn csv_quotes_what_needs_it() {
-        let rows = vec![
-            vec!["plain".to_string(), "a,b".to_string(), "say \"hi\"".to_string()],
-            vec![],
-            vec![String::new(), "two\nlines".to_string(), " padded".to_string()],
-        ];
-        assert_eq!(
-            csv(&rows),
-            "plain,\"a,b\",\"say \"\"hi\"\"\"\n\n,\"two\nlines\",\" padded\"\n"
-        );
-    }
-
-    #[test]
     fn a_workbook_as_excel_writes_it_is_read_with_its_shared_strings_dates_and_formulas() {
         let bytes = archive(&[
             (

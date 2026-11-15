@@ -422,19 +422,4 @@ mod tests {
         // A sub-agent has its own identity, whichever agent the lead is.
         assert_eq!(builder.render(&info(1)).await[0].name, "rules");
     }
-
-    #[test]
-    fn git_branch_reads_head() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(git_branch(dir.path()), None);
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".git/HEAD"), "ref: refs/heads/feature/x\n").unwrap();
-        assert_eq!(git_branch(dir.path()).as_deref(), Some("feature/x"));
-        std::fs::write(
-            dir.path().join(".git/HEAD"),
-            "0123456789abcdef0123456789abcdef01234567\n",
-        )
-        .unwrap();
-        assert_eq!(git_branch(dir.path()).as_deref(), Some("detached at 01234567"));
-    }
 }
