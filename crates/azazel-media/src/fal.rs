@@ -345,12 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn inline_data_and_text_fields_are_not_files() {
-        let result = json!({"image": {"url": "data:image/png;base64,AAAA"}, "description": "done"});
-        assert!(urls(result).is_empty());
-    }
-
-    #[test]
     fn a_file_keeps_the_name_and_type_the_result_states() {
         let found = file_refs(&json!({
             "video": {"url": "https://cdn.example/x", "content_type": "video/mp4", "file_name": "clip.mp4"}

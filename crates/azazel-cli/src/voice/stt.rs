@@ -101,6 +101,3 @@ pub async fn by_command(command: &str, recording: &[u8]) -> Result<String, Strin
     }
     Ok(tidy(&String::from_utf8_lossy(&output.stdout)))
 }
-
-#[cfg(test)]
-mod tests {}

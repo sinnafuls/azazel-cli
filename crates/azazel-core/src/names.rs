@@ -175,6 +175,3 @@ pub fn clean_title(answer: &str) -> Option<String> {
     let title = title.trim().to_string();
     (!title.is_empty()).then_some(title)
 }
-
-#[cfg(test)]
-mod tests {}

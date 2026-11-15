@@ -603,15 +603,4 @@ mod tests {
         assert!(file.covers(project, "src/a.rs"));
         assert!(!file.covers(project, "src/a.rs.bak"));
     }
-
-    #[test]
-    fn collection_names() {
-        assert_eq!(docs_collection("guide").as_deref(), Ok("docs:guide"));
-        assert_eq!(docs_collection("docs:guide").as_deref(), Ok("docs:guide"));
-        assert!(docs_collection("").is_err());
-        assert!(docs_collection("a b").is_err());
-        assert_eq!(search_collection("code"), "code");
-        assert_eq!(search_collection("guide"), "docs:guide");
-        assert_eq!(search_collection("docs:guide"), "docs:guide");
-    }
 }

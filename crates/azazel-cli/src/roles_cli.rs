@@ -368,6 +368,3 @@ fn table(rows: &[RoleRow]) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {}

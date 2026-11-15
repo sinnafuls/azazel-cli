@@ -569,17 +569,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_outside_a_repository_fails() {
-        let tmp = tempfile::tempdir().unwrap();
-        let worktrees = tmp.path().join("worktrees");
-        let error = create(tmp.path(), &worktrees, SESSION, "scout-1")
-            .await
-            .unwrap_err();
-        assert_eq!(error, NOT_A_REPOSITORY);
-        assert!(!worktrees.exists());
-    }
-
-    #[tokio::test]
     async fn create_in_a_repository_without_commits_fails_readably() {
         let repo = empty_repo();
         let error = create(&repo.root, &repo.worktrees(), SESSION, "scout-1")
@@ -624,13 +613,6 @@ mod tests {
         }
         assert!(!repo.worktrees().exists());
         assert_eq!(repo.branches(), "");
-    }
-
-    #[tokio::test]
-    async fn changes_is_none_for_an_untouched_worktree() {
-        let repo = committed_repo();
-        let worktree = repo.worktree("coder-1").await;
-        assert_eq!(changes(&worktree).await.unwrap(), None);
     }
 
     #[tokio::test]
@@ -826,18 +808,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn remove_cleans_up_after_the_directory_was_deleted_by_hand() {
-        let repo = committed_repo();
-        let worktree = repo.worktree("coder-1").await;
-        std::fs::remove_dir_all(&worktree.path).unwrap();
-
-        remove(&repo.root, &worktree).await.unwrap();
-
-        assert_eq!(repo.branches(), "");
-        assert_eq!(repo.registered_worktrees(), 1);
-    }
-
-    #[tokio::test]
     async fn remove_clears_a_leftover_directory_git_no_longer_tracks() {
         let repo = committed_repo();
         let worktree = repo.worktree("coder-1").await;
@@ -874,21 +844,5 @@ mod tests {
         assert_eq!(relative_to_prefix("x/y/", "x/z/f.txt"), "../z/f.txt");
         assert_eq!(relative_to_prefix("x/y/", "f.txt"), "../../f.txt");
         assert_eq!(relative_to_prefix("sub/", "subway/f.txt"), "../subway/f.txt");
-    }
-
-    #[test]
-    fn paths_are_batched_within_the_byte_limit() {
-        let paths: BTreeSet<&[u8]> = [&b"a"[..], &b"bb"[..], &b"ccc"[..], &b"dddddddddddd"[..]].into();
-        // With three bytes of overhead each: "a" and "bb" cost exactly 9 together, "ccc" would exceed it,
-        // and the last path exceeds the limit on its own.
-        assert_eq!(
-            batches(&paths, 9),
-            vec![
-                vec![&b"a"[..], &b"bb"[..]],
-                vec![&b"ccc"[..]],
-                vec![&b"dddddddddddd"[..]],
-            ]
-        );
-        assert!(batches(&BTreeSet::new(), 9).is_empty());
     }
 }

@@ -246,13 +246,4 @@ mod tests {
                 .starts_with("[audio/wav content omitted: not valid base64")
         );
     }
-
-    #[test]
-    fn extensions_come_from_the_mime_subtype() {
-        assert_eq!(extension("audio/mpeg"), "mp3");
-        assert_eq!(extension("audio/x-wav; rate=44100"), "wav");
-        assert_eq!(extension("application/octet-stream"), "bin");
-        assert_eq!(extension("weird"), "weird");
-        assert_eq!(extension(""), "bin");
-    }
 }

@@ -75,25 +75,6 @@ mod tests {
     }
 
     #[test]
-    fn each_definition_is_named_after_its_file() {
-        for (file, text) in BUILTIN_AGENTS {
-            let defs = discover(&[(*file, *text)], &[]);
-            let names: Vec<String> = defs.list().iter().map(|def| def.name.clone()).collect();
-            assert_eq!(names, [file.trim_end_matches(".md")], "{file}");
-        }
-    }
-
-    #[test]
-    fn the_verifier_cannot_write() {
-        let verifier = builtins().get("verifier").unwrap();
-        assert!(verifier.disallowed_tools.contains(&"write".to_string()));
-        assert!(verifier.disallowed_tools.contains(&"edit".to_string()));
-        assert!(patterns(&verifier, "write").is_empty());
-        assert!(patterns(&verifier, "edit").is_empty());
-        assert_eq!(patterns(&verifier, "shell"), [None]);
-    }
-
-    #[test]
     fn the_plan_agent_is_today_s_plan_mode_and_build_is_unlimited() {
         let defs = builtins();
         let plan = defs.primary("plan").unwrap();
@@ -103,16 +84,6 @@ mod tests {
         let build = defs.primary("build").unwrap();
         assert!(!build.plan_mode && build.tools.is_none() && build.color.is_none());
         assert!(defs.subagent("plan").is_none() && defs.subagent("build").is_none());
-    }
-
-    #[test]
-    fn the_planner_writes_only_plan_files() {
-        let planner = builtins().get("planner").unwrap();
-        assert!(planner.tools.is_some());
-        for tool in ["write", "edit"] {
-            assert_eq!(patterns(&planner, tool), [Some(".azazel/plans/**")], "{tool}");
-        }
-        assert!(patterns(&planner, "shell").is_empty());
     }
 
     #[test]

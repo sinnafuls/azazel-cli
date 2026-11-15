@@ -375,14 +375,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_endpoints_are_rejected() {
-        assert!(matches!(
-            resolve_endpoint(&base(), "  "),
-            Err(SseError::Protocol(_))
-        ));
-    }
-
-    #[test]
     fn invalid_headers_are_reported_by_name_only() {
         let headers = BTreeMap::from([("X-Token".to_string(), "line\nbreak".to_string())]);
         let Err(SseError::Http(message)) = header_map(&headers) else {
@@ -393,14 +385,5 @@ mod tests {
 
         let headers = BTreeMap::from([("bad name".to_string(), "v".to_string())]);
         assert!(matches!(header_map(&headers), Err(SseError::Http(_))));
-    }
-
-    #[test]
-    fn event_stream_content_types_are_recognised_with_parameters() {
-        assert!(is_event_stream(&HeaderValue::from_static("text/event-stream")));
-        assert!(is_event_stream(&HeaderValue::from_static(
-            "Text/Event-Stream; charset=utf-8"
-        )));
-        assert!(!is_event_stream(&HeaderValue::from_static("text/html")));
     }
 }

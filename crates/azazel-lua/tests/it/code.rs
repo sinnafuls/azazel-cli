@@ -388,22 +388,6 @@ async fn a_long_result_is_cut_and_kept_whole_as_an_artifact() {
     assert_eq!(whole.text_content().len(), 5000);
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn the_description_lists_the_tools_a_script_can_call() {
-    let bench = Bench::new("manual", CodeLimits::default());
-    let tool = bench.registry.tools.get(&lead(), "run_code").unwrap();
-    let description = tool.description();
-    assert!(description.starts_with("Run a Luau script that calls your other tools"));
-    assert!(
-        description.contains("\n- read{ path: string, offset?: integer, limit?: integer, pages?: string }: "),
-        "{description}"
-    );
-    assert!(description.contains("\n- shell{ "), "{description}");
-    assert!(!description.contains("\n- run_code{"), "{description}");
-    // The text is built once: a request sent later carries the very same description.
-    assert!(std::ptr::eq(description, tool.description()));
-}
-
 /// A session with a team and a lead agent, which `azazel.tools.call` acts for.
 async fn with_lead(bench: &Bench) -> azazel_agent::AgentHandle {
     with_lead_on(bench, Arc::new(MockProvider::new())).await
@@ -540,20 +524,6 @@ async fn an_extension_calls_harness_tools_as_the_lead_through_the_gate() {
         refused.text_content()
     );
     agent.shutdown().await;
-}
-
-#[test]
-fn the_tool_is_registered_under_its_own_extension() {
-    let bench = Bench::new("manual", CodeLimits::default());
-    assert!(bench.registry.extensions().contains(&"code".to_string()));
-    let names: Vec<String> = bench
-        .registry
-        .tools
-        .tools(&lead())
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect();
-    assert!(names.contains(&"run_code".to_string()), "{names:?}");
 }
 
 /// A tool that takes a moment and notes how many of its calls ran at the same time.

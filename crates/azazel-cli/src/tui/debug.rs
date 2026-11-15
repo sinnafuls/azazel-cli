@@ -181,6 +181,3 @@ impl Tui {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}

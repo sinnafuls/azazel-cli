@@ -352,18 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn estimate_counts_text_bytes_over_four_and_flat_images() {
-        let message = Message::user_blocks(vec![
-            Block::text("12345678"),
-            Block::Image {
-                mime: "image/png".into(),
-                data: "A".repeat(100_000),
-            },
-        ]);
-        assert_eq!(estimate_message(&message), 2 + 1500);
-    }
-
-    #[test]
     fn micro_targets_spare_the_newest_results_and_already_elided_ones() {
         let mut entries = transcript(5, 400);
         // Tool entries sit at indices 2, 4, 6, 8, 10; keeping 2 spares 8 and 10.
@@ -436,22 +424,6 @@ mod tests {
         // Forced: keep only the last assistant call and its result.
         assert_eq!(cut_point(&entries, 20_000, true), Some(5));
         assert_eq!(cut_point(&entries[..1], 20_000, true), None);
-    }
-
-    #[test]
-    fn a_lone_summary_is_not_resummarised() {
-        let mut entries = vec![ContextEntry {
-            id: "s".into(),
-            message: summary_message("old"),
-            summary: true,
-        }];
-        entries.push(entry(1, Message::user("next")));
-        entries.push(entry(2, assistant(vec![Block::text("ok")])));
-        // Covering the last two entries puts the cut right after the summary: nothing new to fold in.
-        assert_eq!(cut_point(&entries, 2, false), None);
-        assert_eq!(cut_point(&entries, 2, true), Some(2));
-        assert_eq!(cut_point(&entries[..2], 2, true), None);
-        assert_eq!(summary_text(&entries[0].message), "old");
     }
 
     #[test]

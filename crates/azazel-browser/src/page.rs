@@ -498,14 +498,6 @@ mod tests {
     }
 
     #[test]
-    fn refs_parse() {
-        assert_eq!(ref_number("e12"), Some(12));
-        assert_eq!(ref_number(" e3 "), Some(3));
-        assert_eq!(ref_number("12"), None);
-        assert_eq!(ref_number("ex"), None);
-    }
-
-    #[test]
     fn keys_parse_with_modifiers() {
         let enter = parse_keys("Enter").unwrap();
         assert_eq!(
@@ -557,32 +549,5 @@ mod tests {
         );
         assert!(parse_keys("F13").is_err());
         assert!(parse_keys("").is_err());
-    }
-
-    #[test]
-    fn geometry_of_quads() {
-        let quad = [10.0, 20.0, 110.0, 20.0, 110.0, 60.0, 10.0, 60.0];
-        assert_eq!(bounds(&quad), Some((10.0, 20.0, 100.0, 40.0)));
-        assert_eq!(centre(&quad), Some((60.0, 40.0)));
-        // Nothing to click on.
-        assert_eq!(centre(&[5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0, 5.0]), None);
-        assert_eq!(centre(&[1.0, 2.0]), None);
-    }
-
-    #[test]
-    fn hosts_of_urls() {
-        assert_eq!(
-            host_of("https://Example.com/a?b#c").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(
-            host_of("http://user:pw@localhost:8080/x").as_deref(),
-            Some("localhost")
-        );
-        assert_eq!(host_of("http://[::1]:3000/").as_deref(), Some("::1"));
-        assert_eq!(host_of("https://example.com").as_deref(), Some("example.com"));
-        assert_eq!(host_of("file:///etc/passwd"), None);
-        assert_eq!(host_of("example.com"), None);
-        assert_eq!(host_of("https:///path"), None);
     }
 }

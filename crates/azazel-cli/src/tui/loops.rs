@@ -286,6 +286,3 @@ impl Tui {
 impl Tui {
     pub(super) fn watch_triggers(&mut self) {}
 }
-
-#[cfg(test)]
-mod tests {}

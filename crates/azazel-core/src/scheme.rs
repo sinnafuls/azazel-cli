@@ -83,6 +83,3 @@ pub fn split_url(path: &str) -> Option<(&str, &str)> {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'));
     valid.then_some((scheme, rest))
 }
-
-#[cfg(test)]
-mod tests {}

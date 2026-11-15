@@ -80,6 +80,3 @@ impl Tui {
         self.info(&text);
     }
 }
-
-#[cfg(test)]
-mod tests {}

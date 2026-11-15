@@ -156,6 +156,3 @@ pub fn ask_from_env(
         println!("{line}");
     }))
 }
-
-#[cfg(test)]
-mod tests {}

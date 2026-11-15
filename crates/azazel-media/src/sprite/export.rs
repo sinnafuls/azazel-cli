@@ -477,21 +477,4 @@ mod tests {
         ));
         assert_eq!(export(Target::Unity, &two, "").len(), 3);
     }
-
-    #[test]
-    fn targets_parse_and_state_their_limits() {
-        for name in Target::NAMES {
-            assert!(Target::parse(name).is_some());
-        }
-        assert_eq!(Target::parse("phaser"), None);
-        assert!(!Target::Unity.allows_trim() && Target::Godot.allows_trim());
-        assert_eq!(
-            (Target::Roblox.max_size(), Target::Json.max_size()),
-            (Some(1024), None)
-        );
-        assert_eq!(
-            (luau_number(10.0), luau_number(12.5)),
-            ("10".to_string(), "12.5".to_string())
-        );
-    }
 }

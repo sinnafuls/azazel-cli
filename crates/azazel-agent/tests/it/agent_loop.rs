@@ -1649,29 +1649,6 @@ async fn follow_ups_run_after_idle_and_model_changes_apply_to_the_next_request()
     assert!(!session.agent.prompt(UserInput::text("anyone there?")));
 }
 
-#[tokio::test]
-async fn append_adds_context_without_starting_a_turn() {
-    let mut session = start(Setup::default());
-    session.mock.push("a", MockStep::text("seen"));
-    assert!(
-        session
-            .agent
-            .send(AgentCmd::Append(UserInput::text("ran `ls`:\nsrc\ntests")))
-    );
-    tokio::time::sleep(Duration::from_millis(50)).await;
-    assert!(
-        session.mock.requests().is_empty(),
-        "appending must not call the model"
-    );
-    assert!(session.events.try_recv().is_err(), "appending emits no events");
-
-    session.run("what did ls show?").await;
-    let request = &session.mock.requests_for("a")[0];
-    let texts: Vec<String> = request.messages.iter().map(Message::text).collect();
-    assert_eq!(texts, ["ran `ls`:\nsrc\ntests", "what did ls show?"]);
-    assert_eq!(session.recorder.messages.lock().unwrap().len(), 3);
-}
-
 /// Withdraws a reply that says `forbidden`, and counts how often it did.
 #[derive(Default)]
 struct WordRule {

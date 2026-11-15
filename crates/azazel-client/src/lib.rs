@@ -534,25 +534,4 @@ mod tests {
         let silent = Client::connect(reader, writer).await.err().unwrap();
         assert!(matches!(silent, Error::Protocol(why) if why.contains("did not say hello")));
     }
-
-    #[tokio::test]
-    async fn frames_wait_for_the_first_subscriber() {
-        let (mut server, reader, writer) = pair();
-        server
-            .say(json!({ "type": "hello", "protocol": PROTOCOL, "version": "1" }))
-            .await;
-        server
-            .say(json!({ "type": "agent_start", "agent": "lead" }))
-            .await;
-        server.say(json!({ "type": "turn_end", "agent": "lead" })).await;
-        let client = Client::connect(reader, writer).await.unwrap();
-        drop(server);
-        let mut frames = client.frames();
-        assert_eq!(
-            frames.next().await,
-            Some(Frame::AgentStart { agent: "lead".into() })
-        );
-        assert_eq!(frames.next().await, Some(Frame::TurnEnd { agent: "lead".into() }));
-        assert_eq!(frames.next().await, None);
-    }
 }

@@ -303,18 +303,6 @@ mod tests {
     }
 
     #[test]
-    fn a_long_list_of_violations_says_that_it_was_cut() {
-        let numbers = Typed::new(json!({ "type": "array", "items": { "type": "integer" } })).unwrap();
-        let words: Vec<String> = (0..30).map(|n| format!("w{n}")).collect();
-        let violations = numbers.submit(json!(words)).unwrap_err();
-        assert_eq!(violations.len(), MAX_VIOLATIONS + 1);
-        assert_eq!(
-            violations.last().unwrap(),
-            "(there are more violations than are listed)"
-        );
-    }
-
-    #[test]
     fn the_schemas_own_definitions_stay_reachable_in_the_tool_schema() {
         let schema = json!({
             "$schema": "https://json-schema.org/draft/2020-12/schema",

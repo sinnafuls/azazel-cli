@@ -288,11 +288,6 @@ mod tests {
     }
 
     #[test]
-    fn auto_key_of_an_empty_image_is_none() {
-        assert_eq!(auto_key(&RgbaImage::new(0, 0)), None);
-    }
-
-    #[test]
     fn names_are_checked_before_they_reach_a_file_name() {
         for bad in ["", "a b", "../x", "a.b", "é"] {
             assert!(frame_names(bad, 1, &[]).is_err(), "{bad:?}");

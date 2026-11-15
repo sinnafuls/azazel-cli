@@ -168,6 +168,3 @@ pub fn run(action: &SecretsAction, paths: &Paths) -> u8 {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {}
