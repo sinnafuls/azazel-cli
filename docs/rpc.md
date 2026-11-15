@@ -74,7 +74,8 @@ The session commands report the saved sessions and the open one, change which se
 | `resume_session` | `session_id` or `path` | Opens a saved session by its id (a unique prefix is enough) or by its file | The state |
 | `fork_session` | `entry_id?` | Continues in a copy of the open session, cut at `entry_id` when it is given | The state |
 | `list_sessions` | `query?` | The saved sessions of this project, most recently used first; with `query`, those whose messages contain it | A list of `{"id", "path", "name", "created", "updated", "first_prompt", "messages", "prompts", "pinned", "usage", "matches?"}` |
-| `get_messages` | `leaf?` | The messages from the start of the session to `leaf` (the current leaf when left out) | A list of `{"entry_id", "timestamp", "message"}` |
+| `get_messages` | `leaf?`, `before?`, `limit?` | The messages from the start of the session to `leaf` (the current leaf when left out). With `limit`, only the last `limit` of them; with `before` (the `entry_id` of a message on the branch), the last `limit` messages before that one, so a client can load the history in pages. An unknown `before` is an error | A list of `{"entry_id", "timestamp", "message"}`, oldest first |
+| `get_agent_messages` | `agent`, `before?`, `limit?` | The messages of the transcript of sub-agent `agent`, paged like `get_messages`. An agent that has written nothing yet has none | A list of `{"entry_id", "timestamp", "message"}`, oldest first |
 | `get_tree` | | Every entry of the session file | A list of `{"id", "parent_id", "timestamp", "kind", "role?", "text?", "target_id?", "current"}`; `current` marks the branch that ends at the current leaf, and the journal entries of its runs (`run_started`, ...), which hang from it |
 | `set_leaf` | `entry_id`, `before?` | Continues the conversation from another entry of the tree; with `before`, from the entry before it, which is how a prompt is gone back to. When that leaves a branch the agent worked on, a [summary of it](sessions-and-checkpoints.md#branch-summaries) is added to the conversation a moment later and announced with a `notify` request | The state |
 | `set_label` | `entry_id`, `label` | Labels an entry of the tree; an empty label takes the label away | `null` |
@@ -302,7 +303,7 @@ output to it. Two commands exist only there:
 
 | `type` | Members | Does | Response `data` |
 |---|---|---|---|
-| `attach` | `pid?`, `replay?` | The first command on a connection: makes it a client of the session, beside any that are attached already. `replay` is `missed` (the default), `all` or `none`; those frames follow the response, then the requests that still wait for an answer, then everything the session does from then on | `{"host", "pid", "session_id", "session_file", "clients", "snapshot"}` |
+| `attach` | `pid?`, `replay?`, `since?` | The first command on a connection: makes it a client of the session, beside any that are attached already. `replay` is `missed` (the default), `all` or `none`; those frames follow the response, then the requests that still wait for an answer, then everything the session does from then on. With `since`, the `at` of the last frame the client saw, the frames logged after that one follow instead, and `replay` is not used (see [resuming](#resuming-after-a-dropped-connection)) | `{"host", "pid", "session_id", "session_file", "clients", "snapshot", "cursor", "gap?"}` |
 | `stop` | `now?` | Ends the session once the lead has finished what it is doing; with `now` the lead is stopped first. Any connection may send it, attached or not. The connection closes when the session has ended | `null` |
 
 Until `attach` has been answered, every other command is refused.
@@ -318,6 +319,17 @@ appended to `~/.azazel/run/<id>.log`.
 another client is attached already, nobody was away: the frames of the run in progress are replayed, from the
 input that started it.
 
+### Resuming after a dropped connection
+
+Every frame a background session logs carries `"at"`: the byte offset of its line in the log, which grows with
+each frame. A client keeps the `at` of the last frame it read. When its connection drops, it connects again and
+sends `attach` with `since` set to that value; it is replayed the frames logged after that one, exactly once each,
+and the requests that still wait for an answer (those it saw before are not sent again). The response's `cursor`
+is the `at` the next frame will have, where live frames begin. When the log has no frame with that `at` (a
+different session, or an `at` that was never one), `gap` is `true`: the client cannot trust what it shows, so it
+resynchronises with `get_messages`, and the frames of the run in progress are replayed as with `missed`. Frames
+that are not logged (responses, `btw_delta`, `request_closed`) have no `at`.
+
 `snapshot` in the response to `attach` says where the session stands at that moment, for a client that draws the
 session's state rather than replaying frames:
 
@@ -331,6 +343,11 @@ session's state rather than replaying frames:
 | `pending` | The `request_id`s of the requests that wait for an answer; the requests themselves follow as frames |
 
 `clients` counts the clients attached, the new one included.
+
+| Member | Meaning |
+|---|---|
+| `cursor` | The `at` of the next frame: where live frames begin |
+| `gap` | Present and `true` when `since` named no frame of the log |
 
 ## Example
 

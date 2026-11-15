@@ -446,6 +446,7 @@ impl Host {
             text: text.to_string(),
             agent: None,
         };
+        let frame = serde_json::to_value(&frame).map(|frame| self.stamped(frame));
         if !self.live.busy {
             self.input_at.get_or_insert(self.log_len);
         }
@@ -453,10 +454,17 @@ impl Host {
             kind: kind.to_string(),
             text: text.to_string(),
         });
-        if let Ok(line) = serde_json::to_string(&frame) {
+        if let Ok(line) = frame.map(|frame| frame.to_string()) {
             self.log(&line);
             self.to_clients(&line, from);
         }
+    }
+
+    /// Gives a frame that is about to be logged its `at`: the byte offset of its line in the
+    /// log, which is where a client resumes from after a dropped connection.
+    fn stamped(&self, mut frame: Value) -> Value {
+        frame["at"] = json!(self.log_len);
+        frame
     }
 
     /// The request `request_id` no longer waits: the clients that still show it are told,
@@ -551,6 +559,8 @@ impl Host {
             // An answer in the making belongs to the client that asked.
             "btw_delta" => self.to_asker(frame),
             _ => {
+                // The line that is logged, sent and kept for a pending request carries its `at`.
+                let line = self.stamped(frame.clone()).to_string();
                 if of_lead && kind == "agent_start" {
                     self.run_start = Some(self.input_at.take().unwrap_or(self.log_len));
                 }
@@ -759,7 +769,9 @@ impl Host {
         }
         let (id, command) = Request::parse(line);
         let command = match command {
-            Ok(Command::Attach { pid, replay }) => return self.attach(conn, id, pid, replay),
+            Ok(Command::Attach { pid, replay, since }) => {
+                return self.attach(conn, id, pid, replay, since);
+            }
             Ok(Command::Stop { now }) => {
                 self.stopping = true;
                 if now {
@@ -815,11 +827,14 @@ impl Host {
         }
     }
 
-    fn attach(&mut self, conn: u64, id: Value, pid: Option<u32>, replay: Replay) {
+    fn attach(&mut self, conn: u64, id: Value, pid: Option<u32>, replay: Replay, since: Option<u64>) {
         let alone = self.attached.is_empty();
         self.attached.insert(conn, pid);
         self.settle();
         self.drop_closed();
+        // The frame a client resumes after must still be in the log, where `since` says.
+        let resumed = since.filter(|at| self.logged_at(*at));
+        let gap = since.is_some() && resumed.is_none();
         let attached = Attached {
             host: self.entry.id.clone(),
             pid: self.entry.pid,
@@ -827,13 +842,18 @@ impl Host {
             session_file: self.entry.session_file.display().to_string(),
             clients: self.attached.len() as u32,
             snapshot: self.snapshot(),
+            cursor: self.log_len,
+            gap,
         };
         self.respond(
             conn,
             id,
             serde_json::to_value(attached).map_err(|e| e.to_string()),
         );
+        // A `since` the log does not know is a client that missed something.
+        let replay = if gap { Replay::Missed } else { replay };
         let from = match replay {
+            _ if resumed.is_some() => resumed.unwrap_or_default(),
             Replay::Missed if alone => self.seen,
             // Somebody was here all along: what this client lacks is the run in progress.
             Replay::Missed => self.run_start.unwrap_or(self.log_len),
@@ -841,6 +861,10 @@ impl Host {
             Replay::None => self.log_len,
         };
         for line in self.logged(from) {
+            // The frame `since` names is the one the client has seen.
+            if resumed.is_some_and(|at| at_of(&line) == Some(at)) {
+                continue;
+            }
             // Requests are sent below, and only those that still wait.
             let is_request = serde_json::from_str::<Value>(&line).is_ok_and(|frame| {
                 frame["type"] == "approval_request" || (frame["type"] == "ui_request" && asks(&frame))
@@ -850,8 +874,21 @@ impl Host {
             }
         }
         for pending in &self.pending {
+            // A request the client saw before it dropped is still on its screen.
+            if resumed.is_some_and(|at| at_of(&pending.line).is_some_and(|sent| sent <= at)) {
+                continue;
+            }
             self.to(conn, pending.line.clone());
         }
+    }
+
+    /// Whether the log holds a frame whose line starts at byte `at`.
+    fn logged_at(&self, at: u64) -> bool {
+        at < self.log_len
+            && self
+                .logged(at)
+                .first()
+                .is_some_and(|line| at_of(line) == Some(at))
     }
 
     /// The lines of the log from byte `from` on.
@@ -872,6 +909,11 @@ impl Host {
             }
         }
     }
+}
+
+/// The `at` a logged frame carries.
+fn at_of(line: &str) -> Option<u64> {
+    serde_json::from_str::<Value>(line).ok()?["at"].as_u64()
 }
 
 #[cfg(test)]

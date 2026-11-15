@@ -794,6 +794,7 @@ async fn work(
         .send(Command::Attach {
             pid: None,
             replay: Replay::None,
+            since: None,
         })
         .await
         .map_err(|e| e.to_string())?;

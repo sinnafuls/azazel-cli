@@ -616,7 +616,12 @@ impl Session {
             }
             Command::ForkSession { entry_id } => self.fork_session(entry_id).await.map(Some),
             Command::ListSessions { query } => self.list_sessions(query.as_deref()).map(Some),
-            Command::GetMessages { leaf } => self.messages(leaf.as_deref()).map(Some),
+            Command::GetMessages { leaf, before, limit } => {
+                self.messages(leaf.as_deref(), before.as_deref(), limit).map(Some)
+            }
+            Command::GetAgentMessages { agent, before, limit } => {
+                self.agent_messages(&agent, before.as_deref(), limit).map(Some)
+            }
             Command::GetTree => data(self.tree()).map(Some),
             Command::SetLeaf { entry_id, before } => self.set_leaf(&entry_id, before).await.map(Some),
             Command::SetLabel { entry_id, label } => {

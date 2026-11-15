@@ -812,6 +812,7 @@ pub async fn line_client(client: Client) -> u8 {
         .send(Command::Attach {
             pid: Some(std::process::id()),
             replay: Replay::Missed,
+            since: None,
         })
         .await;
     let attached: Attached = match attached.map(serde_json::from_value) {

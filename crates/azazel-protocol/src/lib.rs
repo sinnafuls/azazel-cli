@@ -182,10 +182,25 @@ pub enum Command {
         query: Option<String>,
     },
     /// The messages from the start of the session to `leaf` (the current leaf when left out).
-    /// Answers with a list of [`MessageRow`].
+    /// With `limit`, only the last `limit` of them, or with `before` (an entry id of the
+    /// branch) the last `limit` messages before that entry, so that a client can load the
+    /// history in pages. Answers with a list of [`MessageRow`], oldest first.
     GetMessages {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         leaf: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
+    },
+    /// The messages of a sub-agent's transcript, paged like `get_messages`. Answers with a
+    /// list of [`MessageRow`], oldest first.
+    GetAgentMessages {
+        agent: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        before: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<u32>,
     },
     /// Every entry of the session file. Answers with a list of [`TreeRow`].
     GetTree,
@@ -301,6 +316,11 @@ pub enum Command {
         pid: Option<u32>,
         #[serde(default)]
         replay: Replay,
+        /// Resumes after a frame: the `at` of the last frame the client saw. The frames
+        /// logged after it follow the response, and nothing before. When the log has no frame
+        /// with that `at`, `gap` is set in the answer and `replay` applies instead.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since: Option<u64>,
     },
     /// Background sessions only, attached or not: ends the session once the lead has finished
     /// what it is doing; with `now` the lead is stopped first. The connection closes when the
@@ -1137,6 +1157,13 @@ pub struct Attached {
     /// Where the session stands at this moment.
     #[serde(default)]
     pub snapshot: Snapshot,
+    /// The `at` the next frame will have: where live frames begin.
+    #[serde(default)]
+    pub cursor: u64,
+    /// True when `since` named a frame the log does not hold; the client resynchronises with
+    /// `get_messages`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gap: bool,
 }
 
 /// A background session at the moment a client attaches: what a client needs to show the work

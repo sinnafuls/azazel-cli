@@ -15,6 +15,10 @@ GitHub are its section here.
 ### Fixed
 
 - `task` takes a bare model id when exactly one usable provider has it (`deepseek-flash` runs `deepseek/deepseek-flash`, with `:level` kept). A name two providers share, or a near miss, is refused with the full names to use (for example both `deepseek/deepseek-pro` and `openrouter/deepseek-pro`, or `did you mean …`), so the model gets it right on the next try instead of retrying the same name.
+### Added
+
+- RPC: a client of a background session can resume after a dropped connection. Every logged frame carries `at`, `attach` takes `since` (the `at` of the last frame it saw) and replays exactly the frames after it, and the answer has `cursor` and `gap` (true when `since` is unknown, so the client reloads with `get_messages`).
+- RPC: `get_messages` takes `before` and `limit` to load the history in pages, and the new `get_agent_messages` reads the transcript of a sub-agent the same way.
 
 ## [0.10.5] - 2026-11-15
 

@@ -162,6 +162,7 @@ async fn send(entry: &running::Entry, prompt: &str) -> Result<Fired, String> {
         .send(Command::Attach {
             pid: None,
             replay: Replay::None,
+            since: None,
         })
         .await
         .map_err(|e| e.to_string())?;
