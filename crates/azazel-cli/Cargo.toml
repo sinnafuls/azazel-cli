@@ -22,6 +22,7 @@ default = [
     "mcp",
     "acp",
     "memory",
+    "repomap",
     "browser",
     "screen",
     "media",
@@ -41,6 +42,9 @@ acp = ["dep:agent-client-protocol"]
 # `rusqlite` reads the SQLite stores of other harnesses for `azazel migrate`; the memory store
 # already links it.
 memory = ["dep:azazel-memory", "dep:rusqlite"]
+# The repository map: `repo_map` and `/repomap`, with the grammars that read Rust, Python, Go,
+# JavaScript and TypeScript.
+repomap = ["dep:azazel-repomap"]
 browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
@@ -73,6 +77,7 @@ azazel-team.workspace = true
 azazel-tui.workspace = true
 azazel-mcp = { workspace = true, optional = true }
 azazel-memory = { workspace = true, optional = true }
+azazel-repomap = { workspace = true, optional = true }
 azazel-lua = { workspace = true, optional = true }
 azazel-browser = { workspace = true, optional = true }
 azazel-media = { workspace = true, optional = true }

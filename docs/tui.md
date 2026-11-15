@@ -1000,6 +1000,7 @@ Skills, extensions and services:
 | `/mcp` | MCP servers and their state; also `/mcp reconnect\|enable\|disable\|approve\|reject\|login\|logout <server>`; see [MCP](mcp.md) |
 | `/mcp:<server>:<prompt>` | Run a prompt offered by an MCP server |
 | `/memory [list \| forget <id> \| auto on\|off]` | What is remembered; see [memory](memory.md) |
+| `/repomap [refresh]` | The repository map of the project; `refresh` also rebuilds the copy in the system prompt; see [tools](tools.md#repository-map) |
 | `/media` | Media backends, configured models and the output directory; see [media and sprites](media-and-sprites.md) |
 | `/lsp` | Language servers and their state; see [LSP](lsp.md) |
 | `/allow-edit <path>` | Let the next edit of one file through, whatever the agent has read of it; see [the read guard](tools.md#the-read-guard) |

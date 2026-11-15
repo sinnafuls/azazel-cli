@@ -447,6 +447,7 @@ settings! {
         "context.nested": Switch, "Nested context files",
             "Read the AGENTS.md of every directory an agent works in, not only the root one.";
         "context.include_depth": Number, "Include depth", "How deep @path includes inside context files are followed; 0 follows none.";
+        "context.repo_map_tokens": Number, "Repository map size", "Tokens of the repository map put in the lead's system prompt; 0 leaves it out.";
         "rules.compat": Switch, "Rules of other tools", "Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline.";
         "compat.claude": Switch, "Claude Code files", "Also read CLAUDE.md and the skills, agents and commands under .claude/.";
     }

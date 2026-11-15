@@ -325,6 +325,8 @@ config_table!(ContextConfig {
     nested: bool = true,
     /// How deep `@path` includes inside context files are followed; 0 follows none.
     include_depth: u32 = 4,
+    /// Tokens of the repository map put in the lead's system prompt; 0 leaves it out.
+    repo_map_tokens: u32 = 0,
 });
 config_table!(TelemetryConfig {
     exporter: TelemetryExporter = TelemetryExporter::Off,

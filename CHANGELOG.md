@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- The repository map: the `repo_map` tool and `/repomap` give an outline of the project's most referenced definitions (Rust, Python, Go, JavaScript, TypeScript), ranked by how the code refers to them and fitted to a token budget. `[context] repo_map_tokens` puts it in the lead's system prompt (off by default).
+
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
