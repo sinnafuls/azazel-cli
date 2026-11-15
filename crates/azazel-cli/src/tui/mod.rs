@@ -1031,8 +1031,14 @@ impl Tui {
         }
         let written = history.iter().map(HistoryItem::rows).sum();
         // A region that grows for a while (a menu, a tall input) rises over the transcript on
-        // the screen and gives it back when it shrinks, instead of leaving blank rows.
-        let restorable = self.renderer.restorable(&history);
+        // the screen and gives it back when it shrinks, instead of leaving blank rows. Only a
+        // menu or a box is that short-lived: the roster and the running cards stay for minutes,
+        // and the rows they would cover are the newest messages, so they push the transcript.
+        let restorable = if self.completion.is_some() || self.overlay.is_some() {
+            self.renderer.restorable(&history)
+        } else {
+            0
+        };
         let (filler, cover) = self
             .floor
             .pad_over(written, viewport.len() + pinned.len(), rows, restorable);

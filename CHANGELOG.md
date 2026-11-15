@@ -21,6 +21,10 @@ GitHub are its section here.
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
 - `/settings` has nine pages: the status line settings moved from a page of their own to a group at the end of Appearance.
 
+### Fixed
+
+- A message you send while the agent is busy is on the screen at once. With the agents roster or running tool cards standing above the input, the input area could rise over the newest rows of the conversation and hide your message until the cards finished; rows written to the conversation are now never covered, and only menus and boxes rise over it.
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed

@@ -133,6 +133,10 @@ impl Floor {
     /// blank rows are left between the transcript and the region. Returns the blank rows the
     /// region needs and how many of its first rows go over the transcript
     /// ([`Renderer::cover`]); the floor itself grows only by what cannot be covered.
+    ///
+    /// A frame that writes history covers nothing: the rows just written (a message, a reply, a
+    /// finished tool card) are the newest of the transcript and stay in sight right above the
+    /// region. What was covered is given back first, and the region is laid out again below.
     pub fn pad_over(
         &mut self,
         history: usize,
@@ -146,6 +150,7 @@ impl Floor {
         // Only what the region outgrows its floor by is covered: rows it lost to history that
         // was written scroll the transcript as before. The last row of the region stays its
         // own, and only rows on the screen are covered.
+        let restorable = if history > 0 { 0 } else { restorable };
         let cover = content
             .saturating_sub(self.rows.min(height))
             .min(restorable)
@@ -822,12 +827,43 @@ mod tests {
         assert!(term.parser.screen().cell(4, 0).expect("cell").bold());
         assert_eq!(term.everything(), all_before, "no row doubled or lost");
 
-        // The input is on the last rows, and what is said next lands right above it.
+        // A row said while the menu is open is never covered by it: the region takes rows of
+        // its own. When the menu closes they stay blank until what is said next fills them.
         term.frame(said(12..13), &["/a"]);
+        assert_eq!(term.screen()[3..], ["line 12", "/a", "rule", ">", "status"]);
         term.frame(Vec::new(), &[]);
-        assert_eq!(term.screen()[4..], ["line 12", "rule", ">", "status"]);
+        term.frame(said(13..14), &[]);
+        assert_eq!(term.screen()[3..], ["line 12", "line 13", "rule", ">", "status"]);
         let all = term.everything();
-        assert_eq!(all.iter().filter(|row| row.starts_with("line ")).count(), 13);
+        assert_eq!(all.iter().filter(|row| row.starts_with("line ")).count(), 14);
+    }
+
+    #[test]
+    fn rows_written_while_a_tall_region_stands_stay_in_sight_above_it() {
+        let mut term = Term::new();
+        term.frame(said(0..12), &[]);
+        // A menu rises over the transcript.
+        term.frame(Vec::new(), &["/help", "/model", "/quit"]);
+        assert_eq!(term.screen()[..2], ["line 7", "line 8"]);
+
+        // A message is said while the region is still that tall: the covered rows are given
+        // back and the new row lands directly above the region.
+        term.frame(said(12..13), &["/help", "/model", "/quit"]);
+        let screen = term.screen();
+        assert_eq!(screen[1], "line 12", "{screen:?}");
+        assert_eq!(screen[2..], ["/help", "/model", "/quit", "rule", ">", "status"]);
+        let all = term.everything();
+        for n in 0..13 {
+            let name = format!("line {n}");
+            assert_eq!(all.iter().filter(|row| **row == name).count(), 1, "{name}");
+        }
+
+        // Closed: the newest row is still on the screen, and the next one follows it.
+        term.frame(Vec::new(), &[]);
+        assert!(term.screen().contains(&"line 12".to_string()));
+        term.frame(said(13..14), &[]);
+        // The rows the menu took stay the region's floor; the transcript grows into them.
+        assert_eq!(term.screen()[..3], ["line 11", "line 12", "line 13"]);
     }
 
     #[test]
