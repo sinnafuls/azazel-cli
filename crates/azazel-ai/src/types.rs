@@ -458,6 +458,31 @@ pub struct Request {
     /// but its own tokens.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tail: Vec<SystemPart>,
+    /// Who asks, for the usage ledger ([`crate::UsageSink`]). Never sent to a provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RequestOrigin>,
+}
+
+/// Who a request is made for, so that what it used can be booked: an agent of a session, or a
+/// side request with its purpose.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestOrigin {
+    pub session: String,
+    /// `lead`, a sub-agent's id, or the purpose of a side request (`btw`, `memory`, ...).
+    pub agent: String,
+    /// The agent definition, when an agent asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub def: Option<String>,
+}
+
+impl RequestOrigin {
+    pub fn purpose(session: &str, purpose: &str) -> Self {
+        RequestOrigin {
+            session: session.to_string(),
+            agent: purpose.to_string(),
+            def: None,
+        }
+    }
 }
 
 /// A tool that runs at the provider, inside one response: the model calls it and reads its

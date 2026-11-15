@@ -1245,6 +1245,7 @@ impl Inner {
                 cache_boundary: false,
             }],
             messages: vec![Message::user(format!("{prompt}\n\nEvent:\n{}", job.payload))],
+            origin: Some(azazel_ai::RequestOrigin::purpose("", "judge")),
             ..Request::default()
         };
         let cancel = CancellationToken::new();

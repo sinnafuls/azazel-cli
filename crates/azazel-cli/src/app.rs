@@ -1076,11 +1076,29 @@ impl App {
             max_stalls: config.retry.max_stalls,
             ..RetryPolicy::default()
         };
-        let router = Arc::new(
-            Router::new(providers, catalog, config.roles.clone(), policy)
-                .with_accounts(credentials.clone())
-                .with_virtual(registry.virtual_models.clone()),
-        );
+        let mut router = Router::new(providers, catalog, config.roles.clone(), policy)
+            .with_accounts(credentials.clone())
+            .with_virtual(registry.virtual_models.clone());
+        if config.usage.ledger {
+            let accounts = credentials.clone();
+            let configs = endpoints.clone();
+            let slug = paths
+                .project_data
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default();
+            router = router.with_usage_sink(Arc::new(azazel_core::ledger::Ledger::new(
+                &paths.home,
+                &slug,
+                move |provider| {
+                    configs
+                        .iter()
+                        .find(|p| p.id == provider)
+                        .is_some_and(|p| crate::models::login(&accounts, p))
+                },
+            )));
+        }
+        let router = Arc::new(router);
         router.set_tier(tier);
         // Models named on the command line are this run's `default` role, so that the roles
         // built on it (`smol`, `verify`, ...) and the agents using them have a model too.

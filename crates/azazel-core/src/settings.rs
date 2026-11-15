@@ -477,6 +477,7 @@ settings! {
         "usage.poll_secs": Number, "Fetch usage every",
             "Seconds between two fetches of the usage of subscription accounts while a session is open; 0 never.";
         "usage.redact_email": Switch, "Shorten e-mail addresses", "Show e-mail addresses as j***@example.com.";
+        "usage.ledger": Switch, "Keep a usage log", "Write every model request's tokens and cost to ~/.azazel/usage/, the history `azazel stats` shows.";
     }
     Usage / "Spending limits" {
         "limits.max_cost_usd": Number, "Cost cap", "Spend in USD at which a run stops; 0 is no cap.";

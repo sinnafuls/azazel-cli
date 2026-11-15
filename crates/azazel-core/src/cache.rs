@@ -738,6 +738,7 @@ impl Warmer {
     async fn warm(&self, target: &WarmTarget) -> Result<Usage, AiError> {
         let request = Request {
             max_output: Some(1),
+            origin: Some(azazel_ai::RequestOrigin::purpose("", WARMING_PURPOSE)),
             ..Request::clone(&target.request)
         };
         let cancel = CancellationToken::new();

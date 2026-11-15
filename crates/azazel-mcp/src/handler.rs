@@ -6,7 +6,7 @@
 
 use std::sync::Weak;
 
-use azazel_ai::{Block, Message, ModelSpec, Request, Role, Router, StopReason, StreamEvent, SystemPart};
+use azazel_ai::{Block, Message, ModelSpec, Request, RequestOrigin, Role, Router, StopReason, StreamEvent, SystemPart};
 use azazel_core::{Level, Ui, UiError};
 use futures::StreamExt;
 use rmcp::model::{
@@ -80,6 +80,7 @@ fn sampling_request(params: &CreateMessageRequestParams) -> Request {
         tier: None,
         hosted: Vec::new(),
         tail: Vec::new(),
+        origin: Some(RequestOrigin::purpose("", "sampling")),
     }
 }
 
