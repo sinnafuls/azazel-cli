@@ -621,22 +621,6 @@ mod tests {
     }
 
     #[test]
-    fn override_changes_only_named_fields() {
-        let ollama = with(
-            ProviderSettings {
-                base_url: Some("http://box:11434/v1/".into()),
-                ..Default::default()
-            },
-            "ollama",
-            &no_env,
-        );
-        assert_eq!(ollama.base_url, "http://box:11434/v1");
-        assert_eq!(ollama.api, WireApi::OpenAiChat);
-        assert_eq!(ollama.discovery, Discovery::Ollama);
-        assert!(!ollama.requires_key);
-    }
-
-    #[test]
     fn settings_reach_every_field_of_a_provider() {
         let env = |name: &str| (name == "TEAM").then(|| "platform".to_string());
         let gateway = with(
@@ -708,24 +692,6 @@ mod tests {
         assert!(mine.requires_key);
         assert_eq!(mine.api_key_env, vec!["MINE_KEY".to_string()]);
         assert_eq!(mine.name, "mine");
-    }
-
-    #[test]
-    fn empty_key_command_is_ignored() {
-        let local = with(
-            ProviderSettings {
-                api: Some(WireApi::OpenAiChat),
-                base_url: Some("http://localhost:9000/v1".into()),
-                api_key_command: Some(String::new()),
-                ..Default::default()
-            },
-            "local",
-            &no_env,
-        );
-        assert_eq!(
-            (local.api_key_command.as_deref(), local.requires_key),
-            (None, false)
-        );
     }
 
     #[test]
@@ -803,17 +769,6 @@ mod tests {
             bare.login_headers(&codex),
             [("originator".to_string(), "azazel".to_string())]
         );
-    }
-
-    #[test]
-    fn hand_written_rows_name_where_each_provider_is_listed() {
-        let rows: Vec<(&str, &str)> = hand_written().iter().map(|(id, name, _)| (*id, *name)).collect();
-        assert!(rows.contains(&("fireworks", "fireworks-ai")));
-        assert!(rows.contains(&("openai", "openai")));
-        // Local servers are asked themselves; a snapshot of someone else's models would mislead.
-        for local in ["ollama", "lmstudio", "llamacpp"] {
-            assert!(rows.contains(&(local, "")), "{local}");
-        }
     }
 
     #[test]

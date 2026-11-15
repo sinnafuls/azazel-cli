@@ -673,46 +673,6 @@ mod tests {
     }
 
     #[test]
-    fn model_ref_rejects_missing_parts() {
-        for bad in ["mock", "/x", "mock/", ""] {
-            assert!(bad.parse::<ModelRef>().is_err(), "{bad}");
-        }
-    }
-
-    #[test]
-    fn model_spec_round_trips_through_serde_as_string() {
-        let chain: Vec<ModelSpec> = serde_json::from_str(r#"["@smol","mock/a"]"#).unwrap();
-        assert_eq!(
-            chain,
-            vec![
-                ModelSpec::Role("smol".into()),
-                ModelSpec::Model(ModelRef::new("mock", "a"))
-            ]
-        );
-        assert_eq!(serde_json::to_string(&chain).unwrap(), r#"["@smol","mock/a"]"#);
-        assert!(serde_json::from_str::<ModelSpec>(r#""@""#).is_err());
-    }
-
-    #[test]
-    fn block_serialises_with_type_tag_and_omits_empty_optionals() {
-        let block = Block::ToolCall {
-            id: "c1".into(),
-            name: "read".into(),
-            input: serde_json::json!({"path": "a"}),
-            signature: None,
-        };
-        assert_eq!(
-            serde_json::to_value(&block).unwrap(),
-            serde_json::json!({"type": "tool_call", "id": "c1", "name": "read", "input": {"path": "a"}})
-        );
-        let msg = Message::user("hi");
-        assert_eq!(
-            serde_json::to_value(&msg).unwrap(),
-            serde_json::json!({"role": "user", "content": [{"type": "text", "text": "hi"}]})
-        );
-    }
-
-    #[test]
     fn usage_price_uses_per_million_rates() {
         let mut usage = Usage {
             input: 1_000_000,

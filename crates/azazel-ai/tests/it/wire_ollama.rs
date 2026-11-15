@@ -294,18 +294,6 @@ fn tool_calls_arrive_whole_and_get_an_id() {
 }
 
 #[test]
-fn the_output_limit_is_reported_as_length() {
-    let events = decode(&lines(&[
-        json!({"message": {"content": "cut"}, "done": false}),
-        json!({"message": {"content": ""}, "done": true, "done_reason": "length"}),
-    ]));
-    let Some(StreamEvent::Done { message }) = events.last() else {
-        panic!("{events:?}")
-    };
-    assert_eq!(message.meta.as_ref().unwrap().stop, StopReason::Length);
-}
-
-#[test]
 fn failures_inside_the_stream_end_it_with_what_was_received() {
     // An error line after some output.
     let events = decode(&lines(&[

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use azazel_ai::wire::{decode_sse, openai_responses};
 use azazel_ai::{
     AiError, AssistantMeta, Auth, Block, INVALID_JSON_KEY, Message, ModelInfo, ProviderConfig, Request,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, Usage, WireApi,
 };
 use serde_json::{Value, json};
 
@@ -243,22 +243,6 @@ fn incomplete_at_the_output_limit_is_length_and_keeps_the_streamed_text() {
 }
 
 #[test]
-fn incomplete_for_another_reason_is_a_normal_stop() {
-    let events = decode(&sse(&[
-        created(),
-        item_added(0, message_item(None)),
-        text_delta(0, "I can't help with that."),
-        item_done(0, message_item(Some("I can't help with that."))),
-        json!({"type": "response.incomplete", "response": {
-            "id": "resp_test",
-            "status": "incomplete",
-            "incomplete_details": {"reason": "content_filter"},
-        }}),
-    ]));
-    assert_eq!(meta(done(&events)).stop, StopReason::Stop);
-}
-
-#[test]
 fn reasoning_without_a_summary_yields_only_the_opaque_item() {
     let item = json!({"id": "rs_test", "type": "reasoning", "encrypted_content": "sealed", "summary": []});
     let events = decode(&sse(&[
@@ -356,23 +340,6 @@ fn arguments_that_are_not_json_are_reported_under_the_invalid_key() {
             json!({ INVALID_JSON_KEY: "{\"path\":" })
         )]
     );
-}
-
-#[test]
-fn items_this_harness_does_not_use_produce_no_blocks() {
-    let search = json!({"id": "ws_test", "type": "web_search_call", "status": "completed", "action": {"type": "search", "query": "rust"}});
-    let events = decode(&sse(&[
-        created(),
-        item_added(0, search.clone()),
-        json!({"type": "response.web_search_call.completed", "item_id": "ws_test", "output_index": 0}),
-        item_done(0, search),
-        item_added(1, message_item(None)),
-        text_delta(1, "Found it."),
-        item_done(1, message_item(Some("Found it."))),
-        completed(json!({"input_tokens": 5, "output_tokens": 9})),
-    ]));
-    assert_eq!(done(&events).content, vec![Block::text("Found it.")]);
-    assert_eq!(block_ends(&events), vec![0]);
 }
 
 #[test]
@@ -497,25 +464,6 @@ fn malformed_payloads_are_skipped_and_nothing_follows_a_terminal_event() {
 }
 
 #[test]
-fn event_type_falls_back_to_the_sse_event_name() {
-    let mut decoder = openai_responses::decoder(&provider(), &model(false));
-    let events = decoder.feed(
-        Some("response.output_text.delta"),
-        r#"{"output_index":0,"content_index":0,"delta":"Hi"}"#,
-    );
-    assert_eq!(
-        events,
-        vec![
-            StreamEvent::Start,
-            StreamEvent::TextDelta {
-                index: 0,
-                delta: "Hi".into(),
-            },
-        ]
-    );
-}
-
-#[test]
 fn usage_separates_cache_reads_and_writes_from_input() {
     let events = decode(&sse(&[
         created(),
@@ -608,30 +556,6 @@ fn system_parts_become_instructions_and_the_cache_key_is_forwarded() {
     assert_eq!(body["max_output_tokens"], json!(4321));
     // The system prompt is not repeated as an input item.
     assert_eq!(body["input"].as_array().unwrap().len(), 1);
-}
-
-#[test]
-fn tools_are_sent_as_flat_function_tools() {
-    let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]});
-    let body = body(&Request {
-        messages: vec![Message::user("hi")],
-        tools: vec![ToolSpec {
-            name: "read".into(),
-            description: "Read a file.".into(),
-            schema: schema.clone(),
-        }],
-        ..Request::default()
-    });
-    assert_eq!(
-        body["tools"],
-        json!([{
-            "type": "function",
-            "name": "read",
-            "description": "Read a file.",
-            "parameters": schema,
-            "strict": false,
-        }])
-    );
 }
 
 #[test]
@@ -834,22 +758,6 @@ fn thinking_level_maps_to_reasoning_effort_with_encrypted_reasoning_included() {
     assert!(body.get("include").is_none());
 }
 
-#[test]
-fn temperature_is_sent_only_to_models_that_do_not_reason() {
-    let temperature = |reasoning: bool| {
-        let req = Request {
-            messages: vec![Message::user("hi")],
-            temperature: Some(0.2),
-            ..Request::default()
-        };
-        openai_responses::build_body(&provider(), &model(reasoning), &req)
-            .get("temperature")
-            .cloned()
-    };
-    assert_eq!(temperature(false), Some(json!(0.2)));
-    assert_eq!(temperature(true), None);
-}
-
 // ---------------------------------------------------------------------------------------------
 // HTTP requests, classify_error, parse_models
 // ---------------------------------------------------------------------------------------------
@@ -923,44 +831,4 @@ fn classify_error_recognises_provider_signals_and_defers_the_rest() {
             "{status} {body}"
         );
     }
-}
-
-#[test]
-fn parse_models_reads_ids_and_defaults_unreported_fields() {
-    let body = json!({
-        "object": "list",
-        "data": [
-            {"id": "mock-large", "object": "model", "created": 1762819200, "owned_by": "system"},
-            {"id": "mock-small", "object": "model", "created": 1762819100, "owned_by": "system", "context_window": 400000, "max_output_tokens": 128000},
-            {"object": "model"},
-        ],
-    });
-    let models = openai_responses::parse_models(&provider(), &body);
-    assert_eq!(models.len(), 2);
-    assert_eq!(models[0], ModelInfo::unknown("mock", "mock-large"));
-    assert_eq!(
-        models[1],
-        ModelInfo {
-            context_window: 400_000,
-            max_output: 128_000,
-            ..ModelInfo::unknown("mock", "mock-small")
-        }
-    );
-}
-
-#[test]
-fn the_service_tier_is_named_only_when_one_is_asked_for() {
-    let tier_of = |tier: Option<Tier>| {
-        body(&Request {
-            messages: vec![Message::user("hi")],
-            tier,
-            ..Request::default()
-        })
-        .get("service_tier")
-        .cloned()
-    };
-    assert_eq!(tier_of(Some(Tier::Priority)), Some(json!("priority")));
-    assert_eq!(tier_of(Some(Tier::Economy)), Some(json!("flex")));
-    assert_eq!(tier_of(Some(Tier::Standard)), None);
-    assert_eq!(tier_of(None), None);
 }

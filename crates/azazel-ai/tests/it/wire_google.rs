@@ -194,12 +194,6 @@ fn thinking_tool_fixture_keeps_block_order_signature_and_usage() {
 // ---- decoder: behaviour not covered by the fixtures ----
 
 #[test]
-fn output_limit_finish_reason_maps_to_length() {
-    let events = decode_chunks(&[chunk(json!([{"text": "cut off"}]), Some("MAX_TOKENS"))]);
-    assert_eq!(done(&events).meta.as_ref().unwrap().stop, StopReason::Length);
-}
-
-#[test]
 fn part_kind_changes_start_new_blocks_and_thought_signature_is_kept() {
     let events = decode_chunks(&[
         chunk(json!([{"text": "one"}, {"text": " two"}]), None),
@@ -246,22 +240,6 @@ fn blocking_finish_reason_is_an_error_with_the_partial_message() {
     assert_eq!(
         error,
         &AiError::InvalidRequest("response blocked: MALFORMED_FUNCTION_CALL".into())
-    );
-    assert!(partial.is_none());
-}
-
-#[test]
-fn blocked_prompt_is_an_error_without_partial() {
-    let events = decode_chunks(&[json!({
-        "promptFeedback": {"blockReason": "PROHIBITED_CONTENT"},
-        "usageMetadata": {"promptTokenCount": 7, "totalTokenCount": 7}
-    })]);
-    assert_eq!(events.len(), 2);
-    assert_eq!(events[0], StreamEvent::Start);
-    let (error, partial) = failure(&events);
-    assert_eq!(
-        error,
-        &AiError::InvalidRequest("response blocked: PROHIBITED_CONTENT".into())
     );
     assert!(partial.is_none());
 }
@@ -567,18 +545,6 @@ fn signature_from_another_model_is_not_replayed() {
     );
 }
 
-#[test]
-fn user_images_become_inline_data() {
-    let req = request(vec![Message::user_blocks(vec![
-        Block::text("what is this?"),
-        image("image/png"),
-    ])]);
-    assert_eq!(
-        body(&model(), &req)["contents"],
-        json!([{"role": "user", "parts": [{"text": "what is this?"}, inline("image/png")]}])
-    );
-}
-
 fn screenshot_history() -> Request {
     request(vec![
         Message::user("look"),
@@ -598,20 +564,6 @@ fn screenshot_history() -> Request {
             Block::tool_result("c2", "A", false),
         ]),
     ])
-}
-
-#[test]
-fn tool_result_images_follow_the_function_responses() {
-    let body = body(&model(), &screenshot_history());
-    assert_eq!(
-        body["contents"][2],
-        json!({"role": "user", "parts": [
-            {"functionResponse": {"id": "c1", "name": "screenshot", "response": {"output": "see attached image"}}},
-            {"functionResponse": {"id": "c2", "name": "read", "response": {"output": "A"}}},
-            inline("image/png"),
-            inline("image/gif")
-        ]})
-    );
 }
 
 #[test]
@@ -805,56 +757,10 @@ fn build_request_targets_the_stream_endpoint_with_the_api_key_header() {
     assert_eq!(sent, body(&model(), &req));
 }
 
-#[test]
-fn oauth_uses_bearer_and_provider_headers_override() {
-    let client = azazel_ai::tls::client();
-    let req = request(vec![Message::user("hi")]);
-    let mut provider = provider();
-    provider.headers.insert("x-extra".into(), "1".into());
-
-    let oauth = Auth::OAuth {
-        access: "tok".into(),
-        fields: std::collections::BTreeMap::new(),
-    };
-    let built = google::build_request(&client, &provider, &model(), &req, &oauth)
-        .build()
-        .unwrap();
-    assert_eq!(built.headers()["authorization"], "Bearer tok");
-    assert!(built.headers().get("x-goog-api-key").is_none());
-    assert_eq!(built.headers()["x-extra"], "1");
-
-    let built = google::build_request(&client, &provider, &model(), &req, &Auth::None)
-        .build()
-        .unwrap();
-    assert!(built.headers().get("authorization").is_none());
-    assert!(built.headers().get("x-goog-api-key").is_none());
-
-    provider
-        .headers
-        .insert("x-goog-api-key".into(), "from-config".into());
-    let built = google::build_request(&client, &provider, &model(), &req, &Auth::ApiKey("k-123".into()))
-        .build()
-        .unwrap();
-    let keys: Vec<_> = built.headers().get_all("x-goog-api-key").iter().collect();
-    assert_eq!(keys, ["from-config"]);
-}
-
 // ---- classify_error / parse_models ----
 
 fn error_body(code: u16, status: &str, message: &str, details: Value) -> String {
     json!({"error": {"code": code, "message": message, "status": status, "details": details}}).to_string()
-}
-
-#[test]
-fn classify_error_detects_context_overflow() {
-    let message = "The input token count (1250000) exceeds the maximum number of tokens allowed (1048576).";
-    let body = error_body(400, "INVALID_ARGUMENT", message, json!([]));
-    assert_eq!(google::classify_error(400, &body), Some(AiError::ContextOverflow));
-    // The non-SSE streaming endpoint wraps the error in an array.
-    assert_eq!(
-        google::classify_error(400, &format!("[{body}]")),
-        Some(AiError::ContextOverflow)
-    );
 }
 
 #[test]

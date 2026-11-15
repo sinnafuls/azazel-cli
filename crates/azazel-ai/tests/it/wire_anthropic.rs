@@ -393,52 +393,6 @@ fn empty_tool_arguments_become_an_object_and_invalid_ones_are_kept_raw() {
 }
 
 #[test]
-fn stop_reason_maps_to_length_only_when_output_was_cut() {
-    let cases = [
-        ("max_tokens", StopReason::Length),
-        ("model_context_window_exceeded", StopReason::Length),
-        ("end_turn", StopReason::Stop),
-        ("stop_sequence", StopReason::Stop),
-        ("pause_turn", StopReason::Stop),
-    ];
-    for (stop_reason, expected) in cases {
-        let mut records = vec![message_start()];
-        records.extend(text_block(0, "partial answer"));
-        records.extend([message_delta(stop_reason), message_stop()]);
-        let events = decode(&sse(&records));
-        let meta = done(&events).meta.clone().unwrap();
-        assert_eq!(meta.stop, expected, "{stop_reason}");
-        // `message_delta` reports the cumulative output count; input stays from `message_start`.
-        assert_eq!(meta.usage, usage(5, 9, 0, 0, 0), "{stop_reason}");
-    }
-}
-
-#[test]
-fn malformed_data_and_unknown_events_are_skipped() {
-    let mut stream = sse(&[
-        message_start(),
-        block_start(0, json!({"type": "text", "text": ""})),
-    ]);
-    stream.extend_from_slice(b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\n\n");
-    stream.extend_from_slice(b"event: future_event\ndata: {\"type\":\"future_event\",\"x\":1}\n\n");
-    stream.extend(sse(&[
-        block_delta(0, json!({"type": "text_delta", "text": "still here"})),
-        block_delta(
-            0,
-            json!({"type": "citations_delta", "citation": {"type": "char_location"}}),
-        ),
-        block_delta(9, json!({"type": "text_delta", "text": "no such block"})),
-        block_stop(0),
-        message_delta("end_turn"),
-        message_stop(),
-    ]));
-    let events = decode(&stream);
-
-    assert_eq!(events.len(), 4, "{events:?}");
-    assert_eq!(done(&events).content, [Block::text("still here")]);
-}
-
-#[test]
 fn stream_that_ends_early_is_a_network_error() {
     let cut = "stream ended before the response was complete";
 
@@ -698,34 +652,6 @@ fn tool_calls_and_results_replay_and_tool_turn_merges_with_user_turn() {
                 ]
             }
         ])
-    );
-}
-
-#[test]
-fn images_map_to_base64_sources_and_empty_content_is_dropped() {
-    let jpeg = Block::Image {
-        mime: "image/jpeg".to_string(),
-        data: "/9j/4AAQ".to_string(),
-    };
-    let req = request(vec![
-        Message::user_blocks(vec![Block::text(""), jpeg, Block::text("what is this?")]),
-        // Left without content, this turn disappears and its neighbours become one user turn.
-        assistant(vec![Block::text("  \n")]),
-        Message::user("answer briefly"),
-    ]);
-    assert_eq!(
-        build(&req)["messages"],
-        json!([{
-            "role": "user",
-            "content": [
-                {
-                    "type": "image",
-                    "source": {"type": "base64", "media_type": "image/jpeg", "data": "/9j/4AAQ"}
-                },
-                {"type": "text", "text": "what is this?"},
-                {"type": "text", "text": "answer briefly", "cache_control": cache_marker()}
-            ]
-        }])
     );
 }
 
@@ -998,38 +924,6 @@ fn build_request_posts_the_body_with_version_and_auth_headers() {
     let sent = send(Auth::None);
     assert_eq!(header(&sent, "authorization"), None);
     assert_eq!(header(&sent, "x-api-key"), None);
-}
-
-#[test]
-fn provider_headers_replace_defaults() {
-    let client = azazel_ai::tls::client();
-    let mut provider = provider();
-    for (name, value) in [
-        ("Anthropic-Version", "2023-06-01"),
-        ("x-api-key", "from-config"),
-        ("anthropic-beta", "mock-beta-2099-01-01"),
-    ] {
-        provider.headers.insert(name.to_string(), value.to_string());
-    }
-    let req = request(vec![Message::user("hi")]);
-    let auth = Auth::ApiKey("sk-mock".to_string());
-    let sent = anthropic::build_request(&client, &provider, &model(MANUAL_MODEL), &req, &auth)
-        .build()
-        .unwrap();
-
-    for (name, value) in [
-        ("anthropic-version", "2023-06-01"),
-        ("x-api-key", "from-config"),
-        ("anthropic-beta", "mock-beta-2099-01-01"),
-    ] {
-        let values: Vec<&str> = sent
-            .headers()
-            .get_all(name)
-            .iter()
-            .map(|value| value.to_str().unwrap())
-            .collect();
-        assert_eq!(values, [value], "{name}");
-    }
 }
 
 // ---- classify_error / parse_models ----

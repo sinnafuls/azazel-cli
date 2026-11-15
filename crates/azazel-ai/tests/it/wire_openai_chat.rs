@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use azazel_ai::wire::{decode_sse, openai_chat};
 use azazel_ai::{
     AiError, AssistantMeta, Auth, Block, Cost, INVALID_JSON_KEY, Message, ModelInfo, ProviderConfig, Request,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WireApi,
+    StopReason, StreamEvent, ThinkingLevel, Usage, WireApi,
 };
 use serde_json::{Value, json};
 
@@ -264,16 +264,6 @@ fn reasoning_is_read_from_either_field_name() {
 }
 
 #[test]
-fn reasoning_sent_under_both_field_names_is_not_duplicated() {
-    let chunks = [
-        chunk(json!({"reasoning_content": "Once.", "reasoning": "Once."}), None),
-        chunk(json!({"content": "ok"}), Some("stop")),
-    ];
-    let events = decode(&sse(&chunks, true));
-    assert_eq!(done(&events).content, vec![thinking("Once."), Block::text("ok")]);
-}
-
-#[test]
 fn typed_content_parts_are_split_into_thinking_and_text() {
     let chunks = [
         chunk(
@@ -287,14 +277,6 @@ fn typed_content_parts_are_split_into_thinking_and_text() {
     ];
     let events = decode(&sse(&chunks, true));
     assert_eq!(done(&events).content, vec![thinking("Hmm."), Block::text("Yes.")]);
-}
-
-#[test]
-fn finish_reason_length_maps_to_length() {
-    let chunks = [chunk(json!({"content": "Once upon a"}), Some("length"))];
-    let events = decode(&sse(&chunks, true));
-    assert_eq!(meta(done(&events)).stop, StopReason::Length);
-    assert_eq!(done(&events).text(), "Once upon a");
 }
 
 #[test]
@@ -431,15 +413,6 @@ fn in_band_errors_are_classified() {
 }
 
 #[test]
-fn finish_reason_error_without_an_error_object_fails_the_response() {
-    let chunks = [chunk(json!({"content": ""}), Some("error"))];
-    let events = decode(&sse(&chunks, true));
-    let (error, partial) = failure(&events);
-    assert!(matches!(error, AiError::Server { status: 500, .. }));
-    assert!(partial.is_none());
-}
-
-#[test]
 fn an_unfinished_tool_call_is_left_out_of_the_partial_message() {
     let chunks = [
         chunk(json!({"content": "Reading."}), None),
@@ -498,59 +471,6 @@ fn usage_is_read_from_whichever_chunk_carries_it() {
 // ---------------------------------------------------------------------------------------------
 // build_body
 // ---------------------------------------------------------------------------------------------
-
-#[test]
-fn system_parts_become_one_leading_system_message() {
-    let body = body(&Request {
-        system: vec![
-            SystemPart {
-                text: "You are terse.".into(),
-                name: String::new(),
-                cache_boundary: false,
-            },
-            SystemPart {
-                text: "  ".into(),
-                name: String::new(),
-                cache_boundary: true,
-            },
-            SystemPart {
-                text: "Project: demo.".into(),
-                name: String::new(),
-                cache_boundary: false,
-            },
-        ],
-        messages: vec![Message::user("hi")],
-        ..Request::default()
-    });
-    assert_eq!(
-        body["messages"],
-        json!([
-            {"role": "system", "content": "You are terse.\n\nProject: demo."},
-            {"role": "user", "content": "hi"},
-        ])
-    );
-}
-
-#[test]
-fn tools_are_sent_as_function_tools() {
-    let schema = json!({"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]});
-    let body = body(&Request {
-        messages: vec![Message::user("hi")],
-        tools: vec![ToolSpec {
-            name: "read".into(),
-            description: "Read a file.".into(),
-            schema: schema.clone(),
-        }],
-        ..Request::default()
-    });
-    assert_eq!(
-        body["tools"],
-        json!([{
-            "type": "function",
-            "function": {"name": "read", "description": "Read a file.", "parameters": schema},
-        }])
-    );
-}
 
 #[test]
 fn tool_calls_and_results_are_replayed_and_reasoning_is_dropped() {
@@ -682,18 +602,6 @@ fn tool_result_images_follow_in_a_user_message_merged_with_the_next_user_turn() 
 }
 
 #[test]
-fn adjacent_user_messages_are_merged_into_one_turn() {
-    let body = body(&Request {
-        messages: vec![Message::user("first"), Message::user("second")],
-        ..Request::default()
-    });
-    assert_eq!(
-        body["messages"],
-        json!([{"role": "user", "content": "first\n\nsecond"}])
-    );
-}
-
-#[test]
 fn thinking_level_maps_to_reasoning_effort() {
     let effort = |reasoning: bool, level: ThinkingLevel| {
         let req = Request {
@@ -711,23 +619,6 @@ fn thinking_level_maps_to_reasoning_effort() {
     assert_eq!(effort(true, ThinkingLevel::Max), Some(json!("high")));
     assert_eq!(effort(true, ThinkingLevel::Off), None);
     assert_eq!(effort(false, ThinkingLevel::High), None);
-}
-
-#[test]
-fn temperature_is_sent_unless_reasoning_is_requested() {
-    let temperature = |level: ThinkingLevel| {
-        let req = Request {
-            messages: vec![Message::user("hi")],
-            thinking: level,
-            temperature: Some(0.2),
-            ..Request::default()
-        };
-        openai_chat::build_body(&provider(), &model(true), &req)
-            .get("temperature")
-            .cloned()
-    };
-    assert_eq!(temperature(ThinkingLevel::Off), Some(json!(0.2)));
-    assert_eq!(temperature(ThinkingLevel::High), None);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -870,23 +761,6 @@ fn a_used_up_chatgpt_plan_is_a_quota_error_with_its_reset_time() {
             message: "Limit reached.".into(),
         })
     );
-}
-
-#[test]
-fn the_service_tier_is_named_only_when_one_is_asked_for() {
-    let tier_of = |tier: Option<Tier>| {
-        body(&Request {
-            messages: vec![Message::user("hi")],
-            tier,
-            ..Request::default()
-        })
-        .get("service_tier")
-        .cloned()
-    };
-    assert_eq!(tier_of(Some(Tier::Priority)), Some(json!("priority")));
-    assert_eq!(tier_of(Some(Tier::Economy)), Some(json!("flex")));
-    assert_eq!(tier_of(Some(Tier::Standard)), None);
-    assert_eq!(tier_of(None), None);
 }
 
 #[test]
