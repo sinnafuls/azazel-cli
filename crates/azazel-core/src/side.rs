@@ -277,7 +277,12 @@ pub fn clean_prediction(reply: &str) -> Option<String> {
     }
     let line = reply.lines().next().unwrap_or_default().trim();
     let line = line
-        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'))
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                '"' | '\'' | '`' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'
+            )
+        })
         .trim();
     if line.is_empty() || line.contains(NO_PREDICTION) {
         return None;
@@ -498,7 +503,10 @@ mod tests {
 
     #[test]
     fn a_prediction_is_one_short_line_without_quotes() {
-        assert_eq!(clean_prediction("  \"run the tests\"\n").as_deref(), Some("run the tests"));
+        assert_eq!(
+            clean_prediction("  \"run the tests\"\n").as_deref(),
+            Some("run the tests")
+        );
         assert_eq!(clean_prediction("`commit it`").as_deref(), Some("commit it"));
         assert_eq!(clean_prediction("NO_PREDICTION"), None);
         assert_eq!(clean_prediction("  "), None);
@@ -520,7 +528,14 @@ mod tests {
             .ask_capped(
                 SideQuestion {
                     agent: &lead(),
-                    context: vec![Message::user("fix the bug"), Message { role: Role::Assistant, content: vec![Block::text("done")], meta: None }],
+                    context: vec![
+                        Message::user("fix the bug"),
+                        Message {
+                            role: Role::Assistant,
+                            content: vec![Block::text("done")],
+                            meta: None,
+                        },
+                    ],
                     question: PREDICT_QUESTION.into(),
                     chain: chain(),
                     purpose: PREDICTION_PURPOSE,
@@ -532,7 +547,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(clean_prediction(&answer.text).as_deref(), Some("now run the tests"));
+        assert_eq!(
+            clean_prediction(&answer.text).as_deref(),
+            Some("now run the tests")
+        );
         assert_eq!(side.costs.by_purpose()[PREDICTION_PURPOSE].output, 5);
         let request = &mock.requests_for("m")[0];
         assert_eq!(request.max_output, Some(PREDICTION_TOKENS));

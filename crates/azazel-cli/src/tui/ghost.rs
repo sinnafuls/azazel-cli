@@ -194,13 +194,21 @@ mod tests {
         for slug in ["here", "elsewhere"] {
             let dir = home.path().join("projects").join(slug);
             std::fs::create_dir_all(&dir).unwrap();
-            let text = if slug == "here" { "migrate the database" } else { "benchmark the parser" };
+            let text = if slug == "here" {
+                "migrate the database"
+            } else {
+                "benchmark the parser"
+            };
             crate::history::append(&dir.join("history.jsonl"), "s1", text).unwrap();
         }
         let paths = Paths::discover(project.path(), home.path().to_str());
         let model = load(&paths, Some(project.path()), false);
         for (typed, rest) in [("migr", "ate"), ("bench", "mark"), ("sched", "uler")] {
-            assert_eq!(model.suggest(typed, typed.len()).as_deref(), Some(rest), "{typed}");
+            assert_eq!(
+                model.suggest(typed, typed.len()).as_deref(),
+                Some(rest),
+                "{typed}"
+            );
         }
     }
 }

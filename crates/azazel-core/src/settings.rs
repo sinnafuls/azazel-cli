@@ -11,9 +11,9 @@ use std::sync::LazyLock;
 use toml::{Table, Value};
 
 use crate::config::{
-    AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView, EditorMode,
-    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, Autocomplete, ReadGuard, SessionResume,
-    StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
+    AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
+    EditorMode, GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard,
+    SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
 
 /// A page of the settings screen.

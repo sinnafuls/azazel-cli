@@ -1201,15 +1201,20 @@ impl Backend for Local {
         updates: mpsc::UnboundedSender<Internal>,
         cancel: CancellationToken,
     ) -> Result<(), String> {
-        let asked = Btw::predict(&self.app.registry.services, &self.active.session, &self.active.lead)?;
+        let asked = Btw::predict(
+            &self.app.registry.services,
+            &self.active.session,
+            &self.active.lead,
+        )?;
         tokio::spawn(async move {
-            let answer = match tokio::time::timeout(PREDICTION_LIMIT, asked.ask(&mut |_| {}, cancel.clone())).await {
-                Ok(result) => result.map(|answer| answer.text),
-                Err(_) => {
-                    cancel.cancel();
-                    Err("the prediction took too long".to_string())
-                }
-            };
+            let answer =
+                match tokio::time::timeout(PREDICTION_LIMIT, asked.ask(&mut |_| {}, cancel.clone())).await {
+                    Ok(result) => result.map(|answer| answer.text),
+                    Err(_) => {
+                        cancel.cancel();
+                        Err("the prediction took too long".to_string())
+                    }
+                };
             let _ = updates.send(Internal::Prediction { id, answer });
         });
         Ok(())
