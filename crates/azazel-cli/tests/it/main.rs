@@ -16,6 +16,7 @@ mod guards;
 mod inbox;
 mod input;
 mod launch;
+mod ledger;
 mod login;
 mod loops;
 mod mcp_cli;

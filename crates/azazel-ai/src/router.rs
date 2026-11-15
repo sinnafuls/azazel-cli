@@ -933,6 +933,49 @@ mod tests {
         assert_eq!(mock.requests_for("a").len(), 3);
     }
 
+    #[derive(Default)]
+    struct Booked(Mutex<Vec<(String, Option<RequestOrigin>, Usage)>>);
+
+    impl UsageSink for Booked {
+        fn record(&self, model: &ModelRef, origin: Option<&RequestOrigin>, usage: &Usage) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((model.to_string(), origin.cloned(), *usage));
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_is_booked_once_for_the_attempt_that_answered() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", MockStep::fail(AiError::Network("reset".into())));
+        mock.push(
+            "a",
+            MockStep::text("ok").with_usage(Usage {
+                input: 7,
+                output: 3,
+                ..Usage::default()
+            }),
+        );
+        let booked = Arc::new(Booked::default());
+        let r = router(mock, &[]).with_usage_sink(booked.clone());
+        let origin = RequestOrigin::purpose("s1", "btw");
+        let request = Request {
+            origin: Some(origin.clone()),
+            ..Request::default()
+        };
+        let (_, stream) = r
+            .stream(&chain(&["mock/a"]), &request, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "ok");
+        let booked = booked.0.lock().unwrap();
+        assert_eq!(booked.len(), 1);
+        assert_eq!(booked[0].0, "mock/a");
+        assert_eq!(booked[0].1, Some(origin));
+        assert_eq!((booked[0].2.input, booked[0].2.output), (7, 3));
+    }
+
     #[tokio::test]
     async fn auth_failure_moves_on_without_retrying() {
         let mock = Arc::new(MockProvider::new());
