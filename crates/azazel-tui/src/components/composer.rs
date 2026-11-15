@@ -20,7 +20,7 @@ pub struct Composer<'a> {
     pub prompt: &'a str,
     /// Colour of the prompt.
     pub prompt_role: Role,
-    /// Shown muted while the editor is empty.
+    /// Shown muted while the editor is empty and has no suggestion to show instead.
     pub placeholder: &'a str,
     /// Colour of both rules.
     pub rule: Role,
@@ -42,7 +42,7 @@ pub fn max_rows(rows: usize) -> usize {
 pub fn render(editor: &Editor, composer: &Composer, width: usize, theme: &Theme) -> (Vec<Line>, (u16, u16)) {
     let prompt = theme.paint(composer.prompt_role, composer.prompt);
     let mut view = editor.view(width, composer.max_rows, theme, &prompt);
-    if editor.is_empty() && !composer.placeholder.is_empty() {
+    if editor.is_empty() && editor.ghost().is_none() && !composer.placeholder.is_empty() {
         let room = width.saturating_sub(usize::from(view.cursor.1));
         let hint = text::truncate(composer.placeholder, room, theme.glyph(Glyph::Ellipsis));
         if let Some(first) = view.lines.first_mut() {

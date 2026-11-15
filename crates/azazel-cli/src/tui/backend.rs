@@ -28,6 +28,9 @@ use azazel_tools::{TodoItem, TodoStore};
 use tokio::sync::{broadcast, mpsc};
 use tokio_util::sync::CancellationToken;
 
+/// How long a prediction of the next message may take.
+const PREDICTION_LIMIT: Duration = Duration::from_secs(15);
+
 use super::bridge::{TuiBridge, UiRequest};
 use super::overlay::RewindPoint;
 use super::{Internal, SHELL_NOTE, btw, slash, team};
@@ -379,6 +382,17 @@ pub(crate) trait Backend: Send {
         updates: mpsc::UnboundedSender<Internal>,
         cancel: CancellationToken,
     ) -> Result<(), String>;
+
+    /// Asks the session's model for the user's likely next message; the reply comes back as
+    /// [`Internal::Prediction`] carrying `id`. Only a session in this process can.
+    fn predict(
+        &mut self,
+        _id: u64,
+        _updates: mpsc::UnboundedSender<Internal>,
+        _cancel: CancellationToken,
+    ) -> Result<(), String> {
+        Err("a session in another process does not predict the next message".to_string())
+    }
 
     /// Asks for the files `@` completes, when listing them takes a round trip; they come
     /// back as [`Internal::Files`]. A local session's files are read where they are needed.
@@ -1177,6 +1191,31 @@ impl Backend for Local {
             };
             let result = asked.ask(&mut on_text, cancel).await;
             let _ = updates.send(Internal::Btw(btw::Update::Done { id, result }));
+        });
+        Ok(())
+    }
+
+    fn predict(
+        &mut self,
+        id: u64,
+        updates: mpsc::UnboundedSender<Internal>,
+        cancel: CancellationToken,
+    ) -> Result<(), String> {
+        let asked = Btw::predict(
+            &self.app.registry.services,
+            &self.active.session,
+            &self.active.lead,
+        )?;
+        tokio::spawn(async move {
+            let answer =
+                match tokio::time::timeout(PREDICTION_LIMIT, asked.ask(&mut |_| {}, cancel.clone())).await {
+                    Ok(result) => result.map(|answer| answer.text),
+                    Err(_) => {
+                        cancel.cancel();
+                        Err("the prediction took too long".to_string())
+                    }
+                };
+            let _ = updates.send(Internal::Prediction { id, answer });
         });
         Ok(())
     }

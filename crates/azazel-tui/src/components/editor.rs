@@ -122,10 +122,20 @@ impl Draft {
 struct Row {
     text: String,
     chips: Vec<(usize, usize)>,
+    /// Ghost text drawn after the content, already cut to the free cells of the row.
+    ghost: String,
 }
 
 impl Row {
     fn paint(&self, theme: &Theme) -> String {
+        let mut out = self.paint_content(theme);
+        if !self.ghost.is_empty() {
+            out.push_str(&theme.paint(Role::Muted, &self.ghost));
+        }
+        out
+    }
+
+    fn paint_content(&self, theme: &Theme) -> String {
         if self.chips.is_empty() {
             return theme.paint(Role::Text, &self.text);
         }
@@ -186,6 +196,9 @@ pub struct Editor {
     atoms: Vec<Named>,
     /// Atoms made so far: each has a character of its own for as long as the editor lives.
     atom_seq: u32,
+    /// A suggestion shown dim after the cursor; Tab or the right arrow writes it into the text.
+    /// Whoever suggests sets it again after every change, so it never outlives the text it fits.
+    ghost: Option<String>,
 }
 
 impl Editor {
@@ -441,6 +454,36 @@ impl Editor {
         self.cursor = start + replacement.len();
     }
 
+    /// Sets the suggestion drawn after the cursor, or removes it. Only its first line is kept.
+    pub fn set_ghost(&mut self, ghost: Option<String>) {
+        self.ghost = ghost
+            .map(|text| text.lines().next().unwrap_or_default().to_string())
+            .filter(|text| !text.is_empty());
+    }
+
+    /// The suggestion drawn after the cursor.
+    pub fn ghost(&self) -> Option<&str> {
+        self.ghost.as_deref()
+    }
+
+    /// Writes the suggestion into the text at the cursor. `space` adds a space after a word
+    /// being completed (Tab); an empty input gets the suggestion as it is. Returns whether there
+    /// was one.
+    pub fn accept_ghost(&mut self, space: bool) -> bool {
+        let Some(ghost) = self.ghost.take() else {
+            return false;
+        };
+        let space = space && !self.text.is_empty();
+        self.begin_edit(Run::None);
+        self.text.insert_str(self.cursor, &ghost);
+        self.cursor += ghost.len();
+        if space {
+            self.text.insert(self.cursor, ' ');
+            self.cursor += 1;
+        }
+        true
+    }
+
     /// Handles an editing or movement key. Returns `false` for keys the editor has no use for
     /// (enter, escape, function keys, unbound chords), which the caller may then act on.
     pub fn handle_key(&mut self, key: &KeyEvent) -> bool {
@@ -456,6 +499,11 @@ impl Editor {
         }
         // Only a yank directly before it gives `alt+y` something to replace.
         let yanked = self.yank.take();
+        // The right arrow takes the suggestion; any other key makes it stale.
+        if key.code == KeyCode::Right && !ctrl && !alt && self.accept_ghost(false) {
+            return true;
+        }
+        self.ghost = None;
         match key.code {
             // Control together with alt is how AltGr characters arrive on Windows.
             KeyCode::Char(c) if ctrl == alt => {
@@ -541,6 +589,22 @@ impl Editor {
             }
             rows.push(row);
             offset += line.len() + 1;
+        }
+
+        // The suggestion goes after the cursor, in the cells that are left, and never wraps.
+        if let Some(ghost) = &self.ghost
+            && let Some(row) = rows.get_mut(cursor.0)
+        {
+            let room = avail.saturating_sub(cursor.1);
+            // A cursor at the start of a row that only a full row before it made is not
+            // followed by anything: the suggestion would wrap.
+            let wrapped = cursor.1 == 0
+                && !self.text.is_empty()
+                && !self.text.ends_with(char::is_control)
+                && self.cursor == self.text.len();
+            if room > 0 && !wrapped && cursor.1 == text::width(&row.text) {
+                row.ghost = text::truncate(ghost, room, "");
+            }
         }
 
         let total = rows.len();
@@ -716,6 +780,7 @@ impl Editor {
 
     /// Saves an undo step unless this edit continues a run of the same kind.
     fn begin_edit(&mut self, run: Run) {
+        self.ghost = None;
         if run == Run::None || run != self.run {
             self.undo.push(Snapshot {
                 text: self.text.clone(),
@@ -995,6 +1060,72 @@ mod tests {
         for _ in 0..times {
             editor.handle_key(&event);
         }
+    }
+
+    fn shown(editor: &Editor, width: usize) -> Vec<String> {
+        let (lines, _) = editor.render(width, &Theme::dark(), "> ");
+        lines.iter().map(|line| text::strip_ansi(line)).collect()
+    }
+
+    #[test]
+    fn a_suggestion_is_drawn_dim_after_the_cursor_and_cut_to_the_row() {
+        let mut editor = with_text("fix the authen");
+        editor.set_ghost(Some("tication middleware".into()));
+        assert_eq!(shown(&editor, 40), ["> fix the authentication middleware"]);
+        let (lines, cursor) = editor.render(40, &Theme::dark(), "> ");
+        assert_eq!(cursor, (0, 16), "the cursor stays before the suggestion");
+        assert!(lines[0].ends_with(&format!(
+            "{}tication middleware{}",
+            Theme::dark().fg(Role::Muted),
+            crate::theme::RESET
+        )));
+        // Cut to the free cells, never wrapped.
+        assert_eq!(shown(&editor, 22), ["> fix the authenticati"]);
+        // A full row sends the cursor to the next one, where there is nothing to wrap.
+        assert_eq!(shown(&editor, 16), ["> fix the authen", "  "]);
+        // Not drawn when the cursor is not at the end of its text.
+        editor.handle_key(&key(KeyCode::Home));
+        editor.set_ghost(Some("tication".into()));
+        assert_eq!(shown(&editor, 40), ["> fix the authen"]);
+    }
+
+    #[test]
+    fn right_takes_the_suggestion_and_tab_takes_it_with_a_space() {
+        let mut editor = with_text("fix the authen");
+        editor.set_ghost(Some("tication".into()));
+        assert!(editor.handle_key(&key(KeyCode::Right)));
+        assert_eq!((editor.text(), editor.ghost()), ("fix the authentication", None));
+
+        let mut editor = with_text("fix the authen");
+        editor.set_ghost(Some("tication".into()));
+        assert!(editor.accept_ghost(true));
+        assert_eq!(editor.text(), "fix the authentication ");
+        assert_eq!(editor.cursor(), editor.text().len());
+        assert!(!editor.accept_ghost(true));
+        // One undo takes the whole suggestion back.
+        editor.handle_key(&ctrl('z'));
+        assert_eq!(editor.text(), "fix the authen");
+    }
+
+    #[test]
+    fn any_other_key_dismisses_the_suggestion() {
+        for event in [
+            key(KeyCode::Char('x')),
+            key(KeyCode::Left),
+            key(KeyCode::Backspace),
+            key(KeyCode::Enter),
+        ] {
+            let mut editor = with_text("fix the authen");
+            editor.set_ghost(Some("tication".into()));
+            editor.handle_key(&event);
+            assert_eq!(editor.ghost(), None, "{event:?}");
+        }
+        // A suggestion for an empty input is taken as written, without a space.
+        let mut editor = Editor::new();
+        editor.set_ghost(Some("run the tests".into()));
+        assert_eq!(shown(&editor, 40), ["> run the tests"]);
+        assert!(editor.accept_ghost(true));
+        assert_eq!(editor.text(), "run the tests");
     }
 
     #[test]
