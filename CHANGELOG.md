@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `tui.complete_ignored` (also under `/settings` → Appearance): `@` offers files that `.gitignore` leaves out, such as `ref/`; `.git/`, `target/` and `node_modules/` are still skipped. Off by default, as before.
+
 ### Changed
 
 - The lead may push again when you ask it to (`git push`, `gh pr create`, …); the push guard now holds for sub-agents only, whose commands and processes are still refused any push in every mode.

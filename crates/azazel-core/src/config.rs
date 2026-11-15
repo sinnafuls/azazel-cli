@@ -382,6 +382,9 @@ config_table!(TuiConfig {
     session_accent: bool = false,
     /// Rows the todo list above the input takes at most; 0 hides it.
     todo_max: u32 = 8,
+    /// `@` also offers files that `.gitignore` leaves out (build output and dependency folders
+    /// such as `target/` and `node_modules/` are still skipped).
+    complete_ignored: bool = false,
     tool_style: ToolStyle = ToolStyle::Card,
     /// How `/diff` shows a file: old beside new (`split`), in one column (`unified`), or split
     /// from 140 columns on (`auto`).

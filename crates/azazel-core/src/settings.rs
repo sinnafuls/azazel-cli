@@ -276,6 +276,8 @@ settings! {
             "Menus, pickers and questions open as a box in the middle of the window.", live;
         "tui.mouse": Switch, "Mouse in popups",
             "Click, hover and scroll in popups; the terminal's own selection works again once a popup closes.", live;
+        "tui.complete_ignored": Switch, "Ignored files in @",
+            "Offer files that .gitignore leaves out when you type @ (target/, node_modules/ and .git/ are still skipped).", live;
         "tui.images": Choice(ImageMode::NAMES), "Inline images",
             "auto shows images where the terminal can; off never does; kitty, iterm and sixel force a protocol.";
         "tui.show_thinking": Switch, "Show the model's thinking", "Show the model's thinking as it is written.", live;

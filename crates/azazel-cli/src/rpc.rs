@@ -685,7 +685,8 @@ impl Session {
             Command::ListCommands => data(self.commands()).map(Some),
             Command::ListFiles => {
                 let root = self.app.paths.cwd.clone();
-                let files = tokio::task::spawn_blocking(move || crate::tui::project_files(&root))
+                let ignored = self.app.config.tui.complete_ignored;
+                let files = tokio::task::spawn_blocking(move || crate::tui::project_files(&root, ignored))
                     .await
                     .map_err(|e| e.to_string())?;
                 data(files).map(Some)

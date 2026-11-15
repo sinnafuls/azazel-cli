@@ -2039,8 +2039,9 @@ impl Tui {
     /// the UI started; until they are there, there are none.
     fn project_files(&mut self) -> &[String] {
         let root = self.local_cwd();
+        let ignored = self.env.config.tui.complete_ignored;
         self.files.get_or_insert_with(|| match root {
-            Some(root) => project_files(&root),
+            Some(root) => project_files(&root, ignored),
             None => Vec::new(),
         })
     }
@@ -2514,13 +2515,24 @@ impl Tui {
     }
 }
 
-/// The files under `root`, as paths relative to it with forward slashes; ignored files are
-/// left out and the list is cut at [`MAX_COMPLETION_FILES`].
-pub(crate) fn project_files(root: &std::path::Path) -> Vec<String> {
+/// Folders `@` never walks into, whatever `.gitignore` says: version control, build output
+/// and dependencies, which would crowd the list out.
+const NEVER_COMPLETED: [&str; 3] = [".git", "target", "node_modules"];
+
+/// The files under `root`, as paths relative to it with forward slashes, cut at
+/// [`MAX_COMPLETION_FILES`]. Files `.gitignore` leaves out are left out too, unless `ignored`
+/// (`tui.complete_ignored`) asks for them.
+pub(crate) fn project_files(root: &std::path::Path, ignored: bool) -> Vec<String> {
     ignore::WalkBuilder::new(root)
         .hidden(false)
         .require_git(false)
-        .filter_entry(|entry| entry.file_name() != ".git")
+        .git_ignore(!ignored)
+        .git_exclude(!ignored)
+        .ignore(!ignored)
+        .filter_entry(move |entry| {
+            let name = entry.file_name();
+            name != ".git" && !(ignored && NEVER_COMPLETED.iter().any(|skip| name == *skip))
+        })
         .build()
         .flatten()
         .filter(|entry| entry.file_type().is_some_and(|t| t.is_file()))
@@ -2535,4 +2547,32 @@ pub(crate) fn project_files(root: &std::path::Path) -> Vec<String> {
 fn first_line(prompt: &str) -> String {
     let line = prompt.lines().next().unwrap_or_default();
     text::truncate(line, 70, "…")
+}
+
+#[cfg(test)]
+mod completion_tests {
+    #![allow(clippy::unwrap_used)]
+
+    #[test]
+    fn ignored_files_are_offered_only_when_asked_and_build_folders_never() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for file in [
+            "src/main.rs",
+            "ref/notes.md",
+            "target/debug/x",
+            "node_modules/a/b.js",
+        ] {
+            let path = root.join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "x").unwrap();
+        }
+        std::fs::write(root.join(".gitignore"), "ref/\ntarget/\nnode_modules/\n").unwrap();
+        let mut plain = super::project_files(root, false);
+        plain.sort();
+        assert_eq!(plain, [".gitignore", "src/main.rs"]);
+        let mut all = super::project_files(root, true);
+        all.sort();
+        assert_eq!(all, [".gitignore", "ref/notes.md", "src/main.rs"]);
+    }
 }
