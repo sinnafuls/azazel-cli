@@ -890,6 +890,11 @@ impl App {
                 .map_err(|e| anyhow!("memory: {e} (set `[memory] enabled = false` to start without it)"))?;
             registry.load(&memory)?;
         }
+        #[cfg(feature = "repomap")]
+        registry.load(&azazel_repomap::RepoMapExt::new(
+            &paths,
+            config.context.repo_map_tokens as usize,
+        ))?;
         #[cfg(feature = "mcp")]
         if !cli.skips(Discovery::Mcp) || !run.mcp_files.is_empty() {
             let mut files = match cli.skips(Discovery::Mcp) {

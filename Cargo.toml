@@ -34,6 +34,7 @@ azazel-core = { path = "crates/azazel-core" }
 azazel-tools = { path = "crates/azazel-tools" }
 azazel-mcp = { path = "crates/azazel-mcp" }
 azazel-memory = { path = "crates/azazel-memory" }
+azazel-repomap = { path = "crates/azazel-repomap" }
 azazel-team = { path = "crates/azazel-team" }
 azazel-lua = { path = "crates/azazel-lua" }
 azazel-browser = { path = "crates/azazel-browser" }
@@ -138,6 +139,11 @@ interprocess = { version = "2.4", features = ["tokio"] }
 winsafe = { version = "0.0.29", features = ["kernel"] }
 tree-sitter = "0.27"
 tree-sitter-bash = "0.25"
+tree-sitter-rust = "0.24"
+tree-sitter-python = "0.25"
+tree-sitter-go = "0.25"
+tree-sitter-javascript = "0.25"
+tree-sitter-typescript = "0.23"
 regex = "1"
 toml_edit = "0.25"
 

@@ -217,6 +217,7 @@ thinking = "low"
 | | `report_misses` | `false` | Say in the transcript when a request misses the cached prefix, and why; `/cost` lists the misses either way |
 | `[context]` | `nested` | `true` | Give an agent the `AGENTS.md` of every directory it works in, with its first tool call there; see [context files](rules.md#context-files) |
 | | `include_depth` | `4` | How deep `@path` includes inside context files and rule files are followed; `0` follows none |
+| | `repo_map_tokens` | `0` | Tokens of the [repository map](tools.md#repository-map) put in the lead's system prompt; `0` leaves it out. The map is made once per session and changes only with `/repomap refresh`, so the prompt cache stays valid |
 | `[rules]` | `compat` | `true` | Also read the rule files of Cursor, Windsurf, Copilot, Gemini and Cline; see [rules](rules.md) |
 | `[[stream_rules]]` | `pattern` | required | Regular expression matched against a reply as it is written |
 | | `message` | required | What the agent is told when the pattern matches |
