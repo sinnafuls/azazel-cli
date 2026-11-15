@@ -302,7 +302,7 @@ Agents · 2 running · 1 queued                                      alt+a hub
 | `Down` in an empty input | Puts the keyboard in the roster: `Up`/`Down` move, `Enter` opens the selected agent's work in a popup you can type to it in, `x` stops it, `Esc` returns. See [the fleet view](tui.md#the-fleet-view) |
 | `@<id> <text>` | Sends the text to that agent, as `/msg` does; `@<id>` alone opens its popup |
 | `@<definition> <text>` | Starts an agent from that definition with the text as its task, as `/task` does |
-| `Alt+A`, or `Left` twice in an empty input | Opens the agent hub: every sub-agent of the session, running and finished, with its state, definition, parent, time, tokens, cost and what it is doing or was asked. See [the agent hub](tui.md#the-agent-hub) |
+| `Alt+A`, or `Left` twice in an empty input | Opens the agent hub: every sub-agent of the session, those at work first, then finished ones newest first, with its state, definition, parent, time, tokens, cost and what it is doing or was asked. Finished agents older than `team.agent_retention_days` (14) leave the list. See [the agent hub](tui.md#the-agent-hub) |
 | `Enter` in the hub | Opens the agent's chat: its whole transcript, followed live, with a line to type to it. `Esc` or `Left` twice returns to the hub |
 | `x` / `S` in the hub | Stop the selected agent / stop all sub-agents |
 | `m` in the hub | Message the selected agent |

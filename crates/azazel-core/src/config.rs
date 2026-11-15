@@ -225,6 +225,9 @@ config_table!(TeamConfig {
     max_depth: u32 = 2,
     /// Requests per task for a sub-agent whose definition sets no `max-turns`; 0 is no limit.
     max_turns: u32 = 200,
+    /// Days a finished sub-agent stays in the agent hub; its transcript file is deleted after
+    /// that. 0 keeps them as long as the session.
+    agent_retention_days: u32 = 14,
     /// The lead only plans and delegates: it is offered no tool that edits or runs commands.
     coordinator: bool = false,
 });

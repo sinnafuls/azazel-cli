@@ -459,5 +459,94 @@ pub fn prune_in_background(paths: &Paths, retention_days: u32, keep: String) {
     });
 }
 
+/// With `team.agent_retention_days` set, deletes the transcript files of sub-agents that last
+/// wrote more than that many days ago, in every session of this project, at most once a day
+/// (the stamp is `cache/agent-prune.json`). Runs on a background thread; never fails the start.
+pub fn prune_agents_in_background(paths: &Paths, retention_days: u32) {
+    if retention_days == 0 {
+        return;
+    }
+    let stamp = paths.cache_dir().join("agent-prune.json");
+    let today = jiff::Zoned::now().date().to_string();
+    let last = std::fs::read_to_string(&stamp)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|v| v.get("date").and_then(|d| d.as_str()).map(str::to_string));
+    if last.as_deref() == Some(today.as_str()) {
+        return;
+    }
+    let dir = paths.sessions_dir();
+    std::thread::spawn(move || {
+        let age = Duration::from_secs(u64::from(retention_days) * 24 * 3600);
+        let gone = prune_agent_transcripts(&dir, age);
+        if gone > 0 {
+            tracing::info!(
+                "retention: deleted {gone} sub-agent transcript(s) older than {retention_days} days"
+            );
+        }
+        if let Some(parent) = stamp.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&stamp, json!({ "date": today }).to_string());
+    });
+}
+
+/// Deletes the `<session>/agents/*.jsonl` files under `sessions` not written to for `age`;
+/// returns how many.
+fn prune_agent_transcripts(sessions: &Path, age: Duration) -> usize {
+    let Ok(sessions) = std::fs::read_dir(sessions) else {
+        return 0;
+    };
+    let mut gone = 0;
+    for session in sessions.flatten() {
+        let Ok(agents) = std::fs::read_dir(session.path().join("agents")) else {
+            continue;
+        };
+        for file in agents.flatten() {
+            let path = file.path();
+            let old = file
+                .metadata()
+                .and_then(|meta| meta.modified())
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .is_some_and(|elapsed| elapsed > age);
+            if old
+                && path.extension().is_some_and(|ext| ext == "jsonl")
+                && std::fs::remove_file(&path).is_ok()
+            {
+                gone += 1;
+            }
+        }
+    }
+    gone
+}
+
 #[cfg(test)]
-mod tests {}
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::time::Duration;
+
+    #[test]
+    fn only_old_agent_transcripts_are_deleted() {
+        let dir = tempfile::tempdir().unwrap();
+        let agents = dir.path().join("s1").join("agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        let old = agents.join("old.jsonl");
+        let new = agents.join("new.jsonl");
+        std::fs::write(&old, "{}").unwrap();
+        std::fs::write(&new, "{}").unwrap();
+        let month_ago = std::time::SystemTime::now() - Duration::from_secs(30 * 24 * 3600);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(month_ago)
+            .unwrap();
+        assert_eq!(
+            super::prune_agent_transcripts(dir.path(), Duration::from_secs(14 * 24 * 3600)),
+            1
+        );
+        assert!(!old.exists() && new.exists());
+    }
+}

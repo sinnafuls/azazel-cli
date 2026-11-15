@@ -182,7 +182,10 @@ impl Tui {
 
     /// The agents the session recorded as finished, earlier processes of it included.
     fn read_recorded(&mut self) {
-        self.fleet.recorded = super::fleet::recorded_agents(&self.session.entries());
+        let days = self.env.config.team.agent_retention_days;
+        let since = (days > 0)
+            .then(|| jiff::Timestamp::now() - jiff::SignedDuration::from_hours(i64::from(days) * 24));
+        self.fleet.recorded = super::fleet::recorded_agents(&self.session.entries(), since);
     }
 
     /// Every sub-agent of the session, running and finished; `enter` opens one's chat.
@@ -207,14 +210,14 @@ impl Tui {
         );
     }
 
-    /// The hub's rows as they stand now: the agents of the team in the order they started, then
-    /// those only the session's record knows, newest first.
+    /// The hub's rows as they stand now: the agents at work first, then the finished agents of
+    /// the team, newest first, then those only the session's record knows, newest first.
     fn hub_rows(&self) -> (Vec<String>, Vec<SelectItem>) {
         let separator = self.theme.glyph(Glyph::Separator);
         let mut ids = Vec::new();
         let mut items = Vec::new();
         let members = self.backend.roster();
-        for member in members.iter().filter(|member| member.id != LEAD) {
+        for member in hub_order(&members) {
             let doing = match &member.state {
                 MemberState::Running { activity } if !activity.is_empty() => Some(activity.clone()),
                 _ => self.fleet.task(&member.id),
@@ -397,5 +400,52 @@ impl Tui {
             Ok(reached) => self.info(&format!("sent to: {}", reached.join(", "))),
             Err(why) => self.fail(&why),
         }
+    }
+}
+
+/// The sub-agents of `members` in the hub's order: those at work (running, queued, waiting for
+/// an approval) first, in the order they started, then the finished ones, newest first.
+fn hub_order(members: &[MemberInfo]) -> Vec<&MemberInfo> {
+    let agents = members.iter().filter(|member| member.id != LEAD);
+    let (mut active, mut finished): (Vec<_>, Vec<_>) = agents.partition(|member| member.state.is_active());
+    finished.reverse();
+    active.append(&mut finished);
+    active
+}
+
+#[cfg(test)]
+mod hub_tests {
+    use std::time::Duration;
+
+    use azazel_team::{MemberInfo, MemberState};
+
+    fn member(id: &str, state: MemberState) -> MemberInfo {
+        MemberInfo {
+            id: id.to_string(),
+            def: "coder".to_string(),
+            parent: Some("lead".to_string()),
+            depth: 1,
+            state,
+            elapsed: Duration::ZERO,
+            tokens: 0,
+            cost_usd: None,
+        }
+    }
+
+    #[test]
+    fn agents_at_work_come_first_and_finished_ones_newest_first() {
+        let running = || MemberState::Running {
+            activity: String::new(),
+        };
+        let members = [
+            member("lead", MemberState::Idle),
+            member("old", MemberState::Done),
+            member("a", running()),
+            member("failed", MemberState::Failed("x".into())),
+            member("q", MemberState::Queued),
+            member("new", MemberState::Done),
+        ];
+        let order: Vec<&str> = super::hub_order(&members).iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(order, ["a", "q", "new", "failed", "old"]);
     }
 }

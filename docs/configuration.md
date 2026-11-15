@@ -170,6 +170,7 @@ thinking = "low"
 | `[team]` | `max_parallel` | `4` | Sub-agents running at once; see [team](team.md) |
 | | `max_depth` | `2` | How deep agents may spawn agents |
 | | `max_turns` | `200` | Requests per task for a sub-agent whose definition sets no `max-turns`; `0` is no limit |
+| | `agent_retention_days` | `14` | Days a finished sub-agent stays in the [agent hub](tui.md#the-agent-hub); after that its transcript file is deleted at the next start. `0` keeps them as long as the session |
 | | `coordinator` | `false` | The lead only plans and delegates; see [coordinator mode](team.md#coordinator-mode) |
 | `[advisor]` | `model` | `[]` | Chain of the second model that reviews the lead's work; empty means no advisor; see [advisor](team.md#advisor) |
 | | `when` | `"off"` | `stop` reviews each time the lead is about to finish; `off` leaves the advisor to `/advise` |

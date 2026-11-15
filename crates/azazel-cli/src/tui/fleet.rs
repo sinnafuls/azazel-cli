@@ -79,7 +79,8 @@ pub(super) struct Recorded {
 }
 
 /// The sub-agents `entries` recorded, each once with what was recorded last, newest first.
-pub(super) fn recorded_agents(entries: &[Entry]) -> Vec<Recorded> {
+/// Agents last recorded before `since` (`team.agent_retention_days`) are left out.
+pub(super) fn recorded_agents(entries: &[Entry], since: Option<jiff::Timestamp>) -> Vec<Recorded> {
     let mut recorded: Vec<Recorded> = Vec::new();
     for entry in entries {
         if let EntryKind::Agent {
@@ -90,6 +91,12 @@ pub(super) fn recorded_agents(entries: &[Entry]) -> Vec<Recorded> {
         } = &entry.kind
         {
             recorded.retain(|agent| agent.id != *agent_id);
+            let at = entry.timestamp.parse::<jiff::Timestamp>().ok();
+            if let (Some(since), Some(at)) = (since, at)
+                && at < since
+            {
+                continue;
+            }
             recorded.push(Recorded {
                 id: agent_id.clone(),
                 def: def.clone(),

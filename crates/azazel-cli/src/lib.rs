@@ -560,6 +560,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     };
     if !cli.no_session {
         sessions::prune_in_background(&app.paths, app.config.session.retention_days, active.session.id());
+        sessions::prune_agents_in_background(&app.paths, app.config.team.agent_retention_days);
     }
     // A project that runs trusted for the first time gets its `setup` hooks.
     if !cli.trust

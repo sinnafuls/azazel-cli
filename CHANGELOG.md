@@ -7,6 +7,7 @@ GitHub are its section here.
 
 ### Added
 
+- `team.agent_retention_days` (default 14, also under `/settings` → Advanced): finished sub-agents older than that leave the agent hub, and their transcript files are deleted at the next start; `0` keeps them.
 - Language servers install themselves: when a file's default server (rust-analyzer, typescript-language-server, pyright, gopls) is missing, azazel installs it into `~/.azazel/lsp/` on first use and starts it. `[lsp] install = "ask" | "auto" | "off"` (default `ask`, trust-gated) decides whether it asks first; with nobody to ask, the tool result gives the command. New `azazel lsp list` and `azazel lsp install <server>`, and `azazel doctor` names the missing servers of the project's languages with the command that installs them.
 - Ghost text in the input: while you type prose, the rest of the word is shown dim, from your earlier prompts, the run and the project's file names. `Tab` accepts it with a space, `Right` without. Turn it off with `tui.autocomplete = "off"` (Input page of `/settings`).
 - `tui.predict_next = true` asks the session's model after each finished turn what you will say next and shows it as ghost text in the empty input; `Tab` or `Right` accepts it. It costs one more request per turn, shown in `/cost` as `prediction`; off by default.
@@ -18,6 +19,7 @@ GitHub are its section here.
 
 ### Changed
 
+- The agent hub lists the agents at work first, then finished ones newest first.
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
 - `/settings` has nine pages: the status line settings moved from a page of their own to a group at the end of Appearance.
 
