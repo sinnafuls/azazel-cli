@@ -989,9 +989,37 @@ pub async fn run(extensions: Vec<Box<dyn Extension>>) -> u8 {
     server.finish().await;
     match served {
         Ok(()) => EXIT_OK,
+        // The editor hung up while something was still being written to it: it is gone, and
+        // that is how a connection ends.
+        Err(e) if client_gone(&e.to_string()) => EXIT_OK,
         Err(e) => {
             eprintln!("azazel: the ACP connection failed: {e}");
             EXIT_FAILED
         }
+    }
+}
+
+/// Whether an error of the connection only says the other end closed it. The SDK hands the
+/// I/O error over as text, so it is recognised by its words.
+fn client_gone(error: &str) -> bool {
+    const GONE: [&str; 5] = [
+        "Broken pipe",
+        "os error 32",
+        "os error 109",
+        "os error 232",
+        "Connection reset",
+    ];
+    GONE.iter().any(|words| error.contains(words))
+}
+
+#[cfg(test)]
+mod gone_tests {
+    #[test]
+    fn a_client_that_hung_up_is_told_from_a_real_failure() {
+        assert!(super::client_gone(
+            r#"Internal error: "Broken pipe (os error 32)""#
+        ));
+        assert!(super::client_gone("The pipe is being closed. (os error 232)"));
+        assert!(!super::client_gone("Parse error: expected value at line 1"));
     }
 }

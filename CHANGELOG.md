@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `azazel acp` exits with status 0 when the editor closes the connection while azazel is still writing to it; it printed `the ACP connection failed: … Broken pipe` and exited with 1.
+
 ## [0.9.0] - 2026-11-15
 
 ### Added
