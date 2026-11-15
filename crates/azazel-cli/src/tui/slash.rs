@@ -128,6 +128,22 @@ const BUILTIN: &[(&str, &str)] = &[
         "Upload the conversation, secrets hidden, as a secret gist and print its link (asks first)",
     ),
     (
+        "issues",
+        "List the repository's GitHub issues; enter puts #<n> in the input, o opens one in the browser",
+    ),
+    (
+        "prs",
+        "List the repository's pull requests; enter puts #<n> in the input, o opens one in the browser",
+    ),
+    (
+        "pr",
+        "Open a pull request from this branch: drafts the title and description, you edit them, asks before pushing: /pr [title]",
+    ),
+    (
+        "review",
+        "Review a pull request (this branch's by default) with the reviewer, then ask whether to post it: /review [number]",
+    ),
+    (
         "bug",
         "Write a bug report to a zip and offer to open an issue: /bug [what went wrong]",
     ),
@@ -384,6 +400,10 @@ impl Tui {
                 Ok(file) => self.info(&format!("exported to {file}")),
                 Err(why) => self.fail(&why),
             },
+            "issues" => self.github_list(azazel_tools::gh::Kind::Issue, azazel_tools::gh::State::Open),
+            "prs" => self.github_list(azazel_tools::gh::Kind::Pr, azazel_tools::gh::State::Open),
+            "pr" => self.pr_command(args),
+            "review" => self.review_command(args),
             "share" => self.share_command(),
             "bug" => self.bug_command(args),
             "theme" if args.is_empty() => self.open_theme_picker(),
