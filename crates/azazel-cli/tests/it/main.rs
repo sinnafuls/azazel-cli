@@ -11,6 +11,7 @@ mod client;
 mod common;
 mod context;
 mod durable;
+mod github;
 mod goal;
 mod guards;
 mod inbox;

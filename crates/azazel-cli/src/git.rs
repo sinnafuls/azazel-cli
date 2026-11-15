@@ -45,7 +45,7 @@ fn git(dir: &Path) -> Command {
 }
 
 /// Runs git in `dir`; the output on success, what git said otherwise.
-async fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) async fn run(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = git(dir)
         .args(args)
         .output()
@@ -89,7 +89,7 @@ async fn base(top: &Path) -> Result<String, String> {
     Ok(empty.trim().to_string())
 }
 
-fn cut(text: &mut String, max: usize) {
+pub(crate) fn cut(text: &mut String, max: usize) {
     if text.len() > max {
         let mut at = max;
         while !text.is_char_boundary(at) {

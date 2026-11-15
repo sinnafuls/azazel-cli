@@ -196,6 +196,15 @@ enum GhKind {
     Issue,
 }
 
+impl From<GhKind> for crate::gh::Kind {
+    fn from(kind: GhKind) -> Self {
+        match kind {
+            GhKind::Pr => crate::gh::Kind::Pr,
+            GhKind::Issue => crate::gh::Kind::Issue,
+        }
+    }
+}
+
 /// `pr://` and `issue://` list what is open in the repository of the working directory;
 /// `pr://<n>` and `issue://<n>` show one with its comments; `pr://<n>/diff` is a pull request's
 /// diff. All of it comes from the `gh` program, with the account `gh` is signed in to.
@@ -237,7 +246,7 @@ impl GhScheme {
             return Err(usage());
         }
         match (self.kind, part) {
-            (_, "") => Ok(owned(&[noun, "view", number, "--comments"])),
+            (kind, "") => Ok(crate::gh::view_arguments(kind.into(), number)),
             (GhKind::Pr, "diff") => Ok(owned(&["pr", "diff", number])),
             _ => Err(usage()),
         }
@@ -289,7 +298,10 @@ impl Scheme for GhScheme {
                 format!("`{shown}` failed: {why}")
             });
         }
-        let text = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+        let mut text = String::from_utf8_lossy(&output.stdout).trim_end().to_string();
+        if arguments.get(1).map(String::as_str) == Some("view") {
+            text = crate::gh::render_view(self.kind.into(), &text)?;
+        }
         Ok(vec![Block::text(if text.is_empty() {
             match self.kind {
                 GhKind::Pr => "no open pull requests".to_string(),
@@ -320,13 +332,10 @@ mod tests {
         let prs = GhScheme::pull_requests(PathBuf::from("gh"));
         let issues = GhScheme::issues(PathBuf::from("gh"));
         assert_eq!(prs.arguments("").unwrap(), ["pr", "list", "--limit", "30"]);
-        assert_eq!(prs.arguments("12").unwrap(), ["pr", "view", "12", "--comments"]);
+        assert_eq!(prs.arguments("12").unwrap()[..3], ["pr", "view", "12"]);
         assert_eq!(prs.arguments("12/diff").unwrap(), ["pr", "diff", "12"]);
         assert_eq!(issues.arguments("/").unwrap(), ["issue", "list", "--limit", "30"]);
-        assert_eq!(
-            issues.arguments("7").unwrap(),
-            ["issue", "view", "7", "--comments"]
-        );
+        assert_eq!(issues.arguments("7").unwrap()[..3], ["issue", "view", "7"]);
         assert_eq!(
             prs.arguments("12/files").unwrap_err(),
             "pr://12/files: expected pr://, pr://<number> or pr://<number>/diff"

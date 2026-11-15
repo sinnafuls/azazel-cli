@@ -7,6 +7,7 @@ pub mod check;
 pub mod debug;
 pub mod eval;
 pub mod format;
+pub mod gh;
 pub mod guards;
 #[cfg(feature = "lsp")]
 pub mod lsp;

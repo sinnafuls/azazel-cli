@@ -932,6 +932,10 @@ Session and display:
 | `/rewind` | Go back to before an earlier prompt: files, conversation or both |
 | `/compact [what to keep]` | Summarise the conversation so far |
 | `/export [path] [--sanitize]` | Write the conversation to a file: `.md`, `.html` or `.jsonl`; `--sanitize` hides secrets and leaves out what files held, [for sharing](sessions-and-checkpoints.md#sanitized-exports) |
+| `/issues` | List the repository's GitHub issues; `Tab` steps through open, closed and all, `Enter` puts `#<n>` in the input, `o` opens the issue in the browser. See [GitHub](github.md) |
+| `/prs` | The same for pull requests |
+| `/pr [title]` | Open a pull request from this branch: the lead drafts the title and description, you edit them, and it asks before pushing the branch |
+| `/review [number]` | Review a pull request (this branch's by default) with the `reviewer` role, show the findings, and ask whether to post them as a review comment |
 | `/share` | Upload the conversation, secrets hidden, as a secret gist and print its link; asks first |
 | `/bug [what went wrong]` | Write a bug report to a zip and offer to open an issue |
 | `/transcript` | Read the whole conversation full screen; see [transcript viewer](#transcript-viewer) |

@@ -18,6 +18,7 @@ pub mod doctor;
 pub mod export;
 mod fix;
 pub mod git;
+pub mod github;
 #[cfg(any(feature = "mcp", feature = "acp"))]
 pub mod headless;
 pub mod history;

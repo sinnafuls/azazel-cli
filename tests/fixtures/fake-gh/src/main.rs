@@ -20,6 +20,17 @@
 //! - `fake-gh issue create --repo <owner>/<name> --title <text> --body-file <file>` writes the
 //!   title, an empty line and the body to `gh-data/issue.md` and prints the address of the new
 //!   issue in that repository. Not signed in, it fails.
+//! - `fake-gh issue view <n> --json …` and `fake-gh pr view [<n>] --json …` print
+//!   `gh-data/issue-<n>.json` and `gh-data/pr-<n>.json` (`gh-data/pr-current.json` without a number)
+//!   and fail the way `gh` does when there is no such file; `fake-gh pr diff <n>` prints
+//!   `gh-data/pr-<n>.diff`;
+//! - `fake-gh issue list` and `fake-gh pr list` with `--state <state>` print
+//!   `gh-data/issue-list-<state>.json` and `gh-data/pr-list-<state>.json`;
+//! - `fake-gh repo view --json …` prints `gh-data/repo.json`;
+//! - `fake-gh pr create --title <text> --body-file <file> [--base <b>] [--head <h>]` writes the title,
+//!   an empty line and the body to `gh-data/pr.md` and prints the address of the new pull request;
+//! - `fake-gh pr review <n> --comment --body-file <file>` writes the body to `gh-data/review-<n>.md`.
+//!   Both fail when not signed in.
 //!
 //! Every call adds a line to `gh-data/calls.log`: its arguments, with a tab between them.
 
@@ -201,6 +212,109 @@ fn main() -> ExitCode {
             }
             let _ = std::fs::write(data.join("issue.md"), format!("{title}\n\n{body}"));
             println!("https://github.com/{repo}/issues/7");
+            ExitCode::SUCCESS
+        }
+        [noun @ ("issue" | "pr"), "view", rest @ ..] => {
+            let number = rest
+                .first()
+                .filter(|word| !word.starts_with("--"))
+                .copied()
+                .unwrap_or("current");
+            match std::fs::read(data.join(format!("{noun}-{number}.json"))) {
+                Ok(body) => {
+                    let _ = std::io::stdout().write_all(&body);
+                    ExitCode::SUCCESS
+                }
+                Err(_) => fail(&format!(
+                    "GraphQL: Could not resolve to an issue or pull request with the number of {number}."
+                )),
+            }
+        }
+        ["pr", "diff", number, ..] => match std::fs::read(data.join(format!("pr-{number}.diff"))) {
+            Ok(body) => {
+                let _ = std::io::stdout().write_all(&body);
+                ExitCode::SUCCESS
+            }
+            Err(_) => fail(&format!("could not find pull request diff: {number}")),
+        },
+        [noun @ ("issue" | "pr"), "list", rest @ ..] => {
+            let state = rest
+                .iter()
+                .position(|word| *word == "--state")
+                .and_then(|at| rest.get(at + 1))
+                .copied()
+                .unwrap_or("open");
+            match std::fs::read(data.join(format!("{noun}-list-{state}.json"))) {
+                Ok(body) => {
+                    let _ = std::io::stdout().write_all(&body);
+                    ExitCode::SUCCESS
+                }
+                Err(_) => {
+                    println!("[]");
+                    ExitCode::SUCCESS
+                }
+            }
+        }
+        ["repo", "view", ..] => match std::fs::read(data.join("repo.json")) {
+            Ok(body) => {
+                let _ = std::io::stdout().write_all(&body);
+                ExitCode::SUCCESS
+            }
+            Err(_) => {
+                fail("none of the git remotes configured for this repository point to a known GitHub host")
+            }
+        },
+        ["pr", "create", rest @ ..] => {
+            if !data.join("signed-in").exists() {
+                return fail("To get started with GitHub CLI, please run:  gh auth login");
+            }
+            let (mut title, mut body) = ("", String::new());
+            let mut rest = rest.iter();
+            while let Some(word) = rest.next() {
+                let value = rest.next().copied().unwrap_or_default();
+                match *word {
+                    "--title" => title = value,
+                    "--base" | "--head" => {}
+                    "--body-file" => match std::fs::read_to_string(value) {
+                        Ok(text) => body = text,
+                        Err(_) => return fail(&format!("open {value}: no such file")),
+                    },
+                    other => return fail(&format!("unknown flag: {other}")),
+                }
+            }
+            if title.is_empty() {
+                return fail(
+                    "must provide `--title` and `--body` (or `--fill`) when not running interactively",
+                );
+            }
+            let _ = std::fs::write(data.join("pr.md"), format!("{title}\n\n{body}"));
+            println!("https://github.com/tester/repo/pull/9");
+            ExitCode::SUCCESS
+        }
+        ["pr", "review", number, rest @ ..] => {
+            if !data.join("signed-in").exists() {
+                return fail("To get started with GitHub CLI, please run:  gh auth login");
+            }
+            let mut rest = rest.iter();
+            let mut commented = false;
+            while let Some(word) = rest.next() {
+                match *word {
+                    "--comment" => commented = true,
+                    "--body-file" => {
+                        let value = rest.next().copied().unwrap_or_default();
+                        match std::fs::read_to_string(value) {
+                            Ok(text) => {
+                                let _ = std::fs::write(data.join(format!("review-{number}.md")), text);
+                            }
+                            Err(_) => return fail(&format!("open {value}: no such file")),
+                        }
+                    }
+                    other => return fail(&format!("unknown flag: {other}")),
+                }
+            }
+            if !commented {
+                return fail("specify one of `--approve`, `--comment`, or `--request-changes`");
+            }
             ExitCode::SUCCESS
         }
         _ => fail(&format!("unknown command: {}", args.join(" "))),

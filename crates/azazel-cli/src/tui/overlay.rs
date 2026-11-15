@@ -156,6 +156,25 @@ pub enum Action {
         top: PathBuf,
         stage_all: bool,
     },
+    /// `/issues` and `/prs`: the rows shown, for the keys that act on one.
+    GhList {
+        kind: azazel_tools::gh::Kind,
+        state: azazel_tools::gh::State,
+        items: Vec<azazel_tools::gh::Item>,
+    },
+    /// `/pr`: the title and description being edited.
+    PrEdit(Box<crate::github::Plan>),
+    /// `/pr`: whether to push and open it; the second row says yes.
+    PrConfirm {
+        plan: Box<crate::github::Plan>,
+        title: String,
+        body: String,
+    },
+    /// `/review`: whether to post the findings as a comment; the second row says yes.
+    ReviewPost {
+        number: u64,
+        body: String,
+    },
     /// `/share`: whether to upload this; the first row says yes.
     Share(Box<crate::share::Shared>),
     /// `/bug`: per row, whether the report takes the conversation along; `None` cancels.
