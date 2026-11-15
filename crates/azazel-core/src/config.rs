@@ -317,6 +317,23 @@ config_table!(WebConfig {
     /// Search through the model provider's own search tool when the lead's model has one.
     provider_search: bool = true,
 });
+config_table!(RemoteConfig {
+    /// The port `azazel remote` listens on. It is fixed because an installed page belongs to its
+    /// origin, port included; 0 lets the system choose.
+    port: u16 = 7420,
+    /// The address of your own tunnel or reverse proxy in front of the server
+    /// (`https://remote.example.com`): the origin of the pairing links, and an origin the server
+    /// accepts. `azazel remote --tunnel` sets it for the run.
+    public_url: String = String::new(),
+    /// Minutes a pairing link works.
+    link_minutes: u64 = 15,
+    /// Hours a paired device stays signed in.
+    device_hours: u64 = 24,
+    /// Hide secrets in the messages and tool results sent to a browser.
+    redact: bool = true,
+    /// Let a browser with control access switch to the `bypass` mode.
+    allow_bypass: bool = false,
+});
 config_table!(GuardsConfig {
     /// Send the lead back once when it stops on changed code and ran no build or test since.
     done_check: bool = true,
@@ -774,6 +791,7 @@ pub struct Config {
     /// Absent means lexical search only.
     pub embeddings: Option<EmbeddingsConfig>,
     pub web: WebConfig,
+    pub remote: RemoteConfig,
     pub mcp: McpConfig,
     pub media: MediaConfig,
     pub lsp: LspConfig,
@@ -854,6 +872,7 @@ impl Default for Config {
             memory: MemoryConfig::default(),
             embeddings: None,
             web: WebConfig::default(),
+            remote: RemoteConfig::default(),
             mcp: McpConfig::default(),
             media: MediaConfig::default(),
             lsp: LspConfig::default(),
@@ -886,7 +905,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-pub const TABLES: [&str; 41] = [
+pub const TABLES: [&str; 42] = [
     "roles",
     "providers",
     "models",
@@ -902,6 +921,7 @@ pub const TABLES: [&str; 41] = [
     "memory",
     "embeddings",
     "web",
+    "remote",
     "mcp",
     "media",
     "lsp",
@@ -1311,7 +1331,7 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 25] = [
+const TRUST_GATED: [(&str, Option<&str>); 26] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -1341,6 +1361,8 @@ const TRUST_GATED: [(&str, Option<&str>); 25] = [
     ("triggers", Some("github_authors")),
     ("triggers", Some("slack_users")),
     ("triggers", Some("slack_url")),
+    // A project must not open ports.
+    ("remote", None),
 ];
 
 /// Every trust-gated setting as the docs name it (`hooks`, `permissions.allow`), `permissions.mode`
