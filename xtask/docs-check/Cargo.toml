@@ -15,7 +15,8 @@ workspace = true
 # registers.
 [dependencies]
 anyhow.workspace = true
-azazel-cli.workspace = true
+# `repomap` is not a default feature, but its tool and command are documented.
+azazel-cli = { workspace = true, features = ["repomap"] }
 azazel-core.workspace = true
 azazel-protocol.workspace = true
 azazel-tui.workspace = true

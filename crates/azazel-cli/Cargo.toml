@@ -22,7 +22,6 @@ default = [
     "mcp",
     "acp",
     "memory",
-    "repomap",
     "browser",
     "screen",
     "media",
@@ -43,7 +42,7 @@ acp = ["dep:agent-client-protocol"]
 # already links it.
 memory = ["dep:azazel-memory", "dep:rusqlite"]
 # The repository map: `repo_map` and `/repomap`, with the grammars that read Rust, Python, Go,
-# JavaScript and TypeScript.
+# JavaScript and TypeScript. Not in the default build: the grammars add 5.3 MB to the binary.
 repomap = ["dep:azazel-repomap"]
 browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]

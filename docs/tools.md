@@ -641,7 +641,7 @@ Registered when `[memory] enabled` is true (the default). See [memory](memory.md
 
 ## Repository map
 
-Registered when azazel is built with the `repomap` feature (on by default). `repo_map` reads the Rust, Python, Go, JavaScript and TypeScript files the project's `.gitignore` and `.ignore` files do not leave out (not generated files, not files over 512 KB), ranks the definitions by how the other files refer to them, and writes the best ones that fit a budget. What was read from each file is kept by modification time in `repomap.json` in the project's data directory, so a second run parses only the files that changed. `/repomap` shows the map to you; `/repomap refresh` also rebuilds the copy that `[context] repo_map_tokens` puts in the system prompt.
+Registered when azazel is built with the `repomap` Cargo feature (`cargo build --features repomap`); it is not in the default build, because the grammars add 5.3 MB to the binary. `repo_map` reads the Rust, Python, Go, JavaScript and TypeScript files the project's `.gitignore` and `.ignore` files do not leave out (not generated files, not files over 512 KB), ranks the definitions by how the other files refer to them, and writes the best ones that fit a budget. What was read from each file is kept by modification time in `repomap.json` in the project's data directory, so a second run parses only the files that changed. `/repomap` shows the map to you; `/repomap refresh` also rebuilds the copy that `[context] repo_map_tokens` puts in the system prompt.
 
 | Tool | Input | Behaviour |
 |---|---|---|

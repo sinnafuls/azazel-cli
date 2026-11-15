@@ -7,7 +7,7 @@ GitHub are its section here.
 
 ### Added
 
-- The repository map: the `repo_map` tool and `/repomap` give an outline of the project's most referenced definitions (Rust, Python, Go, JavaScript, TypeScript), ranked by how the code refers to them and fitted to a token budget. `[context] repo_map_tokens` puts it in the lead's system prompt (off by default).
+- The repository map: the `repo_map` tool and `/repomap` give an outline of the project's most referenced definitions (Rust, Python, Go, JavaScript, TypeScript), ranked by how the code refers to them and fitted to a token budget. `[context] repo_map_tokens` puts it in the lead's system prompt (off by default). Built with `--features repomap`; the grammars add 5.3 MB, so it is not in the default build.
 
 ### Changed
 

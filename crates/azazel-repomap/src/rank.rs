@@ -35,6 +35,12 @@ impl Focus {
     }
 }
 
+/// A type name, or a name long enough to belong to one thing; `len` and `env` are used
+/// everywhere for the standard library's methods and say nothing about the one defined here.
+fn distinctive(name: &str) -> bool {
+    name.len() >= 8 || name.starts_with(|c: char| c.is_uppercase())
+}
+
 struct Edge {
     to: usize,
     name: usize,
@@ -67,7 +73,7 @@ fn rank(files: &[FileTags], focus: &Focus) -> Ranks {
                 continue;
             };
             let mut weight = f64::from(*uses).sqrt();
-            if owners.len() > COMMON_NAME_FILES || name.starts_with('_') {
+            if owners.len() > COMMON_NAME_FILES || name.starts_with('_') || !distinctive(name) {
                 weight *= 0.1;
             }
             if names.contains(name.as_str()) {
@@ -133,11 +139,16 @@ fn rank(files: &[FileTags], focus: &Focus) -> Ranks {
                     if def.name.is_empty() {
                         return 0.0;
                     }
-                    interned
+                    let earned = interned
                         .get(def.name.as_str())
                         .and_then(|id| flow[index].get(id))
                         .copied()
-                        .unwrap_or(0.0)
+                        .unwrap_or(0.0);
+                    if distinctive(&def.name) {
+                        earned
+                    } else {
+                        earned * 0.1
+                    }
                 })
                 .collect()
         })
