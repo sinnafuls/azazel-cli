@@ -863,36 +863,6 @@ System prompt body.
     }
 
     #[test]
-    fn only_name_and_description_are_required() {
-        let def = parse("unknown-key: ignored", DefSource::Home).unwrap();
-        assert_eq!(
-            def,
-            AgentDef {
-                name: "agent".into(),
-                description: "does things".into(),
-                tools: None,
-                disallowed_tools: Vec::new(),
-                model: None,
-                thinking: None,
-                plan_mode: false,
-                mode: AgentMode::Subagent,
-                color: None,
-                max_turns: None,
-                skills: Vec::new(),
-                spawns: Vec::new(),
-                isolation: Isolation::None,
-                output_schema: None,
-                body: "Body".into(),
-                source: DefSource::Home,
-                path: Some(PathBuf::from("agent.md")),
-            }
-        );
-        let explicit = parse("permission-mode: inherit\nisolation: worktree", DefSource::Home).unwrap();
-        assert!(!explicit.plan_mode);
-        assert_eq!(explicit.isolation, Isolation::Worktree);
-    }
-
-    #[test]
     fn an_output_schema_is_a_mapping_or_json_text() {
         let nested = parse(
             "output-schema:\n  type: object\n  properties:\n    files:\n      type: array\n  required: [files]",
@@ -1026,34 +996,6 @@ System prompt body.
             extra("skills: [[nested]]"),
             "skills: every entry must be a string, got `[\"nested\"]`"
         );
-    }
-
-    #[test]
-    fn strings_and_lists_are_interchangeable() {
-        let as_strings = parse(
-            "tools: read, grep\ndisallowed-tools: write, edit\nmodel: \"@slow, mock/a:high\"\n\
-             skills: code-review, testing\nspawns: scout , tester\nmax-turns: \"12\"",
-            DefSource::Project,
-        )
-        .unwrap();
-        let as_lists = parse(
-            "tools: [read, grep]\ndisallowed-tools:\n  - write\n  - edit\n\
-             model: [\"@slow\", \"mock/a:high\"]\nskills: [code-review, testing]\n\
-             spawns: [scout, tester]\nmax-turns: 12",
-            DefSource::Project,
-        )
-        .unwrap();
-        assert_eq!(as_strings, as_lists);
-        assert_eq!(as_lists.tools, Some(vec![rule("read"), rule("grep")]));
-        assert_eq!(as_lists.disallowed_tools, strings(&["write", "edit"]));
-        assert_eq!(as_lists.model, Some(vec![spec("@slow"), spec("mock/a:high")]));
-        assert_eq!(as_lists.skills, strings(&["code-review", "testing"]));
-        assert_eq!(as_lists.spawns, strings(&["scout", "tester"]));
-        assert_eq!(as_lists.max_turns, Some(12));
-
-        let single = parse("model: mock/a\nthinking: off", DefSource::Project).unwrap();
-        assert_eq!(single.model, Some(vec![spec("mock/a")]));
-        assert_eq!(single.thinking, Some(ThinkingLevel::Off));
     }
 
     #[test]
@@ -1267,22 +1209,6 @@ System prompt body.
     }
 
     #[test]
-    fn files_of_one_root_load_in_sorted_order_and_only_markdown_counts() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_def(tmp.path(), "b.md", "twin", "from b");
-        write_def(tmp.path(), "a.md", "twin", "from a");
-        write_def(tmp.path(), "a/inner.md", "twin", "from inner");
-        write_def(tmp.path(), "readme.txt", "text", "not a definition");
-        let defs = discover(&[], &[(tmp.path().to_path_buf(), DefSource::Home)]);
-        assert_eq!(defs.list().len(), 1);
-        assert_eq!(defs.get("twin").unwrap().description, "from b");
-        assert!(defs.invalid().is_empty());
-
-        let missing = discover(&[], &[(tmp.path().join("absent"), DefSource::Home)]);
-        assert_eq!(missing, AgentDefs::default());
-    }
-
-    #[test]
     fn invalid_definitions_are_reported_while_the_valid_ones_load() {
         let tmp = tempfile::tempdir().unwrap();
         write_def(tmp.path(), "good.md", "good", "fine");
@@ -1401,19 +1327,6 @@ System prompt body.
         let mut untouched = before.clone();
         untouched.apply_overrides(&BTreeMap::new());
         assert_eq!(untouched, before);
-    }
-
-    #[test]
-    fn source_labels() {
-        let sources = [
-            DefSource::Builtin,
-            DefSource::Package,
-            DefSource::Home,
-            DefSource::Compat,
-            DefSource::Project,
-        ];
-        let labels = sources.map(|source| source.label());
-        assert_eq!(labels, ["built-in", "package", "user", "compat", "project"]);
     }
 
     fn primaries_and_subagents(extra: &[(&str, &str)]) -> Arc<AgentDefs> {

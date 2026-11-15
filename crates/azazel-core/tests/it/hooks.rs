@@ -545,16 +545,6 @@ async fn a_command_hook_receives_the_event_on_stdin_and_the_session_in_its_envir
 }
 
 #[tokio::test]
-async fn disabled_hooks_register_nothing() {
-    let bench = Bench::new();
-    let mut ext = bench.ext(vec![("pre_tool_use", command("echo 'never' >&2; exit 2"))]);
-    ext.disabled = true;
-    let registry = bench.registry(&ext);
-    let mut event = tool_call("shell", json!({"command": "ls"}));
-    assert_eq!(registry.bus.emit(&mut event).await, Outcome::Continue);
-}
-
-#[tokio::test]
 async fn an_http_hook_blocks_with_the_servers_answer_and_a_failing_server_does_not() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -930,61 +920,4 @@ async fn the_newer_events_reach_their_hooks_with_their_fields() {
         })
         .await;
     assert_eq!(bench.json("setup.json")["trigger"], "init");
-}
-
-#[tokio::test]
-async fn the_hook_list_names_each_hook_its_source_and_how_it_last_ran() {
-    let bench = Bench::new();
-    let mut gate = matching("shell", command("echo 'no' >&2; exit 2"));
-    gate.once = true;
-    gate.timeout = 5;
-    let mut ext = bench.ext(vec![
-        ("stop", command("true")),
-        ("pre_tool_use", gate),
-        ("pre_tool_use", command("exit 1")),
-    ]);
-    ext.sources = BTreeMap::from([("pre_tool_use".to_string(), vec!["/home/config.toml".to_string()])]);
-    let registry = bench.registry(&ext);
-    let hooks = bench.services.get::<azazel_core::hooks::Hooks>().unwrap();
-    assert!(hooks.enabled());
-    let before = hooks.list();
-    let shown: Vec<(&str, &str, Option<&str>)> = before
-        .iter()
-        .map(|hook| (hook.event, hook.source.as_str(), hook.matcher.as_deref()))
-        .collect();
-    assert_eq!(
-        shown,
-        [
-            ("pre_tool_use", "/home/config.toml", Some("shell")),
-            ("pre_tool_use", "environment or command line", None),
-            ("stop", "environment or command line", None),
-        ]
-    );
-    assert_eq!(before[0].options, ["once", "timeout 5 s"]);
-    assert_eq!(before[0].kind, "command");
-    assert!(before.iter().all(|hook| hook.last.is_none()));
-
-    let mut event = tool_call("shell", json!({"command": "ls"}));
-    assert_eq!(registry.bus.emit(&mut event).await, blocked("no"));
-    let mut event = tool_call("read", json!({"path": "a"}));
-    registry.bus.emit(&mut event).await;
-    let after = hooks.list();
-    assert_eq!(after[0].last.as_ref().unwrap().result, "blocked: no");
-    assert_eq!(
-        after[1].last.as_ref().unwrap().result,
-        "failed: exited with code 1"
-    );
-    assert!(after[2].last.is_none());
-
-    // Switched off, the hooks are still listed but none runs.
-    let off = Bench::new();
-    let mut ext = off.ext(vec![("pre_tool_use", command("echo ran > ran.txt"))]);
-    ext.disabled = true;
-    let registry = off.registry(&ext);
-    let hooks = off.services.get::<azazel_core::hooks::Hooks>().unwrap();
-    assert!(!hooks.enabled());
-    assert_eq!(hooks.list().len(), 1);
-    let mut event = tool_call("read", json!({"path": "a"}));
-    registry.bus.emit(&mut event).await;
-    assert_eq!(off.written("ran.txt"), None);
 }

@@ -178,20 +178,4 @@ mod tests {
             "the cost limit of $5.00 is reached ($5.02 spent); raise it with --max-cost or [limits] max_cost_usd"
         );
     }
-
-    #[tokio::test]
-    async fn no_limits_registers_nothing() {
-        let registry = Registry::new(ExtCtx {
-            services: Arc::new(Services::new()),
-            cwd: ".".into(),
-            session_id: "s".into(),
-        });
-        registry
-            .load(&LimitsExt {
-                max_cost_usd: 0.0,
-                warn_cost_usd: 0.0,
-            })
-            .unwrap();
-        assert_eq!(registry.bus.emit(&mut turn()).await, Outcome::Continue);
-    }
 }

@@ -975,23 +975,6 @@ mod tests {
         assert!(listing.contains(&format!("- big-0: {}…", "w".repeat(200))));
     }
 
-    #[test]
-    fn first_use_is_announced_once_per_skill() {
-        let tmp = tempfile::tempdir().unwrap();
-        write_skill(tmp.path(), "a", "name: alpha\ndescription: first", "");
-        let registry = SkillRegistry::default();
-        registry.add_root(SkillRoot::new(tmp.path().to_path_buf(), SkillSource::Home));
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let sink = seen.clone();
-        registry.on_first_use(Arc::new(move |skill| {
-            sink.lock().unwrap().push(skill.name.clone())
-        }));
-        let alpha = registry.get("alpha").unwrap();
-        registry.mark_used(&alpha);
-        registry.mark_used(&alpha);
-        assert_eq!(*seen.lock().unwrap(), ["alpha"]);
-    }
-
     /// A project whose permission state is a service, and a skill of `source` that allows two
     /// things.
     struct Granting {

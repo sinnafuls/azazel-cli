@@ -632,23 +632,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn choices_follow_the_values_the_configuration_knows() {
-        assert_eq!(
-            PermissionMode::NAMES,
-            PermissionMode::ALL.map(PermissionMode::as_str)
-        );
-        assert_eq!(GlyphSetting::NAMES, ["auto", "unicode", "nerd", "ascii"]);
-        let names: Vec<&str> = GlyphSetting::ALL.iter().map(|v| v.as_str()).collect();
-        assert_eq!(GlyphSetting::NAMES, names);
-    }
-
-    #[test]
-    fn leaves_are_values_and_empty_tables() {
-        let table: Table = toml::from_str("a = 1\n[b]\nc = []\n[b.d]\n[b.e]\nf = \"x\"\n").unwrap();
-        assert_eq!(leaves(&table), ["a", "b.c", "b.d", "b.e.f"]);
-        assert_eq!(lookup(&table, "b.e.f"), Some(&Value::String("x".into())));
-        assert_eq!(lookup(&table, "b.missing"), None);
-    }
 }

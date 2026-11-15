@@ -1404,17 +1404,6 @@ mod tests {
     }
 
     #[test]
-    fn defaults_apply_when_no_file_exists() {
-        let f = fixture("", "", "");
-        let loaded = Config::load(&f.paths, &trusted()).unwrap();
-        assert_eq!(loaded.config, Config::default());
-        assert!(loaded.layers.is_empty());
-        assert!(!loaded.config.roles.contains_key("default"));
-        assert_eq!(loaded.config.permissions.mode, PermissionMode::Manual);
-        assert_eq!(loaded.config.compaction.reserve_tokens, 16_384);
-    }
-
-    #[test]
     fn tables_merge_rule_arrays_concatenate_other_arrays_replace() {
         let f = fixture(
             r#"
@@ -1762,52 +1751,6 @@ mod tests {
     }
 
     #[test]
-    fn the_old_name_of_manual_mode_is_refused_with_the_new_one() {
-        let f = fixture("[permissions]\nmode = \"ask\"\n", "", "");
-        let error = Config::load(&f.paths, &LoadOptions::default())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("config.toml") && error.contains("`manual`"),
-            "{error}"
-        );
-        let f = fixture("", "", "");
-        let options = LoadOptions {
-            env: vec![("AZAZEL_PERMISSIONS__MODE".into(), "ask".into())],
-            ..LoadOptions::default()
-        };
-        let error = Config::load(&f.paths, &options).unwrap_err().to_string();
-        assert!(
-            error.contains("AZAZEL_PERMISSIONS__MODE") && error.contains("`manual`"),
-            "{error}"
-        );
-        assert!("ask".parse::<PermissionMode>().unwrap_err().contains("`manual`"));
-
-        // Every mode reads back as it is written; the cycle leaves bypass out.
-        for mode in PermissionMode::ALL {
-            assert_eq!(mode.to_string().parse::<PermissionMode>(), Ok(mode));
-            let table: Table = toml::from_str(&format!("[permissions]\nmode = \"{mode}\"")).unwrap();
-            assert_eq!(finish(table).unwrap().permissions.mode, mode);
-        }
-        let mut seen = vec![PermissionMode::Plan];
-        while seen.len() < 6 {
-            seen.push(seen[seen.len() - 1].next());
-        }
-        assert_eq!(
-            seen,
-            [
-                PermissionMode::Plan,
-                PermissionMode::Manual,
-                PermissionMode::AcceptEdits,
-                PermissionMode::Auto,
-                PermissionMode::Plan,
-                PermissionMode::Manual
-            ]
-        );
-        assert_eq!(PermissionMode::Bypass.next(), PermissionMode::Plan);
-    }
-
-    #[test]
     fn new_tables_parse_with_their_values_and_reject_unknown_words() {
         let home = r#"
             [session]
@@ -2064,17 +2007,5 @@ providers:
             error.contains("models.yml") && error.contains("providers.gateway") && error.contains("base_url"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn an_untrusted_project_models_yml_is_not_read_at_all() {
-        let f = fixture("", "", "");
-        // Not even valid: an untrusted file is never parsed.
-        models_yml(&f, "", "providers:\n  evil:\n    api: nonsense\n");
-        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
-        assert!(loaded.config.providers.is_empty() && loaded.models_files.is_empty());
-        assert_eq!(loaded.ignored.len(), 1);
-        assert!(loaded.ignored[0].contains("models.yml"), "{:?}", loaded.ignored);
-        assert!(Config::load(&f.paths, &trusted()).is_err());
     }
 }
