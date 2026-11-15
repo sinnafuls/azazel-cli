@@ -14,6 +14,9 @@ GitHub are its section here.
 - While sub-agents work, a header above the input counts them (`Agents · 2 running`, with the key of the agent hub), with a row each for the first three (definition, current tool, time, tokens) and `… N more` for the others.
 - `Left` twice on an empty input opens the agent hub. The hub lists every sub-agent of the session, finished ones and those of earlier runs included, with parent, cost and task. `Enter` opens the agent's chat: its whole transcript from its file, followed live, with a line to message it; `Esc` or `Left` twice goes back. `x` stops the agent, `f` follows it in the transcript.
 - `tui.todo_max` (default 8; Appearance page of `/settings`): a long todo list above the input folds the finished items into one row (`✓ 11 done`), shows the item in progress and the next ones, and counts the rest (`… 3 more`); `0` hides the list.
+- `agent_status` (and `agent://<id>/status`, `agent://all/status`) tells at once what an agent is doing, without asking a model: state and time, the tool it runs now and for how long, its last lines, the files it changed, an isolated agent's uncommitted changes and commits, tokens and cost.
+- `agent_send` with `ask: true` asks an agent a question on the side, like `/btw`: it is answered in seconds from the agent's conversation on its own model, the agent keeps working and nothing is added to its transcript. The cost counts to the agent that asked, under `btw` in `/cost`.
+- `agent_send` says how the message reached each agent: `delivered at its next step`, `woke it` or `queued` (a message to an agent still waiting to start now goes with its prompt instead of failing).
 - A tool card appears as soon as the model starts writing the call: its header fills in with the path, command or pattern as the arguments arrive, and a `write` or `edit` shows the last lines of the text being written. The same holds for the sub-agent you follow and in an agent's popup.
 
 ### Changed
@@ -21,6 +24,11 @@ GitHub are its section here.
 - The `minimal` status-line preset counts sub-agents at work. In the agent hub, `Enter` opens the agent's chat instead of following it; following is `f`, stopping is `x`.
 - `Ctrl+O` now expands or collapses the output of every tool call on screen, not only of calls that finish afterwards: the screen and scrollback are erased and the last 300 things written are drawn again. Inside tmux, screen or zellij it works as before.
 - Tool cards that follow one another are set apart by a blank row; compact rows still stand together.
+
+### Fixed
+
+- What you type while the lead waits in `task` or `agent_wait` reaches it at once: the wait ends, the result names the agents still running, and their reports arrive later as messages. Before, the message waited until every agent had finished.
+- A message that reaches an agent just as it finishes its turn gets a turn of its own instead of waiting for the next prompt.
 
 ## [0.8.0] - 2026-11-14
 

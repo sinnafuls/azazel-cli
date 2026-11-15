@@ -143,24 +143,37 @@ default = "plan"
 
 | Tool | Input | Behaviour |
 |---|---|---|
-| `task` | `agents: [{agent, prompt, name?, model?, isolation?, schema?}]`, `wait?` (default `true`) | Starts every listed agent; they run in parallel. With `wait` it returns all reports (each cut at 8000 characters, with a pointer to `agent://<id>`). With `wait: false` it returns the ids at once and each result arrives later as an `<agent-result>` message. If one agent cannot be started, none are. Cancelling a waiting call stops the agents it started. |
-| `agent_send` | `to` (an id, `parent`, or `all`), `message` | A working agent sees the message before its next step. A finished one is revived with it, keeping its context. |
+| `task` | `agents: [{agent, prompt, name?, model?, isolation?, schema?}]`, `wait?` (default `true`) | Starts every listed agent; they run in parallel. With `wait` it returns all reports (each cut at 8000 characters, with a pointer to `agent://<id>`). With `wait: false` it returns the ids at once and each result arrives later as an `<agent-result>` message. If one agent cannot be started, none are. Cancelling a waiting call stops the agents it started. When you type while it waits, the wait ends at once: the result names the agents still running, which go on in the background and report later as messages. |
+| `agent_send` | `to` (an id, `parent`, or `all`), `message`, `ask?` (default `false`) | Returns at once with how the message arrived, one line per agent: `delivered at its next step` (it is working), `woke it` (it was finished, and is revived with the message, keeping its context) or `queued` (it is still waiting to start; the message goes with its prompt). With `ask: true` the message is a question answered on the side: see [Asking an agent](#asking-an-agent). |
 | `agent_stop` | `id`, `reason?` | Stops the agent and every agent it started. |
-| `agent_wait` | `ids?`, `timeout_secs?` (default 600) | Returns when one of the caller's agents has a new result, or a message for the caller arrives. |
+| `agent_wait` | `ids?`, `timeout_secs?` (default 600) | Returns when one of the caller's agents has a new result, or a message for the caller arrives, or the user types something for the caller. The agents keep running. |
 | `agent_list` | none | Id, definition, state, activity, time, tokens and cost of every agent. |
+| `agent_status` | `id` (an id, `lead`, or `all`) | What the agent is doing, at once and without asking a model: state and time, the tool it runs now and for how long, the last lines it wrote, the files its `write`, `edit` and `patch` calls changed, for an isolated agent its worktree's `git status` and the commits since it started, tokens, cost, and what its side questions cost. `all` gives one line per agent. |
 | `worktree_apply` | `agent` | Applies an isolated agent's changes to the main tree. |
 | `worktree_discard` | `agent` | Removes an isolated agent's worktree and branch. |
 
-The lead has all of them. A sub-agent always has `agent_send`, restricted to `to: "parent"`. It gets `task`, `agent_stop`, `agent_wait` and `agent_list` only when its definition lists `spawns` and it is above the depth limit, and may then start only the listed definitions. `worktree_apply` and `worktree_discard` are the lead's alone.
+The lead has all of them. A sub-agent always has `agent_send`, restricted to `to: "parent"`. It gets `task`, `agent_stop`, `agent_wait`, `agent_list` and `agent_status` only when its definition lists `spawns` and it is above the depth limit, and may then start only the listed definitions. `worktree_apply` and `worktree_discard` are the lead's alone.
 
 ### Reading an agent's work
 
-The `read` tool accepts two URLs:
+The `read` tool accepts these URLs:
 
 | URL | Content |
 |---|---|
 | `agent://<id>` | The agent's latest report, in full; for a [typed result](#typed-results), the JSON value alone |
 | `agent://<id>/transcript` | A condensed transcript: prompts, everything the agent said, one line per tool call |
+| `agent://<id>/status` | What `agent_status` returns; `agent://all/status` is the table of every agent |
+
+### Asking an agent
+
+`agent_send` with `ask: true` puts a question to one agent without interrupting it, like `/btw` for the lead.
+The question goes, with the agent's conversation as it is at that moment, as one separate request to the
+agent's own model, framed with its own prompt and tools so its prompt cache is reused. The agent keeps working,
+nothing is written to its transcript, and the answer is the result of the `agent_send` call, usually within
+seconds. A finished agent answers from its final transcript; one that has not started yet has nothing to answer
+from, and the call says so. The request may take 120 seconds; when it takes longer, or the model fails, the call
+fails with the reason. What it costs is counted to the agent that asked (`agent_status` shows it) and under
+`btw` in `/cost`.
 
 A `run_code` script starts agents too: `agents.run(agent, prompt, { model?, isolation?, schema? })` is a
 `task` call for one agent that returns its report (or typed value) to the script, and `parallel` runs several
