@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- RPC: a client of a background session can resume after a dropped connection. Every logged frame carries `at`, `attach` takes `since` (the `at` of the last frame it saw) and replays exactly the frames after it, and the answer has `cursor` and `gap` (true when `since` is unknown, so the client reloads with `get_messages`).
+- RPC: `get_messages` takes `before` and `limit` to load the history in pages, and the new `get_agent_messages` reads the transcript of a sub-agent the same way.
+- `azazel remote` serves the background sessions of this machine to a web page on `127.0.0.1:7420`. A browser pairs with a single-use link or QR code, watches a session live and, with a control link, answers approvals and questions, steers and stops it. `--tunnel` reaches it from a phone through a Cloudflare quick tunnel (azazel offers to install `cloudflared`), `--tailscale` through Tailscale; `--view` makes a watch-only link. Settings are in `[remote]`; see `docs/remote.md`. Built with the `remote` Cargo feature.
+
 ## [0.10.7] - 2026-11-15
 
 ### Fixed
@@ -21,13 +27,6 @@ GitHub are its section here.
 ### Fixed
 
 - `task` takes a bare model id when exactly one usable provider has it (`deepseek-flash` runs `deepseek/deepseek-flash`, with `:level` kept). A name two providers share, or a near miss, is refused with the full names to use (for example both `deepseek/deepseek-pro` and `openrouter/deepseek-pro`, or `did you mean …`), so the model gets it right on the next try instead of retrying the same name.
-### Added
-
-- RPC: a client of a background session can resume after a dropped connection. Every logged frame carries `at`, `attach` takes `since` (the `at` of the last frame it saw) and replays exactly the frames after it, and the answer has `cursor` and `gap` (true when `since` is unknown, so the client reloads with `get_messages`).
-- RPC: `get_messages` takes `before` and `limit` to load the history in pages, and the new `get_agent_messages` reads the transcript of a sub-agent the same way.
-### Added
-
-- `azazel remote` serves the background sessions of this machine to a web page on `127.0.0.1:7420`. A browser pairs with a single-use link or QR code, watches a session live and, with a control link, answers approvals and questions, steers and stops it. `--tunnel` reaches it from a phone through a Cloudflare quick tunnel (azazel offers to install `cloudflared`), `--tailscale` through Tailscale; `--view` makes a watch-only link. Settings are in `[remote]`; see `docs/remote.md`. Built with the `remote` Cargo feature.
 
 ## [0.10.5] - 2026-11-15
 
