@@ -750,3 +750,63 @@ async fn a_file_that_only_has_the_name_of_an_office_file_is_read_as_what_it_is()
     );
     assert!(!bench.path(".artifacts").exists());
 }
+
+#[tokio::test]
+async fn an_issue_and_a_pull_request_read_with_their_details() {
+    let bench = bench();
+    let home = bench.path("gh");
+    let data = home.join("gh-data");
+    std::fs::create_dir_all(&data).unwrap();
+    let fake = crate::common::fixture_program("fake-gh");
+    let program = home.join(fake.file_name().unwrap());
+    std::fs::copy(&fake, &program).unwrap();
+    std::fs::write(
+        data.join("issue-7.json"),
+        r#"{"number":7,"title":"It crashes","state":"OPEN","author":{"login":"ann"},"labels":[{"name":"bug"}],
+        "body":"Steps to crash.","createdAt":"2026-11-02T10:00:00Z","comments":[]}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        data.join("pr-12.json"),
+        r#"{"number":12,"title":"Fix it","state":"OPEN","author":{"login":"bob"},"labels":[],"body":"Fixes #7.",
+        "createdAt":"2026-11-03T10:00:00Z","headRefName":"fix","baseRefName":"main",
+        "statusCheckRollup":[{"name":"build","conclusion":"SUCCESS"}],
+        "files":[{"path":"src/a.rs","additions":2,"deletions":1}],
+        "comments":[{"author":{"login":"ann"},"body":"Thanks.","createdAt":"2026-11-04T10:00:00Z"}]}"#,
+    )
+    .unwrap();
+    std::fs::write(data.join("pr-12.diff"), "diff --git a/src/a.rs b/src/a.rs\n").unwrap();
+    // The bench's own registry has the real `gh`, if there is one, so this test has its own.
+    let schemes = Arc::new(Schemes::default());
+    schemes.add("test", Arc::new(GhScheme::pull_requests(program.clone())));
+    schemes.add("test", Arc::new(GhScheme::issues(program)));
+    let read_tool = ReadTool::new(Arc::default(), schemes);
+    let read = |path: &'static str| {
+        let ctx = bench.ctx();
+        let read_tool = &read_tool;
+        async move { read_tool.call(json!({ "path": path }), &ctx).await }
+    };
+
+    let issue = read("issue://7").await.text_content();
+    for wanted in ["#7 It crashes [OPEN]", "labels: bug", "Steps to crash."] {
+        assert!(issue.contains(wanted), "{wanted} not in\n{issue}");
+    }
+    let pr = read("pr://12").await.text_content();
+    for wanted in [
+        "#12 Fix it [OPEN]",
+        "branch: fix into main",
+        "checks: 1 passed, 0 failed, 0 pending",
+        "src/a.rs +2 -1",
+        "ann, 2026-11-04:\nThanks.",
+    ] {
+        assert!(pr.contains(wanted), "{wanted} not in\n{pr}");
+    }
+    assert!(
+        read("pr://12/diff")
+            .await
+            .text_content()
+            .starts_with("diff --git")
+    );
+    let missing = read("issue://99").await;
+    assert!(missing.is_error);
+}
