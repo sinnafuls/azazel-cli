@@ -169,6 +169,7 @@ thinking = "low"
 | | `micro_threshold` | `0.6` | Fraction of the window at which old tool results are elided |
 | `[team]` | `max_parallel` | `4` | Sub-agents running at once; see [team](team.md) |
 | | `max_depth` | `2` | How deep agents may spawn agents |
+| | `max_turns` | `200` | Requests per task for a sub-agent whose definition sets no `max-turns`; `0` is no limit |
 | | `coordinator` | `false` | The lead only plans and delegates; see [coordinator mode](team.md#coordinator-mode) |
 | `[advisor]` | `model` | `[]` | Chain of the second model that reviews the lead's work; empty means no advisor; see [advisor](team.md#advisor) |
 | | `when` | `"off"` | `stop` reviews each time the lead is about to finish; `off` leaves the advisor to `/advise` |
@@ -184,6 +185,9 @@ thinking = "low"
 | `[tools]` | `disabled` | `[]` | Tool names withheld from every agent; see [tools](tools.md) |
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
+| | `cache_reads` | `true` | A repeated `read`, `grep` or `glob` that gives the same result while the earlier one is still in the context is answered with a short note; see [tools](tools.md#repeated-reads-retries-and-time-limits) |
+| | `retries` | `2` | How often a read-only web, LSP or MCP call is run again after a transient failure |
+| | `call_timeout_secs` | `120` | Time limit of a web, LSP or MCP call; `0` is no limit |
 | | `shell` | `""` | Shell program; empty means auto-detect (`bash`, else `sh`; on Windows Git's bash, `pwsh`, `powershell`) |
 | | `format_on_write` | `true` | Run the file's formatter after `write`, `edit` and `patch`: the configured one, else one the file's project uses; see [tools](tools.md#format-on-write) |
 | | `format` | `{}` | `[tools.format]`: file extension to formatter command, such as `rs = "rustfmt --edition 2024"`; an empty command turns formatting off for the extension |

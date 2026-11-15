@@ -717,6 +717,22 @@ The four `generate_*` tools are registered only when a media backend has credent
 
 See [mcp](mcp.md).
 
+## Repeated reads, retries and time limits
+
+Three settings of `[tools]` shape how the agent loop runs a call.
+
+**Repeated reads.** With `cache_reads` (default on), a `read` of a file or directory, a `grep` or a `glob` that gives exactly the result it gave before, while that earlier result is still in the context, is answered with a one-line note instead of the result again:
+
+```text
+(unchanged since your identical `read` call 3 turns ago; its result above is still current)
+```
+
+The call still runs, so the read guard counts it, and the result is compared with the earlier one: a file that changed, whether by azazel's tools, `shell` or anything else, comes back in full. A note is used only when the earlier result is still in the context, not elided or summarised away, and only when it is much shorter than the result. Errors, images and `scheme://` addresses are never replaced.
+
+**Retries.** A call that only reads (`web_fetch`, `web_search`, `web_grep`, `http` with GET, HEAD or OPTIONS, the read actions of `lsp`, and MCP tools that declare `readOnlyHint`) is run again, up to `retries` times (default 2, with a wait that doubles from half a second), when it fails with a timeout, a reset or closed connection, HTTP 429 or HTTP 500, 502, 503 or 504. Any other call is never run again. A result that took retries ends with `[succeeded after 1 retry]` or `[still failed after 2 retries]`.
+
+**Time limit.** A call of a tool that has no limit of its own (web, `http`, `lsp`, MCP tools) is stopped after `call_timeout_secs` (default 120; `0` is no limit) with an error that says it timed out, which counts as transient for a call that is retried. `shell`, `eval`, `pty` and sub-agents keep their own limits. `Esc` cancels a call at once, during a retry wait too.
+
 ## Output truncation and artifacts
 
 A tool result whose text exceeds `max_result_bytes` (default 50000) is cut at that size. The full text is saved under `~/.azazel/projects/<slug>/artifacts/` and the result ends with:
@@ -811,6 +827,9 @@ javascript = true                     # eval may run JavaScript
 | `disabled` | `[]` | Tools removed for every agent, by name (also MCP and extension tools) |
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
+| `cache_reads` | `true` | Answers a repeated `read`, `grep` or `glob` with a note; see [repeated reads, retries and time limits](#repeated-reads-retries-and-time-limits) |
+| `retries` | `2` | Times a read-only web, LSP or MCP call is run again after a transient failure |
+| `call_timeout_secs` | `120` | Time limit of a web, LSP or MCP call; `0` is no limit |
 | `shell` | `""` | Shell to use instead of the resolved one. In a project config this is honoured only when the project is trusted |
 | `format_on_write` | `true` | Runs the file's formatter after `write`, `edit` and `patch`: the configured one, else one the project uses; see [format on write](#format-on-write). Project config: trusted projects only |
 | `format` | `{}` | Formatter command per file extension, in place of the built-in one; empty turns formatting off for the extension. Project config: trusted projects only |

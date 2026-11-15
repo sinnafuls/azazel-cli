@@ -69,7 +69,7 @@ already been applied. Report the files you created and the commands you ran.
 | `mode` | `subagent` (the team starts it with `task`), `primary` (a persona of the lead, see [primary agents](#primary-agents)) or `all` (both) | `subagent` |
 | `permission-mode` | `inherit` or `plan` (read-only whatever the session mode is). A definition can only narrow the session's mode, never widen it | `inherit` |
 | `color` | `#rrggbb`, or `red`, `orange`, `yellow`, `green`, `cyan`, `blue`, `purple`, `magenta`, `pink`, `gray`: the colour the UI shows a primary agent in | none |
-| `max-turns` | Model requests per prompt before the agent is told to give its final report | no limit |
+| `max-turns` | Model requests per prompt before the agent is told to give its final report | `[team] max_turns` (200) |
 | `skills` | [Skills](skills-and-commands.md) whose text is appended to the system prompt | none |
 | `spawns` | Definitions this agent may itself start | none |
 | `isolation` | `none` or `worktree` | `none` |
@@ -347,8 +347,11 @@ The lead decides when to delegate, but you can start an agent without asking it:
 [team]
 max_parallel = 4   # sub-agents working at the same time
 max_depth = 2      # levels of agents below the lead
+max_turns = 200    # requests per task for an agent whose definition has no max-turns; 0 is no limit
 coordinator = false  # true: the lead only plans and delegates (coordinator mode)
 ```
+
+An agent with a turn limit (`max-turns`, `[team] max_turns`, or `--max-turns` for the lead) is told in its last two turns how many are left: `2 turns left: finish the task and report what is done and what is not`, then `1 turn left`. After the last turn it is asked for its final report without tools.
 
 With `max_depth = 2`, an agent started by the lead may start agents of its own (if its definition lists `spawns`), and those may not start any. An agent revived by a message runs even when every slot is taken.
 
