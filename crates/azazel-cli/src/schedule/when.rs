@@ -32,6 +32,10 @@ pub enum When {
     CiFailure,
     /// A file matching this glob changed.
     File(String),
+    /// A pull request of the project's repository got a comment that mentions the handle.
+    PrComment,
+    /// A message in this Slack channel (its id) mentions the bot.
+    Slack(String),
 }
 
 /// Whether a schedule is to run at a given moment.
@@ -45,7 +49,7 @@ pub enum Due {
 
 impl When {
     /// Reads `text` as typed: `every 10m`, `at +2h`, `at 17:30`, `at 2026-12-01 09:00`,
-    /// `on ci-failure`, `on file:src/**/*.rs`, or five cron fields. Times without a zone are in
+    /// `on ci-failure`, `on pr-comment`, `on slack:C0123`, `on file:src/**/*.rs`, or five cron fields. Times without a zone are in
     /// the zone of `now`.
     pub fn parse(text: &str, now: &Zoned) -> Result<When, String> {
         When::read(text, now, false)
@@ -71,7 +75,10 @@ impl When {
     /// Whether this is something that happens rather than a time: a session that is open
     /// watches for it, the operating system's scheduler does not.
     pub fn is_trigger(&self) -> bool {
-        matches!(self, When::CiFailure | When::File(_))
+        matches!(
+            self,
+            When::CiFailure | When::File(_) | When::PrComment | When::Slack(_)
+        )
     }
 
     /// Whether a run the scheduler wakes at `now` is to go ahead. `last` is when the schedule
@@ -119,7 +126,7 @@ impl When {
                     }
                 }
             }
-            When::CiFailure | When::File(_) => Due::No,
+            When::CiFailure | When::File(_) | When::PrComment | When::Slack(_) => Due::No,
         }
     }
 
@@ -140,7 +147,7 @@ impl When {
                 Some(next.to_zoned(zone))
             }
             When::At(at) => (last.is_none() && *at > now.timestamp()).then(|| at.to_zoned(zone)),
-            When::CiFailure | When::File(_) => None,
+            When::CiFailure | When::File(_) | When::PrComment | When::Slack(_) => None,
         }
     }
 }
@@ -154,6 +161,8 @@ impl fmt::Display for When {
             When::At(at) => write!(f, "at {at}"),
             When::CiFailure => f.write_str("on ci-failure"),
             When::File(glob) => write!(f, "on file:{glob}"),
+            When::PrComment => f.write_str("on pr-comment"),
+            When::Slack(channel) => write!(f, "on slack:{channel}"),
         }
     }
 }
@@ -239,13 +248,23 @@ fn on(text: &str) -> Result<When, String> {
     if text.eq_ignore_ascii_case("ci-failure") {
         return Ok(When::CiFailure);
     }
+    if text.eq_ignore_ascii_case("pr-comment") {
+        return Ok(When::PrComment);
+    }
+    if let Some(channel) = text.strip_prefix("slack:").map(str::trim) {
+        let id = !channel.is_empty() && channel.chars().all(|c| c.is_ascii_alphanumeric());
+        return match id {
+            true => Ok(When::Slack(channel.to_string())),
+            false => Err("`slack:` needs the id of a channel, such as slack:C0123456789".to_string()),
+        };
+    }
     match text.strip_prefix("file:").map(str::trim) {
         Some("") => Err("`file:` needs a glob, such as file:src/**/*.rs".to_string()),
         Some(glob) => globset::Glob::new(glob)
             .map(|_| When::File(glob.to_string()))
             .map_err(|e| format!("`{glob}` is not a glob: {e}")),
         None => Err(format!(
-            "`{text}` is nothing to wait for: ci-failure, or file:<glob>"
+            "`{text}` is nothing to wait for: ci-failure, pr-comment, slack:<channel> or file:<glob>"
         )),
     }
 }

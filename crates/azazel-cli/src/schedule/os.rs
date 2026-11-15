@@ -100,7 +100,7 @@ fn wake(job: &Job) -> Result<Wake, String> {
             })
         }
         When::At(at) => Ok(Wake::Once(at.to_zoned(job.zone.clone()).datetime())),
-        When::CiFailure | When::File(_) => {
+        When::CiFailure | When::File(_) | When::PrComment | When::Slack(_) => {
             Err("a trigger is watched by an open session, not by the scheduler".to_string())
         }
     }
@@ -243,7 +243,7 @@ fn cron_fields(job: &Job) -> Result<String, String> {
                 at.month()
             ))
         }
-        When::CiFailure | When::File(_) => {
+        When::CiFailure | When::File(_) | When::PrComment | When::Slack(_) => {
             Err("a trigger is watched by an open session, not by cron".to_string())
         }
     }
@@ -346,7 +346,7 @@ pub fn launchd_plist(job: &Job) -> Result<String, String> {
                 ])
             )
         }
-        When::CiFailure | When::File(_) => {
+        When::CiFailure | When::File(_) | When::PrComment | When::Slack(_) => {
             return Err("a trigger is watched by an open session, not by launchd".to_string());
         }
     };

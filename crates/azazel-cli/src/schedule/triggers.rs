@@ -170,6 +170,12 @@ enum Watch {
         pending: BTreeSet<String>,
         looked: Option<Instant>,
     },
+    /// Comments and messages that mention the bot; each new one runs in a session of its own.
+    Inbox {
+        inbox: Box<super::inbox::Inbox>,
+        looked: Option<Instant>,
+        complained: bool,
+    },
     Ci {
         /// The runs that were there already; `None` until the first look.
         seen: Option<HashSet<u64>>,
@@ -239,6 +245,11 @@ impl Watcher {
                         looked: None,
                     },
                     Err(_) => continue,
+                },
+                When::PrComment | When::Slack(_) => Watch::Inbox {
+                    inbox: Box::new(super::inbox::Inbox::load(&self.scheduler, &schedule)),
+                    looked: None,
+                    complained: false,
                 },
                 _ => Watch::Ci {
                     seen: None,
@@ -310,6 +321,27 @@ impl Watcher {
                         }
                     }
                 }
+                Watch::Inbox {
+                    inbox,
+                    looked,
+                    complained,
+                } => {
+                    if !due(looked, poll) {
+                        continue;
+                    }
+                    *looked = Some(Instant::now());
+                    match inbox.look(&self.scheduler, &owned.schedule, &self.events).await {
+                        Ok(()) => *complained = false,
+                        Err(why) => {
+                            if !std::mem::replace(complained, true) {
+                                let _ = self.events.send(Event::Note(format!(
+                                    "the trigger {} ({}) cannot be watched: {why}",
+                                    owned.schedule.id, owned.schedule.when
+                                )));
+                            }
+                        }
+                    }
+                }
                 Watch::Ci {
                     seen,
                     looked,
@@ -374,7 +406,7 @@ impl Watcher {
 /// The trigger `owned` as the store has it now, when its end and its checks let it run. Here,
 /// away from the session's own work, because a check may take a while; a check that did not
 /// hold is noted with the schedule, an end is said to the session.
-async fn admitted(
+pub(super) async fn admitted(
     scheduler: &Scheduler,
     events: &mpsc::UnboundedSender<Event>,
     owned: &Schedule,

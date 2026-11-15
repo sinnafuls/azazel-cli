@@ -312,6 +312,20 @@ config_table!(ScheduleConfig {
     /// Rounds after which `/loop <interval>` and `/loop until` stop by themselves; 0 is no limit.
     loop_max: u32 = 50,
 });
+config_table!(TriggersConfig {
+    /// The handle a pull-request comment has to mention to start a run (`on pr-comment`).
+    handle: String = "@azazel".to_string(),
+    /// The permission mode of a run a trigger starts (`on pr-comment`, `on slack:<channel>`); `bypass`
+    /// counts as `auto`. Nobody is there to answer a question, so what would ask is refused.
+    mode: PermissionMode = PermissionMode::AcceptEdits,
+    /// GitHub users whose comments start runs; empty means the user `gh` is signed in as and the
+    /// users with write access to the repository.
+    github_authors: Vec<String> = Vec::new(),
+    /// Slack user ids whose messages start runs; empty means nobody.
+    slack_users: Vec<String> = Vec::new(),
+    /// The address of the Slack Web API.
+    slack_url: String = "https://slack.com/api".to_string(),
+});
 config_table!(CacheConfig {
     /// Keep the prompt cache warm between prompts.
     warming: CacheWarming = CacheWarming::Off,
@@ -697,6 +711,7 @@ pub struct Config {
     pub rules: RulesConfig,
     pub guards: GuardsConfig,
     pub schedule: ScheduleConfig,
+    pub triggers: TriggersConfig,
     pub cache: CacheConfig,
     pub context: ContextConfig,
     pub telemetry: TelemetryConfig,
@@ -775,6 +790,7 @@ impl Default for Config {
             rules: RulesConfig::default(),
             guards: GuardsConfig::default(),
             schedule: ScheduleConfig::default(),
+            triggers: TriggersConfig::default(),
             cache: CacheConfig::default(),
             context: ContextConfig::default(),
             telemetry: TelemetryConfig::default(),
@@ -789,7 +805,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-pub const TABLES: [&str; 39] = [
+pub const TABLES: [&str; 40] = [
     "roles",
     "providers",
     "models",
@@ -823,6 +839,7 @@ pub const TABLES: [&str; 39] = [
     "presets",
     "guards",
     "schedule",
+    "triggers",
     "cache",
     "context",
     "telemetry",
@@ -1212,7 +1229,7 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 20] = [
+const TRUST_GATED: [(&str, Option<&str>); 24] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -1236,6 +1253,11 @@ const TRUST_GATED: [(&str, Option<&str>); 20] = [
     ("statusline", Some("command")),
     // `allow` would lift the question about commands that destroy work.
     ("permissions", Some("destructive")),
+    // They widen who can start a run, or where the Slack token goes.
+    ("triggers", Some("mode")),
+    ("triggers", Some("github_authors")),
+    ("triggers", Some("slack_users")),
+    ("triggers", Some("slack_url")),
 ];
 
 /// Every trust-gated setting as the docs name it (`hooks`, `permissions.allow`), `permissions.mode`

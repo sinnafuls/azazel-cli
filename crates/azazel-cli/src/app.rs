@@ -595,7 +595,9 @@ impl App {
         if cli.no_session {
             loaded.config.checkpoints.enabled = false;
         }
-        let permissions = Arc::new(PermissionState::new(&paths, &loaded).map_err(|e| anyhow!(e))?);
+        let permission_state = PermissionState::new(&paths, &loaded).map_err(|e| anyhow!(e))?;
+        permission_state.set_never_push(cli.never_push);
+        let permissions = Arc::new(permission_state);
         let hook_sources = azazel_core::hooks::hook_sources(&loaded.layers);
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;

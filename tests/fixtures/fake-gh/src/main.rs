@@ -9,6 +9,9 @@
 //!   no such file it fails the way `gh` does for an address GitHub does not know, and when the
 //!   file holds an escape character it is refused, as `gh` refuses it, unless
 //!   `--allow-escape-sequences` is among the arguments;
+//! - `fake-gh api … -f <name>=<value> <path>` is a post: it prints `{}` and keeps the path and the
+//!   fields as `gh-data/posts/<n>.txt` (the path, then one `name=value` per field), `n` counting
+//!   from 1;
 //! - `fake-gh repo clone <owner>/<name> <directory> [-- <git options>…]` copies
 //!   `gh-data/clone/<owner>-<name>` to the directory, and fails when there is no such directory;
 //! - `fake-gh gist create [--desc <text>] <file>…` copies the files to `gh-data/gist`, writes the
@@ -68,6 +71,7 @@ fn main() -> ExitCode {
             let mut kind = "json";
             let mut path = None;
             let mut escapes = false;
+            let mut fields: Vec<String> = Vec::new();
             let mut rest = rest.iter();
             while let Some(word) = rest.next() {
                 match *word {
@@ -75,6 +79,12 @@ fn main() -> ExitCode {
                         rest.next();
                     }
                     "--allow-escape-sequences" => escapes = true,
+                    "-f" | "-F" | "--field" | "--raw-field" => {
+                        fields.push(rest.next().copied().unwrap_or_default().to_string());
+                    }
+                    "-X" | "--method" => {
+                        rest.next();
+                    }
                     "-H" => {
                         let header = rest.next().copied().unwrap_or_default().to_ascii_lowercase();
                         if let Some(accept) = header.strip_prefix("accept:") {
@@ -91,6 +101,17 @@ fn main() -> ExitCode {
             let Some(path) = path else {
                 return fail("accepts 1 arg(s), received 0");
             };
+            if !fields.is_empty() {
+                let posts = data.join("posts");
+                let _ = std::fs::create_dir_all(&posts);
+                let n = std::fs::read_dir(&posts).map(|dir| dir.count()).unwrap_or(0) + 1;
+                let kept = format!("{path}
+{}", fields.join("
+"));
+                let _ = std::fs::write(posts.join(format!("{n}.txt")), kept);
+                println!("{{}}");
+                return ExitCode::SUCCESS;
+            }
             let name: String = path
                 .chars()
                 .map(|c| match c {

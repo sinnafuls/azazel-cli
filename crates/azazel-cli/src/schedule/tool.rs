@@ -194,7 +194,7 @@ impl Tool for ScheduleTool {
                 "when": {
                     "type": "string",
                     "description": "`add`: five cron fields (\"0 9 * * 1-5\"), `every 10m`, `at +2h`, `at 17:30`, \
-                                    `at 2026-12-01 09:00`, `on ci-failure`, or `on file:<glob>`"
+                                    `at 2026-12-01 09:00`, `on ci-failure`, `on pr-comment`, `on slack:<channel id>`, or `on file:<glob>`"
                 },
                 "prompt": {"type": "string", "description": "`add`: what a run is asked to do"},
                 "session": {

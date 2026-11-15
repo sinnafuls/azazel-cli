@@ -13,6 +13,7 @@ mod context;
 mod durable;
 mod goal;
 mod guards;
+mod inbox;
 mod input;
 mod launch;
 mod login;
