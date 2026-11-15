@@ -620,6 +620,20 @@ Details, search backends, stored credentials and limits: [web and browser](web-a
 
 See [lsp](lsp.md).
 
+## Debugger
+
+| Tool | Input | Behaviour |
+|---|---|---|
+| `debug` | `action`, `program?`, `args?`, `cwd?`, `language?`, `stop_on_entry?`, `breakpoints?`, `file?`, `line?`, `condition?`, `clear?`, `kind?`, `expression?`, `frame?`, `timeout_secs?` | A debugger over the [Debug Adapter Protocol](https://microsoft.github.io/debug-adapter-protocol/); one session per agent. `action` is `start`, `break`, `continue`, `step`, `pause`, `state`, `eval`, `output` or `stop` |
+
+`start` runs `program` (an executable built with debug info, a test binary or a script) with `args` in `cwd` and waits until it stops, ends or the time limit passes. `breakpoints` (`file`, `line`, `condition?`) are set before it runs; `stop_on_entry` stops it before its first line. `break` adds a breakpoint at `file` and `line` (stopping only when `condition` is true), or with `clear` removes the one at `line`, or all of `file`'s. `continue`, `step` (`kind` is `over`, `in` or `out`) and `pause` wait for the next stop. `state` reports where the program is stopped; with `timeout_secs` it waits for the next stop. `eval` evaluates `expression` in `frame` (0, the top, by default). `output` is what the program printed; `stop` ends the session, which also ends when the agent does.
+
+A stop is reported as its reason, the thread, the stack (up to 12 frames, `#0 inner at src/main.rs:5`) and the locals of the top frame (up to 30, each value cut at 160 characters), followed by what the program printed since the last result. A wait lasts `debug.timeout_secs` (30) unless `timeout_secs` says otherwise, and Esc cancels it; a program still running then is reported as running, and `pause` stops it.
+
+The adapter is found on `PATH` when a session starts: `lldb-dap` (or `lldb-vscode`, or CodeLLDB's `codelldb`) for `rust`, `c` and `cpp`, `python -m debugpy.adapter` for `python`, `dlv dap` for `go`. `language` is guessed from the program (`.py` and `.go`; anything else is native). A missing adapter is an error that names the command that installs it. `[debug.adapters.<language>]` names another command; it is a [gated setting](configuration.md#trust).
+
+Starting a program and evaluating an expression (which may call functions of the program) are `exec`: they are asked about in `manual` mode like `shell` and refused in plan mode. The other actions only read. Without the `debug` Cargo feature the tool is not registered.
+
 ## Skills
 
 | Tool | Input | Behaviour |

@@ -15,7 +15,8 @@ use serde::de::value::Error as NoValue;
 use serde_json::Value;
 
 use crate::config::{
-    AgentOverride, Config, EmbeddingsConfig, HookConfig, LspServerConfig, PresetConfig, StreamRuleConfig,
+    AgentOverride, Config, DebugAdapterConfig, EmbeddingsConfig, HookConfig, LspServerConfig, PresetConfig,
+    StreamRuleConfig,
 };
 
 /// Asks a type for the fields it deserialises without giving it a value: `serde` passes the
@@ -65,6 +66,7 @@ fn named_entries() -> Vec<(&'static str, Vec<&'static str>)> {
         ("stream_rules", fields_of::<StreamRuleConfig>()),
         ("embeddings", fields_of::<EmbeddingsConfig>()),
         ("lsp.servers.*", fields_of::<LspServerConfig>()),
+        ("debug.adapters.*", fields_of::<DebugAdapterConfig>()),
     ]
 }
 

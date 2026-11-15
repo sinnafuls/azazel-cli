@@ -379,6 +379,13 @@ config_table!(LspConfig {
     /// What happens when a file has a known language server that is not installed.
     install: LspInstall = LspInstall::Ask,
 });
+config_table!(DebugConfig {
+    /// The adapter to use for a language (`rust`, `c`, `cpp`, `python`, `go`), instead of the
+    /// one found on `PATH`.
+    adapters: BTreeMap<String, DebugAdapterConfig> = BTreeMap::new(),
+    /// Seconds a `debug` call waits for the program to stop or end.
+    timeout_secs: u64 = 30,
+});
 config_table!(TuiConfig {
     theme: String = "dark".to_string(),
     /// Models the model-cycling keys step through.
@@ -661,6 +668,19 @@ pub struct LspServerConfig {
     pub warm_files: Vec<String>,
 }
 
+/// `[debug.adapters.<language>]`: the debug adapter that runs programs of a language.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DebugAdapterConfig {
+    pub command: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Whether the adapter listens on a socket and prints where (`DAP server listening at:
+    /// host:port`) instead of talking on its standard streams. Only Go's `dlv dap` does by default.
+    #[serde(default)]
+    pub listens: Option<bool>,
+}
+
 /// `[agents.<name>]`: overrides of an agent definition.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -714,6 +734,7 @@ pub struct Config {
     pub mcp: McpConfig,
     pub media: MediaConfig,
     pub lsp: LspConfig,
+    pub debug: DebugConfig,
     pub tui: TuiConfig,
     pub compat: CompatConfig,
     pub browser: BrowserConfig,
@@ -793,6 +814,7 @@ impl Default for Config {
             mcp: McpConfig::default(),
             media: MediaConfig::default(),
             lsp: LspConfig::default(),
+            debug: DebugConfig::default(),
             tui: TuiConfig::default(),
             compat: CompatConfig::default(),
             browser: BrowserConfig::default(),
@@ -821,7 +843,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-pub const TABLES: [&str; 40] = [
+pub const TABLES: [&str; 41] = [
     "roles",
     "providers",
     "models",
@@ -840,6 +862,7 @@ pub const TABLES: [&str; 40] = [
     "mcp",
     "media",
     "lsp",
+    "debug",
     "tui",
     "compat",
     "browser",
@@ -1245,11 +1268,12 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 24] = [
+const TRUST_GATED: [(&str, Option<&str>); 25] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
     ("lsp", None),
+    ("debug", Some("adapters")),
     ("verify", Some("commands")),
     ("tools", Some("shell")),
     ("browser", Some("path")),

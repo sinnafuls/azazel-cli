@@ -6,6 +6,7 @@ members = [
     "xtask/docs-check",
     "tests/fixtures/mcp-echo",
     "tests/fixtures/fake-lsp",
+    "tests/fixtures/fake-dap",
     "tests/fixtures/fake-check",
     "tests/fixtures/fake-sg",
     "tests/fixtures/fake-gh",

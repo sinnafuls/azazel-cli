@@ -3,6 +3,8 @@
 
 pub mod ast_grep;
 pub mod check;
+#[cfg(feature = "debug")]
+pub mod debug;
 pub mod eval;
 pub mod format;
 pub mod guards;

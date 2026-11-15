@@ -12,6 +12,8 @@ workspace = true
 [features]
 # `zip` and `flate2` unpack the rust-analyzer release it installs.
 lsp = ["dep:lsp-types", "dep:zip", "dep:flate2"]
+# The `debug` tool: a debugger over the Debug Adapter Protocol. Needs no dependency of its own.
+debug = []
 pdf = ["dep:pdf-extract"]
 # `.docx`, `.pptx`, `.xlsx`, `.msg` and `.eml` files in `read`.
 office = ["dep:zip", "dep:cfb", "dep:mail-parser"]

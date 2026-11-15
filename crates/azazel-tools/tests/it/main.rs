@@ -5,6 +5,7 @@
 mod ast_grep;
 mod checks;
 mod common;
+mod debug;
 mod files;
 mod guards;
 mod http;

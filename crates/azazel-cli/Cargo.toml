@@ -26,6 +26,7 @@ default = [
     "screen",
     "media",
     "lsp",
+    "debug",
     "pdf",
     "office",
     "bedrock",
@@ -48,6 +49,7 @@ browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
 lsp = ["azazel-tools/lsp"]
+debug = ["azazel-tools/debug"]
 pdf = ["azazel-tools/pdf"]
 office = ["azazel-tools/office"]
 bedrock = ["azazel-ai/bedrock"]

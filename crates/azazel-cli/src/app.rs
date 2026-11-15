@@ -712,6 +712,11 @@ impl App {
             idle: Duration::from_secs(config.lsp.idle_secs),
             write_severity: config.lsp.write_severity,
         })?;
+        #[cfg(feature = "debug")]
+        registry.load(&azazel_tools::debug::DebugExt {
+            adapters: config.debug.adapters.clone(),
+            timeout: Duration::from_secs(config.debug.timeout_secs),
+        })?;
         registry.load(&azazel_tools::web::WebExt {
             search: config.web.search.clone(),
             searxng_url: config.web.searxng_url.clone(),
