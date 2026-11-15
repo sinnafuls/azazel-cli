@@ -1,13 +1,13 @@
 //! The memory stores of one project: its own, the global one shared by all projects, and the handle
 //! on the search index.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use azazel_ai::Credentials;
 use azazel_core::{Config, Paths};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 use serde_json::json;
 
 use crate::db::{Db, INDEX_SCHEMA, MEMORY_SCHEMA};
@@ -21,6 +21,10 @@ pub const KINDS: [&str; 5] = ["fact", "decision", "preference", "convention", "g
 const PINNED_CHARS: usize = 4800;
 /// Rows embedded per request when catching up.
 const EMBED_BATCH: i64 = 64;
+/// Cosine similarity from which a new memory counts as one already stored.
+pub(crate) const DUPLICATE: f32 = 0.92;
+/// Memories compared with a new one when looking for one that says the same.
+const SIMILAR_CANDIDATES: usize = 8;
 /// Times an extraction left for a later session is started before it is let go.
 const EXTRACTION_ATTEMPTS: i64 = 3;
 
@@ -116,6 +120,103 @@ pub(crate) fn normalized(text: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+/// The words of `text`, lower case.
+fn words(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(str::to_lowercase)
+        .collect()
+}
+
+/// Whether two memories say the same thing in other words: they share the same words, or at least
+/// 70% of all the words either uses. A text of fewer than four words only matches by its words.
+pub(crate) fn similar(a: &str, b: &str) -> bool {
+    let (a, b) = (words(a), words(b));
+    if a == b {
+        return !a.is_empty();
+    }
+    if a.len().min(b.len()) < 4 {
+        return false;
+    }
+    let common = a.intersection(&b).count();
+    common * 10 >= (a.len() + b.len() - common) * 7
+}
+
+/// `old` and `new` tags without repeats (ignoring case), the old ones first.
+fn merged_tags(old: &[String], new: &[String]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    old.iter()
+        .chain(new)
+        .filter(|tag| seen.insert(tag.to_lowercase()))
+        .cloned()
+        .collect()
+}
+
+/// What [`MemoryStore::remember`] did with a memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Remembered {
+    /// Added as a new memory with this id.
+    Stored(String),
+    /// An existing memory said the same: it took the newer wording and the tags, and its time moved on.
+    Updated(String),
+    /// A memory in force already says it.
+    Known,
+}
+
+/// Marks the store as cleaned of duplicates by [`MemoryStore::collapse_duplicates`].
+const COLLAPSED: &str = "duplicates-collapsed";
+
+/// Supersedes every memory in force that says what a newer one says, once per database: the
+/// marker is set in the same transaction. Returns how many were merged.
+fn collapse(conn: &mut Connection) -> rusqlite::Result<usize> {
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let done: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM meta WHERE key = ?1)",
+        params![COLLAPSED],
+        |row| row.get(0),
+    )?;
+    if done {
+        return Ok(0);
+    }
+    let rows: Vec<(String, String, String)> = {
+        let mut statement = tx.prepare(
+            "SELECT id, text, tags FROM memories WHERE superseded_by IS NULL
+             ORDER BY updated_at DESC, rowid DESC",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        rows.collect::<rusqlite::Result<_>>()?
+    };
+    // Newest first, so the wording that is kept is the newest.
+    let mut kept: Vec<(String, String, Vec<String>, bool)> = Vec::new();
+    let mut merged = 0;
+    let at = now();
+    for (id, text, tags) in rows {
+        let tags = split_tags(&tags);
+        match kept.iter_mut().find(|(_, other, _, _)| similar(other, &text)) {
+            Some((kept_id, _, kept_tags, changed)) => {
+                let all = merged_tags(kept_tags, &tags);
+                *changed |= all.len() != kept_tags.len();
+                *kept_tags = all;
+                tx.execute(
+                    "UPDATE memories SET superseded_by = ?2, updated_at = ?3 WHERE id = ?1",
+                    params![id, &*kept_id, at],
+                )?;
+                merged += 1;
+            }
+            None => kept.push((id, text, tags, false)),
+        }
+    }
+    for (id, _, tags, _) in kept.iter().filter(|kept| kept.3) {
+        tx.execute(
+            "UPDATE memories SET tags = ?2 WHERE id = ?1",
+            params![id, join_tags(tags)],
+        )?;
+    }
+    tx.execute("INSERT INTO meta (key) VALUES (?1)", params![COLLAPSED])?;
+    tx.commit()?;
+    Ok(merged)
 }
 
 /// Reads `id, kind, text, tags, created_at` from the first five columns.
@@ -347,6 +448,84 @@ impl MemoryStore {
             stored += 1;
         }
         Ok((stored, present))
+    }
+
+    /// The memory in force in `scope` that says what `text` says, if any: the full-text and vector
+    /// search find the candidates, [`similar`] decides.
+    async fn similar_in(&self, scope: Scope, text: &str) -> Result<Option<MemoryRow>, String> {
+        Ok(self
+            .search(text, SIMILAR_CANDIDATES, Some(scope))
+            .await?
+            .into_iter()
+            .find(|row| similar(&row.text, text)))
+    }
+
+    /// Stores what an extraction learned in the project store, unless it is already there: a
+    /// memory that says the same takes the newer wording, the merged tags and a new time instead
+    /// of a second row. `text` and `kind` must have been checked.
+    pub(crate) async fn remember(
+        &self,
+        text: &str,
+        kind: &str,
+        tags: &[String],
+        session: Option<&str>,
+    ) -> Result<Remembered, String> {
+        if self.similar_in(Scope::Global, text).await?.is_some() {
+            return Ok(Remembered::Known);
+        }
+        let vector = self.embed_one(text).await;
+        if let Some(old) = self.similar_in(Scope::Project, text).await? {
+            let reworded = normalized(&old.text) != normalized(text);
+            let tags = merged_tags(&old.tags, tags);
+            let (id, text) = (old.id.clone(), text.to_string());
+            let (blob, model) = match (&vector, &self.embedder) {
+                (Some(vector), Some(embedder)) => (Some(to_blob(vector)), Some(embedder.model().to_string())),
+                _ => (None, None),
+            };
+            let at = now();
+            self.project
+                .call(move |conn| {
+                    if reworded {
+                        conn.execute(
+                            "UPDATE memories SET text = ?2, tags = ?3, updated_at = ?4, embedding = ?5, embed_model = ?6
+                             WHERE id = ?1",
+                            params![id, text, join_tags(&tags), at, blob, model],
+                        )
+                    } else {
+                        conn.execute(
+                            "UPDATE memories SET tags = ?2, updated_at = ?3 WHERE id = ?1",
+                            params![id, join_tags(&tags), at],
+                        )
+                    }
+                })
+                .await?;
+            return Ok(Remembered::Updated(old.id));
+        }
+        if let Some(vector) = &vector
+            && self
+                .closest(vector)
+                .await?
+                .is_some_and(|similarity| similarity >= DUPLICATE)
+        {
+            return Ok(Remembered::Known);
+        }
+        let id = self
+            .insert(text, kind, tags, Scope::Project, session, vector)
+            .await?;
+        Ok(Remembered::Stored(id))
+    }
+
+    /// Merges the memories in force that say the same thing in both stores, keeping the newest
+    /// wording and the tags of all; the others are marked superseded by it (`azazel memory export`
+    /// still shows them). Done once per store, the first time it is called after this version came;
+    /// returns how many were merged, 0 on every later call. A memory without a duplicate is never
+    /// touched.
+    pub async fn collapse_duplicates(&self) -> Result<usize, String> {
+        let mut merged = 0;
+        for scope in [Scope::Project, Scope::Global] {
+            merged += self.db(scope).call(collapse).await?;
+        }
+        Ok(merged)
     }
 
     /// Deletes the memory `id` from whichever store holds it; false when neither does.
