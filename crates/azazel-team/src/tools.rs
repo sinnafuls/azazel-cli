@@ -101,7 +101,44 @@ struct TaskInput {
     wait: bool,
 }
 
-fn spawn_request(agent: TaskAgent) -> Result<SpawnRequest, String> {
+/// `spec` as a model: `provider/model[:level]`, `@role`, or a bare model id that exactly one of
+/// `catalog`'s `providers` has (`deepseek-flash` → `deepseek/deepseek-flash`). A bare name that
+/// is ambiguous or unknown fails with the full names to use instead, so the next try is right.
+fn model_spec(spec: &str, catalog: &azazel_ai::Catalog, providers: &[String]) -> Result<ModelSpec, String> {
+    let parsed = spec.parse::<ModelSpec>();
+    let bare = !spec.trim().starts_with('@') && !spec.contains('/');
+    let error = match parsed {
+        Ok(model) => return Ok(model),
+        Err(_) if !bare => return parsed.map_err(|e| format!("model `{spec}`: {e}")),
+        Err(e) => e,
+    };
+    let name = spec.trim().rsplit_once(':').map_or(spec.trim(), |(name, _)| name);
+    let listed = |refs: &[azazel_ai::ModelRef]| {
+        refs.iter()
+            .map(|r| format!("`{r}`"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match catalog.find(spec, providers) {
+        Ok(found) if found.model.eq_ignore_ascii_case(name) => Ok(ModelSpec::Model(found)),
+        Ok(near) => Err(format!(
+            "model `{spec}`: no model has that id; did you mean {}? Give it as `provider/model`",
+            listed(&[near])
+        )),
+        Err(many) if !many.is_empty() => Err(format!(
+            "model `{spec}`: name the provider, use one of {}",
+            listed(&many)
+        )),
+        Err(_) => Err(format!(
+            "model `{spec}`: {error}; no usable provider has a model of that name"
+        )),
+    }
+}
+
+fn spawn_request(
+    agent: TaskAgent,
+    resolve: &dyn Fn(&str) -> Result<ModelSpec, String>,
+) -> Result<SpawnRequest, String> {
     let model = match agent.model {
         None => None,
         Some(OneOrMany::One(spec)) => Some(vec![spec]),
@@ -111,10 +148,7 @@ fn spawn_request(agent: TaskAgent) -> Result<SpawnRequest, String> {
         .map(|specs| {
             specs
                 .iter()
-                .map(|spec| {
-                    spec.parse::<ModelSpec>()
-                        .map_err(|e| format!("model `{spec}`: {e}"))
-                })
+                .map(|spec| resolve(spec))
                 .collect::<Result<Vec<_>, _>>()
         })
         .transpose()?;
@@ -175,7 +209,7 @@ impl Tool for TaskTool {
                             "prompt": { "type": "string", "description": "The complete task for this agent" },
                             "name": { "type": "string", "description": "Id for the agent; default <agent>-<n>" },
                             "model": {
-                                "description": "Model or fallback chain, overriding the definition",
+                                "description": "Model as `provider/model[:thinking]` (a bare model id works when only one provider has it), `@role`, or a fallback chain of those; overrides the definition",
                                 "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }]
                             },
                             "isolation": { "type": "string", "enum": ["none", "worktree"] },
@@ -213,8 +247,14 @@ impl Tool for TaskTool {
         if input.agents.is_empty() {
             return ToolOutput::error("`agents` is empty");
         }
-        let requests: Result<Vec<SpawnRequest>, String> =
-            input.agents.into_iter().map(spawn_request).collect();
+        let router = team.router();
+        let providers: Vec<String> = router.provider_ids().into_iter().map(str::to_string).collect();
+        let resolve = |spec: &str| model_spec(spec, router.catalog(), &providers);
+        let requests: Result<Vec<SpawnRequest>, String> = input
+            .agents
+            .into_iter()
+            .map(|agent| spawn_request(agent, &resolve))
+            .collect();
         let requests = match requests {
             Ok(requests) => requests,
             Err(why) => return ToolOutput::error(why),
@@ -664,5 +704,52 @@ impl Tool for WorktreeDiscardTool {
             Ok(done) => ToolOutput::text(done),
             Err(why) => ToolOutput::error(why),
         }
+    }
+}
+
+#[cfg(test)]
+mod model_name_tests {
+    use azazel_ai::{Catalog, ModelInfo, ModelSpec};
+
+    fn catalog() -> Catalog {
+        let mut catalog = Catalog::default();
+        catalog.merge([
+            ModelInfo::unknown("deepseek", "deepseek-flash"),
+            ModelInfo::unknown("deepseek", "deepseek-pro"),
+            ModelInfo::unknown("openrouter", "deepseek-pro"),
+        ]);
+        catalog
+    }
+
+    fn resolve(spec: &str) -> Result<String, String> {
+        let providers = vec!["deepseek".to_string(), "openrouter".to_string()];
+        super::model_spec(spec, &catalog(), &providers).map(|spec| spec.to_string())
+    }
+
+    #[test]
+    fn a_bare_model_id_one_provider_has_is_taken_and_others_say_what_to_write() {
+        assert_eq!(
+            resolve("deepseek-flash").as_deref(),
+            Ok("deepseek/deepseek-flash")
+        );
+        assert_eq!(
+            resolve("deepseek-flash:high").as_deref(),
+            Ok("deepseek/deepseek-flash:high")
+        );
+        let both = resolve("deepseek-pro").unwrap_err();
+        assert!(
+            both.contains("`deepseek/deepseek-pro`") && both.contains("`openrouter/deepseek-pro`"),
+            "{both}"
+        );
+        // A near miss is never taken silently: it is offered.
+        let near = resolve("deepseek-flsh").unwrap_err();
+        assert!(near.contains("did you mean `deepseek/deepseek-flash`"), "{near}");
+        assert!(resolve("no-such-model-anywhere").is_err());
+        assert_eq!(
+            resolve("deepseek/deepseek-pro").as_deref(),
+            Ok("deepseek/deepseek-pro")
+        );
+        assert!(matches!("@slow".parse::<ModelSpec>(), Ok(ModelSpec::Role(_))));
+        assert_eq!(resolve("@slow").as_deref(), Ok("@slow"));
     }
 }

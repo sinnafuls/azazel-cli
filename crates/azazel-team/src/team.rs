@@ -966,6 +966,11 @@ pub struct Team {
 }
 
 impl Team {
+    /// The router the team's agents ask, with its catalogue of models.
+    pub fn router(&self) -> &Arc<Router> {
+        &self.inner.deps.router
+    }
+
     pub fn new(deps: TeamDeps) -> Team {
         let gate = PermissionGate::new(
             deps.permissions.clone(),

@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.6] - 2026-11-15
+
+### Fixed
+
+- `task` takes a bare model id when exactly one usable provider has it (`deepseek-flash` runs `deepseek/deepseek-flash`, with `:level` kept). A name two providers share, or a near miss, is refused with the full names to use (for example both `deepseek/deepseek-pro` and `openrouter/deepseek-pro`, or `did you mean …`), so the model gets it right on the next try instead of retrying the same name.
+
 ## [0.10.5] - 2026-11-15
 
 ### Added
@@ -1087,7 +1093,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.5...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.6...HEAD
+[0.10.6]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.2...v0.10.3
