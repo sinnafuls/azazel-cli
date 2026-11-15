@@ -1839,7 +1839,7 @@ mod tests {
         let shown = rows(&screen, 110, 30);
         assert_eq!(
             shown[0],
-            "Accounts  Models  Appearance  Status line  Input  Permissions  Tools  Sessions  Usage  Advanced"
+            "Accounts  Models  Appearance  Input  Permissions  Tools  Sessions  Usage  Advanced"
         );
         assert!(shown[1].starts_with("Subscriptions, API keys"), "{}", shown[1]);
         assert!(shown[1].ends_with("saves to the home config"), "{}", shown[1]);
@@ -1944,12 +1944,12 @@ mod tests {
         press(&mut screen, KeyCode::Up);
         assert_eq!(selected_name(&screen), "tui.expand_tools");
         press(&mut screen, KeyCode::End);
-        assert_eq!(selected_name(&screen), "notify.keep_awake");
+        assert_eq!(selected_name(&screen), "statusline.command");
         // Around the end to the first setting, not to the heading above it.
         press(&mut screen, KeyCode::Down);
         assert_eq!(selected_name(&screen), "tui.theme");
         press(&mut screen, KeyCode::Up);
-        assert_eq!(selected_name(&screen), "notify.keep_awake");
+        assert_eq!(selected_name(&screen), "statusline.command");
         press(&mut screen, KeyCode::Home);
         assert_eq!(selected_name(&screen), "tui.theme");
         // A page down in a window of five rows moves by what was in view.
@@ -2275,19 +2275,19 @@ mod tests {
         assert!(screen.search.is_some());
         press(&mut screen, KeyCode::Down);
         assert_eq!(selected_name(&screen), "permissions.secret_paths");
-        assert_eq!(screen.tab_in_view(), 5);
+        assert_eq!(screen.tab_in_view(), 4);
         // Esc ends the search on the page of that setting, with it selected.
         press(&mut screen, KeyCode::Esc);
         assert!(screen.search.is_none());
         assert_eq!(screen.page(), Page::Permissions);
         assert_eq!(selected_name(&screen), "permissions.secret_paths");
         // The page the search started from is still on the row it was left on.
-        for _ in 0..4 {
+        for _ in 0..3 {
             press(&mut screen, KeyCode::Left);
         }
         assert_eq!(screen.page(), Page::Models);
         assert_eq!(selected_name(&screen), "roles.planner");
-        for _ in 0..4 {
+        for _ in 0..3 {
             press(&mut screen, KeyCode::Right);
         }
         assert_eq!(selected_name(&screen), "permissions.secret_paths");

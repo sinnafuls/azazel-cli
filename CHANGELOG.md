@@ -8,6 +8,7 @@ GitHub are its section here.
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
+- `/settings` has nine pages: the status line settings moved from a page of their own to a group at the end of Appearance.
 
 ## [0.9.1] - 2026-11-15
 

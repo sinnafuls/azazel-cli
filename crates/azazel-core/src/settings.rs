@@ -22,7 +22,6 @@ pub enum Page {
     Accounts,
     Models,
     Appearance,
-    StatusLine,
     Input,
     Permissions,
     Tools,
@@ -33,11 +32,10 @@ pub enum Page {
 
 impl Page {
     /// The pages in the order of their tabs.
-    pub const ALL: [Page; 10] = [
+    pub const ALL: [Page; 9] = [
         Page::Accounts,
         Page::Models,
         Page::Appearance,
-        Page::StatusLine,
         Page::Input,
         Page::Permissions,
         Page::Tools,
@@ -52,7 +50,6 @@ impl Page {
             Page::Accounts => "Accounts",
             Page::Models => "Models",
             Page::Appearance => "Appearance",
-            Page::StatusLine => "Status line",
             Page::Input => "Input",
             Page::Permissions => "Permissions",
             Page::Tools => "Tools",
@@ -67,8 +64,7 @@ impl Page {
         match self {
             Page::Accounts => "Subscriptions, API keys and the order accounts are tried in.",
             Page::Models => "Which model does what, and how requests to models are retried and cached.",
-            Page::Appearance => "Colours, symbols, the working indicator and how azazel gets your attention.",
-            Page::StatusLine => "What the line under the input shows.",
+            Page::Appearance => "Colours, symbols, the working indicator, notifications and the status line.",
             Page::Input => "The input: its keys, the external editor, queued messages and voice.",
             Page::Permissions => "What agents may do without asking, and the guards that watch them.",
             Page::Tools => "Tools, checks after a write, language servers, MCP, web, media and verification.",
@@ -292,7 +288,7 @@ settings! {
             "A finished run notifies only when it took at least this many seconds.";
         "notify.keep_awake": Switch, "Keep the computer awake", "Keep the machine from sleeping while agents work.";
     }
-    StatusLine / "Status line" {
+    Appearance / "Status line" {
         "statusline.preset": Choice(StatusPreset::NAMES), "Preset",
             "The set of segments shown when the left and right lists are empty; /statusline sets the line up with it in view.", live;
         "statusline.left": List, "Left segments",

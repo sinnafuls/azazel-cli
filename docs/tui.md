@@ -491,7 +491,7 @@ that are off (the sample shows some of them).
 | `Esc` | | Puts the line back as it was |
 
 `/statusline minimal` (or `default`, `powerline`, `full`) takes a preset at once and saves it. The Status line
-page of [`/settings`](#settings) edits the same keys, the segment options and the command included.
+group on the Appearance page of [`/settings`](#settings) edits the same keys, the segment options and the command included.
 
 #### Your own command
 
@@ -1327,12 +1327,12 @@ With the feature:
 
 ## Settings
 
-`/settings` opens one screen with every setting azazel has, on ten pages behind a row of tabs:
+`/settings` opens one screen with every setting azazel has, on nine pages behind a row of tabs:
 
 ```
 ╭─ Settings ───────────────────────────────────────────────────────────────────────────────────────╮
-│ … Models  Appearance 2  Status line  Input  Permissions  Tools  Sessions  Usage  Advanced        │
-│ Colours, symbols, the working indicator and how azazel gets your atte…  saves to the home config │
+│ … Models  Appearance 2  Input  Permissions  Tools  Sessions  Usage  Advanced                     │
+│ Colours, symbols, the working indicator, notifications and the status…  saves to the home config │
 │                                                                                                  │
 │ Interface                                                                                       ┃│
 │ ▌ Theme                            tokyo-night                                          ●  home ┃│
@@ -1361,8 +1361,7 @@ With the feature:
 |---|---|
 | Accounts | Sign in with a subscription, add an API key, sign out or forget a key, the credentials in use, the order accounts are tried in |
 | Models | The default model and the model of every role, favourite models\*, the advisor, per-agent overrides, retries and stalls, prompt cache warming |
-| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, the mouse in popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake |
-| Status line | Preset\*, left and right segments\*, separator\*, segment options\*, command\*; [`/statusline`](#setting-it-up) sets the same line up with the segments in a list |
+| Appearance | Theme\*, symbols\*, working indicator\* and its phrases, session colour for the indicator\*, tool call style\*, hiding secrets\*, popups\*, the mouse in popups\*, inline images, show thinking\*, full tool output\*; bell, desktop notifications, terminal title, tab progress, shortest run that notifies, keep awake; the status line: preset\*, left and right segments\*, separator\*, segment options\*, command\* ([`/statusline`](#setting-it-up) sets the same line up with the segments in a list) |
 | Input | Emacs or Vim keys\*, external editor command\*, paste fold length\*, queued messages; transcription and speech models, voice, language, send at once, longest recording, the commands that record, transcribe and play |
 | Permissions | The mode sessions start in, what destructive commands need, allow, ask and deny rules, additional directories, secret files; the guards |
 | Tools | Disabled tools, result size, shell and its time limit, redaction for the model; formatters and checkers after a write, the findings report, the read guard, the secret scan; language servers; MCP; web search and the browser; media models; verification and goals |
