@@ -64,6 +64,16 @@ azazel migrate --dry-run             # what would come over from pi, omp, jcode,
 Start with [getting started](docs/getting-started.md); every feature has its own page in [docs/](docs/README.md).
 To work on azazel itself, read [AGENTS.md](AGENTS.md).
 
+## Issues and contributing
+
+Found a bug or want something added? [Open an issue](https://github.com/sinnafuls/azazel-cli/issues/new/choose)
+with the bug report or feature request template. Search the existing issues first, keep one problem per issue, and
+never paste API keys, tokens or `auth.json`; security problems go to a
+[private report](https://github.com/sinnafuls/azazel-cli/security/advisories/new). For a bug, include
+`azazel --version`, your OS and terminal, the steps, and a screenshot if anything is drawn wrong.
+
+Pull requests are welcome: [CONTRIBUTING.md](CONTRIBUTING.md) has the ground rules and the checks to run.
+
 ## Licence
 
 Licensed under either of [Apache-2.0](LICENSE-APACHE) or [MIT](LICENSE-MIT), at your option.

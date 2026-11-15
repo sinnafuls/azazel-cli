@@ -1,0 +1,41 @@
+name: Feature request
+description: Something azazel should do, or do differently.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Search the [issues](https://github.com/sinnafuls/azazel-cli/issues?q=is%3Aissue) and the [docs](https://github.com/sinnafuls/azazel-cli/tree/main/docs) first: it may exist already, maybe behind a setting. One idea per issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you are trying to do, and what gets in the way today. Describe the need, not only the solution.
+      placeholder: When three sub-agents run I can't tell from the input which one is waiting for me.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like
+      description: How it should work for you: the command, key, setting or screen, and what it shows.
+    validations:
+      required: true
+  - type: textarea
+    id: elsewhere
+    attributes:
+      label: Seen elsewhere
+      description: Another tool that does this well (Claude Code, Codex, omp, opencode, …), with a link or screenshot if you have one.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you do today instead
+      description: Workarounds you use, and why they are not enough.
+  - type: dropdown
+    id: weight
+    attributes:
+      label: How much does it matter to you?
+      options:
+        - Nice to have
+        - Annoying without it
+        - Blocks me from using azazel for something

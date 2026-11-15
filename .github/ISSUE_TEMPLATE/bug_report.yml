@@ -1,0 +1,76 @@
+name: Bug report
+description: Something azazel does wrong, crashes on, or draws badly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Before you send it:
+        - Search the [open and closed issues](https://github.com/sinnafuls/azazel-cli/issues?q=is%3Aissue) first; add to an existing one rather than opening a second.
+        - One problem per issue.
+        - **No secrets.** Remove API keys, tokens, passwords, `auth.json` contents and private paths from anything you paste. A security problem goes to a [private report](https://github.com/sinnafuls/azazel-cli/security/advisories/new), not here.
+  - type: input
+    id: version
+    attributes:
+      label: azazel version
+      description: The output of `azazel --version`. Run `azazel update` first if you can; the bug may be fixed already.
+      placeholder: azazel 0.10.2
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: System and terminal
+      description: Operating system and the terminal you run azazel in, and tmux/screen/zellij or ssh if any.
+      placeholder: Arch Linux, kitty 0.38, inside tmux
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and sign-in
+      description: The model the session used (the status line shows it) and whether it is an API key or a subscription login.
+      placeholder: anthropic/claude-opus-5-5, Claude subscription
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you saw instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The shortest way to make it happen again. Say if it happens every time or only sometimes.
+      placeholder: |
+        1. Start `azazel` in a project with sub-agents running
+        2. Move the mouse out of the terminal and back
+        3. `[I[O` appears in the input
+    validations:
+      required: true
+  - type: textarea
+    id: screens
+    attributes:
+      label: Screenshots or recordings
+      description: Paste or drag images here. For anything drawn wrong, a screenshot helps most.
+  - type: textarea
+    id: doctor
+    attributes:
+      label: azazel doctor
+      description: The output of `azazel doctor`, run in the same project. Check it for anything private first.
+      render: text
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log
+      description: |
+        The end of the log, from around when it happened: `~/.azazel/logs/azazel.log` (`%USERPROFILE%\.azazel\logs\azazel.log` on Windows).
+        Start azazel with `--debug` to get more detail. Check it for anything private first.
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: The parts of `~/.azazel/config.toml` or the project's `.azazel/config.toml` that matter here, with secrets removed.
+      render: toml
