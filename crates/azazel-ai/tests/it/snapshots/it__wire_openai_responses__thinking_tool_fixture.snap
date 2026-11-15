@@ -1,0 +1,164 @@
+---
+source: crates/azazel-ai/tests/it/wire_openai_responses.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": "**Checking the tests**"
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": " The user wants the tests run."
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": "\n\n"
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": "**Choosing the tool** The shell tool fits."
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "thinking",
+      "text": "**Checking the tests** The user wants the tests run.\n\n**Choosing the tool** The shell tool fits."
+    }
+  },
+  {
+    "type": "block_end",
+    "index": 1,
+    "block": {
+      "type": "opaque",
+      "provider": "mock",
+      "item": {
+        "id": "rs_07e3b9d05a6c41f200690f3e5630c890",
+        "type": "reasoning",
+        "encrypted_content": "gAAAAABpDz5XU2VhbGVkLXJlYXNvbmluZy1zdGF0ZS1mb3ItcmVwbGF5LW9ubHk=",
+        "summary": [
+          {
+            "type": "summary_text",
+            "text": "**Checking the tests** The user wants the tests run."
+          },
+          {
+            "type": "summary_text",
+            "text": "**Choosing the tool** The shell tool fits."
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "text_delta",
+    "index": 2,
+    "delta": "I'll run"
+  },
+  {
+    "type": "text_delta",
+    "index": 2,
+    "delta": " the test suite."
+  },
+  {
+    "type": "block_end",
+    "index": 2,
+    "block": {
+      "type": "text",
+      "text": "I'll run the test suite."
+    }
+  },
+  {
+    "type": "tool_call_start",
+    "index": 3,
+    "id": "call_Q4dTn8Yb1ZsGm6Xe",
+    "name": "shell"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 3,
+    "delta": "{\"command\":"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 3,
+    "delta": "\"cargo test\"}"
+  },
+  {
+    "type": "block_end",
+    "index": 3,
+    "block": {
+      "type": "tool_call",
+      "id": "call_Q4dTn8Yb1ZsGm6Xe",
+      "name": "shell",
+      "input": {
+        "command": "cargo test"
+      }
+    }
+  },
+  {
+    "type": "done",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "text": "**Checking the tests** The user wants the tests run.\n\n**Choosing the tool** The shell tool fits."
+        },
+        {
+          "type": "opaque",
+          "provider": "mock",
+          "item": {
+            "id": "rs_07e3b9d05a6c41f200690f3e5630c890",
+            "type": "reasoning",
+            "encrypted_content": "gAAAAABpDz5XU2VhbGVkLXJlYXNvbmluZy1zdGF0ZS1mb3ItcmVwbGF5LW9ubHk=",
+            "summary": [
+              {
+                "type": "summary_text",
+                "text": "**Checking the tests** The user wants the tests run."
+              },
+              {
+                "type": "summary_text",
+                "text": "**Choosing the tool** The shell tool fits."
+              }
+            ]
+          }
+        },
+        {
+          "type": "text",
+          "text": "I'll run the test suite."
+        },
+        {
+          "type": "tool_call",
+          "id": "call_Q4dTn8Yb1ZsGm6Xe",
+          "name": "shell",
+          "input": {
+            "command": "cargo test"
+          }
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "openai-responses",
+        "usage": {
+          "input": 128,
+          "output": 142,
+          "cache_read": 512,
+          "cache_write": 0,
+          "reasoning": 96
+        },
+        "stop": "tool_use",
+        "response_id": "resp_07e3b9d05a6c41f200690f3e55d1ab90",
+        "duration_ms": 0
+      }
+    }
+  }
+]

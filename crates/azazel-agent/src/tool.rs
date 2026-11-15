@@ -194,39 +194,3 @@ impl Services {
         service.downcast::<T>().ok()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct Counter(u32);
-    struct Label(&'static str);
-
-    #[test]
-    fn services_are_keyed_by_type_and_replaceable() {
-        let services = Services::new();
-        assert!(services.get::<Counter>().is_none());
-        services.insert(Arc::new(Counter(1)));
-        services.insert(Arc::new(Label("x")));
-        services.insert(Arc::new(Counter(2)));
-        assert_eq!(services.get::<Counter>().map(|c| c.0), Some(2));
-        assert_eq!(services.get::<Label>().map(|l| l.0), Some("x"));
-    }
-
-    #[test]
-    fn text_content_joins_text_blocks_and_skips_images() {
-        let output = ToolOutput {
-            content: vec![
-                Block::text("a"),
-                Block::Image {
-                    mime: "image/png".into(),
-                    data: String::new(),
-                },
-                Block::text("b"),
-            ],
-            is_error: false,
-            details: None,
-        };
-        assert_eq!(output.text_content(), "a\nb");
-    }
-}

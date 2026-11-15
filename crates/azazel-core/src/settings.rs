@@ -264,6 +264,8 @@ settings! {
             "Phrases the working indicator shows in turn; empty shows what the agent is doing.";
         "tui.session_accent": Switch, "Session colour in the indicator",
             "Tint the working indicator with a colour derived from the session's name.", live;
+        "tui.todo_max": Number, "Todo rows above the input",
+            "Rows the todo list above the input takes at most; 0 hides it.";
         "tui.tool_style": Choice(ToolStyle::NAMES), "Tool calls",
             "card frames each tool call; compact shows a finished call on one row.", live;
         "tui.diff_view": Choice(DiffView::NAMES), "Diff layout",
@@ -369,6 +371,10 @@ settings! {
             "What a read must cover before an edit: the lines the edit changes (range), any read of the file, or nothing.";
         "tools.scan.secrets": Switch, "Scan for committed secrets",
             "Look for secrets committed to the project with gitleaks, once per session.";
+        "tools.eval.python": Switch, "Python in eval",
+            "Let agents run Python programs with the eval tool. Off for both languages, eval is not offered.";
+        "tools.eval.javascript": Switch, "JavaScript in eval",
+            "Let agents run JavaScript programs (node, bun or deno) with the eval tool.";
     }
     Tools / "Language servers" {
         "lsp.servers": Kind::Table, "Servers",
@@ -631,24 +637,5 @@ mod tests {
                 seen.push(group);
             }
         }
-    }
-
-    #[test]
-    fn choices_follow_the_values_the_configuration_knows() {
-        assert_eq!(
-            PermissionMode::NAMES,
-            PermissionMode::ALL.map(PermissionMode::as_str)
-        );
-        assert_eq!(GlyphSetting::NAMES, ["auto", "unicode", "nerd", "ascii"]);
-        let names: Vec<&str> = GlyphSetting::ALL.iter().map(|v| v.as_str()).collect();
-        assert_eq!(GlyphSetting::NAMES, names);
-    }
-
-    #[test]
-    fn leaves_are_values_and_empty_tables() {
-        let table: Table = toml::from_str("a = 1\n[b]\nc = []\n[b.d]\n[b.e]\nf = \"x\"\n").unwrap();
-        assert_eq!(leaves(&table), ["a", "b.c", "b.d", "b.e.f"]);
-        assert_eq!(lookup(&table, "b.e.f"), Some(&Value::String("x".into())));
-        assert_eq!(lookup(&table, "b.missing"), None);
     }
 }

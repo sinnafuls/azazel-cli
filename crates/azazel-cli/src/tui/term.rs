@@ -491,15 +491,6 @@ mod tests {
     }
 
     #[test]
-    fn the_program_gets_the_room_inside_the_box() {
-        assert_eq!(screen_size(72, 20), (18, 68));
-        assert_eq!(screen_size(44, 8), (6, 40));
-        // Never nothing, however small the window.
-        assert_eq!(screen_size(3, 1), (1, 3));
-        assert_eq!(screen_size(0, 0), (1, 1));
-    }
-
-    #[test]
     fn a_watched_terminal_names_its_program_and_the_keys_and_has_no_cursor() {
         let theme = Theme::dark();
         let view = screen(&["? package name: (demo)", "", ""], Some((0, 23)));

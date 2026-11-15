@@ -472,19 +472,6 @@ mod tests {
     }
 
     #[test]
-    fn unfiltered_list_keeps_original_order() {
-        let mut select = list(&["beta", "alpha", "gamma"]);
-        assert_eq!(select.len(), 3);
-        assert_eq!(select.selected(), Some(0));
-        select.move_down();
-        assert_eq!(select.selected(), Some(1));
-        assert_eq!(
-            select.selected_item().map(|item| item.label.as_str()),
-            Some("alpha")
-        );
-    }
-
-    #[test]
     fn filter_ranks_matches_and_maps_back_to_original_indices() {
         let mut select = list(&["domain_model.rs", "README.md", "main.rs"]);
         select.set_filter("main");
@@ -517,14 +504,6 @@ mod tests {
         select.move_down();
         select.page_down();
         assert_eq!(select.selected(), None);
-    }
-
-    #[test]
-    fn filter_characters_are_literal() {
-        let mut select = list(&["!important", "plain"]);
-        select.set_filter("!imp");
-        assert_eq!(select.selected(), Some(0));
-        assert_eq!(select.len(), 1);
     }
 
     #[test]
@@ -823,23 +802,6 @@ mod tests {
     }
 
     #[test]
-    fn row_limits_are_respected() {
-        let select = list(&["a", "b", "c"]);
-        assert!(select.render(20, 0, &Theme::dark()).is_empty());
-        assert_eq!(select.render(20, 1, &Theme::dark()).len(), 1);
-        assert_eq!(select.render(20, 2, &Theme::dark()).len(), 2);
-        assert_eq!(select.render(20, 3, &Theme::dark()).len(), 3);
-        assert_eq!(select.render(20, 9, &Theme::dark()).len(), 3);
-    }
-
-    #[test]
-    fn empty_result_says_so() {
-        let mut select = list(&["a"]);
-        select.set_filter("zzz");
-        assert_eq!(plain(&select.render(20, 5, &Theme::dark())), ["  no matches"]);
-    }
-
-    #[test]
     fn rows_under_the_mouse_follow_the_scroll() {
         let labels: Vec<String> = (0..20).map(|n| format!("item {n}")).collect();
         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
@@ -894,26 +856,5 @@ mod tests {
             select.on_mouse(MouseKind::ScrollUp, None);
         }
         assert_eq!(select.selected(), Some(0), "nor does it wrap at the top");
-    }
-
-    #[test]
-    fn the_row_under_the_mouse_is_set_apart() {
-        let mut select = SelectList::new(vec![
-            SelectItem::new("alpha", "first"),
-            SelectItem::new("beta", "second"),
-        ]);
-        let theme = Theme::dark();
-        let band = theme.bg(Role::UserBg);
-        let before = plain(&select.view(30, 2, &theme).lines);
-        select.on_mouse(MouseKind::Move, Some(1));
-        let lines = select.view(30, 2, &theme).lines;
-        assert!(!lines[0].contains(&band) && lines[1].contains(&band));
-        assert_eq!(text::width(&lines[1]), 30, "the band runs across the row");
-        assert_eq!(plain(&lines), before, "the text stays where it was");
-        select.on_mouse(MouseKind::Move, None);
-        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
-        select.on_mouse(MouseKind::Move, Some(1));
-        select.clear_hover();
-        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
     }
 }

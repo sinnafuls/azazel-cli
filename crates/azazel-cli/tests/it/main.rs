@@ -1,0 +1,50 @@
+#![allow(clippy::unwrap_used)]
+
+//! The integration tests of the crate, one program for all of them.
+
+mod accounts;
+mod acp;
+mod background;
+mod cache;
+mod checks;
+mod client;
+mod common;
+mod context;
+mod durable;
+mod goal;
+mod guards;
+mod input;
+mod launch;
+mod login;
+mod loops;
+mod mcp_cli;
+mod mcp_serve;
+mod migrate;
+mod modes;
+mod orchestration;
+mod packages;
+mod places;
+mod primary_agents;
+mod print_mode;
+mod projects;
+mod read_guard;
+mod remote;
+mod reports;
+mod resets;
+mod restart;
+mod roles;
+mod rpc;
+mod rpc_session;
+mod rules_and_safety;
+mod run_resources;
+mod schedule;
+mod scripted;
+mod secrets;
+mod sessions;
+mod setup;
+mod side;
+mod tools;
+mod traces;
+mod usage;
+mod voice;
+mod web_search;

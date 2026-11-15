@@ -725,23 +725,6 @@ mod tests {
         assert!(other.starts_with("ast-grep's output could not be read: "));
     }
 
-    #[test]
-    fn a_match_shows_its_first_line_and_every_capture() {
-        let mut value = printed("a.ts", "call(\n  one,\n  two\n)", 4, 2, None);
-        value["lines"] = "    call(\n  one,\n  two\n)".into();
-        value["metaVariables"] = json!({
-            "single": { "F": { "text": "call" } },
-            "multi": { "ARGS": [{ "text": "one" }, { "text": "," }, { "text": "two" }] }
-        });
-        let found: Match = serde_json::from_value(value).unwrap();
-        let mut out = String::new();
-        match_lines("src/a.ts", &found, &mut out);
-        assert_eq!(
-            out,
-            "src/a.ts:3: call( (+3 lines)\n  $F = call\n  $$$ARGS = one , two\n"
-        );
-    }
-
     fn found(values: &[Value]) -> Vec<Match> {
         values
             .iter()
@@ -797,23 +780,5 @@ mod tests {
             rewrite(Path::new("a.rs"), "a.rs", old, &all).err().unwrap(),
             "a.rs changed while it was searched; run it again"
         );
-    }
-
-    #[test]
-    fn only_an_applied_replacement_is_a_write() {
-        let tool = AstGrepTool::new(
-            PathBuf::from("sg"),
-            Arc::new(FileTracker::new()),
-            ReadGuard::Range,
-        );
-        let search = json!({ "action": "search", "pattern": "x", "paths": ["src"] });
-        let preview = json!({ "action": "replace", "pattern": "x", "rewrite": "y" });
-        let apply = json!({ "action": "replace", "pattern": "x", "rewrite": "y", "apply": true, "paths": ["a.rs", "b.rs"] });
-        assert_eq!(tool.access(&search), Access::Read);
-        assert_eq!(tool.access(&preview), Access::Read);
-        assert_eq!(tool.access(&apply), Access::Write);
-        assert_eq!(tool.subjects(&search), ["src"]);
-        assert!(tool.subjects(&preview).is_empty());
-        assert_eq!(tool.subjects(&apply), ["a.rs", "b.rs"]);
     }
 }

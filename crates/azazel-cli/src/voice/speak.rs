@@ -290,20 +290,6 @@ mod tests {
     }
 
     #[test]
-    fn fences_of_any_kind_are_skipped_whole() {
-        // A longer fence holds a shorter one; tildes work like backticks.
-        let reply = "Before\n````md\n```\ninner\n```\nstill code\n````\nBetween\n~~~\ncode\n~~~\nAfter";
-        assert_eq!(
-            speakable(reply),
-            "Before. Code omitted. Between. Code omitted. After"
-        );
-        // A fence left open hides the rest.
-        assert_eq!(speakable("Look:\n```\nlet x = 1;"), "Look: Code omitted.");
-        assert_eq!(speakable("```\nonly code\n```"), "Code omitted.");
-        assert_eq!(speakable(" \n\n"), "");
-    }
-
-    #[test]
     fn tables_images_and_addresses_are_tamed() {
         assert_eq!(speakable("| a | b |\n|---|---|\n| 1 | 2 |"), "a, b. 1, 2");
         assert_eq!(

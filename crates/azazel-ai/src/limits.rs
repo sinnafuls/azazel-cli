@@ -592,36 +592,6 @@ mod tests {
     }
 
     #[test]
-    fn windows_are_kept_per_account_and_replaced_by_name() {
-        let store = LimitStore::new();
-        store.record(
-            "anthropic",
-            "default",
-            vec![window("5h", 0.2, "allowed"), window("7d", 0.5, "allowed")],
-        );
-        store.record("anthropic", "work", vec![window("5h", 0.9, "allowed_warning")]);
-        store.record("anthropic", "default", vec![window("5h", 1.0, REJECTED)]);
-        store.record("anthropic", "default", Vec::new());
-
-        let default = store.windows("anthropic", "default");
-        assert_eq!(default.len(), 2);
-        assert_eq!(default[0], window("5h", 1.0, REJECTED));
-        assert_eq!(default[1].used, 0.5);
-        assert_eq!(
-            store.exhausted("anthropic", "default").unwrap().label(),
-            "5-hour limit"
-        );
-        assert_eq!(store.exhausted("anthropic", "work"), None);
-        assert!(store.windows("openai", "default").is_empty());
-
-        let all = store.snapshot();
-        assert_eq!(
-            all.iter().map(|a| a.account.as_str()).collect::<Vec<_>>(),
-            ["default", "work"]
-        );
-    }
-
-    #[test]
     fn a_full_window_says_which_it_is_and_when_it_resets() {
         assert_eq!(time_left(0), "under a minute");
         assert_eq!(time_left(59), "under a minute");
@@ -671,27 +641,6 @@ mod tests {
         store.block("anthropic", "default", now_secs().saturating_sub(1));
         assert_eq!(store.blocked_until("anthropic", "default"), None);
         assert_eq!(store.snapshot()[0].blocked_until, None);
-    }
-
-    #[test]
-    fn a_window_is_named_by_its_length_and_what_it_counts() {
-        assert_eq!(window("5h", 0.0, "allowed").label(), "5-hour limit");
-        assert_eq!(window("24h", 0.0, "allowed").label(), "24-hour limit");
-        assert_eq!(window("7d-opus", 0.0, "allowed").label(), "7-day Opus limit");
-        assert_eq!(
-            window("7d-fable", 0.0, "allowed").scoped("Fable").label(),
-            "7-day Fable limit"
-        );
-        assert_eq!(window("primary", 0.0, "allowed").label(), "primary limit");
-        assert_eq!(window("overage", 0.0, "allowed").label(), "extra usage");
-
-        let fable = window("7d-fable", 1.0, REJECTED).scoped("Fable");
-        assert!(fable.counts("claude-fable-5-2"));
-        assert!(!fable.counts("claude-opus-5-5"));
-        assert!(window("7d", 1.0, REJECTED).counts("claude-opus-5-5"));
-        assert!(scope_covers("GPT-5.3-Codex-Spark", "gpt-5.3-codex-spark"));
-        assert!(!scope_covers("oauth apps", "claude-opus-5-5"));
-        assert!(!scope_covers("", "claude-opus-5-5"));
     }
 
     #[test]

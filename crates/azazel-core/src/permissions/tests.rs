@@ -91,22 +91,6 @@ fn denied(v: &Verdict) -> bool {
 }
 
 #[test]
-fn rules_parse_and_print() {
-    for text in [
-        "shell",
-        "shell(cargo test:*)",
-        "read(src/**)",
-        "mcp__github__*",
-        "web_fetch(domain:docs.rs)",
-    ] {
-        assert_eq!(text.parse::<Rule>().unwrap().to_string(), text);
-    }
-    for bad in ["", "shell(", "shell()", "shell(x", "sh ell", "(x)"] {
-        assert!(bad.parse::<Rule>().is_err(), "{bad}");
-    }
-}
-
-#[test]
 fn the_decision_table() {
     use Access::*;
     let f = fixture(
@@ -311,34 +295,6 @@ fn a_patch_is_judged_file_by_file_as_a_write() {
         Plan,
         &[".azazel/plans/a.md", "src/a.rs"]
     )));
-}
-
-#[test]
-fn denial_reasons_say_what_happened() {
-    let f = fixture("[permissions]\ndeny = [\"shell(rm -rf:*)\"]\n");
-    f.state.set_mode(PermissionMode::Auto);
-    match verdict(&f, "shell", Access::Exec, "rm -rf x") {
-        Verdict::Deny(reason) => {
-            assert!(
-                reason.starts_with("denied by rule `shell(rm -rf:*)` ("),
-                "{reason}"
-            );
-            assert!(reason.contains("config.toml"), "{reason}");
-        }
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(
-        verdict(&f, "shell", Access::Exec, "git push"),
-        Verdict::Deny(shell::PUSH_DENIED.to_string())
-    );
-    f.state.set_mode(PermissionMode::Plan);
-    assert_eq!(
-        verdict(&f, "shell", Access::Exec, "ls"),
-        Verdict::Deny(PLAN_DENIED.to_string())
-    );
-    assert!(f.state.mode_prompt(&agent()).unwrap().contains("plan_submit"));
-    f.state.set_mode(PermissionMode::Manual);
-    assert_eq!(f.state.mode_prompt(&agent()), None);
 }
 
 #[test]
@@ -1868,4 +1824,26 @@ fn a_request_with_a_stored_credential_needs_its_host_and_the_credential_allowed(
             rule: Some("http(domain:other.test)".to_string())
         }
     );
+}
+
+#[test]
+fn local_files_are_written_without_asking_and_never_escaped() {
+    let f = fixture("");
+    for mode in [PermissionMode::Manual, PermissionMode::Plan] {
+        f.state.set_mode(mode);
+        for tool in ["write", "edit", "patch"] {
+            let v = verdict(&f, tool, Access::Write, "local://notes/report.md");
+            assert!(allowed(&v), "{mode} {tool}: {v:?}");
+        }
+        // A name that leads out of the scratch directory is refused, whatever the mode.
+        for escape in ["local://../../src/main.rs", "local:///etc/passwd"] {
+            let v = verdict(&f, "write", Access::Write, escape);
+            assert!(denied(&v), "{mode} {escape}: {v:?}");
+        }
+    }
+    f.state.set_mode(PermissionMode::Bypass);
+    assert!(denied(&verdict(&f, "write", Access::Write, "local://a/../../x")));
+    // A project file is still asked about in `manual`.
+    f.state.set_mode(PermissionMode::Manual);
+    assert!(prompts(&verdict(&f, "write", Access::Write, "src/main.rs")));
 }

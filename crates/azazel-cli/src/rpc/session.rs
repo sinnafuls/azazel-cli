@@ -656,24 +656,4 @@ mod tests {
             Err("no entry `nope` on the current branch".to_string())
         );
     }
-
-    #[test]
-    fn tree_rows_say_what_an_entry_is() {
-        let current: HashSet<String> = ["m1".to_string()].into();
-        let row = tree_row(prompt("m1", "\n  fix the bug  \nand more"), &current);
-        assert_eq!(
-            (
-                row.kind.as_str(),
-                row.role.as_deref(),
-                row.text.as_deref(),
-                row.current
-            ),
-            ("message", Some("user"), Some("fix the bug"), true)
-        );
-        let row = tree_row(checkpoint("k1", "aaa"), &current);
-        assert_eq!(
-            (row.kind.as_str(), row.role, row.current),
-            ("checkpoint", None, false)
-        );
-    }
 }

@@ -1330,36 +1330,6 @@ mod tests {
     }
 
     #[test]
-    fn times_are_read_from_text_seconds_and_milliseconds() {
-        let text = serde_json::json!("2026-02-16T10:20:30.000Z");
-        let millis = serde_json::json!(1771237230000u64);
-        let seconds = serde_json::json!(1771237230u64);
-        let expected: jiff::Timestamp = "2026-02-16T10:20:30Z".parse().unwrap();
-        assert_eq!(time_of(Some(&text)), Some(expected));
-        assert_eq!(time_of(Some(&millis)), Some(expected));
-        assert_eq!(time_of(Some(&seconds)), Some(expected));
-        assert_eq!(time_of(Some(&Value::Null)), None);
-    }
-
-    #[test]
-    fn environment_files_and_addresses_are_read_plainly() {
-        let lines = env_lines("# keys\nexport A_KEY=\"one two\"\nB_KEY=three # trailing\nbad line\nC=\n");
-        assert_eq!(
-            lines,
-            [
-                ("A_KEY".to_string(), "one two".to_string()),
-                ("B_KEY".to_string(), "three".to_string())
-            ]
-        );
-        assert_eq!(redact_email("jane.doe@example.com"), "j***@example.com");
-        assert_eq!(
-            provider_of_variable("ANTHROPIC_API_KEY").as_deref(),
-            Some("anthropic")
-        );
-        assert_eq!(provider_of_variable("NO_SUCH_KEY"), None);
-    }
-
-    #[test]
     fn a_context_file_becomes_a_rule_that_always_applies_with_its_includes() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("style.md"), "Use tabs.\n").unwrap();

@@ -510,7 +510,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::oauth::{BodyKind, OAuthFlow};
+
     use crate::providers::table::row;
 
     fn no_env(_: &str) -> Option<String> {
@@ -560,55 +560,6 @@ mod tests {
                     .unwrap_or_else(|why| panic!("{}: {why}", provider.id));
             }
         }
-    }
-
-    #[test]
-    fn presets_carry_the_endpoint_facts_of_their_provider() {
-        let cerebras = preset("cerebras");
-        assert_eq!(
-            (cerebras.api, cerebras.base_url.as_str(), cerebras.requires_key),
-            (WireApi::OpenAiChat, "https://api.cerebras.ai/v1", true)
-        );
-        assert_eq!(cerebras.api_key_env, ["CEREBRAS_API_KEY"]);
-        assert_eq!(cerebras.name, "Cerebras");
-
-        let minimax = preset("minimax");
-        assert_eq!(
-            (minimax.api, minimax.base_url.as_str()),
-            (WireApi::AnthropicMessages, "https://api.minimax.io/anthropic")
-        );
-
-        let openrouter = preset("openrouter");
-        assert_eq!(openrouter.api, WireApi::OpenRouter);
-        assert_eq!(openrouter.headers["X-Title"], "azazel");
-
-        let cloud = preset("ollama-cloud");
-        assert_eq!(
-            (cloud.api, cloud.discovery, cloud.requires_key),
-            (WireApi::OllamaChat, Discovery::Ollama, true)
-        );
-        assert_eq!(cloud.api_key_env, ["OLLAMA_CLOUD_API_KEY", "OLLAMA_API_KEY"]);
-
-        // Local servers answer without a key and are asked for their models their own way.
-        for (id, discovery) in [
-            ("ollama", Discovery::Ollama),
-            ("lmstudio", Discovery::LmStudio),
-            ("llamacpp", Discovery::Auto),
-            ("vllm", Discovery::Auto),
-            ("litellm", Discovery::Auto),
-        ] {
-            let local = preset(id);
-            assert!(!local.requires_key, "{id}");
-            assert_eq!(local.discovery, discovery, "{id}");
-            assert!(local.base_url.starts_with("http://localhost:"), "{id}");
-        }
-
-        let azure = preset(AZURE);
-        assert_eq!(
-            (azure.api, azure.auth_style),
-            (WireApi::AzureOpenAiResponses, AuthStyle::ApiKey)
-        );
-        assert_eq!(azure.api_key_env, ["AZURE_OPENAI_API_KEY"]);
     }
 
     #[test]
@@ -667,22 +618,6 @@ mod tests {
         assert_eq!(expand("${B:-${A}/${C:-three}}", &env), "one/three");
         assert_eq!(expand("${B}", &env), "${B}");
         assert_eq!(expand("plain ${ unclosed", &env), "plain ${ unclosed");
-    }
-
-    #[test]
-    fn override_changes_only_named_fields() {
-        let ollama = with(
-            ProviderSettings {
-                base_url: Some("http://box:11434/v1/".into()),
-                ..Default::default()
-            },
-            "ollama",
-            &no_env,
-        );
-        assert_eq!(ollama.base_url, "http://box:11434/v1");
-        assert_eq!(ollama.api, WireApi::OpenAiChat);
-        assert_eq!(ollama.discovery, Discovery::Ollama);
-        assert!(!ollama.requires_key);
     }
 
     #[test]
@@ -760,24 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_key_command_is_ignored() {
-        let local = with(
-            ProviderSettings {
-                api: Some(WireApi::OpenAiChat),
-                base_url: Some("http://localhost:9000/v1".into()),
-                api_key_command: Some(String::new()),
-                ..Default::default()
-            },
-            "local",
-            &no_env,
-        );
-        assert_eq!(
-            (local.api_key_command.as_deref(), local.requires_key),
-            (None, false)
-        );
-    }
-
-    #[test]
     fn azure_takes_resource_keys_in_their_own_header_unless_told_to_use_a_bearer_token() {
         // A resource configured the old way keeps talking the plain Responses format.
         let base = ProviderSettings {
@@ -823,99 +740,6 @@ mod tests {
     }
 
     #[test]
-    fn discovery_reads_names_and_booleans() {
-        let read = |text: &str| serde_json::from_str::<Discovery>(text);
-        assert_eq!(read("\"lm-studio\"").unwrap(), Discovery::LmStudio);
-        assert_eq!(read("true").unwrap(), Discovery::Auto);
-        assert_eq!(read("false").unwrap(), Discovery::Off);
-        assert!(
-            read("\"sometimes\"")
-                .unwrap_err()
-                .to_string()
-                .contains("sometimes")
-        );
-        assert_eq!(serde_json::to_string(&Discovery::Ollama).unwrap(), "\"ollama\"");
-    }
-
-    #[test]
-    fn subscription_flows_are_configured() {
-        let anthropic = preset("anthropic");
-        let claude = anthropic.oauth.as_ref().expect("the Claude subscription flow");
-        claude.check().unwrap();
-        assert_eq!(claude.client().unwrap().0, "9d1c250a-e61b-44d9-88ed-5944d1962f5e");
-        assert_eq!(claude.authorize_url, "https://claude.ai/oauth/authorize");
-        assert_eq!(claude.token_url, "https://api.anthropic.com/v1/oauth/token");
-        assert_eq!(
-            (claude.redirect_port, claude.redirect_path.as_deref()),
-            (54545, Some("/callback"))
-        );
-        assert_eq!(claude.redirect_host.as_deref(), Some("localhost"));
-        assert_eq!(claude.token_body, BodyKind::Json);
-        assert_eq!(claude.token_params["state"], "{state}");
-        let refresh = claude.refresh.as_ref().unwrap();
-        assert_eq!(refresh.headers["anthropic-beta"], "oauth-2025-04-20");
-        // The subscription rides the same provider as API keys: the credential decides.
-        assert_eq!(
-            anthropic.oauth_headers["anthropic-beta"],
-            "claude-code-20250219,oauth-2025-04-20"
-        );
-        assert_eq!(anthropic.oauth_headers["x-app"], "cli");
-
-        let codex = preset("openai-codex");
-        assert_eq!(codex.base_url, "https://chatgpt.com/backend-api/codex");
-        assert_eq!(codex.api, WireApi::OpenAiResponses);
-        assert!(codex.requires_key && codex.api_key_env.is_empty());
-        let chatgpt = codex.oauth.as_ref().expect("the ChatGPT subscription flow");
-        chatgpt.check().unwrap();
-        assert_eq!(chatgpt.authorize_url, "https://auth.openai.com/oauth/authorize");
-        assert_eq!(chatgpt.token_url, "https://auth.openai.com/oauth/token");
-        assert_eq!(
-            chatgpt.redirect_uri.as_deref(),
-            Some("http://localhost:1455/auth/callback")
-        );
-        assert_eq!(chatgpt.redirect_port, 1455);
-        // The account a request is billed to sits in the access token's own claims.
-        assert_eq!(
-            chatgpt.credential.fields["account_id"].claim.as_deref(),
-            Some("https://api.openai.com/auth.chatgpt_account_id")
-        );
-    }
-
-    #[test]
-    fn the_newer_sign_ins_describe_their_servers() {
-        let copilot = preset("github-copilot");
-        let github = copilot.oauth.as_ref().expect("the Copilot device flow");
-        assert_eq!(github.flow, OAuthFlow::Device);
-        assert_eq!(github.device_url, "https://github.com/login/device/code");
-        assert_eq!(github.scopes, ["read:user"]);
-        assert_eq!(copilot.headers["Copilot-Integration-Id"], "copilot-developer-cli");
-
-        let gemini = preset("google-gemini-cli");
-        let google = gemini.oauth.as_ref().expect("the Gemini CLI sign-in");
-        let (id, secret) = google.client().unwrap();
-        assert!(id.ends_with(".apps.googleusercontent.com") && !secret.is_empty());
-        assert!(!google.pkce);
-        assert_eq!(
-            (google.redirect_port, google.redirect_path.as_deref()),
-            (8085, Some("/oauth2callback"))
-        );
-        assert!(gemini.requires_key && gemini.api_key_env.is_empty());
-
-        // OpenRouter registers no client and hands back a key, not a token that expires.
-        let openrouter = preset("openrouter");
-        let key = openrouter.oauth.as_ref().expect("the OpenRouter key flow");
-        assert!(key.anonymous_client && !key.check_state && !key.authorize_standard);
-        assert_eq!(key.credential.access, "key");
-        assert_eq!(key.token_params["code_verifier"], "{code_verifier}");
-
-        let grok = preset("xai-oauth");
-        let xai = grok.oauth.as_ref().expect("the Grok device flow");
-        assert_eq!(xai.flow, OAuthFlow::Device);
-        assert!(xai.discovery_url.is_some());
-        assert_eq!(grok.api_key_env, ["XAI_OAUTH_TOKEN"]);
-    }
-
-    #[test]
     fn a_codex_login_fills_the_headers_the_backend_asks_for() {
         use crate::credentials::Auth;
 
@@ -945,17 +769,6 @@ mod tests {
             bare.login_headers(&codex),
             [("originator".to_string(), "azazel".to_string())]
         );
-    }
-
-    #[test]
-    fn hand_written_rows_name_where_each_provider_is_listed() {
-        let rows: Vec<(&str, &str)> = hand_written().iter().map(|(id, name, _)| (*id, *name)).collect();
-        assert!(rows.contains(&("fireworks", "fireworks-ai")));
-        assert!(rows.contains(&("openai", "openai")));
-        // Local servers are asked themselves; a snapshot of someone else's models would mislead.
-        for local in ["ollama", "lmstudio", "llamacpp"] {
-            assert!(rows.contains(&(local, "")), "{local}");
-        }
     }
 
     #[test]

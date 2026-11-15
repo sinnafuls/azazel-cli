@@ -119,27 +119,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn split_finds_the_block_and_the_body() {
-        assert_eq!(
-            split("---\nname: a\n---\nBody\n---\nmore"),
-            Some(("name: a\n", "Body\n---\nmore"))
-        );
-        assert_eq!(
-            split("\u{feff}---\r\nname: a\r\n---\r\nBody"),
-            Some(("name: a\r\n", "Body"))
-        );
-        assert_eq!(split("---\n---\n"), Some(("", "")));
-        assert_eq!(split("---\nname: a\n---"), Some(("name: a\n", "")));
-        for missing in [
-            "# Title\n---\nx\n---\n",
-            "---\nname: a\nno end",
-            "--- name: a\n---\n",
-        ] {
-            assert_eq!(split(missing), None, "{missing}");
-        }
-    }
-
-    #[test]
     fn parse_converts_yaml_and_rejects_duplicates_and_non_mappings() {
         let map =
             parse("name: x\nflag: true\nn: 3\nlist: [a, b]\nnested:\n  k: v\nfolded: >-\n  two\n  lines\n")

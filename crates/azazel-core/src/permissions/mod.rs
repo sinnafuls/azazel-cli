@@ -89,6 +89,26 @@ pub fn subject_kind(tool: &str) -> SubjectKind {
     }
 }
 
+/// For a `local://` address: whether its name stays inside the session's scratch directory.
+/// `None` for anything else.
+fn local_name(subject: &str) -> Option<Result<(), String>> {
+    match crate::scheme::split_url(subject.trim()) {
+        Some((crate::scheme::LOCAL, rest)) => Some(crate::scheme::local_parts(rest).map(|_| ())),
+        _ => None,
+    }
+}
+
+/// Whether every subject of a file tool's call is a `local://` file: the session's scratch
+/// directory, which is not the project, so using it is never asked about.
+fn all_local(call: &Call<'_>) -> bool {
+    subject_kind(call.tool) == SubjectKind::Path
+        && !call.subjects.is_empty()
+        && call
+            .subjects
+            .iter()
+            .all(|s| matches!(local_name(s), Some(Ok(()))))
+}
+
 fn glob(pattern: &str, literal_separator: bool) -> Option<GlobMatcher> {
     GlobBuilder::new(pattern)
         .literal_separator(literal_separator)
@@ -778,6 +798,11 @@ impl PermissionState {
             return Err(format!("denied by rule `{}` ({})", hit.rule, hit.source));
         }
         self.within_grants(call, &ctx)?;
+        if subject_kind(call.tool) == SubjectKind::Path
+            && let Some(Err(escape)) = call.subjects.iter().find_map(|s| local_name(s))
+        {
+            return Err(escape);
+        }
         if let (Some(analysis), Some(command)) = (call.shell, call.command)
             && shell::pushes(command, analysis)
         {
@@ -885,7 +910,13 @@ impl PermissionState {
                 .into_iter()
                 .flat_map(secrets::candidates)
                 .collect(),
-            _ if subject_kind(call.tool) == SubjectKind::Path => call.subjects.to_vec(),
+            // A `local://` file is the session's own scratch file, never a credential of the user's.
+            _ if subject_kind(call.tool) == SubjectKind::Path => call
+                .subjects
+                .iter()
+                .filter(|s| local_name(s).is_none())
+                .cloned()
+                .collect(),
             _ => return Vec::new(),
         };
         words
@@ -947,6 +978,8 @@ impl PermissionState {
         // Plan mode refuses before anything can ask: an approval must not turn into a way to
         // change things while planning.
         let mode = self.mode_for(call.agent);
+        // The session's scratch files are not the project: notes and drafts go there in every mode.
+        let local = all_local(call);
         if mode == PermissionMode::Plan && call.access != Access::Read {
             let plan_file = matches!(call.tool, "write" | "edit" | "patch")
                 && !call.subjects.is_empty()
@@ -954,7 +987,7 @@ impl PermissionState {
                     .subjects
                     .iter()
                     .all(|s| Self::under(&ctx.resolve(s), &self.plans_dir));
-            return if plan_file || call.tool == "plan_submit" {
+            return if plan_file || local || call.tool == "plan_submit" {
                 Verdict::Allow
             } else {
                 Verdict::Deny(PLAN_DENIED.to_string())
@@ -975,6 +1008,7 @@ impl PermissionState {
         let paths_inside =
             || kind != SubjectKind::Path || call.subjects.iter().all(|s| self.inside_roots(&ctx.resolve(s)));
         let by_mode = match (mode, call.access) {
+            _ if local => true,
             (PermissionMode::Auto, _) => true,
             (_, Access::Read) => paths_inside(),
             (PermissionMode::AcceptEdits, Access::Write) => kind == SubjectKind::Path && paths_inside(),

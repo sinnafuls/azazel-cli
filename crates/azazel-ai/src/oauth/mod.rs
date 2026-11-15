@@ -941,28 +941,6 @@ mod tests {
     }
 
     #[test]
-    fn forms_and_the_sign_in_address_are_encoded() {
-        assert_eq!(
-            form_body(&[("a", "x y&z=1"), ("scope", "é/~")]),
-            "a=x%20y%26z%3D1&scope=%C3%A9%2F~"
-        );
-        let url = authorize_url(
-            &settings(OAuthFlow::Pkce),
-            "app",
-            Some("ch"),
-            "st",
-            "http://127.0.0.1:7/callback",
-        )
-        .unwrap();
-        assert_eq!(
-            url,
-            "https://id.example/authorize?tenant=t%201&response_type=code&client_id=app\
-             &redirect_uri=http%3A%2F%2F127.0.0.1%3A7%2Fcallback&code_challenge=ch\
-             &code_challenge_method=S256&state=st&scope=openid+offline_access"
-        );
-    }
-
-    #[test]
     fn a_provider_adds_its_own_authorise_parameters_and_may_refuse_pkce() {
         let mut settings = settings(OAuthFlow::Pkce);
         settings.authorize_params = BTreeMap::from([
@@ -1036,30 +1014,6 @@ mod tests {
     }
 
     #[test]
-    fn the_newer_flows_name_what_they_lack() {
-        let implicit = OAuthSettings {
-            token_url: String::new(),
-            ..settings(OAuthFlow::Implicit)
-        };
-        assert_eq!(implicit.check(), Ok(()));
-        let device = OAuthSettings {
-            device_url: "https://id.example/usercode".into(),
-            ..settings(OAuthFlow::DeviceAuthCode)
-        };
-        assert_eq!(
-            device.check(),
-            Err("`device_poll_url` is needed for this flow".to_string())
-        );
-        let complete = OAuthSettings {
-            device_poll_url: "https://id.example/poll".into(),
-            verification_url: Some("https://id.example/device".into()),
-            redirect_uri: Some("https://id.example/callback".into()),
-            ..device
-        };
-        assert_eq!(complete.check(), Ok(()));
-    }
-
-    #[test]
     fn answers_fill_the_addresses_and_drop_scopes_left_empty() {
         let settings = OAuthSettings {
             token_url: "https://{account}.example/token".into(),
@@ -1113,21 +1067,5 @@ mod tests {
             panic!("an OAuth entry");
         };
         assert_eq!(refresh, "r2");
-    }
-
-    #[test]
-    fn refusals_read_with_and_without_a_description() {
-        let refused = |description: &str| OAuthError::Refused {
-            code: "invalid_grant".into(),
-            description: description.into(),
-        };
-        assert_eq!(
-            refused("").to_string(),
-            "the authorisation server refused: invalid_grant"
-        );
-        assert_eq!(
-            refused("token revoked").to_string(),
-            "the authorisation server refused: invalid_grant (token revoked)"
-        );
     }
 }

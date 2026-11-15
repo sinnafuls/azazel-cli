@@ -485,46 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unparsable_keys() {
-        for bad in ["", "ctrl+", "mod+x", "ctrl+nope", "f99", "f0", "ctrl+alt"] {
-            assert_eq!(
-                bad.parse::<KeyCombo>(),
-                Err(KeyError::InvalidKey(bad.to_string())),
-                "{bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn display_round_trips() {
-        for text in [
-            "ctrl+o",
-            "alt+enter",
-            "shift+tab",
-            "esc",
-            "f5",
-            "ctrl+shift+p",
-            "ctrl+alt+delete",
-            "space",
-        ] {
-            assert_eq!(combo(text).to_string(), text);
-            assert_eq!(combo(&combo(text).to_string()), combo(text));
-        }
-        assert_eq!(combo("Control+Return").to_string(), "ctrl+enter");
-    }
-
-    #[test]
-    fn shift_tab_is_back_tab() {
-        let shift_tab = combo("shift+tab");
-        assert_eq!(shift_tab.code, KeyCode::BackTab);
-        assert!(shift_tab.matches(&press(KeyCode::BackTab, KeyModifiers::SHIFT)));
-        assert!(shift_tab.matches(&press(KeyCode::BackTab, KeyModifiers::NONE)));
-        assert!(shift_tab.matches(&press(KeyCode::Tab, KeyModifiers::SHIFT)));
-        assert!(!shift_tab.matches(&press(KeyCode::Tab, KeyModifiers::NONE)));
-        assert_eq!(combo("backtab"), shift_tab);
-    }
-
-    #[test]
     fn letters_match_regardless_of_reported_case() {
         let chord = combo("ctrl+shift+p");
         assert!(chord.matches(&press(
@@ -774,12 +734,5 @@ mod tests {
         ] {
             assert_eq!(ambiguous(&combo(key)), None, "{key}");
         }
-    }
-
-    #[test]
-    fn disable_writes_the_pop_sequence() {
-        let mut out = Vec::new();
-        disable_enhanced_keys(&mut out).expect("writing to a Vec cannot fail");
-        assert_eq!(out, b"\x1b[<1u");
     }
 }

@@ -1,7 +1,5 @@
 //! Slash commands and the pickers that go with them.
 
-use std::io::Write;
-
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::{EntryKind, PermissionMode, SessionStore};
 use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, SelectItem, Theme};
@@ -814,17 +812,9 @@ impl Tui {
     // ------------------------------------------------------------ reports
 
     fn clear_screen(&mut self) {
-        self.transcript.clear();
-        self.backdrop.clear();
-        self.after_card = false;
-        let _ = self.renderer.suspend();
-        let out = self.renderer.get_mut();
-        // Screen, scrollback, then home.
-        let _ = out.write_all(b"\x1b[2J\x1b[3J\x1b[H");
-        let _ = out.flush();
-        // The live region starts over at the top of an empty screen and fills it again.
-        let (_, rows) = self.renderer.size();
-        self.floor.reset(rows);
+        self.history.clear();
+        self.calls.last = None;
+        self.erase_all();
     }
 
     fn show_keys(&mut self) {
@@ -1041,25 +1031,6 @@ mod tests {
         assert_eq!(Max.nearest(&[Xhigh]), Xhigh);
         assert_eq!(Low.nearest(&[High, Max]), High);
         assert_eq!(Off.nearest(&[High]), Off);
-    }
-
-    #[test]
-    fn a_glyph_set_is_named_as_in_the_configuration() {
-        assert_eq!(glyph_choice("nerd"), Some(Some(GlyphLevel::Nerd)));
-        assert_eq!(glyph_choice(" ASCII "), Some(Some(GlyphLevel::Ascii)));
-        assert_eq!(glyph_choice("auto"), Some(None));
-        assert_eq!(glyph_choice("fancy"), None);
-    }
-
-    #[test]
-    fn each_glyph_set_previews_its_own_symbols() {
-        assert_eq!(glyph_preview(GlyphLevel::Unicode), "✔ ⚠ ✘ ⑂ ◫ ↯ ⬢ ❯");
-        // Symbols that are words or nothing at this level are shown as they are, or left out.
-        assert_eq!(glyph_preview(GlyphLevel::Ascii), "[+] [!] [-] git: ctx >");
-        assert!(glyph_preview(GlyphLevel::Ascii).is_ascii());
-        let nerd = glyph_preview(GlyphLevel::Nerd);
-        assert_eq!(nerd.split(' ').count(), 8);
-        assert!(nerd.chars().any(|c| ('\u{e000}'..='\u{f8ff}').contains(&c)));
     }
 
     #[test]

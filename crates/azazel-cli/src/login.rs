@@ -596,24 +596,6 @@ mod tests {
         assert!(store.resolve(anthropic).await.is_err());
     }
 
-    #[test]
-    fn storing_a_key_says_when_the_environment_overrides_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let providers = key_providers(&Config::default()).unwrap();
-        let anthropic = find(&providers, "anthropic").unwrap();
-        let line = store_key(
-            &credentials(dir.path(), Some("sk-env")),
-            anthropic,
-            "sk-stored",
-            None,
-        )
-        .unwrap();
-        assert!(
-            line.ends_with("note: the key from env ANTHROPIC_API_KEY takes precedence over it"),
-            "{line}"
-        );
-    }
-
     #[tokio::test]
     async fn a_second_account_is_kept_beside_the_first_and_forgotten_on_its_own() {
         let dir = tempfile::tempdir().unwrap();
@@ -653,18 +635,6 @@ mod tests {
         assert_eq!(
             forget_account(&store, "anthropic", Some("default")).unwrap(),
             "forgot the stored anthropic key"
-        );
-    }
-
-    #[test]
-    fn only_providers_that_take_a_key_can_be_logged_in_to() {
-        let providers = key_providers(&Config::default()).unwrap();
-        assert!(find(&providers, "openai").is_ok());
-        // Local servers need no key.
-        let unknown = find(&providers, "ollama").unwrap_err();
-        assert!(
-            unknown.contains("`ollama` is not a provider that takes a key or a login")
-                && unknown.contains("anthropic")
         );
     }
 

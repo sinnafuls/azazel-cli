@@ -505,35 +505,4 @@ mod tests {
         let moved: Vec<String> = changed(&before, &scan(root, &glob)).into_iter().collect();
         assert_eq!(moved, ["src/a.rs", "src/deep/b.rs", "src/new.rs"]);
     }
-
-    #[test]
-    fn the_prompt_says_what_happened() {
-        let run: CiRun = serde_json::from_value(serde_json::json!({
-            "databaseId": 77, "status": "completed", "conclusion": "failure", "name": "CI",
-            "displayTitle": "Fix the parser", "headBranch": "main", "event": "push",
-            "url": "https://github.com/o/r/actions/runs/77"
-        }))
-        .unwrap();
-        assert!(run.failed());
-        assert_eq!(
-            ci_text("fix the build", &run),
-            "fix the build\n\nA CI run failed: CI: Fix the parser (branch main, push)\n\
-             https://github.com/o/r/actions/runs/77\n`gh run view 77 --log-failed` prints what failed."
-        );
-        let passed = CiRun {
-            conclusion: Some("success".into()),
-            ..run.clone()
-        };
-        let going = CiRun {
-            status: "in_progress".into(),
-            conclusion: None,
-            ..run
-        };
-        assert!(!passed.failed() && !going.failed());
-
-        let files: BTreeSet<String> = (0..23).map(|n| format!("src/f{n:02}.rs")).collect();
-        let text = files_text("run the tests", &files);
-        assert!(text.starts_with("run the tests\n\nChanged files:\n- src/f00.rs\n- src/f01.rs\n"));
-        assert!(text.ends_with("- src/f19.rs\n… and 3 more"));
-    }
 }

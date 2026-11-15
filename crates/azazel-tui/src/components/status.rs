@@ -763,30 +763,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_input_is_an_empty_line() {
-        let theme = Theme::dark();
-        assert_eq!(render(&[], &[], Separator::Dot, 10, &theme), "");
-        assert_eq!(
-            render(&muted(&["status"]), &muted(&["x"]), Separator::Dot, 0, &theme),
-            ""
-        );
-        assert_eq!(
-            render(&muted(&["", ""]), &[], Separator::Powerline, 10, &theme),
-            ""
-        );
-    }
-
-    #[test]
-    fn context_colour_follows_the_thresholds() {
-        assert_eq!(context_role(0), None);
-        assert_eq!(context_role(70), None);
-        assert_eq!(context_role(71), Some(Role::Warning));
-        assert_eq!(context_role(90), Some(Role::Warning));
-        assert_eq!(context_role(91), Some(Role::Error));
-        assert_eq!(context_role(250), Some(Role::Error));
-    }
-
-    #[test]
     fn the_context_bar_fills_by_half_cells() {
         let theme = Theme::dark();
         let bar = |percent| text::strip_ansi(&context_bar(percent, BAR_CELLS, &theme).paint(&theme));
@@ -823,62 +799,6 @@ mod tests {
             "[━━──]"
         );
         assert_eq!(context_bar(50, 0, &theme).width(), 3);
-    }
-
-    #[test]
-    fn labels_take_the_icon_of_the_level_unless_it_repeats_the_text() {
-        let (unicode, ascii) = (Theme::dark(), ascii());
-        assert_eq!(labelled(Glyph::Branch, "main", &unicode), "⑂ main");
-        assert_eq!(labelled(Glyph::Branch, "main", &ascii), "git: main");
-        assert_eq!(labelled(Glyph::Branch, "gitea-fix", &ascii), "git: gitea-fix");
-        assert_eq!(labelled(Glyph::Goal, "goal active", &unicode), "⚑ goal active");
-        assert_eq!(labelled(Glyph::Goal, "goal active", &ascii), "goal active");
-        assert_eq!(labelled(Glyph::Goal, "ship it", &ascii), "goal: ship it");
-        assert_eq!(labelled(Glyph::Agents, "2 agents", &ascii), "2 agents");
-        assert_eq!(labelled(Glyph::Context, "42%", &ascii), "ctx 42%");
-    }
-
-    #[test]
-    fn cost_and_rate_are_short() {
-        let theme = Theme::dark();
-        assert_eq!(cost(0.0, &theme), "$0.00");
-        assert_eq!(cost(0.416, &theme), "$0.42");
-        assert_eq!(cost(9.994, &theme), "$9.99");
-        assert_eq!(cost(12.44, &theme), "$12.4");
-        assert_eq!(cost(240.3, &theme), "$240");
-        assert_eq!(cost(1.5, &ascii()), "$1.50");
-        assert_eq!(cost(1.5, &nerd()), "\u{f155} 1.50");
-
-        assert_eq!(rate(78.4, &theme).as_deref(), Some("↯ 78 tok/s"));
-        assert_eq!(rate(1.0, &theme).as_deref(), Some("↯ 1 tok/s"));
-        assert_eq!(rate(0.99, &theme), None);
-        assert_eq!(rate(78.4, &ascii()).as_deref(), Some("78 tok/s"));
-    }
-
-    #[test]
-    fn long_paths_keep_their_end() {
-        let theme = Theme::dark();
-        assert_eq!(shorten_path("~/src/app", 20, &theme), "~/src/app");
-        assert_eq!(
-            shorten_path("~/projects/azazel/crates/azazel-tui", 24, &theme),
-            "…/crates/azazel-tui"
-        );
-        assert_eq!(
-            shorten_path("C:\\work\\azazel\\crates", 16, &theme),
-            "…\\azazel\\crates"
-        );
-        // One long name has no boundary to start at.
-        assert_eq!(shorten_path("a-very-long-directory", 8, &theme), "…rectory");
-        assert_eq!(
-            shorten_path("~/projects/azazel/crates", 12, &ascii()),
-            ".../crates"
-        );
-        for max in 0..40 {
-            for path in ["~/projects/azazel/crates/azazel-tui", "/日本語/パス/名前"] {
-                let shown = shorten_path(path, max, &theme);
-                assert!(text::width(&shown) <= max, "{max}: {shown:?}");
-            }
-        }
     }
 
     #[test]

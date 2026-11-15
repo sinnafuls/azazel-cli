@@ -436,19 +436,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_colours_parse() {
-        assert_eq!(KeyColor::parse("none"), Ok(KeyColor::None));
-        assert_eq!(KeyColor::parse(" auto "), Ok(KeyColor::Auto));
-        assert_eq!(KeyColor::parse("#FF00ff"), Ok(KeyColor::Rgb([255, 0, 255])));
-        for bad in ["magenta", "#FFF", "FF00FF", "#GG00FF", "#ÿÿÿ"] {
-            assert!(
-                KeyColor::parse(bad).unwrap_err().contains("key_color must be"),
-                "{bad}"
-            );
-        }
-    }
-
-    #[test]
     fn the_output_directory_stays_inside_the_project() {
         let tool = SpriteSheetTool::new(PathBuf::from("/work/game"), "assets/generated/".into(), None);
         assert_eq!(

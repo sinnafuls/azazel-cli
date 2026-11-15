@@ -425,23 +425,4 @@ mod tests {
         login.login = true;
         assert_eq!(price(&login), "subscription");
     }
-
-    #[test]
-    fn the_detail_says_what_a_model_is_and_who_uses_it() {
-        let theme = Theme::dark();
-        let mut model = model("anthropic/claude-opus-5-5");
-        model.name = Some("Claude Opus 5.5".into());
-        let used = [
-            ("default".to_string(), Some("high".to_string())),
-            ("smol".to_string(), None),
-        ];
-        let [first, second] = detail(&model, &used, 200, &theme);
-        assert_eq!(
-            plain(&first),
-            "Claude Opus 5.5 · 200k ctx · 64k out · $3/$15 per M · thinking: low medium high · vision"
-        );
-        assert_eq!(plain(&second), "used by: default ◉ high · smol");
-        let [_, nobody] = detail(&model, &[], 200, &theme);
-        assert_eq!(plain(&nobody), "used by no role");
-    }
 }

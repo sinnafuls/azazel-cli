@@ -272,11 +272,16 @@ Worktrees still present when the session ends are removed. Add `.azazel/worktree
 
 ## Controlling agents from the TUI
 
-While sub-agents are queued, working or waiting for you, the **roster** shows one line each above the editor:
+While sub-agents are queued, working or waiting for you, the **roster** stands above the editor: a header that
+counts them, with the key of the agent hub at its right end, and one line for each of the first three (id,
+definition, what it is doing, time and tokens); `… N more` counts the others. The status line counts them too
+(`⇶ 2 agents`), in every preset.
 
 ```text
-● scout-1  grep parse_config  12s  3.4k
-● scout-2  waiting for your approval  1m05s  1.1k
+Agents · 2 running · 1 queued                                      alt+a hub
+● scout-1  scout  grep parse_config  12s  3.4k
+● scout-2  scout  waiting for your approval  1m05s  1.1k
+● coder-1  coder  queued  0s  0
 ```
 
 | Control | Effect |
@@ -284,11 +289,11 @@ While sub-agents are queued, working or waiting for you, the **roster** shows on
 | `Down` in an empty input | Puts the keyboard in the roster: `Up`/`Down` move, `Enter` opens the selected agent's work in a popup you can type to it in, `x` stops it, `Esc` returns. See [the fleet view](tui.md#the-fleet-view) |
 | `@<id> <text>` | Sends the text to that agent, as `/msg` does; `@<id>` alone opens its popup |
 | `@<definition> <text>` | Starts an agent from that definition with the text as its task, as `/task` does |
-| `Alt+A` | Opens the agent hub: every agent with its definition, state, time and tokens |
-| `Enter` in the hub | Follows that agent: what it says and does appears in the transcript marked `[<id>]`. Choose `lead` to stop following. |
-| `o` in the hub | Opens the selected agent's work in the popup of the fleet view, for finished agents too |
+| `Alt+A`, or `Left` twice in an empty input | Opens the agent hub: every sub-agent of the session, running and finished, with its state, definition, parent, time, tokens, cost and what it is doing or was asked. See [the agent hub](tui.md#the-agent-hub) |
+| `Enter` in the hub | Opens the agent's chat: its whole transcript, followed live, with a line to type to it. `Esc` or `Left` twice returns to the hub |
+| `x` / `S` in the hub | Stop the selected agent / stop all sub-agents |
 | `m` in the hub | Message the selected agent |
-| `s` / `S` in the hub | Stop the selected agent / stop all sub-agents |
+| `f` in the hub | Follows that agent: what it says and does appears in the transcript marked `[<id>]`; `f` on it again stops following |
 | `/agents` | Lists the session's agents, every definition with its source, and invalid definition files |
 | `/msg <id\|all> <text>` | Sends a message as you |
 | `/stop <id\|all>` | Stops an agent and the agents it started |

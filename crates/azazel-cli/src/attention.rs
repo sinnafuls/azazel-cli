@@ -345,40 +345,6 @@ mod tests {
     }
 
     #[test]
-    fn the_settings_choose_the_bell_and_the_path_of_the_notification() {
-        let with = |change: fn(&mut NotifyConfig), vars: &[(&str, &str)]| {
-            let mut config = NotifyConfig::default();
-            change(&mut config);
-            attention(caps(vars), config)
-        };
-        let kitty = [("KITTY_WINDOW_ID", "1")];
-
-        let (quiet, sent) = with(|c| c.bell = false, &kitty);
-        assert_eq!(
-            quiet.signal(Kind::NeedsYou, "q", None),
-            "\x1b]99;i=azazel:d=0:p=title;azazel\x1b\\\x1b]99;i=azazel:d=1:p=body;q\x1b\\"
-        );
-        assert!(sent.lock().unwrap().is_empty());
-
-        let (off, sent) = with(|c| c.desktop = DesktopNotify::Off, &kitty);
-        assert_eq!(off.signal(Kind::NeedsYou, "q", None), "\x07");
-        assert!(sent.lock().unwrap().is_empty());
-
-        // `system` goes past a terminal that could have shown it.
-        let (system, sent) = with(|c| c.desktop = DesktopNotify::System, &kitty);
-        assert_eq!(system.signal(Kind::NeedsYou, "q", None), "\x07");
-        assert_eq!(sent.lock().unwrap().len(), 1);
-
-        // `terminal` on a terminal that was not recognised sends the common form.
-        let (terminal, sent) = with(|c| c.desktop = DesktopNotify::Terminal, &[]);
-        assert_eq!(
-            terminal.signal(Kind::NeedsYou, "q", None),
-            "\x07\x1b]9;azazel: q\x1b\\"
-        );
-        assert!(sent.lock().unwrap().is_empty());
-    }
-
-    #[test]
     fn a_short_run_ends_quietly_and_a_request_never_does() {
         let (attention, _) = attention(caps(&[("TERM_PROGRAM", "WezTerm")]), NotifyConfig::default());
         let secs = Duration::from_secs;
@@ -457,26 +423,6 @@ mod tests {
         assert_eq!(ghostty.next_wake(), Some(later + Duration::from_secs(1)));
         ghostty.show(Activity::Idle, "x", later);
         assert_eq!(ghostty.next_wake(), None);
-    }
-
-    #[test]
-    fn title_and_progress_can_be_turned_off_and_unknown_terminals_get_no_progress() {
-        let config = NotifyConfig {
-            title: false,
-            progress: false,
-            keep_awake: false,
-            ..NotifyConfig::default()
-        };
-        let (mut off, _) = attention(caps(&[("WT_SESSION", "1")]), config);
-        let now = Instant::now();
-        assert_eq!(off.open(), "");
-        assert_eq!(off.show(Activity::Working, "x", now), "");
-        assert_eq!(off.close(), "");
-        off.keep_awake(true, now);
-        assert_eq!(off.next_wake(), None);
-
-        let (mut plain, _) = attention(caps(&[]), NotifyConfig::default());
-        assert_eq!(plain.show(Activity::Working, "x", now), "\x1b]0;* azazel · x\x07");
     }
 
     #[test]

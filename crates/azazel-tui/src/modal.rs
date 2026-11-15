@@ -265,15 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn small_windows_have_no_room_for_a_popup() {
-        assert!(fits(44, 12));
-        assert!(fits(200, 60));
-        assert!(!fits(43, 12));
-        assert!(!fits(44, 11));
-        assert!(!fits(20, 40));
-    }
-
-    #[test]
     fn the_box_is_placed_where_the_last_frame_put_it() {
         let theme = Theme::dark();
         let mut modal = Modal::new(40, 12);

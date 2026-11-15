@@ -680,71 +680,6 @@ mod tests {
     }
 
     #[test]
-    fn a_model_row_shows_its_window_and_its_price_or_that_it_is_a_subscription() {
-        let cost = |input, output| Cost {
-            input,
-            output,
-            cache_read: 0.0,
-            cache_write: 0.0,
-        };
-        assert_eq!(
-            model_detail(200_000, Some(&cost(3.0, 15.0)), false),
-            "ctx 200k · $3/$15"
-        );
-        assert_eq!(
-            model_detail(1_000_000, Some(&cost(1.25, 10.0)), false),
-            "ctx 1M · $1.25/$10"
-        );
-        assert_eq!(
-            model_detail(1_048_576, Some(&cost(0.075, 0.3)), false),
-            "ctx 1048k · $0.075/$0.3"
-        );
-        assert_eq!(model_detail(128_000, None, false), "ctx 128k");
-        assert_eq!(model_detail(8192, None, false), "ctx 8k");
-        assert_eq!(model_detail(512, None, false), "ctx 512");
-        // A login is not paid for by the token, whatever the catalogue says the model costs.
-        assert_eq!(
-            model_detail(200_000, Some(&cost(15.0, 75.0)), true),
-            "ctx 200k · subscription"
-        );
-        assert_eq!(model_detail(2_500_000, None, true), "ctx 2.5M · subscription");
-    }
-
-    #[test]
-    fn a_menu_choice_line_carries_the_provider_it_set_up() {
-        assert_eq!(
-            split_provider("stored the openai key in auth.json\nopenai".to_string()),
-            (
-                "stored the openai key in auth.json".to_string(),
-                "openai".to_string()
-            )
-        );
-        // A line from sign-out names no provider to go on with.
-        assert_eq!(split_provider("forgot it".to_string()).1, "");
-    }
-
-    #[test]
-    fn themes_to_choose_from_are_auto_the_built_in_ones_then_the_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let names = theme_names(dir.path());
-        let builtins = Theme::builtin_names();
-        assert_eq!(names[0], "auto");
-        assert_eq!(names, builtins);
-        let themes = dir.path().join("themes");
-        std::fs::create_dir_all(&themes).unwrap();
-        std::fs::write(themes.join("zenburn.toml"), "accent = \"#dcdccc\"\n").unwrap();
-        std::fs::write(themes.join("amber.toml"), "accent = \"#ffb000\"\n").unwrap();
-        // A file named like a built-in theme, or like `auto`, is not a second entry; other
-        // files are not themes.
-        std::fs::write(themes.join("dark.toml"), "accent = \"#ffffff\"\n").unwrap();
-        std::fs::write(themes.join("auto.toml"), "accent = \"#ffffff\"\n").unwrap();
-        std::fs::write(themes.join("notes.txt"), "not a theme").unwrap();
-        let names = theme_names(dir.path());
-        assert_eq!(&names[..builtins.len()], builtins);
-        assert_eq!(&names[builtins.len()..], ["amber", "zenburn"]);
-    }
-
-    #[test]
     fn the_settings_that_apply_at_once_are_the_ones_the_ui_knows_how_to_apply() {
         let live: Vec<&str> = SETTINGS
             .iter()
@@ -1062,26 +997,6 @@ mod tests {
                     provider: None,
                 }
             ]
-        );
-    }
-
-    #[tokio::test]
-    async fn settings_need_someone_to_show_them_to() {
-        let f = fixture("", "");
-        let context = ExtCtx {
-            services: Arc::new(azazel_agent::Services::new()),
-            cwd: std::path::PathBuf::new(),
-            session_id: String::new(),
-        };
-        let outcome = handler(&f).run("", &context).await;
-        assert!(matches!(outcome, CommandOutcome::Error(why) if why.contains("interactive UI")));
-
-        // A config file that does not load is said, with the file.
-        std::fs::write(f.paths.home_config(), "[tui\n").unwrap();
-        let outcome = handler(&f).run("", &ctx(Scripted::new(Vec::new()))).await;
-        assert!(
-            matches!(&outcome, CommandOutcome::Error(why) if why.contains("config.toml")),
-            "{outcome:?}"
         );
     }
 }

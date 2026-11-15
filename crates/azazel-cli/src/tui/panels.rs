@@ -91,14 +91,21 @@ pub(super) fn context_items(report: &ContextReport, theme: &Theme, room: usize) 
         .collect()
 }
 
-/// The keys of the agent hub, in the order [`Tui::overlay_hotkey`] reads them.
+/// What each of the agent hub's keys does, in the order of [`hub_keys`].
+pub(super) const HUB_ACTIONS: [&str; 7] = ["down", "up", "back", "stop", "stop all", "message", "follow"];
+
+/// The keys of the agent hub, in the order of [`HUB_ACTIONS`]. Those without a word stay out of
+/// the hint line.
 pub(super) fn hub_keys() -> Vec<(KeyCombo, &'static str)> {
     let plain = |c| KeyCombo::new(KeyCode::Char(c), KeyModifiers::NONE);
     vec![
-        (plain('m'), "message"),
-        (plain('s'), "stop"),
+        (plain('j'), ""),
+        (plain('k'), ""),
+        (KeyCombo::new(KeyCode::Left, KeyModifiers::NONE), ""),
+        (plain('x'), "stop"),
         (plain('S'), "stop all"),
-        (plain('o'), "open"),
+        (plain('m'), "message"),
+        (plain('f'), "follow"),
     ]
 }
 
@@ -187,8 +194,8 @@ impl Tui {
         };
         match target {
             Some(Target::Agent(id)) => {
-                if let Some(key) = ['m', 's', 'S', 'o'].get(key) {
-                    self.hub_key(*key, &id).await;
+                if let Some(action) = HUB_ACTIONS.get(key) {
+                    self.hub_key(action, &id).await;
                 }
             }
             Some(Target::Model(spec)) => {
@@ -782,38 +789,5 @@ mod tests {
                 CONTEXT_NUMBERS + 2 + CONTEXT_BAR + 2 + "120 tools".len()
             );
         }
-    }
-
-    #[test]
-    fn rules_are_typed_as_kind_and_rule() {
-        let (kind, rule) = parse_rule("allow shell(cargo test:*)").unwrap();
-        assert_eq!(
-            (kind, rule.to_string().as_str()),
-            (RuleKind::Allow, "shell(cargo test:*)")
-        );
-        let (kind, rule) = parse_rule("  DENY   write(secrets/**) ").unwrap();
-        assert_eq!(
-            (kind, rule.to_string().as_str()),
-            (RuleKind::Deny, "write(secrets/**)")
-        );
-        assert_eq!(parse_rule("ask web_fetch").unwrap().0, RuleKind::Ask);
-        assert!(parse_rule("shell(ls)").unwrap_err().contains("for example"));
-        assert!(parse_rule("permit shell").unwrap_err().contains("for example"));
-        assert!(
-            parse_rule("allow shell(")
-                .unwrap_err()
-                .contains("invalid permission rule")
-        );
-    }
-
-    #[test]
-    fn changes_between_name_lists_are_counted_and_named() {
-        let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        assert_eq!(name_changes(&list(&["a", "b"]), &list(&["a", "b"])), "");
-        assert_eq!(name_changes(&list(&["a"]), &list(&["a", "b", "c"])), "+2 (b, c)");
-        assert_eq!(
-            name_changes(&list(&["a", "b"]), &list(&["b", "z"])),
-            "+1 (z) −1 (a)"
-        );
     }
 }

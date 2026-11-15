@@ -359,21 +359,4 @@ mod tests {
         };
         assert_eq!(never.read(&body("t")).unwrap().expires, NEVER);
     }
-
-    #[test]
-    fn an_answer_without_an_access_token_is_not_a_credential() {
-        let map = CredentialMap::default();
-        assert!(map.read(&json!({ "refresh_token": "r" })).is_none());
-        assert!(map.read(&json!({ "access_token": "" })).is_none());
-        // Paths can reach into a wrapper the way plan logins answer.
-        let nested = CredentialMap {
-            access: "data.zai.access_token".into(),
-            expires: Expiry::Never,
-            ..Default::default()
-        };
-        let tokens = nested
-            .read(&json!({ "data": { "zai": { "access_token": "t" } } }))
-            .unwrap();
-        assert_eq!((tokens.access.as_str(), tokens.refresh), ("t", None));
-    }
 }

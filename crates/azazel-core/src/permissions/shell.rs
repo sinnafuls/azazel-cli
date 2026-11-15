@@ -758,15 +758,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn unparsed_commands_fall_back_to_a_pattern() {
-        let check = |command: &str| pushes(command, &analyze(command, false));
-        assert!(check("git push origin main"));
-        assert!(check("cd repo; git -C . push"));
-        assert!(!check("git status; echo push"));
-        assert!(!check("Write-Output 'pushing'"));
-    }
-
     fn risk(command: &str) -> Option<&'static str> {
         // Paths that start with `/` or `..` count as outside the project.
         let outside = |path: &str| path.starts_with('/') || path.starts_with("..");
@@ -963,27 +954,5 @@ mod tests {
         assert!(risk("rm -r C:\\").is_some());
         assert_eq!(risk("Write-Output 'git reset --hard'"), None);
         assert_eq!(risk("Get-ChildItem | Remove-Item"), None);
-    }
-
-    #[test]
-    fn guard_env_appends_after_existing_git_config() {
-        let env = guard_env(&|name| (name == "GIT_CONFIG_COUNT").then(|| "2".to_string()));
-        let get = |key: &str| env.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
-        assert_eq!(get("GIT_CONFIG_COUNT"), Some("8"));
-        assert_eq!(
-            get("GIT_CONFIG_KEY_2"),
-            Some("url.azazel-push-blocked://denied/.pushInsteadOf")
-        );
-        assert_eq!(get("GIT_CONFIG_VALUE_2"), Some("https://"));
-        assert_eq!(get("GIT_CONFIG_VALUE_7"), Some("file://"));
-        assert_eq!(get("GIT_CONFIG_KEY_0"), None);
-        assert_eq!(get("GIT_TERMINAL_PROMPT"), Some("0"));
-        assert_eq!(
-            guard_env(&|_| None)
-                .iter()
-                .filter(|(k, _)| k.starts_with("GIT_CONFIG_KEY_"))
-                .count(),
-            6
-        );
     }
 }

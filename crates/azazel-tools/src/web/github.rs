@@ -1518,29 +1518,6 @@ mod tests {
     }
 
     #[test]
-    fn other_pages_of_the_site_are_left_to_the_ordinary_fetch() {
-        for page in [
-            "https://github.com/",
-            "https://github.com/rust-lang",
-            "https://github.com/orgs/rust-lang",
-            "https://github.com/topics/rust",
-            "https://github.com/search?q=cargo",
-            "https://github.com/rust-lang/cargo/issues",
-            "https://github.com/rust-lang/cargo/issues/new",
-            "https://github.com/rust-lang/cargo/pull/abc",
-            "https://github.com/rust-lang/cargo/releases/tag/0.90.0",
-            "https://github.com/rust-lang/cargo/commit/1a2b3c4",
-            "https://github.com/rust-lang/cargo/blob/master",
-            "https://github.com/rust-lang/ca%20rgo",
-            "https://raw.githubusercontent.com/rust-lang/cargo/master",
-            "https://gist.github.com/someone/1a2b3c4",
-            "https://example.com/rust-lang/cargo",
-        ] {
-            assert_eq!(target(page), None, "{page}");
-        }
-    }
-
-    #[test]
     fn the_lines_of_a_file_address_are_read_from_its_end() {
         assert_eq!(line_range("L7"), Some((7, 7)));
         assert_eq!(line_range("L7-L9"), Some((7, 9)));

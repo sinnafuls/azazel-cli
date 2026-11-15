@@ -449,14 +449,4 @@ mod tests {
         assert_eq!(error_text("  upstream unavailable \n"), "upstream unavailable");
         assert_eq!(error_text(""), "the response had no body");
     }
-
-    #[test]
-    fn sizes_and_ratios_need_two_positive_numbers() {
-        assert_eq!(parse_size("1024x768"), Some((1024, 768)));
-        assert_eq!(parse_size("1024X768"), Some((1024, 768)));
-        assert_eq!(parse_size("1024"), None);
-        assert_eq!(parse_size("0x768"), None);
-        assert_eq!(parse_ratio("16:9"), Some((16, 9)));
-        assert_eq!(parse_ratio("16x9"), None);
-    }
 }

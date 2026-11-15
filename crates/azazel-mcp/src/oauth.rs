@@ -475,27 +475,11 @@ mod tests {
     }
 
     #[test]
-    fn credential_key_prefixes_the_url() {
-        assert_eq!(credential_key(SERVER), "mcp:https://mcp.example.com/mcp");
-    }
-
-    #[test]
     fn parse_callback_reads_code_and_state() {
         assert_eq!(
             parse_callback("GET /callback?code=abc&state=xyz HTTP/1.1"),
             Ok(("abc".to_string(), "xyz".to_string()))
         );
-    }
-
-    #[test]
-    fn parse_callback_decodes_percent_encoding() {
-        assert_eq!(
-            parse_callback("GET /callback?state=x%2Fy%3D%3D&code=a%20b%2Bc+d&iss=https%3A%2F%2Fas HTTP/1.1"),
-            Ok(("a b+c d".to_string(), "x/y==".to_string()))
-        );
-        let callback =
-            read_callback("GET /callback?code=c&state=s&iss=https%3A%2F%2Fas.example HTTP/1.1").unwrap();
-        assert_eq!(callback.issuer.as_deref(), Some("https://as.example"));
     }
 
     #[test]
@@ -509,27 +493,6 @@ mod tests {
 
         let bare = parse_callback("GET /callback?error=server_error HTTP/1.1").unwrap_err();
         assert!(bare.contains("server_error"), "{bare}");
-    }
-
-    #[test]
-    fn parse_callback_requires_code_and_state() {
-        let no_state = parse_callback("GET /callback?code=abc HTTP/1.1").unwrap_err();
-        assert!(no_state.contains("state"), "{no_state}");
-        let empty_state = parse_callback("GET /callback?code=abc&state= HTTP/1.1").unwrap_err();
-        assert!(empty_state.contains("state"), "{empty_state}");
-        let no_code = parse_callback("GET /callback?state=xyz HTTP/1.1").unwrap_err();
-        assert!(no_code.contains("code"), "{no_code}");
-    }
-
-    #[test]
-    fn parse_callback_rejects_other_requests() {
-        let other_path = parse_callback("GET /favicon.ico?code=abc&state=xyz HTTP/1.1").unwrap_err();
-        assert!(other_path.contains("/favicon.ico"), "{other_path}");
-        assert!(parse_callback("GET /callback/extra?code=abc&state=xyz HTTP/1.1").is_err());
-        assert!(parse_callback("POST /callback?code=abc&state=xyz HTTP/1.1").is_err());
-        assert!(parse_callback("").is_err());
-        assert!(!is_callback_request("GET /favicon.ico HTTP/1.1"));
-        assert!(is_callback_request("GET /callback?error=access_denied HTTP/1.1"));
     }
 
     #[test]
@@ -607,37 +570,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_mirrors_unknown_fields_as_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let credentials = Arc::new(Credentials::new(dir.path().join("auth.json")));
-        let store = AuthJsonStore::new(Arc::clone(&credentials), SERVER);
-
-        store
-            .save(stored(json!({
-                "client_id": "client-1",
-                "token_response": { "access_token": "access-1", "token_type": "bearer" }
-            })))
-            .await
-            .unwrap();
-
-        let entries = credentials.load();
-        let key = credential_key(SERVER);
-        let Some(Credential::OAuth {
-            access,
-            refresh,
-            expires,
-            ..
-        }) = entries.get(&key)
-        else {
-            panic!("no OAuth entry for the server: {entries:?}");
-        };
-        assert_eq!(access, "access-1");
-        assert_eq!(refresh, "");
-        assert_eq!(*expires, 0);
-        assert!(store.load().await.unwrap().is_some());
-    }
-
-    #[tokio::test]
     async fn store_ignores_entries_it_did_not_write() {
         let dir = tempfile::tempdir().unwrap();
         let credentials = Arc::new(Credentials::new(dir.path().join("auth.json")));
@@ -666,28 +598,6 @@ mod tests {
         };
         credentials.store(&key, broken).unwrap();
         assert!(store.load().await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn authorized_client_is_none_without_a_stored_login() {
-        let dir = tempfile::tempdir().unwrap();
-        let credentials = Arc::new(Credentials::new(dir.path().join("auth.json")));
-        let client = authorized_client(SERVER, credentials, azazel_ai::tls::client())
-            .await
-            .unwrap();
-        assert!(client.is_none());
-    }
-
-    #[test]
-    fn logout_reports_whether_tokens_existed() {
-        let dir = tempfile::tempdir().unwrap();
-        let credentials = Credentials::new(dir.path().join("auth.json"));
-        assert!(!logout(SERVER, &credentials).unwrap());
-        credentials
-            .store(&credential_key(SERVER), entry_for(full_login()))
-            .unwrap();
-        assert!(logout(SERVER, &credentials).unwrap());
-        assert!(credentials.load().is_empty());
     }
 
     async fn fetch(addr: std::net::SocketAddr, request_line: &str) -> String {

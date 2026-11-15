@@ -684,6 +684,12 @@ impl App {
             max_cost_usd: config.limits.max_cost_usd,
             warn_cost_usd: config.limits.warn_cost_usd,
         })?;
+        registry
+            .services
+            .insert(Arc::new(azazel_tools::eval::EvalLanguages::from_switches(
+                config.tools.eval.python,
+                config.tools.eval.javascript,
+            )));
         registry.load(&CoreToolsExt {
             shell: shell.clone(),
             shell_timeout: Duration::from_secs(config.tools.shell_timeout_secs),

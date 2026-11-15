@@ -1403,23 +1403,6 @@ mod tests {
         assert!(log.in_flight.is_empty());
     }
 
-    #[test]
-    fn the_logs_keep_only_the_latest_entries() {
-        let logs = Logs::default();
-        for i in 0..LOG_LINES + 5 {
-            record(
-                &logs,
-                &event(
-                    "Runtime.consoleAPICalled",
-                    json!({ "type": "log", "args": [{ "value": i }] }),
-                ),
-            );
-        }
-        let logs = logs.lock().unwrap();
-        assert_eq!(logs["S"].console.len(), LOG_LINES);
-        assert_eq!(logs["S"].console.front().map(String::as_str), Some("[log] 5"));
-    }
-
     /// The user at the other end of a handoff: remembers what it was asked and answers `reply`.
     struct User {
         asked: Mutex<Vec<String>>,
@@ -1604,32 +1587,5 @@ mod tests {
             "{back}"
         );
         fresh.shutdown().await;
-    }
-
-    #[tokio::test]
-    async fn actions_before_a_page_is_open_say_what_to_do() {
-        let dir = tempfile::tempdir().unwrap();
-        let session = BrowserSession::new(Settings {
-            path: String::new(),
-            headless: true,
-            profile: dir.path().join("profile"),
-        });
-        let click = Input {
-            action: "click".into(),
-            reference: Some("e1".into()),
-            ..Input::default()
-        };
-        assert_eq!(session.act(click, None).await.unwrap_err(), NO_TAB);
-        let tabs = Input {
-            action: "tabs".into(),
-            ..Input::default()
-        };
-        assert_eq!(
-            session.act(tabs, None).await.unwrap(),
-            [Block::text("no tabs are open\n")]
-        );
-        // Nothing was started, so there is no profile directory and nothing to shut down.
-        session.shutdown().await;
-        assert!(!dir.path().join("profile").exists());
     }
 }

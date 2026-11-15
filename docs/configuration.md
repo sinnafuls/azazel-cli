@@ -194,6 +194,8 @@ thinking = "low"
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
 | | `redact_output` | `false` | Replace secrets in tool results with `[redacted:<kind>]` before the model and the session file get them; see [permissions](permissions.md#secrets-in-tool-results) |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
+| `[tools.eval]` | `python` | `true` | Let the [`eval`](tools.md#eval) tool run Python |
+| | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript; with both off, `eval` is not offered |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
@@ -265,6 +267,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `indicator` | `"shimmer"` | How the [working indicator](tui.md#working-indicator) moves: `shimmer`, `kitt` or `static` |
 | | `indicator_text` | `[]` | Phrases the working indicator shows in turn; empty shows what the agent is doing. A running tool is always named |
 | | `session_accent` | `false` | Tint the working indicator with a colour derived from the session's name |
+| | `todo_max` | `8` | Rows the todo list above the input takes at most. A longer list folds the finished items into one row (`✓ 11 done`), shows the item in progress and the next ones, and counts the rest (`… 3 more`); `0` hides the list |
 | | `tool_style` | `"card"` | `card` frames each tool call; `compact` shows a finished call on one row and calls that follow one another as a tree; see [compact style](tui.md#compact-style) |
 | | `diff_view` | `"auto"` | How `/diff` shows a file: `split` (old beside new), `unified` (one column), or `auto`, split in a window of 140 columns or more; see [diffs and commits](tui.md#diffs-and-commits) |
 | | `redact` | `true` | Hide what looks like a secret in tool cards, the transcript viewer and Markdown and HTML exports; the model and the session file keep it. See [hiding secrets](tui.md#hiding-secrets) |
@@ -353,7 +356,7 @@ back. A project needs a trust decision when it has any of:
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
 is `bypass`, `lsp`, `verify.commands`,
-`tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
+`tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.

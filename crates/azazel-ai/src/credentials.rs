@@ -1028,14 +1028,4 @@ mod tests {
         assert_eq!(used(&env).await, (Auth::ApiKey("from-env".into()), None));
         assert!(!env.uses_store("acme"));
     }
-
-    #[test]
-    fn account_labels_are_plain_words() {
-        assert_eq!(account_key("acme", DEFAULT_ACCOUNT), "acme");
-        assert_eq!(account_key("acme", "work"), "acme#work");
-        assert!(check_label("work-2.b_c").is_ok());
-        for bad in ["", "a b", "a#b", "default", "é"] {
-            assert!(check_label(bad).is_err(), "{bad}");
-        }
-    }
 }

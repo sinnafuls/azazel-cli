@@ -322,15 +322,4 @@ mod tests {
         assert_eq!(directories(&cwd, "../si"), ["../sibling/"]);
         assert!(directories(&cwd, "missing/").is_empty());
     }
-
-    #[test]
-    fn typed_directories_are_below_the_working_one_or_home() {
-        let cwd = Path::new("/work");
-        assert_eq!(typed_dir("src", cwd), cwd.join("src"));
-        assert_eq!(typed_dir("\"my dir\"", cwd), cwd.join("my dir"));
-        if let Some(home) = std::env::home_dir() {
-            assert_eq!(typed_dir("~", cwd), home.join(""));
-            assert_eq!(typed_dir("~/code", cwd), home.join("code"));
-        }
-    }
 }

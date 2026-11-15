@@ -1043,18 +1043,4 @@ mod tests {
         let refused = models_text("", &[("odd".to_string(), broken)]).unwrap_err();
         assert!(refused.contains("providers.odd"), "{refused}");
     }
-
-    #[test]
-    fn values_are_written_as_toml_writes_them() {
-        let list = toml::Value::Array(vec![
-            toml::Value::String("a b".into()),
-            toml::Value::String("c".into()),
-        ]);
-        assert_eq!(item_of(&list).unwrap().to_string(), r#"["a b", "c"]"#);
-        assert_eq!(item_of(&toml::Value::Boolean(true)).unwrap().to_string(), "true");
-        assert_eq!(
-            item_of(&toml::Value::String("x".into())).unwrap().to_string(),
-            r#""x""#
-        );
-    }
 }

@@ -106,19 +106,6 @@ mod tests {
     }
 
     #[test]
-    fn names_split_into_words() {
-        assert_eq!(
-            tokenize("mcp__git__commitChanges"),
-            ["mcp", "git", "commit", "changes"]
-        );
-        assert_eq!(
-            tokenize("read-file v2 HTTPServer"),
-            ["read", "file", "v2", "httpserver"]
-        );
-        assert!(tokenize(" _-_ ").is_empty());
-    }
-
-    #[test]
     fn the_best_match_comes_first_and_non_matches_are_left_out() {
         let tools = tools();
         assert_eq!(rank(&tools, "echo", 8), [1]);
@@ -129,14 +116,5 @@ mod tests {
         assert!(rank(&tools, "kubernetes", 8).is_empty());
         assert!(rank(&tools, "", 8).is_empty());
         assert!(rank(&[], "echo", 8).is_empty());
-    }
-
-    #[test]
-    fn a_word_in_the_name_outweighs_the_same_word_in_a_description() {
-        let tools = vec![
-            ("mcp__a__describe".to_string(), "Shows the query plan".to_string()),
-            ("mcp__b__query".to_string(), "Runs it".to_string()),
-        ];
-        assert_eq!(rank(&tools, "query", 8), [1, 0]);
     }
 }

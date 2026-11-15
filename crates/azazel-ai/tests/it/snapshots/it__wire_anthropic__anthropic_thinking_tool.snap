@@ -1,0 +1,116 @@
+---
+source: crates/azazel-ai/tests/it/wire_anthropic.rs
+expression: "serde_json::to_string_pretty(&events).unwrap()"
+---
+[
+  {
+    "type": "start"
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": "The user wants every unfinished marker."
+  },
+  {
+    "type": "thinking_delta",
+    "index": 0,
+    "delta": "\nA search over src/ is the cheapest way to find them."
+  },
+  {
+    "type": "block_end",
+    "index": 0,
+    "block": {
+      "type": "thinking",
+      "text": "The user wants every unfinished marker.\nA search over src/ is the cheapest way to find them.",
+      "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds0Mock=="
+    }
+  },
+  {
+    "type": "text_delta",
+    "index": 1,
+    "delta": "Searching the sources"
+  },
+  {
+    "type": "text_delta",
+    "index": 1,
+    "delta": " for markers."
+  },
+  {
+    "type": "block_end",
+    "index": 1,
+    "block": {
+      "type": "text",
+      "text": "Searching the sources for markers."
+    }
+  },
+  {
+    "type": "tool_call_start",
+    "index": 2,
+    "id": "toolu_01NcR4yWm8Zp2KsVb6HtJq3L",
+    "name": "grep"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 2,
+    "delta": "{\"pattern\": \"FIX"
+  },
+  {
+    "type": "tool_call_delta",
+    "index": 2,
+    "delta": "ME\", \"path\": \"src\"}"
+  },
+  {
+    "type": "block_end",
+    "index": 2,
+    "block": {
+      "type": "tool_call",
+      "id": "toolu_01NcR4yWm8Zp2KsVb6HtJq3L",
+      "name": "grep",
+      "input": {
+        "pattern": "FIXME",
+        "path": "src"
+      }
+    }
+  },
+  {
+    "type": "done",
+    "message": {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "thinking",
+          "text": "The user wants every unfinished marker.\nA search over src/ is the cheapest way to find them.",
+          "signature": "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds0Mock=="
+        },
+        {
+          "type": "text",
+          "text": "Searching the sources for markers."
+        },
+        {
+          "type": "tool_call",
+          "id": "toolu_01NcR4yWm8Zp2KsVb6HtJq3L",
+          "name": "grep",
+          "input": {
+            "pattern": "FIXME",
+            "path": "src"
+          }
+        }
+      ],
+      "meta": {
+        "provider": "mock",
+        "model": "mock-model",
+        "api": "anthropic-messages",
+        "usage": {
+          "input": 41,
+          "output": 143,
+          "cache_read": 1536,
+          "cache_write": 0,
+          "reasoning": 61
+        },
+        "stop": "tool_use",
+        "response_id": "msg_01Qd7Vn5KsGx3RtB9YwAe2Hu",
+        "duration_ms": 0
+      }
+    }
+  }
+]

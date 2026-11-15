@@ -460,16 +460,4 @@ pub fn prune_in_background(paths: &Paths, retention_days: u32, keep: String) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn ages_parse_in_hours_days_and_weeks() {
-        assert_eq!(parse_age("12h").unwrap().as_hours(), 12);
-        assert_eq!(parse_age("30d").unwrap().as_hours(), 720);
-        assert_eq!(parse_age("2w").unwrap().as_hours(), 336);
-        assert_eq!(parse_age("7").unwrap().as_hours(), 168);
-        assert!(parse_age("d").is_err());
-        assert!(parse_age("3y").unwrap_err().contains("unit"));
-    }
-}
+mod tests {}

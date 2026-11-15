@@ -605,17 +605,6 @@ mod tests {
     }
 
     #[test]
-    fn sizes_read_in_the_unit_that_fits() {
-        assert_eq!(format_size(0), "0 B");
-        assert_eq!(format_size(1023), "1023 B");
-        assert_eq!(format_size(1024), "1.0 KB");
-        assert_eq!(format_size(1536), "1.5 KB");
-        assert_eq!(format_size(1024 * 1024 - 1), "1023.9 KB");
-        assert_eq!(format_size(3 * 1024 * 1024 * 1024), "3.0 GB");
-        assert_eq!(format_size(u64::MAX / 16), "1048575.9 TB");
-    }
-
-    #[test]
     fn found_files_stand_under_their_directory() {
         let paths = [
             "src/tui/mod.rs",

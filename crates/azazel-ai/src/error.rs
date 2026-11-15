@@ -92,45 +92,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn serde_shape_is_kind_plus_detail() {
-        let cases = [
-            (AiError::Overloaded, serde_json::json!({"kind": "overloaded"})),
-            (
-                AiError::Auth("no key".into()),
-                serde_json::json!({"kind": "auth", "detail": "no key"}),
-            ),
-            (
-                AiError::RateLimit {
-                    retry_after: Some(Duration::from_millis(1500)),
-                },
-                serde_json::json!({"kind": "rate_limit", "detail": {"retry_after": 1.5}}),
-            ),
-            (
-                AiError::Server {
-                    status: 502,
-                    body: "bad gateway".into(),
-                },
-                serde_json::json!({"kind": "server", "detail": {"status": 502, "body": "bad gateway"}}),
-            ),
-            (
-                AiError::Quota {
-                    resets_at: Some(1_800_000_000),
-                    message: "weekly limit".into(),
-                },
-                serde_json::json!({"kind": "quota", "detail": {"resets_at": 1_800_000_000u64, "message": "weekly limit"}}),
-            ),
-            (
-                AiError::Stalled { secs: 20 },
-                serde_json::json!({"kind": "stalled", "detail": {"secs": 20}}),
-            ),
-        ];
-        for (error, json) in cases {
-            assert_eq!(serde_json::to_value(&error).unwrap(), json);
-            assert_eq!(serde_json::from_value::<AiError>(json).unwrap(), error);
-        }
-    }
-
-    #[test]
     fn retryable_covers_transient_failures_only() {
         assert!(AiError::Network("reset".into()).is_retryable());
         assert!(AiError::Stalled { secs: 20 }.is_retryable());

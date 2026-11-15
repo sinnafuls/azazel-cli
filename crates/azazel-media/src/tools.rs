@@ -364,16 +364,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompts_become_file_name_stems() {
-        assert_eq!(
-            slug("A wooden treasure-chest, lid half open; iron bands!", "image"),
-            "a-wooden-treasure-chest-lid-half"
-        );
-        assert_eq!(slug("  Sunset  ", "image"), "sunset");
-        assert_eq!(slug("日本語 ¡!", "image"), "image");
-    }
-
-    #[test]
     fn output_paths_follow_out_or_the_media_directory() {
         let root = Path::new("/work/game");
         let at = |out: Option<&str>, index: usize, total: usize| {

@@ -1,10 +1,17 @@
-//! URL schemes the `read` tool can resolve (`artifact://`, `skill://`, `agent://`, `mcp://`, …).
+//! URL schemes the `read` tool can resolve (`artifact://`, `skill://`, `agent://`, `mcp://`, …),
+//! and `local://`, the session's scratch files, which the file tools also write.
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, ToolCtx};
+use azazel_agent::{Access, Services, ToolCtx};
 use azazel_ai::Block;
+
+use crate::session::SessionStore;
+
+/// The scheme of the session's scratch files.
+pub const LOCAL: &str = "local";
 
 /// The lines a `read` call asks for with `offset` and `limit`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -84,30 +91,75 @@ pub fn split_url(path: &str) -> Option<(&str, &str)> {
     valid.then_some((scheme, rest))
 }
 
+/// The parts of the name in `local://<name>`, or why it names nothing inside the directory: a
+/// name is relative, and has no `..` and no drive.
+pub fn local_parts(rest: &str) -> Result<Vec<&str>, String> {
+    let rest = rest.trim();
+    if rest.starts_with(['/', '\\']) {
+        return Err(format!(
+            "`local://{rest}` is an absolute path; a local:// name is relative to the session's scratch directory"
+        ));
+    }
+    let mut parts = Vec::new();
+    for part in rest.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                return Err(format!(
+                    "`local://{rest}` leads out of the session's scratch directory; `..` is not allowed there"
+                ));
+            }
+            part if part.contains(':') => {
+                return Err(format!(
+                    "`local://{rest}`: `{part}` is not a usable name; a local:// name has no drive or `:`"
+                ));
+            }
+            part => parts.push(part),
+        }
+    }
+    Ok(parts)
+}
+
+/// The file `local://<rest>` names in `dir`, the session's scratch directory.
+pub fn local_path(dir: &Path, rest: &str) -> Result<PathBuf, String> {
+    Ok(local_parts(rest)?
+        .into_iter()
+        .fold(dir.to_path_buf(), |path, part| path.join(part)))
+}
+
+/// The session's scratch directory, created when it is not there yet.
+pub fn local_dir(services: &Services) -> Result<PathBuf, String> {
+    let session = services
+        .get::<SessionStore>()
+        .ok_or_else(|| "no session is open, so there are no local:// files".to_string())?;
+    let dir = session.local_dir();
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    Ok(dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn split_url_accepts_schemes_and_rejects_paths() {
-        assert_eq!(split_url("artifact://call_1"), Some(("artifact", "call_1")));
+    fn local_names_map_into_the_directory_and_never_out_of_it() {
+        let dir = Path::new("scratch");
+        assert_eq!(local_path(dir, "report.md").unwrap(), dir.join("report.md"));
         assert_eq!(
-            split_url("mcp://server/mem://greeting"),
-            Some(("mcp", "server/mem://greeting"))
+            local_path(dir, "runs/2/./out.txt").unwrap(),
+            dir.join("runs").join("2").join("out.txt")
         );
-        assert_eq!(
-            split_url("https://example.com/a?b=c"),
-            Some(("https", "example.com/a?b=c"))
-        );
-        for not_url in [
-            "C://Users/me",
-            "src/main.rs",
-            "/abs/path",
-            "a b://x",
-            "1x://y",
-            "://x",
+        assert_eq!(local_path(dir, "").unwrap(), dir);
+        for escape in [
+            "../x",
+            "a/../../x",
+            "a\\..\\x",
+            "/etc/passwd",
+            "\\x",
+            "C:/x",
+            "C:x",
         ] {
-            assert_eq!(split_url(not_url), None, "{not_url}");
+            assert!(local_path(dir, escape).is_err(), "{escape}");
         }
     }
 }

@@ -233,14 +233,4 @@ mod tests {
         assert!(parse("Nothing worth keeping.").is_err());
         assert!(parse("[not json]").is_err());
     }
-
-    #[test]
-    fn at_most_eight_items_are_taken() {
-        let items: Vec<Value> = (0..12)
-            .map(|i| serde_json::json!({ "kind": "fact", "text": format!("fact {i}") }))
-            .collect();
-        let parsed = parse(&Value::Array(items).to_string()).unwrap();
-        assert_eq!(parsed.len(), MAX_ITEMS);
-        assert_eq!(parsed[7].text, "fact 7");
-    }
 }

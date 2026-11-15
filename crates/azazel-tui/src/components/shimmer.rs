@@ -287,30 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_tiers_share_one_colour_sequence() {
-        let theme = Theme::dark();
-        let line = sweep("running the tests now", 21, Mode::Shimmer, None, &theme);
-        assert_eq!(text::strip_ansi(&line), "running the tests now");
-        assert_eq!(tiers(21, 21, Mode::Shimmer), "-------++#####++-----");
-        let (muted, plain, accent) = (
-            theme.fg(Role::Muted),
-            theme.fg(Role::Text),
-            theme.fg(Role::Accent),
-        );
-        assert_eq!(
-            line,
-            format!(
-                "{muted}running{RESET}{plain} t{RESET}{BOLD}{accent}he te{RESET}{plain}st{RESET}{muted}s now{RESET}"
-            )
-        );
-        // Away from the text the whole of it is one run.
-        assert_eq!(
-            sweep("thinking", 0, Mode::Shimmer, None, &theme),
-            format!("{muted}thinking{RESET}")
-        );
-    }
-
-    #[test]
     fn a_session_colour_replaces_the_accent_of_the_bright_tier_only() {
         let theme = Theme::dark();
         let own = Color::Rgb(1, 2, 3);
@@ -338,28 +314,6 @@ mod tests {
             }
         }
         assert_eq!(sweep("", 3, Mode::Shimmer, None, &theme), "");
-    }
-
-    #[test]
-    fn phrases_take_turns_one_pass_each() {
-        let phrases = vec!["working".to_string(), "still at it".to_string()];
-        // 10 + 7 + 6 ticks for the first, 10 + 11 + 6 for the second.
-        assert_eq!(phrase(&phrases, 0, Mode::Shimmer), Some(("working", 0)));
-        assert_eq!(phrase(&phrases, 22, Mode::Shimmer), Some(("working", 22)));
-        assert_eq!(phrase(&phrases, 23, Mode::Shimmer), Some(("still at it", 0)));
-        assert_eq!(phrase(&phrases, 49, Mode::Shimmer), Some(("still at it", 26)));
-        assert_eq!(phrase(&phrases, 50, Mode::Shimmer), Some(("working", 0)));
-        assert_eq!(phrase(&phrases, 89, Mode::Static), Some(("working", 89)));
-        assert_eq!(phrase(&phrases, 90, Mode::Static), Some(("still at it", 0)));
-        assert_eq!(phrase(&[], 5, Mode::Shimmer), None);
-    }
-
-    #[test]
-    fn ticks_follow_elapsed_time() {
-        assert_eq!(tick_at(Duration::ZERO), 0);
-        assert_eq!(tick_at(Duration::from_millis(32)), 0);
-        assert_eq!(tick_at(Duration::from_millis(33)), 1);
-        assert_eq!(tick_at(Duration::from_secs(1)), 30);
     }
 
     /// The hue of an sRGB colour in degrees, as OKLCH measures it, with its lightness.

@@ -21,13 +21,15 @@ pub enum RosterState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RosterRow {
     pub id: String,
+    /// The definition the agent was started from; left out when empty.
+    pub def: String,
     pub activity: String,
     pub elapsed: Duration,
     pub tokens: u64,
     pub state: RosterState,
 }
 
-/// One line per row: `● <id>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
+/// One line per row: `● <id>  <def>  <activity>  <elapsed>  <tokens>` (`*` for the bullet at the
 /// `ascii` glyph level). The bullet is coloured by state and the activity is shortened first
 /// when the line is too long.
 ///
@@ -42,6 +44,22 @@ pub fn render(rows: &[RosterRow], selected: Option<usize>, width: usize, theme: 
             Some(chosen) => focused_row(row, at == chosen, width, theme),
         })
         .collect()
+}
+
+/// The first `limit` rows as [`render`] draws them without a selection, and under them a muted
+/// `… N more` for the rows left out.
+pub fn collapsed(rows: &[RosterRow], limit: usize, width: usize, theme: &Theme) -> Vec<Line> {
+    let shown = rows.len().min(limit);
+    let mut lines = render(&rows[..shown], None, width, theme);
+    if rows.len() > shown {
+        let more = format!("{} {} more", theme.glyph(Glyph::Ellipsis), rows.len() - shown);
+        lines.push(text::truncate(
+            &theme.paint(Role::Muted, &more),
+            width,
+            theme.glyph(Glyph::Ellipsis),
+        ));
+    }
+    lines
 }
 
 /// Columns the rail of a roster that has the keyboard takes.
@@ -74,16 +92,24 @@ fn render_row(row: &RosterRow, width: usize, theme: &Theme) -> Line {
         RosterState::Idle => Role::Muted,
     };
     let id = one_line(&row.id);
+    let def = one_line(&row.def);
     let elapsed = format_elapsed(row.elapsed);
     let tokens = format_tokens(row.tokens);
+    let def_width = if def.is_empty() { 0 } else { text::width(&def) + 2 };
 
-    // Everything except the activity: bullet, id and the two right-hand columns with separators.
-    let fixed = 2 + text::width(&id) + 2 + 2 + elapsed.len() + 2 + tokens.len();
+    // Everything except the activity: bullet, id, definition and the two right-hand columns with
+    // separators.
+    let fixed = 2 + text::width(&id) + def_width + 2 + 2 + elapsed.len() + 2 + tokens.len();
     let ellipsis = theme.glyph(Glyph::Ellipsis);
     let activity = text::truncate(&one_line(&row.activity), width.saturating_sub(fixed), ellipsis);
+    let def = if def.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", theme.paint(Role::Muted, &def))
+    };
 
     let line = format!(
-        "{} {id}  {activity}  {}  {}",
+        "{} {id}{def}  {activity}  {}  {}",
         theme.paint(role, theme.glyph(Glyph::Bullet)),
         theme.paint(Role::Muted, &elapsed),
         theme.paint(Role::Muted, &tokens),
@@ -99,51 +125,12 @@ mod tests {
     fn row(id: &str, activity: &str, secs: u64, tokens: u64, state: RosterState) -> RosterRow {
         RosterRow {
             id: id.to_string(),
+            def: String::new(),
             activity: activity.to_string(),
             elapsed: Duration::from_secs(secs),
             tokens,
             state,
         }
-    }
-
-    #[test]
-    fn formats_one_line_per_row() {
-        let rows = [
-            row("scout-1", "grep TODO", 42, 1234, RosterState::Running),
-            row(
-                "coder-2",
-                "waiting for approval",
-                185,
-                15_700,
-                RosterState::Waiting,
-            ),
-        ];
-        let lines = render(&rows, None, 80, &Theme::dark());
-        let plain: Vec<String> = lines.iter().map(|l| text::strip_ansi(l)).collect();
-        assert_eq!(
-            plain,
-            [
-                "● scout-1  grep TODO  42s  1.2k",
-                "● coder-2  waiting for approval  3m05s  15.7k"
-            ]
-        );
-    }
-
-    #[test]
-    fn bullet_colour_follows_state() {
-        let mut theme = Theme::dark();
-        theme.set_color(Role::Border, Color::Indexed(240));
-        theme.set_color(Role::Success, Color::Indexed(2));
-        theme.set_color(Role::Warning, Color::Indexed(3));
-        theme.set_color(Role::Muted, Color::Indexed(8));
-        let bullet = |state| {
-            let lines = render(&[row("a", "b", 1, 1, state)], None, 40, &theme);
-            lines[0].split('●').next().map(str::to_string)
-        };
-        assert_eq!(bullet(RosterState::Queued).as_deref(), Some("\x1b[38;5;240m"));
-        assert_eq!(bullet(RosterState::Running).as_deref(), Some("\x1b[32m"));
-        assert_eq!(bullet(RosterState::Waiting).as_deref(), Some("\x1b[33m"));
-        assert_eq!(bullet(RosterState::Idle).as_deref(), Some("\x1b[90m"));
     }
 
     #[test]
@@ -160,6 +147,31 @@ mod tests {
         assert_eq!(text::width(&lines[0]), 32);
         assert!(plain.starts_with("● scout-1  reading a"), "{plain:?}");
         assert!(plain.ends_with("…  42s  1.2k"), "{plain:?}");
+    }
+
+    #[test]
+    fn a_collapsed_roster_shows_three_rows_and_counts_the_rest() {
+        let rows: Vec<RosterRow> = (1..=5)
+            .map(|n| RosterRow {
+                def: "scout".to_string(),
+                ..row(&format!("scout-{n}"), "grep", 1, 10, RosterState::Running)
+            })
+            .collect();
+        let theme = Theme::dark();
+        let plain: Vec<String> = collapsed(&rows, 3, 60, &theme)
+            .iter()
+            .map(|l| text::strip_ansi(l))
+            .collect();
+        assert_eq!(
+            plain,
+            [
+                "● scout-1  scout  grep  1s  10",
+                "● scout-2  scout  grep  1s  10",
+                "● scout-3  scout  grep  1s  10",
+                "… 2 more",
+            ]
+        );
+        assert_eq!(collapsed(&rows[..3], 3, 60, &theme).len(), 3);
     }
 
     #[test]

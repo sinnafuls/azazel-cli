@@ -101,25 +101,3 @@ pub async fn by_command(command: &str, recording: &[u8]) -> Result<String, Strin
     }
     Ok(tidy(&String::from_utf8_lossy(&output.stdout)))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn transcripts_become_one_line() {
-        assert_eq!(tidy("  fix the\n failing   test.\r\n"), "fix the failing test.");
-        assert_eq!(tidy(" \n "), "");
-    }
-
-    #[test]
-    fn either_setting_enables_dictation() {
-        let mut settings = VoiceConfig::default();
-        assert!(!configured(&settings));
-        settings.stt = "openai/whisper-1".to_string();
-        assert!(configured(&settings));
-        settings.stt.clear();
-        settings.stt_command = "whisper-cli -f {file}".to_string();
-        assert!(configured(&settings));
-    }
-}

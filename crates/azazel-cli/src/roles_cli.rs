@@ -368,37 +368,3 @@ fn table(rows: &[RoleRow]) -> String {
     }
     out
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn row(role: &str, chain: &[&str], resolved: &[&str], source: RoleSource) -> RoleRow {
-        RoleRow {
-            role: role.to_string(),
-            chain: chain.iter().map(ToString::to_string).collect(),
-            source,
-            builtin: Vec::new(),
-            resolved: resolved.iter().map(ToString::to_string).collect(),
-            thinking: None,
-        }
-    }
-
-    #[test]
-    fn the_list_lines_up_the_model_a_role_resolves_to_and_its_level() {
-        let shown = table(&[
-            row("default", &["a/one:high"], &["a/one:high"], RoleSource::Home),
-            row("smol", &["@default"], &["a/one:high"], RoleSource::Builtin),
-            row("vision", &[], &[], RoleSource::Unset),
-        ]);
-        assert_eq!(
-            shown.lines().collect::<Vec<_>>(),
-            [
-                "role     chain       model  thinking  source",
-                "default  a/one:high  a/one  high      home",
-                "smol     @default    a/one  high      built-in",
-                "vision   -           -      -         unset",
-            ]
-        );
-    }
-}

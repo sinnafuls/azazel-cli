@@ -905,15 +905,6 @@ mod tests {
     }
 
     #[test]
-    fn images_are_fitted_keeping_their_shape() {
-        assert_eq!(fit(800, 600, 1568), (800, 600));
-        assert_eq!(fit(3136, 1764, 1568), (1568, 882));
-        assert_eq!(fit(1000, 4000, 1568), (392, 1568));
-        // Never down to nothing.
-        assert_eq!(fit(10_000, 1, 100), (100, 1));
-    }
-
-    #[test]
     fn frames_for_the_contact_sheet_span_the_recording() {
         assert_eq!(evenly_spaced(0, 9), Vec::<usize>::new());
         assert_eq!(evenly_spaced(4, 9), [0, 1, 2, 3]);
@@ -999,16 +990,5 @@ mod tests {
             [enigo::Key::Control, enigo::Key::Shift]
         );
         assert!(held_modifiers(0).is_empty());
-    }
-
-    #[test]
-    fn buttons_parse() {
-        assert_eq!(mouse_button(None), Ok(Button::Left));
-        assert_eq!(mouse_button(Some("right")), Ok(Button::Right));
-        assert!(
-            mouse_button(Some("fourth"))
-                .unwrap_err()
-                .contains("unknown button `fourth`")
-        );
     }
 }

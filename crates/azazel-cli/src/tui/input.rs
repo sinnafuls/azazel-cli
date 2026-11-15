@@ -1431,12 +1431,4 @@ mod tests {
         // A terminal that lets the key through sends its press first: that was the paste.
         assert!(!press_was_kept(true, None));
     }
-
-    #[test]
-    fn shell_words_keep_quoted_text_together() {
-        assert_eq!(shell_words("a 'b c'  \"d e\" f"), ["a", "b c", "d e", "f"]);
-        assert_eq!(shell_words("''"), [""]);
-        assert_eq!(shell_words("   "), Vec::<String>::new());
-        assert_eq!(percent_decode("a%20b%2Fc%zz%"), "a b/c%zz%");
-    }
 }

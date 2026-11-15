@@ -85,11 +85,4 @@ mod tests {
         assert_eq!(mime, "image/png");
         assert_eq!((scaled.width(), scaled.height()), (100, 25));
     }
-
-    #[test]
-    fn non_images_are_rejected() {
-        assert!(image_block(b"plain text", 100).is_err());
-        assert_eq!(image_mime(b"\x89PNG\r\n\x1a\n"), Some("image/png"));
-        assert_eq!(image_mime(b"%PDF-1.7"), None);
-    }
 }

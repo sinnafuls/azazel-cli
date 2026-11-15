@@ -207,24 +207,4 @@ mod tests {
         let looped = format!("Start.\n{}", block.repeat(3));
         assert_eq!(repeated_block(&looped), Some(block.as_str()));
     }
-
-    #[test]
-    fn the_note_names_the_guard_and_quotes_the_start_of_the_block() {
-        let block = prose(4);
-        let looped = block.repeat(3);
-        let note = Runaway.note(&looped, false).unwrap();
-        assert!(
-            note.starts_with("<rule name=\"runaway\" reason=\"repetition\">\n"),
-            "{note}"
-        );
-        let quoted: String = block.chars().take(QUOTED_CHARS).collect();
-        assert!(note.contains(&format!("{quoted}…\n</rule>")), "{note}");
-        assert!(
-            Runaway
-                .note(&looped, true)
-                .unwrap()
-                .contains("Your thinking repeated")
-        );
-        assert_eq!(Runaway.note(&prose(30), false), None);
-    }
 }

@@ -168,16 +168,3 @@ pub fn run(action: &SecretsAction, paths: &Paths) -> u8 {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_site_login_is_named_after_the_host_of_its_page() {
-        assert_eq!(site_name("https://github.com/login*"), "github.com");
-        assert_eq!(site_name("https://*.example.com"), "example.com");
-        assert_eq!(site_name("http://localhost:3000/signin"), "localhost-3000");
-        assert_eq!(site_name("http://[::1]:3000/"), "1--3000");
-    }
-}

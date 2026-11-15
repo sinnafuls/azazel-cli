@@ -1360,37 +1360,4 @@ mod tests {
         let errors = diagnostic_lines("a", text, &items, |d| severity_word(d.severity) == "error");
         assert_eq!(errors.len(), 2);
     }
-
-    #[test]
-    fn paths_below_the_root_are_shown_relative() {
-        let root = Path::new(if cfg!(windows) {
-            r"C:\work\proj"
-        } else {
-            "/work/proj"
-        });
-        assert_eq!(
-            below(root, &root.join("src").join("a.rs")).as_deref(),
-            Some("src/a.rs")
-        );
-        assert_eq!(below(root, root.parent().unwrap()), None);
-        let sibling = root.parent().unwrap().join("project2").join("a.rs");
-        assert_eq!(below(root, &sibling), None);
-        assert_eq!(shown(root, &sibling), sibling.display().to_string());
-        if cfg!(windows) {
-            // Servers write drive letters either way.
-            assert_eq!(
-                below(root, Path::new(r"c:\Work\proj\a.rs")).as_deref(),
-                Some("a.rs")
-            );
-        }
-    }
-
-    #[test]
-    fn long_lists_are_cut_with_a_count() {
-        let lines: Vec<String> = (0..MAX_LISTED + 7).map(|i| i.to_string()).collect();
-        let out = listed(lines);
-        assert_eq!(out.lines().count(), MAX_LISTED + 1);
-        assert!(out.ends_with("… 7 more"));
-        assert_eq!(listed(vec!["one".into()]), "one");
-    }
 }

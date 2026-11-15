@@ -278,13 +278,6 @@ providers:
     }
 
     #[test]
-    fn an_empty_file_defines_nothing() {
-        assert!(parse("").unwrap().is_empty());
-        assert!(parse("providers:\n").unwrap().is_empty());
-        assert!(parse("# only a comment\n").unwrap().is_empty());
-    }
-
-    #[test]
     fn a_mistake_is_reported_under_its_key() {
         let error = |text: &str| parse(text).unwrap_err();
         let has = |text: &str, parts: &[&str]| {

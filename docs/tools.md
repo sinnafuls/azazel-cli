@@ -424,6 +424,7 @@ Permissions are those of `shell`: starting the program is a `shell` call like an
 | Tool | Input | Behaviour |
 |---|---|---|
 | `run_code` | `code` | Runs a Luau script that calls other tools, and returns what it printed and returned |
+| `eval` | `language` (`python`, `javascript`), `code`, `timeout_secs?` | Runs a Python or JavaScript program and returns what it printed; see [`eval`](#eval) |
 
 `run_code` lets an agent do a job of several steps in one call: read a dozen files and return only the lines that matter, search and then filter, make the same edit in many places. Only the script's result reaches the model, not what the tools returned along the way.
 
@@ -487,6 +488,17 @@ end
 store("audit_serious", serious)
 return serious
 ```
+
+### `eval`
+
+`eval` runs a program the agent writes, for work a script does better than a shell command: computing, parsing and reshaping data, trying out a snippet.
+
+- Python runs with the first of `python`, `python3` and `py` on `PATH` (on Windows the `WindowsApps` stand-ins that open the Store are passed over). JavaScript runs with `node`, else `bun`, else `deno`; top-level `await` works. The program is looked for at each call; when none is installed the result says which to install.
+- The code is handed to the interpreter on standard input and runs in the agent's working directory with the environment of `shell` commands. Each call is a new process: nothing is kept from one call to the next, so a later call reads what an earlier one left in a file.
+- `AZAZEL_LOCAL` names the session's scratch directory, the files `local://<name>` addresses (see [URL schemes](#url-schemes-read-accepts)).
+- stdout and stderr come back together, the first 100 and last 300 lines of them, with the exit code; a code other than 0 makes the result an error. The output streams into the running card, `Esc` kills the program, and so does the timeout: `timeout_secs`, else `shell_timeout_secs` (120).
+- It can do whatever a program can, so it is approved like `shell`: `manual` and `accept-edits` ask, `auto` runs it, plan mode refuses it. A rule names the language: `allow = ["eval(python)"]`.
+- `[tools.eval]` turns each language on or off: `python = false` or `javascript = false` (both are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with both off, `eval` is not offered at all. A project's config may set them only once the project is trusted.
 
 ## Todo list, questions, plans
 
@@ -716,6 +728,8 @@ note: called as `bash`; the tool is `shell`; `timeout` was a number in a string,
 | Address | Returns |
 |---|---|
 | `artifact://<id>` | A spilled tool output |
+| `local://` | The session's scratch directory, listed |
+| `local://<name>` | A file in it; see below |
 | `skill://<name>` | The body of a skill |
 | `skill://<name>/<relative path>` | A file beside that skill's `SKILL.md` (at most 256 KB) |
 | `agent://<id>` | The latest report of an agent |
@@ -734,6 +748,8 @@ note: called as `bash`; the tool is `shell`; `timeout` was a number in a string,
 | `pr://<n>/diff` | A pull request's diff |
 
 `pr://` and `issue://` run the [`gh`](https://cli.github.com) program in the agent's working directory, with the account `gh` is signed in to, and exist only when `gh` is on `PATH` (`azazel doctor` says whether it is). They count as network access to `github.com`: in `manual` mode you are asked, and the rule `web_fetch(domain:github.com)` allows them.
+
+`local://` is a directory of scratch files that belongs to the session, kept in the session's folder (`<sessions>/<id>/local/`) and deleted with it. The lead and its sub-agents share it. Unlike the other schemes it is a place to write: `read`, `write`, `edit`, `patch`, `glob` and `grep` take `local://<name>` where they take a path, and a name may have subdirectories (`local://runs/2/report.md`). A name with `..`, a leading `/` or a drive is refused. Writing there is not a change to the project: it is never asked about, in plan mode too. `write`, `edit` and `patch` take no other scheme (`write does not take agent:// addresses; only local:// and file paths`).
 
 A scheme says what reading one of its addresses touches. Addresses that stay on this machine are plain reads. Extensions can add more schemes; see [extensions](extensions.md).
 
@@ -760,6 +776,10 @@ py = "pylint --output-format=parseable"
 
 [tools.scan]
 secrets = true                        # scan the project with gitleaks once per session
+
+[tools.eval]
+python = true                         # eval may run Python
+javascript = true                     # eval may run JavaScript
 ```
 
 | Key | Default | Meaning |
@@ -777,6 +797,8 @@ secrets = true                        # scan the project with gitleaks once per 
 | `read_guard` | `"range"` | What an agent must have read of a file before it changes it: the lines an edit changes (`range`), any part of the file (`file`), or nothing (`off`); see [the read guard](#the-read-guard) |
 | `redact_output` | `false` | Replaces what looks like a secret in a tool result with `[redacted:<kind>]` before the model and the session file get it; see [permissions](permissions.md#secrets-in-tool-results) |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
+| `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
+| `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript; with both off, `eval` is not offered. Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
 

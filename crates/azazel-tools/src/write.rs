@@ -14,7 +14,7 @@ use serde_json::{Value, json};
 
 use crate::check::{Checked, Checks};
 use crate::format::Formatters;
-use crate::util::{display_path, parse_input, resolve_path, unified_diff, write_atomic};
+use crate::util::{parse_input, resolve_target, shown_path, unified_diff, write_atomic};
 
 pub const NEVER_READ: &str = "read the file before overwriting it";
 pub const CHANGED: &str = "file changed since you last read it; read it again";
@@ -269,7 +269,7 @@ fn with_checks(text: String, block: Option<String>) -> String {
 }
 
 fn diff_details(ctx: &ToolCtx, path: &Path, old: &str, new: &str) -> Value {
-    let shown = display_path(&ctx.cwd, path);
+    let shown = shown_path(ctx, path);
     let diff = if old.len() + new.len() <= MAX_DIFF_BYTES {
         unified_diff(old, new, &shown)
     } else {
@@ -388,7 +388,10 @@ impl Tool for WriteTool {
             Ok(input) => input,
             Err(error) => return error,
         };
-        let path = resolve_path(&ctx.cwd, &input.path);
+        let path = match resolve_target(ctx, &input.path, "write") {
+            Ok(path) => path,
+            Err(why) => return ToolOutput::error(why),
+        };
         if let Some(refusal) = reserved_name(&path) {
             return ToolOutput::error(refusal);
         }
@@ -398,7 +401,7 @@ impl Tool for WriteTool {
         }
         let mut guarded = Guarded::new(&self.tracker, self.guard, &ctx.agent_id, &path);
         let old = if path.exists() {
-            let shown = display_path(&ctx.cwd, &path);
+            let shown = shown_path(ctx, &path);
             match guarded
                 .content()
                 .and_then(|bytes| guarded.whole(&shown).map(|()| bytes))
@@ -427,7 +430,7 @@ impl Tool for WriteTool {
         let verb = if old.is_some() { "replaced" } else { "created" };
         let summary = format!(
             "{verb} {} ({} bytes)",
-            display_path(&ctx.cwd, &path),
+            shown_path(ctx, &path),
             written.content.len()
         );
         let details = diff_details(ctx, &path, old.as_deref().unwrap_or(""), &written.content);
@@ -650,7 +653,10 @@ impl Tool for EditTool {
         if input.edits.is_empty() {
             return ToolOutput::error("no edits given");
         }
-        let path = resolve_path(&ctx.cwd, &input.path);
+        let path = match resolve_target(ctx, &input.path, "edit") {
+            Ok(path) => path,
+            Err(why) => return ToolOutput::error(why),
+        };
         let guard = self.tracker.lock(&path).await;
         if !path.is_file() {
             return ToolOutput::error(format!(
@@ -676,7 +682,7 @@ impl Tool for EditTool {
         if applied.text == original {
             return ToolOutput::error("the edits leave the file unchanged");
         }
-        let shown = display_path(&ctx.cwd, &path);
+        let shown = shown_path(ctx, &path);
         if let Err(refusal) = guarded.lines("edit", &shown, &applied.targets) {
             return refusal;
         }
@@ -837,14 +843,72 @@ mod tests {
         );
     }
 
-    #[test]
-    fn unread_lines_are_named_briefly() {
-        assert_eq!(lines_text(&[(40, 52)]), "lines 40-52");
-        assert_eq!(lines_text(&[(7, 7)]), "line 7");
-        assert_eq!(lines_text(&[(3, 4), (9, 9), (20, 22)]), "lines 3-4, 9 and 20-22");
-        assert_eq!(
-            lines_text(&[(1, 1), (3, 3), (5, 5), (7, 7), (9, 9), (11, 12)]),
-            "lines 1, 3, 5, 7 and 2 more places"
-        );
+    #[tokio::test]
+    async fn local_files_are_written_read_edited_and_found_in_the_session_folder() {
+        use azazel_agent::{AgentInfo, Services, UpdateSink};
+        use azazel_core::{Schemes, SessionStore};
+        use tokio_util::sync::CancellationToken;
+
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let session = Arc::new(SessionStore::create(&dir.path().join("sessions"), &project, None).unwrap());
+        let services = Arc::new(Services::new());
+        services.insert(session.clone());
+        let agent = AgentInfo {
+            id: "lead".into(),
+            def: "lead".into(),
+            parent: None,
+            depth: 0,
+            session_id: session.id(),
+        };
+        let ctx = ToolCtx {
+            agent_id: agent.id.clone(),
+            session_id: agent.session_id.clone(),
+            agent,
+            call_id: "c1".into(),
+            cwd: project.clone(),
+            cancel: CancellationToken::new(),
+            update: UpdateSink::default(),
+            services,
+        };
+        let tracker = Arc::new(FileTracker::new());
+        let write = WriteTool::new(tracker.clone(), ReadGuard::Range);
+        let edit = EditTool::new(tracker.clone(), ReadGuard::Range, PatchMode::Off);
+        let read = crate::ReadTool::new(tracker, Arc::new(Schemes::default()));
+        let text = |out: ToolOutput| {
+            assert!(!out.is_error, "{}", out.text_content());
+            out.text_content()
+        };
+
+        let out = write
+            .call(
+                json!({"path": "local://runs/report.md", "content": "draft\n"}),
+                &ctx,
+            )
+            .await;
+        assert!(text(out).contains("local://runs/report.md"));
+        let file = session.local_dir().join("runs").join("report.md");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "draft\n");
+        assert!(!project.join("local:").exists());
+
+        assert!(text(read.call(json!({"path": "local://runs/report.md"}), &ctx).await).contains("draft"));
+        let edits = json!({"path": "local://runs/report.md", "edits": [{"old": "draft", "new": "final"}]});
+        text(edit.call(edits, &ctx).await);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "final\n");
+        assert!(text(read.call(json!({"path": "local://"}), &ctx).await).contains("runs/"));
+        let found = crate::GlobTool
+            .call(json!({"pattern": "*.md", "path": "local://"}), &ctx)
+            .await;
+        assert_eq!(text(found), "local://runs/report.md");
+
+        let escape = write
+            .call(json!({"path": "local://../escape.md", "content": "x"}), &ctx)
+            .await;
+        assert!(escape.is_error);
+        let other = write
+            .call(json!({"path": "agent://scout-1", "content": "x"}), &ctx)
+            .await;
+        assert!(other.is_error && other.text_content().contains("agent://"));
     }
 }

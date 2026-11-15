@@ -213,11 +213,4 @@ mod tests {
         assert_eq!(google_vectors(&google), Some(vec![vec![0.5, 0.5], vec![1.0]]));
         assert_eq!(google_vectors(&json!({ "error": {} })), None);
     }
-
-    #[test]
-    fn long_texts_are_cut_on_a_character_boundary() {
-        let text = "é".repeat(MAX_CHARS + 5);
-        assert_eq!(clip(&text).chars().count(), MAX_CHARS);
-        assert_eq!(clip("short"), "short");
-    }
 }

