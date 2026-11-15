@@ -213,6 +213,10 @@ impl Tui {
             return self.other_command("stats", args);
         };
         let home = local.app.paths.home.clone();
+        if azazel_core::ledger::backfilling(&home) {
+            self.info("building the usage history from your sessions; /stats shows it in a moment");
+            return;
+        }
         let tabs = windows(days);
         let read = move || {
             azazel_core::ledger::ensure_backfilled(&home);

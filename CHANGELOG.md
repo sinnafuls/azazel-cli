@@ -5,8 +5,11 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.5] - 2026-11-15
+
 ### Added
 
+- The usage history is imported in the background on the first start, once across every azazel running (`/stats` says so while it runs), and imported replies of providers you are signed in to are marked as subscription use (`≈`).
 - A permanent usage log, `~/.azazel/usage/YYYY-MM.jsonl`, with a line for every answered model request: the lead's, every sub-agent's and the side requests (`/btw`, prediction, memory, naming, advisor, judges, compaction). Deleting sessions or agent transcripts no longer takes the history with it. `[usage] ledger = false` turns it off. The history of your existing sessions is imported the first time; `azazel stats --rebuild` imports again.
 - `azazel stats --period day|week|month|year|all`, `--since DATE`, `--by provider|model|project|agent` and `--rebuild`; `/stats` opens a panel with tabs for Today, 7 days, 30 days, Month, Year and All, a chart, and rows with bars that `g` groups by provider, project or agent.
 
@@ -1084,7 +1087,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.5...HEAD
+[0.10.5]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.1...v0.10.2

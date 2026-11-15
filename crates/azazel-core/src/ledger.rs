@@ -170,16 +170,56 @@ pub fn read(dir: &Path, since_month: Option<&str>, mut each: impl FnMut(Line)) {
 /// under `home` and writes the marker. Returns how many requests were imported.
 pub fn ensure_backfilled(home: &Path) -> usize {
     let usage = dir(home);
-    if usage.join(MARKER).exists() {
+    if usage.join(MARKER).exists() || std::fs::create_dir_all(&usage).is_err() {
         return 0;
     }
-    rebuild(home)
+    // Another azazel may be importing right now: only one does, the others leave it be.
+    let lock = usage.join("backfill.lock");
+    let taken = |lock: &Path| OpenOptions::new().write(true).create_new(true).open(lock).is_ok();
+    if !taken(&lock) {
+        let stale = std::fs::metadata(&lock)
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|at| at.elapsed().ok())
+            .is_some_and(|age| age > std::time::Duration::from_secs(600));
+        if !stale || std::fs::remove_file(&lock).is_err() || !taken(&lock) {
+            return 0;
+        }
+    }
+    let imported = match usage.join(MARKER).exists() {
+        true => 0,
+        false => rebuild(home),
+    };
+    let _ = std::fs::remove_file(&lock);
+    imported
+}
+
+/// Whether the history import is running in some azazel process now.
+pub fn backfilling(home: &Path) -> bool {
+    let usage = dir(home);
+    !usage.join(MARKER).exists() && usage.join("backfill.lock").exists()
+}
+
+/// The providers `home`'s credential file holds a sign-in for (`anthropic`, `openai-codex`, …):
+/// imported replies of those count as subscription use.
+fn login_providers(home: &Path) -> HashSet<String> {
+    let credentials = azazel_ai::Credentials::new(home.join("auth.json"));
+    let providers: HashSet<String> = credentials
+        .load()
+        .into_keys()
+        .map(|key| key.split('#').next().unwrap_or_default().to_string())
+        .collect();
+    providers
+        .into_iter()
+        .filter(|provider| credentials.accounts(provider).iter().any(|account| account.login))
+        .collect()
 }
 
 /// Imports what the ledger lacks from the session files, and writes the marker.
 pub fn rebuild(home: &Path) -> usize {
     let usage = dir(home);
-    let imported = import(&home.join("projects"), &usage).unwrap_or_else(|e| {
+    let logins = login_providers(home);
+    let imported = import(&home.join("projects"), &usage, &logins).unwrap_or_else(|e| {
         tracing::warn!("the usage history cannot be imported: {e}");
         0
     });
@@ -192,8 +232,9 @@ pub fn rebuild(home: &Path) -> usize {
 /// Reads every session and sub-agent transcript under `projects` and appends to the ledger in
 /// `dir` a line for each reply with usage, at the time of the reply. A reply already imported
 /// (same session and entry) is not imported again, and nothing at or after the first line the
-/// ledger itself wrote is, since those requests are in the ledger already.
-pub fn import(projects: &Path, dir: &Path) -> io::Result<usize> {
+/// ledger itself wrote is, since those requests are in the ledger already. Replies of a provider
+/// in `logins` are marked as subscription use.
+pub fn import(projects: &Path, dir: &Path, logins: &HashSet<String>) -> io::Result<usize> {
     let mut live_from: Option<String> = None;
     let mut seen: HashSet<(String, String)> = HashSet::new();
     read(dir, None, |line| {
@@ -205,7 +246,8 @@ pub fn import(projects: &Path, dir: &Path) -> io::Result<usize> {
     });
     let mut by_month: BTreeMap<String, String> = BTreeMap::new();
     let mut count = 0;
-    let mut take = |line: Line| {
+    let mut take = |mut line: Line| {
+        line.login = logins.contains(&line.provider);
         let key = (line.session.clone(), line.entry.clone().unwrap_or_default());
         if live_from.as_ref().is_some_and(|first| line.at >= *first) || !seen.insert(key) {
             return;

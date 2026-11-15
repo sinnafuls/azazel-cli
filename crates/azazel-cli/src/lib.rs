@@ -578,6 +578,11 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
     if !cli.no_session {
         sessions::prune_in_background(&app.paths, app.config.session.retention_days, active.session.id());
         sessions::prune_agents_in_background(&app.paths, app.config.team.agent_retention_days);
+        // The first start imports the usage history of the session files, off the UI thread.
+        if app.config.usage.ledger {
+            let home = app.paths.home.clone();
+            std::thread::spawn(move || azazel_core::ledger::ensure_backfilled(&home));
+        }
     }
     // A project that runs trusted for the first time gets its `setup` hooks.
     if !cli.trust
