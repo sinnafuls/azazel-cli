@@ -731,6 +731,14 @@ The call still runs, so the read guard counts it, and the result is compared wit
 
 **Retries.** A call that only reads (`web_fetch`, `web_search`, `web_grep`, `http` with GET, HEAD or OPTIONS, the read actions of `lsp`, and MCP tools that declare `readOnlyHint`) is run again, up to `retries` times (default 2, with a wait that doubles from half a second), when it fails with a timeout, a reset or closed connection, HTTP 429 or HTTP 500, 502, 503 or 504. Any other call is never run again. A result that took retries ends with `[succeeded after 1 retry]` or `[still failed after 2 retries]`.
 
+### Keeping the machine responsive
+
+Several agents building at once can take every core. Three settings keep your machine usable; each applies to what agents start, never to your own `!` commands.
+
+- **Priority.** `[tools] priority` (`low` by default, also `idle` or `normal`) sets the operating-system priority of every process started for an agent: `shell` (also in the background), `pty` terminals, `eval`, the checks that run after a write, verify commands and hooks. Programs they start inherit it. On Windows it is `BELOW_NORMAL_PRIORITY_CLASS` (`IDLE_PRIORITY_CLASS` for `idle`); on Linux and macOS the program is started through `nice -n 10` (`19` for `idle`), and nothing changes when `nice` is not installed.
+- **Build jobs.** `[tools] build_jobs` (`half` by default) sets `CARGO_BUILD_JOBS`, `MAKEFLAGS=-j<n>` and `CMAKE_BUILD_PARALLEL_LEVEL` in those processes: half of the logical cores, at least 2; or a number; `all` sets nothing. A variable your environment already sets is left as it is.
+- **Build cache of worktrees.** `[team] worktree_target`; see [build output of worktrees](team.md#build-output-of-worktrees).
+
 **Time limit.** A call of a tool that has no limit of its own (web, `http`, `lsp`, MCP tools) is stopped after `call_timeout_secs` (default 120; `0` is no limit) with an error that says it timed out, which counts as transient for a call that is retried. `shell`, `eval`, `pty` and sub-agents keep their own limits. `Esc` cancels a call at once, during a retry wait too.
 
 ## Output truncation and artifacts
@@ -830,6 +838,8 @@ javascript = true                     # eval may run JavaScript
 | `cache_reads` | `true` | Answers a repeated `read`, `grep` or `glob` with a note; see [repeated reads, retries and time limits](#repeated-reads-retries-and-time-limits) |
 | `retries` | `2` | Times a read-only web, LSP or MCP call is run again after a transient failure |
 | `call_timeout_secs` | `120` | Time limit of a web, LSP or MCP call; `0` is no limit |
+| `priority` | `"low"` | Operating-system priority of the processes started for agents: `low`, `idle` or `normal`; see [keeping the machine responsive](#keeping-the-machine-responsive) |
+| `build_jobs` | `"half"` | Build jobs cargo, make and cmake may run at once for agents: `half` of the cores (at least 2), a number, or `all` to set nothing |
 | `shell` | `""` | Shell to use instead of the resolved one. In a project config this is honoured only when the project is trusted |
 | `format_on_write` | `true` | Runs the file's formatter after `write`, `edit` and `patch`: the configured one, else one the project uses; see [format on write](#format-on-write). Project config: trusted projects only |
 | `format` | `{}` | Formatter command per file extension, in place of the built-in one; empty turns formatting off for the extension. Project config: trusted projects only |

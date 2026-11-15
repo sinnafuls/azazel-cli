@@ -79,7 +79,8 @@ building and testing, and before you hand a change over, run `cargo xtask prune`
 newer build replaced, so the next build stays incremental. A worktree made for one change has its own
 `target/`: remove the worktree (`git worktree remove --force <dir>`) once the change is merged, and delete
 the directory by hand if a running program kept a file open. `cargo clean` frees everything, at the cost
-of a full build.
+of a full build. Agent worktrees share the main checkout's `target/` by default (`[team] worktree_target`), so
+`cargo xtask prune` and `cargo clean` there act on the directory they all use; with `own`, each has its own.
 
 ## Trying a change by hand
 

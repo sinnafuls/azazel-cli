@@ -281,6 +281,15 @@ With `isolation: worktree` (in the definition, or per agent in a `task` call) th
 4. `worktree_apply` applies the patch to the main tree with `git apply --3way` and removes the worktree and branch. The changes arrive as ordinary uncommitted modifications; nothing is committed. On a conflict the conflict markers are left in the files, the conflicting paths are returned, and the worktree is kept.
 5. `worktree_discard` removes the worktree and branch without applying anything.
 
+### Build output of worktrees
+
+A worktree has no `target/` yet, so every agent's first build would start from scratch, and several agents would compile the same dependencies at once. With `[team] worktree_target = "shared"` (the default) the processes of an agent in a worktree of a Cargo project get `CARGO_TARGET_DIR` set to the main checkout's `target/`, unless your environment already sets it. Cargo takes a lock on the target directory, so builds that share one wait for each other instead of corrupting it; fewer compiles run at the same time, which is also the point. The cost is that two agents building different code take turns, and each may rebuild what the other's changes touched.
+
+- `own`: each worktree builds into its own `target/`.
+- `sccache`: each worktree builds into its own `target/` with `RUSTC_WRAPPER=sccache`, when `sccache` is installed (azazel does not install it) and `RUSTC_WRAPPER` is not set.
+
+`cargo clean` and `cargo xtask prune` in the main checkout act on the shared directory.
+
 Worktrees still present when the session ends are removed. Add `.azazel/worktrees/` to your `.gitignore`.
 
 ## Controlling agents from the TUI
@@ -349,6 +358,7 @@ max_parallel = 4   # sub-agents working at the same time
 max_depth = 2      # levels of agents below the lead
 max_turns = 200    # requests per task for an agent whose definition has no max-turns; 0 is no limit
 coordinator = false  # true: the lead only plans and delegates (coordinator mode)
+worktree_target = "shared"  # shared | own | sccache: where agents in worktrees build
 ```
 
 An agent with a turn limit (`max-turns`, `[team] max_turns`, or `--max-turns` for the lead) is told in its last two turns how many are left: `2 turns left: finish the task and report what is done and what is not`, then `1 turn left`. After the last turn it is asked for its final report without tools.
