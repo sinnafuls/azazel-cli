@@ -743,10 +743,7 @@ async fn execute(
     if let Some(env) = &env {
         azazel_core::process::lower(&mut command, env.priority());
     }
-    #[cfg(unix)]
-    command.wrap(process_wrap::tokio::ProcessGroup::leader());
-    #[cfg(windows)]
-    command.wrap(process_wrap::tokio::JobObject);
+    azazel_core::process::detach_from_terminal(&mut command);
     command.wrap(KillOnDrop);
     let mut child = match command.spawn() {
         Ok(child) => child,

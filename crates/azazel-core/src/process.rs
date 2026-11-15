@@ -510,12 +510,33 @@ pub fn spawn_program(
             .stderr(Stdio::piped());
     });
     lower(&mut command, priority);
-    #[cfg(unix)]
-    command.wrap(process_wrap::tokio::ProcessGroup::leader());
-    #[cfg(windows)]
-    command.wrap(process_wrap::tokio::JobObject);
+    detach_from_terminal(&mut command);
     command.wrap(KillOnDrop);
     command.spawn()
+}
+
+/// Starts what `command` runs in a session of its own (Unix) or a job (Windows). On Unix that
+/// leaves it without a controlling terminal: a program that opens `/dev/tty` itself (`ssh` and
+/// `sudo` asking for a password, `git` asking for credentials) cannot read the user's keys from
+/// under the UI, nor write its prompt into the input. It fails instead, as with nobody to answer.
+pub fn detach_from_terminal(command: &mut CommandWrap) {
+    #[cfg(unix)]
+    command.wrap(process_wrap::tokio::ProcessSession);
+    #[cfg(windows)]
+    command.wrap(process_wrap::tokio::JobObject);
+}
+
+/// Environment that keeps programs an agent starts from asking for a password or credentials on
+/// a terminal: nobody can answer there, and on Unix there is none (see [`detach_from_terminal`]).
+pub fn no_prompts_env() -> Vec<(String, String)> {
+    [
+        ("GIT_TERMINAL_PROMPT", "0"),
+        ("GCM_INTERACTIVE", "never"),
+        ("SSH_ASKPASS_REQUIRE", "never"),
+    ]
+    .into_iter()
+    .map(|(name, value)| (name.to_string(), value.to_string()))
+    .collect()
 }
 
 /// Forwards the lines of `pipe` to `tx`. Ends at end of stream or when the receiver is gone.
@@ -871,6 +892,19 @@ mod tests {
         Some(result.output.render().trim().to_string())
     }
 
+    /// A program an agent starts must not share the user's terminal: one that opens `/dev/tty`
+    /// (ssh asking for a password) would read the keys meant for the UI and write into its input.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_agent_command_leads_a_session_of_its_own_with_no_terminal() {
+        let shell = Shell::resolve("");
+        let script = "[ \"$(ps -o sid= -p $$ | tr -d ' ')\" = \"$$\" ] && echo leader; (: < /dev/tty) 2>/dev/null && echo tty || echo none";
+        let mut options = RunOptions::new(std::env::temp_dir());
+        options.priority = ProcessPriority::Normal;
+        let result = run(&shell, script, options).await.unwrap();
+        assert_eq!(result.output.render().trim(), "leader\nnone");
+    }
+
     #[tokio::test]
     async fn a_lowered_process_runs_at_the_priority_the_setting_names() {
         // `normal` keeps whatever the test runner runs at (CI runners are often lowered
@@ -881,8 +915,9 @@ mod tests {
         let (low, idle) = if cfg!(windows) {
             ("BelowNormal".to_string(), "Idle".to_string())
         } else {
+            // `nice -n` adds to the runner's own value, which may be negative (macOS CI: -10).
             let base: i32 = normal.parse().unwrap_or(0);
-            ((base + 10).min(19).to_string(), "19".to_string())
+            ((base + 10).min(19).to_string(), (base + 19).min(19).to_string())
         };
         for (priority, wanted) in [(ProcessPriority::Low, low), (ProcessPriority::Idle, idle)] {
             let Some(got) = own_priority(priority).await else {

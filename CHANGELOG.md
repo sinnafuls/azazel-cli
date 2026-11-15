@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-11-15
+
+### Fixed
+
+- On Linux and macOS, a program an agent ran could open the terminal itself (`ssh` or `sudo` asking for a password, `git` asking for credentials): its prompt landed in azazel's input, and it swallowed the start of key and focus sequences, so `[I`, `[O`, `[C` and `[D` were typed into the input. Agent commands now run in a session of their own with no terminal, and git, ssh and Git Credential Manager are told not to prompt; such a command fails instead of waiting for an answer nobody can give.
+
 ## [0.10.1] - 2026-11-15
 
 ### Added
@@ -1057,7 +1063,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.1...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.2...HEAD
+[0.10.2]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...v0.9.1
