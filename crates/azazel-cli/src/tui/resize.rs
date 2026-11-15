@@ -17,6 +17,18 @@ const SETTLE: Duration = Duration::from_millis(60);
 pub(super) struct Resize {
     /// The size last reported, and when it counts as settled.
     pending: Option<((u16, u16), Instant)>,
+    /// The window settled taller or at another width, and the transcript is to be drawn again
+    /// to fit it once the main screen shows.
+    redraw: bool,
+}
+
+/// Whether a window that went from `before` to `after` gets its transcript drawn again. A taller
+/// one would otherwise keep blank rows between the transcript and the input, and a wider or
+/// narrower one rows the terminal re-wrapped its own way; a shorter one only scrolls. Inside a
+/// multiplexer the scrollback cannot be erased, and a transcript drawn again would stand under
+/// the old one.
+fn redraw_for(before: (u16, u16), after: (u16, u16), multiplexer: bool) -> bool {
+    !multiplexer && (after.0 != before.0 || after.1 > before.1)
 }
 
 impl Resize {
@@ -138,14 +150,31 @@ impl Tui {
     }
 
     fn settle(&mut self, force: bool) -> bool {
-        let Some(reported) = self.resize.settled(Instant::now(), force) else {
-            return !self.resize.pending();
-        };
-        let (width, height) = crossterm::terminal::size().unwrap_or(reported);
-        self.renderer.resize(width, height);
-        self.floor.resize(height, self.renderer.rows_on_screen());
-        self.anchor_floor();
-        true
+        self.take_size(force);
+        !self.resize.pending()
+    }
+
+    /// Takes in the size the window settled at, if it has. True when the transcript is drawn
+    /// again for it, below an erased screen and scrollback, and the live region starts afresh
+    /// under it; that waits while the alternate screen shows.
+    fn take_size(&mut self, force: bool) -> bool {
+        let settled = self.resize.settled(Instant::now(), force).map(|reported| {
+            let before = self.renderer.size();
+            let (width, height) = crossterm::terminal::size().unwrap_or(reported);
+            self.renderer.resize(width, height);
+            self.resize.redraw |= redraw_for(before, (width, height), !self.can_redraw());
+            height
+        });
+        if self.resize.redraw && !self.quit && !self.guard.in_alt() {
+            self.resize.redraw = false;
+            self.redraw_transcript();
+            return true;
+        }
+        if let Some(height) = settled {
+            self.floor.resize(height, self.renderer.rows_on_screen());
+            self.anchor_floor();
+        }
+        false
     }
 
     /// The live region has just been taken off the screen ([`Renderer::suspend`]) and the
@@ -170,7 +199,11 @@ impl Tui {
     /// begins below it again, at the size the window has now.
     pub(super) fn back_on_main(&mut self) {
         self.ask_size();
-        self.settle(true);
+        // Drawn again from the top of an erased screen: no re-wrapped rows to step past.
+        if self.take_size(true) {
+            self.alt_from = None;
+            return;
+        }
         if let Some((width, top)) = self.alt_from.take() {
             let _ = self.renderer.follow_rewrap(self.backdrop.rows(), top, width);
         }
@@ -236,6 +269,22 @@ mod tests {
         resize.note((80, 24), at(600));
         assert_eq!(resize.settled(at(600), true), Some((80, 24)));
         assert!(!resize.pending());
+    }
+
+    #[test]
+    fn a_taller_or_rewidened_window_has_its_transcript_drawn_again_outside_a_multiplexer() {
+        let was = (80, 24);
+        // Taller: blank rows would stand between the transcript and the input.
+        assert!(redraw_for(was, (80, 40), false));
+        // Another width: the terminal re-wrapped the transcript its own way.
+        assert!(redraw_for(was, (100, 24), false));
+        assert!(redraw_for(was, (60, 20), false));
+        // Shorter only: the transcript scrolls up and nothing is left blank.
+        assert!(!redraw_for(was, (80, 12), false));
+        assert!(!redraw_for(was, was, false));
+        // tmux, screen and zellij keep what is erased: the floor follows the size as before.
+        assert!(!redraw_for(was, (80, 40), true));
+        assert!(!redraw_for(was, (100, 24), true));
     }
 
     #[test]
