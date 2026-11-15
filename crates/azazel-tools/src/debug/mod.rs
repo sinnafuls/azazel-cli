@@ -314,11 +314,15 @@ impl Session {
             .dap
             .request("variables", json!({ "variablesReference": reference }))
             .await?;
-        let all = variables
+        // debugpy lists groups (`special variables`, `function variables`) beside the locals.
+        let all: Vec<Value> = variables
             .get("variables")
             .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|v| !field(v, "name").is_some_and(|name| name.ends_with(" variables")))
             .cloned()
-            .unwrap_or_default();
+            .collect();
         let mut lines: Vec<String> = all
             .iter()
             .take(MAX_LOCALS)

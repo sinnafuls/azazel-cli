@@ -62,6 +62,16 @@ fn guess(program: &Path) -> &'static str {
     }
 }
 
+/// The names of Python's program, best first. Windows has a `python3` stub that only opens the
+/// Store, so `python` comes first there.
+fn python_names() -> [&'static str; 2] {
+    if cfg!(windows) {
+        ["python", "python3"]
+    } else {
+        ["python3", "python"]
+    }
+}
+
 /// The adapter for `language` (guessed from `program` when absent): the command set in the
 /// settings, else the first adapter `find` has.
 pub(crate) fn resolve_with(
@@ -112,7 +122,7 @@ pub(crate) fn resolve_with(
                     listens: true,
                 })
             }),
-        Family::Python => ["python3", "python"]
+        Family::Python => python_names()
             .iter()
             .find_map(|c| find(c))
             .map(|program| Adapter {
