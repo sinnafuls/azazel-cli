@@ -1,0 +1,619 @@
+#![cfg(feature = "remote")]
+
+//! `azazel remote`: the web server in front of background sessions, against the real binary, the
+//! scripted provider and stand-ins for `cloudflared` and `tailscale`. The client is a WebSocket
+//! client with a Bearer token, as a program would be; pairing goes through an HTTP client.
+
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
+use std::sync::LazyLock;
+use std::sync::mpsc::Receiver;
+use std::time::{Duration, Instant};
+
+use futures::{SinkExt, StreamExt};
+use serde_json::{Value, json};
+use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+use tokio_tungstenite::tungstenite::protocol::Message;
+use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
+
+use crate::common::{fixture_program, lines_of, script_fixture};
+
+const LIMIT: Duration = Duration::from_secs(60);
+
+static CLOUDFLARED: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-cloudflared"));
+static TAILSCALE: LazyLock<PathBuf> = LazyLock::new(|| fixture_program("fake-tailscale"));
+
+/// A home and a project of its own. Background sessions still running when it goes are stopped.
+struct Sandbox {
+    dir: tempfile::TempDir,
+}
+
+impl Sandbox {
+    fn new() -> Sandbox {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("project/.git")).unwrap();
+        std::fs::create_dir_all(dir.path().join("home")).unwrap();
+        std::fs::copy(script_fixture("web_session.json"), dir.path().join("script.json")).unwrap();
+        Sandbox { dir }
+    }
+
+    fn home(&self) -> PathBuf {
+        self.dir.path().join("home")
+    }
+
+    fn azazel(&self, args: &[&str]) -> Command {
+        let mut command = Command::new(assert_cmd::cargo::cargo_bin("azazel"));
+        command
+            .env("AZAZEL_HOME", self.home())
+            .env("AZAZEL_MOCK_SCRIPT", self.dir.path().join("script.json"))
+            .args(["--set", "session.auto_name=false", "--no-memory"])
+            .args(["--set", "notify.desktop=\"off\""])
+            .arg("--cwd")
+            .arg(self.dir.path().join("project"))
+            .args(args)
+            .stdin(Stdio::null());
+        command
+    }
+
+    fn ok(&self, args: &[&str]) -> String {
+        let output = self.azazel(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?}: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).unwrap()
+    }
+
+    /// Starts a background session on the prompt of the script and returns its id.
+    fn bg(&self, mode: &str) -> String {
+        self.ok(&["--mode", mode, "bg", "create hello"])
+            .trim()
+            .to_string()
+    }
+
+    fn wait_for_state(&self, id: &str, state: &str) {
+        let started = Instant::now();
+        loop {
+            let listed = self.ok(&["ps", "--json"]);
+            let found = listed
+                .lines()
+                .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                .any(|row| row["id"] == id && row["state"] == state);
+            if found {
+                return;
+            }
+            assert!(started.elapsed() < LIMIT, "{id} never was `{state}`");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// `azazel remote --port 0 --json` with `args`, and `dirs` ahead of the rest of `PATH`.
+    fn remote(&self, args: &[&str], dirs: &[&Path]) -> Remote {
+        let mut all = vec!["remote", "--port", "0", "--json"];
+        all.extend_from_slice(args);
+        let mut command = self.azazel(&all);
+        let mut path: Vec<PathBuf> = dirs.iter().map(|dir| dir.to_path_buf()).collect();
+        path.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        command.env("PATH", std::env::join_paths(path).unwrap());
+        Remote::start(command)
+    }
+
+    /// A directory with `fixture` in it as `name`.
+    fn tool(&self, name: &str, fixture: &Path) -> PathBuf {
+        let dir = self.dir.path().join(format!("tool-{name}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::copy(
+            fixture,
+            dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX)),
+        )
+        .unwrap();
+        dir
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let listed = self.azazel(&["ps", "--json"]).output();
+        let rows = listed
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        for row in rows
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        {
+            if let Some(id) = row["id"].as_str() {
+                let _ = self.azazel(&["kill", id]).output();
+            }
+        }
+    }
+}
+
+/// A running `azazel remote`.
+struct Remote {
+    child: Child,
+    errors: Receiver<String>,
+    /// The first line of its output, which `--json` makes `{"url","pair","port"}`.
+    first: Value,
+}
+
+impl Remote {
+    fn start(mut command: Command) -> Remote {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let lines = lines_of(child.stdout.take().unwrap());
+        let errors = lines_of(child.stderr.take().unwrap());
+        let line = lines.recv_timeout(LIMIT).unwrap_or_else(|_| {
+            let _ = child.kill();
+            panic!(
+                "azazel remote printed nothing: {:?}",
+                errors.try_iter().collect::<Vec<_>>()
+            )
+        });
+        let first = serde_json::from_str(&line).unwrap_or_else(|e| panic!("{line:?}: {e}"));
+        // Whatever it prints after that is not read, which a pipe that fills would punish.
+        std::thread::spawn(move || for _ in lines {});
+        Remote { child, errors, first }
+    }
+
+    fn port(&self) -> u16 {
+        self.first["port"].as_u64().unwrap() as u16
+    }
+
+    fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.port())
+    }
+
+    fn secret(&self) -> String {
+        self.first["pair"]
+            .as_str()
+            .unwrap()
+            .split_once("#pair=")
+            .unwrap()
+            .1
+            .to_string()
+    }
+
+    /// Makes a link with `key` (`l` control, `v` view) and pairs with it; the device's token.
+    async fn pair_with(&mut self, secret: &str) -> String {
+        let answer = pair(&self.base(), secret, &[]).await;
+        assert_eq!(answer.0, 200, "{}", answer.1);
+        answer.1["token"].as_str().unwrap().to_string()
+    }
+
+    /// The text of what it said on standard error up to a line with `wanted`.
+    fn said(&self, wanted: &str) -> Vec<String> {
+        crate::common::read_until(&self.errors, wanted, LIMIT)
+    }
+
+    /// Types `q` and waits for it to end.
+    fn quit(&mut self) -> std::process::ExitStatus {
+        let stdin = self.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "q").unwrap();
+        stdin.flush().unwrap();
+        let started = Instant::now();
+        loop {
+            if let Some(status) = self.child.try_wait().unwrap() {
+                return status;
+            }
+            assert!(started.elapsed() < LIMIT, "azazel remote did not end");
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for Remote {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// POSTs a pairing secret; the status and the JSON answer.
+async fn pair(base: &str, secret: &str, headers: &[(&str, &str)]) -> (u16, Value) {
+    let mut request = azazel_ai::tls::client()
+        .post(format!("{base}/api/pair"))
+        .header("X-Azazel", "1")
+        .json(&json!({ "secret": secret, "bearer": true }));
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let response = request.send().await.unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
+
+async fn connect(port: u16, id: &str, token: Option<&str>, origin: &str) -> Socket {
+    let mut request = format!("ws://127.0.0.1:{port}/api/ws/{id}")
+        .into_client_request()
+        .unwrap();
+    request.headers_mut().insert("origin", origin.parse().unwrap());
+    if let Some(token) = token {
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
+    }
+    tokio_tungstenite::connect_async(request).await.unwrap().0
+}
+
+async fn send(socket: &mut Socket, command: Value) {
+    socket.send(Message::text(command.to_string())).await.unwrap();
+}
+
+async fn next(socket: &mut Socket) -> Value {
+    loop {
+        match tokio::time::timeout(LIMIT, socket.next()).await.expect("a frame") {
+            Some(Ok(Message::Text(text))) => return serde_json::from_str(text.as_str()).unwrap(),
+            Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
+            other => panic!("expected a frame, got {other:?}"),
+        }
+    }
+}
+
+/// The frames up to and including the first that `wanted` accepts.
+async fn until(socket: &mut Socket, wanted: impl Fn(&Value) -> bool) -> Vec<Value> {
+    let mut seen = Vec::new();
+    loop {
+        let frame = next(socket).await;
+        let done = wanted(&frame);
+        seen.push(frame);
+        if done {
+            return seen;
+        }
+    }
+}
+
+async fn close_code(socket: &mut Socket) -> u16 {
+    loop {
+        match tokio::time::timeout(LIMIT, socket.next()).await.expect("a close") {
+            Some(Ok(Message::Close(Some(frame)))) => return u16::from(frame.code),
+            Some(Ok(Message::Text(_) | Message::Ping(_) | Message::Pong(_))) => {}
+            other => panic!("expected a close, got {other:?}"),
+        }
+    }
+}
+
+/// Attaches and waits for the answer; returns it.
+async fn attach(socket: &mut Socket, replay: &str) -> Value {
+    send(
+        socket,
+        json!({ "id": "attach", "type": "attach", "replay": replay }),
+    )
+    .await;
+    until(socket, |frame| frame["id"] == "attach")
+        .await
+        .pop()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn nothing_works_without_a_token_a_right_origin_or_a_fresh_link() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("auto");
+    let mut remote = sandbox.remote(&[], &[]);
+    let (base, port) = (remote.base(), remote.port());
+    let client = azazel_ai::tls::client();
+
+    assert_eq!(
+        client
+            .get(format!("{base}/api/sessions"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let mut nobody = connect(port, &id, None, &base).await;
+    assert_eq!(close_code(&mut nobody).await, 4401);
+
+    // The page is public and carries its policy.
+    let page = client.get(format!("{base}/")).send().await.unwrap();
+    assert_eq!(page.status(), 200);
+    let csp = page.headers()["content-security-policy"]
+        .to_str()
+        .unwrap()
+        .to_string();
+    assert!(
+        csp.contains("default-src 'self'") && csp.contains("frame-ancestors 'none'"),
+        "{csp}"
+    );
+
+    // A link pairs once; from another origin it does not pair at all.
+    let secret = remote.secret();
+    let foreign = pair(&base, &secret, &[("Origin", "https://evil.example")]).await;
+    assert_eq!(foreign.0, 403);
+    let token = remote.pair_with(&secret).await;
+    assert_eq!(pair(&base, &secret, &[]).await.0, 401);
+
+    let listed: Value = client
+        .get(format!("{base}/api/sessions"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["sessions"][0]["id"], json!(id));
+    let mut unknown = connect(port, "nosuch", Some(&token), &base).await;
+    assert_eq!(close_code(&mut unknown).await, 4404);
+}
+
+#[tokio::test]
+async fn a_prompt_streams_from_the_start_to_idle() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("auto");
+    let mut remote = sandbox.remote(&[], &[]);
+    let token = remote.pair_with(&remote.secret()).await;
+    let mut socket = connect(remote.port(), &id, Some(&token), &remote.base()).await;
+    assert_eq!(next(&mut socket).await["type"], "hello");
+    // `all` replays what the session did since it started, the run of the prompt it began with.
+    let attached = attach(&mut socket, "all").await;
+    assert_eq!(attached["success"], true, "{attached}");
+    let frames = until(&mut socket, |frame| frame["type"] == "idle").await;
+    let kinds: Vec<&str> = frames.iter().filter_map(|frame| frame["type"].as_str()).collect();
+    assert!(kinds.contains(&"agent_start"), "{kinds:?}");
+    let position = |kind: &str| kinds.iter().position(|k| *k == kind).unwrap();
+    assert!(
+        position("agent_start") < position("tool_end") && position("tool_end") < position("idle"),
+        "{kinds:?}"
+    );
+    assert!(sandbox.dir.path().join("project/hello.txt").is_file());
+}
+
+#[tokio::test]
+async fn the_first_of_two_browsers_to_answer_wins_and_the_other_is_told() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("manual");
+    sandbox.wait_for_state(&id, "waiting for you");
+    let mut remote = sandbox.remote(&[], &[]);
+    let token = remote.pair_with(&remote.secret()).await;
+    let mut first = connect(remote.port(), &id, Some(&token), &remote.base()).await;
+    let mut second = connect(remote.port(), &id, Some(&token), &remote.base()).await;
+    for socket in [&mut first, &mut second] {
+        next(socket).await;
+        attach(socket, "none").await;
+    }
+    let asked = until(&mut first, |frame| frame["type"] == "approval_request")
+        .await
+        .pop()
+        .unwrap();
+    until(&mut second, |frame| frame["type"] == "approval_request").await;
+    let request_id = asked["request_id"].as_str().unwrap().to_string();
+
+    send(
+        &mut first,
+        json!({ "id": "yes", "type": "approval_response", "request_id": request_id, "decision": "allow" }),
+    )
+    .await;
+    let closed = until(&mut second, |frame| frame["type"] == "request_closed")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(closed["request_id"], json!(request_id));
+    // A second answer is turned away.
+    send(
+        &mut second,
+        json!({ "id": "late", "type": "approval_response", "request_id": request_id, "decision": "deny" }),
+    )
+    .await;
+    let late = until(&mut second, |frame| frame["id"] == "late")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(late["success"], false, "{late}");
+    until(&mut first, |frame| frame["type"] == "idle").await;
+}
+
+#[tokio::test]
+async fn a_view_link_watches_and_cannot_steer_and_a_control_link_cannot_reach_the_machine() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("manual");
+    sandbox.wait_for_state(&id, "waiting for you");
+    let mut remote = sandbox.remote(&["--view"], &[]);
+    let view = remote.pair_with(&remote.secret()).await;
+    let mut watcher = connect(remote.port(), &id, Some(&view), &remote.base()).await;
+    next(&mut watcher).await;
+    assert_eq!(attach(&mut watcher, "none").await["success"], true);
+    send(&mut watcher, json!({ "id": "p", "type": "prompt", "text": "go" })).await;
+    let refused = until(&mut watcher, |frame| frame["id"] == "p")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(refused["success"], false, "{refused}");
+    // The frames still come: the request that waits, and the answer to a read.
+    send(&mut watcher, json!({ "id": "s", "type": "get_state" })).await;
+    let state = until(&mut watcher, |frame| frame["id"] == "s")
+        .await
+        .pop()
+        .unwrap();
+    assert_eq!(state["success"], true, "{state}");
+
+    // The viewer cannot make a control link; stdin of the server can.
+    let made: Value = azazel_ai::tls::client()
+        .post(format!("{}/api/links", remote.base()))
+        .bearer_auth(&view)
+        .header("X-Azazel", "1")
+        .json(&json!({ "access": "control" }))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(made["error"].is_string(), "{made}");
+    // With `--json` the first link is also on standard error; read past it to the next one.
+    remote.said("pair=");
+    {
+        let stdin = remote.child.stdin.as_mut().unwrap();
+        writeln!(stdin, "l").unwrap();
+        stdin.flush().unwrap();
+    }
+    let said = remote.said("pair=");
+    let secret = said
+        .last()
+        .unwrap()
+        .split_once("#pair=")
+        .unwrap()
+        .1
+        .trim()
+        .to_string();
+    let control = remote.pair_with(&secret).await;
+    let mut driver = connect(remote.port(), &id, Some(&control), &remote.base()).await;
+    next(&mut driver).await;
+    attach(&mut driver, "none").await;
+    for (n, command) in [
+        json!({ "type": "shell", "command": "echo hi" }),
+        json!({ "type": "export", "path": "out.html" }),
+        json!({ "type": "set_role", "role": "default", "save": "home" }),
+        json!({ "type": "set_mode", "mode": "bypass" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command;
+        command["id"] = json!(format!("c{n}"));
+        send(&mut driver, command).await;
+        let answer = until(&mut driver, |frame| frame["id"] == json!(format!("c{n}")))
+            .await
+            .pop()
+            .unwrap();
+        assert_eq!(answer["success"], false, "{answer}");
+    }
+    assert!(!sandbox.dir.path().join("project/out.html").exists());
+}
+
+#[test]
+fn a_cloudflare_tunnel_is_the_only_other_address_the_server_answers_to() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("cloudflared", &CLOUDFLARED);
+    let mut remote = sandbox.remote(&["--tunnel"], &[&tool]);
+    assert_eq!(remote.first["url"], "https://fake-tunnel-test.trycloudflare.com");
+    let pair_url = remote.first["pair"].as_str().unwrap();
+    assert!(
+        pair_url.starts_with("https://fake-tunnel-test.trycloudflare.com/#pair="),
+        "{pair_url}"
+    );
+    // cloudflared was told to lead to the port of the server.
+    let told = std::fs::read_to_string(tool.join("cloudflared.url")).unwrap();
+    assert_eq!(told, format!("http://127.0.0.1:{}", remote.port()));
+
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let client = azazel_ai::tls::client();
+        let base = remote.base();
+        let through = |host: &'static str| client.get(format!("{base}/api/me")).header("Host", host).send();
+        assert_eq!(
+            through("fake-tunnel-test.trycloudflare.com")
+                .await
+                .unwrap()
+                .status(),
+            401
+        );
+        assert_eq!(through("other.trycloudflare.com").await.unwrap().status(), 421);
+        let secret = remote.secret();
+        let paired = pair(
+            &base,
+            &secret,
+            &[
+                ("Host", "fake-tunnel-test.trycloudflare.com"),
+                ("Origin", "https://fake-tunnel-test.trycloudflare.com"),
+            ],
+        )
+        .await;
+        assert_eq!(paired.0, 200, "{}", paired.1);
+    });
+    assert!(remote.quit().success());
+}
+
+#[test]
+fn without_cloudflared_the_run_says_how_to_install_it() {
+    let sandbox = Sandbox::new();
+    // Nothing on `PATH` but an empty directory, and nothing in the home.
+    let empty = sandbox.dir.path().join("empty");
+    std::fs::create_dir_all(&empty).unwrap();
+    let mut command = sandbox.azazel(&["remote", "--port", "0", "--tunnel"]);
+    command.env("PATH", &empty);
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        said.contains("cloudflared is not installed") && said.contains("install"),
+        "{said}"
+    );
+    assert!(said.contains("developers.cloudflare.com"), "{said}");
+}
+
+/// Writes what the stand-in `tailscale` knows.
+fn tailscale_knows(tool: &Path, status: Option<&str>) {
+    let data = tool.join("tailscale-data");
+    std::fs::create_dir_all(&data).unwrap();
+    if let Some(status) = status {
+        std::fs::write(data.join("status.json"), status).unwrap();
+    }
+}
+
+#[test]
+fn tailscale_serves_the_port_and_only_that_entry_is_removed_afterwards() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(
+        &tool,
+        Some(r#"{"BackendState":"Running","Self":{"DNSName":"Laptop.tail1234.ts.net."}}"#),
+    );
+    // The user serves something on 443 already.
+    let serve = tool.join("tailscale-data/serve.json");
+    std::fs::write(&serve, r#"{"TCP":{"443":{"HTTPS":true}}}"#).unwrap();
+    let mut remote = sandbox.remote(&["--tailscale"], &[&tool]);
+    // 443 is theirs, so the next free port is used, and the address says which.
+    assert_eq!(remote.first["url"], "https://laptop.tail1234.ts.net:8443");
+    let calls = std::fs::read_to_string(tool.join("tailscale-data/calls.log")).unwrap();
+    assert!(
+        calls.contains(&format!(
+            "serve\t--bg\t--https=8443\thttp://127.0.0.1:{}",
+            remote.port()
+        )),
+        "{calls}"
+    );
+    let serving: Value = serde_json::from_str(&std::fs::read_to_string(&serve).unwrap()).unwrap();
+    assert!(serving["TCP"]["8443"].is_object() && serving["TCP"]["443"].is_object());
+
+    assert!(remote.quit().success());
+    let left: Value = serde_json::from_str(&std::fs::read_to_string(&serve).unwrap()).unwrap();
+    assert!(
+        left["TCP"]["8443"].is_null() && left["TCP"]["443"].is_object(),
+        "{left}"
+    );
+}
+
+#[test]
+fn tailscale_that_is_not_signed_in_is_left_alone_and_the_run_says_what_to_do() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(
+        &tool,
+        Some(r#"{"BackendState":"NeedsLogin","Self":{"DNSName":""}}"#),
+    );
+    let mut command = sandbox.azazel(&["remote", "--port", "0", "--tailscale"]);
+    let mut path = vec![tool.clone()];
+    path.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    command.env("PATH", std::env::join_paths(path).unwrap());
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("tailscale up"), "{said}");
+    let calls = std::fs::read_to_string(tool.join("tailscale-data/calls.log")).unwrap();
+    assert!(!calls.contains("--bg"), "nothing was served: {calls}");
+}
