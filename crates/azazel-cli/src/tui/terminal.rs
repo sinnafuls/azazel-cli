@@ -172,8 +172,7 @@ impl Tui {
         if !items.is_empty() {
             // Whatever is said ends the group of tool calls that was growing.
             self.flush_calls();
-            self.after_card = false;
-            self.transcript.extend(items);
+            self.keep_rows(items);
         }
     }
 
@@ -187,14 +186,15 @@ impl Tui {
     }
 
     /// The pictures a tool result carries (an image that was read, a screenshot, a generated
-    /// image), shown under its card where the terminal draws images.
-    pub(super) fn show_images(&mut self, output: &ToolOutput) {
+    /// image), to show under its card where the terminal draws images.
+    pub(super) fn pictures(&self, output: &ToolOutput) -> Vec<HistoryItem> {
         #[cfg(feature = "images")]
         {
             use azazel_ai::Block;
             use base64::Engine as _;
+            let mut pictures = Vec::new();
             if self.caps.images == Images::None {
-                return;
+                return pictures;
             }
             let (columns, rows) = self.renderer.size();
             let room = (columns.min(IMAGE_COLS), rows.saturating_sub(4).min(IMAGE_ROWS));
@@ -205,16 +205,15 @@ impl Tui {
                 let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) else {
                     continue;
                 };
-                if let Some(picture) = azazel_tui::image::encode(&bytes, &self.caps, room.0, room.1) {
-                    // The card stays the last thing above the picture; what follows starts apart.
-                    self.flush_calls();
-                    self.transcript.push(picture);
-                    self.after_card = false;
-                }
+                pictures.extend(azazel_tui::image::encode(&bytes, &self.caps, room.0, room.1));
             }
+            pictures
         }
         #[cfg(not(feature = "images"))]
-        let _ = (output, IMAGE_COLS, IMAGE_ROWS);
+        {
+            let _ = (output, IMAGE_COLS, IMAGE_ROWS);
+            Vec::new()
+        }
     }
 
     /// The replies of the agent on the current branch, newest first.

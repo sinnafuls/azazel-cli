@@ -270,9 +270,21 @@ long the call took and, for `shell`, the exit code. The frame and the icon show 
 | `✘` | error | Failed |
 
 A finished card shows 3 lines of output, or 16 lines of a diff; `… N more lines (ctrl+o to expand)` counts the
-rest, and the bottom border says how long the whole output is (`4.1k chars`). `Ctrl+O` expands tool calls that
-finish from then on (up to 40 lines of output, all of a diff). Diffs have a line-number gutter, and added and
-removed lines are filled with a background colour.
+rest, and the bottom border says how long the whole output is (`4.1k chars`). `Ctrl+O` expands every tool call
+of the conversation on screen (up to 40 lines of output, all of a diff), and pressing it again cuts them short
+again: azazel erases the screen and the terminal's scrollback and draws the last 300 things it wrote again at the
+new setting, the recap of a resumed session included. What the terminal showed before azazel started is erased
+too. Inside tmux, screen or zellij, whose scrollback azazel cannot erase, only calls that finish from then on
+change. Diffs have a line-number gutter, and added and removed lines are filled with a background colour.
+
+Every card stands apart from what precedes it with a blank row, another card included.
+
+A card appears as soon as the model starts writing a call, with a spinner and the tool's name, and the rule
+above the input says `writing the <tool> call`. Its header fills in as the arguments arrive (the path of `read`,
+`write` and `edit`, the command of `shell`, the pattern of `grep`), and for `write` and `edit` the card shows the
+last 3 lines of the text being written. When the call starts it is the same card, now showing what the tool
+prints. The calls of the sub-agent you follow appear the same way, marked `[name]`, and so do those in an
+agent's popup.
 
 What reading and searching return is drawn for what it is. None of this changes what the model receives:
 
@@ -316,8 +328,10 @@ and shows the worst of their states. An edit keeps its diff under its row; nothi
 
 A group grows above the input while its calls come in and is written to the transcript when the agent says
 something else or the run ends. A call that is still running stands in the same tree with a spinner, the time
-it has been running and, under its row, the last 5 lines it printed. `Ctrl+O` writes the calls of the group on screen again as full cards and shows the calls that follow as
-cards until it is pressed again; the [transcript viewer](#transcript-viewer) always shows full cards.
+it has been running and, under its row, the last 5 lines it printed. Groups that follow one another stand
+together without a blank row. `Ctrl+O` draws the transcript again with every call as a full card until it is
+pressed again; inside tmux, screen or zellij it writes the calls of the group on screen again as full cards
+instead. The [transcript viewer](#transcript-viewer) always shows full cards.
 
 #### Hiding secrets
 
@@ -536,7 +550,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+D` | `exit` | Exit when the input is empty |
 | `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `manual`, `accept-edits`, `auto`. `bypass` is not a step: it is entered with `/mode bypass` and confirmed |
 | `Alt+A` | `agent_hub` | Open the [agent hub](#the-agent-hub). `Left` twice on an empty input opens it too, when the session has sub-agents |
-| `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output; in the [compact style](#compact-style), also write the last group of calls as full cards |
+| `Ctrl+O` | `toggle_tool_output` | Expand or collapse the output of every tool call on screen, by drawing the transcript again ([tool cards](#tool-cards)) |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L`, `Alt+P` | `model_picker` | Open the [model picker](#models-and-roles-at-a-key): roles, favourites, recent models, then every model |
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |

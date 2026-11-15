@@ -17,13 +17,14 @@ use azazel_ai::{Block, Role as MessageRole, StopReason, StreamEvent};
 use azazel_core::session::Entry;
 use azazel_core::{EntryKind, SessionStore};
 use azazel_team::{LEAD, MemberInfo};
-use azazel_tui::components::{format_elapsed, format_tokens, markdown, tool_card};
+use azazel_tui::components::{format_elapsed, format_tokens, markdown};
 use azazel_tui::{Editor, Glyph, Hint, Line, Role, Scroll, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::calls::Finished;
 use super::overlay::{Action, Kind, Overlay, Widget};
-use super::{RunningTool, Tui, view};
+use super::running::{self, RunningTool};
+use super::{Tui, view};
 
 /// Finished things kept per agent. Past this the oldest go.
 const MAX_ITEMS: usize = 400;
@@ -210,9 +211,9 @@ pub(super) struct Log {
     whole: bool,
     /// Items read from the transcript file, kept beyond [`MAX_ITEMS`].
     loaded: usize,
-    /// The finished items as rows: the width they were laid out for, how many items they
-    /// cover, and whether the last of them is a tool card.
-    drawn: Option<(usize, usize, bool, Vec<Line>)>,
+    /// The finished items as rows: the width they were laid out for and how many items they
+    /// cover.
+    drawn: Option<(usize, usize, Vec<Line>)>,
 }
 
 /// A message as the view shows it: one from another agent names its sender instead of
@@ -277,6 +278,9 @@ impl Log {
 
     pub(super) fn event(&mut self, event: &AgentEvent) {
         self.version += 1;
+        if let Some(ended) = running::track(&mut self.tools, event) {
+            self.push(Item::Tool(Box::new(Finished::from_ended(None, ended))));
+        }
         match event {
             AgentEvent::MessageStart => {
                 self.stream.clear();
@@ -319,40 +323,9 @@ impl Log {
                     Role::Muted,
                 ));
             }
-            AgentEvent::ToolStart { call_id, name, input } => self.tools.push(RunningTool {
-                call_id: call_id.clone(),
-                name: name.clone(),
-                input: input.clone(),
-                tail: Vec::new(),
-                started: Instant::now(),
-            }),
-            AgentEvent::ToolUpdate { call_id, text } => {
-                if let Some(tool) = self.tools.iter_mut().find(|tool| tool.call_id == *call_id) {
-                    tool.tail.push(text.clone());
-                    let excess = tool.tail.len().saturating_sub(tool_card::MAX_OUTPUT_LINES);
-                    tool.tail.drain(..excess);
-                }
-            }
-            AgentEvent::ToolEnd {
-                call_id,
-                output,
-                duration_ms,
-            } => {
-                if let Some(at) = self.tools.iter().position(|tool| tool.call_id == *call_id) {
-                    let tool = self.tools.remove(at);
-                    self.push(Item::Tool(Box::new(Finished {
-                        agent: None,
-                        name: tool.name,
-                        input: tool.input,
-                        output: output.clone(),
-                        elapsed: Duration::from_millis(*duration_ms),
-                    })));
-                }
-            }
             AgentEvent::Idle { stop } => {
                 self.stream.clear();
                 self.thinking.clear();
-                self.tools.clear();
                 let how = match stop {
                     StopReason::Aborted => "stopped",
                     _ => "finished",
@@ -362,7 +335,6 @@ impl Log {
             AgentEvent::Failed { error } => {
                 self.stream.clear();
                 self.thinking.clear();
-                self.tools.clear();
                 self.push(Item::Note(format!("failed: {error}"), Role::Error));
             }
             _ => {}
@@ -375,9 +347,8 @@ impl Log {
         !self.tools.is_empty()
     }
 
-    fn draw_item(item: &Item, after_card: &mut bool, width: usize, look: Look<'_>, out: &mut Vec<Line>) {
+    fn draw_item(item: &Item, width: usize, look: Look<'_>, out: &mut Vec<Line>) {
         let theme = look.theme;
-        let card = matches!(item, Item::Tool(_));
         match item {
             Item::Input(text) => out.extend(view::user_prompt(&handed(text), width, theme)),
             Item::Reply(text) => {
@@ -391,10 +362,8 @@ impl Log {
                 out.extend(view::thinking(text, width, theme));
             }
             Item::Tool(call) => {
-                // Cards that follow one another stand together, as in the transcript.
-                if !*after_card {
-                    out.push(String::new());
-                }
+                // Every card stands apart, as in the transcript.
+                out.push(String::new());
                 let call = view::Call {
                     agent: None,
                     name: &call.name,
@@ -407,24 +376,23 @@ impl Log {
             }
             Item::Note(text, role) => out.extend(view::styled(text, *role, width, theme)),
         }
-        *after_card = card;
     }
 
     /// Everything as rows `width` wide: what is finished, then what is in flight. The finished
     /// part is laid out once per width and added to as items arrive.
     pub(super) fn rows(&mut self, width: usize, look: Look<'_>) -> Vec<Line> {
-        let (mut covered, mut after_card, mut lines) = match self.drawn.take() {
-            Some((drawn, covered, after_card, lines)) if drawn == width && covered <= self.items.len() => {
-                (covered, after_card, lines)
+        let (mut covered, mut lines) = match self.drawn.take() {
+            Some((drawn, covered, lines)) if drawn == width && covered <= self.items.len() => {
+                (covered, lines)
             }
-            _ => (0, false, Vec::new()),
+            _ => (0, Vec::new()),
         };
         for item in &self.items[covered..] {
-            Log::draw_item(item, &mut after_card, width, look, &mut lines);
+            Log::draw_item(item, width, look, &mut lines);
         }
         covered = self.items.len();
         let mut rows = lines.clone();
-        self.drawn = Some((width, covered, after_card, lines));
+        self.drawn = Some((width, covered, lines));
 
         let theme = look.theme;
         if !self.stream.trim().is_empty() {
@@ -435,10 +403,8 @@ impl Log {
             let from = wrapped.len().saturating_sub(THINKING_ROWS);
             rows.extend(wrapped.into_iter().skip(from));
         }
-        if !self.tools.is_empty() && !after_card {
-            rows.push(String::new());
-        }
         for tool in &self.tools {
+            rows.push(String::new());
             rows.extend(view::tool_running(
                 &tool.name,
                 &tool.input,
@@ -976,13 +942,13 @@ mod tests {
         let mut log = Log::default();
         log.input("task".to_string());
         let first = log.rows(40, look(&theme));
-        assert!(matches!(&log.drawn, Some((40, 1, false, _))));
+        assert!(matches!(&log.drawn, Some((40, 1, _))));
         log.event(&AgentEvent::MessageEnd {
             message: said("done"),
         });
         let second = log.rows(40, look(&theme));
         assert_eq!(second[..first.len()], first[..]);
-        assert!(matches!(&log.drawn, Some((40, 2, false, _))));
+        assert!(matches!(&log.drawn, Some((40, 2, _))));
 
         // Only the newest items are kept, and the rows follow.
         for n in 0..MAX_ITEMS + 10 {

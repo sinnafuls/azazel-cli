@@ -13,7 +13,7 @@ use azazel_tui::{Card, CardState, Glyph, GlyphLevel, Line, Role, Theme, text};
 use serde_json::Value;
 
 /// Output lines shown in the card of a finished tool call unless expanded.
-const COLLAPSED_LINES: usize = 3;
+pub(super) const COLLAPSED_LINES: usize = 3;
 const EXPANDED_LINES: usize = 40;
 const COLLAPSED_DIFF_LINES: usize = 16;
 /// How the result of a call that was interrupted or refused, rather than failed, starts.

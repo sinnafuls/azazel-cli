@@ -49,6 +49,9 @@ pub enum Notify {
 pub struct Caps {
     /// Inside tmux: OSC sequences need pass-through.
     pub tmux: bool,
+    /// Inside tmux, screen or zellij, which keep a scrollback of their own: erasing the
+    /// terminal's (`CSI 3 J`) does nothing there.
+    pub multiplexer: bool,
     pub images: Images,
     /// OSC 8 hyperlinks.
     pub links: bool,
@@ -97,8 +100,10 @@ impl Caps {
         } else {
             Notify::None
         };
+        let multiplexer = tmux || has("STY") || has("ZELLIJ");
         Caps {
             tmux,
+            multiplexer,
             // Images under tmux need a forced protocol (`tui.images`).
             images: if tmux { Images::None } else { images },
             links: if tmux {

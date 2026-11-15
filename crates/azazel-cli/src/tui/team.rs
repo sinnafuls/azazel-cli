@@ -1,7 +1,7 @@
 //! The team in the terminal UI: the roster of working agents, the agent hub, and following one
 //! agent's work in the transcript.
 
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use azazel_agent::AgentEvent;
 use azazel_team::{LEAD, MemberInfo, MemberState, TeamEvent};
@@ -11,7 +11,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use tokio::sync::broadcast;
 
 use super::overlay::{Action, Kind, Overlay};
-use super::{RunningTool, Tui, view};
+use super::{Tui, running, view};
 
 /// Rows of agents shown above the input before the rest are counted as `… N more`.
 const ROSTER_ROWS: usize = 3;
@@ -142,6 +142,9 @@ impl Tui {
             return;
         }
         let width = self.width();
+        if let Some(ended) = running::track(&mut self.followed_tools, &event) {
+            self.tool_finished(super::calls::Finished::from_ended(Some(id.clone()), ended));
+        }
         match *event {
             AgentEvent::MessageEnd { message } => {
                 let said = message.text();
@@ -149,35 +152,6 @@ impl Tui {
                     let mut lines = view::styled(&format!("[{id}]"), Role::Accent, width, &self.theme);
                     lines.extend(markdown::render(&said, width, &self.theme));
                     self.say(lines);
-                }
-            }
-            AgentEvent::ToolStart { call_id, name, input } => {
-                self.followed_tools.push(RunningTool {
-                    call_id,
-                    name,
-                    input,
-                    tail: Vec::new(),
-                    started: Instant::now(),
-                });
-            }
-            AgentEvent::ToolEnd {
-                call_id,
-                output,
-                duration_ms,
-            } => {
-                if let Some(at) = self
-                    .followed_tools
-                    .iter()
-                    .position(|tool| tool.call_id == call_id)
-                {
-                    let tool = self.followed_tools.remove(at);
-                    self.tool_finished(super::calls::Finished {
-                        agent: Some(id),
-                        name: tool.name,
-                        input: tool.input,
-                        output,
-                        elapsed: Duration::from_millis(duration_ms),
-                    });
                 }
             }
             AgentEvent::Idle { .. } => self.info(&format!("[{id}] finished")),
