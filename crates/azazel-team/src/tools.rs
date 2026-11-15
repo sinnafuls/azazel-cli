@@ -1,5 +1,5 @@
 //! The tools agents use to work as a team: `task`, `agent_send`, `agent_stop`, `agent_wait`,
-//! `agent_list`, `worktree_apply` and `worktree_discard`.
+//! `agent_list`, `agent_status`, `worktree_apply` and `worktree_discard`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -11,7 +11,8 @@ use azazel_core::agents::Isolation;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::team::{Finished, MemberInfo, SpawnRequest, Team, WaitOutcome};
+use crate::status::{status_table, status_text};
+use crate::team::{Finished, MemberInfo, SpawnRequest, Team, WaitAll, WaitOutcome};
 
 /// Characters of a report returned inline; the rest is read through `agent://<id>`.
 pub const REPORT_LIMIT: usize = 8000;
@@ -238,20 +239,42 @@ impl Tool for TaskTool {
                 ids.join(", ")
             ));
         }
-        match team.wait_all(&ids, &ctx.cancel).await {
-            Some(results) => {
+        match team.wait_for(&ctx.agent, &ids, &ctx.cancel).await {
+            WaitAll::Finished(results) => {
                 let sections: Vec<String> = results.iter().map(result_section).collect();
                 ToolOutput::text(sections.join("\n\n")).with_details(results_details(&results))
             }
-            None => ToolOutput::error("cancelled; the agents this call started were stopped"),
+            WaitAll::Steered { finished, running } => {
+                ToolOutput::text(steered_text(&finished, &running)).with_details(results_details(&finished))
+            }
+            WaitAll::Cancelled => ToolOutput::error("cancelled; the agents this call started were stopped"),
         }
     }
+}
+
+/// What a wait that steering input ended says: what finished, and what goes on in the background.
+fn steered_text(finished: &[Finished], running: &[String]) -> String {
+    let mut out = String::from("stopped waiting: a new message for you arrived; it follows.");
+    if !running.is_empty() {
+        out.push_str(&format!(
+            " Still running in the background: {}. Each result arrives as a message when it is ready; \
+             `agent_wait` blocks until the next one.",
+            running.join(", ")
+        ));
+    }
+    for finished in finished {
+        out.push_str("\n\n");
+        out.push_str(&result_section(finished));
+    }
+    out
 }
 
 #[derive(Deserialize)]
 struct SendInput {
     to: String,
     message: String,
+    #[serde(default)]
+    ask: bool,
 }
 
 pub struct AgentSendTool;
@@ -263,9 +286,11 @@ impl Tool for AgentSendTool {
     }
 
     fn description(&self) -> &str {
-        "Send a message to another agent: an agent id, `parent` (whoever started you), or `all`. An agent \
-         that is working sees it before its next step; one that has finished picks its work up again with the \
-         message, keeping what it knows."
+        "Send a message to another agent: an agent id, `parent` (whoever started you), or `all`. It returns \
+         at once: an agent that is working sees the message before its next step; one that has finished picks \
+         its work up again with the message, keeping what it knows; one still starting gets it with its \
+         prompt. With `ask: true` the message is a question answered in seconds from what the agent knows \
+         now, without interrupting it or adding to its conversation; the answer is the result of this call."
     }
 
     fn schema(&self) -> Value {
@@ -273,7 +298,11 @@ impl Tool for AgentSendTool {
             "type": "object",
             "properties": {
                 "to": { "type": "string", "description": "An agent id, `parent`, or `all`" },
-                "message": { "type": "string" }
+                "message": { "type": "string" },
+                "ask": {
+                    "type": "boolean",
+                    "description": "Ask one agent a question on the side and return its answer (default false)"
+                }
             },
             "required": ["to", "message"]
         })
@@ -296,8 +325,24 @@ impl Tool for AgentSendTool {
             Ok(input) => input,
             Err(output) => return output,
         };
+        if input.ask {
+            return match team.ask(&ctx.agent, &input.to, &input.message, &ctx.cancel).await {
+                Ok(answer) => ToolOutput::text(answer),
+                Err(why) => ToolOutput::error(why),
+            };
+        }
         match team.send(&ctx.agent, &input.to, &input.message) {
-            Ok(reached) => ToolOutput::text(format!("delivered to: {}", reached.join(", "))),
+            Ok(reached) => {
+                let receipts: Vec<String> = reached
+                    .iter()
+                    .map(|(id, delivery)| format!("{id}: {delivery}"))
+                    .collect();
+                let details: Vec<Value> = reached
+                    .iter()
+                    .map(|(id, delivery)| json!({ "id": id, "delivery": delivery.to_string() }))
+                    .collect();
+                ToolOutput::text(receipts.join("\n")).with_details(json!({ "agents": details }))
+            }
             Err(why) => ToolOutput::error(why),
         }
     }
@@ -417,6 +462,10 @@ impl Tool for AgentWaitTool {
                 ToolOutput::text(sections.join("\n\n"))
             }
             Ok(WaitOutcome::Message) => ToolOutput::text("a message for you arrived; it follows"),
+            Ok(WaitOutcome::Steered) => ToolOutput::text(
+                "stopped waiting: a new message for you arrived; it follows. The agents go on in the background; \
+                 call `agent_wait` again for their results.",
+            ),
             Ok(WaitOutcome::Timeout) => ToolOutput::text(format!(
                 "nothing finished within {} s; the agents are still working (`agent_list` shows them)",
                 timeout.as_secs()
@@ -460,6 +509,68 @@ impl Tool for AgentListTool {
             Err(output) => output,
         }
     }
+}
+
+#[derive(Deserialize)]
+struct StatusInput {
+    id: String,
+}
+
+pub struct AgentStatusTool;
+
+#[async_trait]
+impl Tool for AgentStatusTool {
+    fn name(&self) -> &str {
+        "agent_status"
+    }
+
+    fn description(&self) -> &str {
+        "What an agent is doing, at once and without asking it: state and time, the tool it runs now and for \
+         how long, the last lines it wrote, the files it changed (and an isolated agent's uncommitted changes \
+         and commits), tokens and cost. `id: \"all\"` gives one line per agent."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "id": { "type": "string", "description": "An agent id, or `all`" } },
+            "required": ["id"]
+        })
+    }
+
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+
+    async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {
+        let team = match team(ctx) {
+            Ok(team) => team,
+            Err(output) => return output,
+        };
+        let input: StatusInput = match parse(input) {
+            Ok(input) => input,
+            Err(output) => return output,
+        };
+        match status_report(&team, &input.id).await {
+            Ok(text) => ToolOutput::text(text),
+            Err(why) => ToolOutput::error(why),
+        }
+    }
+}
+
+/// The status of agent `id` in full, or of `all` as a table: what `agent_status` and
+/// `agent://<id>/status` return.
+pub async fn status_report(team: &Team, id: &str) -> Result<String, String> {
+    let statuses = team.status(id).await?;
+    Ok(if id == "all" {
+        status_table(&statuses)
+    } else {
+        statuses.iter().map(status_text).collect::<Vec<_>>().join("\n")
+    })
 }
 
 #[derive(Deserialize)]
