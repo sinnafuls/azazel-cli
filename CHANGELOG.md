@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Ghost text in the input: while you type prose, the rest of the word is shown dim, from your earlier prompts, the run and the project's file names. `Tab` accepts it with a space, `Right` without. Turn it off with `tui.autocomplete = "off"` (Input page of `/settings`).
+- `tui.predict_next = true` asks the session's model after each finished turn what you will say next and shows it as ghost text in the empty input; `Tab` or `Right` accepts it. It costs one more request per turn, shown in `/cost` as `prediction`; off by default.
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.

@@ -276,6 +276,8 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `images` | `"auto"` | Inline images: `auto` (what the terminal supports), `off`, or a protocol to force: `kitty`, `iterm`, `sixel`; see [images](tui.md#images) |
 | | `show_thinking` | `false` | Start with the model's thinking shown (`Ctrl+T` toggles it) |
 | | `expand_tools` | `false` | Start with tool output shown in full (`Ctrl+O` toggles it) |
+| | `autocomplete` | `"words"` | Ghost text in the input: `words` completes the word being typed from your earlier prompts, this run and the project's file names (`Tab` accepts with a space, `Right` without); `off` shows none; see [ghost text](tui.md#ghost-text) |
+| | `predict_next` | `false` | After a finished turn, ask the session's model for your likely next message and show it as ghost text in the empty input. Each finished turn costs one more request, counted in `/cost` as `prediction` |
 | | `queue_mode` | `"one"` | Messages queued while the agent works: `one` sends them one turn at a time, `all` sends them together as one prompt; see [queued messages](tui.md#queued-messages-and-stashed-drafts) |
 | `[statusline]` | `preset` | `"default"` | Segments shown when `left` and `right` are empty: `default`, `minimal`, `powerline` or `full`; see [the status line](tui.md#status-line). `/statusline` sets these keys up with the line in view |
 | | `left`, `right` | `[]` | Segment names on each side, in order: `mode`, `agent`, `model`, `thinking`, `tier`, `path`, `branch`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `todo`, `queue`, `session`, `time`, `git_dirty`, `account`, `cache`, `extensions`. Empty takes the preset's; `["none"]` is an empty side |

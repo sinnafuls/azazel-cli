@@ -69,6 +69,26 @@ limit of anthropic · 2 h 10 min left`); see
 [Vim keys](#vim-keys) on, the same rule shows `-- NORMAL --` in normal mode. While you dictate it shows
 `● rec`, the time and a level meter, then `transcribing`; see [voice](voice.md).
 
+### Ghost text
+
+While you type prose, the rest of the word under the cursor is shown dim after it, guessed from what you wrote
+before: your earlier prompts in every project, the prompts and replies of this run, and the words in the file
+names of the project. Words you used often, and words that often follow the one before, come first. `Tab`
+accepts the word and adds a space, `Right` accepts it without one, and any other key dismisses it. It appears
+after at least three letters, only when the cursor is at the end of its line, and never in a slash command, a
+`!` shell line, an `@` mention, a path, a token that looks like code (`_ = : { } [ ] < >`, camelCase, digits),
+fenced code or very long input. While the `/` or `@` list is open, `Tab` belongs to the list; in Vim normal
+mode nothing is shown. The text is cut to the row and never wraps. `[tui] autocomplete = "off"` turns it off.
+
+With `[tui] predict_next = true`, a finished turn (not an interrupted one) also sends one more request to the
+session's own model, with the conversation as it stands so the provider's prompt cache is used, asking what you
+are likely to say next. The guess, a line of up to about 20 words in your voice and language, appears as ghost
+text in the empty input in place of the hint; `Tab` or `Right` puts it in the input and never sends it. It is
+dropped when you type, when a new turn starts, when the model has no guess, after 15 seconds, or when the reply
+is over 500 characters. The requests are counted in `/cost` under `prediction`. Only a session that runs in
+this process predicts; an attached session does not. Both settings are on the Input page of `/settings` and
+apply at once.
+
 The colour of the rules tells you what `Enter` will do:
 
 | Rules | Meaning |
@@ -565,7 +585,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+R` | `history_search` | Search what you sent in this project, in any session, and put one prompt back in the input |
 | `Ctrl+V`, `Alt+V` | `paste_image` | Take what is on the clipboard: an image or image files are attached, other files mentioned, text pasted; see [pastes, images and dropped files](#pastes-images-and-dropped-files). In Windows Terminal `Ctrl+V` pastes text itself, and attaches an image when the clipboard holds one and no text. VS Code on Windows pastes with `Ctrl+V` itself, so there the key for an image is `Alt+V` |
 | `Ctrl+Shift+V`, `Alt+Shift+V` | `paste_text` | Paste the clipboard's text as text, even when it is the path of an image |
-| `Tab` | `complete` | Open or accept completion. In an empty input: switch the lead to the next [primary agent](team.md#primary-agents) (`build`, `plan`, …) |
+| `Tab` | `complete` | Open or accept completion; with [ghost text](#ghost-text) showing and no list open, accept it and add a space (`Right` accepts it as it is). In an empty input: switch the lead to the next [primary agent](team.md#primary-agents) (`build`, `plan`, …) |
 | `Ctrl+G` | `external_editor` | Edit the draft in your editor; see [external editor](#external-editor) |
 | `Alt+Up`, `Shift+Up` | `dequeue` | Take the last queued message back into the input |
 | `Ctrl+S` | `stash` | Park the draft; on an empty input, bring the last parked draft back |
