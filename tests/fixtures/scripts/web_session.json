@@ -1,0 +1,17 @@
+{
+  "lead": [
+    {
+      "reply": {
+        "tool_calls": [
+          { "id": "c1", "name": "write", "input": { "path": "hello.txt", "content": "hello from azazel\n" } }
+        ]
+      }
+    },
+    {
+      "reply": {
+        "tool_calls": [{ "id": "c2", "name": "read", "input": { "path": "hello.txt" } }]
+      }
+    },
+    { "reply": { "text": "Wrote and verified hello.txt." } }
+  ]
+}

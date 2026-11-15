@@ -67,6 +67,10 @@ impl Paths {
     pub fn lsp_dir(&self) -> PathBuf {
         self.home.join("lsp")
     }
+    /// Where azazel keeps the programs `azazel remote` needs, such as `cloudflared`.
+    pub fn remote_dir(&self) -> PathBuf {
+        self.home.join("remote")
+    }
     pub fn logs_dir(&self) -> PathBuf {
         self.home.join("logs")
     }

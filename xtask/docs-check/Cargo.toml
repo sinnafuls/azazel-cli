@@ -15,7 +15,7 @@ workspace = true
 # registers.
 [dependencies]
 anyhow.workspace = true
-azazel-cli.workspace = true
+azazel-cli = { workspace = true, features = ["remote"] }
 azazel-core.workspace = true
 azazel-protocol.workspace = true
 azazel-tui.workspace = true

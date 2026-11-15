@@ -212,6 +212,12 @@ glyphs! {
     Cycle => "⟳", "⟳", "~";
     /// Between the steps of a sequence: `smol › default`.
     Step => "›", "›", ">";
+    /// The QR code of a pairing link, two rows of modules to a line of text: both, the upper one,
+    /// the lower one, or neither. In ASCII a line is one row and a module is two characters.
+    QrFull => "█", "█", "##";
+    QrUpper => "▀", "▀", "##";
+    QrLower => "▄", "▄", "##";
+    QrEmpty => " ", " ", "  ";
 }
 
 /// The characters of a box.

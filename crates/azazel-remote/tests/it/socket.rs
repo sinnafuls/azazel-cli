@@ -1,0 +1,159 @@
+use azazel_remote::Access;
+use futures::SinkExt;
+use serde_json::json;
+use tokio_tungstenite::tungstenite::protocol::Message;
+
+use crate::common::*;
+
+#[tokio::test]
+async fn without_a_device_or_a_session_the_socket_closes_with_a_code() {
+    let (server, ..) = server().await;
+    let port = server.port();
+    let mut nobody = connect(port, "s1", None).await;
+    assert_eq!(close_code(&mut nobody).await, 4401);
+    let mut bogus = connect(port, "s1", Some("not-a-token")).await;
+    assert_eq!(close_code(&mut bogus).await, 4401);
+    let token = pair(&server, Access::Control).await;
+    let mut unknown = connect(port, "unknown", Some(&token)).await;
+    assert_eq!(close_code(&mut unknown).await, 4404);
+}
+
+#[tokio::test]
+async fn a_controller_sends_commands_and_gets_the_frames() {
+    let (server, fake, mut received) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    assert_eq!(next_json(&mut socket).await["type"], "hello");
+    send(&mut socket, json!({ "id": 1, "type": "prompt", "text": "go" })).await;
+    let command = sent(&mut received).await;
+    assert_eq!(
+        (command["type"].clone(), command["text"].clone()),
+        ("prompt".into(), "go".into())
+    );
+    fake.push(r#"{"type":"agent_start","agent":"lead","at":10}"#)
+        .await;
+    let frame = next_json(&mut socket).await;
+    assert_eq!(
+        (frame["type"].clone(), frame["at"].clone()),
+        ("agent_start".into(), 10.into())
+    );
+}
+
+#[tokio::test]
+async fn a_viewer_sees_the_frames_and_its_commands_are_answered_with_a_refusal() {
+    let (server, fake, mut received) = server().await;
+    let token = pair(&server, Access::View).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    send(&mut socket, json!({ "id": "p", "type": "prompt", "text": "go" })).await;
+    let refused = next_json(&mut socket).await;
+    assert_eq!(
+        (
+            refused["type"].clone(),
+            refused["id"].clone(),
+            refused["success"].clone()
+        ),
+        ("response".into(), "p".into(), false.into())
+    );
+    send(&mut socket, json!({ "id": 2, "type": "get_state" })).await;
+    // Only what was allowed reached the session.
+    assert_eq!(sent(&mut received).await["type"], "get_state");
+    fake.push(r#"{"type":"idle"}"#).await;
+    assert_eq!(next_json(&mut socket).await["type"], "idle");
+}
+
+#[tokio::test]
+async fn a_controller_cannot_reach_the_machine_through_the_session() {
+    let (server, _fake, mut received) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    let refused = [
+        json!({ "id": "a", "type": "shell", "command": "ls" }),
+        json!({ "id": "b", "type": "export", "path": "/tmp/x.html" }),
+        json!({ "id": "c", "type": "set_role", "role": "default", "save": "home" }),
+        json!({ "id": "d", "type": "set_mode", "mode": "bypass" }),
+        json!({ "id": "e", "type": "run_command", "name": "trust" }),
+    ];
+    for command in &refused {
+        send(&mut socket, command.clone()).await;
+        let answer = next_json(&mut socket).await;
+        assert_eq!(
+            (answer["id"].clone(), answer["success"].clone()),
+            (command["id"].clone(), false.into())
+        );
+    }
+    // Nothing got through; a command after them does.
+    send(&mut socket, json!({ "id": "f", "type": "abort" })).await;
+    assert_eq!(sent(&mut received).await["type"], "abort");
+}
+
+#[tokio::test]
+async fn a_message_that_is_not_a_command_or_not_text_is_not_forwarded() {
+    let (server, ..) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    socket.send(Message::text("not json")).await.unwrap();
+    assert_eq!(next_json(&mut socket).await["success"], false);
+    socket.send(Message::binary(vec![1u8, 2, 3])).await.unwrap();
+    assert_eq!(close_code(&mut socket).await, 1003);
+}
+
+#[tokio::test]
+async fn a_burst_of_commands_is_cut_off_at_the_rate_limit() {
+    let (server, ..) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    for n in 0..80 {
+        send(&mut socket, json!({ "id": n, "type": "get_state" })).await;
+    }
+    let first = next_json(&mut socket).await;
+    assert_eq!(first["success"], false);
+    // The commands within the burst were forwarded, so the first answer is for a surplus one.
+    assert!(first["id"].as_u64().unwrap() >= 40);
+}
+
+#[tokio::test]
+async fn revoking_closes_the_sockets_and_the_device_stays_out() {
+    let (server, ..) = server().await;
+    let port = server.port();
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(port, "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    server.revoke_all();
+    assert_eq!(close_code(&mut socket).await, 4401);
+    let mut again = connect(port, "s1", Some(&token)).await;
+    assert_eq!(close_code(&mut again).await, 4401);
+}
+
+#[tokio::test]
+async fn a_device_has_four_sockets() {
+    let (server, ..) = server().await;
+    let port = server.port();
+    let token = pair(&server, Access::Control).await;
+    let mut held = Vec::new();
+    for _ in 0..4 {
+        let mut socket = connect(port, "s1", Some(&token)).await;
+        next_json(&mut socket).await;
+        held.push(socket);
+    }
+    let mut fifth = connect(port, "s1", Some(&token)).await;
+    assert_eq!(close_code(&mut fifth).await, 4409);
+    // Another device is not held up by it.
+    let other = pair(&server, Access::View).await;
+    let mut socket = connect(port, "s1", Some(&other)).await;
+    assert_eq!(next_json(&mut socket).await["type"], "hello");
+}
+
+#[tokio::test]
+async fn stopping_the_server_closes_every_socket() {
+    let (server, ..) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    let waiting = tokio::spawn(async move { close_code(&mut socket).await });
+    server.shutdown().await;
+    assert_eq!(waiting.await.unwrap(), 1001);
+}

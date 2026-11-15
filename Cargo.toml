@@ -15,6 +15,8 @@ members = [
     "tests/fixtures/fake-ssh",
     "tests/fixtures/fake-sched",
     "tests/fixtures/fake-az",
+    "tests/fixtures/fake-cloudflared",
+    "tests/fixtures/fake-tailscale",
     "examples/custom-distro",
     "examples/client-demo",
 ]
@@ -44,6 +46,7 @@ azazel-tui = { path = "crates/azazel-tui" }
 azazel-cli = { path = "crates/azazel-cli" }
 azazel-protocol = { path = "crates/azazel-protocol" }
 azazel-client = { path = "crates/azazel-client" }
+azazel-remote = { path = "crates/azazel-remote" }
 
 # Async runtime and streams
 tokio = { version = "1.54", features = [
@@ -75,6 +78,12 @@ reqwest = { version = "0.13", default-features = false, features = [
 ] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio-tungstenite = { version = "0.30", features = ["connect"] }
+# The remote server (`azazel remote`): hyper's server half, no router. The QR code of a pairing
+# link is drawn by `qrcodegen`, which has no dependencies.
+hyper = { version = "1", default-features = false, features = ["server", "http1"] }
+hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
+http-body-util = "0.1"
+qrcodegen = "1.8"
 
 # Serialisation
 serde = { version = "1", features = ["derive"] }

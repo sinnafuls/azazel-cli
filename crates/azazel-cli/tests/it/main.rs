@@ -31,6 +31,7 @@ mod print_mode;
 mod projects;
 mod read_guard;
 mod remote;
+mod remote_web;
 mod reports;
 mod resets;
 mod restart;

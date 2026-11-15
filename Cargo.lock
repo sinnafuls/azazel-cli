@@ -973,6 +973,7 @@ dependencies = [
  "azazel-media",
  "azazel-memory",
  "azazel-protocol",
+ "azazel-remote",
  "azazel-repomap",
  "azazel-team",
  "azazel-tools",
@@ -1008,6 +1009,7 @@ dependencies = [
  "sha2 0.11.1",
  "tempfile",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "toml",
  "toml_edit",
@@ -1171,6 +1173,31 @@ dependencies = [
  "schemars 1.2.3",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "azazel-remote"
+version = "0.10.5"
+dependencies = [
+ "async-trait",
+ "azazel-protocol",
+ "base64 0.23.1",
+ "bytes",
+ "flate2",
+ "futures",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jiff",
+ "qrcodegen",
+ "rand 0.10.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "tokio",
+ "tokio-tungstenite",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]
@@ -2684,6 +2711,10 @@ name = "fake-check"
 version = "0.10.6"
 
 [[package]]
+name = "fake-cloudflared"
+version = "0.10.5"
+
+[[package]]
 name = "fake-dap"
 version = "0.10.6"
 dependencies = [
@@ -2722,6 +2753,13 @@ dependencies = [
 [[package]]
 name = "fake-ssh"
 version = "0.10.6"
+
+[[package]]
+name = "fake-tailscale"
+version = "0.10.5"
+dependencies = [
+ "serde_json",
+]
 
 [[package]]
 name = "fallible-iterator"
@@ -5465,6 +5503,12 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
+
+[[package]]
+name = "qrcodegen"
+version = "1.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4339fc7a1021c9c1621d87f5e3505f2805c8c105420ba2f2a4df86814590c142"
 
 [[package]]
 name = "quantette"

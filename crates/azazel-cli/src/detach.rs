@@ -285,7 +285,7 @@ pub async fn bg(paths: &Paths, request_id: Option<&str>) -> u8 {
 /// on the same session and under the same id. It works as the one before did, in the mode
 /// asked for now or else the one it was in; with `[session] resume_runs` it goes on with the
 /// run by itself. Returns the entry of the new process.
-async fn revive(cli: &Cli, paths: &Paths, entry: &Entry) -> Result<Entry, String> {
+pub(crate) async fn revive(cli: &Cli, paths: &Paths, entry: &Entry) -> Result<Entry, String> {
     let home = &paths.home;
     let mut args: Vec<OsString> = entry.args.iter().map(OsString::from).collect();
     args.extend(["--cwd".into(), entry.cwd.clone().into()]);

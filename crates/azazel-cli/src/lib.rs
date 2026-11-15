@@ -39,6 +39,8 @@ pub mod models;
 pub mod orchestration;
 pub mod pkg;
 pub mod print;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod reports;
 pub mod resets;
 pub mod resources;
@@ -521,6 +523,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Kill { id }) => return detach::kill(&paths, id).await,
         #[cfg(feature = "detach")]
         Some(Sub::Attach { id, .. }) => return detach::attach(&cli, paths, id).await,
+        #[cfg(feature = "remote")]
+        Some(Sub::Remote(args)) => {
+            let Some(config) = load_config(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            return remote::run(&paths, &config, args).await;
+        }
         #[cfg(feature = "detach")]
         Some(Sub::Schedule { action }) => {
             let Some(config) = load_config(&cli, &paths, trusted) else {

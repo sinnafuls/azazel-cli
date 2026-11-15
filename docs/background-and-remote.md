@@ -5,6 +5,8 @@ that goes on after you close the terminal; you look in, answer it, or take it ov
 mechanism lets the UI on your machine show a session that runs on another machine over SSH, and
 lets a [schedule](#schedules) run a prompt at a time or when something happens.
 
+To watch and steer these sessions from a browser or a phone, see [remote](remote.md).
+
 There is no daemon. Each background session is one process (`azazel host`, started for you) that ends
 when it is no longer needed. When that process is killed in the middle of its work, the session is
 [started again where it stopped](#when-a-background-session-dies) the next time you attach.
