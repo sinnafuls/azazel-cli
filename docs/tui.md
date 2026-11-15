@@ -383,7 +383,7 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 | Preset | Left | Right |
 |---|---|---|
 | `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
-| `minimal` | `mode`, `path` | `model` |
+| `minimal` | `mode`, `path`, `agents` | `model` |
 | `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
 | `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
 
@@ -535,7 +535,7 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+C` | `clear_or_exit` | Clear the input; on an empty input, twice within a second exits: the terminal is yours again at once, and nothing at the end of the session waits for a model (memories are extracted by the next session; see [memory](memory.md#automatic-extraction)). Another `Ctrl+C` while the session is still closing ends azazel there and then |
 | `Ctrl+D` | `exit` | Exit when the input is empty |
 | `Shift+Tab` | `cycle_mode` | Next permission mode: `plan`, `manual`, `accept-edits`, `auto`. `bypass` is not a step: it is entered with `/mode bypass` and confirmed |
-| `Alt+A` | `agent_hub` | Open the agent hub |
+| `Alt+A` | `agent_hub` | Open the [agent hub](#the-agent-hub). `Left` twice on an empty input opens it too, when the session has sub-agents |
 | `Ctrl+O` | `toggle_tool_output` | Expand or collapse tool output; in the [compact style](#compact-style), also write the last group of calls as full cards |
 | `Ctrl+T` | `toggle_thinking` | Show or hide thinking |
 | `Ctrl+L`, `Alt+P` | `model_picker` | Open the [model picker](#models-and-roles-at-a-key): roles, favourites, recent models, then every model |
@@ -556,8 +556,8 @@ none; `git_dirty`, `account` and `extensions` are not shown for it.
 | `Ctrl+Space` | `voice` | Start recording; again: stop and put the transcript in the input. `Esc` cancels; see [voice](voice.md) |
 
 `Esc` interrupts the lead only; stop sub-agents from the roster, the agent hub or with `/stop`. In the agent
-hub, `Enter` follows the selected agent's work in the transcript, `o` opens it in a popup, `m` messages it,
-`s` stops it and `S` stops all.
+hub, `Enter` opens the selected agent's chat, `x` stops it, `S` stops all, `m` messages it and `f` follows its
+work in the transcript.
 
 Editing keys in the input: arrows, `Home`/`End`, `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+Left`/`Ctrl+Right` or
 `Alt+B`/`Alt+F` (word), `Ctrl+W` and `Ctrl+Backspace` (delete word back), `Alt+D` and `Ctrl+Delete` (delete word
@@ -636,8 +636,42 @@ opened on the session, the newest 400 items per agent; the agent's transcript fi
 The line at the bottom is for the agent: what you type and send with `Enter` reaches it as a steer message
 before its next request, or starts it again when it has finished (`Shift+Enter` adds a line, the
 `external_editor` key opens your editor). `Ctrl+X` stops the agent, `Esc` closes the popup; the agent goes on
-either way. `@scout-1` alone at the prompt, and `o` in the agent hub, open the same popup for any agent of
+either way. `@scout-1` alone at the prompt, and `Enter` in the agent hub, open the same popup for any agent of
 the session, finished ones included.
+
+### The agent hub
+
+While sub-agents are queued or at work, a header above the input counts them, with the key of the hub at its
+right end, and one row for each of the first three (id, definition, what it is doing, time, tokens); `… N more`
+counts the others:
+
+```text
+Agents · 2 running · 1 queued                                      alt+a hub
+● scout-1  scout  grep parse_config  12s  3.4k
+● scout-2  scout  waiting for your approval  1m05s  1.1k
+● coder-1  coder  queued  0s  0
+```
+
+`Alt+A`, or `Left` twice on an empty input (two presses 40 to 500 ms apart; a key held down or a quicker run of
+presses does not count), opens the hub. It lists every sub-agent of the session, running and finished, those
+of earlier runs of the session included: its state, definition, parent, time, tokens, cost, and what it is
+doing or was asked.
+
+| Key | Effect |
+|---|---|
+| `Up`, `Down`, `j`, `k` | Move between the agents |
+| `Enter` | Opens the agent's chat |
+| `x` | Stops the selected agent and the agents it started |
+| `S` | Stops every sub-agent |
+| `m` | Message the selected agent |
+| `f` | Follow the agent: what it says and does appears in the transcript marked `[<id>]`; `f` on it again stops |
+| `Esc`, `Left` twice | Close the hub |
+
+The chat is the popup of [the fleet view](#the-fleet-view) for that agent. An agent that was not watched from
+its start (it ran before the UI opened, or in an earlier run of the session) is read from its transcript file,
+so the chat shows its whole work; from then on it follows live. A session in another process on this machine
+has its files here too; over `azazel ssh` the chat shows only what happened since the UI attached. `Esc`, or
+`Left` twice on an empty line, goes back to the hub; `Esc` there returns to the session.
 
 ### Mentions
 

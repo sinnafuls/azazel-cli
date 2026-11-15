@@ -9,6 +9,13 @@ GitHub are its section here.
 
 - Leaving the terminal UI prints how to come back to the session (`Resume this session with` / `azazel -r <id>`), once the session holds a conversation and is kept on disk.
 - `azazel mcp import jcode` copies the MCP servers of jcode (`~/.jcode/mcp.json`, or `$JCODE_HOME`, and `<project>/.jcode/mcp.json`), reading its `servers` key and its `timeout_secs`. Every client's `timeout_secs` now becomes `timeout`.
+- While sub-agents work, a header above the input counts them (`Agents · 2 running`, with the key of the agent hub), with a row each for the first three (definition, current tool, time, tokens) and `… N more` for the others.
+- `Left` twice on an empty input opens the agent hub. The hub lists every sub-agent of the session, finished ones and those of earlier runs included, with parent, cost and task. `Enter` opens the agent's chat: its whole transcript from its file, followed live, with a line to message it; `Esc` or `Left` twice goes back. `x` stops the agent, `f` follows it in the transcript.
+- `tui.todo_max` (default 8; Appearance page of `/settings`): a long todo list above the input folds the finished items into one row (`✓ 11 done`), shows the item in progress and the next ones, and counts the rest (`… 3 more`); `0` hides the list.
+
+### Changed
+
+- The `minimal` status-line preset counts sub-agents at work. In the agent hub, `Enter` opens the agent's chat instead of following it; following is `f`, stopping is `x`.
 
 ## [0.8.0] - 2026-11-14
 
