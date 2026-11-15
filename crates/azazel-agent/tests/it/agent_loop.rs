@@ -1249,6 +1249,40 @@ async fn turn_limit_asks_for_a_final_report_without_tools() {
     ));
 }
 
+#[tokio::test]
+async fn an_agent_with_a_turn_limit_is_warned_in_its_last_two_turns() {
+    let mut session = start(Setup {
+        tools: vec![slow("dump", Access::Read, 0, 4)],
+        limits: Limits {
+            max_turns: Some(3),
+            ..Limits::default()
+        },
+        ..Setup::default()
+    });
+    for id in ["c1", "c2", "c3"] {
+        session
+            .mock
+            .push("a", MockStep::tools("", &[(id, "dump", json!({}))]));
+    }
+    session.mock.push("a", MockStep::text("final report"));
+    session.run("go").await;
+
+    let notes: Vec<String> = session
+        .mock
+        .requests_for("a")
+        .iter()
+        .map(|request| request.tail_text().unwrap_or_default())
+        .collect();
+    assert_eq!(notes.len(), 4);
+    assert!(notes[0].is_empty());
+    assert!(notes[1].contains("2 turns left: finish the task and report what is done and what is not"));
+    assert!(notes[2].contains("1 turn left"));
+    assert!(
+        notes[3].is_empty(),
+        "the final report is asked for without a warning"
+    );
+}
+
 #[derive(Default)]
 struct Hooks {
     stop_calls: Mutex<Vec<bool>>,

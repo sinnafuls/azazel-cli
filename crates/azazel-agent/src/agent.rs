@@ -605,7 +605,12 @@ impl Actor {
             }
             let (request, tools) = self
                 .inbox
-                .drive(self.core.build_request(&chain, thinking, !final_report))
+                .drive(self.core.build_request(
+                    &chain,
+                    thinking,
+                    !final_report,
+                    self.core.turns_left_note(turn),
+                ))
                 .await;
             let request = Arc::new(request);
             self.core.record_request(&request);
@@ -1187,6 +1192,17 @@ impl Core {
         Ok(true)
     }
 
+    /// The warning for the last two turns an agent with a turn limit may use tools in; the turn
+    /// after them is the final report, asked for without tools.
+    fn turns_left_note(&self, turn: u32) -> Option<String> {
+        let left = self.limits.max_turns?.checked_sub(turn)? + 1;
+        match left {
+            2 => Some("2 turns left: finish the task and report what is done and what is not".to_string()),
+            1 => Some("1 turn left: finish the task and report what is done and what is not".to_string()),
+            _ => None,
+        }
+    }
+
     /// The request for the next turn and the tools that may be called in its response. Tools
     /// meant for other model families than the one `chain` asks first are left out.
     async fn build_request(
@@ -1194,6 +1210,7 @@ impl Core {
         chain: &[ModelSpec],
         thinking: Option<ThinkingLevel>,
         with_tools: bool,
+        budget_note: Option<String>,
     ) -> (Request, Vec<Arc<dyn Tool>>) {
         let mut messages: Vec<Message> = self.entries.iter().map(|e| e.message.clone()).collect();
         self.hooks.context(&self.info, &mut messages).await;
@@ -1221,6 +1238,13 @@ impl Core {
             tail: Vec::new(),
         };
         self.hooks.before_request(&self.info, &mut request).await;
+        if let Some(text) = budget_note {
+            request.tail.push(SystemPart {
+                text,
+                name: "turn-budget".to_string(),
+                cache_boundary: false,
+            });
+        }
         // A hook may have withdrawn tools; only what was offered can be called.
         tools.retain(|t| request.tools.iter().any(|spec| spec.name == t.name()));
         (request, tools)

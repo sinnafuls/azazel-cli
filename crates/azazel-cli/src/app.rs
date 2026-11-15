@@ -1138,6 +1138,7 @@ impl App {
             defs: agent_defs,
             max_parallel: config.team.max_parallel,
             max_depth: config.team.max_depth,
+            max_turns: config.team.max_turns,
             max_result_bytes: config.tools.max_result_bytes,
             compaction: (&config.compaction).into(),
             posix_shell: shell.is_posix(),

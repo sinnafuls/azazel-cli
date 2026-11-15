@@ -203,6 +203,7 @@ impl Bench {
             defs,
             max_parallel,
             max_depth: 2,
+            max_turns: 0,
             max_result_bytes: 50_000,
             compaction: CompactionSettings::default(),
             posix_shell: shell.is_posix(),

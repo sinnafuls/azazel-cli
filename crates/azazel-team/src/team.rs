@@ -331,6 +331,8 @@ pub struct TeamDeps {
     pub defs: Arc<AgentDefs>,
     pub max_parallel: usize,
     pub max_depth: u32,
+    /// Requests per task for an agent whose definition sets none; 0 is no limit.
+    pub max_turns: u32,
     pub max_result_bytes: usize,
     pub compaction: CompactionSettings,
     pub posix_shell: bool,
@@ -628,7 +630,7 @@ impl Inner {
                 .get::<ArtifactStore>()
                 .map(|store| store as Arc<dyn ArtifactSink>),
             limits: Limits {
-                max_turns: def.max_turns,
+                max_turns: def.max_turns.or((deps.max_turns > 0).then_some(deps.max_turns)),
                 max_result_bytes: deps.max_result_bytes,
             },
             compaction: deps.compaction,

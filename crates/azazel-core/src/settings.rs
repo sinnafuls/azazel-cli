@@ -480,6 +480,7 @@ settings! {
             "The lead only plans and delegates: it is offered no tool that edits or runs commands.";
         "team.max_parallel": Number, "Agents at once", "Sub-agents working at the same time.";
         "team.max_depth": Number, "Spawn depth", "How deep agents may spawn agents.";
+        "team.max_turns": Number, "Sub-agent turn cap", "Requests per task for a sub-agent whose definition sets no limit; 0 is no limit.";
     }
     Advanced / "Schedules and loops" {
         "schedule.register": Switch, "Use the system scheduler",
