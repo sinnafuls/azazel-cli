@@ -713,6 +713,12 @@ struct Bridge {
 impl Bridge {
     /// Connects and attaches; returns the bridge and the data of `attach`.
     fn attach(sandbox: &Sandbox, id: &str, replay: &str) -> (Bridge, Value) {
+        Bridge::attach_with(sandbox, id, json!({ "replay": replay }))
+    }
+
+    /// Connects and attaches with the members `extra` adds to the command; returns the
+    /// bridge and the data of `attach`.
+    fn attach_with(sandbox: &Sandbox, id: &str, extra: Value) -> (Bridge, Value) {
         let mut process = sandbox
             .azazel(&["rpc", "--attach", id])
             .stdin(Stdio::piped())
@@ -726,7 +732,11 @@ impl Bridge {
             process,
         };
         assert_eq!(bridge.next()["type"], "hello");
-        bridge.send(json!({ "id": "attach", "type": "attach", "replay": replay }));
+        let mut attach = json!({ "id": "attach", "type": "attach" });
+        for (key, value) in extra.as_object().unwrap() {
+            attach[key] = value.clone();
+        }
+        bridge.send(attach);
         let attached = bridge.until(|frame| frame["id"] == "attach").pop().unwrap();
         assert_eq!(attached["success"], true, "{attached}");
         (bridge, attached["data"].clone())
@@ -883,6 +893,94 @@ fn two_clients_of_one_session_see_the_same_and_either_answers_an_approval() {
     two.detach();
     three.detach();
     sandbox.wait_for_state(&id, "idle");
+    assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
+}
+
+/// The `at` of every frame that has one.
+fn cursors(frames: &[Value]) -> Vec<u64> {
+    frames.iter().filter_map(|frame| frame["at"].as_u64()).collect()
+}
+
+/// A background session whose run waits for an approval, and the script that finishes it.
+fn session_waiting_for_approval() -> (Sandbox, String) {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/scripts/write_read.json");
+    let script: Value = serde_json::from_str(&std::fs::read_to_string(script).unwrap()).unwrap();
+    let sandbox = Sandbox::new(&script);
+    let id = sandbox.bg(&[], "create hello");
+    sandbox.wait_for_state(&id, "waiting for you");
+    (sandbox, id)
+}
+
+#[test]
+fn a_client_that_dropped_is_sent_the_frames_after_its_last_one_and_no_other() {
+    let (sandbox, id) = session_waiting_for_approval();
+    let (mut stays, attached) = Bridge::attach(&sandbox, &id, "all");
+    let (drops, _) = Bridge::attach(&sandbox, &id, "all");
+    let begin = attached["cursor"].as_u64().unwrap();
+    let seen = drops.until(|frame| frame["type"] == "approval_request");
+    let request = seen.last().unwrap().clone();
+    stays.until(|frame| frame["type"] == "approval_request");
+    // Every frame of the log says where it is; the order is the log's.
+    let first = cursors(&seen);
+    assert!(
+        first.len() > 2 && first.windows(2).all(|pair| pair[0] < pair[1]),
+        "{seen:?}"
+    );
+    assert!(first.iter().all(|at| *at < begin), "{first:?} before {begin}");
+    let last_seen = *first.last().unwrap();
+    drops.detach();
+
+    // The run goes on while it is away.
+    let request_id = request["request_id"].as_str().unwrap();
+    stays
+        .send(json!({ "id": 1, "type": "approval_response", "request_id": request_id, "decision": "allow" }));
+    let live = stays.until(|frame| frame["type"] == "idle");
+    let missed: Vec<Value> = live
+        .iter()
+        .filter(|frame| frame["at"].is_u64())
+        .cloned()
+        .collect();
+    assert!(missed.len() > 2, "{live:?}");
+
+    let (back, resumed) = Bridge::attach_with(&sandbox, &id, json!({ "replay": "none", "since": last_seen }));
+    assert_eq!(resumed["gap"], Value::Null, "{resumed}");
+    assert!(resumed["cursor"].as_u64().unwrap() > *cursors(&missed).last().unwrap());
+    let replayed = back.until(|frame| frame["type"] == "idle");
+    // Exactly what came after `last_seen`: nothing before it, nothing twice, nothing missing.
+    assert_eq!(cursors(&replayed), cursors(&missed), "{replayed:?}");
+    assert_eq!(events(&replayed), events(&missed));
+    assert!(
+        replayed.iter().all(|frame| frame["type"] != "approval_request"),
+        "the request was answered: {replayed:?}"
+    );
+    back.detach();
+    stays.detach();
+    sandbox.wait_for_state(&id, "idle");
+}
+
+#[test]
+fn a_since_the_log_does_not_hold_is_a_gap() {
+    let (sandbox, id) = session_waiting_for_approval();
+    let (first, attached) = Bridge::attach(&sandbox, &id, "all");
+    let cursor = attached["cursor"].as_u64().unwrap();
+    first.detach();
+    // Past the end of the log, and in the middle of a line.
+    for since in [cursor + 1000, 1] {
+        let (bridge, attached) = Bridge::attach_with(&sandbox, &id, json!({ "since": since }));
+        assert_eq!(attached["gap"], true, "since {since}: {attached}");
+        assert_eq!(attached["cursor"], cursor, "{attached}");
+        // The client is still told what waits for an answer.
+        bridge.until(|frame| frame["type"] == "approval_request");
+        bridge.detach();
+    }
+    // Resuming at a frame the log holds is no gap.
+    let (bridge, _) = Bridge::attach(&sandbox, &id, "all");
+    let last = cursors(&bridge.until(|frame| frame["type"] == "approval_request"));
+    bridge.detach();
+    let (bridge, attached) = Bridge::attach_with(&sandbox, &id, json!({ "since": last[last.len() - 2] }));
+    assert_eq!(attached["gap"], Value::Null, "{attached}");
+    bridge.until(|frame| frame["type"] == "approval_request");
+    bridge.detach();
     assert_eq!(sandbox.ok(&["kill", &id]).trim(), format!("stopped {id}"));
 }
 

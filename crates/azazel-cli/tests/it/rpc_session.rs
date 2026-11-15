@@ -334,6 +334,94 @@ fn the_tree_is_read_moved_in_and_the_last_prompt_sent_again() {
     assert_eq!(client.finish(), Some(0));
 }
 
+#[test]
+fn messages_are_read_in_pages_from_the_end_of_the_branch() {
+    let mut client = Client::start(&replies(&["one", "two", "three"]), &[]);
+    for prompt in ["a", "b", "c"] {
+        client.prompt(prompt);
+    }
+    let rows = client.ok(json!({ "type": "get_messages" }));
+    let ids: Vec<String> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["entry_id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids.len(), 6);
+    let texts = |rows: &Value| -> Vec<String> {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["message"]["content"][0]["text"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // The last page, oldest first; then the one before it, found through its first row.
+    let last = client.ok(json!({ "type": "get_messages", "limit": 2 }));
+    assert_eq!(texts(&last), ["c", "three"]);
+    let before = last[0]["entry_id"].as_str().unwrap();
+    let middle = client.ok(json!({ "type": "get_messages", "before": before, "limit": 2 }));
+    assert_eq!(texts(&middle), ["b", "two"]);
+    // A page that reaches past the start is what is left.
+    let first = client.ok(json!({ "type": "get_messages", "before": middle[0]["entry_id"], "limit": 5 }));
+    assert_eq!(texts(&first), ["a", "one"]);
+    // Without a limit, `before` gives everything up to it.
+    let upto = client.ok(json!({ "type": "get_messages", "before": ids[3] }));
+    assert_eq!(texts(&upto), ["a", "one", "b"]);
+    assert_eq!(
+        client.error(json!({ "type": "get_messages", "before": "nope" })),
+        "no message `nope` on this branch"
+    );
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn the_messages_of_a_sub_agent_are_read_from_its_transcript() {
+    let script: Value =
+        serde_json::from_str(&std::fs::read_to_string(fixture("mention.json")).unwrap()).unwrap();
+    let mut client = Client::start(&script, &["--set", "roles.smol=[\"mock/scout\"]"]);
+    assert_eq!(
+        client.error(json!({ "type": "get_agent_messages", "agent": "scout-1" })),
+        "no agent `scout-1` in this session"
+    );
+    client.ok(json!({ "type": "agent_mention", "name": "scout", "text": "where is the retry policy?" }));
+    client.until(|line| line["type"] == "idle" && line["agent"] == "lead");
+
+    let rows = client.ok(json!({ "type": "get_agent_messages", "agent": "scout-1" }));
+    let said: Vec<(&str, &str)> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| {
+            (
+                row["message"]["role"].as_str().unwrap(),
+                row["message"]["content"][0]["text"].as_str().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            ("user", "where is the retry policy?"),
+            ("assistant", "The retry policy is in src/retry.rs.")
+        ]
+    );
+    let last = client.ok(json!({ "type": "get_agent_messages", "agent": "scout-1", "limit": 1 }));
+    assert_eq!(last.as_array().unwrap().len(), 1);
+    assert_eq!(last[0]["message"]["role"], "assistant");
+    let first = client.ok(json!({
+        "type": "get_agent_messages", "agent": "scout-1", "before": last[0]["entry_id"], "limit": 1
+    }));
+    assert_eq!(first[0]["message"]["role"], "user");
+    assert_eq!(client.finish(), Some(0));
+}
+
+fn fixture(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/scripts")
+        .join(name)
+}
+
 /// The texts of the messages of `request` a user wrote, in order.
 fn user_texts(request: &Value) -> Vec<String> {
     request["messages"]

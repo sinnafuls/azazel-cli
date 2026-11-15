@@ -72,6 +72,38 @@ fn session_row(summary: SessionSummary, matches: Vec<String>) -> SessionRow {
 }
 
 /// The name an entry's kind has in the session file.
+/// The messages among `entries` (a branch, oldest first) as rows: all of them, or the last
+/// `limit`, or the last `limit` before the entry `before`.
+fn message_page(
+    entries: Vec<Entry>,
+    before: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Vec<MessageRow>, String> {
+    let mut rows: Vec<MessageRow> = entries
+        .into_iter()
+        .filter_map(|entry| match entry.kind {
+            EntryKind::Message { message } => Some(MessageRow {
+                entry_id: entry.id,
+                timestamp: entry.timestamp,
+                message: serde_json::to_value(message).ok()?,
+            }),
+            _ => None,
+        })
+        .collect();
+    if let Some(before) = before {
+        let at = rows
+            .iter()
+            .position(|row| row.entry_id == before)
+            .ok_or_else(|| format!("no message `{before}` on this branch"))?;
+        rows.truncate(at);
+    }
+    if let Some(limit) = limit {
+        let skip = rows.len().saturating_sub(limit as usize);
+        rows.drain(..skip);
+    }
+    Ok(rows)
+}
+
 fn kind_name(kind: &EntryKind) -> &'static str {
     match kind {
         EntryKind::Message { .. } => "message",
@@ -404,26 +436,43 @@ impl Session {
         data(rows)
     }
 
-    pub(super) fn messages(&self, leaf: Option<&str>) -> Result<Value, String> {
+    pub(super) fn messages(
+        &self,
+        leaf: Option<&str>,
+        before: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value, String> {
         let session = &self.active.session;
         if let Some(leaf) = leaf
             && session.entry(leaf).is_none()
         {
             return Err(format!("no entry `{leaf}` in this session"));
         }
-        let rows: Vec<MessageRow> = session
-            .branch(leaf)
-            .into_iter()
-            .filter_map(|entry| match entry.kind {
-                EntryKind::Message { message } => Some(MessageRow {
-                    entry_id: entry.id,
-                    timestamp: entry.timestamp,
-                    message: serde_json::to_value(message).ok()?,
-                }),
-                _ => None,
-            })
-            .collect();
-        data(rows)
+        data(message_page(session.branch(leaf), before, limit)?)
+    }
+
+    /// The transcript of sub-agent `agent`, a page of it like [`Self::messages`].
+    pub(super) fn agent_messages(
+        &self,
+        agent: &str,
+        before: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Value, String> {
+        let team = self
+            .team
+            .as_ref()
+            .ok_or("there are no sub-agents in this session")?;
+        let path = team
+            .transcript_path(agent)
+            .ok_or_else(|| format!("no agent `{agent}` in this session"))?;
+        // An agent that has not written anything yet has no transcript file.
+        let entries = if path.exists() {
+            SessionStore::branch_of(&path)
+                .map_err(|e| format!("could not read the transcript of `{agent}`: {e}"))?
+        } else {
+            Vec::new()
+        };
+        data(message_page(entries, before, limit)?)
     }
 
     pub(super) fn tree(&self) -> Vec<TreeRow> {

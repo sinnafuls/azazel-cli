@@ -746,6 +746,7 @@ impl Remote {
                     pid: Some(std::process::id()),
                     // The UI shows where the session stands from the session itself.
                     replay: Replay::None,
+                    since: None,
                 },
             )
             .await?;

@@ -383,12 +383,57 @@
                 "string",
                 "null"
               ]
+            },
+            "before": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
             }
           },
           "required": [
             "type"
           ],
-          "description": "The messages from the start of the session to `leaf` (the current leaf when left out).\nAnswers with a list of [`MessageRow`]."
+          "description": "The messages from the start of the session to `leaf` (the current leaf when left out).\nWith `limit`, only the last `limit` of them, or with `before` (an entry id of the\nbranch) the last `limit` messages before that entry, so that a client can load the\nhistory in pages. Answers with a list of [`MessageRow`], oldest first."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_agent_messages"
+            },
+            "agent": {
+              "type": "string"
+            },
+            "before": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint32",
+              "minimum": 0
+            }
+          },
+          "required": [
+            "type",
+            "agent"
+          ],
+          "description": "The messages of a sub-agent's transcript, paged like `get_messages`. Answers with a\nlist of [`MessageRow`], oldest first."
         },
         {
           "type": "object",
@@ -828,6 +873,15 @@
             "replay": {
               "$ref": "#/$defs/Replay",
               "default": "missed"
+            },
+            "since": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "Resumes after a frame: the `at` of the last frame the client saw. The frames\nlogged after it follow the response, and nothing before. When the log has no frame\nwith that `at`, `gap` is set in the answer and `replay` applies instead."
             }
           },
           "required": [
@@ -2972,6 +3026,17 @@
             "queue": [],
             "pending": []
           }
+        },
+        "cursor": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The `at` the next frame will have: where live frames begin.",
+          "default": 0
+        },
+        "gap": {
+          "type": "boolean",
+          "description": "True when `since` named a frame the log does not hold; the client resynchronises with\n`get_messages`."
         }
       },
       "required": [
