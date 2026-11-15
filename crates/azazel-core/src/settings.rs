@@ -369,6 +369,10 @@ settings! {
             "What a read must cover before an edit: the lines the edit changes (range), any read of the file, or nothing.";
         "tools.scan.secrets": Switch, "Scan for committed secrets",
             "Look for secrets committed to the project with gitleaks, once per session.";
+        "tools.eval.python": Switch, "Python in eval",
+            "Let agents run Python programs with the eval tool. Off for both languages, eval is not offered.";
+        "tools.eval.javascript": Switch, "JavaScript in eval",
+            "Let agents run JavaScript programs (node, bun or deno) with the eval tool.";
     }
     Tools / "Language servers" {
         "lsp.servers": Kind::Table, "Servers",

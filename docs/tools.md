@@ -498,6 +498,7 @@ return serious
 - `AZAZEL_LOCAL` names the session's scratch directory, the files `local://<name>` addresses (see [URL schemes](#url-schemes-read-accepts)).
 - stdout and stderr come back together, the first 100 and last 300 lines of them, with the exit code; a code other than 0 makes the result an error. The output streams into the running card, `Esc` kills the program, and so does the timeout: `timeout_secs`, else `shell_timeout_secs` (120).
 - It can do whatever a program can, so it is approved like `shell`: `manual` and `accept-edits` ask, `auto` runs it, plan mode refuses it. A rule names the language: `allow = ["eval(python)"]`.
+- `[tools.eval]` turns each language on or off: `python = false` or `javascript = false` (both are on by default; also on the Tools page of `/settings`). A language that is off is not offered to the model and is refused if asked for; with both off, `eval` is not offered at all. A project's config may set them only once the project is trusted.
 
 ## Todo list, questions, plans
 
@@ -775,6 +776,10 @@ py = "pylint --output-format=parseable"
 
 [tools.scan]
 secrets = true                        # scan the project with gitleaks once per session
+
+[tools.eval]
+python = true                         # eval may run Python
+javascript = true                     # eval may run JavaScript
 ```
 
 | Key | Default | Meaning |
@@ -792,6 +797,8 @@ secrets = true                        # scan the project with gitleaks once per 
 | `read_guard` | `"range"` | What an agent must have read of a file before it changes it: the lines an edit changes (`range`), any part of the file (`file`), or nothing (`off`); see [the read guard](#the-read-guard) |
 | `redact_output` | `false` | Replaces what looks like a secret in a tool result with `[redacted:<kind>]` before the model and the session file get it; see [permissions](permissions.md#secrets-in-tool-results) |
 | `scan.secrets` | `true` | Scans the project with `gitleaks` once per session; see [secret scan](#secret-scan). Project config: trusted projects only |
+| `eval.python` | `true` | Lets [`eval`](#eval) run Python. Project config: trusted projects only |
+| `eval.javascript` | `true` | Lets [`eval`](#eval) run JavaScript; with both off, `eval` is not offered. Project config: trusted projects only |
 
 To take a tool away from one kind of agent only, use `tools` and `disallowed-tools` in its definition; see [team](team.md).
 

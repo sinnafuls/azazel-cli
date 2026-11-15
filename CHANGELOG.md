@@ -10,7 +10,7 @@ GitHub are its section here.
 - Leaving the terminal UI prints how to come back to the session (`Resume this session with` / `azazel -r <id>`), once the session holds a conversation and is kept on disk.
 - `azazel mcp import jcode` copies the MCP servers of jcode (`~/.jcode/mcp.json`, or `$JCODE_HOME`, and `<project>/.jcode/mcp.json`), reading its `servers` key and its `timeout_secs`. Every client's `timeout_secs` now becomes `timeout`.
 - `local://<name>` files: a scratch directory of the session, shared by the lead and its sub-agents. `read`, `write`, `edit`, `patch`, `glob` and `grep` take `local://` addresses, `read local://` lists them, and writing there is never asked about. `write`, `edit` and `patch` now refuse other schemes with a clear message instead of writing to a mangled path.
-- The `eval` tool runs Python (`python`, `python3` or `py` on `PATH`) or JavaScript (`node`, `bun` or `deno`) the agent writes, in the project directory, approved like a shell command; `AZAZEL_LOCAL` names the `local://` directory to the program.
+- The `eval` tool runs Python (`python`, `python3` or `py` on `PATH`) or JavaScript (`node`, `bun` or `deno`) the agent writes, in the project directory, approved like a shell command; `AZAZEL_LOCAL` names the `local://` directory to the program. `[tools.eval] python` and `javascript` (both on; also on the Tools page of `/settings`) turn each language off; with both off, `eval` is not offered.
 
 ## [0.8.0] - 2026-11-14
 

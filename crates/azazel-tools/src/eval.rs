@@ -30,6 +30,14 @@ pub enum Language {
 }
 
 impl Language {
+    /// The name in the tool's input and in `[tools.eval]`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Language::Python => "python",
+            Language::Javascript => "javascript",
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Language::Python => "Python",
@@ -84,14 +92,46 @@ pub fn interpreter(language: Language) -> Option<(PathBuf, Vec<String>)> {
     })
 }
 
+/// `[tools.eval]`: the languages `eval` may run, as a service of the registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalLanguages(pub Vec<Language>);
+
+impl EvalLanguages {
+    pub fn all() -> EvalLanguages {
+        EvalLanguages(vec![Language::Python, Language::Javascript])
+    }
+
+    /// The languages whose switch is on.
+    pub fn from_switches(python: bool, javascript: bool) -> EvalLanguages {
+        let mut languages = Vec::new();
+        if python {
+            languages.push(Language::Python);
+        }
+        if javascript {
+            languages.push(Language::Javascript);
+        }
+        EvalLanguages(languages)
+    }
+}
+
 pub struct EvalTool {
     default_timeout: Duration,
     env: Arc<AgentEnv>,
+    /// The languages `[tools.eval]` turns on; never empty (with none on, the tool is not offered).
+    languages: Vec<Language>,
 }
 
 impl EvalTool {
     pub fn new(default_timeout: Duration, env: Arc<AgentEnv>) -> Self {
-        EvalTool { default_timeout, env }
+        EvalTool::with_languages(default_timeout, env, vec![Language::Python, Language::Javascript])
+    }
+
+    pub fn with_languages(default_timeout: Duration, env: Arc<AgentEnv>, languages: Vec<Language>) -> Self {
+        EvalTool {
+            default_timeout,
+            env,
+            languages,
+        }
     }
 }
 
@@ -124,7 +164,7 @@ impl Tool for EvalTool {
         json!({
             "type": "object",
             "properties": {
-                "language": {"type": "string", "enum": ["python", "javascript"]},
+                "language": {"type": "string", "enum": self.languages.iter().map(|l| l.key()).collect::<Vec<_>>()},
                 "code": {"type": "string", "description": "The whole program"},
                 "timeout_secs": {"type": "integer", "minimum": 1, "description": "Seconds the program may run; the shell tool's default when left out"}
             },
@@ -153,6 +193,13 @@ impl Tool for EvalTool {
             Ok(input) => input,
             Err(error) => return error,
         };
+        if !self.languages.contains(&input.language) {
+            return ToolOutput::error(format!(
+                "{} is turned off for eval (tools.eval.{} = false in the configuration)",
+                input.language.name(),
+                input.language.key()
+            ));
+        }
         let Some((program, args)) = interpreter(input.language) else {
             return ToolOutput::error(input.language.missing());
         };
@@ -294,5 +341,23 @@ mod tests {
             return;
         };
         assert!(failed.is_error && failed.text_content().contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn a_language_turned_off_is_not_offered_and_is_refused() {
+        let temp = tempfile::tempdir().unwrap();
+        let tool = EvalTool::with_languages(
+            Duration::from_secs(5),
+            Arc::new(AgentEnv::default()),
+            vec![Language::Python],
+        );
+        assert_eq!(tool.schema()["properties"]["language"]["enum"], json!(["python"]));
+        let out = tool
+            .call(
+                json!({"language": "js", "code": "console.log(1)"}),
+                &ctx(temp.path(), Arc::new(Services::new())),
+            )
+            .await;
+        assert!(out.is_error && out.text_content().contains("tools.eval.javascript"));
     }
 }

@@ -194,6 +194,8 @@ thinking = "low"
 | | `read_guard` | `"range"` | What a read must cover before an edit: `range` (the lines the edit changes), `file` (any read of the file) or `off`; see [the read guard](tools.md#the-read-guard) |
 | | `redact_output` | `false` | Replace secrets in tool results with `[redacted:<kind>]` before the model and the session file get them; see [permissions](permissions.md#secrets-in-tool-results) |
 | `[tools.scan]` | `secrets` | `true` | Look for committed secrets with `gitleaks` once per session, when it is installed and the project is trusted; see [tools](tools.md#secret-scan) |
+| `[tools.eval]` | `python` | `true` | Let the [`eval`](tools.md#eval) tool run Python |
+| | `javascript` | `true` | Let the [`eval`](tools.md#eval) tool run JavaScript; with both off, `eval` is not offered |
 | `[[hooks.<event>]]` | `matcher`, `if`, `type`, `command`, `url`, `headers`, `prompt`, `model` | unset | See [hooks](hooks.md). `type` defaults to `command` |
 | | `timeout` | `60` | Seconds |
 | | `async` | `false` | Do not wait for the hook |
@@ -353,7 +355,7 @@ back. A project needs a trust decision when it has any of:
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
 is `bypass`, `lsp`, `verify.commands`,
-`tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `browser.path`, `editor.command`,
+`tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
