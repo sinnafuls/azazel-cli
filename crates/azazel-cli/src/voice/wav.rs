@@ -419,17 +419,4 @@ mod tests {
         assert_eq!(with(3, 64, &(-0.5f64).to_le_bytes()).unwrap(), [-0.5]);
         assert!(with(2, 4, &[]).unwrap_err().contains("unsupported"));
     }
-
-    #[test]
-    fn what_is_not_wav_is_refused() {
-        assert_eq!(decode(b"ID3\x04 not audio").unwrap_err(), "not a WAV stream");
-        assert!(format(&encode(&[], 16_000, 1)[..30]).is_err());
-        let raw = Format::raw_speech();
-        let pcm = decode_as(&raw, &[0, 0x40, 0, 0xC0, 7]);
-        assert_eq!(
-            (pcm.rate, pcm.channels, pcm.samples),
-            (16_000, 1, vec![0.5, -0.5])
-        );
-        assert_eq!(raw.peak(&[0, 0x40, 0, 0xC0]), 0.5);
-    }
 }

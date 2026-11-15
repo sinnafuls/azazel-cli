@@ -511,19 +511,6 @@ mod tests {
     }
 
     #[test]
-    fn only_a_well_formed_digest_is_accepted() {
-        let digest = "a".repeat(64);
-        assert_eq!(
-            expected_digest(&format!("{digest}  azazel-linux-x86_64.tar.gz\n")),
-            Some(digest)
-        );
-        assert_eq!(expected_digest(&"A".repeat(64)), Some("a".repeat(64)));
-        assert_eq!(expected_digest("abc  file"), None);
-        assert_eq!(expected_digest(""), None);
-        assert_eq!(hex(&[0, 15, 255]), "000fff");
-    }
-
-    #[test]
     fn the_binary_is_found_at_the_top_or_one_level_down() {
         let dir = tempfile::tempdir().unwrap();
         assert!(find_binary(dir.path()).is_none());

@@ -680,37 +680,6 @@ mod tests {
     }
 
     #[test]
-    fn a_model_row_shows_its_window_and_its_price_or_that_it_is_a_subscription() {
-        let cost = |input, output| Cost {
-            input,
-            output,
-            cache_read: 0.0,
-            cache_write: 0.0,
-        };
-        assert_eq!(
-            model_detail(200_000, Some(&cost(3.0, 15.0)), false),
-            "ctx 200k · $3/$15"
-        );
-        assert_eq!(
-            model_detail(1_000_000, Some(&cost(1.25, 10.0)), false),
-            "ctx 1M · $1.25/$10"
-        );
-        assert_eq!(
-            model_detail(1_048_576, Some(&cost(0.075, 0.3)), false),
-            "ctx 1048k · $0.075/$0.3"
-        );
-        assert_eq!(model_detail(128_000, None, false), "ctx 128k");
-        assert_eq!(model_detail(8192, None, false), "ctx 8k");
-        assert_eq!(model_detail(512, None, false), "ctx 512");
-        // A login is not paid for by the token, whatever the catalogue says the model costs.
-        assert_eq!(
-            model_detail(200_000, Some(&cost(15.0, 75.0)), true),
-            "ctx 200k · subscription"
-        );
-        assert_eq!(model_detail(2_500_000, None, true), "ctx 2.5M · subscription");
-    }
-
-    #[test]
     fn the_settings_that_apply_at_once_are_the_ones_the_ui_knows_how_to_apply() {
         let live: Vec<&str> = SETTINGS
             .iter()

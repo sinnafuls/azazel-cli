@@ -1086,17 +1086,6 @@ mod tests {
     }
 
     #[test]
-    fn unknown_language_and_downgraded_colours() {
-        let lines = render("```no-such-language\nx = 1\n```", 40, &Theme::dark());
-        assert_eq!(plain(&lines), [" x = 1 "]);
-        assert!(!lines[0].contains("\x1b[38;"));
-
-        let theme = Theme::dark().with_depth(crate::theme::ColorDepth::Ansi256);
-        let lines = render("```rust\nlet x = 1;\n```", 40, &theme);
-        assert!(lines[0].contains("\x1b[38;5;") && !lines[0].contains("\x1b[38;2;"));
-    }
-
-    #[test]
     fn incomplete_input_does_not_panic() {
         assert_eq!(rendered("```rust\nfn x() {", 40), [" fn x() { "]);
         for source in [

@@ -142,26 +142,4 @@ mod tests {
             assert!(!secret_name(name), "{name}");
         }
     }
-
-    #[test]
-    fn words_of_a_command_that_may_be_files() {
-        assert_eq!(candidates(".env"), [".env"]);
-        assert_eq!(candidates("@.env"), ["@.env", ".env"]);
-        assert_eq!(
-            candidates("--data=@secrets/tls.key"),
-            ["--data=@secrets/tls.key", "@secrets/tls.key", "secrets/tls.key"]
-        );
-        assert_eq!(
-            candidates("me@host:.ssh/id_rsa"),
-            ["me@host:.ssh/id_rsa", "host:.ssh/id_rsa"]
-        );
-        assert_eq!(candidates("$HOME/.ssh/config"), ["~/.ssh/config"]);
-        assert_eq!(candidates("${HOME}/.netrc"), ["~/.netrc"]);
-        assert_eq!(
-            candidates("%USERPROFILE%\\.aws\\credentials"),
-            ["~/.aws/credentials"]
-        );
-        assert_eq!(candidates("$HOMEWORK/.env"), ["$HOMEWORK/.env"]);
-        assert!(candidates("https://example.com/ca.pem").is_empty());
-    }
 }

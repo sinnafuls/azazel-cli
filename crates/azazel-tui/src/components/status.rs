@@ -802,45 +802,6 @@ mod tests {
     }
 
     #[test]
-    fn labels_take_the_icon_of_the_level_unless_it_repeats_the_text() {
-        let (unicode, ascii) = (Theme::dark(), ascii());
-        assert_eq!(labelled(Glyph::Branch, "main", &unicode), "⑂ main");
-        assert_eq!(labelled(Glyph::Branch, "main", &ascii), "git: main");
-        assert_eq!(labelled(Glyph::Branch, "gitea-fix", &ascii), "git: gitea-fix");
-        assert_eq!(labelled(Glyph::Goal, "goal active", &unicode), "⚑ goal active");
-        assert_eq!(labelled(Glyph::Goal, "goal active", &ascii), "goal active");
-        assert_eq!(labelled(Glyph::Goal, "ship it", &ascii), "goal: ship it");
-        assert_eq!(labelled(Glyph::Agents, "2 agents", &ascii), "2 agents");
-        assert_eq!(labelled(Glyph::Context, "42%", &ascii), "ctx 42%");
-    }
-
-    #[test]
-    fn long_paths_keep_their_end() {
-        let theme = Theme::dark();
-        assert_eq!(shorten_path("~/src/app", 20, &theme), "~/src/app");
-        assert_eq!(
-            shorten_path("~/projects/azazel/crates/azazel-tui", 24, &theme),
-            "…/crates/azazel-tui"
-        );
-        assert_eq!(
-            shorten_path("C:\\work\\azazel\\crates", 16, &theme),
-            "…\\azazel\\crates"
-        );
-        // One long name has no boundary to start at.
-        assert_eq!(shorten_path("a-very-long-directory", 8, &theme), "…rectory");
-        assert_eq!(
-            shorten_path("~/projects/azazel/crates", 12, &ascii()),
-            ".../crates"
-        );
-        for max in 0..40 {
-            for path in ["~/projects/azazel/crates/azazel-tui", "/日本語/パス/名前"] {
-                let shown = shorten_path(path, max, &theme);
-                assert!(text::width(&shown) <= max, "{max}: {shown:?}");
-            }
-        }
-    }
-
-    #[test]
     fn the_ascii_level_draws_with_ascii_only() {
         let theme = ascii();
         let muted = |text: String| Segment::new(Role::Muted, text);

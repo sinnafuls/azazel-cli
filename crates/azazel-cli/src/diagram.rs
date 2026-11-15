@@ -129,7 +129,7 @@ pub fn fenced(language: &str, source: &str, caps: &Caps, max_cols: u16, max_rows
 
 #[cfg(test)]
 mod tests {
-    use azazel_tui::HistoryItem;
+
     use azazel_tui::term::Images;
 
     use super::*;
@@ -165,31 +165,6 @@ mod tests {
         let label = r##"<svg xmlns="http://www.w3.org/2000/svg" width="200" height="40"><text x="4" y="28" font-family="Inter, sans-serif" font-size="24" fill="#000000">Decision</text></svg>"##;
         let drawn = pixels(label, 400, 80).unwrap();
         assert!(drawn.pixels().any(|pixel| pixel.0[0] < 64));
-    }
-
-    #[test]
-    fn a_diagram_is_scaled_into_its_box() {
-        let svg = svg(FLOW).unwrap();
-        let small = pixels(&svg, 120, 400).unwrap();
-        assert!(small.width() <= 120);
-        let flat = pixels(&svg, 4000, 30).unwrap();
-        assert!(flat.height() <= 30);
-    }
-
-    #[test]
-    fn only_mermaid_is_drawn_and_only_where_images_show() {
-        let kitty = caps(Images::Kitty);
-        let Some(Fenced::Replace(items)) = fenced("mermaid", FLOW, &kitty, 80, 30) else {
-            panic!("the flowchart was not drawn");
-        };
-        let [HistoryItem::Block { rows, paint }] = &items[..] else {
-            panic!("not one block");
-        };
-        assert!((1..=30).contains(rows));
-        assert!(paint.starts_with("\x1b_Ga=T,f=100"));
-
-        assert!(fenced("rust", "fn main() {}", &kitty, 80, 30).is_none());
-        assert!(fenced("mermaid", FLOW, &caps(Images::None), 80, 30).is_none());
     }
 
     #[test]

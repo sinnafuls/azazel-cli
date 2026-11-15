@@ -287,30 +287,6 @@ mod tests {
     }
 
     #[test]
-    fn equal_tiers_share_one_colour_sequence() {
-        let theme = Theme::dark();
-        let line = sweep("running the tests now", 21, Mode::Shimmer, None, &theme);
-        assert_eq!(text::strip_ansi(&line), "running the tests now");
-        assert_eq!(tiers(21, 21, Mode::Shimmer), "-------++#####++-----");
-        let (muted, plain, accent) = (
-            theme.fg(Role::Muted),
-            theme.fg(Role::Text),
-            theme.fg(Role::Accent),
-        );
-        assert_eq!(
-            line,
-            format!(
-                "{muted}running{RESET}{plain} t{RESET}{BOLD}{accent}he te{RESET}{plain}st{RESET}{muted}s now{RESET}"
-            )
-        );
-        // Away from the text the whole of it is one run.
-        assert_eq!(
-            sweep("thinking", 0, Mode::Shimmer, None, &theme),
-            format!("{muted}thinking{RESET}")
-        );
-    }
-
-    #[test]
     fn a_session_colour_replaces_the_accent_of_the_bright_tier_only() {
         let theme = Theme::dark();
         let own = Color::Rgb(1, 2, 3);

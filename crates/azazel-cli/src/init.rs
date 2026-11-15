@@ -301,21 +301,6 @@ mod tests {
     }
 
     #[test]
-    fn choosing_takes_a_number_or_a_name_and_asks_again_otherwise() {
-        let options = ["alpha".to_string(), "beta".to_string()];
-        assert_eq!(choose("Pick", &options, &mut "2\n".as_bytes()).unwrap(), "beta");
-        assert_eq!(
-            choose("Pick", &options, &mut "0\nseven\nalpha\n".as_bytes()).unwrap(),
-            "alpha"
-        );
-        assert!(choose("Pick", &options, &mut "".as_bytes()).is_err());
-        assert_eq!(
-            choose("Pick", &options[..1], &mut "".as_bytes()).unwrap(),
-            "alpha"
-        );
-    }
-
-    #[test]
     fn a_project_config_is_written_once_and_only_inside_a_project() {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");

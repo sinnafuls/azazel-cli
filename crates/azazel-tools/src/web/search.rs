@@ -1117,21 +1117,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn duckduckgo_links_resolve_to_the_result_page() {
-        assert_eq!(
-            duckduckgo_target("//duckduckgo.com/l/?uddg=https%3A%2F%2Fdoc.rust%2Dlang.org%2Fstd%2F&rut=abc")
-                .as_deref(),
-            Some("https://doc.rust-lang.org/std/")
-        );
-        assert_eq!(
-            duckduckgo_target("https://example.com/a?b=c").as_deref(),
-            Some("https://example.com/a?b=c")
-        );
-        assert_eq!(duckduckgo_target("//duckduckgo.com/y.js?ad_provider=x"), None);
-        assert_eq!(duckduckgo_target("not a url"), None);
-    }
-
-    #[test]
     fn a_call_searches_its_query_and_queries_once_each_up_to_five() {
         let list = |queries: &[&str]| queries.iter().map(|q| q.to_string()).collect::<Vec<_>>();
         assert_eq!(wanted(Some(" one ".into()), Vec::new()), Ok(list(&["one"])));

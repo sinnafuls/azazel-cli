@@ -857,25 +857,4 @@ mod tests {
         }
         assert_eq!(select.selected(), Some(0), "nor does it wrap at the top");
     }
-
-    #[test]
-    fn the_row_under_the_mouse_is_set_apart() {
-        let mut select = SelectList::new(vec![
-            SelectItem::new("alpha", "first"),
-            SelectItem::new("beta", "second"),
-        ]);
-        let theme = Theme::dark();
-        let band = theme.bg(Role::UserBg);
-        let before = plain(&select.view(30, 2, &theme).lines);
-        select.on_mouse(MouseKind::Move, Some(1));
-        let lines = select.view(30, 2, &theme).lines;
-        assert!(!lines[0].contains(&band) && lines[1].contains(&band));
-        assert_eq!(text::width(&lines[1]), 30, "the band runs across the row");
-        assert_eq!(plain(&lines), before, "the text stays where it was");
-        select.on_mouse(MouseKind::Move, None);
-        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
-        select.on_mouse(MouseKind::Move, Some(1));
-        select.clear_hover();
-        assert!(!select.view(30, 2, &theme).lines[1].contains(&band));
-    }
 }

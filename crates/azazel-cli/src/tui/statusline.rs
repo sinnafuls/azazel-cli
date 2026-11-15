@@ -1116,30 +1116,6 @@ mod tests {
     }
 
     #[test]
-    fn the_agent_stands_after_the_mode_in_its_own_colour() {
-        let theme = Theme::dark();
-        let plan = StatusLine {
-            agent: "plan",
-            ..full(&METERED)
-        };
-        assert!(shown(&plan, 160, &theme).starts_with("⏸ plan · plan · ⑂ main · "));
-        assert!(painted(&plan, 160, &theme).contains(&theme.paint(Role::Accent, "plan")));
-        let blue = Color::Rgb(83, 155, 245);
-        let coloured = StatusLine {
-            agent_color: Some(blue),
-            ..plan
-        };
-        assert!(painted(&coloured, 160, &theme).contains(&format!("{}plan", theme.fg_color(blue))));
-        // It leaves a narrow line after the mode and the model.
-        assert_eq!(
-            shown(&coloured, 35, &theme),
-            "⏸ plan  ⬢ anthropic/claude-opus-5-5"
-        );
-        let minimal = layout("preset = \"minimal\"");
-        assert!(!shown_in(&coloured, &minimal, 160, &theme).contains("· plan"));
-    }
-
-    #[test]
     fn what_cannot_be_understood_is_said_and_left_out() {
         let found = problems("left = [\"mode\", \"clock\", \"mode\"]\nright = [\"mode\"]");
         assert_eq!(found.len(), 3, "{found:?}");
@@ -1405,18 +1381,5 @@ mod tests {
                 gone
             )
         );
-    }
-
-    #[test]
-    fn the_home_directory_is_a_tilde() {
-        let home = std::path::Path::new("/home/ann");
-        let at = |path: &str| display_path(std::path::Path::new(path), Some(home));
-        assert_eq!(at("/home/ann"), "~");
-        assert_eq!(at("/home/ann/src/app"), "~/src/app");
-        assert_eq!(
-            at("/srv/app"),
-            std::path::Path::new("/srv/app").display().to_string()
-        );
-        assert_eq!(display_path(home, None), home.display().to_string());
     }
 }

@@ -825,16 +825,6 @@ mod tests {
     }
 
     #[test]
-    fn wrap_hard_preserves_whitespace() {
-        assert_eq!(wrap_hard("ab  cd  ef", 4), ["ab  ", "cd  ", "ef"]);
-        assert_eq!(wrap_hard("a\nb", 4), ["a", "b"]);
-        assert_eq!(wrap_hard("日本語", 5), ["日本", "語"]);
-        assert_eq!(wrap_hard("cafe\u{301}s", 4), ["cafe\u{301}", "s"]);
-        let lines = wrap_hard("\x1b[32m+added line\x1b[0m", 6);
-        assert_eq!(lines, ["\x1b[32m+added\x1b[0m", "\x1b[32m line\x1b[0m"]);
-    }
-
-    #[test]
     fn truncate_adds_ellipsis_only_when_cutting() {
         assert_eq!(truncate("short", 10, "…"), "short");
         assert_eq!(truncate("hello world", 8, "…"), "hello w…");

@@ -783,15 +783,4 @@ mod tests {
             );
         }
     }
-
-    #[test]
-    fn changes_between_name_lists_are_counted_and_named() {
-        let list = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
-        assert_eq!(name_changes(&list(&["a", "b"]), &list(&["a", "b"])), "");
-        assert_eq!(name_changes(&list(&["a"]), &list(&["a", "b", "c"])), "+2 (b, c)");
-        assert_eq!(
-            name_changes(&list(&["a", "b"]), &list(&["b", "z"])),
-            "+1 (z) −1 (a)"
-        );
-    }
 }

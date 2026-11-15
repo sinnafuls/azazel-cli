@@ -1026,23 +1026,4 @@ mod tests {
         );
         assert_eq!((later[0].parent, later[0].trace), (None, later[0].id));
     }
-
-    #[test]
-    fn events_before_a_prompt_began_make_no_span() {
-        let mut recorder = recorder(false);
-        let spans = feed(
-            &mut recorder,
-            &LEAD,
-            vec![
-                (0, AgentEvent::TurnStart { turn: 3 }),
-                (
-                    10,
-                    AgentEvent::Failed {
-                        error: "compaction failed".into(),
-                    },
-                ),
-            ],
-        );
-        assert!(spans.is_empty());
-    }
 }

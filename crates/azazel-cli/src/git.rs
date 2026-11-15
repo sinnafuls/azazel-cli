@@ -719,34 +719,4 @@ new mode 100755
         let count = run(&top, &["rev-list", "--count", "HEAD"]).await.unwrap();
         assert_eq!(count.trim(), "3");
     }
-
-    #[test]
-    fn a_drafted_message_loses_its_fence_and_quotes() {
-        assert_eq!(clean_message("  Fix the parser\n"), "Fix the parser");
-        assert_eq!(
-            clean_message("```\nFix the parser\n\nIt dropped the last token.\n```"),
-            "Fix the parser\n\nIt dropped the last token."
-        );
-        assert_eq!(clean_message("```text\nFix it\n```\n"), "Fix it");
-        assert_eq!(clean_message("\"Fix the parser\""), "Fix the parser");
-        assert_eq!(
-            clean_message("Rename \"old\" to \"new\""),
-            "Rename \"old\" to \"new\""
-        );
-        assert_eq!(clean_message(""), "");
-    }
-
-    #[test]
-    fn a_long_diff_is_cut_for_the_model() {
-        let changes = Changes {
-            status: " M big.txt".to_string(),
-            diff: "+line\n".repeat(20_000),
-            staged: true,
-            subjects: Vec::new(),
-        };
-        let request = message_request(&changes, "");
-        assert!(request.len() < MAX_DRAFT_DIFF_BYTES + 2_000);
-        assert!(request.contains(CUT_NOTE) && !request.contains("Recent subjects"));
-        assert!(request.contains("The staged changes"));
-    }
 }

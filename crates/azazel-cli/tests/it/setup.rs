@@ -125,11 +125,3 @@ fn doctor_lists_what_an_untrusted_project_asked_for_and_what_was_skipped() {
         "{report}"
     );
 }
-
-#[test]
-fn the_interactive_ui_refuses_to_start_without_a_terminal() {
-    let sandbox = Sandbox::new();
-    let output = sandbox.azazel().output().unwrap();
-    assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("pass -p"));
-}

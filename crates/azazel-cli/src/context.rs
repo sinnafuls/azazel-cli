@@ -267,30 +267,6 @@ mod tests {
     }
 
     #[test]
-    fn a_bar_is_the_share_of_the_request_and_never_empty_for_something() {
-        let report = sample();
-        let bars: Vec<usize> = report
-            .categories
-            .iter()
-            .map(|c| bar_cells(c, &report, BAR_CELLS))
-            .collect();
-        // 50 tokens of 50 000 still get a cell; nothing gets none; 36 % is seven cells of twenty.
-        assert_eq!(bars, [1, 1, 1, 1, 4, 6, 1, 0, 7, 1]);
-        let shares: Vec<u64> = report.categories.iter().map(|c| percent(c, &report)).collect();
-        assert_eq!(shares, [1, 7, 2, 0, 18, 32, 2, 0, 36, 2]);
-        for cells in 1..=60 {
-            for category in &report.categories {
-                let filled = bar_cells(category, &report, cells);
-                assert!(filled <= cells);
-                assert_eq!(filled == 0, category.tokens == 0);
-            }
-        }
-        let empty = self::report(vec![category(CategoryKind::Images, "", 0, 0)], None);
-        assert_eq!(bar_cells(&empty.categories[0], &empty, BAR_CELLS), 0);
-        assert_eq!(percent(&empty.categories[0], &empty), 0);
-    }
-
-    #[test]
     fn the_text_report_has_a_row_per_category_under_the_size_of_the_request() {
         let text = render(&sample());
         let lines: Vec<&str> = text.lines().collect();

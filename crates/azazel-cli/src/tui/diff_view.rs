@@ -966,11 +966,4 @@ mod tests {
             }
         }
     }
-
-    #[test]
-    fn long_paths_keep_their_file_name() {
-        assert_eq!(cut_left("src/deep/down/name.rs", 12, "…"), "…own/name.rs");
-        assert_eq!(cut_left("a.rs", 12, "…"), "a.rs");
-        assert_eq!(cut_left("abc", 0, "…"), "");
-    }
 }

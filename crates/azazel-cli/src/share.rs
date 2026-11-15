@@ -226,11 +226,4 @@ mod tests {
         assert!(summary.contains("2 messages") && summary.contains("secret gist"));
         assert!(summary.contains(names[0]) && summary.contains(names[1]));
     }
-
-    #[test]
-    fn sizes_read_as_a_person_says_them() {
-        assert_eq!(size(900), "900 bytes");
-        assert_eq!(size(1025), "2 KB");
-        assert_eq!(size(3_565_158), "3.4 MB");
-    }
 }

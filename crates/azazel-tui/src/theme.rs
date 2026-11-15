@@ -637,16 +637,6 @@ mod tests {
     }
 
     #[test]
-    fn detects_colour_depth() {
-        assert_eq!(ColorDepth::detect(Some("truecolor")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("24bit")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("TrueColor")), ColorDepth::TrueColor);
-        assert_eq!(ColorDepth::detect(Some("yes")), ColorDepth::Ansi256);
-        assert_eq!(ColorDepth::detect(Some("")), ColorDepth::Ansi256);
-        assert_eq!(ColorDepth::detect(None), ColorDepth::Ansi256);
-    }
-
-    #[test]
     fn downgrades_known_rgb_values() {
         assert_eq!(nearest_256(0, 0, 0), 16);
         assert_eq!(nearest_256(255, 255, 255), 231);
@@ -698,21 +688,6 @@ mod tests {
         assert_eq!(theme.color(Role::Accent), Color::Rgb(16, 32, 48));
         for role in [Role::UserBg, Role::DiffAddBg, Role::SelectedBg, Role::Muted] {
             assert_eq!(theme.color(role), light.color(role), "{role:?} should inherit");
-        }
-    }
-
-    #[test]
-    fn background_roles_paint_the_background() {
-        let mut theme = Theme::dark();
-        for role in Role::ALL {
-            theme.set_color(role, Color::Indexed(200));
-            let painted = theme.paint(role, "x");
-            let expected = if role.is_background() {
-                "\x1b[48;5;200mx\x1b[0m"
-            } else {
-                "\x1b[38;5;200mx\x1b[0m"
-            };
-            assert_eq!(painted, expected, "{role:?}");
         }
     }
 

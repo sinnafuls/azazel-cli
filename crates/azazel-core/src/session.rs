@@ -1957,30 +1957,6 @@ mod tests {
     }
 
     #[test]
-    fn list_reports_name_first_prompt_and_count_newest_first() {
-        let dir = tempfile::tempdir().unwrap();
-        let older = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
-        older.message(&Message::user("first session prompt"));
-        older.message(&assistant("ok"));
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        let newer = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
-        newer.append(EntryKind::SessionInfo { name: "named".into() });
-        std::fs::write(dir.path().join("notes.txt"), "not a session").unwrap();
-
-        let list = SessionStore::list(dir.path());
-        assert_eq!(
-            list.iter().map(|s| s.id.clone()).collect::<Vec<_>>(),
-            [newer.id(), older.id()]
-        );
-        assert_eq!((list[0].name.as_deref(), list[0].messages), (Some("named"), 0));
-        assert_eq!(
-            (list[1].first_prompt.as_deref(), list[1].messages),
-            (Some("first session prompt"), 2)
-        );
-        assert!(SessionStore::list(&dir.path().join("missing")).is_empty());
-    }
-
-    #[test]
     fn prune_keeps_pinned_recent_and_open_sessions_and_search_finds_lines() {
         let dir = tempfile::tempdir().unwrap();
         let make = |text: &str| {

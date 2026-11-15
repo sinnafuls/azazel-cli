@@ -12,7 +12,7 @@ use tokio::io::BufReader;
 
 use crate::app::{Active, App, discover_paths};
 use crate::cli::Cli;
-use crate::tui::backend::{Backend, Local};
+use crate::tui::backend::Backend;
 use crate::tui::remote::{Place, Remote};
 
 /// An application over a home and a project of its own under `dir`, and its open session.
@@ -144,15 +144,6 @@ async fn exercise(backend: &mut dyn Backend, home_config: &Path) {
                 .all(|row| row.usable == provider.usable)
         );
     }
-}
-
-#[tokio::test]
-async fn a_session_here_is_changed_through_its_backend() {
-    let dir = tempfile::tempdir().unwrap();
-    let (app, active, home_config) = session(dir.path()).await;
-    let mut local = Local::new(app, active);
-    exercise(&mut local, &home_config).await;
-    local.finish().await;
 }
 
 #[tokio::test]

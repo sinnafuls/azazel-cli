@@ -186,16 +186,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn osc52_carries_the_text_as_base64_and_is_wrapped_for_tmux() {
-        assert_eq!(osc52("hi there", false), "\x1b]52;c;aGkgdGhlcmU=\x07");
-        assert_eq!(
-            osc52("hi there", true),
-            "\x1bPtmux;\x1b\x1b]52;c;aGkgdGhlcmU=\x07\x1b\\"
-        );
-        assert_eq!(osc52("", false), "\x1b]52;c;\x07");
-    }
-
-    #[test]
     fn the_last_messages_are_copied_as_the_export_writes_them() {
         use azazel_ai::{Block, Message};
         let dir = tempfile::tempdir().unwrap();

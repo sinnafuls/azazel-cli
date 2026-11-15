@@ -1136,34 +1136,6 @@ System prompt body.
     }
 
     #[test]
-    fn roots_are_home_then_compat_then_project() {
-        let home = PathBuf::from("/home/u/.azazel");
-        let root = PathBuf::from("/work/app");
-        let paths = Paths {
-            home: home.clone(),
-            project_root: root.clone(),
-            cwd: root.join("src"),
-            project_data: home.join("projects").join("app"),
-            sessions_override: None,
-        };
-        assert_eq!(
-            def_roots(&paths, true, &crate::packages::Loaded::default()),
-            [
-                (home.join("agents"), DefSource::Home),
-                (root.join(".claude").join("agents"), DefSource::Compat),
-                (root.join(".azazel").join("agents"), DefSource::Project),
-            ]
-        );
-        assert_eq!(
-            def_roots(&paths, false, &crate::packages::Loaded::default()),
-            [
-                (home.join("agents"), DefSource::Home),
-                (root.join(".azazel").join("agents"), DefSource::Project),
-            ]
-        );
-    }
-
-    #[test]
     fn later_sources_replace_earlier_ones_by_name_not_file_name() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");

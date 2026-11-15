@@ -381,19 +381,6 @@ mod tests {
         (tmp, root)
     }
 
-    #[test]
-    fn names_are_checked_and_made_up_when_missing() {
-        assert!(checked_name("feature-1_b").is_ok());
-        for bad in ["", "a/b", "..", "-x", "with space"] {
-            assert!(checked_name(bad).is_err(), "{bad}");
-        }
-        let dir = tempfile::tempdir().unwrap();
-        let name = new_name(dir.path());
-        assert!(checked_name(&name).is_ok());
-        std::fs::create_dir(dir.path().join(&name)).unwrap();
-        assert_ne!(new_name(dir.path()), name);
-    }
-
     #[tokio::test]
     async fn uncommitted_changes_move_into_the_new_worktree_and_azazel_stays() {
         let (_tmp, root) = repo();

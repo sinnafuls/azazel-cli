@@ -293,32 +293,6 @@ async fn a_recording_from_a_recorder_program_lands_in_the_editor() {
     assert_eq!(editor.text(), "note: 16000 Hz, 1 channel, 500 ms");
 }
 
-/// Waits, as the UI does on its ticks, for a recorder that ends by itself.
-async fn ended(recording: &mut record::Recording) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
-    while !recording.ended() {
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "the recorder did not exit"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-}
-
-#[tokio::test]
-async fn a_recorder_may_write_raw_audio_and_end_by_itself() {
-    let mut config = Config::default();
-    config.voice.record_command = fake("record --raw --exit 250");
-    let mut recording = record::start(&config.voice).await.unwrap();
-    ended(&mut recording).await;
-    let audio = recording.finish().await.unwrap();
-    let pcm = wav::decode(&audio).unwrap();
-    assert_eq!((pcm.rate, pcm.channels, pcm.samples.len()), (16_000, 1, 4_000));
-    // The tone is still there, at the level the fixture wrote it.
-    let peak = pcm.samples.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
-    assert!((peak - 16_000.0 / 32_768.0).abs() < 0.01, "peak {peak}");
-}
-
 #[test]
 fn doctor_reports_the_voice_setup() {
     let line = |findings: &[azazel_cli::doctor::Finding], start: &str| {

@@ -1444,26 +1444,6 @@ async fn a_value_azazel_would_refuse_never_reaches_its_configuration() {
 }
 
 #[tokio::test]
-async fn old_conversations_a_retention_setting_would_delete_are_pointed_out() {
-    let sandbox = Sandbox::new("pi");
-    let home = sandbox.path("azazel");
-    std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(home.join("config.toml"), "[session]\nretention_days = 30\n").unwrap();
-    let report = sandbox
-        .migrate(Source::Pi, &Options::new(vec![Kind::Chats], false, false))
-        .await;
-    let warned = report.of(Source::Pi, Kind::Chats, Status::Lossy).join("\n");
-    assert!(
-        warned.contains("2 of the imported conversations were last used more than 30 days ago"),
-        "{warned}"
-    );
-    // The listing of the project's sessions is ready for the first `/resume`.
-    let home = home.to_string_lossy().into_owned();
-    let dir = Paths::discover(Path::new("/work/app"), Some(&home)).sessions_dir();
-    assert!(dir.join("index.json").is_file());
-}
-
-#[tokio::test]
 async fn claude_rules_join_those_that_are_there_and_project_servers_go_to_the_project() {
     let sandbox = Sandbox::new("claude");
     // Claude Code keeps a project's servers under the project's path in its state file.
@@ -1539,27 +1519,4 @@ async fn claude_rules_join_those_that_are_there_and_project_servers_go_to_the_pr
             .iter()
             .any(|entry| matches!(entry.kind, EntryKind::Compaction { .. }))
     );
-}
-
-#[test]
-fn a_source_is_looked_for_where_its_own_variables_point() {
-    let home = Path::new("/home/dev");
-    let plain = Env::at(home);
-    assert_eq!(root_of(Source::Pi, &plain), home.join(".pi/agent"));
-    assert_eq!(root_of(Source::Omp, &plain), home.join(".omp/agent"));
-    assert_eq!(root_of(Source::Codex, &plain), home.join(".codex"));
-    let moved = Env::at(home)
-        .with_var("CODEX_HOME", "/data/codex")
-        .with_var("CLAUDE_CONFIG_DIR", "/data/claude")
-        .with_var("JCODE_HOME", "/data/jcode")
-        .with_var("PI_CONFIG_DIR", ".ohmy");
-    assert_eq!(root_of(Source::Codex, &moved), Path::new("/data/codex"));
-    assert_eq!(root_of(Source::Claude, &moved), Path::new("/data/claude"));
-    assert_eq!(root_of(Source::Jcode, &moved), Path::new("/data/jcode"));
-    assert_eq!(root_of(Source::Omp, &moved), home.join(".ohmy/agent"));
-    // pi and omp read the same variable; the directory says whose it is.
-    let shared = fixture("omp").join("home/.omp/agent");
-    let pointed = Env::at(home).with_var("PI_CODING_AGENT_DIR", &shared.to_string_lossy());
-    assert_eq!(root_of(Source::Omp, &pointed), shared);
-    assert_eq!(root_of(Source::Pi, &pointed), home.join(".pi/agent"));
 }

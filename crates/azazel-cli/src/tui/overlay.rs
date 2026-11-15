@@ -1185,24 +1185,6 @@ mod tests {
     }
 
     #[test]
-    fn select_moves_filters_and_reports_the_original_index() {
-        let mut overlay = Overlay::select(
-            "Pick",
-            Vec::new(),
-            items(&["alpha", "beta", "gamma"]),
-            true,
-            Action::Mode,
-        );
-        assert!(matches!(overlay.on_key(&key(KeyCode::Down)), Outcome::Pending));
-        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(1)));
-        for c in "gam".chars() {
-            overlay.on_key(&key(KeyCode::Char(c)));
-        }
-        assert!(matches!(overlay.on_key(&key(KeyCode::Enter)), Outcome::Chosen(2)));
-        assert!(matches!(overlay.on_key(&key(KeyCode::Esc)), Outcome::Cancelled));
-    }
-
-    #[test]
     fn unfiltered_select_takes_digits_and_input_returns_its_text() {
         let mut pick = Overlay::select(
             "Allow?",

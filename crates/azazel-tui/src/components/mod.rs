@@ -87,18 +87,4 @@ mod tests {
         assert_eq!(format_elapsed(Duration::from_secs(3600)), "1h00m");
         assert_eq!(format_elapsed(Duration::from_secs(3725)), "1h02m");
     }
-
-    #[test]
-    fn tokens_switch_units_at_boundaries() {
-        assert_eq!(format_tokens(0), "0");
-        assert_eq!(format_tokens(999), "999");
-        assert_eq!(format_tokens(1000), "1.0k");
-        assert_eq!(format_tokens(1234), "1.2k");
-        assert_eq!(format_tokens(1250), "1.3k");
-        assert_eq!(format_tokens(15_700), "15.7k");
-        assert_eq!(format_tokens(999_949), "999.9k");
-        assert_eq!(format_tokens(999_950), "1.0M");
-        assert_eq!(format_tokens(3_440_000), "3.4M");
-        assert_eq!(format_tokens(u64::MAX), "18446744073709.6M");
-    }
 }

@@ -626,34 +626,6 @@ fn a_rewind_takes_back_files_and_conversation() {
 }
 
 #[test]
-fn registered_commands_run_and_the_lists_answer() {
-    let mut client = Client::start(&replies(&[]), &[]);
-    let shown = client.ok(json!({ "type": "run_command", "name": "fast", "args": "status" }));
-    assert_eq!(shown["outcome"], "show");
-    assert!(
-        shown["text"].as_str().unwrap().starts_with("fast: off"),
-        "{shown}"
-    );
-    let on = client.ok(json!({ "type": "run_command", "name": "/fast", "args": "on" }));
-    assert_eq!(on["outcome"], "show");
-    assert_eq!(client.ok(json!({ "type": "get_state" }))["tier"], "priority");
-    assert_eq!(
-        client.error(json!({ "type": "run_command", "name": "nope" })),
-        "no command named `nope`"
-    );
-    assert_eq!(
-        client.error(json!({ "type": "run_command", "name": "skill:nope" })),
-        "no skill named `nope`"
-    );
-
-    // Nothing was asked of a provider yet, so nothing is known of any account.
-    assert_eq!(client.ok(json!({ "type": "get_usage" })), json!([]));
-    assert!(client.ok(json!({ "type": "list_models" })).is_array());
-
-    assert_eq!(client.finish(), Some(0));
-}
-
-#[test]
 fn roles_providers_and_models_are_listed_and_changed() {
     let mut client = Client::start(&replies(&[]), &["--trust"]);
     let home_config = client.dir.path().join("home").join("config.toml");

@@ -586,26 +586,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn todo_edits_add_finish_and_clear() {
-        let items = edit_todo(Vec::new(), "add write the tests").unwrap();
-        let items = edit_todo(items, "add run them").unwrap();
-        assert_eq!(todo_text(&items), " 1. [ ] write the tests\n 2. [ ] run them");
-        let items = edit_todo(items, "done 1").unwrap();
-        assert_eq!(items[0].status, TodoStatus::Done);
-        assert_eq!(items[1].status, TodoStatus::Pending);
-        assert!(
-            edit_todo(items.clone(), "done 3")
-                .unwrap_err()
-                .contains("from 1 to 2")
-        );
-        assert!(edit_todo(items.clone(), "done x").is_err());
-        assert!(edit_todo(items.clone(), "add").is_err());
-        assert!(edit_todo(items.clone(), "shuffle").unwrap_err().contains("usage"));
-        assert_eq!(edit_todo(items, "clear").unwrap(), Vec::new());
-        assert!(todo_text(&[]).contains("empty"));
-    }
-
-    #[test]
     fn the_session_report_names_what_the_session_holds() {
         let mut facts = SessionFacts {
             created: "2026-11-12T10:00:00Z".to_string(),

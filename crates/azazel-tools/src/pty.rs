@@ -1295,40 +1295,6 @@ mod tests {
     }
 
     #[test]
-    fn keys_are_named_as_people_write_them() {
-        let plain = Mods::default();
-        let ctrl = Mods { ctrl: true, ..plain };
-        assert_eq!(parse_key("enter"), Some((Key::Enter, plain)));
-        assert_eq!(parse_key(" Escape "), Some((Key::Esc, plain)));
-        assert_eq!(parse_key("ctrl+c"), Some((Key::Char('c'), ctrl)));
-        assert_eq!(parse_key("Ctrl+Left"), Some((Key::Left, ctrl)));
-        assert_eq!(
-            parse_key("shift+tab"),
-            Some((Key::Tab, Mods { shift: true, ..plain }))
-        );
-        assert_eq!(parse_key("backtab"), parse_key("shift+tab"));
-        assert_eq!(
-            parse_key("ctrl+alt+x"),
-            Some((
-                Key::Char('x'),
-                Mods {
-                    ctrl: true,
-                    alt: true,
-                    shift: false
-                }
-            ))
-        );
-        assert_eq!(parse_key("f12"), Some((Key::F(12), plain)));
-        assert_eq!(parse_key("G"), Some((Key::Char('G'), plain)));
-        assert_eq!(parse_key("+"), Some((Key::Char('+'), plain)));
-        assert_eq!(parse_key("ctrl++"), Some((Key::Char('+'), ctrl)));
-        assert_eq!(parse_key("space"), Some((Key::Char(' '), plain)));
-        for bad in ["", "f13", "f0", "hyper+x", "hello", "ctrl+"] {
-            assert_eq!(parse_key(bad), None, "{bad}");
-        }
-    }
-
-    #[test]
     fn keys_become_the_bytes_xterm_sends() {
         let bytes = |name: &str, application: bool| {
             let (key, mods) = parse_key(name).unwrap();

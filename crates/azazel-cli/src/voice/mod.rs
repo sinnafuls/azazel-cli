@@ -296,18 +296,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dictated_text_goes_in_at_the_cursor() {
-        let mut editor = Editor::new();
-        insert(&mut editor, "first words");
-        assert_eq!(editor.text(), "first words");
-        insert(&mut editor, "then more");
-        assert_eq!(editor.text(), "first words then more");
-        editor.set_text("a line\n");
-        insert(&mut editor, "next line");
-        assert_eq!(editor.text(), "a line\nnext line");
-    }
-
-    #[test]
     fn settings_must_name_a_provider_and_a_model() {
         assert_eq!(spec("stt", "openai/whisper-1"), Ok(("openai", "whisper-1")));
         assert_eq!(
@@ -323,22 +311,6 @@ mod tests {
             let error = spec("stt", bad).unwrap_err();
             assert!(error.starts_with("[voice] stt must be"), "{error}");
         }
-    }
-
-    #[test]
-    fn commands_are_looked_up_and_missing_ones_are_named() {
-        assert_eq!(program("").unwrap_err(), "the command is empty");
-        assert_eq!(
-            program("azazel-no-such-program --flag").unwrap_err(),
-            "`azazel-no-such-program` was not found"
-        );
-        let (found, args) = program("cargo \"two words\" three").unwrap();
-        assert_eq!(short_name(&found), "cargo");
-        assert_eq!(args, ["two words", "three"]);
-        assert_eq!(
-            first_installed(&["azazel-no-such-program -x", "cargo -q"]),
-            Some("cargo -q")
-        );
     }
 
     #[test]

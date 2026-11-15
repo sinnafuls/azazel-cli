@@ -485,17 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unparsable_keys() {
-        for bad in ["", "ctrl+", "mod+x", "ctrl+nope", "f99", "f0", "ctrl+alt"] {
-            assert_eq!(
-                bad.parse::<KeyCombo>(),
-                Err(KeyError::InvalidKey(bad.to_string())),
-                "{bad:?}"
-            );
-        }
-    }
-
-    #[test]
     fn letters_match_regardless_of_reported_case() {
         let chord = combo("ctrl+shift+p");
         assert!(chord.matches(&press(

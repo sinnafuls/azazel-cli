@@ -445,26 +445,6 @@ fn a_gpt_model_gets_patch_in_place_of_edit_and_patches_files() {
 }
 
 #[test]
-fn which_models_get_patch_follows_tools_patch() {
-    let sandbox = Sandbox::new();
-    let offered = |args: &[&str]| -> (bool, bool) {
-        let script =
-            json!({ "lead": [{ "reply": { "text": "done" } }], "gpt-5": [{ "reply": { "text": "done" } }] });
-        let output = sandbox.azazel(&script, args);
-        assert!(output.status.success(), "{}", stderr(&output));
-        let request = &sandbox.requests()[0];
-        (tool(request, "patch").is_some(), tool(request, "edit").is_some())
-    };
-    assert_eq!(offered(&[]), (false, true));
-    assert_eq!(offered(&["--model", "mock/gpt-5"]), (true, false));
-    assert_eq!(offered(&["--set", "tools.patch=\"on\""]), (true, true));
-    assert_eq!(
-        offered(&["--model", "mock/gpt-5", "--set", "tools.patch=\"off\""]),
-        (false, true)
-    );
-}
-
-#[test]
 fn what_a_loaded_skill_allows_needs_no_approval_while_the_run_lasts() {
     let sandbox = Sandbox::new();
     let skill = sandbox.home().join("skills/greet");

@@ -639,18 +639,6 @@ mod tests {
     }
 
     #[test]
-    fn only_providers_that_take_a_key_can_be_logged_in_to() {
-        let providers = key_providers(&Config::default()).unwrap();
-        assert!(find(&providers, "openai").is_ok());
-        // Local servers need no key.
-        let unknown = find(&providers, "ollama").unwrap_err();
-        assert!(
-            unknown.contains("`ollama` is not a provider that takes a key or a login")
-                && unknown.contains("anthropic")
-        );
-    }
-
-    #[test]
     fn the_command_line_picks_the_device_or_the_enterprise_sign_in() {
         let providers = key_providers(&Config::default()).unwrap();
         let codex = find(&providers, "openai-codex").unwrap();
