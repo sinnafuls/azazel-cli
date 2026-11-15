@@ -5,6 +5,21 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-15
+
+### Added
+
+- Status line preset `lean`: mode, agent, branch, directory and tok/s on the left; model, thinking level and context on the right, drawn as blocks (`/statusline lean`).
+
+### Changed
+
+- When the thinking segment is on the status line, the model segment no longer repeats the level as `:high`.
+
+### Fixed
+
+- `Ctrl+P` (and any other model switch) shows the new model in the status line at once, not after the next message.
+- The process-priority test compared against a fixed priority, so it failed on CI runners that already run lowered (Windows) and on macOS, whose `nice` prints its usage instead of the value.
+
 ## [0.10.0] - 2026-11-15
 
 ### Added
@@ -1042,7 +1057,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.1...HEAD
+[0.10.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.0...v0.10.1
 [0.10.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...v0.9.0

@@ -428,6 +428,7 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 | `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
 | `minimal` | `mode`, `path`, `agents` | `model` |
 | `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
+| `lean` | `mode`, `agent`, `branch`, `path`, `rate` | `model`, `thinking`, `context` |
 | `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
 
 `statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
@@ -510,7 +511,7 @@ that are off (the sample shows some of them).
 | `Enter` | | Saves `preset`, `separator`, `left` and `right` under `[statusline]` in `~/.azazel/config.toml`. A side that is the preset's is not written, so it follows the preset |
 | `Esc` | | Puts the line back as it was |
 
-`/statusline minimal` (or `default`, `powerline`, `full`) takes a preset at once and saves it. The Status line
+`/statusline minimal` (or `default`, `powerline`, `lean`, `full`) takes a preset at once and saves it. The Status line
 group on the Appearance page of [`/settings`](#settings) edits the same keys, the segment options and the command included.
 
 #### Your own command

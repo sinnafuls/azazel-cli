@@ -632,7 +632,13 @@ config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
 config_enum!(QueueMode { One = "one", All = "all" } default One);
 config_enum!(Autocomplete { Words = "words", Off = "off" } default Words);
-config_enum!(StatusPreset { Default = "default", Minimal = "minimal", Powerline = "powerline", Full = "full" } default Default);
+config_enum!(StatusPreset { Default = "default", Minimal = "minimal", Powerline = "powerline", Lean = "lean", Full = "full" } default Default);
+impl StatusPreset {
+    /// Whether the preset is drawn as blocks of colour unless another separator is chosen.
+    pub fn blocks(self) -> bool {
+        matches!(self, StatusPreset::Powerline | StatusPreset::Lean)
+    }
+}
 config_enum!(StatusSeparator { Dot = "dot", Bar = "bar", Powerline = "powerline", Space = "space" } default Dot);
 config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", Ascii = "ascii" } default Auto);
 config_enum!(Indicator { Shimmer = "shimmer", Kitt = "kitt", Static = "static" } default Shimmer);

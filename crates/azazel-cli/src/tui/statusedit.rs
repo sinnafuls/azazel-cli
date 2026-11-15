@@ -48,7 +48,7 @@ pub struct StatusEditor {
 /// preset's own", which for `powerline` is blocks, so it is not a choice of its own there.
 fn separators(preset: StatusPreset) -> &'static [StatusSeparator] {
     match preset {
-        StatusPreset::Powerline => &[
+        StatusPreset::Powerline | StatusPreset::Lean => &[
             StatusSeparator::Powerline,
             StatusSeparator::Bar,
             StatusSeparator::Space,
@@ -67,7 +67,7 @@ impl StatusEditor {
     pub fn new(config: &StatuslineConfig, subscription: bool) -> StatusEditor {
         let (layout, _) = Layout::new(config);
         let separator = match (config.preset, config.separator) {
-            (StatusPreset::Powerline, StatusSeparator::Dot) => StatusSeparator::Powerline,
+            (preset, StatusSeparator::Dot) if preset.blocks() => StatusSeparator::Powerline,
             (_, separator) => separator,
         };
         let mut editor = StatusEditor {
@@ -105,7 +105,7 @@ impl StatusEditor {
         let mut config = self.before.clone();
         config.preset = self.preset;
         config.separator = match (self.preset, self.separator) {
-            (StatusPreset::Powerline, StatusSeparator::Powerline) => StatusSeparator::Dot,
+            (preset, StatusSeparator::Powerline) if preset.blocks() => StatusSeparator::Dot,
             (_, separator) => separator,
         };
         config.left = listed(&self.left, preset_left);

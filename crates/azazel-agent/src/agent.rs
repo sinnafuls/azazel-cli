@@ -520,6 +520,12 @@ impl Actor {
             }
             {
                 let mut status = locked(&self.core.status);
+                // A new chain: the model that answered last no longer stands for it, so the
+                // status line names the model the chain asks first until the next request.
+                if status.chain != self.inbox.chain {
+                    status.model = None;
+                    status.via = None;
+                }
                 status.chain = self.inbox.chain.clone();
                 status.thinking_set = self.inbox.thinking;
             }

@@ -184,6 +184,14 @@ impl Name {
     }
 }
 
+/// `model` without a trailing `:level` naming a thinking level.
+fn without_level(model: &str) -> &str {
+    match model.rsplit_once(':') {
+        Some((name, level)) if level.parse::<azazel_ai::ThinkingLevel>().is_ok() => name,
+        _ => model,
+    }
+}
+
 /// The segments of a preset: its left side and its right side.
 pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name]) {
     use Name::*;
@@ -200,6 +208,8 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
             &[Mode, Branch, GitDirty, Path, Context, Agents, Extensions],
             &[Cost, Usage, Thinking, Model],
         ),
+        // Who acts and where on the left, what answers and how full it is on the right.
+        StatusPreset::Lean => (&[Mode, Agent, Branch, Path, Rate], &[Model, Thinking, Context]),
         StatusPreset::Full => (
             &[
                 Mode, Agent, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal,
@@ -385,8 +395,8 @@ impl Layout {
             (left, side("right", &config.right, preset_right))
         };
         let separator = match config.separator {
-            // The preset called `powerline` is drawn as one unless another separator is chosen.
-            StatusSeparator::Dot if config.preset == StatusPreset::Powerline => Separator::Powerline,
+            // The powerline presets are drawn as blocks unless another separator is chosen.
+            StatusSeparator::Dot if config.preset.blocks() => Separator::Powerline,
             StatusSeparator::Dot => Separator::Dot,
             StatusSeparator::Bar => Separator::Bar,
             StatusSeparator::Space => Separator::Space,
@@ -655,12 +665,19 @@ impl StatusLine<'_> {
                 Segment::new(Role::Muted, labelled(Glyph::Account, &cut(account, None)))
             }),
             Name::Model => {
-                let model = match (self.model.is_empty(), options.short_model) {
+                // With the thinking segment on the line, the level it shows is not repeated as
+                // the model's `:level`.
+                let shows_level =
+                    layout.left.contains(&Name::Thinking) || layout.right.contains(&Name::Thinking);
+                let model = match shows_level {
+                    true => without_level(self.model),
+                    false => self.model,
+                };
+                let model = match (model.is_empty(), options.short_model) {
                     (true, _) => "no model".to_string(),
-                    (false, false) => self.model.to_string(),
+                    (false, false) => model.to_string(),
                     // `virtual/auto -> provider/model` keeps both of its names.
-                    (false, true) => self
-                        .model
+                    (false, true) => model
                         .split(" -> ")
                         .map(|model| model.split_once('/').map_or(model, |(_, id)| id))
                         .collect::<Vec<_>>()

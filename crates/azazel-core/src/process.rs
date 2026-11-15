@@ -861,8 +861,9 @@ mod tests {
             })?;
             (shell, "(Get-Process -Id $PID).PriorityClass")
         } else {
-            which::which("nice").ok()?;
-            (Shell::resolve(""), "nice")
+            // BSD `nice` without a program prints its usage, not the value: ask `ps`.
+            which::which("ps").ok()?;
+            (Shell::resolve(""), "ps -o nice= -p $$")
         };
         let mut options = RunOptions::new(std::env::temp_dir());
         options.priority = priority;
@@ -872,24 +873,22 @@ mod tests {
 
     #[tokio::test]
     async fn a_lowered_process_runs_at_the_priority_the_setting_names() {
-        let table = if cfg!(windows) {
-            [
-                (ProcessPriority::Normal, "Normal"),
-                (ProcessPriority::Low, "BelowNormal"),
-                (ProcessPriority::Idle, "Idle"),
-            ]
-        } else {
-            [
-                (ProcessPriority::Normal, "0"),
-                (ProcessPriority::Low, "10"),
-                (ProcessPriority::Idle, "19"),
-            ]
+        // `normal` keeps whatever the test runner runs at (CI runners are often lowered
+        // already), so the lowered levels are compared with it.
+        let Some(normal) = own_priority(ProcessPriority::Normal).await else {
+            return;
         };
-        for (priority, wanted) in table {
+        let (low, idle) = if cfg!(windows) {
+            ("BelowNormal".to_string(), "Idle".to_string())
+        } else {
+            let base: i32 = normal.parse().unwrap_or(0);
+            ((base + 10).min(19).to_string(), "19".to_string())
+        };
+        for (priority, wanted) in [(ProcessPriority::Low, low), (ProcessPriority::Idle, idle)] {
             let Some(got) = own_priority(priority).await else {
                 return;
             };
-            assert_eq!(got, wanted, "{priority}");
+            assert_eq!(got, wanted, "{priority} (normal here: {normal})");
         }
     }
 }
