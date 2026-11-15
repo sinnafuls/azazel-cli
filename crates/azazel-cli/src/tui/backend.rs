@@ -123,7 +123,7 @@ pub(crate) enum Billing {
 
 /// What azazel prints as it ends, to say how to come back to session `id`.
 pub(crate) fn resume_line(id: &str) -> String {
-    format!("Resume this session with\n  azazel -r {id}")
+    format!("Resume this session with\nazazel -r {id}")
 }
 
 /// The roles the cycling keys step through when there are no favourites, as `@role`: those of

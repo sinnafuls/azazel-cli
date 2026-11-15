@@ -742,7 +742,10 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     }
     // Starting again returns to the session by itself: nobody has to be told how.
     if let Some(farewell) = tui.backend.farewell().filter(|_| !tui.ended && !tui.restarting) {
-        println!("{farewell}");
+        // Muted, like the other asides: it is a reminder, not part of the conversation.
+        for line in farewell.lines() {
+            println!("{}", tui.theme.paint(azazel_tui::theme::Role::Muted, line));
+        }
     }
     // A release the background check downloaded takes the place of this binary now.
     if tui.env.config.update.auto

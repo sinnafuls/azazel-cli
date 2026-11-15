@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Changed
+
+- The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
+
 ## [0.9.1] - 2026-11-15
 
 ### Fixed
