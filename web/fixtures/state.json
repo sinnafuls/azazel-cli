@@ -1,0 +1,89 @@
+{
+ "session_id": "01a1e0e0-96af-759d-ac3d-3931ebd4d68a",
+ "session_file": "session.jsonl",
+ "name": null,
+ "cwd": "/home/dev/project",
+ "mode": "manual",
+ "busy": false,
+ "turn": 2,
+ "model": "mock/lead",
+ "chain": [
+  "mock/lead"
+ ],
+ "thinking": "off",
+ "tier": null,
+ "context_tokens": 2346,
+ "context_window": 128000,
+ "usage": {
+  "input": 0,
+  "output": 0,
+  "cache_read": 0,
+  "cache_write": 0,
+  "reasoning": 0
+ },
+ "requests": 1,
+ "agents": [
+  {
+   "id": "lead",
+   "def": "lead",
+   "parent": null,
+   "depth": 0,
+   "state": "idle",
+   "elapsed_ms": 0,
+   "tokens": 0,
+   "cost_usd": null
+  },
+  {
+   "id": "scout-1",
+   "def": "scout",
+   "parent": "lead",
+   "depth": 1,
+   "state": "done",
+   "elapsed_ms": 30,
+   "tokens": 0,
+   "cost_usd": null
+  },
+  {
+   "id": "scout-2",
+   "def": "scout",
+   "parent": "lead",
+   "depth": 1,
+   "state": "failed",
+   "elapsed_ms": 39,
+   "tokens": 0,
+   "cost_usd": null
+  },
+  {
+   "id": "scout-3",
+   "def": "scout",
+   "parent": "lead",
+   "depth": 1,
+   "state": "failed",
+   "elapsed_ms": 39,
+   "tokens": 0,
+   "cost_usd": null
+  }
+ ],
+ "branch": null,
+ "coordinator": false,
+ "agent": "build",
+ "primary_agents": [
+  {
+   "name": "build",
+   "description": "The lead as it works by default, with every tool. Tab switches to plan."
+  },
+  {
+   "name": "plan",
+   "description": "Investigates read-only and writes a plan under .azazel/plans/; changes nothing else. Tab switches to build.",
+   "color": "#539bf5"
+  }
+ ],
+ "goal": null,
+ "todo": [],
+ "roles": {
+  "artist": "mock/lead",
+  "coder": "mock/lead",
+  "default": "mock/lead",
+  "designer": "mock/lead"
+ }
+}

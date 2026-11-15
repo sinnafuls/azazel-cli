@@ -1,0 +1,9 @@
+{"type": "agent_start", "agent": "lead"}
+{"type": "turn_start", "turn": 1, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "text_delta", "index": 0, "delta": "Noted."}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "text", "text": "Noted."}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Noted."}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "stop", "duration_ms": 0}}, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "idle", "stop": "stop", "agent": "lead"}
