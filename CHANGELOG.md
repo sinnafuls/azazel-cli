@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-15
+
 ### Added
 
 - `team.agent_retention_days` (default 14, also under `/settings` → Advanced): finished sub-agents older than that leave the agent hub, and their transcript files are deleted at the next start; `0` keeps them.
@@ -1040,7 +1042,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...v0.8.0
