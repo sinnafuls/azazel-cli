@@ -274,7 +274,7 @@ pub fn list_arguments(kind: Kind, state: State) -> Vec<String> {
         "--limit",
         &PICKER_LIMIT.to_string(),
         "--json",
-        "number,title,author,labels,createdAt,state",
+        "number,title,author,labels,createdAt,state,url",
     ]
     .iter()
     .map(|word| word.to_string())
@@ -289,8 +289,9 @@ pub struct Item {
     pub author: String,
     pub labels: Vec<String>,
     pub state: String,
-    /// The day it was opened, `2026-11-02`.
-    pub opened: String,
+    /// When it was opened, as GitHub writes it (`2026-11-02T10:00:00Z`).
+    pub created: String,
+    pub url: String,
 }
 
 /// The rows of the JSON of [`list_arguments`].
@@ -305,9 +306,16 @@ pub fn parse_list(json: &str) -> Result<Vec<Item>, String> {
             author: login(row).to_string(),
             labels: label_names(row).iter().map(|l| l.to_string()).collect(),
             state: text(row, "state").to_string(),
-            opened: day(text(row, "createdAt")).to_string(),
+            created: text(row, "createdAt").to_string(),
+            url: text(row, "url").to_string(),
         })
         .collect())
+}
+
+/// The issues or pull requests of the repository of `cwd` in `state`, newest first.
+pub async fn list(program: &Path, cwd: &Path, kind: Kind, state: State) -> Result<Vec<Item>, String> {
+    let json = run(program, &list_arguments(kind, state), cwd, &[], TIMEOUT).await?;
+    parse_list(&json)
 }
 
 /// What `#<n>` in a prompt can mean: the numbers of a prompt that are whole words made of
@@ -372,6 +380,17 @@ mod tests {
             assert!(references(plain).is_empty(), "{plain}");
         }
         assert_eq!(references("#3"), [3]);
+    }
+
+    #[test]
+    fn a_listing_has_one_row_per_item_with_its_author_labels_and_state() {
+        let json = r#"[{"number":3,"title":"Crash","author":{"login":"ann"},"labels":[{"name":"bug"}],
+            "createdAt":"2026-11-02T10:00:00Z","state":"OPEN","url":"https://github.com/o/r/issues/3"}]"#;
+        let rows = parse_list(json).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!((rows[0].number, rows[0].author.as_str()), (3, "ann"));
+        assert_eq!(rows[0].labels, ["bug"]);
+        assert_eq!(State::Open.next().next().next(), State::Open);
     }
 
     #[test]
