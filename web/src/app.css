@@ -1,39 +1,92 @@
 @import 'tailwindcss';
 
 /*
- * Tokens use shadcn-svelte's names and are defined once with light-dark(). The page follows the
- * system; `html.light` / `html.dark` (the theme toggle) overrides it. One accent (amber) marks
- * "this needs you" and the primary action. Green, red and blue are status only.
+ * azazel web: design tokens.
+ *
+ * Reference: Linear's system (a four-step surface ladder carried by hairlines, one scarce accent,
+ * quiet type), with a terminal's mono voice in tool output.
+ *
+ * Three layers: primitives (the ramps, in OKLCH, hue 268 for neutrals so every grey leans the same way
+ * as the canvas), semantic roles (what components use), and Tailwind's @theme mapping at the bottom.
+ * light-dark() picks the value per theme; `html.light` / `html.dark` overrides the system choice.
+ *
+ * Accent: ember (hue 45). It means "this needs you" and "the primary action", nothing else.
+ * Status colours (blue working, green done, red failed) never decorate.
  */
+
+@font-face {
+	font-family: 'Geist';
+	src: url('./lib/fonts/geist-latin-wght-normal.woff2') format('woff2-variations');
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+@font-face {
+	font-family: 'Geist Mono';
+	src: url('./lib/fonts/geist-mono-latin-wght-normal.woff2') format('woff2-variations');
+	font-weight: 100 900;
+	font-style: normal;
+	font-display: swap;
+}
+
 :root {
 	color-scheme: light dark;
-	--background: light-dark(#f6f6f7, #0f1012);
-	--foreground: light-dark(#17181b, #e6e7e9);
-	--card: light-dark(#ffffff, #15171a);
-	--raised: light-dark(#eeeef0, #1c1e22);
-	--border: light-dark(#dcdde1, #272a30);
-	--input: light-dark(#c4c7ce, #353941);
-	--muted-foreground: light-dark(#575c66, #8d929c);
-	--primary: light-dark(#d98a1c, #e8a23c);
-	--primary-foreground: light-dark(#1c1305, #1a1204);
-	--accent-text: light-dark(#8a4b00, #f0b45a);
-	--ring: light-dark(#b86f06, #e8a23c);
-	--destructive: light-dark(#c4323a, #f0646a);
-	--destructive-foreground: light-dark(#ffffff, #1a0709);
-	--success: light-dark(#197a47, #5cc98a);
-	--info: light-dark(#1f5fbf, #6ea8fe);
-	--diff-add: light-dark(#dcf3e5, #12281c);
-	--diff-del: light-dark(#fbe3e4, #301518);
-	--diff-add-fg: light-dark(#14613a, #7fdba4);
-	--diff-del-fg: light-dark(#a2262d, #f58d92);
-	--muted: var(--raised);
-	--secondary: var(--raised);
-	--secondary-foreground: var(--foreground);
-	--accent: var(--raised);
-	--accent-foreground: var(--foreground);
-	--popover: var(--card);
-	--popover-foreground: var(--foreground);
-	--card-foreground: var(--foreground);
+
+	/* surface ladder: canvas < sidebar < card < raised < overlay */
+	--background: light-dark(oklch(0.978 0.004 268), oklch(0.155 0.008 268));
+	--sidebar: light-dark(oklch(0.962 0.005 268), oklch(0.185 0.009 268));
+	--card: light-dark(oklch(1 0 0), oklch(0.205 0.01 268));
+	--raised: light-dark(oklch(0.947 0.006 268), oklch(0.245 0.011 268));
+	--overlay: light-dark(oklch(1 0 0), oklch(0.275 0.012 268));
+	--inset: light-dark(oklch(0.965 0.005 268), oklch(0.13 0.008 268));
+
+	/* hairlines */
+	--border: light-dark(oklch(0.905 0.006 268), oklch(0.285 0.012 268));
+	--border-strong: light-dark(oklch(0.84 0.008 268), oklch(0.36 0.013 268));
+	--input: light-dark(oklch(0.8 0.009 268), oklch(0.4 0.014 268));
+
+	/* ink: three strengths */
+	--foreground: light-dark(oklch(0.215 0.012 268), oklch(0.955 0.004 268));
+	--ink-2: light-dark(oklch(0.38 0.012 268), oklch(0.82 0.007 268));
+	--muted-foreground: light-dark(oklch(0.5 0.012 268), oklch(0.7 0.011 268));
+	--faint: light-dark(oklch(0.62 0.01 268), oklch(0.56 0.012 268));
+
+	/* accent: ember */
+	--primary: light-dark(oklch(0.66 0.19 45), oklch(0.74 0.17 50));
+	--primary-hover: light-dark(oklch(0.62 0.19 45), oklch(0.79 0.16 52));
+	--primary-foreground: oklch(0.2 0.04 45);
+	--accent-text: light-dark(oklch(0.5 0.17 40), oklch(0.8 0.14 60));
+	--ring: light-dark(oklch(0.6 0.19 45), oklch(0.74 0.17 50));
+
+	/* status */
+	--info: light-dark(oklch(0.55 0.17 255), oklch(0.74 0.12 250));
+	--success: light-dark(oklch(0.52 0.14 155), oklch(0.77 0.15 155));
+	--destructive: light-dark(oklch(0.53 0.2 25), oklch(0.72 0.16 22));
+	--destructive-foreground: light-dark(oklch(0.99 0 0), oklch(0.16 0.03 22));
+
+	/* diff */
+	--diff-add: light-dark(oklch(0.95 0.045 155), oklch(0.27 0.06 155));
+	--diff-del: light-dark(oklch(0.955 0.03 20), oklch(0.27 0.06 22));
+	--diff-add-fg: light-dark(oklch(0.4 0.11 155), oklch(0.82 0.13 155));
+	--diff-del-fg: light-dark(oklch(0.46 0.15 22), oklch(0.82 0.1 22));
+
+	/* depth: neutral-tinted, a faint top highlight on lifted dark surfaces */
+	--shadow-sm: 0 1px 2px light-dark(oklch(0.3 0.02 268 / 0.08), oklch(0 0 0 / 0.4));
+	--shadow-md:
+		0 4px 14px -2px light-dark(oklch(0.3 0.02 268 / 0.12), oklch(0 0 0 / 0.5)),
+		0 1px 2px light-dark(oklch(0.3 0.02 268 / 0.06), oklch(0 0 0 / 0.3));
+	--shadow-lg:
+		0 18px 48px -8px light-dark(oklch(0.3 0.02 268 / 0.22), oklch(0 0 0 / 0.65)),
+		0 4px 12px light-dark(oklch(0.3 0.02 268 / 0.08), oklch(0 0 0 / 0.35));
+	--edge: inset 0 1px 0 light-dark(oklch(1 0 0 / 0.6), oklch(1 0 0 / 0.045));
+	--glow: 0 0 0 3px color-mix(in oklab, var(--ring) 28%, transparent);
+
+	/* motion */
+	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+	--ease-in: cubic-bezier(0.5, 0, 0.75, 0);
+	--dur-fast: 120ms;
+	--dur: 180ms;
+	--dur-slow: 260ms;
 }
 :root.light {
 	color-scheme: light;
@@ -44,12 +97,26 @@
 
 @theme inline {
 	--color-background: var(--background);
+	--color-sidebar: var(--sidebar);
 	--color-foreground: var(--foreground);
 	--color-card: var(--card);
+	--color-card-foreground: var(--foreground);
+	--color-popover: var(--overlay);
+	--color-popover-foreground: var(--foreground);
 	--color-raised: var(--raised);
+	--color-overlay: var(--overlay);
+	--color-inset: var(--inset);
 	--color-border: var(--border);
+	--color-border-strong: var(--border-strong);
 	--color-input: var(--input);
+	--color-ink-2: var(--ink-2);
+	--color-muted: var(--raised);
 	--color-muted-foreground: var(--muted-foreground);
+	--color-faint: var(--faint);
+	--color-secondary: var(--raised);
+	--color-secondary-foreground: var(--foreground);
+	--color-accent: var(--raised);
+	--color-accent-foreground: var(--foreground);
 	--color-primary: var(--primary);
 	--color-primary-foreground: var(--primary-foreground);
 	--color-accent-text: var(--accent-text);
@@ -62,26 +129,37 @@
 	--color-diff-del: var(--diff-del);
 	--color-diff-add-fg: var(--diff-add-fg);
 	--color-diff-del-fg: var(--diff-del-fg);
-	--color-muted: var(--muted);
-	--color-secondary: var(--secondary);
-	--color-secondary-foreground: var(--secondary-foreground);
-	--color-accent: var(--accent);
-	--color-accent-foreground: var(--accent-foreground);
-	--color-popover: var(--popover);
-	--color-popover-foreground: var(--popover-foreground);
-	--color-card-foreground: var(--card-foreground);
+
 	--font-sans:
-		ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
-		'Helvetica Neue', Arial, sans-serif;
-	--font-mono:
-		ui-monospace, 'SF Mono', 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono',
-		monospace;
-	--radius-sm: 4px;
-	--radius-md: 6px;
-	--radius-lg: 10px;
-	--radius-xl: 14px;
+		'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
+		sans-serif;
+	--font-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
+
+	/* type scale, ratio ~1.15 for a dense tool; whole pixels */
 	--text-2xs: 0.6875rem;
 	--text-2xs--line-height: 1rem;
+	--text-xs: 0.75rem;
+	--text-xs--line-height: 1rem;
+	--text-sm: 0.8125rem;
+	--text-sm--line-height: 1.25rem;
+	--text-base: 0.9375rem;
+	--text-base--line-height: 1.5rem;
+	--text-lg: 1.0625rem;
+	--text-lg--line-height: 1.5rem;
+	--text-xl: 1.25rem;
+	--text-xl--line-height: 1.75rem;
+
+	/* radius: one scale. controls 8, cards 12, sheets 16, pills full */
+	--radius-xs: 4px;
+	--radius-sm: 6px;
+	--radius-md: 8px;
+	--radius-lg: 12px;
+	--radius-xl: 16px;
+	--radius-2xl: 20px;
+
+	--animate-enter: enter var(--dur) var(--ease-out) both;
+	--animate-ping-soft: ping-soft 1.8s var(--ease-out) infinite;
+	--animate-shimmer: shimmer 1.8s linear infinite;
 }
 
 @layer base {
@@ -99,12 +177,26 @@
 		font-family: var(--font-sans);
 		font-size: 14px;
 		line-height: 1.5;
+		letter-spacing: -0.006em;
+		font-feature-settings:
+			'cv11' 1,
+			'ss01' 1;
 		-webkit-font-smoothing: antialiased;
 		-webkit-text-size-adjust: 100%;
+		-webkit-tap-highlight-color: transparent;
+	}
+	code,
+	kbd,
+	pre,
+	samp {
+		font-family: var(--font-mono);
+		letter-spacing: 0;
+		font-feature-settings: 'liga' 0;
 	}
 	:focus-visible {
 		outline: 2px solid var(--ring);
 		outline-offset: 2px;
+		border-radius: 4px;
 	}
 	button,
 	[role='button'],
@@ -116,10 +208,10 @@
 		cursor: not-allowed;
 	}
 	::selection {
-		background: color-mix(in oklab, var(--primary) 35%, transparent);
+		background: color-mix(in oklab, var(--primary) 32%, transparent);
 	}
 	@media (pointer: coarse) {
-		input,
+		input:not([type='checkbox']),
 		textarea,
 		select {
 			font-size: 16px;
@@ -141,15 +233,62 @@
 	.num {
 		font-variant-numeric: tabular-nums;
 	}
+	/* The micro-label: used sparingly, on panel headings. */
+	.label {
+		font-size: 0.6875rem;
+		font-weight: 500;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--muted-foreground);
+	}
+	/* A lifted surface: hairline + faint top edge, no drop shadow unless it floats. */
+	.surface {
+		background: var(--card);
+		border: 1px solid var(--border);
+		box-shadow: var(--edge);
+	}
+	.float {
+		background: var(--overlay);
+		border: 1px solid var(--border-strong);
+		box-shadow: var(--edge), var(--shadow-lg);
+	}
+	.pad-b {
+		padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+	}
+	.pad-t {
+		padding-top: env(safe-area-inset-top);
+	}
+	/* Press feedback on touch and click; transform only. */
+	.press {
+		transition: transform var(--dur-fast) var(--ease-out);
+	}
+	.press:active:not(:disabled) {
+		transform: scale(0.97);
+	}
+	/* Shimmer for "thinking" text. */
+	.shimmer {
+		background: linear-gradient(
+				100deg,
+				var(--muted-foreground) 35%,
+				var(--foreground) 50%,
+				var(--muted-foreground) 65%
+			)
+			0 0 / 220% 100%;
+		-webkit-background-clip: text;
+		background-clip: text;
+		color: transparent;
+		animation: shimmer 2s linear infinite;
+	}
 
 	/* Rendered model markdown. Everything inside is sanitised first. */
 	.md {
 		font-size: 0.9375rem;
-		line-height: 1.65;
+		line-height: 1.7;
 		overflow-wrap: anywhere;
+		color: var(--foreground);
 	}
 	.md > * + * {
-		margin-top: 0.75em;
+		margin-top: 0.8em;
 	}
 	.md h1,
 	.md h2,
@@ -157,22 +296,22 @@
 	.md h4 {
 		font-weight: 600;
 		line-height: 1.3;
-		letter-spacing: -0.01em;
-		margin-top: 1.25em;
+		letter-spacing: -0.015em;
+		margin-top: 1.4em;
 	}
 	.md h1 {
 		font-size: 1.25rem;
 	}
 	.md h2 {
-		font-size: 1.125rem;
+		font-size: 1.0625rem;
 	}
 	.md h3,
 	.md h4 {
-		font-size: 1rem;
+		font-size: 0.9375rem;
 	}
 	.md ul,
 	.md ol {
-		padding-left: 1.4em;
+		padding-left: 1.35em;
 	}
 	.md ul {
 		list-style: disc;
@@ -181,68 +320,87 @@
 		list-style: decimal;
 	}
 	.md li + li {
-		margin-top: 0.25em;
+		margin-top: 0.3em;
 	}
 	.md li::marker {
-		color: var(--muted-foreground);
+		color: var(--faint);
+	}
+	.md strong {
+		font-weight: 600;
 	}
 	.md a {
 		color: var(--accent-text);
 		text-decoration: underline;
 		text-underline-offset: 3px;
 		text-decoration-thickness: 1px;
+		text-decoration-color: color-mix(in oklab, var(--accent-text) 45%, transparent);
+	}
+	.md a:hover {
+		text-decoration-color: currentColor;
 	}
 	.md blockquote {
-		border-left: 2px solid var(--input);
+		border-left: 2px solid var(--border-strong);
 		padding-left: 0.9em;
 		color: var(--muted-foreground);
 	}
 	.md hr {
 		border: 0;
 		border-top: 1px solid var(--border);
-		margin: 1.25em 0;
+		margin: 1.4em 0;
 	}
 	.md code {
-		font-family: var(--font-mono);
-		font-size: 0.85em;
+		font-size: 0.84em;
 		background: var(--raised);
-		border-radius: 4px;
-		padding: 0.12em 0.4em;
+		border: 1px solid var(--border);
+		border-radius: 5px;
+		padding: 0.1em 0.38em;
 	}
 	.md pre {
-		background: var(--card);
+		background: var(--inset);
 		border: 1px solid var(--border);
 		border-radius: var(--radius-lg);
-		padding: 0.75rem 0.9rem;
+		padding: 0.85rem 1rem;
 		overflow-x: auto;
 		font-size: 0.8125rem;
-		line-height: 1.55;
+		line-height: 1.6;
 		scrollbar-width: thin;
+		box-shadow: inset 0 1px 0 light-dark(oklch(0 0 0 / 0.03), oklch(0 0 0 / 0.25));
 	}
 	.md pre code {
 		background: none;
+		border: 0;
 		padding: 0;
 		font-size: inherit;
 	}
 	.md table {
 		display: block;
 		overflow-x: auto;
-		border-collapse: collapse;
+		border-collapse: separate;
+		border-spacing: 0;
 		font-size: 0.875rem;
+		border: 1px solid var(--border);
+		border-radius: var(--radius-md);
+		width: max-content;
+		max-width: 100%;
 	}
 	.md th,
 	.md td {
-		border: 1px solid var(--border);
-		padding: 0.35rem 0.65rem;
+		border-bottom: 1px solid var(--border);
+		padding: 0.4rem 0.8rem;
 		text-align: left;
+	}
+	.md tr:last-child td {
+		border-bottom: 0;
 	}
 	.md th {
 		background: var(--raised);
-		font-weight: 600;
+		font-weight: 500;
+		color: var(--ink-2);
+		font-size: 0.8125rem;
 	}
 	.hljs-comment,
 	.hljs-quote {
-		color: var(--muted-foreground);
+		color: var(--faint);
 		font-style: italic;
 	}
 	.hljs-keyword,
@@ -273,20 +431,32 @@
 	}
 }
 
-@keyframes pulse-dot {
-	50% {
-		opacity: 0.35;
-	}
-}
-@keyframes sheet-up {
+/* Motion explains a change of state; it moves transform and opacity only. */
+@keyframes enter {
 	from {
-		transform: translateY(28px);
 		opacity: 0;
+		transform: translateY(6px);
 	}
 }
 @keyframes fade-in {
 	from {
 		opacity: 0;
+	}
+}
+@keyframes ping-soft {
+	0% {
+		transform: scale(1);
+		opacity: 0.55;
+	}
+	80%,
+	100% {
+		transform: scale(2.6);
+		opacity: 0;
+	}
+}
+@keyframes shimmer {
+	to {
+		background-position: -220% 0;
 	}
 }
 @keyframes caret {
@@ -302,6 +472,14 @@
 		transform: scaleX(1);
 	}
 }
+@keyframes bar {
+	0% {
+		transform: translateX(-100%);
+	}
+	100% {
+		transform: translateX(260%);
+	}
+}
 
 @media (prefers-reduced-motion: reduce) {
 	*,
@@ -311,5 +489,10 @@
 		animation-iteration-count: 1 !important;
 		transition-duration: 0.001ms !important;
 		scroll-behavior: auto !important;
+	}
+	.shimmer {
+		animation: none;
+		color: var(--muted-foreground);
+		background: none;
 	}
 }

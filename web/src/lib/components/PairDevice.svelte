@@ -71,7 +71,7 @@
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 				{@html svg}
 			</div>
-			<code class="bg-background block rounded-md border p-2.5 text-xs break-all">{link.url}</code>
+			<code class="bg-inset block rounded-md border p-2.5 text-xs break-all">{link.url}</code>
 			<Button variant="outline" class="h-11 w-full md:h-9" onclick={copy}
 				>{copied ? 'Copied' : 'Copy link'}</Button
 			>

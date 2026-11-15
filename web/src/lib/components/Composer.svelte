@@ -123,19 +123,19 @@
 				? followUp
 					? 'Queue something for when it is done…'
 					: 'Steer the agent…'
-				: 'Message azazel…'
+				: 'Ask azazel to do something…'
 	);
 </script>
 
 <form
-	class="bg-background border-t px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] md:px-6"
+	class="relative px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-8 md:pb-5"
 	onsubmit={(e) => {
 		e.preventDefault();
 		void submit();
 	}}
 	data-composer
 >
-	<div class="mx-auto max-w-3xl">
+	<div class="mx-auto max-w-[46rem]">
 		{#if mention}
 			<ul
 				class="bg-card mb-2 overflow-hidden rounded-lg border shadow-lg"
@@ -185,7 +185,7 @@
 		{/if}
 
 		<div
-			class="bg-card focus-within:border-ring flex items-end gap-1 rounded-xl border p-1.5 transition-colors"
+			class="surface focus-within:border-ring/70 focus-within:shadow-[var(--glow)] flex items-end gap-1 rounded-2xl p-1.5 shadow-[var(--shadow-md)] transition-[border-color,box-shadow] duration-150"
 		>
 			<input
 				bind:this={fileInput}
@@ -200,7 +200,7 @@
 			/>
 			<button
 				type="button"
-				class="text-muted-foreground hover:text-foreground hover:bg-raised grid size-11 shrink-0 place-items-center rounded-lg disabled:opacity-40 md:size-9"
+				class="text-muted-foreground hover:text-foreground hover:bg-raised grid size-11 shrink-0 place-items-center rounded-xl disabled:opacity-40 md:size-9"
 				aria-label="Attach an image"
 				disabled={!canControl}
 				onclick={() => fileInput?.click()}><Paperclip class="size-[18px]" /></button
@@ -228,7 +228,7 @@
 			{#if busy}
 				<button
 					type="button"
-					class="bg-destructive/15 text-destructive hover:bg-destructive/25 grid size-11 shrink-0 place-items-center rounded-lg disabled:opacity-40 md:size-9"
+					class="bg-destructive/15 text-destructive hover:bg-destructive/25 press grid size-11 shrink-0 place-items-center rounded-xl disabled:opacity-40 md:size-9"
 					aria-label="Stop the agent"
 					disabled={!canControl}
 					onclick={() => session.abort().catch((e) => toasts.push(String(e.message ?? e), 'error'))}
@@ -237,7 +237,7 @@
 			{/if}
 			<button
 				type="submit"
-				class="bg-primary text-primary-foreground grid size-11 shrink-0 place-items-center rounded-lg transition-opacity disabled:opacity-35 md:size-9"
+				class="bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] press grid size-11 shrink-0 place-items-center rounded-xl transition-[opacity,background-color] disabled:opacity-30 md:size-9"
 				aria-label={label}
 				disabled={!canControl || sending || (!text.trim() && !images.length)}
 				><ArrowUp class="size-[18px]" /></button

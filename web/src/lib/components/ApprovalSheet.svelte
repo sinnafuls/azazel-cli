@@ -64,13 +64,15 @@
 <Sheet
 	open={true}
 	docked
+	attention
 	title="{f.agent === 'lead' ? 'Allow' : `${f.agent} asks to use`} {f.tool}?"
 	subtitle={ACCESS[f.access] ?? f.access}
 	dismissible={false}
 >
 	<div class="space-y-3" data-request="approval">
 		<div class="flex flex-wrap items-center gap-1.5">
-			<span class="bg-raised rounded-md border px-1.5 py-0.5 font-mono text-[11px] uppercase"
+			<span
+				class="bg-raised rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] tracking-wide uppercase"
 				>{f.access}</span
 			>
 			{#if f.destructive}<span
@@ -100,7 +102,7 @@
 			<DiffView {diff} max={14} />
 		{:else}
 			<pre
-				class="bg-background scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5 whitespace-pre-wrap break-words">{prettyInput(
+				class="bg-inset scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5 whitespace-pre-wrap break-words">{prettyInput(
 					f.input,
 					900
 				)}</pre>
@@ -110,7 +112,7 @@
 			<label class="block">
 				<span class="text-muted-foreground mb-1 block text-xs">Tell the model why (optional)</span>
 				<textarea
-					class="bg-background focus-visible:ring-ring min-h-20 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
+					class="bg-inset focus-visible:ring-ring min-h-20 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
 					bind:value={feedback}
 					placeholder="Use a temporary directory instead."></textarea>
 			</label>

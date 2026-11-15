@@ -64,8 +64,10 @@
 
 <div class="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
 	<div class="flex min-h-0 min-w-0 flex-col">
-		<header class="bg-background shrink-0 border-b pt-[env(safe-area-inset-top)]">
-			<div class="flex h-12 items-center gap-1 px-2 md:px-4">
+		<header
+			class="bg-background/90 shrink-0 border-b pt-[env(safe-area-inset-top)] backdrop-blur-none"
+		>
+			<div class="flex h-14 items-center gap-1 px-2 md:px-5">
 				<a
 					href="/"
 					class="text-muted-foreground hover:text-foreground grid size-11 place-items-center lg:hidden"
@@ -78,7 +80,9 @@
 					}}><ArrowLeft class="size-[18px]" /></a
 				>
 				<div class="min-w-0 flex-1">
-					<h1 class="flex items-center gap-2 truncate text-sm font-semibold">
+					<h1
+						class="flex items-center gap-2.5 truncate text-[15px] font-semibold tracking-[-0.015em]"
+					>
 						<StateDot state={stateName} class={waiting ? '' : ''} />
 						<span class="truncate">{title}</span>
 						{#if agentId}<span class="text-muted-foreground font-mono text-xs font-normal"
@@ -103,7 +107,7 @@
 						>{/if}
 				</button>
 			</div>
-			<div class="border-t px-2 md:px-3"><StatusBar {session} canControl={app.canControl} /></div>
+			<div class="border-t px-3 md:px-5"><StatusBar {session} canControl={app.canControl} /></div>
 		</header>
 
 		{#if session.status === 'reconnecting' || session.status === 'connecting'}

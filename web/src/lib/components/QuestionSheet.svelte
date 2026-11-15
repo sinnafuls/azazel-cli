@@ -120,6 +120,7 @@
 <Sheet
 	open={true}
 	docked
+	attention
 	{title}
 	subtitle={multiple ? `${tab + 1} of ${questions.length}` : undefined}
 	dismissible={false}
@@ -127,12 +128,12 @@
 	<div class="space-y-3.5" data-request="ui" data-kind={f.kind}>
 		{#if isPlan}
 			<p class="text-muted-foreground font-mono text-xs break-all">{f.path}</p>
-			<div class="bg-background scroll-thin max-h-[42dvh] overflow-y-auto rounded-md border p-3.5">
+			<div class="bg-inset scroll-thin max-h-[42dvh] overflow-y-auto rounded-md border p-3.5">
 				<Markdown text={String(f.plan)} />
 			</div>
 			{#if revising}
 				<textarea
-					class="bg-background focus-visible:ring-ring min-h-24 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
+					class="bg-inset focus-visible:ring-ring min-h-24 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
 					bind:value={feedback}
 					placeholder="What should change?"
 					aria-label="Feedback on the plan"></textarea>
@@ -174,7 +175,7 @@
 				<DiffView diff={q.diff} max={12} />
 			{:else if q.code}
 				<pre
-					class="bg-background scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5">{q.code}</pre>
+					class="bg-inset scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5">{q.code}</pre>
 			{/if}
 
 			{#if q.expects === 'confirm'}
@@ -240,7 +241,7 @@
 							>Or write your own answer</span
 						>{/if}
 					<input
-						class="bg-background focus-visible:ring-ring h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
+						class="bg-inset focus-visible:ring-ring h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
 						type={secret ? 'password' : 'text'}
 						autocomplete="off"
 						spellcheck="false"

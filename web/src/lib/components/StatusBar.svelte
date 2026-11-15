@@ -7,6 +7,10 @@
 	import Sheet from './Sheet.svelte';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Check from '@lucide/svelte/icons/check';
+	import Cpu from '@lucide/svelte/icons/cpu';
+	import Brain from '@lucide/svelte/icons/brain';
+	import Shield from '@lucide/svelte/icons/shield';
+	import Bot from '@lucide/svelte/icons/bot';
 	import { tokens } from '$lib/format';
 
 	let { session, canControl }: { session: Session; canControl: boolean } = $props();
@@ -19,6 +23,10 @@
 	const st = $derived(session.state);
 	const current = $derived(st?.chain?.[0] ?? st?.model ?? '…');
 	const model = $derived(session.models.find((m) => m.model === (st?.model ?? current)));
+	// Always the whole `provider/id`: that is what set_model takes. The provider is dimmed.
+	const slash = $derived(current.indexOf('/'));
+	const provider = $derived(slash > 0 ? current.slice(0, slash + 1) : '');
+	const modelId = $derived(slash > 0 ? current.slice(slash + 1) : current);
 	const levels = $derived(
 		model && model.reasoning
 			? model.thinking_levels?.length
@@ -50,18 +58,25 @@
 	}
 
 	const chip =
-		'hover:bg-raised enabled:active:bg-raised flex min-h-11 shrink-0 items-center gap-1 rounded-md px-2 text-xs md:min-h-7 disabled:cursor-default';
+		'press hover:bg-raised enabled:hover:border-border-strong flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs disabled:cursor-default';
 </script>
 
-<div class="no-scrollbar flex items-center gap-0.5 overflow-x-auto" data-statusbar>
+<div
+	class="no-scrollbar flex items-center gap-1.5 overflow-x-auto py-2 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)] md:[mask-image:none]"
+	data-statusbar
+>
 	<button
-		class="{chip} font-mono"
+		class="{chip} font-medium"
 		disabled={!canControl}
 		onclick={() => open('model')}
 		aria-label="Model: {current}"
+		title={current}
 	>
-		<span class="max-w-[11rem] truncate">{current.replace(/^[^/]+\//, '')}</span>
-		{#if canControl}<ChevronDown class="size-3 opacity-60" />{/if}
+		<Cpu class="text-faint size-3.5" />
+		<span class="max-w-[15rem] truncate font-mono text-[11.5px]"
+			><span class="text-faint">{provider}</span>{modelId}</span
+		>
+		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
 	<button
 		class={chip}
@@ -69,18 +84,19 @@
 		onclick={() => open('thinking')}
 		aria-label="Thinking: {st?.thinking ?? 'off'}"
 	>
-		<span class="text-muted-foreground">think</span>
+		<Brain class="text-faint size-3.5" />
 		{st?.thinking ?? 'off'}
-		{#if canControl}<ChevronDown class="size-3 opacity-60" />{/if}
+		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
 	<button
-		class="{chip} {st?.mode === 'bypass' ? 'text-destructive' : ''}"
+		class="{chip} {st?.mode === 'bypass' ? 'border-destructive/40 text-destructive' : ''}"
 		disabled={!canControl}
 		onclick={() => open('mode')}
 		aria-label="Mode: {st?.mode ?? ''}"
 	>
+		<Shield class="text-faint size-3.5" />
 		{st?.mode ?? ''}
-		{#if canControl}<ChevronDown class="size-3 opacity-60" />{/if}
+		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
 	{#if st?.primary_agents && st.primary_agents.length > 1}
 		<button
@@ -89,15 +105,15 @@
 			onclick={() => open('agent')}
 			aria-label="Agent: {st.agent}"
 		>
-			<span class="text-muted-foreground">agent</span>
+			<Bot class="text-faint size-3.5" />
 			{st.agent}
-			{#if canControl}<ChevronDown class="size-3 opacity-60" />{/if}
+			{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 		</button>
 	{/if}
 	{#if st && st.context_window}
 		<span
-			class="text-muted-foreground num ml-1 hidden shrink-0 px-2 text-xs sm:inline"
-			title="Context in use">{tokens(st.context_tokens)} / {tokens(st.context_window)}</span
+			class="text-faint num ml-auto hidden shrink-0 pl-2 font-mono text-[11px] sm:inline"
+			title="Context in use">{tokens(st.context_tokens)}/{tokens(st.context_window)}</span
 		>
 	{/if}
 </div>
@@ -109,7 +125,7 @@
 	onclose={() => (which = null)}
 >
 	<input
-		class="bg-background focus-visible:ring-ring mb-2 h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
+		class="bg-inset focus-visible:ring-ring mb-2 h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
 		placeholder="Search models"
 		aria-label="Search models"
 		bind:value={query}

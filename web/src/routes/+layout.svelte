@@ -30,12 +30,17 @@
 
 {#if app.auth === 'ok'}
 	<div class="grid h-dvh grid-cols-1 lg:grid-cols-[18.5rem_minmax(0,1fr)]">
-		<aside class="bg-card hidden min-h-0 flex-col border-r lg:flex" aria-label="Sessions">
-			<div class="flex h-12 shrink-0 items-center justify-between border-b px-4"><Brand /></div>
-			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-2"><SessionList {current} /></div>
-			<div class="flex items-center justify-between border-t px-3 py-2 text-xs">
-				<span class="text-muted-foreground"
-					>{app.me?.access === 'control' ? 'Full control' : 'Watch only'}</span
+		<aside class="bg-sidebar hidden min-h-0 flex-col border-r lg:flex" aria-label="Sessions">
+			<div class="flex h-14 shrink-0 items-center justify-between px-4"><Brand /></div>
+			<div class="label px-5 pt-1 pb-2">Sessions</div>
+			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
+				<SessionList {current} />
+			</div>
+			<div class="flex items-center justify-between border-t px-3 py-2.5 text-xs">
+				<span class="text-muted-foreground flex items-center gap-1.5"
+					><span
+						class="size-1.5 rounded-full {app.me?.access === 'control' ? 'bg-primary' : 'bg-faint'}"
+					></span>{app.me?.access === 'control' ? 'Full control' : 'Watch only'}</span
 				>
 				<span class="flex gap-1">
 					<button

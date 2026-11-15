@@ -593,7 +593,14 @@ export function prependRows(m: Model, rows: Row[], limit: number): Model {
 export function withState(m: Model, state: State): Model {
 	const runs = { ...m.runs, lead: { ...(m.runs['lead'] ?? {}), busy: state.busy } };
 	// `get_state` carries the roster too; frames sent before attach are not replayed, so it seeds the hub.
-	return { ...m, state, runs, roster: state.agents?.length ? state.agents : m.roster };
+	const seeded = !!state.agents?.length;
+	return {
+		...m,
+		state,
+		runs,
+		roster: seeded ? (state.agents as Member[]) : m.roster,
+		rosterAt: seeded ? Date.now() : m.rosterAt
+	};
 }
 
 export function itemsFor(m: Model, agent: string): Item[] {

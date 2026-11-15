@@ -1,23 +1,32 @@
 <script lang="ts">
 	import { parseDiff } from '$lib/tools';
-	let { diff, max = 18 }: { diff: string; max?: number } = $props();
+	let { diff, max = 18, file }: { diff: string; max?: number; file?: string } = $props();
 	const lines = $derived(parseDiff(diff));
+	const body = $derived(lines.filter((l) => l.kind !== 'meta'));
 	let all = $state(false);
-	const shown = $derived(all ? lines : lines.slice(0, max));
+	const shown = $derived(all ? body : body.slice(0, max));
 	const stats = $derived({
-		add: lines.filter((l) => l.kind === 'add').length,
-		del: lines.filter((l) => l.kind === 'del').length
+		add: body.filter((l) => l.kind === 'add').length,
+		del: body.filter((l) => l.kind === 'del').length
 	});
+	const name = $derived(
+		file ?? lines.find((l) => l.text.startsWith('+++'))?.text.replace(/^\+\+\+ (b\/)?/, '') ?? ''
+	);
 </script>
 
-<div class="bg-background overflow-hidden rounded-md border font-mono text-xs leading-5">
+<figure class="bg-inset overflow-hidden rounded-lg border font-mono text-[12px] leading-[1.55]">
+	<figcaption class="bg-card flex items-center gap-2 border-b px-3 py-1.5 font-sans text-xs">
+		<span class="text-ink-2 min-w-0 flex-1 truncate font-mono">{name || 'diff'}</span>
+		<span class="num shrink-0 font-mono"
+			><span class="text-diff-add-fg">+{stats.add}</span>
+			<span class="text-diff-del-fg">−{stats.del}</span></span
+		>
+	</figcaption>
 	<div class="scroll-thin overflow-x-auto">
 		<div class="w-max min-w-full py-1">
 			{#each shown as l, i (i)}
-				{#if l.kind === 'meta'}
-					<div class="text-muted-foreground px-3">{l.text}</div>
-				{:else if l.kind === 'hunk'}
-					<div class="bg-raised text-muted-foreground px-3">{l.text}</div>
+				{#if l.kind === 'hunk'}
+					<div class="text-faint px-3 py-0.5 select-none">{l.text}</div>
 				{:else}
 					<div
 						class="flex px-3 {l.kind === 'add'
@@ -29,7 +38,7 @@
 						<span class="w-4 shrink-0 select-none" aria-hidden="true"
 							>{l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}</span
 						>
-						<span class="whitespace-pre">{l.text || ' '}</span>
+						<span class="pr-3 whitespace-pre">{l.text || ' '}</span>
 						{#if l.kind === 'add'}<span class="sr-only">added</span>{:else if l.kind === 'del'}<span
 								class="sr-only">removed</span
 							>{/if}
@@ -38,21 +47,13 @@
 			{/each}
 		</div>
 	</div>
-	<div
-		class="text-muted-foreground flex items-center justify-between border-t px-3 py-1 text-[11px]"
-	>
-		<span class="num"
-			><span class="text-diff-add-fg">+{stats.add}</span>
-			<span class="text-diff-del-fg">−{stats.del}</span></span
+	{#if body.length > max}
+		<button
+			type="button"
+			class="text-muted-foreground hover:text-foreground hover:bg-raised bg-card block min-h-9 w-full border-t font-sans text-xs"
+			onclick={() => (all = !all)}
 		>
-		{#if lines.length > max}
-			<button
-				type="button"
-				class="hover:text-foreground py-1 underline underline-offset-2"
-				onclick={() => (all = !all)}
-			>
-				{all ? 'Show less' : `Show all ${lines.length} lines`}
-			</button>
-		{/if}
-	</div>
-</div>
+			{all ? 'Show less' : `Show all ${body.length} lines`}
+		</button>
+	{/if}
+</figure>

@@ -2,6 +2,7 @@
 	import type { Item } from '$lib/session/reduce';
 	import Markdown from './Markdown.svelte';
 	import ToolCard from './ToolCard.svelte';
+	import Brand from './Brand.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import { tokens } from '$lib/format';
@@ -30,7 +31,6 @@
 	let announce = $state('');
 
 	const nearBottom = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-
 	function onscroll() {
 		if (scroller) pinned = nearBottom(scroller);
 	}
@@ -62,6 +62,7 @@
 	});
 
 	let thinkingOpen = $state<Record<string, boolean>>({});
+	const isOpen = (id: string, streaming: boolean) => thinkingOpen[id] ?? streaming;
 </script>
 
 <div class="relative min-h-0 flex-1">
@@ -71,11 +72,11 @@
 		class="scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
 		data-transcript
 	>
-		<div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-5 md:px-6">
+		<div class="mx-auto flex w-full max-w-[46rem] flex-col gap-5 px-4 py-6 md:px-8 md:py-8">
 			{#if canLoadEarlier}
 				<button
 					type="button"
-					class="text-muted-foreground hover:text-foreground hover:bg-raised mx-auto min-h-11 rounded-full border px-4 text-xs md:min-h-8"
+					class="text-muted-foreground hover:text-foreground hover:bg-raised press mx-auto min-h-11 rounded-full border px-4 text-xs md:min-h-8"
 					disabled={loadingEarlier}
 					onclick={onEarlier}
 				>
@@ -84,31 +85,31 @@
 			{/if}
 
 			{#if items.length === 0}
-				<p class="text-muted-foreground py-16 text-center text-sm">{empty}</p>
+				<div class="flex flex-col items-center gap-3 py-20 text-center">
+					<span class="opacity-60"><Brand size={36} word={false} /></span>
+					<p class="text-muted-foreground max-w-[16rem] text-sm leading-relaxed">{empty}</p>
+				</div>
 			{/if}
 
 			{#each items as item (item.id)}
 				{#if item.kind === 'user'}
-					<div
-						class="bg-raised ml-auto max-w-[92%] rounded-xl rounded-tr-sm border px-3.5 py-2.5 md:max-w-[80%]"
-						data-item="user"
-					>
-						<div class="text-muted-foreground mb-0.5 flex gap-2 text-[11px]">
-							<span
-								>{item.via === 'steer'
-									? 'Steering'
-									: item.via === 'follow_up'
-										? 'Queued follow-up'
-										: 'You'}</span
-							>
+					<div class="flex animate-enter flex-col items-end" data-item="user">
+						<div
+							class="bg-raised max-w-[92%] rounded-2xl rounded-br-md border px-4 py-2.5 shadow-[var(--edge)] md:max-w-[82%]"
+						>
+							<p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
+						</div>
+						<div class="text-faint mt-1 flex gap-2 px-1 text-[11px]">
+							{#if item.via !== 'prompt'}<span class="text-accent-text"
+									>{item.via === 'steer' ? 'steering' : 'queued follow-up'}</span
+								>{/if}
 							{#if showAgent && item.agent !== 'lead'}<span class="font-mono">{item.agent}</span
 								>{/if}
 							{#if item.images}<span>{item.images} image{item.images > 1 ? 's' : ''}</span>{/if}
 						</div>
-						<p class="text-[15px] leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
 					</div>
 				{:else if item.kind === 'assistant'}
-					<div class="space-y-3" data-item="assistant">
+					<div class="animate-enter space-y-3" data-item="assistant">
 						{#if showAgent && item.agent !== 'lead'}<div
 								class="text-muted-foreground font-mono text-[11px]"
 							>
@@ -116,27 +117,33 @@
 							</div>{/if}
 						{#each item.blocks as b (b.index + b.type)}
 							{#if b.type === 'thinking'}
-								<div class="text-muted-foreground">
+								<div>
 									<button
 										type="button"
-										class="hover:text-foreground flex min-h-8 items-center gap-1.5 text-xs"
-										aria-expanded={thinkingOpen[item.id] ?? item.streaming}
-										onclick={() =>
-											(thinkingOpen[item.id] = !(thinkingOpen[item.id] ?? item.streaming))}
+										class="text-muted-foreground hover:text-foreground flex min-h-8 items-center gap-1.5 text-xs"
+										aria-expanded={isOpen(item.id, item.streaming)}
+										onclick={() => (thinkingOpen[item.id] = !isOpen(item.id, item.streaming))}
 									>
 										<ChevronRight
-											class="size-3.5 transition-transform {(thinkingOpen[item.id] ??
-											item.streaming)
+											class="size-3.5 transition-transform duration-150 {isOpen(
+												item.id,
+												item.streaming
+											)
 												? 'rotate-90'
 												: ''}"
 										/>
-										{item.streaming && !item.blocks.some((x) => x.type === 'text')
-											? 'Thinking…'
-											: 'Thought'}
+										<span
+											class={item.streaming && !item.blocks.some((x) => x.type === 'text')
+												? 'shimmer'
+												: ''}
+											>{item.streaming && !item.blocks.some((x) => x.type === 'text')
+												? 'Thinking'
+												: 'Thought'}</span
+										>
 									</button>
-									{#if thinkingOpen[item.id] ?? item.streaming}
+									{#if isOpen(item.id, item.streaming)}
 										<p
-											class="border-input mt-1 ml-1.5 border-l-2 pl-3.5 text-[13px] leading-relaxed whitespace-pre-wrap italic"
+											class="text-muted-foreground border-border-strong mt-1 ml-[7px] border-l pl-4 text-[13px] leading-[1.65] whitespace-pre-wrap"
 										>
 											{b.text}
 										</p>
@@ -150,10 +157,10 @@
 							{/if}
 						{/each}
 						{#if item.streaming && item.blocks.length === 0}
-							<span class="text-muted-foreground text-xs">Waiting for the model…</span>
+							<span class="shimmer text-xs">Waiting for the model</span>
 						{/if}
 						{#if item.tokens && !item.streaming}
-							<div class="text-muted-foreground num text-[11px]">
+							<div class="text-faint num font-mono text-[11px]">
 								{tokens(item.tokens.input)} in · {tokens(item.tokens.output)} out{item.model
 									? ` · ${item.model}`
 									: ''}
@@ -161,13 +168,13 @@
 						{/if}
 					</div>
 				{:else if item.kind === 'tool'}
-					<ToolCard tool={item} />
+					<div class="animate-enter"><ToolCard tool={item} /></div>
 				{:else}
 					<div
-						class="rounded-lg border px-3 py-2 text-[13px] {item.level === 'error'
-							? 'border-destructive/50 text-destructive'
+						class="rounded-lg border px-3.5 py-2.5 text-[13px] {item.level === 'error'
+							? 'border-destructive/40 bg-destructive/8 text-destructive'
 							: item.level === 'warn'
-								? 'text-accent-text'
+								? 'border-primary/30 bg-primary/8 text-accent-text'
 								: 'text-muted-foreground'}"
 						role={item.level === 'error' ? 'alert' : undefined}
 					>
@@ -177,10 +184,12 @@
 			{/each}
 
 			{#if busy && items[items.length - 1]?.kind !== 'assistant'}
-				<div class="text-muted-foreground flex items-center gap-2 text-xs" aria-hidden="true">
-					<span
-						class="bg-primary size-1.5 animate-[pulse-dot_1.2s_ease-in-out_infinite] rounded-full"
-					></span> Working…
+				<div class="text-muted-foreground flex items-center gap-2.5 text-xs" aria-hidden="true">
+					<span class="relative grid size-2.5 place-items-center">
+						<span class="bg-primary absolute inset-0 animate-ping-soft rounded-full"></span>
+						<span class="bg-primary size-2 rounded-full"></span>
+					</span>
+					<span class="shimmer">Working</span>
 				</div>
 			{/if}
 		</div>
@@ -189,7 +198,7 @@
 	{#if !pinned}
 		<button
 			type="button"
-			class="bg-card hover:bg-raised absolute right-4 bottom-3 z-10 flex min-h-11 items-center gap-1.5 rounded-full border px-3.5 text-xs shadow-lg md:min-h-8"
+			class="float press absolute bottom-3 left-1/2 z-10 flex min-h-11 -translate-x-1/2 items-center gap-1.5 rounded-full px-4 text-xs md:min-h-8"
 			onclick={() => toBottom(true)}
 		>
 			<ArrowDown class="size-3.5" /> Latest
