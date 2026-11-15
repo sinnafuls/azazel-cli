@@ -5,6 +5,9 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- Language servers install themselves: when a file's default server (rust-analyzer, typescript-language-server, pyright, gopls) is missing, azazel installs it into `~/.azazel/lsp/` on first use and starts it. `[lsp] install = "ask" | "auto" | "off"` (default `ask`, trust-gated) decides whether it asks first; with nobody to ask, the tool result gives the command. New `azazel lsp list` and `azazel lsp install <server>`, and `azazel doctor` names the missing servers of the project's languages with the command that installs them.
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.

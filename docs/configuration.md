@@ -254,6 +254,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `args` | `[]` | Arguments |
 | | `warm_files` | `[]` | Files opened as soon as the server starts, relative to the project root |
 | `[lsp]` | `idle_secs` | `240` | Stop a server after this many seconds in which none of its files was touched; `0` keeps it running |
+| | `install` | `"ask"` | What happens when a file has a default language server that is not installed: `ask` asks once per server, `auto` installs without asking, `off` only says the command. The whole `[lsp]` table is trust-gated. Installs go into `~/.azazel/lsp/`; see [installing servers](lsp.md#installing-servers) |
 | | `write_severity` | `"error"` | The lowest severity reported after a write: `error` or `warning` |
 | `[voice]` | `stt`, `tts` | `""` | Speech-to-text and text-to-speech model, as `<provider>/<model>`; see [voice](voice.md) |
 | | `voice`, `language` | `""` | Voice name for speech; language code of what is dictated |
@@ -503,6 +504,7 @@ unknown tier or preset) exits with status 2.
 | `azazel mcp` | `list`, `add`, `remove`, `login`, `logout`, `approve`, `reject`, `serve`, `import` | Manage MCP servers, or serve azazel as one; see [MCP](mcp.md) |
 | `azazel pkg` | `add`, `list`, `update`, `remove` | Install and manage packages; see [packages](packages.md) |
 | `azazel skills` | `add`, `list`, `remove` | Install and list skills; see [packages](packages.md#azazel-skills) |
+| `azazel lsp` | `list`, `install` | List the language servers and install the ones azazel can; see [installing servers](lsp.md#installing-servers) |
 | `azazel rules` | `list`, `test` | Show the rule files of the project and test one; see [rules](rules.md) |
 | `azazel memory` | `list`, `search`, `forget`, `export` | What is remembered about the project; see [memory](memory.md) |
 | `azazel index` | | Rebuild the index of the project's code |
