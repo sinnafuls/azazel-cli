@@ -13,7 +13,7 @@ use azazel_ai::{
 use futures::StreamExt;
 use futures::future::join_all;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -184,6 +184,7 @@ pub struct AgentHandle {
     router: Arc<Router>,
     last_request: Arc<Mutex<Option<Arc<RequestRecord>>>>,
     task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    steering: watch::Receiver<u64>,
 }
 
 impl AgentHandle {
@@ -235,6 +236,13 @@ impl AgentHandle {
         status
     }
 
+    /// How many steering inputs wait for the agent's next step. It changes when one arrives
+    /// while the agent works and when the agent takes them, so a tool that blocks (a wait for
+    /// other agents) can end as soon as there is something new for the agent to read.
+    pub fn steering(&self) -> watch::Receiver<u64> {
+        self.steering.clone()
+    }
+
     /// The request the agent sent last, exactly as it was sent; `None` before its first.
     pub fn last_request(&self) -> Option<Arc<RequestRecord>> {
         locked(&self.last_request).clone()
@@ -264,11 +272,13 @@ impl Agent {
         let info = config.info.clone();
         let router = config.router.clone();
         let last_request = Arc::new(Mutex::new(None));
+        let (steering_tx, steering) = watch::channel(0);
         let actor = Actor {
             inbox: Inbox {
                 rx,
                 closed: false,
                 steer: VecDeque::new(),
+                steering: steering_tx,
                 follow_up: VecDeque::new(),
                 chain: config.chain,
                 thinking: config.thinking,
@@ -307,6 +317,7 @@ impl Agent {
             router,
             last_request,
             task: Arc::new(Mutex::new(Some(task))),
+            steering,
         }
     }
 }
@@ -317,6 +328,8 @@ struct Inbox {
     rx: mpsc::UnboundedReceiver<AgentCmd>,
     closed: bool,
     steer: VecDeque<UserInput>,
+    /// The number of steering inputs in `steer`, for [`AgentHandle::steering`].
+    steering: watch::Sender<u64>,
     follow_up: VecDeque<UserInput>,
     chain: Vec<ModelSpec>,
     thinking: Option<ThinkingLevel>,
@@ -330,7 +343,11 @@ impl Inbox {
     fn while_busy(&mut self, command: AgentCmd) {
         match command {
             AgentCmd::Prompt(input) | AgentCmd::FollowUp(input) => self.follow_up.push_back(input),
-            AgentCmd::Steer(input) | AgentCmd::Append(input) => self.steer.push_back(input),
+            AgentCmd::Steer(input) => {
+                self.steer.push_back(input);
+                self.steering.send_modify(|pending| *pending += 1);
+            }
+            AgentCmd::Append(input) => self.steer.push_back(input),
             AgentCmd::Abort => self.turn_cancel.cancel(),
             AgentCmd::SetModel(chain) => self.chain = chain,
             AgentCmd::SetThinking(level) => self.thinking = level,
@@ -370,6 +387,7 @@ impl Inbox {
             return None;
         }
         let content: Vec<Block> = self.steer.drain(..).flat_map(|input| input.content).collect();
+        self.steering.send_replace(0);
         Some(Message::user_blocks(content))
     }
 }
@@ -428,6 +446,13 @@ impl Actor {
             }
             if self.inbox.shutdown {
                 break;
+            }
+            // Steering that came too late for the run it was meant for starts a run of its own;
+            // what was only appended waits for the next prompt, as it asks for no reply.
+            if *self.inbox.steering.borrow() > 0
+                && let Some(steer) = self.inbox.take_steer()
+            {
+                self.inbox.follow_up.push_front(UserInput::blocks(steer.content));
             }
             {
                 let mut status = locked(&self.core.status);
@@ -686,6 +711,12 @@ impl Actor {
                 if let Some(reason) = keep_going {
                     self.core.push(Message::user(reason));
                     stop_hook_active = true;
+                    continue;
+                }
+                // A message that arrived while the stop hooks ran gets its turn now, instead of
+                // waiting in the queue until the next prompt.
+                if let Some(steer) = self.inbox.take_steer() {
+                    self.core.push(steer);
                     continue;
                 }
                 return Ok(stop);
