@@ -9,6 +9,7 @@
 //! that wants the last rows of the region to stay on the last rows of the screen keeps the region
 //! tall enough with a [`Floor`].
 
+use std::collections::VecDeque;
 use std::io;
 
 use crate::text;
@@ -124,6 +125,36 @@ impl Floor {
         self.rows = self.rows.saturating_sub(history).max(content).min(height);
         self.rows.saturating_sub(content)
     }
+
+    /// Like [`Floor::pad`], for a renderer that can paint over the last `restorable` rows of the
+    /// transcript and paint them back later ([`Renderer::restorable`]). A region that outgrows
+    /// its floor for a while (a menu that opens) then rises over the transcript instead of
+    /// pushing it into the scrollback, and gives the rows back when it shrinks again, so that no
+    /// blank rows are left between the transcript and the region. Returns the blank rows the
+    /// region needs and how many of its first rows go over the transcript
+    /// ([`Renderer::cover`]); the floor itself grows only by what cannot be covered.
+    pub fn pad_over(
+        &mut self,
+        history: usize,
+        content: usize,
+        height: u16,
+        restorable: usize,
+    ) -> (usize, usize) {
+        let height = usize::from(height.max(1));
+        self.height = height;
+        let room = self.rows.saturating_sub(history).min(height);
+        // Only what the region outgrows its floor by is covered: rows it lost to history that
+        // was written scroll the transcript as before. The last row of the region stays its
+        // own, and only rows on the screen are covered.
+        let cover = content
+            .saturating_sub(self.rows.min(height))
+            .min(restorable)
+            .min(content.saturating_sub(1));
+        let cover = cover.min(height.saturating_sub(content - cover));
+        let own = content - cover;
+        self.rows = room.max(own).min(height);
+        (self.rows.saturating_sub(own), cover)
+    }
 }
 
 const SYNC_BEGIN: &str = "\x1b[?2026h";
@@ -155,6 +186,16 @@ pub struct Renderer<W: io::Write> {
     redraw: bool,
     /// The terminal re-wraps what is on screen when it gets narrower.
     rewraps: bool,
+    /// The last rows written to the transcript, as they were written and newest last, at most a
+    /// screen of them; `None` for a row of a block, which cannot be painted again.
+    written: VecDeque<Option<Line>>,
+    /// The first rows of the region lie over this many of the last rows of `written`.
+    covered: usize,
+    /// What the next frame covers, as [`Renderer::cover`] asked.
+    cover_next: usize,
+    /// The screen changed size since `written` was written: nothing more is covered until the
+    /// transcript is written again.
+    written_stale: bool,
 }
 
 impl<W: io::Write> Renderer<W> {
@@ -170,7 +211,46 @@ impl<W: io::Write> Renderer<W> {
             cursor_visible: true,
             redraw: false,
             rewraps: true,
+            written: VecDeque::new(),
+            covered: 0,
+            cover_next: 0,
+            written_stale: false,
         }
+    }
+
+    /// How many of the last rows of the transcript, once `history` is written after them, the
+    /// renderer can paint back after a region drew over them: rows of text it wrote itself, at
+    /// the size the screen has now. The caller knows whether they are on the screen.
+    pub fn restorable(&self, history: &[HistoryItem]) -> usize {
+        let mut run = 0;
+        for item in history.iter().rev() {
+            match item {
+                HistoryItem::Line(_) => run += 1,
+                HistoryItem::Block { rows: 0, .. } => {}
+                HistoryItem::Block { .. } => return run,
+            }
+        }
+        if !self.written_stale {
+            run += self.written.iter().rev().take_while(|row| row.is_some()).count();
+        }
+        run.min(usize::from(self.height))
+    }
+
+    /// The first `rows` rows of the next frame go over the last rows of the transcript, which
+    /// are on the screen right above the region, instead of below them: a region at the bottom
+    /// of the screen grows upwards without scrolling the transcript away. They are painted back
+    /// when a later frame covers fewer, or the region is erased. At most
+    /// [`Renderer::restorable`] rows are covered.
+    pub fn cover(&mut self, rows: usize) {
+        self.cover_next = rows;
+    }
+
+    /// The screen no longer shows what was written to it last (it was erased, or another
+    /// program wrote on it): nothing is covered until the transcript is written again. Call
+    /// while the region is off the screen ([`Renderer::suspend`]).
+    pub fn forget_transcript(&mut self) {
+        self.written.clear();
+        self.covered = 0;
     }
 
     /// Draws a frame. Writes nothing when the frame has no history and repeats the previous
@@ -196,22 +276,77 @@ impl<W: io::Write> Renderer<W> {
             let row = usize::from(row).checked_sub(skipped)?;
             (row < rows.len().max(1)).then_some((row, usize::from(col).min(width - 1)))
         });
+        // The row with the cursor, and the last row, stay the region's own.
+        let cover = std::mem::take(&mut self.cover_next)
+            .saturating_sub(skipped)
+            .min(rows.len().saturating_sub(1))
+            .min(cursor.map_or(usize::MAX, |(row, _)| row))
+            .min(self.restorable(&history));
 
-        if history.is_empty() && !self.redraw && rows == self.drawn && cursor == self.cursor {
+        if history.is_empty()
+            && !self.redraw
+            && rows == self.drawn
+            && cursor == self.cursor
+            && cover == self.covered
+        {
             return Ok(());
         }
 
         let mut buf = String::from(SYNC_BEGIN);
         if history.is_empty() && !self.redraw {
-            self.draw_changes(&mut buf, &rows);
+            self.draw_over(&mut buf, rows, cursor, cover);
         } else {
-            self.draw_all(&mut buf, history, &rows, width, height);
+            self.draw_all(&mut buf, history, &rows, width, height, cover);
+            self.drawn = rows;
+            self.place_cursor(&mut buf, cursor);
         }
-        self.drawn = rows;
         self.redraw = false;
-        self.place_cursor(&mut buf, cursor);
         buf.push_str(SYNC_END);
         self.write(&buf)
+    }
+
+    /// A frame that writes no history: the rows it covers change, then the rows that differ.
+    fn draw_over(
+        &mut self,
+        buf: &mut String,
+        mut rows: Vec<Line>,
+        mut cursor: Option<(usize, usize)>,
+        cover: usize,
+    ) {
+        let end = self.written.len();
+        if cover > self.covered {
+            // The rows right above take part in the region as they are, and are drawn over.
+            let rise = cover - self.covered;
+            let above = self.written.range(end - cover..end - self.covered);
+            let above: Vec<Line> = above.map(|row| row.clone().unwrap_or_default()).collect();
+            if self.drawn.is_empty() {
+                // An empty region still owns the row the cursor is on.
+                self.drawn.push(String::new());
+            }
+            self.drawn.splice(0..0, above);
+            self.cursor_row += rise;
+            self.covered = cover;
+        }
+        // Rows given back are painted as the transcript had them, then leave the region.
+        let given = self.covered - cover;
+        if given > 0 {
+            let back = self.written.range(end - self.covered..end - cover);
+            let back: Vec<Line> = back.map(|row| row.clone().unwrap_or_default()).collect();
+            rows.splice(0..0, back);
+            cursor = cursor.map(|(row, col)| (row + given, col));
+        }
+        self.draw_changes(buf, &rows);
+        self.drawn = rows;
+        self.place_cursor(buf, cursor);
+        if given > 0 {
+            if self.cursor_row < given {
+                self.move_to_row(buf, given);
+            }
+            self.drawn.drain(..given);
+            self.cursor_row -= given;
+            self.cursor = self.cursor.map(|(row, col)| (row - given, col));
+            self.covered = cover;
+        }
     }
 
     /// Records a new terminal size. The next frame erases and repaints the live region at the
@@ -229,6 +364,7 @@ impl<W: io::Write> Renderer<W> {
             self.width = width;
             self.height = height;
             self.redraw = true;
+            self.written_stale = true;
         }
     }
 
@@ -241,13 +377,30 @@ impl<W: io::Write> Renderer<W> {
 
     /// Rows of the screen the region takes as it was last drawn: its own rows, and after the
     /// terminal got narrower the rows its long lines were continued on.
+    /// Rows it covers ([`Renderer::cover`]) are the transcript's, and are not counted.
     pub fn rows_on_screen(&self) -> usize {
-        self.drawn.iter().map(|row| self.wrapped(row)).sum()
+        self.drawn
+            .iter()
+            .skip(self.covered)
+            .map(|row| self.wrapped(row))
+            .sum()
     }
 
     /// Rows of the screen between the first row of the region and the row the terminal cursor
-    /// is on.
+    /// is on. Rows it covers are the transcript's, and are not counted.
     pub fn rows_above_cursor(&self) -> usize {
+        let covered: usize = self
+            .drawn
+            .iter()
+            .take(self.covered)
+            .map(|row| self.wrapped(row))
+            .sum();
+        self.rows_to_top() - covered
+    }
+
+    /// Rows of the screen between the first row the region draws on, covered or not, and the
+    /// row the terminal cursor is on.
+    fn rows_to_top(&self) -> usize {
         let above: usize = self
             .drawn
             .iter()
@@ -325,12 +478,13 @@ impl<W: io::Write> Renderer<W> {
     pub fn suspend(&mut self) -> io::Result<()> {
         let mut buf = String::new();
         if !self.drawn.is_empty() || self.cursor.is_some() {
-            let above = self.rows_above_cursor();
+            let above = self.rows_to_top();
             if above > 0 {
                 csi(&mut buf, above, 'A');
             }
             buf.push('\r');
             buf.push_str(ERASE_BELOW);
+            self.restore_covered(&mut buf);
         }
         if !self.cursor_visible {
             buf.push_str(SHOW_CURSOR);
@@ -406,7 +560,32 @@ impl<W: io::Write> Renderer<W> {
         }
     }
 
-    /// Erases the region, appends history where it began and paints the region below it.
+    /// Writes the rows the region covered as the transcript has them, from the row the cursor
+    /// is on, and leaves the cursor below them, where the region's own rows began.
+    fn restore_covered(&mut self, buf: &mut String) {
+        let width = usize::from(self.width);
+        let end = self.written.len();
+        for row in self.written.range(end - self.covered..) {
+            push_line(buf, &fit(row.clone().unwrap_or_default(), width));
+            buf.push_str("\r\n");
+        }
+        self.covered = 0;
+        if self.written_stale {
+            self.written.clear();
+            self.written_stale = false;
+        }
+    }
+
+    /// Keeps a row written to the transcript, for painting it back after a region covered it.
+    fn keep(&mut self, row: Option<Line>) {
+        if self.written.len() >= usize::from(self.height) {
+            self.written.pop_front();
+        }
+        self.written.push_back(row);
+    }
+
+    /// Erases the region, appends history where it began and paints the region below it, its
+    /// first `cover` rows over the last rows of the transcript.
     fn draw_all(
         &mut self,
         buf: &mut String,
@@ -414,22 +593,29 @@ impl<W: io::Write> Renderer<W> {
         rows: &[Line],
         width: usize,
         height: usize,
+        cover: usize,
     ) {
         // After a change of size the rows above the cursor may have been re-wrapped.
-        let above = self.rows_above_cursor();
+        let above = self.rows_to_top();
         if above > 0 {
             csi(buf, above, 'A');
         }
         buf.push('\r');
         buf.push_str(ERASE_BELOW);
+        self.restore_covered(buf);
         for item in history {
             match item {
                 HistoryItem::Line(line) => {
-                    push_line(buf, &fit(line, width));
+                    let line = fit(line, width);
+                    push_line(buf, &line);
                     buf.push_str("\r\n");
+                    self.keep(Some(line));
                 }
                 HistoryItem::Block { rows, paint } => {
                     let rows = usize::from(rows);
+                    for _ in 0..rows {
+                        self.keep(None);
+                    }
                     // The line feeds make the rows, scrolling the screen when they must; only
                     // then is the first of them a place the cursor can go back to.
                     for _ in 0..rows {
@@ -445,12 +631,20 @@ impl<W: io::Write> Renderer<W> {
                 }
             }
         }
+        // The rows covered were written just now or before, and are right above.
+        if cover > 0 {
+            csi(buf, cover, 'A');
+        }
         for (i, line) in rows.iter().enumerate() {
             if i > 0 {
                 buf.push_str("\r\n");
             }
+            if i < cover {
+                buf.push_str(ERASE_LINE);
+            }
             push_line(buf, line);
         }
+        self.covered = cover;
         self.cursor_row = rows.len().saturating_sub(1);
         self.cursor_col = rows.last().map_or(0, |row| end_column(row, width));
     }
@@ -527,5 +721,150 @@ pub(crate) fn fit(line: Line, width: usize) -> Line {
         text::truncate(&line, width, "")
     } else {
         line
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CHROME: [&str; 3] = ["rule", ">", "status"];
+
+    struct Term {
+        renderer: Renderer<Vec<u8>>,
+        parser: vt100::Parser,
+        floor: Floor,
+    }
+
+    impl Term {
+        fn new() -> Term {
+            let size = |n| std::num::NonZeroU16::new(n).expect("not zero");
+            Term {
+                renderer: Renderer::new(Vec::new(), 20, 8),
+                parser: vt100::Parser::new(size(8), size(20), 100),
+                floor: Floor::new(8),
+            }
+        }
+
+        /// One frame as the UI draws it: `menu` rows above the input, the transcript rows
+        /// `history` written above the region.
+        fn frame(&mut self, history: Vec<HistoryItem>, menu: &[&str]) {
+            let written = history.iter().map(HistoryItem::rows).sum();
+            let content: Vec<Line> = menu.iter().chain(&CHROME).map(|row| (*row).to_string()).collect();
+            let restorable = self.renderer.restorable(&history);
+            let (filler, cover) = self.floor.pad_over(written, content.len(), 8, restorable);
+            self.renderer.cover(cover);
+            let mut viewport = vec![String::new(); filler];
+            viewport.extend(content);
+            let cursor = Some((viewport.len() as u16 - 2, 2));
+            self.renderer
+                .render(Frame {
+                    history,
+                    viewport,
+                    cursor,
+                })
+                .expect("written");
+            let bytes = std::mem::take(self.renderer.get_mut());
+            self.parser.process(&bytes);
+        }
+
+        fn screen(&self) -> Vec<String> {
+            self.parser
+                .screen()
+                .rows(0, 20)
+                .map(|row| row.trim_end().to_string())
+                .collect()
+        }
+
+        /// Everything the terminal holds, scrollback first.
+        fn everything(&mut self) -> Vec<String> {
+            self.parser.screen_mut().set_scrollback(usize::MAX);
+            let back = self.parser.screen().scrollback();
+            let mut rows = Vec::new();
+            for offset in (1..=back).rev() {
+                self.parser.screen_mut().set_scrollback(offset);
+                rows.push(self.screen()[0].clone());
+            }
+            self.parser.screen_mut().set_scrollback(0);
+            rows.extend(self.screen());
+            rows
+        }
+    }
+
+    fn said(range: std::ops::Range<usize>) -> Vec<HistoryItem> {
+        range
+            .map(|n| HistoryItem::Line(format!("\x1b[1mline {n}\x1b[0m")))
+            .collect()
+    }
+
+    #[test]
+    fn a_menu_that_opens_and_closes_gives_the_transcript_its_rows_back() {
+        let mut term = Term::new();
+        term.frame(said(0..12), &[]);
+        let before = term.screen();
+        assert_eq!(before[..5], ["line 7", "line 8", "line 9", "line 10", "line 11"]);
+        let all_before = term.everything();
+
+        // The menu rises over the transcript; nothing scrolls into the scrollback.
+        term.frame(Vec::new(), &["/help", "/model", "/quit"]);
+        assert_eq!(
+            term.screen(),
+            [
+                "line 7", "line 8", "/help", "/model", "/quit", "rule", ">", "status"
+            ]
+        );
+        term.frame(Vec::new(), &["/model"]);
+        assert_eq!(term.screen()[3..5], ["line 10", "/model"]);
+
+        // Closed: the rows are the transcript's again, in their style, with no blank band.
+        term.frame(Vec::new(), &[]);
+        assert_eq!(term.screen(), before);
+        assert!(term.parser.screen().cell(4, 0).expect("cell").bold());
+        assert_eq!(term.everything(), all_before, "no row doubled or lost");
+
+        // The input is on the last rows, and what is said next lands right above it.
+        term.frame(said(12..13), &["/a"]);
+        term.frame(Vec::new(), &[]);
+        assert_eq!(term.screen()[4..], ["line 12", "rule", ">", "status"]);
+        let all = term.everything();
+        assert_eq!(all.iter().filter(|row| row.starts_with("line ")).count(), 13);
+    }
+
+    #[test]
+    fn a_picture_above_the_input_is_not_drawn_over() {
+        let mut term = Term::new();
+        term.frame(said(0..12), &[]);
+        let picture = HistoryItem::Block {
+            rows: 2,
+            paint: String::new(),
+        };
+        term.frame(vec![picture], &[]);
+        // The rows of a picture cannot be painted back: the menu takes rows of its own and the
+        // transcript scrolls, as it did before.
+        term.frame(Vec::new(), &["/help", "/model"]);
+        assert_eq!(term.screen()[..3], ["line 11", "", ""]);
+        assert_eq!(term.screen()[3..], ["/help", "/model", "rule", ">", "status"]);
+        assert_eq!(
+            term.everything()
+                .iter()
+                .filter(|row| row.starts_with("line "))
+                .count(),
+            12
+        );
+    }
+
+    #[test]
+    fn a_region_that_covers_rows_is_erased_down_to_the_transcript() {
+        let mut term = Term::new();
+        term.frame(said(0..12), &[]);
+        term.frame(Vec::new(), &["/help", "/model"]);
+        term.renderer.suspend().expect("written");
+        let bytes = std::mem::take(term.renderer.get_mut());
+        term.parser.process(&bytes);
+        assert_eq!(
+            term.screen()[..5],
+            ["line 7", "line 8", "line 9", "line 10", "line 11"]
+        );
+        assert_eq!(term.parser.screen().cursor_position(), (5, 0));
     }
 }

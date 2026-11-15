@@ -758,6 +758,8 @@ impl Tui {
         // The editor gets the terminal as a shell would hand it over: cooked, no bracketed
         // paste, no enhanced keys, and nobody else reading its input.
         let _ = self.renderer.suspend();
+        // The editor writes on the screen: the rows above the region are not ours any more.
+        self.renderer.forget_transcript();
         self.terminal = None;
         self.guard.suspend();
         let status = tokio::process::Command::new(program)

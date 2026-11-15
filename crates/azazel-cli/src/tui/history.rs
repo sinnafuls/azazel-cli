@@ -83,6 +83,7 @@ impl Tui {
         self.backdrop.clear();
         self.after_rows = false;
         let _ = self.renderer.suspend();
+        self.renderer.forget_transcript();
         let out = self.renderer.get_mut();
         let _ = out.write_all(ERASE_ALL);
         let _ = out.flush();
