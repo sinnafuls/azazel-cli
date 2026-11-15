@@ -35,6 +35,7 @@ default = [
     "notify",
     "images",
     "detach",
+    "repomap",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
@@ -42,9 +43,10 @@ acp = ["dep:agent-client-protocol"]
 # `rusqlite` reads the SQLite stores of other harnesses for `azazel migrate`; the memory store
 # already links it.
 memory = ["dep:azazel-memory", "dep:rusqlite"]
-# The repository map: `repo_map` and `/repomap`, with the grammars that read Rust, Python, Go,
-# JavaScript and TypeScript. Not in the default build: the grammars add 5.3 MB to the binary.
+# The repository map: `repo_map` and `/repomap`, read by a line scanner for Rust, Python, Go,
+# JavaScript and TypeScript. `repomap-treesitter` reads with grammars instead, which add 5.3 MB.
 repomap = ["dep:azazel-repomap"]
+repomap-treesitter = ["repomap", "azazel-repomap/treesitter"]
 browser = ["dep:azazel-browser"]
 screen = ["browser", "azazel-browser/screen"]
 media = ["dep:azazel-media"]
