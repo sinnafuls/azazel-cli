@@ -188,11 +188,11 @@ impl Tui {
     /// The pictures a tool result carries (an image that was read, a screenshot, a generated
     /// image), to show under its card where the terminal draws images.
     pub(super) fn pictures(&self, output: &ToolOutput) -> Vec<HistoryItem> {
-        let mut pictures = Vec::new();
         #[cfg(feature = "images")]
         {
             use azazel_ai::Block;
             use base64::Engine as _;
+            let mut pictures = Vec::new();
             if self.caps.images == Images::None {
                 return pictures;
             }
@@ -207,10 +207,13 @@ impl Tui {
                 };
                 pictures.extend(azazel_tui::image::encode(&bytes, &self.caps, room.0, room.1));
             }
+            pictures
         }
         #[cfg(not(feature = "images"))]
-        let _ = (output, IMAGE_COLS, IMAGE_ROWS);
-        pictures
+        {
+            let _ = (output, IMAGE_COLS, IMAGE_ROWS);
+            Vec::new()
+        }
     }
 
     /// The replies of the agent on the current branch, newest first.
