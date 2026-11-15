@@ -39,6 +39,11 @@ tree-sitter-bash.workspace = true
 uuid.workspace = true
 which.workspace = true
 
+# The priority classes process-wrap's `CreationFlags` takes; the same version it links.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", default-features = false, features = ["Win32_System_Threading"] }
+winsafe.workspace = true
+
 [build-dependencies]
 flate2.workspace = true
 

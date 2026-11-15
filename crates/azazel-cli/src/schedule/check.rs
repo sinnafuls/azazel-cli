@@ -197,8 +197,15 @@ pub fn judge(check: &Check, code: Option<i32>, stdout: &[u8]) -> Judged {
 /// Runs `command` with `shell` in `cwd`: its exit code (`None` when it was killed) and what it
 /// printed on standard output.
 async fn run(shell: &Shell, cwd: &Path, command: &str) -> Result<(Option<i32>, Vec<u8>), String> {
-    let mut child =
-        process::spawn(shell, command, cwd, &[], false).map_err(|e| format!("cannot run it: {e}"))?;
+    let mut child = process::spawn(
+        shell,
+        command,
+        cwd,
+        &[],
+        false,
+        azazel_core::config::ProcessPriority::Normal,
+    )
+    .map_err(|e| format!("cannot run it: {e}"))?;
     let stdout = child.stdout().take();
     let stderr = child.stderr().take();
     let reader = tokio::spawn(async move {

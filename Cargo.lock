@@ -1065,6 +1065,8 @@ dependencies = [
  "tree-sitter-bash",
  "uuid",
  "which",
+ "windows 0.62.2",
+ "winsafe",
  "wiremock",
 ]
 

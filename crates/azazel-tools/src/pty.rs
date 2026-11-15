@@ -15,7 +15,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::process::Shell;
+use azazel_core::config::ProcessPriority;
+use azazel_core::process::{Shell, lower_running, lowered};
 use portable_pty::{ChildKiller, CommandBuilder, MasterPty, PtySize, native_pty_system};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -805,6 +806,7 @@ impl Terminals {
         cwd: &Path,
         env: &[(String, String)],
         agent: &str,
+        priority: ProcessPriority,
     ) -> Result<Arc<Terminal>, String> {
         let running = locked(&self.terminals)
             .values()
@@ -827,12 +829,18 @@ impl Terminals {
             })
             .map_err(|e| failed(&e))?;
 
-        let mut builder = CommandBuilder::new(&shell.program);
-        if shell.is_posix() {
-            builder.args(["-c", command]);
+        let arguments: Vec<String> = if shell.is_posix() {
+            vec!["-c".to_string(), command.to_string()]
         } else {
-            builder.args(["-NoProfile", "-Command", command]);
-        }
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                command.to_string(),
+            ]
+        };
+        let (program, arguments) = lowered(&shell.program, &arguments, priority);
+        let mut builder = CommandBuilder::new(&program);
+        builder.args(&arguments);
         builder.cwd(cwd);
         // The environment of this process as it is now, not as the system would set it up for
         // a new login.
@@ -845,6 +853,9 @@ impl Terminals {
             builder.env(name, value);
         }
         let mut child = pair.slave.spawn_command(builder).map_err(|e| failed(&e))?;
+        if let Some(pid) = child.process_id() {
+            lower_running(pid, priority);
+        }
         // The program has its end of the pty; ours would keep the pty open after it ends.
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| failed(&e))?;
@@ -1396,7 +1407,14 @@ mod tests {
             }
         );
         let terminal = terminals
-            .start(&shell, &command, dir.path(), &env, "lead")
+            .start(
+                &shell,
+                &command,
+                dir.path(),
+                &env,
+                "lead",
+                ProcessPriority::Normal,
+            )
             .unwrap();
         assert_eq!(terminal.id, "pty-1");
         assert_eq!(terminal.size(), DEFAULT_SIZE);
@@ -1482,7 +1500,9 @@ mod tests {
         } else {
             "Write-Output first; Start-Sleep 1; Write-Output second; Start-Sleep 600"
         };
-        let terminal = terminals.start(&shell, command, dir.path(), &[], "lead").unwrap();
+        let terminal = terminals
+            .start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal)
+            .unwrap();
 
         let read = tool
             .call(
@@ -1563,7 +1583,7 @@ mod tests {
         let context = ctx(dir.path());
         let command = format!("{}; {}", ask(&shell, "one?"), ask(&shell, "two?"));
         let terminal = terminals
-            .start(&shell, &command, dir.path(), &[], "lead")
+            .start(&shell, &command, dir.path(), &[], "lead", ProcessPriority::Normal)
             .unwrap();
         wait_for(&terminal, "one?").await;
 
@@ -1610,7 +1630,9 @@ mod tests {
         } else {
             "Write-Output ready; Start-Sleep 600"
         };
-        let terminal = terminals.start(&shell, command, dir.path(), &[], "lead").unwrap();
+        let terminal = terminals
+            .start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal)
+            .unwrap();
         wait_for(&terminal, "ready").await;
         terminal.resize(12, 40);
         assert_eq!(terminal.size(), (12, 40));

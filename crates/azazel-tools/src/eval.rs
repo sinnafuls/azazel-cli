@@ -207,7 +207,7 @@ impl Tool for EvalTool {
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
-        let mut env = self.env.for_agent(ctx.agent.depth);
+        let mut env = self.env.for_agent(ctx.agent.depth, &ctx.cwd);
         if let Ok(dir) = local_dir(&ctx.services) {
             env.push((LOCAL_ENV.to_string(), dir.to_string_lossy().into_owned()));
         }
@@ -217,6 +217,7 @@ impl Tool for EvalTool {
         let update = ctx.update.clone();
         let mut options = RunOptions::new(ctx.cwd.clone());
         options.env = env;
+        options.priority = self.env.priority();
         options.timeout = Some(timeout);
         options.cancel = ctx.cancel.clone();
         options.stdin = Some(input.code.into_bytes());

@@ -1164,9 +1164,22 @@ impl Inner {
     async fn command(&self, hook: &Hook, command: &str, job: &Job) -> Result<Reply, String> {
         let env = self.env(hook, job);
         let stdin = job.payload.to_string().into_bytes();
-        let run = capture(&self.shell, command, &job.cwd, &env, stdin, hook.timeout)
-            .await
-            .map_err(|e| format!("could not be started: {e}"))?;
+        let priority = job
+            .services
+            .get::<AgentEnv>()
+            .map(|env| env.priority())
+            .unwrap_or(crate::config::ProcessPriority::Normal);
+        let run = capture(
+            &self.shell,
+            command,
+            &job.cwd,
+            &env,
+            stdin,
+            hook.timeout,
+            priority,
+        )
+        .await
+        .map_err(|e| format!("could not be started: {e}"))?;
         if run.timed_out {
             return Err(format!("timed out after {} s", hook.timeout.as_secs()));
         }
@@ -1373,8 +1386,9 @@ async fn capture(
     env: &[(String, String)],
     stdin: Vec<u8>,
     timeout: Duration,
+    priority: crate::config::ProcessPriority,
 ) -> io::Result<Captured> {
-    let mut child = process::spawn(shell, script, cwd, env, true)?;
+    let mut child = process::spawn(shell, script, cwd, env, true, priority)?;
     if let Some(mut pipe) = child.stdin().take() {
         tokio::spawn(async move {
             // A hook that does not read its input closes the pipe early; that is not a failure.

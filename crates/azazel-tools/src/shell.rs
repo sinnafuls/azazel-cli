@@ -9,6 +9,7 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_core::config::ProcessPriority;
 use azazel_core::hooks::Wake;
 use azazel_core::process::{AgentEnv, Detached, OutputBuffer, RunOptions, Shell, pump_lines, run, spawn};
 use serde::Deserialize;
@@ -60,8 +61,9 @@ impl Jobs {
         command: &str,
         cwd: &Path,
         env: &[(String, String)],
+        priority: ProcessPriority,
     ) -> std::io::Result<String> {
-        let mut child = spawn(shell, command, cwd, env, false)?;
+        let mut child = spawn(shell, command, cwd, env, false, priority)?;
         let (tx, rx) = mpsc::unbounded_channel();
         if let Some(stdout) = child.stdout().take() {
             pump_lines(stdout, tx.clone());
@@ -364,7 +366,7 @@ impl Tool for ShellTool {
         if !cwd.is_dir() {
             return ToolOutput::error(format!("{} is not a directory", cwd.display()));
         }
-        let env = self.env.for_agent(ctx.agent.depth);
+        let env = self.env.for_agent(ctx.agent.depth, &cwd);
         if input.interactive {
             return self.interactive(&input, &cwd, &env, ctx).await;
         }
@@ -372,7 +374,10 @@ impl Tool for ShellTool {
             return ToolOutput::error("`wake_on_exit` goes with `interactive: true`");
         }
         if input.background {
-            return match self.jobs.start(&self.shell, &input.command, &cwd, &env) {
+            return match self
+                .jobs
+                .start(&self.shell, &input.command, &cwd, &env, self.env.priority())
+            {
                 Ok(id) => ToolOutput::text(format!(
                     "started {id} in the background; use the job tool to read its output or stop it"
                 ))
@@ -387,6 +392,7 @@ impl Tool for ShellTool {
         let update = ctx.update.clone();
         let mut options = RunOptions::new(cwd);
         options.env = env;
+        options.priority = self.env.priority();
         options.timeout = Some(timeout);
         options.cancel = ctx.cancel.clone();
         options.on_line = Some(Arc::new(move |line| update.send(line)));
@@ -457,10 +463,14 @@ impl ShellTool {
                  pty tool (`read` with `wait: \"exit\"`)",
             );
         }
-        let terminal = match self
-            .terminals
-            .start(&self.shell, &input.command, cwd, env, &ctx.agent.id)
-        {
+        let terminal = match self.terminals.start(
+            &self.shell,
+            &input.command,
+            cwd,
+            env,
+            &ctx.agent.id,
+            self.env.priority(),
+        ) {
             Ok(terminal) => terminal,
             Err(why) => return ToolOutput::error(why),
         };

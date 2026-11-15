@@ -12,8 +12,9 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
-    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, QueueMode,
-    ReadGuard, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
+    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, ProcessPriority,
+    QueueMode, ReadGuard, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle,
+    WorktreeTarget, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -357,6 +358,10 @@ settings! {
         "tools.retries": Number, "Tool retries", "How often a read-only web, LSP or MCP call is run again after a transient failure.";
         "tools.call_timeout_secs": Number, "Tool call time limit", "Seconds a web, LSP or MCP call may take; 0 is no limit.";
         "tools.shell": Text, "Shell", "The shell program; empty finds one (bash, sh; on Windows Git's bash, pwsh, powershell).";
+        "tools.priority": Choice(ProcessPriority::NAMES), "Process priority",
+            "Operating-system priority of what agents run (shell, jobs, terminals, eval, checks, hooks): low, idle or normal.";
+        "tools.build_jobs": Text, "Parallel build jobs",
+            "Build jobs cargo, make and cmake may run at once for agents: half (of the cores), a number, or all.";
         "tools.patch": Choice(PatchMode::NAMES), "Patch tool",
             "Who gets the patch tool: auto gives it instead of edit to OpenAI GPT and Codex models, on to every model.";
         "tools.redact_output": Switch, "Redact secrets for the model",
@@ -483,6 +488,8 @@ settings! {
             "The lead only plans and delegates: it is offered no tool that edits or runs commands.";
         "team.max_parallel": Number, "Agents at once", "Sub-agents working at the same time.";
         "team.max_depth": Number, "Spawn depth", "How deep agents may spawn agents.";
+        "team.worktree_target": Choice(WorktreeTarget::NAMES), "Worktree build cache",
+            "Where an agent in a worktree builds: shared (the main checkout's target/), own, or sccache (own, through sccache).";
         "team.max_turns": Number, "Sub-agent turn cap", "Requests per task for a sub-agent whose definition sets no limit; 0 is no limit.";
         "team.agent_retention_days": Number, "Keep finished agents (days)", "Finished sub-agents older than this leave the agent hub and their transcripts are deleted; 0 keeps them.";
     }

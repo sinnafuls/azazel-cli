@@ -158,7 +158,14 @@ impl Setup {
     fn start(&self, cwd: &Path, rest: &str) -> Arc<Terminal> {
         let shell = Shell::resolve("powershell");
         self.terminals
-            .start(&shell, &self.command(cwd, rest), cwd, &self.env(), "test")
+            .start(
+                &shell,
+                &self.command(cwd, rest),
+                cwd,
+                &self.env(),
+                "test",
+                azazel_core::config::ProcessPriority::Normal,
+            )
             .unwrap()
     }
 
