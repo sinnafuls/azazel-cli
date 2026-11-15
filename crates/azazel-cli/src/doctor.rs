@@ -429,19 +429,39 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
     }
     #[cfg(feature = "lsp")]
     {
-        let servers = azazel_tools::lsp::LspManager::new(&azazel_tools::lsp::LspExt {
-            root: paths.project_root.clone(),
-            servers: config.lsp.servers.clone(),
-            idle: Duration::from_secs(config.lsp.idle_secs),
-            write_severity: config.lsp.write_severity,
-        });
+        let places = azazel_tools::lsp::Places::system(paths.lsp_dir());
+        let in_project = azazel_tools::lsp::extensions_in(&paths.project_root);
         let mut ready = Vec::new();
-        for (name, installed, builtin) in servers.availability() {
-            match (installed, builtin) {
-                (true, _) => ready.push(name),
-                // The defaults are optional.
-                (false, true) => {}
-                (false, false) => report.warn(format!("lsp server `{name}`: its command was not found")),
+        for server in azazel_tools::lsp::known(&config.lsp.servers, &places) {
+            let used = server
+                .extensions
+                .iter()
+                .any(|extension| in_project.contains(extension));
+            match (server.found.is_some(), server.builtin, used) {
+                (true, _, _) => ready.push(server.name),
+                // The defaults are optional, unless the project has files for them.
+                (false, true, false) => {}
+                (false, true, true) => {
+                    let how = server.install.unwrap_or_default();
+                    let how = if server.installable {
+                        format!("`azazel lsp install {}` runs `{how}`", server.name)
+                    } else {
+                        how
+                    };
+                    report.warn(format!(
+                        "lsp server `{}` is not installed, and this project has {} files: {how}",
+                        server.name,
+                        server
+                            .extensions
+                            .iter()
+                            .map(|e| format!(".{e}"))
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
+                (false, false, _) => {
+                    report.warn(format!("lsp server `{}`: its command was not found", server.name))
+                }
             }
         }
         if ready.is_empty() {

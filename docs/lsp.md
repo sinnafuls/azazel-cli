@@ -14,7 +14,40 @@ These are used without any configuration, each only when its command is found on
 | `go` | `gopls` | `go` |
 | `c` | `clangd` | `c`, `h`, `cc`, `cpp`, `hpp` |
 
-Azazel does not install servers. A default whose command is missing is simply not used.
+A default whose command is not found is not used, until it is installed: see [installing servers](#installing-servers). A server you configure yourself is never installed by azazel.
+
+## Installing servers
+
+When an agent calls the `lsp` tool on a file whose default server is not installed, azazel can install it into `~/.azazel/lsp/` (never system-wide) and start it. Servers installed there are found before `PATH`. The recipes:
+
+| Server | Installed with |
+|---|---|
+| `rust` | `rustup component add rust-analyzer`; without rustup, the rust-analyzer release for the platform from GitHub, into `~/.azazel/lsp/bin` |
+| `typescript` | `npm install --prefix ~/.azazel/lsp/npm typescript-language-server typescript`, with `bun add --cwd ~/.azazel/lsp/npm …` when npm is missing |
+| `python` | `npm install --prefix ~/.azazel/lsp/npm pyright` (or bun) |
+| `go` | `go install golang.org/x/tools/gopls@latest` with `GOBIN=~/.azazel/lsp/bin` |
+| `c` | no recipe: install `clangd` with your package manager (`brew install llvm`, `apt install clangd`, `winget install LLVM.LLVM`) |
+
+The installing program (`npm`, `bun`, `rustup`, `go`) is looked for when the install is asked for; when none is there, the message says what to install first. An install stops after 10 minutes.
+
+`[lsp] install` says when it happens (a project's config may set it only once the project is [trusted](configuration.md#trust), because it runs programs):
+
+| Value | Meaning |
+|---|---|
+| `ask` (default) | The UI asks once per server: install it, not now, or never. "Not now" is remembered for the session, "never" in `~/.azazel/lsp/declined`. With nobody to ask (print mode, background sessions, RPC without a UI) nothing is installed and the tool result says the command to run |
+| `auto` | Install without asking |
+| `off` | Never install; the tool result says the command |
+
+The `lsp` call that triggers an install waits up to 45 seconds for it and then goes on with the file. If the install takes longer, the call answers `installing language server <name>… it is still running in the background; ask again in a minute`, and the next call finds the server. The wait is short so that an agent is not held up for minutes by a slow download, and long enough that most installs end within one call. A failed install is reported once, with the end of the installer's output, and is not tried again in the session.
+
+Two commands work without an agent:
+
+| Command | Does |
+|---|---|
+| `azazel lsp list [--json]` | Every known server, whether it is installed and where from (`installed by azazel`, `installed`, or the command that installs it) |
+| `azazel lsp install <server>` | Installs `rust`, `typescript`, `python` or `go` now, whatever `lsp.install` says |
+
+`azazel doctor` warns about each default server that is not installed while the project has files for it, with the command that installs it.
 
 ## Configuring servers
 

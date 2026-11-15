@@ -503,6 +503,12 @@ pub enum Sub {
         #[command(subcommand)]
         action: SkillsAction,
     },
+    /// List the language servers and install the ones azazel can
+    #[cfg(feature = "lsp")]
+    Lsp {
+        #[command(subcommand)]
+        action: LspAction,
+    },
     /// Show the rule files of this project and test one
     Rules {
         #[command(subcommand)]
@@ -684,6 +690,22 @@ pub enum McpAction {
         /// Import every server found without asking; names already configured are left alone
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[cfg(feature = "lsp")]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum LspAction {
+    /// Every known language server: whether it is installed, and where from
+    List {
+        /// One JSON array, an object per server
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install a language server into ~/.azazel/lsp
+    Install {
+        /// A name from `azazel lsp list` (rust, typescript, python, go)
+        server: String,
     },
 }
 

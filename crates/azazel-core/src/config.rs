@@ -360,6 +360,8 @@ config_table!(LspConfig {
     idle_secs: u64 = 240,
     /// The lowest severity reported after a write.
     write_severity: WriteSeverity = WriteSeverity::Error,
+    /// What happens when a file has a known language server that is not installed.
+    install: LspInstall = LspInstall::Ask,
 });
 config_table!(TuiConfig {
     theme: String = "dark".to_string(),
@@ -591,6 +593,11 @@ config_enum!(
     /// `range`: the lines an edit changes must have been read; `file`: any read of the file
     /// will do; `off`: no check.
     ReadGuard { Range = "range", File = "file", Off = "off" } default Range
+);
+config_enum!(
+    /// `ask`: ask once per server before installing it into `~/.azazel/lsp/`; `auto`: install
+    /// without asking; `off`: never install, only say the command.
+    LspInstall { Ask = "ask", Auto = "auto", Off = "off" } default Ask
 );
 config_enum!(WriteSeverity { Error = "error", Warning = "warning" } default Error);
 config_enum!(

@@ -1201,6 +1201,7 @@ dependencies = [
  "base64 0.23.1",
  "cfb",
  "dom_smoothie",
+ "flate2",
  "futures",
  "globset",
  "grep-regex",
@@ -2668,6 +2669,10 @@ version = "0.9.1"
 dependencies = [
  "serde_json",
 ]
+
+[[package]]
+name = "fake-npm"
+version = "0.9.1"
 
 [[package]]
 name = "fake-sched"

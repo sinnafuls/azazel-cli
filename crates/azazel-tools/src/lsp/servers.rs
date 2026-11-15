@@ -6,6 +6,8 @@ use std::path::{Path, PathBuf};
 
 use azazel_core::config::LspServerConfig;
 
+use super::install::Recipe;
+
 /// One language server and the files it is for.
 pub(crate) struct Spec {
     pub name: String,
@@ -17,6 +19,8 @@ pub(crate) struct Spec {
     pub builtin: bool,
     /// Files opened as soon as the server starts, relative to the project root.
     pub warm_files: Vec<String>,
+    /// How azazel installs it; only the built-in defaults have a recipe.
+    pub recipe: Option<Recipe>,
 }
 
 impl Spec {
@@ -35,43 +39,52 @@ impl Spec {
     }
 }
 
-struct Builtin {
-    name: &'static str,
-    command: &'static str,
+pub(crate) struct Builtin {
+    pub name: &'static str,
+    pub command: &'static str,
     args: &'static [&'static str],
-    extensions: &'static [&'static str],
+    pub extensions: &'static [&'static str],
+    /// How azazel installs the server when it is missing.
+    pub recipe: Recipe,
 }
 
-const BUILTINS: [Builtin; 5] = [
+pub(crate) const BUILTINS: [Builtin; 5] = [
     Builtin {
         name: "rust",
         command: "rust-analyzer",
         args: &[],
         extensions: &["rs"],
+        recipe: Recipe::RustAnalyzer,
     },
     Builtin {
         name: "typescript",
         command: "typescript-language-server",
         args: &["--stdio"],
         extensions: &["ts", "tsx", "js", "jsx"],
+        recipe: Recipe::Npm(&["typescript-language-server", "typescript"]),
     },
     Builtin {
         name: "python",
         command: "pyright-langserver",
         args: &["--stdio"],
         extensions: &["py"],
+        recipe: Recipe::Npm(&["pyright"]),
     },
     Builtin {
         name: "go",
         command: "gopls",
         args: &[],
         extensions: &["go"],
+        recipe: Recipe::Go("golang.org/x/tools/gopls@latest"),
     },
     Builtin {
         name: "c",
         command: "clangd",
         args: &[],
         extensions: &["c", "h", "cc", "cpp", "hpp"],
+        recipe: Recipe::Manual(
+            "install clangd with your package manager, for example `brew install llvm`, `apt install clangd` or `winget install LLVM.LLVM`",
+        ),
     },
 ];
 
@@ -96,6 +109,7 @@ pub(crate) fn specs(configured: &BTreeMap<String, LspServerConfig>) -> Vec<Spec>
                 .collect(),
             builtin: false,
             warm_files: server.warm_files.clone(),
+            recipe: None,
         })
         .collect();
     for builtin in &BUILTINS {
@@ -116,6 +130,7 @@ pub(crate) fn specs(configured: &BTreeMap<String, LspServerConfig>) -> Vec<Spec>
                 extensions,
                 builtin: true,
                 warm_files: Vec::new(),
+                recipe: Some(builtin.recipe),
             });
         }
     }
@@ -124,13 +139,14 @@ pub(crate) fn specs(configured: &BTreeMap<String, LspServerConfig>) -> Vec<Spec>
 
 /// The executable `command` names: the file itself when `command` is a path, otherwise the first
 /// match on `PATH`. On Windows the `PATHEXT` extensions are tried, so `server` finds `server.cmd`.
-pub(crate) fn find_program(command: &str) -> Option<PathBuf> {
+///
+/// `dirs` stands for `PATH`: the directories a bare name is looked for in, in order.
+pub(crate) fn find_program_in(dirs: &[PathBuf], command: &str) -> Option<PathBuf> {
     let command = Path::new(command);
     if command.components().count() > 1 {
         return runnable(command);
     }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path).find_map(|dir| runnable(&dir.join(command)))
+    dirs.iter().find_map(|dir| runnable(&dir.join(command)))
 }
 
 #[cfg(windows)]
@@ -236,18 +252,18 @@ mod tests {
     #[test]
     fn a_program_is_found_by_path_or_by_name_on_the_search_path() {
         let this = std::env::current_exe().unwrap();
-        assert_eq!(find_program(&this.to_string_lossy()), Some(this.clone()));
+        assert_eq!(find_program_in(&[], &this.to_string_lossy()), Some(this.clone()));
         if cfg!(windows) {
             // Without its extension the file is still found, with the extension as `PATHEXT` spells it.
-            let found = find_program(&this.with_extension("").to_string_lossy()).unwrap();
+            let found = find_program_in(&[], &this.with_extension("").to_string_lossy()).unwrap();
             assert!(
                 found
                     .to_string_lossy()
                     .eq_ignore_ascii_case(&this.to_string_lossy())
             );
         }
-        assert_eq!(find_program("azazel-no-such-language-server"), None);
+        assert_eq!(find_program_in(&[], "azazel-no-such-language-server"), None);
         let missing = std::env::temp_dir().join("azazel-no-such-dir").join("server");
-        assert_eq!(find_program(&missing.to_string_lossy()), None);
+        assert_eq!(find_program_in(&[], &missing.to_string_lossy()), None);
     }
 }

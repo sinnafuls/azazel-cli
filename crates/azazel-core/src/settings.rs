@@ -12,8 +12,8 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView, EditorMode,
-    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, SessionResume,
-    StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
+    GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, QueueMode, ReadGuard,
+    SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -380,6 +380,8 @@ settings! {
         "lsp.idle_secs": Number, "Stop when idle",
             "Stop a server after this many seconds in which none of its files was touched; 0 keeps it running.";
         "lsp.write_severity": Choice(WriteSeverity::NAMES), "Reported after a write", "The lowest severity reported after a write.";
+        "lsp.install": Choice(LspInstall::NAMES), "Install servers",
+            "When a file has a known language server that is not installed: ask before installing it into ~/.azazel/lsp, install it without asking, or never.";
     }
     Tools / "MCP" {
         "mcp.startup_wait_ms": Number, "Startup wait", "Milliseconds the first request waits for MCP servers.";
