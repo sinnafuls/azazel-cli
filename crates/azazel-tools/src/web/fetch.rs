@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy};
 use azazel_ai::Block;
 use azazel_core::{ArtifactStore, Lines, Scheme};
 use dom_smoothie::{Article, Config, Readability, TextMode};
@@ -750,6 +750,13 @@ impl Tool for WebFetchTool {
 
     fn replay_safe(&self, _: &Value) -> bool {
         true
+    }
+
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: true,
+            timeout: Timeout::Configured,
+        }
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {

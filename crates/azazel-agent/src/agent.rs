@@ -1,6 +1,6 @@
 //! The agent actor: one task that owns a conversation and drives model requests and tool calls.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
@@ -23,7 +23,10 @@ use crate::gate::{Gate, GateDecision};
 use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
 use crate::repair::{self, Prepared};
-use crate::tool::{ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, tool_spec};
+use crate::tool::{
+    ArtifactSink, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolSettings, ToolSource, UpdateSink,
+    tool_spec,
+};
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
 pub const ABORTED_TEXT: &str = "aborted by user";
@@ -126,6 +129,53 @@ pub struct AgentStatus {
     /// Totals over the agent's lifetime, including summarisation requests.
     pub usage: Usage,
     pub requests: u32,
+}
+
+/// `value` as JSON with the keys of every object in order, so the same call written two ways is
+/// one key.
+fn canonical(value: &Value) -> String {
+    fn sorted(value: &Value) -> Value {
+        match value {
+            Value::Object(map) => {
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                Value::Object(keys.into_iter().map(|k| (k.clone(), sorted(&map[k]))).collect())
+            }
+            Value::Array(items) => Value::Array(items.iter().map(sorted).collect()),
+            other => other.clone(),
+        }
+    }
+    sorted(value).to_string()
+}
+
+/// Completes after `limit`, never when there is none.
+async fn timeout_after(limit: Option<Duration>) {
+    match limit {
+        Some(limit) => tokio::time::sleep(limit).await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Whether a failed call's text names a reason that passes: a timeout, a connection that broke,
+/// a server that is busy (HTTP 429) or failing (HTTP 500, 502, 503, 504).
+fn is_transient(text: &str) -> bool {
+    let text = text.to_lowercase();
+    const PHRASES: [&str; 7] = [
+        "timed out",
+        "timeout",
+        "connection reset",
+        "connection closed",
+        "broken pipe",
+        "too many requests",
+        "temporarily unavailable",
+    ];
+    if PHRASES.iter().any(|phrase| text.contains(phrase)) {
+        return true;
+    }
+    (text.contains("http") || text.contains("status"))
+        && text
+            .split(|c: char| !c.is_ascii_digit())
+            .any(|token| matches!(token, "429" | "500" | "502" | "503" | "504"))
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -305,6 +355,7 @@ impl Agent {
                 status: status.clone(),
                 requests: 0,
                 last_request: last_request.clone(),
+                reads: Mutex::new(HashMap::new()),
             },
         };
         let task = tokio::spawn(actor.run());
@@ -413,7 +464,20 @@ struct Core {
     /// Requests of its own the agent has built.
     requests: u32,
     last_request: Arc<Mutex<Option<Arc<RequestRecord>>>>,
+    /// The last result each repeatable call gave: where it is in the context and what it held.
+    reads: Mutex<HashMap<String, SeenRead>>,
 }
+
+/// A result of a repeatable call that was sent to the model.
+struct SeenRead {
+    call_id: String,
+    digest: u64,
+    /// The `requests` count of the agent when the result was given.
+    request: u32,
+}
+
+/// Most calls the agent remembers results of.
+const MAX_SEEN_READS: usize = 256;
 
 struct Actor {
     inbox: Inbox,
@@ -1333,27 +1397,139 @@ impl Core {
             }),
             services: self.services.clone(),
         };
-        // A task of its own, so a panicking tool fails this call and nothing else.
-        let runner = tool.clone();
-        let mut task = tokio::spawn(async move { runner.call(input, &ctx).await });
-        let mut output = tokio::select! {
-            joined = &mut task => match joined {
-                Ok(output) => output,
-                Err(e) if e.is_panic() => ToolOutput::error(format!("tool `{name}` panicked")),
-                Err(_) => ToolOutput::error(ABORTED_TEXT),
-            },
-            _ = cancel.cancelled() => {
-                if tokio::time::timeout(ABORT_GRACE, &mut task).await.is_err() {
-                    task.abort();
+        let settings = self
+            .services
+            .get::<ToolSettings>()
+            .map(|s| *s)
+            .unwrap_or_default();
+        let policy = tool.policy(&input);
+        let limit = match policy.timeout {
+            Timeout::Own => None,
+            Timeout::Configured => settings.call_timeout,
+            Timeout::After(limit) => Some(limit),
+        };
+        let attempts = if policy.idempotent {
+            1 + settings.retries
+        } else {
+            1
+        };
+        let mut retried = 0u32;
+        let mut output = loop {
+            // A task of its own, so a panicking tool fails this call and nothing else.
+            let runner = tool.clone();
+            let (call_input, call_ctx) = (input.clone(), ctx.clone());
+            let mut task = tokio::spawn(async move { runner.call(call_input, &call_ctx).await });
+            let (mut output, timed_out) = tokio::select! {
+                joined = &mut task => (match joined {
+                    Ok(output) => output,
+                    Err(e) if e.is_panic() => ToolOutput::error(format!("tool `{name}` panicked")),
+                    Err(_) => ToolOutput::error(ABORTED_TEXT),
+                }, false),
+                _ = cancel.cancelled() => {
+                    if tokio::time::timeout(ABORT_GRACE, &mut task).await.is_err() {
+                        task.abort();
+                    }
+                    return ToolOutput::error(ABORTED_TEXT);
                 }
-                return ToolOutput::error(ABORTED_TEXT);
+                _ = timeout_after(limit) => {
+                    task.abort();
+                    let secs = limit.map_or(0, |limit| limit.as_secs());
+                    (ToolOutput::error(format!(
+                        "`{name}` timed out after {secs}s and was stopped; try again, ask for less, or use another approach"
+                    )), true)
+                }
+            };
+            let again = output.is_error
+                && retried + 1 < attempts
+                && (timed_out || is_transient(&output.text_content()));
+            if !again {
+                if retried > 0 {
+                    let outcome = if output.is_error {
+                        "still failed"
+                    } else {
+                        "succeeded"
+                    };
+                    output.content.push(Block::text(format!(
+                        "[{outcome} after {retried} {}]",
+                        if retried == 1 { "retry" } else { "retries" }
+                    )));
+                }
+                break output;
+            }
+            let wait = settings.backoff.saturating_mul(1 << retried.min(6));
+            retried += 1;
+            tokio::select! {
+                _ = cancel.cancelled() => return ToolOutput::error(ABORTED_TEXT),
+                _ = tokio::time::sleep(wait) => {}
             }
         };
         self.gate
             .after(&self.info, tool.as_ref(), call_id, &mut output)
             .await;
         self.limit_output(call_id, &mut output);
+        if settings.cache_reads && tool.repeatable(&input) {
+            self.answer_repeat(call_id, name, &input, &mut output);
+        }
         output
+    }
+
+    /// Replaces the result of a call the agent made before with a note that says so, when the
+    /// output is the same and the earlier result is still in the context. The call has run, so
+    /// what it records (that a file was read) is kept; an output that differs, or an error, is
+    /// shown in full. Comparing outputs makes a stale answer impossible: whatever changed the
+    /// files, a different result comes through.
+    fn answer_repeat(&self, call_id: &str, name: &str, input: &Value, output: &mut ToolOutput) {
+        if output.is_error
+            || output
+                .content
+                .iter()
+                .any(|block| !matches!(block, Block::Text { .. }))
+        {
+            return;
+        }
+        let text = output.text_content();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&text, &mut hasher);
+        let digest = std::hash::Hasher::finish(&hasher);
+        let key = format!("{name}\u{1f}{}\u{1f}{}", canonical(input), self.cwd.display());
+        let mut seen = locked(&self.reads);
+        if let Some(before) = seen.get(&key)
+            && before.digest == digest
+            && self.in_context(&before.call_id)
+        {
+            let ago = self.requests.saturating_sub(before.request);
+            let note = format!(
+                "(unchanged since your identical `{name}` call {ago} turn{} ago; its result above is still current)",
+                if ago == 1 { "" } else { "s" }
+            );
+            // Not worth a note when the result is hardly bigger than it.
+            if text.len() > note.len() * 2 {
+                output.content = vec![Block::text(note)];
+                return;
+            }
+        }
+        if seen.len() >= MAX_SEEN_READS {
+            seen.clear();
+        }
+        seen.insert(
+            key,
+            SeenRead {
+                call_id: call_id.to_string(),
+                digest,
+                request: self.requests,
+            },
+        );
+    }
+
+    /// Whether the result of call `call_id` is in the context with its content: not elided, not
+    /// summarised away.
+    fn in_context(&self, call_id: &str) -> bool {
+        self.entries.iter().any(|entry| {
+            entry.message.content.iter().any(|block| {
+                matches!(block, Block::ToolResult { call_id: id, content, .. }
+                    if id == call_id && !compaction::is_elided(content))
+            })
+        })
     }
 
     /// Cuts text beyond `max_result_bytes`, storing the full text as an artifact.

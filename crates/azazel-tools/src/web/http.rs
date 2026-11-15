@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy};
 use azazel_ai::ServiceStore;
 use azazel_ai::services::{self, NO_SERVICE, REDACTED, Service};
 use azazel_core::{ArtifactStore, ExtError, Extension, Registrar};
@@ -487,6 +487,14 @@ impl Tool for HttpTool {
         ["GET", "HEAD", "OPTIONS"]
             .iter()
             .any(|safe| method.trim().eq_ignore_ascii_case(safe))
+    }
+
+    /// Only a request that reads is run again; a POST may have taken effect before it failed.
+    fn policy(&self, input: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: self.concurrency_safe(input),
+            timeout: Timeout::Configured,
+        }
     }
 
     fn approval_note(&self, input: &Value) -> Option<String> {

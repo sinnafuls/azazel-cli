@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy};
 use azazel_core::config::{LspInstall, LspServerConfig, WriteSeverity};
 use azazel_core::tracker::Splice;
 use azazel_core::{
@@ -1402,6 +1402,13 @@ impl Tool for LspTool {
 
     fn replay_safe(&self, input: &Value) -> bool {
         self.access(input) == Access::Read
+    }
+
+    fn policy(&self, input: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: self.access(input) == Access::Read,
+            timeout: Timeout::Configured,
+        }
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {

@@ -4,7 +4,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy};
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -169,6 +169,13 @@ impl Tool for WebGrepTool {
 
     fn replay_safe(&self, _: &Value) -> bool {
         true
+    }
+
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: true,
+            timeout: Timeout::Configured,
+        }
     }
 
     fn subjects(&self, input: &Value) -> Vec<String> {
