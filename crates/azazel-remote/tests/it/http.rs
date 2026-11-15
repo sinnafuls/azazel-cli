@@ -254,7 +254,7 @@ async fn a_public_address_is_accepted_and_makes_the_cookie_secure() {
 async fn a_taken_port_gives_way_to_the_next_one() {
     // Tests running beside this one hold ports of their own, so the port taken here is one whose
     // successor is free.
-    let (taken, port) = loop {
+    let (_taken, port) = loop {
         let taken = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = taken.local_addr().unwrap().port();
         if port < u16::MAX - 10

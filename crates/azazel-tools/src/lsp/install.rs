@@ -418,6 +418,8 @@ fn unpack(bytes: &[u8], kind: Archive, dir: &Path) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     #[test]

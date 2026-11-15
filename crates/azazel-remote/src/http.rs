@@ -63,7 +63,7 @@ fn error(status: u16, message: &str) -> Res {
     json_reply(status, json!({ "error": message }))
 }
 
-fn header<'a>(req: &'a Request<Incoming>, name: impl hyper::header::AsHeaderName) -> Option<&'a str> {
+fn header(req: &Request<Incoming>, name: impl hyper::header::AsHeaderName) -> Option<&str> {
     req.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
@@ -85,25 +85,29 @@ fn authenticate(
     shared: &Shared,
     req: &Request<Incoming>,
     needs_origin: bool,
-) -> Result<Option<(String, Device)>, Res> {
+) -> Result<Option<(String, Device)>, Box<Res>> {
     let Some((token, cookie)) = token(req) else {
         return Ok(None);
     };
     if cookie && needs_origin && header(req, ORIGIN).is_none() {
-        return Err(error(
+        return Err(Box::new(error(
             403,
             "a request signed in by cookie must say where it comes from (`Origin`)",
-        ));
+        )));
     }
     Ok(shared.auth.device(&token).map(|device| (token, device)))
 }
 
-fn signed_in(shared: &Shared, req: &Request<Incoming>, needs_origin: bool) -> Result<(String, Device), Res> {
+fn signed_in(
+    shared: &Shared,
+    req: &Request<Incoming>,
+    needs_origin: bool,
+) -> Result<(String, Device), Box<Res>> {
     authenticate(shared, req, needs_origin)?.ok_or_else(|| {
-        error(
+        Box::new(error(
             401,
             "not signed in: open the pairing link again, or ask for a new one",
-        )
+        ))
     })
 }
 
@@ -136,7 +140,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
                     "version": env!("CARGO_PKG_VERSION"),
                 }),
             ),
-            Err(res) => res,
+            Err(res) => *res,
         },
         (Method::GET, "/api/sessions") => match signed_in(shared, &req, false) {
             Ok(_) => {
@@ -144,7 +148,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
                 sessions.sort_by(|a, b| b.started.cmp(&a.started));
                 json_reply(200, json!({ "sessions": sessions }))
             }
-            Err(res) => res,
+            Err(res) => *res,
         },
         (Method::POST, "/api/links") => links(shared, req).await,
         (Method::POST, "/api/logout") => match signed_in(shared, &req, true) {
@@ -159,7 +163,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
                 );
                 res
             }
-            Err(res) => res,
+            Err(res) => *res,
         },
         (Method::GET, p) if p.starts_with("/api/ws/") => socket(shared, &mut req, &p["/api/ws/".len()..]),
         (_, "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout") => {
@@ -207,12 +211,12 @@ fn page(req: &Request<Incoming>) -> Res {
     res
 }
 
-async fn body(req: Request<Incoming>) -> Result<Bytes, Res> {
+async fn body(req: Request<Incoming>) -> Result<Bytes, Box<Res>> {
     Limited::new(req.into_body(), BODY_LIMIT)
         .collect()
         .await
         .map(|collected| collected.to_bytes())
-        .map_err(|_| error(413, "the request is too large"))
+        .map_err(|_| Box::new(error(413, "the request is too large")))
 }
 
 #[derive(Deserialize)]
@@ -227,7 +231,7 @@ async fn pair(shared: &Arc<Shared>, peer: IpAddr, req: Request<Incoming>) -> Res
     let secure = shared.is_https_host(&host);
     let bytes = match body(req).await {
         Ok(bytes) => bytes,
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     let Ok(pair) = serde_json::from_slice::<PairBody>(&bytes) else {
         return error(400, "send {\"secret\": \"…\"}");
@@ -278,12 +282,12 @@ struct LinkBody {
 async fn links(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
     let device = match signed_in(shared, &req, true) {
         Ok((_, device)) => device,
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     let origin = header(&req, ORIGIN).map(str::to_string);
     let bytes = match body(req).await {
         Ok(bytes) => bytes,
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     let Ok(wanted) = serde_json::from_slice::<LinkBody>(&bytes) else {
         return error(400, "send {\"access\": \"view\"} or {\"access\": \"control\"}");
@@ -302,7 +306,7 @@ async fn links(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
 fn socket(shared: &Arc<Shared>, req: &mut Request<Incoming>, id: &str) -> Res {
     let device = match authenticate(shared, req, true) {
         Ok(device) => device.map(|(_, device)| device),
-        Err(res) => return res,
+        Err(res) => return *res,
     };
     let wants = |name: &str, wanted: &str| {
         header(req, name).is_some_and(|v| v.split(',').any(|part| part.trim().eq_ignore_ascii_case(wanted)))

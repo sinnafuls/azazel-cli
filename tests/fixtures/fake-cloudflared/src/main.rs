@@ -22,10 +22,18 @@ fn main() -> ExitCode {
     let beside: PathBuf = program.parent().unwrap_or(Path::new(".")).join("cloudflared.url");
     let _ = std::fs::write(beside, &url);
     eprintln!("INF Requesting new quick Tunnel on trycloudflare.com...");
-    eprintln!("INF +--------------------------------------------------------------------------------------------+");
-    eprintln!("INF |  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |");
-    eprintln!("INF |  https://fake-tunnel-test.trycloudflare.com                                                |");
-    eprintln!("INF +--------------------------------------------------------------------------------------------+");
+    eprintln!(
+        "INF +--------------------------------------------------------------------------------------------+"
+    );
+    eprintln!(
+        "INF |  Your quick Tunnel has been created! Visit it at (it may take some time to be reachable):  |"
+    );
+    eprintln!(
+        "INF |  https://fake-tunnel-test.trycloudflare.com                                                |"
+    );
+    eprintln!(
+        "INF +--------------------------------------------------------------------------------------------+"
+    );
     loop {
         std::thread::sleep(std::time::Duration::from_secs(3600));
     }

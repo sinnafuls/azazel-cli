@@ -41,7 +41,10 @@ pub(crate) fn cache_control(asset: &Asset) -> &'static str {
 pub(crate) fn inflate(asset: &Asset) -> Vec<u8> {
     let mut out = Vec::new();
     // The bytes were made by the build script from a file it read; they are a valid gzip stream.
-    if flate2::read::GzDecoder::new(asset.gz).read_to_end(&mut out).is_err() {
+    if flate2::read::GzDecoder::new(asset.gz)
+        .read_to_end(&mut out)
+        .is_err()
+    {
         out.clear();
     }
     out

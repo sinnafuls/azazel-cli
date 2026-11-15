@@ -24,8 +24,6 @@ pub mod history;
 pub mod hooks;
 #[cfg(feature = "detach")]
 pub mod host;
-#[cfg(feature = "remote")]
-pub mod remote;
 pub mod init;
 pub mod inventory;
 pub mod login;
@@ -41,6 +39,8 @@ pub mod models;
 pub mod orchestration;
 pub mod pkg;
 pub mod print;
+#[cfg(feature = "remote")]
+pub mod remote;
 pub mod reports;
 pub mod resets;
 pub mod resources;

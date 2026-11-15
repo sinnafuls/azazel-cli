@@ -116,7 +116,10 @@ impl Answer {
 
 /// One HTTP/1.1 request on a connection of its own. `Host` is the server's unless given.
 pub async fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str)], body: &str) -> Answer {
-    let mut head = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n", body.len());
+    let mut head = format!(
+        "{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
     if !headers.iter().any(|(name, _)| name.eq_ignore_ascii_case("host")) {
         head.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
     }
@@ -128,11 +131,21 @@ pub async fn request(port: u16, method: &str, path: &str, headers: &[(&str, &str
     stream.write_all(head.as_bytes()).await.unwrap();
     stream.write_all(body.as_bytes()).await.unwrap();
     let mut raw = Vec::new();
-    tokio::time::timeout(WAIT, stream.read_to_end(&mut raw)).await.unwrap().unwrap();
+    tokio::time::timeout(WAIT, stream.read_to_end(&mut raw))
+        .await
+        .unwrap()
+        .unwrap();
     let split = raw.windows(4).position(|w| w == b"\r\n\r\n").unwrap();
     let head = String::from_utf8_lossy(&raw[..split]).into_owned();
     let mut lines = head.lines();
-    let status = lines.next().unwrap().split_whitespace().nth(1).unwrap().parse().unwrap();
+    let status = lines
+        .next()
+        .unwrap()
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
     let headers = lines
         .filter_map(|line| line.split_once(':'))
         .map(|(name, value)| (name.to_ascii_lowercase(), value.trim().to_string()))
@@ -156,10 +169,16 @@ pub async fn pair(server: &Server, access: Access) -> String {
 pub type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 pub async fn connect(port: u16, id: &str, token: Option<&str>) -> Socket {
-    let mut request = format!("ws://127.0.0.1:{port}/api/ws/{id}").into_client_request().unwrap();
-    request.headers_mut().insert("origin", format!("http://127.0.0.1:{port}").parse().unwrap());
+    let mut request = format!("ws://127.0.0.1:{port}/api/ws/{id}")
+        .into_client_request()
+        .unwrap();
+    request
+        .headers_mut()
+        .insert("origin", format!("http://127.0.0.1:{port}").parse().unwrap());
     if let Some(token) = token {
-        request.headers_mut().insert("authorization", format!("Bearer {token}").parse().unwrap());
+        request
+            .headers_mut()
+            .insert("authorization", format!("Bearer {token}").parse().unwrap());
     }
     tokio_tungstenite::connect_async(request).await.unwrap().0
 }
@@ -167,7 +186,10 @@ pub async fn connect(port: u16, id: &str, token: Option<&str>) -> Socket {
 /// The next text message, as JSON.
 pub async fn next_json(socket: &mut Socket) -> serde_json::Value {
     loop {
-        match tokio::time::timeout(WAIT, socket.next()).await.expect("a message") {
+        match tokio::time::timeout(WAIT, socket.next())
+            .await
+            .expect("a message")
+        {
             Some(Ok(Message::Text(text))) => return serde_json::from_str(text.as_str()).unwrap(),
             Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
             other => panic!("expected a text message, got {other:?}"),
@@ -191,6 +213,9 @@ pub async fn send(socket: &mut Socket, value: serde_json::Value) {
 }
 
 pub async fn sent(received: &mut mpsc::UnboundedReceiver<String>) -> serde_json::Value {
-    let line = tokio::time::timeout(WAIT, received.recv()).await.expect("a command").unwrap();
+    let line = tokio::time::timeout(WAIT, received.recv())
+        .await
+        .expect("a command")
+        .unwrap();
     serde_json::from_str(&line).unwrap()
 }
