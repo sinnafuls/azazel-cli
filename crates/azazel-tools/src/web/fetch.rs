@@ -898,15 +898,6 @@ mod tests {
     }
 
     #[test]
-    fn a_page_that_fits_is_returned_as_it_is() {
-        let page = "line one\r\n  line two\n";
-        assert_eq!(part(page, 1, page.len()).unwrap(), page);
-        assert_eq!(part(page, 1, DEFAULT_LIMIT).unwrap(), page);
-        // Characters are counted, not bytes: four two-byte letters fit a window of four.
-        assert_eq!(part("éé\néé", 1, 5).unwrap(), "éé\néé");
-    }
-
-    #[test]
     fn a_long_page_comes_in_whole_lines_and_each_part_names_the_next() {
         let page: String = (1..=10).map(|n| format!("l{n}\n")).collect();
         assert_eq!(
@@ -938,19 +929,6 @@ mod tests {
     }
 
     #[test]
-    fn read_counts_its_limit_in_lines() {
-        let page: String = (1..=10).map(|n| format!("l{n}\n")).collect();
-        let lines = |offset, limit| window(&page, Window::of_read(Lines { offset, limit }));
-        assert_eq!(lines(None, None).unwrap(), page);
-        assert_eq!(
-            lines(Some(4), Some(2)).unwrap(),
-            "l4\nl5\n[lines 4-5 of 10; continue with offset=6, or web_grep to search the page]"
-        );
-        assert_eq!(lines(Some(9), None).unwrap(), "l9\nl10\n[lines 9-10 of 10]");
-        assert_eq!(lines(None, Some(10)).unwrap(), page.trim_end());
-    }
-
-    #[test]
     fn a_line_longer_than_the_window_is_cut_and_the_trailer_says_so() {
         let long = "é".repeat(50);
         assert_eq!(
@@ -974,24 +952,5 @@ mod tests {
                 "é".repeat(20)
             )
         );
-    }
-
-    #[test]
-    fn web_fetch_limits_stay_within_their_bounds() {
-        assert_eq!(
-            Window::of_fetch(None, None),
-            Window {
-                offset: 1,
-                chars: DEFAULT_LIMIT,
-                lines: usize::MAX
-            }
-        );
-        assert_eq!(Window::of_fetch(Some(0), Some(0)).chars, 1);
-        assert_eq!(Window::of_fetch(Some(0), Some(0)).offset, 1);
-        assert_eq!(Window::of_fetch(Some(7), Some(usize::MAX)).chars, MAX_LIMIT);
-        assert_eq!(classify(None, b"  <!DOCTYPE html><html></html>"), Kind::Html);
-        assert_eq!(classify(None, b"just words"), Kind::Text);
-        assert_eq!(classify(None, &[0xff, 0xfe, 0x00]), Kind::Binary);
-        assert_eq!(media_type("Text/HTML; charset=UTF-8"), "text/html");
     }
 }

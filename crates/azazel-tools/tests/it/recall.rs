@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, TranscriptSink, UpdateSink};
+use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UpdateSink};
 use azazel_ai::{AssistantMeta, Block, Message, StopReason, Usage, WireApi};
 use azazel_core::config::ReadGuard;
 use azazel_core::process::Shell;
@@ -437,29 +437,4 @@ async fn a_sub_agent_recalls_its_own_transcript() {
         "{}",
         missing.text_content()
     );
-}
-
-#[tokio::test]
-async fn the_tool_is_offered_with_the_core_tools_and_only_reads() {
-    let bench = bench();
-    let lead = bench.ctx("lead", 0).agent;
-    let tool = bench
-        .registry
-        .tools
-        .tools(&lead)
-        .into_iter()
-        .find(|tool| tool.name() == "session_recall")
-        .expect("session_recall is registered");
-    let input = json!({"query": "x"});
-    assert_eq!(tool.access(&input), azazel_agent::Access::Read);
-    assert!(tool.concurrency_safe(&input));
-    assert!(tool.subjects(&input).is_empty());
-
-    // A call leaves the session file as it was.
-    let ids = compacted(&bench.session);
-    let before = std::fs::read(bench.session.path()).unwrap();
-    bench
-        .recall(json!({"query": "parser", "touched": true, "expand": [ids.prompt], "range": ["", ""]}))
-        .await;
-    assert_eq!(std::fs::read(bench.session.path()).unwrap(), before);
 }

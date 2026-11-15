@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
-use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
+use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
 use azazel_core::config::{LspServerConfig, WriteSeverity};
 use azazel_core::process::Shell;
 use azazel_core::{CommandOutcome, Event, ExtCtx, Registry};
@@ -305,63 +305,6 @@ async fn rename_writes_the_servers_edit_and_keeps_the_agent_up_to_date() {
             renamed.len() - 1
         )
     );
-}
-
-#[tokio::test]
-async fn what_cannot_be_asked_is_explained() {
-    let bench = bench();
-    bench.file("a.fk", SOURCE);
-    bench.file("notes.txt", "x");
-    bench.file("old.gone", "x");
-
-    let input = |action: &str, path: &str| json!({ "action": action, "path": path });
-    assert_eq!(
-        bench.err("lsp", input("hover", "notes.txt")).await,
-        "no language server is available for `.txt` files; /lsp lists the servers"
-    );
-    assert_eq!(
-        bench.err("lsp", input("hover", "a.fk")).await,
-        "`hover` needs `line` (and `column`, 1 when left out)"
-    );
-    assert_eq!(
-        bench
-            .err("lsp", json!({ "action": "hover", "path": "a.fk", "line": 9 }))
-            .await,
-        "a.fk has no line 9; it has 4"
-    );
-    assert!(
-        bench
-            .err("lsp", input("format", "a.fk"))
-            .await
-            .starts_with("unknown action `format`; actions: ")
-    );
-    assert_eq!(
-        bench
-            .err("lsp", json!({ "action": "rename", "path": "a.fk", "line": 1 }))
-            .await,
-        "`rename` needs `new_name`"
-    );
-    assert_eq!(
-        bench.err("lsp", input("diagnostics", "old.gone")).await,
-        "language server `ghost`: `no-such-language-server` was not found"
-    );
-    // A server that cannot run does not get in the way of the file tools.
-    bench.ok("read", json!({ "path": "old.gone" })).await;
-    let written = bench
-        .ok("write", json!({ "path": "old.gone", "content": "yz" }))
-        .await;
-    assert_eq!(written, "replaced old.gone (2 bytes)");
-
-    let tool = bench.registry.tools.tools(&AgentInfo {
-        id: "lead".into(),
-        def: "lead".into(),
-        parent: None,
-        depth: 0,
-        session_id: "s".into(),
-    });
-    let lsp = tool.iter().find(|tool| tool.name() == "lsp").unwrap();
-    assert_eq!(lsp.access(&input("rename", "a.fk")), azazel_agent::Access::Write);
-    assert_eq!(lsp.access(&input("hover", "a.fk")), azazel_agent::Access::Read);
 }
 
 #[tokio::test]

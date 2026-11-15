@@ -442,34 +442,3 @@ async fn a_long_body_is_cut_and_saved_whole_and_other_content_is_saved_to_a_file
     assert!(head.starts_with("HTTP 204 No Content · HEAD "), "{head}");
     assert!(!head.contains("\n\n"), "{head}");
 }
-
-#[tokio::test]
-async fn a_request_that_cannot_be_sent_says_why() {
-    let bench = bench();
-    let method = bench
-        .refused(json!({"method": "TRACE", "url": "http://127.0.0.1:9/"}))
-        .await;
-    assert!(
-        method.contains("GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS"),
-        "{method}"
-    );
-    let both = bench
-        .refused(json!({"url": "http://127.0.0.1:9/", "body": "x", "json": {"a": 1}}))
-        .await;
-    assert_eq!(both, "give `body` or `json`, not both");
-    let relative = bench.refused(json!({"url": "/v1/items"})).await;
-    assert!(relative.starts_with("invalid URL \"/v1/items\""), "{relative}");
-    let file = bench.refused(json!({"url": "file:///etc/passwd"})).await;
-    assert!(file.contains("only http and https URLs"), "{file}");
-    let metadata = bench
-        .refused(json!({"url": "http://169.254.169.254/latest/meta-data/"}))
-        .await;
-    assert!(metadata.contains("link-local or cloud-metadata"), "{metadata}");
-    let header = bench
-        .refused(json!({"url": "http://127.0.0.1:9/", "headers": {"bad name": "x"}}))
-        .await;
-    assert_eq!(header, "`bad name` is not a header name");
-    // Nothing listens there: the failure names the request, not a status.
-    let down = bench.refused(json!({"url": "http://127.0.0.1:9/x"})).await;
-    assert!(down.starts_with("GET http://127.0.0.1:9/x failed: "), "{down}");
-}

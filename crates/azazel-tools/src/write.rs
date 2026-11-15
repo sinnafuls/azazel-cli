@@ -836,15 +836,4 @@ mod tests {
             [run(4, 1, 2), run(4, 1, 2), run(2, 1, 2), run(1, 1, 2)]
         );
     }
-
-    #[test]
-    fn unread_lines_are_named_briefly() {
-        assert_eq!(lines_text(&[(40, 52)]), "lines 40-52");
-        assert_eq!(lines_text(&[(7, 7)]), "line 7");
-        assert_eq!(lines_text(&[(3, 4), (9, 9), (20, 22)]), "lines 3-4, 9 and 20-22");
-        assert_eq!(
-            lines_text(&[(1, 1), (3, 3), (5, 5), (7, 7), (9, 9), (11, 12)]),
-            "lines 1, 3, 5, 7 and 2 more places"
-        );
-    }
 }

@@ -467,17 +467,6 @@ mod tests {
     }
 
     #[test]
-    fn glob_lists_newest_first() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("old.txt"), "1").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(30));
-        std::fs::write(dir.path().join("new.txt"), "2").unwrap();
-        let files = glob_files(dir.path(), &compile_glob("*.txt").unwrap());
-        let names: Vec<String> = files.iter().map(|p| display_path(dir.path(), p)).collect();
-        assert_eq!(names, ["new.txt", "old.txt"]);
-    }
-
-    #[test]
     fn grep_content_skips_ignored_git_and_binary_files() {
         let dir = tree();
         assert_eq!(

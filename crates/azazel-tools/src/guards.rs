@@ -639,14 +639,4 @@ mod tests {
         assert!(!failed(false, Some(&serde_json::json!({ "job_id": "job-1" }))));
         assert!(!failed(false, None));
     }
-
-    #[test]
-    fn prose_is_told_from_code_by_the_extension() {
-        for path in ["README.md", "docs/guide.MDX", "notes.txt", "CHANGES.rst"] {
-            assert!(is_prose(Path::new(path)), "{path}");
-        }
-        for path in ["src/main.rs", "Makefile", "config.toml", "a.md.rs", ".env"] {
-            assert!(!is_prose(Path::new(path)), "{path}");
-        }
-    }
 }

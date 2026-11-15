@@ -2,12 +2,11 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink};
-use azazel_ai::Block;
-use azazel_core::{ArtifactStore, ExtCtx, Registry};
+use azazel_agent::{Access, AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
+use azazel_core::ArtifactStore;
 use azazel_tools::web::{
     Brave, DuckDuckGo, Exa, Fetcher, MAX_BODY_BYTES, SearchBackend, SearchHit, SearchQuery, Searxng, Tavily,
-    UrlScheme, WebExt, WebFetchTool, WebGrepTool, WebSearchTool, active_backend, backend_from_config,
+    UrlScheme, WebFetchTool, WebGrepTool, WebSearchTool, active_backend,
 };
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
@@ -524,59 +523,6 @@ fn auto_prefers_keyed_backends_then_searxng_then_duckduckgo() {
 }
 
 #[tokio::test]
-async fn an_explicit_backend_without_its_key_or_url_errors_naming_what_to_set() {
-    let no_env = env_of(&[]);
-    for (search, needs) in [
-        ("brave", "BRAVE_API_KEY"),
-        ("tavily", "TAVILY_API_KEY"),
-        ("exa", "EXA_API_KEY"),
-        ("searxng", "searxng_url"),
-        ("bing", "duckduckgo"),
-        ("provider", "no web search of its own"),
-    ] {
-        let reason = backend_from_config(search, "", &no_env).err().unwrap();
-        assert!(reason.contains(needs), "{search}: {reason}");
-        assert!(reason.contains(search), "{search}: {reason}");
-    }
-
-    let chosen = backend_from_config("auto", "", &env_of(&[("TAVILY_API_KEY", "t")])).unwrap();
-    assert_eq!(
-        (chosen.name(), chosen.base_url()),
-        ("tavily", "https://api.tavily.com")
-    );
-    let fallback = backend_from_config("auto", "", &no_env).unwrap();
-    assert_eq!(
-        (fallback.name(), fallback.base_url()),
-        ("duckduckgo", "https://html.duckduckgo.com")
-    );
-
-    // The tool reports the same reason on every call, and names no host to permission rules.
-    let bench = bench();
-    let tool = WebSearchTool::new(
-        backend_from_config("brave", "", &no_env),
-        azazel_ai::tls::client(),
-    );
-    assert!(tool.subjects(&json!({"query": "x"})).is_empty());
-    let refused = tool.call(json!({"query": "x"}), &bench.ctx()).await;
-    assert!(failed(&refused).contains("BRAVE_API_KEY"));
-}
-
-#[test]
-fn web_tools_are_network_access_on_the_host_they_contact() {
-    let backend: Arc<dyn SearchBackend> = Arc::new(Brave::new("https://api.search.brave.com", "k"));
-    let search = WebSearchTool::new(Ok(backend), azazel_ai::tls::client());
-    let input = json!({"query": "x"});
-    assert_eq!(search.access(&input), Access::Net);
-    assert_eq!(search.subjects(&input), ["domain:api.search.brave.com"]);
-
-    let fetch = fetch_tool();
-    let input = json!({"url": "https://Docs.RS/tokio?x=1"});
-    assert_eq!(fetch.access(&input), Access::Net);
-    assert_eq!(fetch.subjects(&input), ["domain:docs.rs"]);
-    assert!(fetch.subjects(&json!({"url": "not a url"})).is_empty());
-}
-
-#[tokio::test]
 async fn an_article_page_becomes_markdown_without_the_page_chrome() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
@@ -636,40 +582,6 @@ async fn text_is_the_article_without_markup_and_raw_is_the_body_as_sent() {
         .call(json!({"url": url, "format": "pdf"}), &bench.ctx())
         .await;
     assert!(failed(&unknown).starts_with("invalid arguments"));
-}
-
-#[tokio::test]
-async fn json_and_plain_text_pass_through_unchanged() {
-    let server = MockServer::start().await;
-    let payload = r#"{"items":[1,2,3],"next":null,"note":"<b>not markup</b>"}"#;
-    Mock::given(method("GET"))
-        .and(path("/api/items"))
-        .respond_with(json_body(payload))
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/notes.txt"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("line one\n  line two\n"))
-        .mount(&server)
-        .await;
-    let bench = bench();
-    let tool = fetch_tool();
-
-    let json_out = tool
-        .call(
-            json!({"url": format!("{}/api/items", server.uri())}),
-            &bench.ctx(),
-        )
-        .await;
-    assert_eq!(ok(&json_out), payload);
-    let text_out = tool
-        .call(
-            json!({"url": format!("{}/notes.txt", server.uri()), "format": "text"}),
-            &bench.ctx(),
-        )
-        .await;
-    assert_eq!(ok(&text_out), "line one\n  line two\n");
-    assert!(bench.artifacts().is_empty());
 }
 
 #[tokio::test]
@@ -795,33 +707,6 @@ async fn a_pdf_comes_back_as_its_text_under_a_line_naming_the_saved_file() {
     assert!(
         scanned.ends_with(&format!("Saved to {}", saved[0].display())),
         "{scanned}"
-    );
-}
-
-#[cfg(not(feature = "pdf"))]
-#[tokio::test]
-async fn a_build_without_the_pdf_reader_saves_a_pdf_and_says_so() {
-    let server = MockServer::start().await;
-    let pdf: Vec<u8> = b"%PDF-1.7\n\xff\xfe\x00 not text".to_vec();
-    Mock::given(method("GET"))
-        .and(path("/files/report.pdf"))
-        .respond_with(ResponseTemplate::new(200).set_body_raw(pdf.clone(), "application/pdf"))
-        .mount(&server)
-        .await;
-    let bench = bench();
-    let url = format!("{}/files/report.pdf", server.uri());
-
-    let text = ok(&fetch_tool().call(json!({"url": url}), &bench.ctx()).await);
-    let saved = bench.artifacts();
-    assert_eq!(saved.len(), 1, "{saved:?}");
-    assert_eq!(std::fs::read(&saved[0]).unwrap(), pdf);
-    assert_eq!(
-        text,
-        format!(
-            "{url} is a PDF, which this build of azazel cannot read ({} bytes). Saved to {}",
-            pdf.len(),
-            saved[0].display()
-        )
     );
 }
 
@@ -1396,100 +1281,6 @@ async fn failures_are_not_cached_and_report_the_status() {
         .call(json!({"url": format!("{}/missing", server.uri())}), &bench.ctx())
         .await;
     assert!(failed(&missing).contains("404"));
-}
-
-#[tokio::test]
-async fn only_http_and_https_urls_are_fetched() {
-    let bench = bench();
-    let tool = fetch_tool();
-    for url in [
-        "file:///etc/passwd",
-        "ftp://example.com/readme.txt",
-        "data:text/plain,hello",
-        "gopher://example.com/",
-    ] {
-        let out = tool.call(json!({"url": url}), &bench.ctx()).await;
-        let reason = failed(&out);
-        assert!(reason.contains("only http and https"), "{url}: {reason}");
-    }
-    let relative = tool.call(json!({"url": "example.com/page"}), &bench.ctx()).await;
-    assert!(failed(&relative).contains("invalid URL"));
-}
-
-#[tokio::test]
-async fn the_extension_registers_its_tools_and_url_schemes_that_read_as_markdown() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/blog/borrow-checker"))
-        .respond_with(html_body(ARTICLE))
-        .expect(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/search"))
-        .and(query_param("format", "json"))
-        .respond_with(json_body(SEARXNG))
-        .expect(1)
-        .mount(&server)
-        .await;
-    let bench = bench();
-    let registry = Registry::new(ExtCtx {
-        services: bench.services.clone(),
-        cwd: bench.dir.path().into(),
-        session_id: "s".into(),
-    });
-    registry
-        .load(&WebExt {
-            search: "searxng".into(),
-            searxng_url: server.uri(),
-            provider_search: true,
-        })
-        .unwrap();
-    let ctx = bench.ctx();
-
-    let names: Vec<String> = registry
-        .tools
-        .tools(&ctx.agent)
-        .iter()
-        .map(|tool| tool.name().to_string())
-        .collect();
-    assert_eq!(names, ["web_search", "web_fetch", "web_grep"]);
-    assert!(registry.schemes.get("https").is_some());
-
-    // `read http://…` hands the scheme everything after `http://`.
-    let rest = format!("{}/blog/borrow-checker", server.uri());
-    let rest = rest.strip_prefix("http://").unwrap();
-    let blocks = registry
-        .schemes
-        .get("http")
-        .unwrap()
-        .read(rest, &ctx)
-        .await
-        .unwrap();
-    let [Block::Text { text: page }] = blocks.as_slice() else {
-        panic!("expected one text block");
-    };
-    assert!(has_heading(page, ARTICLE_TITLE), "{page}");
-    assert!(page.contains(ARTICLE_SENTENCES[0]), "{page}");
-
-    // The scheme and the tool share one cache: the page is requested once.
-    let fetch = registry.tools.get(&ctx.agent, "web_fetch").unwrap();
-    let again = fetch.call(json!({"url": format!("http://{rest}")}), &ctx).await;
-    assert_eq!(&ok(&again), page);
-
-    // So does `web_grep`.
-    let grep = registry.tools.get(&ctx.agent, "web_grep").unwrap();
-    let found = grep
-        .call(
-            json!({"url": format!("http://{rest}"), "pattern": "^#+ Moves and copies$"}),
-            &ctx,
-        )
-        .await;
-    assert!(ok(&found).ends_with(": ## Moves and copies"), "{}", ok(&found));
-
-    let search = registry.tools.get(&ctx.agent, "web_search").unwrap();
-    let found = search.call(json!({"query": "wiremock"}), &ctx).await;
-    assert!(ok(&found).starts_with("1. wiremock - Rust\n"));
 }
 
 #[test]

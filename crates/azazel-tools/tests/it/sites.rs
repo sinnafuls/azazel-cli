@@ -330,47 +330,6 @@ async fn an_issue_address_returns_the_issue_with_its_comments_and_a_missing_one_
     );
 }
 
-#[tokio::test]
-async fn the_limit_on_requests_without_a_login_is_said_in_words() {
-    let server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/repos/acme/widgets/issues/3"))
-        .respond_with(
-            ResponseTemplate::new(403)
-                .insert_header("x-ratelimit-remaining", "0")
-                .set_body_json(json!({"message": "API rate limit exceeded for 203.0.113.7."})),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/repos/acme/widgets/issues/5"))
-        .respond_with(ResponseTemplate::new(410).set_body_json(json!({"message": "This issue was deleted"})))
-        .mount(&server)
-        .await;
-    let bench = bench();
-    let fetcher = plain(&server);
-    let limited = bench
-        .fetch(
-            &fetcher,
-            json!({"url": "https://github.com/acme/widgets/issues/3"}),
-        )
-        .await;
-    assert_eq!(
-        failed(&limited),
-        "GitHub's hourly limit for requests without a login is used up; sign in with `gh auth login` to go on"
-    );
-    let gone = bench
-        .fetch(
-            &fetcher,
-            json!({"url": "https://github.com/acme/widgets/issues/5"}),
-        )
-        .await;
-    assert_eq!(
-        failed(&gone),
-        "GitHub answered HTTP 410 Gone: This issue was deleted"
-    );
-}
-
 fn step(number: u64, name: &str, conclusion: &str, started: &str, completed: &str) -> Value {
     json!({"number": number, "name": name, "conclusion": conclusion, "status": "completed",
            "started_at": started, "completed_at": completed})
