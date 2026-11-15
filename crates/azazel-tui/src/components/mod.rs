@@ -18,6 +18,7 @@ pub mod tabs;
 pub mod todo;
 pub mod tool_card;
 pub mod vim;
+pub mod words;
 
 use std::time::Duration;
 
