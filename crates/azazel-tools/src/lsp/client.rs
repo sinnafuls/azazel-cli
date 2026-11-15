@@ -7,9 +7,10 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
+use process_wrap::tokio::ChildWrapper;
 use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command};
+use tokio::process::{ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::{Notify, oneshot};
 
 use super::text::{path_key, path_to_uri, uri_to_path};
@@ -50,7 +51,7 @@ pub(crate) struct Client {
     writer: Arc<tokio::sync::Mutex<ChildStdin>>,
     shared: Arc<Shared>,
     next: AtomicI64,
-    child: tokio::sync::Mutex<Child>,
+    child: tokio::sync::Mutex<Box<dyn ChildWrapper>>,
     /// What the server said it can do when it answered `initialize`.
     capabilities: OnceLock<Value>,
 }
@@ -181,17 +182,18 @@ async fn read_loop(
 impl Client {
     /// Starts `program` and completes the `initialize` handshake for the workspace at `root`.
     pub async fn start(program: &Path, args: &[String], root: &Path) -> Result<Arc<Client>, String> {
-        let mut child = Command::new(program)
-            .args(args)
-            .current_dir(root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", program.display()))?;
+        let mut child = azazel_core::process::helper_command(program, |command| {
+            command
+                .args(args)
+                .current_dir(root)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+        })
+        .spawn()
+        .map_err(|e| format!("could not start {}: {e}", program.display()))?;
         let (Some(stdin), Some(stdout), Some(stderr)) =
-            (child.stdin.take(), child.stdout.take(), child.stderr.take())
+            (child.stdin().take(), child.stdout().take(), child.stderr().take())
         else {
             return Err(format!(
                 "could not reach the standard streams of {}",

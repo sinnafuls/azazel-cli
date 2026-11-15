@@ -327,12 +327,13 @@ pub(crate) async fn run(plan: &Plan) -> Result<(), String> {
                     std::fs::create_dir_all(dir)
                         .map_err(|e| format!("could not create {}: {e}", dir.display()))?;
                 }
-                let output = tokio::process::Command::new(program)
-                    .args(args)
-                    .envs(env.iter().map(|(key, value)| (key, value)))
-                    .stdin(std::process::Stdio::null())
-                    .kill_on_drop(true)
-                    .output()
+                let command = azazel_core::process::helper_command(program, |command| {
+                    command
+                        .args(args)
+                        .envs(env.iter().map(|(key, value)| (key, value)))
+                        .stdin(std::process::Stdio::null());
+                });
+                let output = azazel_core::process::helper_output(command)
                     .await
                     .map_err(|e| format!("could not run `{}`: {e}", plan.shown))?;
                 if output.status.success() {

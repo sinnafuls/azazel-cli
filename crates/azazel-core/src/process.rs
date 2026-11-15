@@ -526,6 +526,29 @@ pub fn detach_from_terminal(command: &mut CommandWrap) {
     command.wrap(process_wrap::tokio::JobObject);
 }
 
+/// A command for a helper program azazel starts itself: an MCP server, a language server, a debug
+/// adapter, an installer, a Luau `azazel.exec`. Like agent commands it runs in a session of its
+/// own with no terminal ([`detach_from_terminal`]), and it is stopped when its handle is dropped.
+pub fn helper_command(
+    program: impl AsRef<std::ffi::OsStr>,
+    init: impl FnOnce(&mut tokio::process::Command),
+) -> CommandWrap {
+    let mut command = CommandWrap::with_new(program, init);
+    detach_from_terminal(&mut command);
+    command.wrap(KillOnDrop);
+    command
+}
+
+/// Runs a [`helper_command`] to its end and collects what it printed, as `Command::output` does.
+pub async fn helper_output(mut command: CommandWrap) -> std::io::Result<std::process::Output> {
+    command
+        .command_mut()
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let child = command.spawn()?;
+    Box::into_pin(child.wait_with_output()).await
+}
+
 /// Environment that keeps programs an agent starts from asking for a password or credentials on
 /// a terminal: nobody can answer there, and on Unix there is none (see [`detach_from_terminal`]).
 pub fn no_prompts_env() -> Vec<(String, String)> {

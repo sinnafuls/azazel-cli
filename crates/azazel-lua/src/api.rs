@@ -441,16 +441,16 @@ fn exec(lua: &Lua, shared: &Arc<Shared>) -> mlua::Result<Function> {
                 None => (None, None),
             };
             let timeout = seconds(timeout, EXEC_TIMEOUT, NAME)?;
-            let mut command = tokio::process::Command::new(&program);
-            command
-                .args(args.unwrap_or_default())
-                .current_dir(script.roots.project.join(cwd.unwrap_or_default()))
-                .stdin(Stdio::null())
-                .kill_on_drop(true);
-            if let Some(env) = script.services.get::<AgentEnv>() {
-                command.envs(env.vars());
-            }
-            let output = tokio::time::timeout(timeout, command.output())
+            let command = azazel_core::process::helper_command(&program, |command| {
+                command
+                    .args(args.unwrap_or_default())
+                    .current_dir(script.roots.project.join(cwd.unwrap_or_default()))
+                    .stdin(Stdio::null());
+                if let Some(env) = script.services.get::<AgentEnv>() {
+                    command.envs(env.vars());
+                }
+            });
+            let output = tokio::time::timeout(timeout, azazel_core::process::helper_output(command))
                 .await
                 .map_err(|_| {
                     runtime(format!(

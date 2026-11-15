@@ -46,8 +46,10 @@ async fn connect_process<H: ClientHandler>(
     // Resolved by hand so that script shims (`npx.cmd`) are found on Windows too.
     let program = which::which_in(command, std::env::var_os("PATH"), cwd)
         .map_err(|_| ConnectError::Fatal(format!("`{command}` was not found on PATH")))?;
-    let mut process = tokio::process::Command::new(program);
-    process.args(args).envs(env).current_dir(cwd);
+    // In a session of its own with no terminal, like every program azazel starts.
+    let process = azazel_core::process::helper_command(program, |process| {
+        process.args(args).envs(env).current_dir(cwd);
+    });
     let (transport, stderr) = TokioChildProcess::builder(process)
         .stderr(Stdio::piped())
         .spawn()

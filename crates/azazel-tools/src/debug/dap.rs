@@ -8,12 +8,12 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
+use process_wrap::tokio::ChildWrapper;
 use serde_json::{Value, json};
 use tokio::io::{
     AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
 };
 use tokio::net::TcpStream;
-use tokio::process::{Child, Command};
 use tokio::sync::{Notify, oneshot};
 use tokio_util::sync::CancellationToken;
 
@@ -89,7 +89,7 @@ pub(crate) struct Dap {
     writer: Arc<tokio::sync::Mutex<Writer>>,
     shared: Arc<Shared>,
     next: AtomicI64,
-    child: tokio::sync::Mutex<Child>,
+    child: tokio::sync::Mutex<Box<dyn ChildWrapper>>,
 }
 
 async fn write_frame(writer: &tokio::sync::Mutex<Writer>, message: &Value) -> std::io::Result<()> {
@@ -271,22 +271,21 @@ fn announced_address(line: &str) -> Option<String> {
 impl Dap {
     /// Starts the adapter in `cwd`; the `initialize` handshake is the caller's.
     pub async fn start(adapter: &Adapter, cwd: &std::path::Path) -> Result<Dap, String> {
-        let mut command = Command::new(&adapter.program);
-        command
-            .args(&adapter.args)
-            .current_dir(cwd)
-            .stdin(if adapter.listens {
-                Stdio::null()
-            } else {
-                Stdio::piped()
-            })
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let mut child = command
-            .spawn()
-            .map_err(|e| format!("could not start {}: {e}", adapter.program.display()))?;
-        let (Some(stdout), Some(stderr)) = (child.stdout.take(), child.stderr.take()) else {
+        let mut child = azazel_core::process::helper_command(&adapter.program, |command| {
+            command
+                .args(&adapter.args)
+                .current_dir(cwd)
+                .stdin(if adapter.listens {
+                    Stdio::null()
+                } else {
+                    Stdio::piped()
+                })
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+        })
+        .spawn()
+        .map_err(|e| format!("could not start {}: {e}", adapter.program.display()))?;
+        let (Some(stdout), Some(stderr)) = (child.stdout().take(), child.stderr().take()) else {
             return Err(format!(
                 "could not reach the standard streams of {}",
                 adapter.program.display()
@@ -327,7 +326,7 @@ impl Dap {
             let (read, write) = socket.into_split();
             (Box::new(BufReader::new(read)), Box::new(write))
         } else {
-            let Some(stdin) = child.stdin.take() else {
+            let Some(stdin) = child.stdin().take() else {
                 return Err(format!(
                     "could not reach the standard streams of {}",
                     adapter.program.display()
