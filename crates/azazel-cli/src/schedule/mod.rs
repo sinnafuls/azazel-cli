@@ -1,5 +1,5 @@
 //! Schedules: prompts that run at a time (`azazel schedule add every 10m "…"`) or when something
-//! happens (`--on ci-failure`, `--on file:<glob>`).
+//! happens (`--on ci-failure`, `--on pr-comment`, `--on slack:<channel>`, `--on file:<glob>`).
 //!
 //! They are kept per project in `<home>/projects/<project>/schedules.json`. A schedule that goes
 //! by the clock is handed to the scheduler of the operating system ([`os`]), which starts
@@ -11,6 +11,7 @@
 
 pub mod check;
 pub mod fire;
+pub mod inbox;
 pub mod os;
 pub mod tool;
 pub mod triggers;
@@ -22,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::{Duration, Instant};
 
-use azazel_core::config::{Config, ScheduleConfig};
+use azazel_core::config::{Config, ScheduleConfig, TriggersConfig};
 use azazel_core::process::Shell;
 use azazel_core::{Paths, SessionStore};
 use jiff::{Timestamp, Zoned};
@@ -406,6 +407,8 @@ fn run_args(cli: &Cli) -> Vec<String> {
 pub struct Scheduler {
     pub paths: Paths,
     pub config: ScheduleConfig,
+    /// Who may start the runs of `on pr-comment` and `on slack:<channel>`, and how they work.
+    pub triggers: TriggersConfig,
     /// See [`home_args`].
     pub home_args: Vec<String>,
     /// What runs the checks: the shell the agents' commands run in.
@@ -417,6 +420,7 @@ impl Scheduler {
         Scheduler {
             paths: paths.clone(),
             config: config.schedule.clone(),
+            triggers: config.triggers.clone(),
             home_args: home_args(cli, paths),
             shell: Shell::resolve(&config.tools.shell),
         }
@@ -862,7 +866,7 @@ fn add(
     limits: &ScheduleLimits,
 ) -> Result<(), Problem> {
     let usage = "azazel schedule add \"0 9 * * 1-5\" \"<prompt>\", add every 10m \"<prompt>\", add at +2h \
-                 \"<prompt>\", or add --on ci-failure|file:<glob> \"<prompt>\"";
+                 \"<prompt>\", or add --on ci-failure|pr-comment|slack:<channel>|file:<glob> \"<prompt>\"";
     let Some((prompt, time)) = spec.split_last() else {
         return Err(Problem::Usage(usage.to_string()));
     };
@@ -910,6 +914,7 @@ mod tests {
                 register: false,
                 ..ScheduleConfig::default()
             },
+            triggers: TriggersConfig::default(),
             home_args: Vec::new(),
             shell: Shell::resolve(""),
         }

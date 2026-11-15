@@ -323,6 +323,8 @@ pub struct PermissionState {
     secret_patterns: Vec<String>,
     /// Secret files the user allowed for this session, as normalised paths.
     secret_grants: RwLock<HashSet<String>>,
+    /// The push guard applies to the lead too: a run a trigger started (`--never-push`).
+    never_push: std::sync::atomic::AtomicBool,
 }
 
 fn read<T>(lock: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -387,7 +389,26 @@ impl PermissionState {
             destructive: permissions.destructive,
             secret_patterns: permissions.secret_paths.clone(),
             secret_grants: RwLock::default(),
+            never_push: std::sync::atomic::AtomicBool::new(false),
         })
+    }
+
+    /// Makes the push guard apply to the lead as well as to sub-agents.
+    pub fn set_never_push(&self, on: bool) {
+        self.never_push.store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Why the call is a push that is refused, when it is one.
+    fn push_refusal(&self, call: &Call<'_>) -> Option<&'static str> {
+        let refused = if call.agent.depth > 0 {
+            shell::PUSH_DENIED
+        } else if self.never_push.load(std::sync::atomic::Ordering::SeqCst) {
+            shell::TRIGGER_PUSH_DENIED
+        } else {
+            return None;
+        };
+        let (analysis, command) = (call.shell?, call.command?);
+        shell::pushes(command, analysis).then_some(refused)
     }
 
     pub fn mode(&self) -> PermissionMode {
@@ -789,7 +810,7 @@ impl PermissionState {
     }
 
     /// Steps that no mode, hook or rule can override: deny rules, what the agent's definition
-    /// grants, the push guard (sub-agents only), and `destructive = "deny"`. Also reports whether the call writes
+    /// grants, the push guard (sub-agents, and the lead of a run a trigger started), and `destructive = "deny"`. Also reports whether the call writes
     /// to a protected path, which forces a prompt in every mode but `bypass`.
     pub fn precheck(&self, call: &Call<'_>) -> Result<bool, String> {
         let cwd = self.cwd_of(call.agent);
@@ -804,11 +825,8 @@ impl PermissionState {
             return Err(escape);
         }
         // The lead pushes when the user asks it to; a sub-agent never does.
-        if call.agent.depth > 0
-            && let (Some(analysis), Some(command)) = (call.shell, call.command)
-            && shell::pushes(command, analysis)
-        {
-            return Err(shell::PUSH_DENIED.to_string());
+        if let Some(refused) = self.push_refusal(call) {
+            return Err(refused.to_string());
         }
         if self.destructive == DestructivePolicy::Deny
             && let Some(risk) = self.risk(call, &ctx)
@@ -840,11 +858,8 @@ impl PermissionState {
             ));
         }
         // The lead pushes when the user asks it to; a sub-agent never does.
-        if call.agent.depth > 0
-            && let (Some(analysis), Some(command)) = (call.shell, call.command)
-            && shell::pushes(command, analysis)
-        {
-            return Err(shell::PUSH_DENIED.to_string());
+        if let Some(refused) = self.push_refusal(call) {
+            return Err(refused.to_string());
         }
         if self.destructive == DestructivePolicy::Deny
             && let Some(risk) = self.risk(call, &ctx)

@@ -9,6 +9,10 @@ use tree_sitter::{Node, Parser};
 pub const PUSH_DENIED: &str =
     "sub-agents never push. Report that the work is ready; the lead or the user pushes it.";
 
+/// What a run started by a trigger (a comment, a message) is told when it pushes.
+pub const TRIGGER_PUSH_DENIED: &str =
+    "runs started by a trigger never push. Report that the work is ready; the user pushes it.";
+
 /// One command as the shell would execute it, without leading assignments or wrappers such as
 /// `sudo` and `env`.
 #[derive(Debug, Clone, PartialEq, Eq)]

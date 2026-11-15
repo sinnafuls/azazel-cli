@@ -207,6 +207,11 @@ thinking = "low"
 | `[schedule]` | `register` | `true` | Hand [schedules](background-and-remote.md#schedules) to the system's scheduler (Task Scheduler, cron, launchd). Off, they run only when `azazel schedule run --due` is called |
 | | `poll_secs` | `60` | Seconds between two looks at the CI runs for a [`ci-failure` trigger](background-and-remote.md#triggers) |
 | | `loop_max` | `50` | Rounds after which [`/loop`](tui.md#loops) with an interval or a condition stops by itself; `0` is no limit |
+| `[triggers]` | `handle` | `"@azazel"` | The handle a pull-request comment has to mention to start a run of an [`on pr-comment` trigger](background-and-remote.md#comments-and-messages-as-triggers) |
+| | `mode` | `"accept-edits"` | The permission mode of the runs `on pr-comment` and `on slack:<channel>` start; `bypass` counts as `auto`, and a schedule added with a stricter `--mode` keeps it. The runs are headless: what would ask is refused |
+| | `github_authors` | `[]` | GitHub users whose comments start runs. Empty: the user `gh` is signed in as, and users with write access to the repository |
+| | `slack_users` | `[]` | Slack user ids whose messages start runs. Empty: nobody |
+| | `slack_url` | `"https://slack.com/api"` | The address of the Slack Web API; the bot token is sent only there |
 | `[cache]` | `warming` | `"off"` | `idle` keeps Anthropic's prompt cache warm while the session waits for you; see [prompt cache](models-and-logins.md#prompt-cache) |
 | | `warm_minutes` | `30` | How long after the lead's last request the cache is kept warm |
 | | `report_misses` | `false` | Say in the transcript when a request misses the cached prefix, and why; `/cost` lists the misses either way |
@@ -361,7 +366,8 @@ back. A project needs a trust decision when it has any of:
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
 is `bypass`, `lsp`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
-`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`.
+`voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`,
+`triggers.mode`, `triggers.github_authors`, `triggers.slack_users`, `triggers.slack_url`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it

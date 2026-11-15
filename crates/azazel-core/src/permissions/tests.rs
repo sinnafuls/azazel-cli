@@ -248,6 +248,22 @@ fn the_decision_table() {
         }
     }
 
+    // The lead of a run a trigger started never pushes either, in any mode.
+    f.state.set_never_push(true);
+    for mode in [
+        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
+        PermissionMode::Bypass,
+    ] {
+        f.state.set_mode(mode);
+        for command in ["git push", "cargo test && git push origin main"] {
+            let v = verdict(&f, "shell", Exec, command);
+            assert!(denied(&v), "{mode} {command}: {v:?}");
+        }
+    }
+    assert!(allowed(&verdict(&f, "shell", Exec, "git status")));
+    f.state.set_never_push(false);
+
     // A directory added while running widens the roots like a configured one.
     f.state.set_mode(PermissionMode::Manual);
     let elsewhere = f.paths.project_root.parent().unwrap().join("elsewhere");

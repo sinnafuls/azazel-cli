@@ -307,6 +307,8 @@ azazel schedule add --on "file:src/**/*.rs" "run the tests of what changed and f
 | Trigger | When it runs |
 |---|---|
 | `--on ci-failure` | A CI run of the project ends in failure. The runs are read with `gh run list` (the GitHub CLI, signed in) every `[schedule] poll_secs` seconds (60). Runs that had failed before anybody watched do not count; the prompt gets the run's name, branch, address and the command that prints what failed |
+| `--on pr-comment` | A comment on an open pull request of the project's repository mentions the handle (`@azazel`). See [comments and messages](#comments-and-messages-as-triggers) |
+| `--on slack:<channel id>` | A message in the Slack channel mentions the bot. See [comments and messages](#comments-and-messages-as-triggers) |
 | `--on file:<glob>` | A file of the project that matches the glob is added, changed or deleted. Files git ignores are not looked at. The prompt gets the list of changed files, once they have stopped changing for two seconds |
 
 A trigger is watched by a session that is open in the project: the interactive UI, or a background
@@ -318,6 +320,53 @@ The prompt goes to the session that saw it happen, as a message of yours: at onc
 nothing to do, after its current work otherwise. `--session <id>` lets only that session take it;
 `--new` starts a background session for it instead. Files that change while the lead works do not run
 a `file:` trigger: they are the lead's own doing.
+
+### Comments and messages as triggers
+
+```sh
+azazel schedule add --on pr-comment "Do what the comment asks; run the tests before you answer."
+azazel schedule add --on slack:C0123456789 "Do what the message asks."
+```
+
+Write `@azazel fix the failing test` on a pull request, or mention the bot in the channel, and an agent works on
+it and answers where you wrote. The prompt you gave the schedule comes first, then the request.
+
+Each new mention starts a run of its own: a background session in a new git worktree under
+`.azazel/worktrees` (for a pull request, on the commit its branch is at; for Slack, on the project's
+HEAD), working in the `[triggers] mode` (`accept-edits`). The run is headless, so whatever would ask for
+permission is refused, and **it never pushes**, though its agent is the lead: the push guard that holds for
+sub-agents holds for it too. When it ends, its last message is posted with the branch and path of the
+worktree, the commits it made and what it left uncommitted; pushing the branch is up to you. At most three
+runs of one trigger work at once. Mentions that were handled are kept in the project's data, so none runs
+twice, also after a restart; mentions older than the trigger are not looked at.
+
+What a comment says is untrusted input. It reaches the run as the user message, inside a block marked with
+its author and where it was written, after the pull request's title, description and list of changed files
+(or the earlier messages of the Slack thread).
+
+**Who may start a run.** Others are ignored, and what was ignored is noted with the schedule (`azazel schedule list`).
+
+| Trigger | Allowed |
+|---|---|
+| `pr-comment` | `[triggers] github_authors` when it is set; otherwise the user `gh` is signed in as and the users with write access to the repository (`admin`, `maintain` or `write`) |
+| `slack:<channel id>` | The user ids in `[triggers] slack_users`; empty means nobody |
+
+**GitHub** is looked at with `gh api` (signed in, in the project's repository) every `[schedule] poll_secs`
+seconds: the open pull requests, and their issue comments and review comments. A comment counts when it
+mentions the handle `[triggers] handle` as a whole name, and is not one of the replies azazel posted itself.
+
+**Slack** needs a Slack app with a bot user. Create one at <https://api.slack.com/apps>, give the bot
+token the scopes `channels:history` (`groups:history` for a private channel), `chat:write` and, to have
+`conversations.replies` read threads, the same history scope, install it to the workspace, and invite the bot to the
+channel. Then store the token, which is sent only to the host of `[triggers] slack_url`:
+
+```sh
+azazel secrets add slack --host slack.com --header "Authorization: Bearer xoxb-…"
+azazel config set triggers.slack_users '["U0123ABCD"]'
+```
+
+The bot's messages and its own mentions are not looked at. A run first answers `Working on it.` in the
+message's thread, then posts the result there.
 
 ### The `schedule` tool and `/loop`
 

@@ -47,7 +47,7 @@ pub fn dir(paths: &Paths) -> PathBuf {
 
 /// Runs git in `dir`; its output when it succeeds, what it said otherwise. Variables that
 /// would point git at another repository are dropped, so `dir` alone decides.
-async fn git<S: AsRef<OsStr>>(dir: &Path, args: &[S]) -> Result<String, String> {
+pub(crate) async fn git<S: AsRef<OsStr>>(dir: &Path, args: &[S]) -> Result<String, String> {
     let output = Command::new("git")
         .arg("-C")
         .arg(dir)
@@ -113,6 +113,17 @@ async fn newest_stash(dir: &Path) -> Option<String> {
 /// Makes `<dir>/<name>` on a new branch `azazel/<name>` from the HEAD of the tree `cwd` is
 /// in. With `carry` the uncommitted changes of that tree move into it.
 pub async fn create(cwd: &Path, dir: &Path, name: &str, carry: bool) -> Result<Created, String> {
+    create_from(cwd, dir, name, carry, None).await
+}
+
+/// [`create`], starting from the commit `start` names instead of the HEAD of the tree `cwd` is in.
+pub async fn create_from(
+    cwd: &Path,
+    dir: &Path,
+    name: &str,
+    carry: bool,
+    start: Option<&str>,
+) -> Result<Created, String> {
     let name = checked_name(name)?;
     let top = git(cwd, &["rev-parse", "--show-toplevel"])
         .await
@@ -123,8 +134,12 @@ pub async fn create(cwd: &Path, dir: &Path, name: &str, carry: bool) -> Result<C
         .trim()
         .to_string();
     // One commit for the worktree and the stash alike, whatever happens in the tree meanwhile.
-    let Ok(head) = git(cwd, &["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]).await else {
-        return Err("the repository has no commit yet: a worktree starts from one".to_string());
+    let wanted = format!("{}^{{commit}}", start.unwrap_or("HEAD"));
+    let Ok(head) = git(cwd, &["rev-parse", "--verify", "--quiet", wanted.as_str()]).await else {
+        return Err(match start {
+            Some(start) => format!("the commit {start} is not in the repository"),
+            None => "the repository has no commit yet: a worktree starts from one".to_string(),
+        });
     };
     let head = head.trim().to_string();
     let path = canonical(&dir.join(name));

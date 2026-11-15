@@ -164,7 +164,7 @@ pub enum ScheduleAction {
     /// Add a schedule: `add "0 9 * * 1-5" "<prompt>"`, `add every 10m "<prompt>"`,
     /// `add at +2h "<prompt>"`, or `add --on ci-failure "<prompt>"`
     Add {
-        /// Run when this happens instead of at a time: ci-failure, or file:<glob>
+        /// Run when this happens instead of at a time: ci-failure, pr-comment, slack:<channel id>, or file:<glob>
         #[arg(long, value_name = "EVENT")]
         on: Option<String>,
         /// Send the prompt to this session every time, instead of starting a new one
@@ -906,6 +906,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub coordinator: bool,
 
+    /// Refuse `git push` for the lead as well as for sub-agents (set for runs a trigger starts)
+    #[arg(long, global = true, hide = true)]
+    pub never_push: bool,
+
     /// With -p: a file for the prompt; text is added to it as an @path mention is, an image is
     /// attached. Repeat for more, up to 100
     #[arg(short = 'f', long = "file", value_name = "PATH", requires = "print")]
@@ -1081,6 +1085,7 @@ impl Cli {
             (self.bare, "--bare"),
             (self.coordinator, "--coordinator"),
             (self.trust, "--trust"),
+            (self.never_push, "--never-push"),
             (self.debug, "--debug"),
         ];
         args.extend(

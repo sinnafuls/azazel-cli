@@ -568,8 +568,13 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
         let ci = triggers
             .iter()
             .any(|schedule| schedule.when == crate::schedule::when::When::CiFailure);
+        let comments = triggers
+            .iter()
+            .any(|schedule| schedule.when == crate::schedule::when::When::PrComment);
         if ci && which::which("gh").is_err() {
             report.warn("trigger on ci-failure: `gh` is not on PATH, so CI runs cannot be looked at");
+        } else if comments && which::which("gh").is_err() {
+            report.warn("trigger on pr-comment: `gh` is not on PATH, so pull requests cannot be looked at");
         } else if !triggers.is_empty() {
             report.ok(format!(
                 "triggers: {} here, watched while a session is open",

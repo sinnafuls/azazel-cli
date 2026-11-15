@@ -552,7 +552,7 @@ With `async: true` the agent does not wait. The call returns `The question is wi
 | `schedule` | `action` (`add`, `list`, `pause`, `resume`, `remove`), `when?`, `prompt?`, `session?` (`new`, `this`), `if?`, `until?` (each `{run, is?, matches?, changes?}`), `ends?` (`{after?, at?, times?}`), `tz?`, `id?` | Adds, lists, pauses, resumes and removes the [schedules](background-and-remote.md#schedules) of the project |
 
 `add` takes `when` as `azazel schedule add` does (five cron fields, `every 10m`, `at +2h`, `at 17:30`),
-or `on ci-failure` and `on file:<glob>` for a [trigger](background-and-remote.md#triggers), and the
+or `on ci-failure`, `on pr-comment`, `on slack:<channel id>` and `on file:<glob>` for a [trigger](background-and-remote.md#triggers), and the
 `prompt` a run is given. A run starts a background session that knows nothing of the conversation, so
 the prompt has to stand on its own; `session: "this"` sends every run to the session the agent works in
 instead. The runs work as the session does at that moment: its model, thinking level, permission mode
