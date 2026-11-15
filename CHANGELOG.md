@@ -5,6 +5,11 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Memory extraction no longer stores notes about one failed or refused tool call, a retry, or the model's own status (a refused model name became a permanent instruction in every request); preferences and conventions need a standing rule the user gave or the codebase shows.
+- A memory that says what a stored one already says updates that one (newer wording, merged tags) instead of being added again; on the first start of this version, existing near-duplicate memories are merged once.
+
 ## [0.10.6] - 2026-11-15
 
 ### Fixed

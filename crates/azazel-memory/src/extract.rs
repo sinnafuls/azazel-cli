@@ -1,14 +1,12 @@
 //! Automatic extraction: one model call that turns a conversation into durable memories.
 
-use std::collections::HashSet;
-
 use azazel_agent::compaction::render_span;
 use azazel_ai::{Message, ModelSpec, Request, Role, Router, StreamEvent, SystemPart, ThinkingLevel};
 use azazel_core::SessionStore;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
-use crate::store::{MemoryRow, MemoryStore, Scope, checked, normalized};
+use crate::store::{MemoryRow, MemoryStore, Remembered, Scope, checked};
 
 /// The role whose chain answers extraction requests.
 const ROLE: &str = "memory";
@@ -18,8 +16,6 @@ const SPAN_CHARS: usize = 120_000;
 const QUERY_CHARS: usize = 2000;
 const EXISTING: usize = 20;
 const MAX_ITEMS: usize = 8;
-/// Cosine similarity from which a new memory counts as one already stored.
-const DUPLICATE: f32 = 0.92;
 
 const INSTRUCTIONS: &str = "You maintain the long-term memory of a coding agent. From the conversation you \
 are given, pick what will still be worth knowing in later sessions on this project: facts about the project, \
@@ -75,6 +71,55 @@ fn parse(reply: &str) -> Result<Vec<Item>, String> {
         })
         .take(MAX_ITEMS)
         .collect())
+}
+
+/// Words that mark a note about one failed or refused call, or a retry, rather than about the project.
+const TRANSIENT: [&str; 17] = [
+    "refused",
+    "rejected",
+    "denied",
+    "retry",
+    "retrying",
+    "retried",
+    "retries",
+    "stop trying",
+    "tool call",
+    "call failed",
+    "calls failed",
+    "request failed",
+    "timed out",
+    "was declined",
+    "unknown model",
+    "invalid model",
+    "model not found",
+];
+/// Words that show a note states a lasting rule or fact even when it mentions such an event.
+const LASTING: [&str; 9] = [
+    "always",
+    "never",
+    "must",
+    "should",
+    "requires",
+    "only works",
+    "do not",
+    "don't",
+    "whenever",
+];
+
+/// Whether a candidate is a note about one failed or refused call, a retry, or the model's own
+/// doings, and not a lasting fact. The pinned kinds (preference, convention) are put in front of the
+/// agent with every request, so for them a lasting-sounding word does not excuse it.
+fn transient(kind: &str, text: &str) -> bool {
+    let lower = text.to_lowercase();
+    let pinned = kind == "preference" || kind == "convention";
+    let own = ["i ", "i'll ", "i'm ", "i've ", "we tried ", "tried "]
+        .iter()
+        .any(|start| lower.starts_with(start));
+    let event = TRANSIENT.iter().any(|word| lower.contains(word));
+    if pinned && own {
+        return true;
+    }
+    event && (pinned || !LASTING.iter().any(|word| lower.contains(word)))
 }
 
 fn describe(memory: &MemoryRow) -> String {
@@ -160,41 +205,29 @@ pub(crate) async fn extract(
     };
     let items = parse(&complete(router, &request).await?)?;
 
-    let mut known: HashSet<String> = HashSet::new();
-    for scope in [Scope::Project, Scope::Global] {
-        known.extend(store.list(scope).await?.iter().map(|row| normalized(&row.text)));
-    }
     let session_id = session.id();
     let mut stored = 0;
     for item in items {
         let Ok(text) = checked(&item.text, &item.kind) else {
             continue;
         };
-        if !known.insert(normalized(text)) {
+        if transient(&item.kind, text) {
+            tracing::debug!("not remembered, a note about one failed call: {text}");
             continue;
         }
-        let vector = store.embed_one(text).await;
-        if let Some(vector) = &vector
-            && store
-                .closest(vector)
-                .await?
-                .is_some_and(|similarity| similarity >= DUPLICATE)
+        // Every candidate is compared with what is stored by now, so the same memory twice in one
+        // reply, or in the replies of two turns or two sessions, is stored once and then updated.
+        match store
+            .remember(text, &item.kind, &item.tags, Some(&session_id))
+            .await?
         {
-            continue;
-        }
-        let id = store
-            .insert(
-                text,
-                &item.kind,
-                &item.tags,
-                Scope::Project,
-                Some(&session_id),
-                vector,
-            )
-            .await?;
-        stored += 1;
-        if let Some(old) = &item.replaces {
-            store.supersede(old.trim(), &id).await?;
+            Remembered::Stored(id) => {
+                stored += 1;
+                if let Some(old) = &item.replaces {
+                    store.supersede(old.trim(), &id).await?;
+                }
+            }
+            Remembered::Updated(_) | Remembered::Known => {}
         }
     }
     Ok(stored)
@@ -203,6 +236,27 @@ pub(crate) async fn extract(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn notes_about_one_failed_call_are_not_memories_but_lasting_facts_are() {
+        assert!(transient(
+            "preference",
+            "Use the full model name; deepseek-flash was refused"
+        ));
+        assert!(transient(
+            "fact",
+            "The task call with model deepseek-flash was refused"
+        ));
+        assert!(transient("convention", "I will stop retrying the task call"));
+        assert!(transient("gotcha", "The build timed out and was retried"));
+        // A lasting rule behind the event stays, unless it would be pinned.
+        assert!(!transient(
+            "gotcha",
+            "Bare model names are refused: always use provider/model"
+        ));
+        assert!(!transient("fact", "CI runs on Linux"));
+        assert!(!transient("preference", "Indent with tabs"));
+    }
 
     #[test]
     fn replies_are_read_leniently_but_must_hold_an_array() {

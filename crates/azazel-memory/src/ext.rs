@@ -69,6 +69,13 @@ impl State {
         self.prompted.store(false, Ordering::Relaxed);
         let state = self.clone();
         tokio::spawn(async move {
+            // Once per store, the first time this version starts: before the memories are embedded,
+            // so the ones merged away are not.
+            match state.store.collapse_duplicates().await {
+                Ok(0) => {}
+                Ok(merged) => tracing::info!("merged {merged} duplicate memories"),
+                Err(why) => tracing::warn!("duplicate memories could not be merged: {why}"),
+            }
             if let Err(why) = state.store.embed_memories().await {
                 tracing::warn!("memories could not be embedded: {why}");
             }

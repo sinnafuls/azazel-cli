@@ -679,6 +679,175 @@ async fn a_session_that_ends_is_extracted_by_the_next_one_storing_what_is_new() 
     .await;
 }
 
+/// A project whose lead has talked and can be extracted from, with the scripted `memory` model.
+struct Extracting {
+    _home: Home,
+    store: Arc<MemoryStore>,
+    mock: Arc<MockProvider>,
+    registry: Arc<Registry>,
+    session: Arc<SessionStore>,
+    _ext: MemoryExt,
+}
+
+fn extracting() -> Extracting {
+    let home = home();
+    let mut config = Config::default();
+    config.memory.auto_index = false;
+    let ext = open(&home, &config);
+    let mock = Arc::new(MockProvider::new());
+    let providers: Vec<Arc<dyn Provider>> = vec![mock.clone()];
+    let roles = BTreeMap::from([("memory".to_string(), vec!["mock/m".parse::<ModelSpec>().unwrap()])]);
+    let router = Arc::new(Router::new(
+        providers,
+        Catalog::default(),
+        roles,
+        RetryPolicy::default(),
+    ));
+    let session = Arc::new(SessionStore::create(&home.paths.sessions_dir(), &home.paths.cwd, None).unwrap());
+    session.append(EntryKind::Message {
+        message: Message::user("Run the deploy with the flash model."),
+    });
+    let registry = registry(&home, &ext, &session.id());
+    registry.services.insert(router);
+    registry.services.insert(session.clone());
+    Extracting {
+        store: ext.store(),
+        _home: home,
+        mock,
+        registry,
+        session,
+        _ext: ext,
+    }
+}
+
+impl Extracting {
+    /// Has the model answer one extraction with `reply`, and waits until it has been asked.
+    async fn extract(&self, reply: Value) {
+        let asked = self.mock.requests_for("m").len();
+        self.mock.push("m", MockStep::text(reply.to_string()));
+        let agent = lead(&self.session.id());
+        self.registry.bus.emit(&mut Event::PostCompact { agent }).await;
+        eventually("the model is asked", || async {
+            self.mock.requests_for("m").len() == asked + 1
+        })
+        .await;
+    }
+}
+
+#[tokio::test]
+async fn a_note_about_a_refused_call_is_not_remembered_and_never_pinned() {
+    let t = extracting();
+    t.extract(json!([
+        { "kind": "preference", "text": "The model name deepseek-flash was refused by the task tool", "tags": [] },
+        { "kind": "convention", "text": "I will stop retrying the task call with a short model name", "tags": [] },
+        { "kind": "gotcha", "text": "The task call failed and was retried twice", "tags": [] },
+        { "kind": "fact", "text": "Releases are cut from the main branch", "tags": [] },
+    ]))
+    .await;
+    eventually("the lasting fact is stored", || async {
+        !t.store.list(Scope::Project).await.unwrap().is_empty()
+    })
+    .await;
+    let listed = t.store.list(Scope::Project).await.unwrap();
+    assert_eq!(texts(&listed), ["Releases are cut from the main branch"]);
+    assert!(
+        listed
+            .iter()
+            .all(|row| row.kind != "preference" && row.kind != "convention")
+    );
+}
+
+#[tokio::test]
+async fn the_same_memory_extracted_again_updates_the_one_stored() {
+    let t = extracting();
+    t.extract(json!([
+        { "kind": "fact", "text": "Deploys go through GitHub Actions", "tags": ["ci"] },
+    ]))
+    .await;
+    eventually("the memory is stored", || async {
+        !t.store.list(Scope::Project).await.unwrap().is_empty()
+    })
+    .await;
+    let first = t.store.list(Scope::Project).await.unwrap();
+    assert_eq!(first.len(), 1);
+
+    // A later turn of the same session says it again in other words, and with another tag.
+    t.extract(json!([
+        { "kind": "fact", "text": "deploys go through github actions", "tags": [] },
+        { "kind": "fact", "text": "Deploys now go through GitHub Actions workflows", "tags": ["deploy", "ci"] },
+    ]))
+    .await;
+    eventually("the memory is updated", || async {
+        t.store.list(Scope::Project).await.unwrap()[0]
+            .text
+            .contains("workflows")
+    })
+    .await;
+    let listed = t.store.list(Scope::Project).await.unwrap();
+    assert_eq!(listed.len(), 1, "{listed:?}");
+    assert_eq!(listed[0].id, first[0].id);
+    assert_eq!(listed[0].tags, ["ci", "deploy"]);
+    assert_eq!(t.store.export().await.unwrap().lines().count(), 1);
+}
+
+#[tokio::test]
+async fn the_first_start_of_this_version_merges_duplicates_once_and_keeps_the_rest() {
+    let home = home();
+    let ext = open(&home, &quiet());
+    let store = ext.store();
+    let save = |text: &'static str, tags: &'static [&'static str]| {
+        let store = store.clone();
+        async move {
+            let tags: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
+            let id = store
+                .save(text, "fact", &tags, Scope::Project, None)
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            id
+        }
+    };
+    save(
+        "Do not retry the task call with the model name deepseek-flash",
+        &["model"],
+    )
+    .await;
+    save(
+        "Do not retry the task call with the model name deepseek-flash.",
+        &[],
+    )
+    .await;
+    save(
+        "Never retry the task call with the model name deepseek-flash",
+        &["retry"],
+    )
+    .await;
+    let newest = save(
+        "Do not retry the task call with the model name deepseek-flash!",
+        &[],
+    )
+    .await;
+    let ci = save("CI runs on Linux with cargo nextest", &[]).await;
+    let tabs = save("The project indents with tabs", &[]).await;
+
+    assert_eq!(store.collapse_duplicates().await.unwrap(), 3);
+    let listed = store.list(Scope::Project).await.unwrap();
+    assert_eq!(ids(&listed), [tabs.as_str(), ci.as_str(), newest.as_str()]);
+    assert_eq!(
+        listed[2].text,
+        "Do not retry the task call with the model name deepseek-flash!"
+    );
+    assert_eq!(listed[2].tags, ["retry", "model"]);
+    assert_eq!(listed[0].text, "The project indents with tabs");
+    // Merged ones stay on record, superseded by the one kept.
+    assert_eq!(store.export().await.unwrap().lines().count(), 6);
+
+    // Once only: a duplicate that comes later is left for extraction to avoid, not cleaned.
+    save("The project indents with tabs.", &[]).await;
+    assert_eq!(store.collapse_duplicates().await.unwrap(), 0);
+    assert_eq!(store.list(Scope::Project).await.unwrap().len(), 4);
+}
+
 const CONFIG_RS: &str = "/// Reads the settings file.
 pub fn parse_config(text: &str) -> Settings {
     let mut config = Settings::default();
