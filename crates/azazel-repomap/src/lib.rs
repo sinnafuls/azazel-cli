@@ -5,7 +5,11 @@
 mod ext;
 mod extract;
 mod index;
+mod lex;
 mod rank;
+mod scan;
+#[cfg(feature = "treesitter")]
+mod treesitter;
 
 pub use ext::{RepoMap, RepoMapExt, TOOL};
 pub use index::Stats;
