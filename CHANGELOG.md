@@ -5,10 +5,13 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.7] - 2026-11-15
+
 ### Fixed
 
 - Memory extraction no longer stores notes about one failed or refused tool call, a retry, or the model's own status (a refused model name became a permanent instruction in every request); preferences and conventions need a standing rule the user gave or the codebase shows.
 - A memory that says what a stored one already says updates that one (newer wording, merged tags) instead of being added again; on the first start of this version, existing near-duplicate memories are merged once.
+
 ### Added
 
 - GitHub, through the `gh` program when it is on `PATH`: `issue://<n>` and `pr://<n>` read one issue or pull request with its labels, state, comments and, for a pull request, its branch, checks and changed files. A `#12` in a prompt attaches that issue or pull request, and is left as plain text when it does not exist. `/issues` and `/prs` list them (`Tab` open/closed/all, `Enter` puts `#<n>` in the input, `o` opens the browser). `/pr [title]` opens a pull request from the current branch with a drafted title and description you edit first, and `/review [n]` has the `reviewer` review one and offers to post the findings as a comment. Anything that posts to GitHub asks first in every mode but `bypass`. See [GitHub](docs/github.md).
@@ -1101,7 +1104,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.6...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.7...HEAD
+[0.10.7]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...v0.10.5
 [0.10.4]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.3...v0.10.4

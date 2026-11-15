@@ -1111,7 +1111,16 @@ async fn a_migration_brings_everything_over_once() {
             .path("azazel/skills/release-notes/references/format.md")
             .is_file()
     );
-    assert!(sandbox.path("azazel/commands/review.md").is_file());
+    // `review` is the name of a built-in slash command (`/review`), so the user's own is not
+    // copied over it and the report says why.
+    assert!(!sandbox.path("azazel/commands/review.md").exists());
+    assert!(
+        report
+            .render()
+            .contains("review.md: built-in, azazel has its own"),
+        "{}",
+        report.render()
+    );
     assert!(sandbox.path("azazel/rules/pi-agents.md").is_file());
     assert!(sandbox.path("project/.azazel/skills/deploy/SKILL.md").is_file());
     assert!(sandbox.path("project/.azazel/commands/ship.md").is_file());
