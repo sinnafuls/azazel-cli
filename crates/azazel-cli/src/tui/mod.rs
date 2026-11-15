@@ -36,6 +36,7 @@ mod resize;
 mod running;
 mod sessions;
 mod setup;
+mod github;
 mod share;
 mod slash;
 mod stats;
@@ -282,6 +283,8 @@ enum Internal {
     Trigger(crate::schedule::triggers::Event),
     /// A session was shared, a bug report written or its issue opened; or not.
     Sent(share::Sent),
+    /// GitHub, or a model asked about it, answered `/issues`, `/prs`, `/pr` or `/review`.
+    Github(github::Done),
     /// What the providers said about the usage of the stored logins, for the open `/usage` box.
     Usage(Vec<crate::usage::Entry>),
     /// What the clipboard held when a paste key was pressed.
@@ -373,6 +376,8 @@ pub struct Tui {
     overlay: Option<Overlay>,
     /// Overlays of the UI's own that wait until nothing else asks for the user.
     deferred: VecDeque<Overlay>,
+    /// What the user typed after `/pr`, for the title.
+    pr_hint: String,
     /// The terminal of a program an agent runs interactively, while it is on show. An overlay
     /// comes before it.
     term: Option<term::TermView>,
@@ -662,6 +667,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         history: history::History::default(),
         overlay: None,
         deferred: VecDeque::new(),
+        pr_hint: String::new(),
         models_asked: Default::default(),
         models_parked: None,
         models_waiting: None,
@@ -1494,6 +1500,7 @@ impl Tui {
             #[cfg(feature = "detach")]
             Internal::Trigger(event) => return self.on_trigger(event).await,
             Internal::Sent(sent) => return self.on_sent(sent),
+            Internal::Github(done) => return self.on_github(done),
             Internal::Usage(entries) => return self.on_usage(entries),
             Internal::Clipboard(clip) => return self.on_clipboard(clip),
             Internal::ClipboardText(text) => return self.on_clipboard_text(text),
@@ -2391,6 +2398,10 @@ impl Tui {
             action @ (Action::Share(_) | Action::Bug { .. } | Action::BugIssue(_)) => {
                 self.finish_share(action, choice)
             }
+            action @ (Action::GhList { .. }
+            | Action::PrEdit(_)
+            | Action::PrConfirm { .. }
+            | Action::ReviewPost { .. }) => self.finish_github(action, choice, typed),
             Action::TerminalSetup(change) => self.finish_terminal_setup(&change, choice),
             action @ (Action::CopyCode(_)
             | Action::Context(_)

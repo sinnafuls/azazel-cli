@@ -174,6 +174,9 @@ impl Tui {
         if self.session_hotkey(index, key).await {
             return;
         }
+        if self.github_hotkey(index, key) {
+            return;
+        }
         if matches!(
             self.overlay.as_ref().map(|overlay| &overlay.action),
             Some(Action::Usage(_))
