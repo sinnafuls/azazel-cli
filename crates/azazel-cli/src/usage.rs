@@ -717,16 +717,17 @@ impl CommandHandler for StatsCommand {
     async fn run(&self, args: &str, _ctx: &ExtCtx) -> CommandOutcome {
         let days = match args.trim() {
             "" => 30,
-            text => match text.parse::<u32>() {
-                Ok(days) if days > 0 => days,
-                _ => return CommandOutcome::Error("usage: /stats [days]".to_string()),
+            text => match crate::stats::parse_days(text) {
+                Some(days) => days,
+                None => return CommandOutcome::Error("usage: /stats [days]".to_string()),
             },
         };
         let paths = self.paths.clone();
-        // Reading every project's session index is file work.
-        match tokio::task::spawn_blocking(move || crate::stats::text(&paths, days)).await {
+        // Reading the usage log is file work.
+        let read = move || crate::stats::text(&paths, crate::stats::Window::days(days), crate::stats::By::Provider);
+        match tokio::task::spawn_blocking(read).await {
             Ok(text) => CommandOutcome::Show(text.trim_end().to_string()),
-            Err(e) => CommandOutcome::Error(format!("could not read the sessions: {e}")),
+            Err(e) => CommandOutcome::Error(format!("could not read the usage log: {e}")),
         }
     }
 }
@@ -762,7 +763,7 @@ impl Extension for UsageExt {
         });
         r.command(Command {
             name: "stats".to_string(),
-            description: "Sessions, prompts, tokens and cost per day, model, project and tool".to_string(),
+            description: "Tokens and cost per day, provider, model, project and agent, from the usage log".to_string(),
             argument_hint: Some("[days]".to_string()),
             handler: Arc::new(StatsCommand {
                 paths: self.paths.clone(),

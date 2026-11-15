@@ -401,14 +401,26 @@ pub enum Sub {
         #[arg(long)]
         json: bool,
     },
-    /// Sessions, prompts, tokens and cost per day, model, project and tool
+    /// Requests, tokens and cost over time and per provider, model, project and agent, from the usage log
     Stats {
-        /// How many days back, today included
-        #[arg(long, value_name = "N", default_value_t = 30)]
-        days: u32,
+        /// How many days back, today included (30 when no window is given)
+        #[arg(long, value_name = "N", conflicts_with_all = ["period", "since"])]
+        days: Option<u32>,
+        /// A calendar window: today, the last 7 days, this month, this year, or everything
+        #[arg(long, value_enum, conflicts_with = "since")]
+        period: Option<crate::stats::Period>,
+        /// What the table groups by
+        #[arg(long, value_enum, default_value = "provider")]
+        by: crate::stats::By,
+        /// From this day on, as 2026-03-01
+        #[arg(long, value_name = "DATE")]
+        since: Option<String>,
         /// One JSON object
         #[arg(long)]
         json: bool,
+        /// Import the history of the session files into the log again
+        #[arg(long)]
+        rebuild: bool,
     },
     /// List, search, delete, prune and export sessions
     Sessions {

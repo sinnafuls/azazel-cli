@@ -372,7 +372,24 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Secrets { action }) => return secrets::run(action, &paths),
         Some(Sub::Sessions { action }) => return sessions::run(action, &paths).await,
         Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),
-        Some(Sub::Stats { days, json }) => return stats::run(&paths, *days, *json),
+        Some(Sub::Stats {
+            days,
+            period,
+            by,
+            since,
+            json,
+            rebuild,
+        }) => {
+            let args = stats::Args {
+                days: *days,
+                period: *period,
+                by: *by,
+                since: since.clone(),
+                json: *json,
+                rebuild: *rebuild,
+            };
+            return stats::run(&paths, &args);
+        }
         Some(Sub::Context { session, json }) => return context::run(&paths, session.as_deref(), *json),
         Some(Sub::Export {
             session,
