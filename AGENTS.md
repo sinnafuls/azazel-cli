@@ -48,8 +48,10 @@ cargo build --no-default-features -p azazel-cli
 cargo xtask docs-check
 ```
 
-The whole suite (`cargo test --workspace --no-fail-fast`) runs in CI (`.github/workflows/ci.yml`) on
-every push and pull request, and before a release.
+The whole suite runs in CI (`.github/workflows/ci.yml`) on Linux, with `cargo nextest`, on every push,
+pull request and release tag; the docs check runs there as one of the tests. Windows and macOS run it
+when CI is started by hand (`gh workflow run ci`); do that before a release that touches
+platform-specific code.
 
 - `cargo build --no-default-features -p azazel-cli` builds without any optional feature; code behind a
   feature (`mcp`, `lua`, `memory`, `browser`, `media`, `voice`, `detach`, …) must not be needed without it.

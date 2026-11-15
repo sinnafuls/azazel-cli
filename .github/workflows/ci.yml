@@ -1,7 +1,8 @@
 name: ci
 
-# Every push to main and every pull request is checked on Linux. Release tags, and runs started
-# by hand (Actions tab, or `gh workflow run ci`), check Windows and macOS as well.
+# Every push to main, every pull request and every release tag is checked on Linux. Runs started by
+# hand (Actions tab, or `gh workflow run ci`) check Windows and macOS as well; the release workflow
+# builds every platform anyway.
 on:
   push:
     branches: [main]
@@ -23,7 +24,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: ${{ (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch') && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
+        os: ${{ github.event_name == 'workflow_dispatch' && fromJSON('["ubuntu-latest", "windows-latest", "macos-latest"]') || fromJSON('["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     defaults:
@@ -41,6 +42,9 @@ jobs:
       - uses: actions/checkout@v4
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
+      # mold links the many test binaries in a fraction of the time ld takes.
+      - if: runner.os == 'Linux'
+        uses: rui314/setup-mold@v1
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
@@ -51,13 +55,9 @@ jobs:
           libxrandr-dev libdbus-1-dev libpipewire-0.3-dev libwayland-dev libegl-dev libgbm-dev
       - run: cargo fmt --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
-      - run: cargo test --workspace --no-fail-fast
-      # The docs list what the code registers, name for name. The check is the same on every
-      # system, so it runs on Linux only.
-      - if: runner.os == 'Linux'
-        run: cargo xtask docs-check
       # `azazel --ssh` through the real ssh: the runner logs in to itself with a key made for
-      # this job. Everywhere else the same tests go through a stand-in for ssh only.
+      # this job, and the remote:: tests run through it beside the stand-in (AZAZEL_TEST_SSH).
+      # Set up before the tests, so they run in the one test build instead of a second one.
       - if: runner.os == 'Linux'
         run: |
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -67,5 +67,17 @@ jobs:
           sudo systemctl start ssh
           ssh-keyscan localhost >> ~/.ssh/known_hosts
           ssh -o BatchMode=yes localhost true
-          AZAZEL_TEST_SSH=1 cargo test -p azazel-cli --test it remote::
+      - if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      # nextest runs every test in a process of its own, many at once. The docs check is one of
+      # them (docs-check's the_docs_of_this_repository_agree_with_the_code), so it needs no build
+      # of its own. nextest leaves doc examples out; `--doc` runs those.
+      - if: runner.os == 'Linux'
+        run: |
+          AZAZEL_TEST_SSH=1 cargo nextest run --workspace --no-fail-fast
+          cargo test --workspace --doc
+      - if: runner.os != 'Linux'
+        run: cargo test --workspace --no-fail-fast
       - run: cargo build --no-default-features -p azazel-cli
