@@ -506,6 +506,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_prediction_is_a_capped_framed_request_counted_as_prediction() {
+        let mock = Arc::new(MockProvider::new());
+        let mut step = MockStep::text("\"now run the tests\"");
+        step.reply.as_mut().unwrap().usage = Usage {
+            input: 100,
+            output: 5,
+            ..Usage::default()
+        };
+        mock.push("m", step);
+        let side = side(mock.clone());
+        let answer = side
+            .ask_capped(
+                SideQuestion {
+                    agent: &lead(),
+                    context: vec![Message::user("fix the bug"), Message { role: Role::Assistant, content: vec![Block::text("done")], meta: None }],
+                    question: PREDICT_QUESTION.into(),
+                    chain: chain(),
+                    purpose: PREDICTION_PURPOSE,
+                    framed: true,
+                },
+                Some(PREDICTION_TOKENS),
+                &mut |_| {},
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(clean_prediction(&answer.text).as_deref(), Some("now run the tests"));
+        assert_eq!(side.costs.by_purpose()[PREDICTION_PURPOSE].output, 5);
+        let request = &mock.requests_for("m")[0];
+        assert_eq!(request.max_output, Some(PREDICTION_TOKENS));
+        // The conversation goes as it is, so the provider's cache of it is used.
+        assert_eq!(request.messages[0].text(), "fix the bug");
+        assert_eq!(request.cache_key.as_deref(), Some("s1:lead"));
+    }
+
+    #[tokio::test]
     async fn a_plain_question_goes_alone_and_failures_are_text() {
         let mock = Arc::new(MockProvider::new());
         mock.push("m", MockStep::text("fix: handle empty input"));
