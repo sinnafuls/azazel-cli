@@ -475,3 +475,61 @@ fn capital(word: &str) -> String {
         None => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use azazel_tui::KeyCombo;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::tui::overlay::Outcome;
+
+    fn item(number: u64, title: &str) -> Item {
+        Item {
+            number,
+            title: title.into(),
+            author: "ann".into(),
+            labels: vec!["bug".into()],
+            state: "OPEN".into(),
+            created: "2026-11-02T10:00:00Z".into(),
+            url: format!("https://github.com/o/r/issues/{number}"),
+        }
+    }
+
+    fn picker() -> Overlay {
+        let rows = vec![SelectItem::new("#1 One", "ann"), SelectItem::new("#2 Two", "ann")];
+        let items = vec![item(1, "One"), item(2, "Two")];
+        Overlay::select(
+            "Issues (open)",
+            Vec::new(),
+            rows,
+            false,
+            Action::GhList {
+                kind: Kind::Issue,
+                state: State::Open,
+                items,
+            },
+        )
+        .with_keys(picker_keys())
+    }
+
+    #[test]
+    fn tab_and_o_act_on_the_selected_row_and_enter_picks_it() {
+        let mut overlay = picker();
+        let press = |overlay: &mut Overlay, code| overlay.on_key(&KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(matches!(press(&mut overlay, KeyCode::Down), Outcome::Pending));
+        assert!(matches!(
+            press(&mut overlay, KeyCode::Tab),
+            Outcome::Hotkey { index: 1, key: 0 }
+        ));
+        assert!(matches!(
+            press(&mut overlay, KeyCode::Char('o')),
+            Outcome::Hotkey { index: 1, key: 1 }
+        ));
+        assert!(matches!(press(&mut overlay, KeyCode::Enter), Outcome::Chosen(1)));
+        assert_eq!(
+            picker_keys()[0].0,
+            KeyCombo::new(KeyCode::Tab, KeyModifiers::NONE)
+        );
+    }
+}
