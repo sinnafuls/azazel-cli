@@ -38,13 +38,13 @@ mod sessions;
 mod setup;
 mod share;
 mod slash;
+mod stats;
 mod statusbar;
 mod statusedit;
 mod statusline;
 mod team;
 mod term;
 mod terminal;
-mod stats;
 mod usage;
 pub(crate) mod view;
 #[cfg(feature = "voice")]

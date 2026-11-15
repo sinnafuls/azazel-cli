@@ -396,7 +396,11 @@ mod tests {
             def: Some("lead".into()),
         };
         ledger.record(&ModelRef::new("anthropic", "fable"), Some(&origin), &usage);
-        assert_eq!(rebuild(home.path()), 1, "only the reply from before the ledger is imported");
+        assert_eq!(
+            rebuild(home.path()),
+            1,
+            "only the reply from before the ledger is imported"
+        );
         let all = lines(&dir(home.path()));
         assert_eq!(all.len(), 2);
         let live = all.iter().find(|l| !l.backfilled).unwrap();

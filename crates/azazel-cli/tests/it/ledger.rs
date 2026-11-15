@@ -35,30 +35,53 @@ fn lead_sub_agent_and_side_requests_are_each_one_line_with_who_asked() {
         .env_remove("OPENAI_API_KEY")
         .arg("--cwd")
         .arg(dir.path().join("project"))
-        .args(["-p", "go", "--mode", "auto", "--no-memory", "--set", "session.auto_name=false"])
+        .args([
+            "-p",
+            "go",
+            "--mode",
+            "auto",
+            "--no-memory",
+            "--set",
+            "session.auto_name=false",
+        ])
         .write_stdin("")
         .output()
         .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let mut lines = Vec::new();
-    for file in std::fs::read_dir(dir.path().join("home/usage")).unwrap().flatten() {
+    for file in std::fs::read_dir(dir.path().join("home/usage"))
+        .unwrap()
+        .flatten()
+    {
         if file.path().extension().is_some_and(|e| e == "jsonl") {
             lines.extend(json_lines(&std::fs::read(file.path()).unwrap()));
         }
     }
     let by_agent: BTreeMap<String, Vec<&Value>> = lines.iter().fold(BTreeMap::new(), |mut map, line| {
-        map.entry(line["agent"].as_str().unwrap().to_string()).or_default().push(line);
+        map.entry(line["agent"].as_str().unwrap().to_string())
+            .or_default()
+            .push(line);
         map
     });
     let inputs = |agent: &str| -> Vec<u64> {
-        let mut inputs: Vec<u64> = by_agent[agent].iter().map(|l| l["input"].as_u64().unwrap()).collect();
+        let mut inputs: Vec<u64> = by_agent[agent]
+            .iter()
+            .map(|l| l["input"].as_u64().unwrap())
+            .collect();
         inputs.sort();
         inputs
     };
     assert_eq!(inputs("lead"), [10, 30], "{lines:?}");
     assert_eq!(inputs("btw"), [20], "{lines:?}");
-    let sub: Vec<&String> = by_agent.keys().filter(|k| !["lead", "btw"].contains(&k.as_str())).collect();
+    let sub: Vec<&String> = by_agent
+        .keys()
+        .filter(|k| !["lead", "btw"].contains(&k.as_str()))
+        .collect();
     assert_eq!(sub.len(), 1, "{by_agent:?}");
     assert_eq!(inputs(sub[0]), [40]);
     assert_eq!(by_agent[sub[0].as_str()][0]["def"], "scout");

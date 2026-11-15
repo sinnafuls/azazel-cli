@@ -6,7 +6,9 @@
 
 use std::sync::Weak;
 
-use azazel_ai::{Block, Message, ModelSpec, Request, RequestOrigin, Role, Router, StopReason, StreamEvent, SystemPart};
+use azazel_ai::{
+    Block, Message, ModelSpec, Request, RequestOrigin, Role, Router, StopReason, StreamEvent, SystemPart,
+};
 use azazel_core::{Level, Ui, UiError};
 use futures::StreamExt;
 use rmcp::model::{

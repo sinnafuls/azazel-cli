@@ -1079,6 +1079,7 @@ mod tests {
             Request {
                 max_output: Some(1),
                 thinking: ThinkingLevel::Low,
+                origin: Some(azazel_ai::RequestOrigin::purpose("", WARMING_PURPOSE)),
                 ..sent.clone()
             }
         );

@@ -256,6 +256,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[usage]` | `auto_reset` | `false` | Spend a banked usage reset without asking when nobody is there to ask (print mode, background sessions, schedules) and a subscription runs out; see [when every account is out](models-and-logins.md#when-every-account-is-out). With somebody there the choice is always theirs |
 | | `poll_secs` | `300` | How often, in seconds, the usage of every stored subscription login is fetched in the background while a session is open, so that a request does not start on an account with nothing left. Never more often than every 60; `0` never. A login is not renewed for this; see [several accounts](models-and-logins.md#several-accounts) |
 | | `redact_email` | `true` | Show e-mail addresses as `j***@example.com` in `/usage`, `azazel usage` (`--json` included) and `/account` |
+| | `ledger` | `true` | Append every answered model request (time, provider, model, project, session, agent or purpose, tokens, estimated cost) to `~/.azazel/usage/YYYY-MM.jsonl`, the history `azazel stats` and `/stats` read. Session and agent retention never delete it |
 | `[accounts]` | `order` | `{}` | Provider id to account labels in the order work moves through them when the account in use runs out, such as `{ anthropic = ["work", "default"] }`. Accounts that are not listed follow: the default one, then the rest by label; see [several accounts](models-and-logins.md#several-accounts) |
 | `[browser]` | `path` | `""` | Browser binary; empty means look for Chrome, Chromium, Edge or Brave |
 | | `headless` | `true` | Run the browser without a window |
@@ -513,7 +514,7 @@ unknown tier or preset) exits with status 2.
 | `azazel export` | | Write a session to a file; `--sanitize` for sharing |
 | `azazel open` | | Pick a recent session of any project and open it in the UI; see [projects and directories](sessions-and-checkpoints.md#projects-and-directories) |
 | `azazel context` | | What the last request of a session was made of |
-| `azazel stats` | | Sessions, prompts, tokens and cost per day, model, project and tool |
+| `azazel stats` | | Requests, tokens and cost over time and per provider, model, project and agent, from the usage log; see [usage statistics](sessions-and-checkpoints.md#usage-statistics) |
 | `azazel migrate` | | Bring models, keys, skills, commands, agents, MCP servers, rules, settings, chats and memory over from pi, omp, jcode, Claude Code or Codex CLI; see [migrating](migrating.md) |
 | `azazel goal` | | Work on an objective until it is verified; see [goals](goals.md) |
 | `azazel bg` | | Run a prompt in a background session; see [background sessions](background-and-remote.md) |
