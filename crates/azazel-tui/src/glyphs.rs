@@ -183,6 +183,8 @@ glyphs! {
     ProgressEmpty => "─", "─", "-";
     /// The half-filled cell at the head of a progress bar.
     ProgressHead => "╸", "╸", ">";
+    /// The levels of a one-line chart, lowest first.
+    Spark => "▁▂▃▄▅▆▇█", "▁▂▃▄▅▆▇█", " .:-=+*#";
     CheckOn => "\u{f14a}", "▣", "[x]";
     CheckOff => "\u{f096}", "□", "[ ]";
     RadioOn => "\u{f192}", "◉", "(o)";

@@ -180,6 +180,8 @@ pub enum Action {
     Statusline,
     /// `/usage`: what each subscription has left; its key asks the providers again.
     Usage(std::sync::Arc<super::usage::Shown>),
+    /// `/stats`: tokens and cost over time; its keys change the tab and the grouping.
+    Stats(std::sync::Arc<super::stats::Shown>),
     /// `/models`: `done` hears when the screen closes (`/settings` waits for it).
     Models {
         done: Option<Reply<()>>,
