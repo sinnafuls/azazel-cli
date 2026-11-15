@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-15
+
 ### Added
 
 - Leaving the terminal UI prints how to come back to the session (`Resume this session with` / `azazel -r <id>`), once the session holds a conversation and is kept on disk.
@@ -1005,7 +1007,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.5.0...v0.6.0
