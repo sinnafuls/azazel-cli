@@ -30,6 +30,14 @@ pub struct MockStep {
     /// Wait before the first event.
     #[serde(default)]
     pub delay_ms: u64,
+    /// Wait this long before each event after the first, so that a reply streams as it would
+    /// from a model.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub event_ms: u64,
+    /// The arguments of each tool call of `reply` arrive in pieces of this many characters
+    /// rather than at once.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub chunk: usize,
     #[serde(default)]
     pub events: Vec<StreamEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -154,10 +162,19 @@ impl MockStep {
                 id: call.id.clone(),
                 name: call.name.clone(),
             });
-            events.push(StreamEvent::ToolCallDelta {
-                index,
-                delta: input.to_string(),
-            });
+            let args = input.to_string();
+            let chars: Vec<char> = args.chars().collect();
+            let size = if self.chunk == 0 {
+                chars.len().max(1)
+            } else {
+                self.chunk
+            };
+            for piece in chars.chunks(size) {
+                events.push(StreamEvent::ToolCallDelta {
+                    index,
+                    delta: piece.iter().collect(),
+                });
+            }
             let block = Block::ToolCall {
                 id: call.id,
                 name: call.name,
@@ -190,6 +207,10 @@ impl MockStep {
         });
         events
     }
+}
+
+fn is_zero<T: Default + PartialEq>(value: &T) -> bool {
+    *value == T::default()
 }
 
 /// Script file: `{ "<model id>": [ <MockStep>, … ] }`.
@@ -305,6 +326,7 @@ impl Provider for MockProvider {
             )));
         };
         let delay = Duration::from_millis(step.delay_ms);
+        let pace = Duration::from_millis(step.event_ms);
         let mut events = step.into_events(&model.id);
         if let Some(StreamEvent::Error { error, .. }) = events.first() {
             return Err(error.clone());
@@ -316,14 +338,27 @@ impl Provider for MockProvider {
                 partial: None,
             });
         }
+        let aborted = || StreamEvent::Error {
+            error: AiError::Aborted,
+            partial: None,
+        };
         let stream = futures::stream::once(async move {
             tokio::select! {
-                _ = cancel.cancelled() => vec![StreamEvent::Error { error: AiError::Aborted, partial: None }],
+                _ = cancel.cancelled() => vec![aborted()],
                 _ = tokio::time::sleep(delay) => events,
             }
         })
         .flat_map(futures::stream::iter);
-        Ok(Box::pin(stream))
+        if pace.is_zero() {
+            return Ok(Box::pin(stream));
+        }
+        let paced = stream.enumerate().then(move |(at, event)| async move {
+            if at > 0 {
+                tokio::time::sleep(pace).await;
+            }
+            event
+        });
+        Ok(Box::pin(paced))
     }
 
     async fn list_models(&self) -> Result<Vec<ModelInfo>, AiError> {

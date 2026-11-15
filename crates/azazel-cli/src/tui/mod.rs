@@ -62,9 +62,7 @@ use azazel_core::{
     ApprovalDecision, CommandOutcome, Level, Paths, PermissionMode, PlanDecision, SessionStore,
 };
 use azazel_tools::TodoStatus;
-use azazel_tui::components::{
-    composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo,
-};
+use azazel_tui::components::{composer, format_elapsed, format_tokens, markdown, shimmer, spinner, todo};
 use azazel_tui::modal;
 use azazel_tui::mouse::Mouse;
 use azazel_tui::term::{Caps, FOCUS_OFF, FOCUS_ON, MouseCapture};
@@ -1056,7 +1054,7 @@ impl Tui {
                 ))
             }
             None => self.tools.last().map(|tool| match tool.writing() {
-                true => format!("writing a {} call", tool.name),
+                true => format!("writing the {} call", tool.name),
                 false => format!("running {}", tool.name),
             }),
         };

@@ -9,6 +9,12 @@ GitHub are its section here.
 
 - Leaving the terminal UI prints how to come back to the session (`Resume this session with` / `azazel -r <id>`), once the session holds a conversation and is kept on disk.
 - `azazel mcp import jcode` copies the MCP servers of jcode (`~/.jcode/mcp.json`, or `$JCODE_HOME`, and `<project>/.jcode/mcp.json`), reading its `servers` key and its `timeout_secs`. Every client's `timeout_secs` now becomes `timeout`.
+- A tool card appears as soon as the model starts writing the call: its header fills in with the path, command or pattern as the arguments arrive, and a `write` or `edit` shows the last lines of the text being written. The same holds for the sub-agent you follow and in an agent's popup.
+
+### Changed
+
+- `Ctrl+O` now expands or collapses the output of every tool call on screen, not only of calls that finish afterwards: the screen and scrollback are erased and the last 300 things written are drawn again. Inside tmux, screen or zellij it works as before.
+- Tool cards that follow one another are set apart by a blank row; compact rows still stand together.
 
 ## [0.8.0] - 2026-11-14
 

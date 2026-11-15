@@ -1,6 +1,5 @@
 //! Slash commands and the pickers that go with them.
 
-
 use azazel_ai::{ModelSpec, Role as MessageRole, ThinkingLevel};
 use azazel_core::{EntryKind, PermissionMode, SessionStore};
 use azazel_tui::{Glyph, GlyphLevel, Glyphs, Role, SelectItem, Theme};
