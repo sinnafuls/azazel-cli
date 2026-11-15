@@ -198,13 +198,15 @@ pub(crate) fn blank(lang: Lang, src: &str) -> (String, String) {
                 j += 1;
             }
             let word = &b[i..j];
-            if rust && matches!(word, b"r" | b"br" | b"cr") && matches!(b.get(j), Some(b'"' | b'#')) {
-                if let Some(end) = rust_raw(b, j) {
-                    wipe(&mut code, i, end);
-                    i = end;
-                    last = b'"';
-                    continue;
-                }
+            if rust
+                && matches!(word, b"r" | b"br" | b"cr")
+                && matches!(b.get(j), Some(b'"' | b'#'))
+                && let Some(end) = rust_raw(b, j)
+            {
+                wipe(&mut code, i, end);
+                i = end;
+                last = b'"';
+                continue;
             }
             // After `return` a `/` starts a regular expression, not a division.
             last = if matches!(word, b"return" | b"typeof") {
