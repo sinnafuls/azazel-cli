@@ -14,6 +14,7 @@ New here? Read [getting started](getting-started.md) first.
 | [Sessions and checkpoints](sessions-and-checkpoints.md) | Resuming and forking sessions, exporting and sharing, bug reports, compaction, `/rewind` |
 | [Migrating from another harness](migrating.md) | `azazel migrate` and `/migrate`: models, keys, skills, commands, MCP servers, settings, conversations and memory from pi, omp, jcode, Claude Code and Codex CLI |
 | [Background sessions, schedules and remote work](background-and-remote.md) | `azazel bg`, `ps`, `logs`, `attach`, `kill`; `azazel schedule` and triggers; working on another machine with `--ssh` |
+| [Remote](remote.md) | Following and steering a session from a browser or a phone: pairing links, access levels, the HTTP and WebSocket API |
 
 ## Working as a team
 
