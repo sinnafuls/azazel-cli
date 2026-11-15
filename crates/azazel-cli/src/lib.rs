@@ -28,6 +28,8 @@ pub mod init;
 pub mod inventory;
 pub mod login;
 pub mod loops;
+#[cfg(feature = "lsp")]
+mod lsp_cli;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "memory")]
@@ -332,6 +334,8 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             return code;
         }
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
+        #[cfg(feature = "lsp")]
+        Some(Sub::Lsp { action }) => return lsp_cli::run(action, &paths, trusted).await,
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
         Some(Sub::Bug {
             description,

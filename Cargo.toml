@@ -9,6 +9,7 @@ members = [
     "tests/fixtures/fake-check",
     "tests/fixtures/fake-sg",
     "tests/fixtures/fake-gh",
+    "tests/fixtures/fake-npm",
     "tests/fixtures/fake-audio",
     "tests/fixtures/fake-ssh",
     "tests/fixtures/fake-sched",

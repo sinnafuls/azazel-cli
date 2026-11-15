@@ -6,11 +6,14 @@ use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use azazel_agent::{AgentInfo, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
-use azazel_core::config::{LspServerConfig, WriteSeverity};
+use azazel_core::config::{LspInstall, LspServerConfig, WriteSeverity};
 use azazel_core::process::Shell;
-use azazel_core::{CommandOutcome, Event, ExtCtx, Registry};
+use azazel_core::{
+    ApprovalDecision, ApprovalRequest, CommandOutcome, Event, ExtCtx, Question, Registry, Ui, UiBridge,
+    UiError,
+};
 use azazel_tools::CoreToolsExt;
-use azazel_tools::lsp::{LspExt, LspManager};
+use azazel_tools::lsp::{LspExt, LspManager, Places};
 use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
@@ -29,6 +32,11 @@ struct Setup {
     write_severity: WriteSeverity,
     /// The fixture server's `warm_files`.
     warm_files: Vec<String>,
+    /// `lsp.install`.
+    install: LspInstall,
+    /// Put `fake-npm` as `npm` and `fake-lsp` into `<project>/tools`, the only place the install
+    /// of a server looks for programs (the system's `PATH` is never used).
+    fake_npm: bool,
 }
 
 impl Default for Setup {
@@ -37,6 +45,8 @@ impl Default for Setup {
             idle: Duration::from_secs(240),
             write_severity: WriteSeverity::Error,
             warm_files: Vec::new(),
+            install: LspInstall::Off,
+            fake_npm: false,
         }
     }
 }
@@ -80,8 +90,14 @@ fn bench_with(setup: Setup) -> Bench {
         ("fake".to_string(), fake),
         ("ghost".to_string(), server("no-such-language-server", ".GONE")),
     ]);
+    let tools = setup.fake_npm.then(|| tools_dir(&root));
     registry
         .load(&LspExt {
+            places: Places {
+                lsp_dir: root.join("lsp-home"),
+                path: tools.into_iter().collect(),
+            },
+            install: setup.install,
             root,
             servers,
             idle: setup.idle,
@@ -669,4 +685,199 @@ async fn moving_a_file_asks_the_server_first_and_tells_it_after() {
     let nowhere = json!({ "action": "rename_file", "path": "user.fk" });
     assert_eq!(bench.err("lsp", nowhere).await, "`rename_file` needs `new_path`");
     assert!(user.exists());
+}
+
+/// `<root>/tools`: `fake-npm` as `npm`, and `fake-lsp` for it to install from. `npm.log` there
+/// says what was run.
+fn tools_dir(root: &std::path::Path) -> PathBuf {
+    let tools = root.join("tools");
+    std::fs::create_dir_all(&tools).unwrap();
+    let suffix = std::env::consts::EXE_SUFFIX;
+    let npm = crate::common::fixture_program("fake-npm");
+    std::fs::copy(npm, tools.join(format!("npm{suffix}"))).unwrap();
+    std::fs::copy(&*FIXTURE, tools.join(format!("fake-lsp{suffix}"))).unwrap();
+    tools
+}
+
+/// Answers the question whether to install a server with `answer`, and keeps the questions.
+struct Installer {
+    answer: &'static str,
+    asked: std::sync::Mutex<Vec<Question>>,
+}
+
+impl Installer {
+    fn new(answer: &'static str) -> Arc<Installer> {
+        Arc::new(Installer {
+            answer,
+            asked: Default::default(),
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl UiBridge for Installer {
+    async fn ask(&self, question: &Question) -> Result<Vec<String>, UiError> {
+        self.asked.lock().unwrap().push(question.clone());
+        Ok(vec![self.answer.to_string()])
+    }
+    async fn confirm(&self, _: &str) -> Result<bool, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn select(&self, _: &str, _: &[String]) -> Result<usize, UiError> {
+        Err(UiError::NoUser)
+    }
+    async fn input(&self, _: &str) -> Result<String, UiError> {
+        Err(UiError::NoUser)
+    }
+    fn notify(&self, _: azazel_core::Level, _: &str) {}
+    async fn approval(&self, _: ApprovalRequest) -> Option<ApprovalDecision> {
+        None
+    }
+}
+
+impl Bench {
+    /// A project with a Python file whose server (`pyright-langserver`) is not installed, and
+    /// `npm` that is the fixture.
+    fn without_pyright(install: LspInstall) -> Bench {
+        let bench = bench_with(Setup {
+            install,
+            fake_npm: true,
+            ..Setup::default()
+        });
+        bench.file(
+            "a.py", "x = 1
+",
+        );
+        bench
+    }
+
+    /// What `npm` was asked to do, one call per line.
+    fn npm_calls(&self) -> Vec<String> {
+        let log = std::fs::read_to_string(self.root().join("tools").join("npm.log")).unwrap_or_default();
+        log.lines().map(str::to_string).collect()
+    }
+
+    fn installed(&self) -> bool {
+        let bin = self
+            .root()
+            .join("lsp-home")
+            .join("npm")
+            .join("node_modules")
+            .join(".bin");
+        bin.join(format!("pyright-langserver{}", std::env::consts::EXE_SUFFIX))
+            .is_file()
+    }
+}
+
+fn diagnostics_of_a() -> Value {
+    json!({ "action": "diagnostics", "path": "a.py" })
+}
+
+#[tokio::test]
+async fn auto_installs_a_missing_server_into_the_azazel_folder_and_the_next_call_uses_it() {
+    let bench = Bench::without_pyright(LspInstall::Auto);
+    let found = bench.lsp(diagnostics_of_a()).await;
+    assert!(found.contains("fake error"), "{found}");
+    assert!(bench.installed());
+    let calls = bench.npm_calls();
+    assert_eq!(calls.len(), 1, "{calls:?}");
+    assert!(calls[0].starts_with("install	--prefix	"), "{calls:?}");
+    assert!(calls[0].ends_with("pyright"), "{calls:?}");
+
+    bench.lsp(diagnostics_of_a()).await;
+    assert_eq!(
+        bench.npm_calls().len(),
+        1,
+        "an installed server is not installed again"
+    );
+}
+
+#[tokio::test]
+async fn ask_installs_after_a_yes() {
+    let bench = Bench::without_pyright(LspInstall::Ask);
+    let ui = Installer::new("Install it");
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    let found = bench.lsp(diagnostics_of_a()).await;
+    assert!(found.contains("fake error"), "{found}");
+    assert!(bench.installed());
+    let asked = ui.asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert!(
+        asked[0].context.as_deref().unwrap().contains("npm install"),
+        "the question names the command"
+    );
+}
+
+#[tokio::test]
+async fn a_no_installs_nothing_and_is_not_asked_again() {
+    let bench = Bench::without_pyright(LspInstall::Ask);
+    let ui = Installer::new("Not now");
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    for _ in 0..2 {
+        let said = bench.err("lsp", diagnostics_of_a()).await;
+        assert!(said.contains("azazel lsp install python"), "{said}");
+    }
+    assert_eq!(ui.asked.lock().unwrap().len(), 1);
+    assert!(bench.npm_calls().is_empty());
+    assert!(!bench.installed());
+}
+
+#[tokio::test]
+async fn a_never_is_remembered_across_sessions() {
+    let bench = Bench::without_pyright(LspInstall::Ask);
+    let ui = Installer::new("Never");
+    bench.registry.services.insert(Arc::new(Ui(ui.clone())));
+    bench.err("lsp", diagnostics_of_a()).await;
+
+    // A new manager over the same folder, as in the next session, does not ask.
+    let again = Installer::new("Install it");
+    let reopened = bench_reopened(&bench);
+    reopened.registry.services.insert(Arc::new(Ui(again.clone())));
+    reopened.err("lsp", diagnostics_of_a()).await;
+    assert!(again.asked.lock().unwrap().is_empty());
+    assert!(bench.npm_calls().is_empty());
+}
+
+/// A second bench for the same scratch folders: its own registry, the first one's `lsp-home`
+/// and tools.
+fn bench_reopened(first: &Bench) -> Bench {
+    let second = bench_with(Setup {
+        install: LspInstall::Ask,
+        fake_npm: true,
+        ..Setup::default()
+    });
+    let declined = first.root().join("lsp-home").join("declined");
+    let home = second.root().join("lsp-home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::copy(declined, home.join("declined")).unwrap();
+    second.file(
+        "a.py", "x = 1
+",
+    );
+    second
+}
+
+#[tokio::test]
+async fn off_and_a_run_nobody_watches_only_say_the_command() {
+    for install in [LspInstall::Off, LspInstall::Ask] {
+        // No `Ui` service at all: print mode.
+        let bench = Bench::without_pyright(install);
+        let said = bench.err("lsp", diagnostics_of_a()).await;
+        assert!(said.contains("azazel lsp install python"), "{said}");
+        assert!(said.contains("npm install"), "{said}");
+        assert!(bench.npm_calls().is_empty());
+        assert!(!bench.installed());
+    }
+}
+
+#[tokio::test]
+async fn a_failed_install_is_reported_and_leaves_no_server() {
+    let bench = Bench::without_pyright(LspInstall::Auto);
+    // `--fail` is not something the recipe passes, so break the fixture another way: no
+    // `fake-lsp` beside `npm` for it to copy.
+    let tools = bench.root().join("tools");
+    std::fs::remove_file(tools.join(format!("fake-lsp{}", std::env::consts::EXE_SUFFIX))).unwrap();
+    let said = bench.err("lsp", diagnostics_of_a()).await;
+    assert!(said.contains("could not be installed"), "{said}");
+    assert!(!bench.installed());
 }

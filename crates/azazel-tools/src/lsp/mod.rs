@@ -2,6 +2,7 @@
 //! every write, and queried through the `lsp` tool.
 
 mod client;
+mod install;
 mod servers;
 pub mod text;
 
@@ -10,17 +11,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::hash::{Hash, Hasher};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError, Weak};
+use std::sync::{Arc, Mutex, PoisonError, Weak};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_agent::agent::ABORTED_TEXT;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::config::{LspServerConfig, WriteSeverity};
+use azazel_core::config::{LspInstall, LspServerConfig, WriteSeverity};
 use azazel_core::tracker::Splice;
 use azazel_core::{
     Command, CommandHandler, CommandOutcome, Event, EventHandler, EventKind, ExtCtx, ExtError, Extension,
-    FileTracker, Outcome, Registrar,
+    FileTracker, Outcome, Registrar, Ui,
 };
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DocumentChanges, DocumentSymbol, DocumentSymbolResponse,
@@ -32,9 +33,11 @@ use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 use self::client::Client;
-use self::servers::{Spec, extension_of, find_program, language_id, specs};
+use self::servers::{Spec, extension_of, language_id, specs};
 use self::text::{Lines, apply_edits, path_key, path_to_uri, uri_to_path};
 use crate::util::{parse_input, resolve_path, write_atomic};
+
+pub use self::install::{Known, Places, extensions_in, install, known};
 
 /// How long a write waits for the diagnostics of the new content.
 const DIAGNOSTICS_WAIT: Duration = Duration::from_millis(1500);
@@ -44,6 +47,10 @@ const MAX_WRITE_DIAGNOSTICS: usize = 10;
 const MAX_LISTED: usize = 100;
 /// Times a server is started before it is given up on.
 const MAX_STARTS: u32 = 3;
+/// How long an `lsp` call waits for a server it is installing before it says that the install
+/// goes on in the background. Most installs end within this, so the call can answer with the
+/// server up; a slow one (a large npm tree on a slow line) does not hold the agent up for minutes.
+const INSTALL_WAIT: Duration = Duration::from_secs(45);
 /// Larger files are not sent to a server.
 const MAX_SYNC_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_SOURCE_CHARS: usize = 160;
@@ -82,9 +89,24 @@ struct State {
     idle: bool,
 }
 
+/// Where installing a server stands.
+enum Install {
+    /// Nothing was tried, or it succeeded.
+    Idle,
+    /// Running in the background; the result arrives on the channel.
+    Running(tokio::sync::watch::Receiver<Option<Result<(), String>>>),
+    /// The user said no; not asked again in this session.
+    Declined,
+    /// The install failed; not tried again in this session (`azazel lsp install` does).
+    Failed(String),
+}
+
 struct Server {
     spec: Spec,
-    program: OnceLock<Option<PathBuf>>,
+    places: Places,
+    /// The program, once it has been found; looked for again for as long as it is not.
+    program: Mutex<Option<PathBuf>>,
+    install: tokio::sync::Mutex<Install>,
     /// An agent has touched a file of this server, so it is running or about to be.
     wanted: AtomicBool,
     state: tokio::sync::Mutex<State>,
@@ -95,10 +117,12 @@ struct Server {
 }
 
 impl Server {
-    fn program(&self) -> Option<&Path> {
-        self.program
-            .get_or_init(|| find_program(&self.spec.command))
-            .as_deref()
+    fn program(&self) -> Option<PathBuf> {
+        let mut known = self.program.lock().unwrap_or_else(PoisonError::into_inner);
+        if known.is_none() {
+            *known = self.places.find(&self.spec.command);
+        }
+        known.clone()
     }
 
     fn touch(&self) {
@@ -450,6 +474,8 @@ pub struct LspManager {
     /// A server none of whose files was touched for this long is stopped; zero keeps it running.
     idle: Duration,
     write_severity: WriteSeverity,
+    places: Places,
+    install: LspInstall,
 }
 
 impl LspManager {
@@ -459,7 +485,9 @@ impl LspManager {
             .map(|spec| {
                 Arc::new(Server {
                     spec,
-                    program: OnceLock::new(),
+                    places: ext.places.clone(),
+                    program: Mutex::new(None),
+                    install: tokio::sync::Mutex::new(Install::Idle),
                     wanted: AtomicBool::new(false),
                     state: tokio::sync::Mutex::default(),
                     touched: Mutex::new(tokio::time::Instant::now()),
@@ -472,6 +500,122 @@ impl LspManager {
             servers,
             idle: ext.idle,
             write_severity: ext.write_severity,
+            places: ext.places.clone(),
+            install: ext.install,
+        }
+    }
+
+    /// The default server for files like `path` when it is not installed and azazel knows
+    /// how to install it.
+    fn missing_for(&self, path: &Path) -> Option<Arc<Server>> {
+        let extension = extension_of(path)?;
+        let server = self
+            .servers
+            .iter()
+            .find(|server| server.spec.serves(&extension))?;
+        (server.spec.builtin && server.spec.recipe.is_some() && server.program().is_none())
+            .then(|| server.clone())
+    }
+
+    /// What to do by hand to get `server`: the command, or why there is none.
+    fn by_hand(&self, server: &Server) -> String {
+        match server
+            .spec
+            .recipe
+            .map(|recipe| install::plan(recipe, &self.places))
+        {
+            Some(Ok(plan)) => format!(
+                "run `azazel lsp install {}` (it runs `{}`)",
+                server.spec.name, plan.shown
+            ),
+            Some(Err(how)) => how,
+            None => format!("install `{}`", server.spec.command),
+        }
+    }
+
+    /// Makes sure `server` is installed, installing it when the setting and the user allow, and
+    /// waits for an install that is running. `Ok` means its program is there now; `Err` is what
+    /// to tell the agent.
+    async fn ensure_installed(&self, server: &Arc<Server>, ui: Option<Arc<Ui>>) -> Result<(), String> {
+        let (name, command) = (&server.spec.name, &server.spec.command);
+        let not_installed = |why: &str| {
+            format!(
+                "language server `{name}` (`{command}`) is not installed. {why}, so nothing was installed; to install it, {}",
+                self.by_hand(server)
+            )
+        };
+        let mut state = server.install.lock().await;
+        if server.program().is_some() {
+            return Ok(());
+        }
+        let mut done = match &*state {
+            Install::Running(done) => done.clone(),
+            Install::Declined => return Err(not_installed("You said not to install it")),
+            Install::Failed(why) => {
+                return Err(format!("language server `{name}` could not be installed: {why}"));
+            }
+            Install::Idle => {
+                let recipe = server
+                    .spec
+                    .recipe
+                    .ok_or_else(|| not_installed("It has no install recipe"))?;
+                if self.install == LspInstall::Off {
+                    return Err(not_installed("`lsp.install` is \"off\""));
+                }
+                if install::declined(&self.places.lsp_dir).contains(name.as_str()) {
+                    return Err(not_installed("You chose never to install it"));
+                }
+                let plan = install::plan(recipe, &self.places).map_err(|how| not_installed(&how))?;
+                if self.install == LspInstall::Ask {
+                    let Some(ui) = ui.filter(|ui| ui.0.present()) else {
+                        return Err(not_installed("Nobody is here to ask"));
+                    };
+                    match ask(&ui, server, &plan.shown, &self.places.lsp_dir).await {
+                        Choice::Yes => {}
+                        Choice::No => {
+                            *state = Install::Declined;
+                            return Err(not_installed("You said not to install it"));
+                        }
+                        Choice::Never => {
+                            install::decline(&self.places.lsp_dir, name);
+                            *state = Install::Declined;
+                            return Err(not_installed("You chose never to install it"));
+                        }
+                        Choice::Dismissed => return Err(not_installed("The question was dismissed")),
+                    }
+                }
+                let (send, done) = tokio::sync::watch::channel(None);
+                *state = Install::Running(done.clone());
+                let server = server.clone();
+                tokio::spawn(async move {
+                    let result = install::run(&plan).await;
+                    let mut state = server.install.lock().await;
+                    *state = match &result {
+                        Ok(()) => Install::Idle,
+                        Err(why) => Install::Failed(why.clone()),
+                    };
+                    let _ = send.send(Some(result));
+                });
+                done
+            }
+        };
+        drop(state);
+        let waited = tokio::time::timeout(INSTALL_WAIT, done.wait_for(|result| result.is_some())).await;
+        let result = match waited {
+            Ok(Ok(result)) => result.clone().unwrap_or(Ok(())),
+            Ok(Err(_)) => Err("the install stopped without a result".to_string()),
+            Err(_) => {
+                return Err(format!(
+                    "installing language server `{name}`… it is still running in the background; ask again in a minute"
+                ));
+            }
+        };
+        match result {
+            Ok(()) if server.program().is_some() => Ok(()),
+            Ok(()) => Err(format!(
+                "language server `{name}` was installed but `{command}` is still not found"
+            )),
+            Err(why) => Err(format!("language server `{name}` could not be installed: {why}")),
         }
     }
 
@@ -503,7 +647,7 @@ impl LspManager {
         }
         state.starts += 1;
         let started = match server.program() {
-            Some(program) => Client::start(program, &server.spec.args, &self.root).await,
+            Some(program) => Client::start(&program, &server.spec.args, &self.root).await,
             None => Err(format!("`{}` was not found", server.spec.command)),
         };
         match started {
@@ -759,7 +903,19 @@ impl LspTool {
             ));
         }
         let path = resolve_path(&ctx.cwd, &input.path);
-        let Some(server) = self.manager.server_for(&path) else {
+        let found = match self.manager.server_for(&path) {
+            Some(server) => Some(server),
+            None => match self.manager.missing_for(&path) {
+                Some(missing) => {
+                    self.manager
+                        .ensure_installed(&missing, ctx.services.get::<Ui>())
+                        .await?;
+                    self.manager.server_for(&path)
+                }
+                None => None,
+            },
+        };
+        let Some(server) = found else {
             let kind = match extension_of(&path) {
                 Some(extension) => format!("`.{extension}` files"),
                 None => "files without an extension".to_string(),
@@ -1294,6 +1450,10 @@ impl EventHandler for StopServers {
 /// Registers the [`LspManager`] service, the `lsp` tool and `/lsp`. Load it after the core tools.
 pub struct LspExt {
     pub root: PathBuf,
+    /// Where servers are looked for (`~/.azazel/lsp` first, then `PATH`) and installed into.
+    pub places: Places,
+    /// `lsp.install`: what happens when a file's server is not installed.
+    pub install: LspInstall,
     pub servers: BTreeMap<String, LspServerConfig>,
     /// `lsp.idle_secs`: a server none of whose files was touched for this long is stopped. Zero
     /// keeps servers running.
@@ -1323,6 +1483,48 @@ impl Extension for LspExt {
         });
         r.on(EventKind::SessionEnd, Arc::new(StopServers(manager)));
         Ok(())
+    }
+}
+
+/// What the user answered to the question whether to install a server.
+enum Choice {
+    Yes,
+    No,
+    Never,
+    Dismissed,
+}
+
+async fn ask(ui: &Ui, server: &Server, shown: &str, lsp_dir: &Path) -> Choice {
+    const YES: &str = "Install it";
+    const NO: &str = "Not now";
+    const NEVER: &str = "Never";
+    let files: Vec<String> = server
+        .spec
+        .extensions
+        .iter()
+        .map(|extension| format!(".{extension}"))
+        .collect();
+    let mut question = azazel_core::Question::text(format!(
+        "Install the {} language server (`{}`)? It is not installed, and is needed for {} files.",
+        server.spec.name,
+        server.spec.command,
+        files.join(" ")
+    ));
+    question.kind = azazel_core::AskKind::Select;
+    question.context = Some(format!(
+        "azazel would run `{shown}`. It installs into {}, not system-wide.",
+        lsp_dir.display()
+    ));
+    question.options = vec![YES.to_string(), NO.to_string(), NEVER.to_string()];
+    question.recommended = Some(YES.to_string());
+    match ui.0.ask(&question).await {
+        Ok(answers) => match answers.first().map(String::as_str) {
+            Some(YES) => Choice::Yes,
+            Some(NEVER) => Choice::Never,
+            Some(_) => Choice::No,
+            None => Choice::Dismissed,
+        },
+        Err(_) => Choice::Dismissed,
     }
 }
 

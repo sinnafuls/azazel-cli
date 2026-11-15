@@ -63,6 +63,10 @@ impl Paths {
     pub fn keybindings_file(&self) -> PathBuf {
         self.home.join("keybindings.toml")
     }
+    /// Where azazel installs the language servers it can install itself.
+    pub fn lsp_dir(&self) -> PathBuf {
+        self.home.join("lsp")
+    }
     pub fn logs_dir(&self) -> PathBuf {
         self.home.join("logs")
     }

@@ -704,6 +704,8 @@ impl App {
         #[cfg(feature = "lsp")]
         registry.load(&azazel_tools::lsp::LspExt {
             root: paths.project_root.clone(),
+            places: azazel_tools::lsp::Places::system(paths.lsp_dir()),
+            install: config.lsp.install,
             servers: config.lsp.servers.clone(),
             idle: Duration::from_secs(config.lsp.idle_secs),
             write_severity: config.lsp.write_severity,
