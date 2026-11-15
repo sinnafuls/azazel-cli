@@ -5,19 +5,6 @@ GitHub are its section here.
 
 ## [Unreleased]
 
-### Added
-
-- `tui.complete_ignored` (also under `/settings` → Appearance): `@` offers files that `.gitignore` leaves out, such as `ref/`; `.git/`, `target/` and `node_modules/` are still skipped. Off by default, as before.
-
-### Changed
-
-- The lead may push again when you ask it to (`git push`, `gh pr create`, …); the push guard now holds for sub-agents only, whose commands and processes are still refused any push in every mode.
-
-### Fixed
-
-- No more band of blank rows between the transcript and the input after the `/` or `@` menu closes (or a tall input, the agents roster or the todo list shrinks): the menu now opens over the last transcript rows and gives them back when it closes.
-- Making the window taller or changing its width no longer leaves a gap above the input: once the window has settled, the transcript is drawn again at the new size, as `Ctrl+O` does. Inside tmux, screen and zellij, which keep what is erased, the old behaviour stays.
-
 ## [0.9.0] - 2026-11-15
 
 ### Added
@@ -33,17 +20,21 @@ GitHub are its section here.
 - `agent_send` with `ask: true` asks an agent a question on the side, like `/btw`: it is answered in seconds from the agent's conversation on its own model, the agent keeps working and nothing is added to its transcript. The cost counts to the agent that asked, under `btw` in `/cost`.
 - `agent_send` says how the message reached each agent: `delivered at its next step`, `woke it` or `queued` (a message to an agent still waiting to start now goes with its prompt instead of failing).
 - A tool card appears as soon as the model starts writing the call: its header fills in with the path, command or pattern as the arguments arrive, and a `write` or `edit` shows the last lines of the text being written. The same holds for the sub-agent you follow and in an agent's popup.
+- `tui.complete_ignored` (also under `/settings` → Input): `@` offers files that `.gitignore` leaves out, such as `ref/`; `.git/`, `target/` and `node_modules/` are still skipped. Off by default, as before.
 
 ### Changed
 
 - The `minimal` status-line preset counts sub-agents at work. In the agent hub, `Enter` opens the agent's chat instead of following it; following is `f`, stopping is `x`.
 - `Ctrl+O` now expands or collapses the output of every tool call on screen, not only of calls that finish afterwards: the screen and scrollback are erased and the last 300 things written are drawn again. Inside tmux, screen or zellij it works as before.
 - Tool cards that follow one another are set apart by a blank row; compact rows still stand together.
+- The lead may push again when you ask it to (`git push`, `gh pr create`, …); the push guard now holds for sub-agents only, whose commands and processes are still refused any push in every mode.
 
 ### Fixed
 
 - What you type while the lead waits in `task` or `agent_wait` reaches it at once: the wait ends, the result names the agents still running, and their reports arrive later as messages. Before, the message waited until every agent had finished.
 - A message that reaches an agent just as it finishes its turn gets a turn of its own instead of waiting for the next prompt.
+- No more band of blank rows between the transcript and the input after the `/` or `@` menu closes (or a tall input, the agents roster or the todo list shrinks): the menu now opens over the last transcript rows and gives them back when it closes.
+- Making the window taller or changing its width no longer leaves a gap above the input: once the window has settled, the transcript is drawn again at the new size, as `Ctrl+O` does. Inside tmux, screen and zellij, which keep what is erased, the old behaviour stays.
 
 ## [0.8.0] - 2026-11-14
 
