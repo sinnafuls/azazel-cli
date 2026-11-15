@@ -94,7 +94,16 @@ fn restart_opens_the_session_again_in_the_same_terminal_and_hands_on_the_exit_co
         quoted(&path(&project)),
     );
     let terminals = Arc::new(Terminals::new(dir.path().join("terminals")));
-    let terminal = terminals.start(&shell, &command, &project, &env, "test", azazel_core::config::ProcessPriority::Normal).unwrap();
+    let terminal = terminals
+        .start(
+            &shell,
+            &command,
+            &project,
+            &env,
+            "test",
+            azazel_core::config::ProcessPriority::Normal,
+        )
+        .unwrap();
 
     // The prompt on the command line is answered; the session is on the mode that was given.
     shows(&terminal, "the first answer");

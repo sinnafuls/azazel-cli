@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
-use azazel_core::hooks::Wake;
 use azazel_core::config::ProcessPriority;
+use azazel_core::hooks::Wake;
 use azazel_core::process::{AgentEnv, Detached, OutputBuffer, RunOptions, Shell, pump_lines, run, spawn};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -374,7 +374,10 @@ impl Tool for ShellTool {
             return ToolOutput::error("`wake_on_exit` goes with `interactive: true`");
         }
         if input.background {
-            return match self.jobs.start(&self.shell, &input.command, &cwd, &env, self.env.priority()) {
+            return match self
+                .jobs
+                .start(&self.shell, &input.command, &cwd, &env, self.env.priority())
+            {
                 Ok(id) => ToolOutput::text(format!(
                     "started {id} in the background; use the job tool to read its output or stop it"
                 ))
@@ -460,10 +463,14 @@ impl ShellTool {
                  pty tool (`read` with `wait: \"exit\"`)",
             );
         }
-        let terminal = match self
-            .terminals
-            .start(&self.shell, &input.command, cwd, env, &ctx.agent.id, self.env.priority())
-        {
+        let terminal = match self.terminals.start(
+            &self.shell,
+            &input.command,
+            cwd,
+            env,
+            &ctx.agent.id,
+            self.env.priority(),
+        ) {
             Ok(terminal) => terminal,
             Err(why) => return ToolOutput::error(why),
         };

@@ -12,8 +12,9 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
-    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, ProcessPriority, QueueMode,
-    ReadGuard, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WorktreeTarget, WriteSeverity,
+    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, ProcessPriority,
+    QueueMode, ReadGuard, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle,
+    WorktreeTarget, WriteSeverity,
 };
 
 /// A page of the settings screen.

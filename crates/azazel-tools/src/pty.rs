@@ -832,7 +832,11 @@ impl Terminals {
         let arguments: Vec<String> = if shell.is_posix() {
             vec!["-c".to_string(), command.to_string()]
         } else {
-            vec!["-NoProfile".to_string(), "-Command".to_string(), command.to_string()]
+            vec![
+                "-NoProfile".to_string(),
+                "-Command".to_string(),
+                command.to_string(),
+            ]
         };
         let (program, arguments) = lowered(&shell.program, &arguments, priority);
         let mut builder = CommandBuilder::new(&program);
@@ -1403,7 +1407,14 @@ mod tests {
             }
         );
         let terminal = terminals
-            .start(&shell, &command, dir.path(), &env, "lead", ProcessPriority::Normal)
+            .start(
+                &shell,
+                &command,
+                dir.path(),
+                &env,
+                "lead",
+                ProcessPriority::Normal,
+            )
             .unwrap();
         assert_eq!(terminal.id, "pty-1");
         assert_eq!(terminal.size(), DEFAULT_SIZE);
@@ -1489,7 +1500,9 @@ mod tests {
         } else {
             "Write-Output first; Start-Sleep 1; Write-Output second; Start-Sleep 600"
         };
-        let terminal = terminals.start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal).unwrap();
+        let terminal = terminals
+            .start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal)
+            .unwrap();
 
         let read = tool
             .call(
@@ -1617,7 +1630,9 @@ mod tests {
         } else {
             "Write-Output ready; Start-Sleep 600"
         };
-        let terminal = terminals.start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal).unwrap();
+        let terminal = terminals
+            .start(&shell, command, dir.path(), &[], "lead", ProcessPriority::Normal)
+            .unwrap();
         wait_for(&terminal, "ready").await;
         terminal.resize(12, 40);
         assert_eq!(terminal.size(), (12, 40));

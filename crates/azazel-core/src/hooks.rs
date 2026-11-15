@@ -1169,9 +1169,17 @@ impl Inner {
             .get::<AgentEnv>()
             .map(|env| env.priority())
             .unwrap_or(crate::config::ProcessPriority::Normal);
-        let run = capture(&self.shell, command, &job.cwd, &env, stdin, hook.timeout, priority)
-            .await
-            .map_err(|e| format!("could not be started: {e}"))?;
+        let run = capture(
+            &self.shell,
+            command,
+            &job.cwd,
+            &env,
+            stdin,
+            hook.timeout,
+            priority,
+        )
+        .await
+        .map_err(|e| format!("could not be started: {e}"))?;
         if run.timed_out {
             return Err(format!("timed out after {} s", hook.timeout.as_secs()));
         }

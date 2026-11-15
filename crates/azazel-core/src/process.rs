@@ -754,4 +754,142 @@ mod tests {
             started.elapsed()
         );
     }
+
+    #[test]
+    fn build_jobs_are_half_the_cores_unless_the_environment_or_the_setting_says_otherwise() {
+        let none = |_: &str| false;
+        let value = |vars: &[(String, String)], name: &str| {
+            vars.iter().find(|(n, _)| n == name).map(|(_, v)| v.clone())
+        };
+        let half = build_jobs_env("half", 16, &none);
+        assert_eq!(value(&half, "CARGO_BUILD_JOBS").as_deref(), Some("8"));
+        assert_eq!(value(&half, "MAKEFLAGS").as_deref(), Some("-j8"));
+        assert_eq!(value(&half, "CMAKE_BUILD_PARALLEL_LEVEL").as_deref(), Some("8"));
+        assert_eq!(
+            value(&build_jobs_env("half", 1, &none), "CARGO_BUILD_JOBS").as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            value(&build_jobs_env("3", 16, &none), "CARGO_BUILD_JOBS").as_deref(),
+            Some("3")
+        );
+        assert!(build_jobs_env("all", 16, &none).is_empty());
+        // What the user's environment sets stays theirs; the rest is still filled in.
+        let set = |name: &str| name == "CARGO_BUILD_JOBS";
+        let partial = build_jobs_env("half", 16, &set);
+        assert_eq!(value(&partial, "CARGO_BUILD_JOBS"), None);
+        assert_eq!(value(&partial, "MAKEFLAGS").as_deref(), Some("-j8"));
+    }
+
+    fn worktree_of(main: &Path) -> PathBuf {
+        let dir = main.join(".azazel").join("worktrees").join("coder-1");
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_worktree_agent_builds_into_the_main_checkouts_target_unless_told_otherwise() {
+        let main = tempfile::tempdir().unwrap();
+        std::fs::write(
+            main.path().join("Cargo.toml"),
+            "[package]
+",
+        )
+        .unwrap();
+        let dir = worktree_of(main.path());
+        let deeper = dir.join("src");
+        let env = AgentEnv::default();
+        env.set_worktree_target(WorktreeTarget::Shared, false);
+        let target = main.path().join("target").display().to_string();
+        let found = |vars: Vec<(String, String)>| {
+            vars.into_iter()
+                .find(|(n, _)| n == "CARGO_TARGET_DIR")
+                .map(|(_, v)| v)
+        };
+        assert_eq!(found(env.for_agent(1, &deeper)), Some(target.clone()));
+        assert_eq!(found(env.vars_in(Some(&dir))), Some(target));
+        // The main checkout itself, and a project that is not Cargo's, keep their own.
+        assert_eq!(found(env.for_agent(1, main.path())), None);
+        let other = tempfile::tempdir().unwrap();
+        assert_eq!(found(env.for_agent(1, &worktree_of(other.path()))), None);
+        env.set_worktree_target(WorktreeTarget::Own, true);
+        assert_eq!(found(env.for_agent(1, &dir)), None);
+    }
+
+    #[test]
+    fn sccache_is_used_only_when_it_is_installed() {
+        let main = tempfile::tempdir().unwrap();
+        std::fs::write(
+            main.path().join("Cargo.toml"),
+            "[package]
+",
+        )
+        .unwrap();
+        let dir = worktree_of(main.path());
+        let env = AgentEnv::default();
+        let wrapper = |env: &AgentEnv| {
+            env.build_cache(Some(&dir), &|_| false)
+                .into_iter()
+                .find(|(n, _)| n == "RUSTC_WRAPPER")
+        };
+        env.set_worktree_target(WorktreeTarget::Sccache, false);
+        assert_eq!(wrapper(&env), None);
+        env.set_worktree_target(WorktreeTarget::Sccache, true);
+        assert_eq!(
+            wrapper(&env),
+            Some(("RUSTC_WRAPPER".to_string(), "sccache".to_string()))
+        );
+        assert!(
+            env.build_cache(Some(&dir), &|name| name == "RUSTC_WRAPPER")
+                .is_empty()
+        );
+    }
+
+    /// The priority the process `script` runs in reports for itself, or `None` where this machine
+    /// has no way to ask.
+    async fn own_priority(priority: ProcessPriority) -> Option<String> {
+        let (shell, script) = if cfg!(windows) {
+            let shell = ["pwsh", "powershell"].iter().find_map(|name| {
+                which::which(name).ok().map(|program| Shell {
+                    program,
+                    kind: if *name == "pwsh" {
+                        ShellKind::Pwsh
+                    } else {
+                        ShellKind::PowerShell
+                    },
+                })
+            })?;
+            (shell, "(Get-Process -Id $PID).PriorityClass")
+        } else {
+            which::which("nice").ok()?;
+            (Shell::resolve(""), "nice")
+        };
+        let mut options = RunOptions::new(std::env::temp_dir());
+        options.priority = priority;
+        let result = run(&shell, script, options).await.ok()?;
+        Some(result.output.render().trim().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_lowered_process_runs_at_the_priority_the_setting_names() {
+        let table = if cfg!(windows) {
+            [
+                (ProcessPriority::Normal, "Normal"),
+                (ProcessPriority::Low, "BelowNormal"),
+                (ProcessPriority::Idle, "Idle"),
+            ]
+        } else {
+            [
+                (ProcessPriority::Normal, "0"),
+                (ProcessPriority::Low, "10"),
+                (ProcessPriority::Idle, "19"),
+            ]
+        };
+        for (priority, wanted) in table {
+            let Some(got) = own_priority(priority).await else {
+                return;
+            };
+            assert_eq!(got, wanted, "{priority}");
+        }
+    }
 }
