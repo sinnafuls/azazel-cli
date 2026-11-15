@@ -115,9 +115,10 @@ Signs this device out and clears the cookie. Answer `204`. Its WebSockets close 
 
 ### The WebSocket
 
-`GET /api/ws/{id}` with the usual upgrade headers (`Upgrade: websocket`, `Sec-WebSocket-Version: 13`, a key). It
-needs a device. A failed check before the upgrade is the plain HTTP answer (`401`, `403`, `421`, `429`); a failure
-after it is a close code.
+`GET /api/ws/{id}` with the usual upgrade headers (`Upgrade: websocket`, `Sec-WebSocket-Version: 13`, a key). A
+request with a wrong `Host` or `Origin` gets the plain HTTP answer (`421`, `403`) and no upgrade. Everything else is
+accepted and, when it fails, closed with a code, because a browser cannot read the status of a refused upgrade: no
+device is `4401`, an unknown session `4404`, too many sockets `4409`.
 
 Once upgraded:
 
