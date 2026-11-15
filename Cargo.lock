@@ -2659,6 +2659,13 @@ name = "fake-check"
 version = "0.9.1"
 
 [[package]]
+name = "fake-dap"
+version = "0.9.1"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "fake-gh"
 version = "0.9.1"
 

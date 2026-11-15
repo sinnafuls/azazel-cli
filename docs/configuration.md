@@ -255,6 +255,10 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `warm_files` | `[]` | Files opened as soon as the server starts, relative to the project root |
 | `[lsp]` | `idle_secs` | `240` | Stop a server after this many seconds in which none of its files was touched; `0` keeps it running |
 | | `write_severity` | `"error"` | The lowest severity reported after a write: `error` or `warning` |
+| `[debug.adapters.<language>]` | `command` | required | Debug adapter program for `rust`, `c`, `cpp`, `python` or `go`, instead of the one found on `PATH`; see [tools](tools.md#debugger) |
+| | `args` | `[]` | Arguments |
+| | `listens` | `false` (`true` for `go`) | The adapter listens on a socket and prints where, instead of talking on its standard streams |
+| `[debug]` | `timeout_secs` | `30` | Seconds a `debug` call waits for the program to stop or end |
 | `[voice]` | `stt`, `tts` | `""` | Speech-to-text and text-to-speech model, as `<provider>/<model>`; see [voice](voice.md) |
 | | `voice`, `language` | `""` | Voice name for speech; language code of what is dictated |
 | | `record_command`, `stt_command`, `play_command` | `""` | Programs that record, transcribe and play instead of the built-in ways |
@@ -356,7 +360,7 @@ back. A project needs a trust decision when it has any of:
   see [tools](tools.md#checkers-that-run-the-projects-code)
 
 Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destructive`, `permissions.mode` when it
-is `bypass`, `lsp`, `verify.commands`,
+is `bypass`, `lsp`, `debug.adapters`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`.
 

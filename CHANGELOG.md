@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- The `debug` tool: agents debug a program through the Debug Adapter Protocol with `start`, `break` (with a condition), `continue`, `step`, `pause`, `state`, `eval`, `output` and `stop`, one session per agent. It uses `lldb-dap` or `codelldb` (Rust, C, C++), `debugpy` (Python) or `dlv dap` (Go) from `PATH`, and says how to install a missing one. `[debug.adapters.<language>]` names another adapter and `debug.timeout_secs` (30) sets how long a call waits for a stop. Starting a program is asked about like `shell`.
+
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.

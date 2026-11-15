@@ -11,6 +11,8 @@ workspace = true
 
 [features]
 lsp = ["dep:lsp-types"]
+# The `debug` tool: a debugger over the Debug Adapter Protocol. Needs no dependency of its own.
+debug = []
 pdf = ["dep:pdf-extract"]
 # `.docx`, `.pptx`, `.xlsx`, `.msg` and `.eml` files in `read`.
 office = ["dep:zip", "dep:cfb", "dep:mail-parser"]

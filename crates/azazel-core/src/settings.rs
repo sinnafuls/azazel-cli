@@ -381,6 +381,12 @@ settings! {
             "Stop a server after this many seconds in which none of its files was touched; 0 keeps it running.";
         "lsp.write_severity": Choice(WriteSeverity::NAMES), "Reported after a write", "The lowest severity reported after a write.";
     }
+    Tools / "Debugger" {
+        "debug.adapters": Kind::Table, "Adapters",
+            "Debug adapter by language, such as python = { command = \"python\", args = [\"-m\", \"debugpy.adapter\"] }; the one on PATH is used otherwise.";
+        "debug.timeout_secs": Number, "Wait for a stop",
+            "Seconds a debug call waits for the program to stop or end.";
+    }
     Tools / "MCP" {
         "mcp.startup_wait_ms": Number, "Startup wait", "Milliseconds the first request waits for MCP servers.";
         "mcp.defer_threshold": Number, "Defer above", "Above this many MCP tools, they are found through tool_search instead.";
