@@ -303,6 +303,27 @@ pub async fn changes(worktree: &Worktree) -> Result<Option<Changes>, String> {
     }))
 }
 
+/// What an agent has done in its worktree so far, read without touching its index:
+/// `git status --short` and `git log --oneline <base>..HEAD`.
+pub async fn progress(worktree: &Worktree) -> Result<crate::status::WorktreeProgress, String> {
+    let dir = worktree.path.as_path();
+    let lines = |bytes: Vec<u8>| -> Vec<String> {
+        String::from_utf8_lossy(&bytes)
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let changed = git(dir, &["status", "--short", "--untracked-files=all"]).await?;
+    let range = format!("{}..HEAD", worktree.base);
+    let commits = git(dir, &["log", "--oneline", range.as_str()]).await?;
+    Ok(crate::status::WorktreeProgress {
+        path: worktree.path.clone(),
+        changed: lines(changed),
+        commits: lines(commits),
+    })
+}
+
 /// Applies `patch` (a file written from [`Changes::patch`]) to the main tree with `git apply --3way`.
 /// On success the changes are left as ordinary unstaged modifications (new files untracked), except
 /// for paths the user already had staged before the call, which are left staged; nothing else in the

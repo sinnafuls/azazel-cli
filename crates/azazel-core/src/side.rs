@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use azazel_agent::tool::tool_spec;
-use azazel_agent::{AgentInfo, ToolSource};
+use azazel_agent::{AgentHandle, AgentInfo, Services, ToolSource};
 use azazel_ai::{
     AiError, Block, HostedTool, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, SystemPart,
     ThinkingLevel, Usage, WebSource,
@@ -14,6 +14,7 @@ use azazel_ai::{
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
 
+use crate::SessionStore;
 use crate::prompt::PromptBuilder;
 
 /// How a side question is framed for the model when it is asked with the lead's prompt.
@@ -233,6 +234,95 @@ impl Side {
                 .then(|| format!("{}:{}", question.agent.session_id, question.agent.id)),
             hosted: Vec::new(),
         }
+    }
+}
+
+/// The key side questions (`/btw`, and questions one agent asks another) are counted under.
+pub const BTW_PURPOSE: &str = "btw";
+
+/// A side question and what came back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Exchange {
+    pub question: String,
+    pub answer: String,
+}
+
+/// A side question ready to be sent: an agent's conversation as it is now, the exchanges that
+/// went before on the side, and the model the agent is on.
+pub struct Btw {
+    side: Arc<Side>,
+    agent: AgentInfo,
+    context: Vec<Message>,
+    chain: Vec<ModelSpec>,
+    question: String,
+}
+
+impl Btw {
+    /// A question about the lead's session. Takes the session's context now, so the answer is
+    /// about the work up to this moment. `earlier` is what was already asked on the side; it goes
+    /// into this request only.
+    pub fn prepare(
+        services: &Services,
+        session: &SessionStore,
+        lead: &AgentHandle,
+        earlier: &[Exchange],
+        question: &str,
+    ) -> Result<Btw, String> {
+        let side = services
+            .get::<Side>()
+            .ok_or("side questions are not available in this session")?;
+        Ok(Btw::about(side, lead, session, earlier, question))
+    }
+
+    /// A question about the conversation of `agent`, recorded in `session`, framed with the
+    /// prompt and tools of `side`. The agent may be working or finished.
+    pub fn about(
+        side: Arc<Side>,
+        agent: &AgentHandle,
+        session: &SessionStore,
+        earlier: &[Exchange],
+        question: &str,
+    ) -> Btw {
+        let mut context = settled(
+            session
+                .build_context(None)
+                .into_iter()
+                .map(|entry| entry.message)
+                .collect(),
+        );
+        for exchange in earlier {
+            context.push(Message::user(format!("{SIDE_NOTE}\n\n{}", exchange.question)));
+            context.push(Message {
+                role: Role::Assistant,
+                content: vec![Block::text(exchange.answer.as_str())],
+                meta: None,
+            });
+        }
+        Btw {
+            side,
+            agent: agent.info().clone(),
+            context,
+            chain: agent.status().chain,
+            question: question.to_string(),
+        }
+    }
+
+    /// Sends the question; the answer's text goes to `on_text` as it arrives. Counted as
+    /// [`BTW_PURPOSE`].
+    pub async fn ask(
+        self,
+        on_text: &mut (dyn FnMut(&str) + Send),
+        cancel: CancellationToken,
+    ) -> Result<SideAnswer, String> {
+        let question = SideQuestion {
+            agent: &self.agent,
+            context: self.context,
+            question: self.question,
+            chain: self.chain,
+            purpose: BTW_PURPOSE,
+            framed: true,
+        };
+        self.side.ask(question, on_text, cancel).await
     }
 }
 

@@ -11,33 +11,38 @@ use azazel_agent::{
     Agent, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, ArtifactSink, CompactionSettings,
     Gate, Limits, Services, Tool, ToolSource, UserInput,
 };
-use azazel_ai::{ModelSpec, Router, StopReason};
+use azazel_ai::{ModelSpec, Router, StopReason, StreamEvent, Usage};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
+use azazel_core::side::{Btw, Side};
 use azazel_core::transcript::activity;
 use azazel_core::{
     ArtifactStore, EntryKind, Event, EventBus, Outcome, Paths, PermissionGate, PermissionState,
     PromptBuilder, Rule, SessionStore, ToolCaller, ToolRegistry,
 };
 use serde_json::Value;
-use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast};
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, broadcast, watch};
 use tokio_util::sync::CancellationToken;
 
 use crate::report::{NO_REPORT, REPORT_TOOL, ReportTool, Typed};
+use crate::status::{MemberStatus, RunningTool, last_lines, written_paths};
 use crate::worktree::{self, ApplyError, Worktree};
 
 /// Tools that manage other agents. A sub-agent gets them only as far as its definition allows.
-pub const ORCHESTRATION_TOOLS: [&str; 7] = [
+pub const ORCHESTRATION_TOOLS: [&str; 8] = [
     "task",
     "agent_send",
     "agent_stop",
     "agent_wait",
     "agent_list",
+    "agent_status",
     "worktree_apply",
     "worktree_discard",
 ];
 /// The id under which the lead is addressed.
 pub const LEAD: &str = "lead";
 const POLL: Duration = Duration::from_millis(100);
+/// How long a question asked on the side (`agent_send` with `ask`) may take.
+pub const ASK_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MemberState {
@@ -191,10 +196,126 @@ pub enum WaitOutcome {
     Finished(Vec<Finished>),
     /// A message for the caller arrived; it is delivered when the call returns.
     Message,
+    /// Steering input (what the user typed, a message) reached the caller; it reads it next.
+    Steered,
     Timeout,
     /// None of the agents waited for is working.
     NothingRunning,
     Cancelled,
+}
+
+/// How a wait for every agent of a batch ended.
+#[derive(Debug, Clone, PartialEq)]
+pub enum WaitAll {
+    /// Every agent finished; their results in the order asked for.
+    Finished(Vec<Finished>),
+    /// Steering input reached the caller first. `finished` ended meanwhile; `running` go on, and
+    /// each of their results reaches the caller as a message when it is ready.
+    Steered {
+        finished: Vec<Finished>,
+        running: Vec<String>,
+    },
+    /// The call was cancelled; the agents were stopped.
+    Cancelled,
+}
+
+/// How a message reached an agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Delivery {
+    /// The agent is working: it reads the message before its next step.
+    NextStep,
+    /// The agent was at rest: the message started a turn of its own.
+    Woke,
+    /// The agent has not started yet: the message goes with its prompt.
+    Queued,
+}
+
+impl fmt::Display for Delivery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Delivery::NextStep => "delivered at its next step",
+            Delivery::Woke => "woke it",
+            Delivery::Queued => "queued",
+        })
+    }
+}
+
+/// What an agent is doing, followed from its events.
+#[derive(Debug, Default)]
+struct Track {
+    /// `(call id, tool, what it works on, when it started, the files it would change)`.
+    running: Vec<(String, String, String, Instant, Vec<String>)>,
+    /// The text of the message being written now.
+    live: String,
+    /// The last message that had text.
+    said: String,
+    files: Vec<String>,
+}
+
+impl Track {
+    fn see(&mut self, event: &AgentEvent) {
+        match event {
+            AgentEvent::MessageStart => self.live.clear(),
+            AgentEvent::Stream(StreamEvent::TextDelta { delta, .. }) => self.live.push_str(delta),
+            AgentEvent::MessageEnd { message } => {
+                let text = message.text();
+                if !text.trim().is_empty() {
+                    self.said = text;
+                }
+                self.live.clear();
+            }
+            AgentEvent::ToolStart { call_id, name, input } => {
+                let what = activity(name, input);
+                let detail = what.strip_prefix(name.as_str()).unwrap_or_default().trim();
+                self.running.push((
+                    call_id.clone(),
+                    name.clone(),
+                    detail.to_string(),
+                    Instant::now(),
+                    written_paths(name, input),
+                ));
+            }
+            AgentEvent::ToolEnd { call_id, output, .. } => {
+                if let Some(at) = self.running.iter().position(|call| call.0 == *call_id) {
+                    let (.., paths) = self.running.remove(at);
+                    if !output.is_error {
+                        for path in paths {
+                            if !self.files.contains(&path) {
+                                self.files.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+            AgentEvent::Idle { .. } | AgentEvent::Failed { .. } => {
+                self.running.clear();
+                self.live.clear();
+            }
+            _ => {}
+        }
+    }
+
+    /// The call that has been running longest, and the last lines said.
+    fn now(&self) -> (Option<RunningTool>, Vec<String>) {
+        let tool = self
+            .running
+            .first()
+            .map(|(_, name, detail, started, _)| RunningTool {
+                name: name.clone(),
+                detail: detail.clone(),
+                elapsed: started.elapsed(),
+            });
+        let text = if self.live.trim().is_empty() {
+            &self.said
+        } else {
+            &self.live
+        };
+        (tool, last_lines(text))
+    }
+}
+
+fn add_usage(total: &mut Option<Usage>, usage: &Usage) {
+    total.get_or_insert_with(Usage::default).add(usage);
 }
 
 /// What the team needs from the application.
@@ -241,6 +362,14 @@ struct Member {
     worktree: Option<Worktree>,
     patch: Option<PathBuf>,
     stop: CancellationToken,
+    track: Track,
+    /// What the questions it asked on the side cost.
+    asked: Option<Usage>,
+    /// Its transcript and its tools, once it is built.
+    store: Option<Arc<SessionStore>>,
+    tools: Option<Arc<dyn ToolSource>>,
+    /// Messages that came before it started.
+    pending: Vec<UserInput>,
 }
 
 impl Member {
@@ -281,6 +410,8 @@ struct Inner {
     /// The typed result the lead owes (print mode's `--json-schema`).
     lead_report: RwLock<Option<Arc<Typed>>>,
     lead_mail: AtomicBool,
+    /// What the lead's questions on the side cost.
+    lead_asked: Mutex<Option<Usage>>,
     /// `(caller, the ids it waits for)` of every `agent_wait` in progress; `None` is all children.
     waiters: Mutex<Vec<(String, Option<Vec<String>>)>>,
     semaphore: Arc<Semaphore>,
@@ -456,8 +587,10 @@ impl Inner {
             deps.permissions.narrow_agent(id, grants.clone());
         }
         let lead_session = self.lead().map(|(_, session)| session.path());
-        let sink = SessionStore::create_at(&transcript, id, &cwd, lead_session.as_deref())
-            .map_err(|e| format!("cannot write {}: {e}", transcript.display()))?;
+        let sink = Arc::new(
+            SessionStore::create_at(&transcript, id, &cwd, lead_session.as_deref())
+                .map_err(|e| format!("cannot write {}: {e}", transcript.display()))?,
+        );
         let can_spawn = !def.spawns.is_empty() && info.depth < deps.max_depth;
         let system = deps.prompt.render(&info).await;
         let tools = Arc::new(MemberTools {
@@ -471,6 +604,12 @@ impl Inner {
         if let Some(caller) = deps.services.get::<ToolCaller>() {
             caller.scope_agent(id, tools.clone());
         }
+        // A question asked on the side about this agent reads its conversation and is framed
+        // with its own tools, so the request starts as its own requests do.
+        if let Some(member) = self.members().iter_mut().find(|member| member.info.id == id) {
+            member.store = Some(sink.clone());
+            member.tools = Some(tools.clone());
+        }
         Ok(Agent::spawn(AgentConfig {
             info,
             system,
@@ -483,7 +622,7 @@ impl Inner {
             services: deps.services.clone(),
             cwd,
             initial_messages: Vec::new(),
-            sink: Arc::new(sink),
+            sink,
             artifacts: deps
                 .services
                 .get::<ArtifactStore>()
@@ -651,21 +790,30 @@ impl Inner {
             }
         };
         let mut events = handle.subscribe();
+        let _ = self.events.send(TeamEvent::Input {
+            id: id.clone(),
+            text: prompt.clone(),
+        });
+        // Messages sent while it was queued go with its prompt, so its first request has them.
+        // The roster is held meanwhile: a later message finds the handle and comes after.
         self.update(&id, |member| {
+            let mut content = UserInput::text(prompt).content;
+            for input in std::mem::take(&mut member.pending) {
+                content.extend(input.content);
+            }
+            handle.prompt(UserInput::blocks(content));
             member.handle = Some(handle.clone());
             member.state = MemberState::Running {
                 activity: "starting".to_string(),
             };
         });
-        let _ = self.events.send(TeamEvent::Input {
-            id: id.clone(),
-            text: prompt.clone(),
-        });
-        handle.prompt(UserInput::text(prompt));
 
         let mut slot: Option<OwnedSemaphorePermit> = Some(slot);
         let mut said = String::new();
         while let Some(event) = events.recv().await {
+            if let Some(member) = self.members().iter_mut().find(|member| member.info.id == id) {
+                member.track.see(&event);
+            }
             let _ = self.events.send(TeamEvent::Agent {
                 id: id.clone(),
                 event: Box::new(event.clone()),
@@ -751,37 +899,53 @@ impl Inner {
             .any(|member| member.info.id == id && member.stop.is_cancelled())
     }
 
-    /// Hands `text` to `target`: as a steer while it works, as a new prompt when it does not.
-    fn deliver(&self, target: &str, text: String) -> Result<(), String> {
+    /// Hands `text` to `target`: as a steer while it works, as a new prompt when it does not,
+    /// and with its first prompt when it has not started yet. Never waits for the agent.
+    fn deliver(&self, target: &str, text: String) -> Result<Delivery, String> {
         let input = UserInput::text(text.clone());
         if target == LEAD {
             let (handle, _) = self.lead().ok_or("there is no lead to message")?;
-            if handle.status().busy {
+            let delivery = if handle.status().busy {
                 handle.steer(input);
+                Delivery::NextStep
             } else {
                 handle.prompt(input);
-            }
+                Delivery::Woke
+            };
             self.lead_mail.store(true, Ordering::SeqCst);
             self.announce();
-            return Ok(());
+            return Ok(delivery);
         }
         let mut members = self.members();
         let member = members
             .iter_mut()
             .find(|member| member.info.id == target)
             .ok_or_else(|| format!("no agent named `{target}`"))?;
-        let handle = member
-            .handle
-            .clone()
-            .ok_or_else(|| format!("agent `{target}` has not started yet"))?;
-        if handle.status().busy {
-            handle.steer(input);
-        } else {
-            // Revived: whoever spawned it hears about the outcome without having to ask.
-            member.stop = CancellationToken::new();
-            member.notify_parent = true;
-            handle.prompt(input);
-        }
+        let delivery = match member.handle.clone() {
+            None if member.state.is_finished() => {
+                return Err(format!("agent `{target}` ended before it started"));
+            }
+            // Still waiting for a slot or being set up: handed over right after its prompt.
+            None => {
+                member.pending.push(input);
+                Delivery::Queued
+            }
+            // At work, or given its prompt and about to be: commands reach it in order, so a
+            // steer sent now is read at its next step.
+            Some(handle) if handle.status().busy || member.state.is_active() => {
+                handle.steer(input);
+                Delivery::NextStep
+            }
+            Some(handle) => {
+                // Revived: whoever spawned it hears about the outcome without having to ask.
+                member.stop = CancellationToken::new();
+                member.notify_parent = true;
+                if !handle.prompt(input) {
+                    return Err(format!("agent `{target}` has shut down"));
+                }
+                Delivery::Woke
+            }
+        };
         member.mail = true;
         drop(members);
         let _ = self.events.send(TeamEvent::Input {
@@ -789,7 +953,7 @@ impl Inner {
             text,
         });
         self.announce();
-        Ok(())
+        Ok(delivery)
     }
 }
 
@@ -818,6 +982,7 @@ impl Team {
                 lead: RwLock::default(),
                 lead_report: RwLock::default(),
                 lead_mail: AtomicBool::new(false),
+                lead_asked: Mutex::default(),
                 waiters: Mutex::default(),
                 semaphore,
                 events,
@@ -1030,6 +1195,11 @@ impl Team {
             worktree,
             patch: None,
             stop: CancellationToken::new(),
+            track: Track::default(),
+            asked: None,
+            store: None,
+            tools: None,
+            pending: Vec::new(),
         });
         // The member holds the id now.
         drop(reservation);
@@ -1041,7 +1211,30 @@ impl Team {
     /// Waits until every agent in `ids` has finished and returns their results in that order.
     /// `None` when `cancel` fired first; the agents are stopped then.
     pub async fn wait_all(&self, ids: &[String], cancel: &CancellationToken) -> Option<Vec<Finished>> {
+        match self.wait_batch(ids, None, cancel).await {
+            WaitAll::Finished(results) => Some(results),
+            _ => None,
+        }
+    }
+
+    /// Like [`Team::wait_all`] for agent `caller`, which is blocked in the wait: when steering
+    /// input reaches `caller` first (the user typed while it waited), the wait ends at once and
+    /// the agents still running go on, their results reaching `caller` as messages.
+    pub async fn wait_for(&self, caller: &AgentInfo, ids: &[String], cancel: &CancellationToken) -> WaitAll {
+        let steering = self.inner.handle_of(&caller.id).map(|handle| handle.steering());
+        self.wait_batch(ids, steering, cancel).await
+    }
+
+    async fn wait_batch(
+        &self,
+        ids: &[String],
+        mut steering: Option<watch::Receiver<u64>>,
+        cancel: &CancellationToken,
+    ) -> WaitAll {
         loop {
+            if steering.as_mut().is_some_and(|rx| *rx.borrow_and_update() > 0) {
+                return self.leave_running(ids);
+            }
             {
                 let mut members = self.inner.members();
                 let done = ids.iter().all(|id| {
@@ -1057,19 +1250,52 @@ impl Team {
                             results.push(member.finished());
                         }
                     }
-                    return Some(results);
+                    return WaitAll::Finished(results);
                 }
             }
+            let steered = async {
+                match steering.as_mut() {
+                    Some(rx) => {
+                        if rx.changed().await.is_err() {
+                            // The caller is gone; nothing will steer it any more.
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
             tokio::select! {
                 _ = cancel.cancelled() => {
                     for id in ids {
                         let _ = self.stop(id);
                     }
-                    return None;
+                    return WaitAll::Cancelled;
                 }
+                _ = steered => {}
                 _ = tokio::time::timeout(POLL, self.inner.changed.notified()) => {}
             }
         }
+    }
+
+    /// Ends a wait for `ids` early: what finished is returned, and the rest report to their
+    /// parent as messages when they are done.
+    fn leave_running(&self, ids: &[String]) -> WaitAll {
+        let mut members = self.inner.members();
+        let mut finished = Vec::new();
+        let mut running = Vec::new();
+        for id in ids {
+            let Some(member) = members.iter_mut().find(|member| member.info.id == *id) else {
+                continue;
+            };
+            if member.runs > 0 && member.state.is_finished() {
+                member.reported = true;
+                finished.push(member.finished());
+            } else {
+                member.notify_parent = true;
+                running.push(id.clone());
+            }
+        }
+        WaitAll::Steered { finished, running }
     }
 
     /// Waits until one of `ids` (default: any agent `caller` spawned) has a result `caller` has not
@@ -1098,7 +1324,11 @@ impl Team {
             .unwrap_or_else(PoisonError::into_inner)
             .push(entry.clone());
         let deadline = Instant::now() + timeout;
+        let mut steering = inner.handle_of(&caller.id).map(|handle| handle.steering());
         let outcome = loop {
+            if steering.as_mut().is_some_and(|rx| *rx.borrow_and_update() > 0) {
+                break WaitOutcome::Steered;
+            }
             {
                 let mut members = inner.members();
                 let mine = |member: &Member| match &ids {
@@ -1133,8 +1363,19 @@ impl Team {
             if Instant::now() >= deadline {
                 break WaitOutcome::Timeout;
             }
+            let steered = async {
+                match steering.as_mut() {
+                    Some(rx) => {
+                        if rx.changed().await.is_err() {
+                            std::future::pending::<()>().await;
+                        }
+                    }
+                    None => std::future::pending::<()>().await,
+                }
+            };
             tokio::select! {
                 _ = cancel.cancelled() => break WaitOutcome::Cancelled,
+                _ = steered => {}
                 _ = tokio::time::timeout(POLL, inner.changed.notified()) => {}
             }
         };
@@ -1146,17 +1387,9 @@ impl Team {
     }
 
     /// Sends `message` from agent `from` to `to`: an agent id, `parent`, or `all`. Sub-agents can
-    /// reach their parent only. Returns who received it.
-    pub fn send(&self, from: &AgentInfo, to: &str, message: &str) -> Result<Vec<String>, String> {
-        let parent = from.parent.as_deref();
-        let to = if to == "parent" {
-            parent.ok_or("the lead has no parent")?
-        } else {
-            to
-        };
-        if from.depth > 0 && Some(to) != parent {
-            return Err("sub-agents can message their parent only: use `to: \"parent\"`".to_string());
-        }
+    /// reach their parent only. Returns who received it and how. Never waits for the receiver.
+    pub fn send(&self, from: &AgentInfo, to: &str, message: &str) -> Result<Vec<(String, Delivery)>, String> {
+        let to = self.recipient(from, to)?;
         self.send_text(
             &from.id,
             to,
@@ -1167,9 +1400,116 @@ impl Team {
         )
     }
 
+    /// Whom a message of `from` addressed to `to` goes to; sub-agents may reach their parent only.
+    fn recipient<'a>(&self, from: &'a AgentInfo, to: &'a str) -> Result<&'a str, String> {
+        let parent = from.parent.as_deref();
+        let to = if to == "parent" {
+            parent.ok_or("the lead has no parent")?
+        } else {
+            to
+        };
+        if from.depth > 0 && Some(to) != parent {
+            return Err("sub-agents can message their parent only: use `to: \"parent\"`".to_string());
+        }
+        Ok(to)
+    }
+
     /// Sends a message typed by the user to `to` (an agent id or `all`).
     pub fn send_from_user(&self, to: &str, message: &str) -> Result<Vec<String>, String> {
         self.send_text("", to, message.to_string())
+            .map(|reached| reached.into_iter().map(|(id, _)| id).collect())
+    }
+
+    /// Asks agent `to` a question on the side, for `from`: one request on `to`'s model with its
+    /// conversation as it is now, like `/btw` for the lead. `to` keeps working and nothing is
+    /// written to its transcript; a finished agent answers from its final transcript. The cost
+    /// is counted to `from`, as `btw`. Fails after [`ASK_TIMEOUT`] or when the model fails.
+    pub async fn ask(
+        &self,
+        from: &AgentInfo,
+        to: &str,
+        question: &str,
+        cancel: &CancellationToken,
+    ) -> Result<String, String> {
+        let inner = &self.inner;
+        let to = self.recipient(from, to)?;
+        if to == "all" {
+            return Err("a question goes to one agent: name it in `to`".to_string());
+        }
+        if to == from.id {
+            return Err("an agent cannot ask itself".to_string());
+        }
+        let base = inner
+            .deps
+            .services
+            .get::<Side>()
+            .ok_or("side questions are not available in this session")?;
+        let (handle, store, tools) = if to == LEAD {
+            let (handle, session) = inner.lead().ok_or("there is no lead to ask")?;
+            (handle, session, base.tools.clone())
+        } else {
+            let members = inner.members();
+            let member = members
+                .iter()
+                .find(|member| member.info.id == to)
+                .ok_or_else(|| format!("no agent named `{to}`"))?;
+            let (Some(handle), Some(store), Some(tools)) =
+                (member.handle.clone(), member.store.clone(), member.tools.clone())
+            else {
+                return Err(format!(
+                    "agent `{to}` has not started yet, so it has nothing to answer from; send the question without `ask`"
+                ));
+            };
+            (handle, store, tools)
+        };
+        // Framed with the agent's own prompt and tools, so its cached prefix is reused. The cost
+        // is counted below, once the asker is known to have had an answer.
+        let side = Arc::new(Side {
+            router: base.router.clone(),
+            prompt: base.prompt.clone(),
+            tools,
+            costs: Arc::new(Default::default()),
+        });
+        let btw = Btw::about(side, &handle, &store, &[], question);
+        let cancel = cancel.child_token();
+        let asked = tokio::time::timeout(ASK_TIMEOUT, btw.ask(&mut |_| {}, cancel.clone())).await;
+        let answer = match asked {
+            Ok(Ok(answer)) => answer,
+            Ok(Err(why)) => return Err(format!("`{to}` could not answer: {why}")),
+            Err(_) => {
+                cancel.cancel();
+                return Err(format!(
+                    "`{to}` did not answer within {} s; send the question without `ask` to have it answer in its own turn",
+                    ASK_TIMEOUT.as_secs()
+                ));
+            }
+        };
+        // Counted to the agent that asked, beside what it spent itself.
+        if from.id == LEAD {
+            add_usage(
+                &mut inner.lead_asked.lock().unwrap_or_else(PoisonError::into_inner),
+                &answer.usage,
+            );
+        } else if let Some(member) = inner
+            .members()
+            .iter_mut()
+            .find(|member| member.info.id == from.id)
+        {
+            add_usage(&mut member.asked, &answer.usage);
+        }
+        base.costs.add(azazel_core::side::BTW_PURPOSE, &answer.usage);
+        inner.announce();
+        let mut text = answer.text.trim().to_string();
+        if text.is_empty() {
+            text = format!("(`{to}` gave no answer)");
+        }
+        if !answer.dropped_tools.is_empty() {
+            text.push_str(&format!(
+                "\n\n(`{to}` tried to use {} to answer; ask without `ask` to let it work on the question)",
+                answer.dropped_tools.join(", ")
+            ));
+        }
+        Ok(text)
     }
 
     /// Hands `text` to agent `id` (the lead is `lead`) from outside its turn: a steer message
@@ -1209,7 +1549,7 @@ impl Team {
         )
     }
 
-    fn send_text(&self, sender: &str, to: &str, text: String) -> Result<Vec<String>, String> {
+    fn send_text(&self, sender: &str, to: &str, text: String) -> Result<Vec<(String, Delivery)>, String> {
         let targets: Vec<String> = if to == "all" {
             let members = self.inner.members();
             members
@@ -1223,10 +1563,12 @@ impl Team {
         if targets.is_empty() {
             return Err("there is no agent to message".to_string());
         }
-        for target in &targets {
-            self.inner.deliver(target, text.clone())?;
+        let mut reached = Vec::new();
+        for target in targets {
+            let delivery = self.inner.deliver(&target, text.clone())?;
+            reached.push((target, delivery));
         }
-        Ok(targets)
+        Ok(reached)
     }
 
     /// Aborts `id` and every agent it spawned. Returns the ids that were stopped.
@@ -1334,6 +1676,81 @@ impl Team {
             });
         }
         out
+    }
+
+    /// What agent `id` (or every agent, for `all`) is doing, from the harness's own records:
+    /// state and time, the tool it runs now, the last lines it said, the files it changed and,
+    /// for an isolated agent, its worktree's changes and commits. No model is asked.
+    pub async fn status(&self, id: &str) -> Result<Vec<MemberStatus>, String> {
+        let all = id == "all";
+        if !all && id != LEAD && !self.inner.members().iter().any(|member| member.info.id == id) {
+            return Err(format!("no agent named `{id}`"));
+        }
+        let mut out = Vec::new();
+        let mut worktrees = Vec::new();
+        if (all || id == LEAD)
+            && let Some((lead, _)) = self.inner.lead()
+        {
+            let status = lead.status();
+            out.push(MemberStatus {
+                id: LEAD.to_string(),
+                def: LEAD.to_string(),
+                depth: 0,
+                state: if status.busy {
+                    MemberState::Running {
+                        activity: String::new(),
+                    }
+                } else {
+                    MemberState::Idle
+                },
+                elapsed: Duration::ZERO,
+                tool: None,
+                text: Vec::new(),
+                files: Vec::new(),
+                worktree: None,
+                tokens: status.usage.input + status.usage.output,
+                cost_usd: status.usage.cost_usd,
+                asked: *self
+                    .inner
+                    .lead_asked
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            });
+            worktrees.push(None);
+        }
+        for member in self.inner.members().iter() {
+            if !all && member.info.id != id {
+                continue;
+            }
+            let usage = member
+                .handle
+                .as_ref()
+                .map(|handle| handle.status().usage)
+                .unwrap_or_default();
+            let (tool, text) = member.track.now();
+            out.push(MemberStatus {
+                id: member.info.id.clone(),
+                def: member.info.def.clone(),
+                depth: member.info.depth,
+                state: member.state.clone(),
+                elapsed: member.elapsed(),
+                tool,
+                text,
+                files: member.track.files.clone(),
+                worktree: None,
+                tokens: usage.input + usage.output,
+                cost_usd: usage.cost_usd,
+                asked: member.asked,
+            });
+            worktrees.push(member.worktree.clone());
+        }
+        // Git is asked once the roster is let go, so no other caller waits for it.
+        for (status, worktree) in out.iter_mut().zip(worktrees) {
+            if let Some(worktree) = worktree {
+                status.worktree = Some(worktree::progress(&worktree).await);
+            }
+        }
+        Ok(out)
     }
 
     /// The latest result of agent `id`, once it has one.

@@ -1,89 +1,20 @@
 //! Side questions (`/btw`): a question about the open session that is answered outside it. The
-//! lead keeps working, nothing is written to the session, and the cost is counted as `btw`.
+//! lead keeps working, nothing is written to the session, and the cost is counted as `btw`. The
+//! request itself is [`azazel_core::side::Btw`], which agents asking each other use too.
 
+#[cfg(feature = "test-support")]
 use std::sync::Arc;
 
-use azazel_agent::{AgentHandle, AgentInfo, Services};
-use azazel_ai::{Block, Message, ModelSpec, Role};
+#[cfg(feature = "test-support")]
+use azazel_agent::AgentHandle;
+use azazel_agent::Services;
+#[cfg(feature = "test-support")]
 use azazel_core::SessionStore;
-use azazel_core::side::{SIDE_NOTE, Side, SideAnswer, SideQuestion, settled};
+use azazel_core::side::Side;
+pub use azazel_core::side::{Btw, Exchange};
 use azazel_tui::components::format_tokens;
+#[cfg(feature = "test-support")]
 use tokio_util::sync::CancellationToken;
-
-/// The key side questions are counted under in the session's cost.
-const PURPOSE: &str = "btw";
-
-/// A side question and what came back.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Exchange {
-    pub question: String,
-    pub answer: String,
-}
-
-/// A side question ready to be sent: the session as it is now, the exchanges that went before on
-/// the side, and the model the lead is on.
-pub struct Btw {
-    side: Arc<Side>,
-    agent: AgentInfo,
-    context: Vec<Message>,
-    chain: Vec<ModelSpec>,
-    question: String,
-}
-
-impl Btw {
-    /// Takes the session's context now, so the answer is about the work up to this moment.
-    /// `earlier` is what was already asked on the side; it goes into this request only.
-    pub fn prepare(
-        services: &Services,
-        session: &SessionStore,
-        lead: &AgentHandle,
-        earlier: &[Exchange],
-        question: &str,
-    ) -> Result<Btw, String> {
-        let side = services
-            .get::<Side>()
-            .ok_or("side questions are not available in this session")?;
-        let mut context = settled(
-            session
-                .build_context(None)
-                .into_iter()
-                .map(|entry| entry.message)
-                .collect(),
-        );
-        for exchange in earlier {
-            context.push(Message::user(format!("{SIDE_NOTE}\n\n{}", exchange.question)));
-            context.push(Message {
-                role: Role::Assistant,
-                content: vec![Block::text(exchange.answer.as_str())],
-                meta: None,
-            });
-        }
-        Ok(Btw {
-            side,
-            agent: lead.info().clone(),
-            context,
-            chain: lead.status().chain,
-            question: question.to_string(),
-        })
-    }
-
-    /// Sends the question; the answer's text goes to `on_text` as it arrives.
-    pub async fn ask(
-        self,
-        on_text: &mut (dyn FnMut(&str) + Send),
-        cancel: CancellationToken,
-    ) -> Result<SideAnswer, String> {
-        let question = SideQuestion {
-            agent: &self.agent,
-            context: self.context,
-            question: self.question,
-            chain: self.chain,
-            purpose: PURPOSE,
-            framed: true,
-        };
-        self.side.ask(question, on_text, cancel).await
-    }
-}
 
 /// What to say when the model answered a side question with tool calls, which were dropped.
 pub fn dropped_note(tools: &[String]) -> Option<String> {

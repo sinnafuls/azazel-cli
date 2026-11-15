@@ -20,8 +20,8 @@ use tokio_util::sync::CancellationToken;
 use crate::report::{REPORT_TOOL, Reminder};
 use crate::team::{LEAD, MemberState, SpawnRequest, Team};
 use crate::tools::{
-    AgentListTool, AgentSendTool, AgentStopTool, AgentWaitTool, TaskTool, WorktreeApplyTool,
-    WorktreeDiscardTool, roster_table,
+    AgentListTool, AgentSendTool, AgentStatusTool, AgentStopTool, AgentWaitTool, TaskTool, WorktreeApplyTool,
+    WorktreeDiscardTool, roster_table, status_report,
 };
 
 /// New files `/review` names one by one; more than this and the reviewer finds them itself.
@@ -154,6 +154,10 @@ impl Scheme for AgentScheme {
     async fn read(&self, rest: &str, ctx: &ToolCtx) -> Result<Vec<Block>, String> {
         let team = team(&ctx.services)?;
         let (id, part) = rest.split_once('/').unwrap_or((rest, ""));
+        // The status needs no transcript: it is there for the lead and for `all` too.
+        if part == "status" {
+            return Ok(vec![Block::text(status_report(&team, id).await?)]);
+        }
         let path = team
             .transcript_path(id)
             .ok_or_else(|| format!("no agent named `{id}`"))?;
@@ -170,7 +174,7 @@ impl Scheme for AgentScheme {
                 Ok(vec![Block::text(condensed(&store))])
             }
             other => Err(format!(
-                "agent://{id}/{other}: expected agent://{id} or agent://{id}/transcript"
+                "agent://{id}/{other}: expected agent://{id}, agent://{id}/transcript or agent://{id}/status"
             )),
         }
     }
@@ -632,6 +636,7 @@ impl Extension for TeamExt {
         r.tool(Arc::new(AgentStopTool));
         r.tool(Arc::new(AgentWaitTool));
         r.tool(Arc::new(AgentListTool));
+        r.tool(Arc::new(AgentStatusTool));
         r.tool(Arc::new(WorktreeApplyTool));
         r.tool(Arc::new(WorktreeDiscardTool));
         r.scheme(Arc::new(AgentScheme));

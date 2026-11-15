@@ -15,11 +15,12 @@ use azazel_ai::{AiError, Catalog, Message, Provider, RetryPolicy, Router};
 use azazel_core::agents::{DefSource, discover};
 use azazel_core::permissions::plan::PermissionsExt;
 use azazel_core::process::Shell;
+use azazel_core::side::{Side, SideCosts};
 use azazel_core::{
     CommandOutcome, Config, ExtCtx, Extension, Headless, LoadOptions, Paths, PermissionGate, PermissionState,
     Post, Registrar, Registry, SessionStore, Ui,
 };
-use azazel_team::{BUILTIN_AGENTS, MemberState, Mentioned, Team, TeamDeps, TeamEvent, TeamExt};
+use azazel_team::{BUILTIN_AGENTS, Delivery, MemberState, Mentioned, Team, TeamDeps, TeamEvent, TeamExt};
 use azazel_tools::CoreToolsExt;
 use serde_json::{Value, json};
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -207,6 +208,12 @@ impl Bench {
             posix_shell: shell.is_posix(),
         }));
         services.insert(team.clone());
+        services.insert(Arc::new(Side {
+            router: router.clone(),
+            prompt: registry.prompt.clone(),
+            tools: registry.tools.clone(),
+            costs: Arc::new(SideCosts::default()),
+        }));
 
         let session = Arc::new(SessionStore::create(&paths.sessions_dir(), &paths.cwd, None).unwrap());
         registry.bus.set_session(&session.id());
@@ -386,7 +393,7 @@ async fn a_message_reaches_a_working_agent_before_its_next_request() {
     bench.mock.push("w", MockStep::text("checked A and B"));
     let calls = bench.run("go").await;
     assert!(calls[0].2.starts_with("started: worker-1."), "{}", calls[0].2);
-    assert_eq!(calls[1].2, "delivered to: worker-1");
+    assert_eq!(calls[1].2, "worker-1: delivered at its next step");
     assert!(calls[2].2.starts_with("## worker-1 (done, "), "{}", calls[2].2);
     assert!(calls[2].2.ends_with("checked A and B"), "{}", calls[2].2);
 
@@ -967,4 +974,230 @@ async fn a_schema_that_cannot_be_used_starts_no_agent() {
     );
     assert_eq!(calls[1].2, "the schema for `worker` must be a JSON Schema object");
     assert_eq!(bench.team.list().len(), 1);
+}
+
+/// Starts `def` for the lead on `mock/<model>`, its result left for a wait to collect.
+async fn spawn_for_lead(bench: &Bench, def: &str, prompt: &str, model: &str) -> String {
+    let request = azazel_team::SpawnRequest {
+        def: def.to_string(),
+        prompt: prompt.to_string(),
+        name: None,
+        model: Some(vec![format!("mock/{model}").parse().unwrap()]),
+        isolation: None,
+        tools: None,
+        schema: None,
+    };
+    bench.team.spawn(bench.lead.info(), request, false).await.unwrap()
+}
+
+/// Waits until agent `id` exists and `check` holds for its state.
+async fn until_state(bench: &Bench, id: &str, check: impl Fn(&MemberState) -> bool) {
+    let started = Instant::now();
+    let state = || {
+        bench
+            .team
+            .list()
+            .into_iter()
+            .find(|member| member.id == id)
+            .map(|member| member.state)
+    };
+    while !state().is_some_and(|state| check(&state)) {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "{id} is still {:?}",
+            state()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+fn napping(state: &MemberState) -> bool {
+    matches!(state, MemberState::Running { activity } if activity == "nap")
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_status_of_a_working_agent_shows_its_tool_its_words_and_its_files() {
+    let bench = Bench::new(4, false).await;
+    bench.mock.push(
+        "e",
+        MockStep::tools(
+            "",
+            &[("c1", "write", json!({ "path": "notes.txt", "content": "hi\n" }))],
+        ),
+    );
+    bench.mock.push(
+        "e",
+        MockStep::tools(
+            "Wrote the notes.\nNow resting.",
+            &[("c2", "nap", json!({ "ms": 20_000 }))],
+        ),
+    );
+    let id = spawn_for_lead(&bench, "editor", "write the notes", "e").await;
+    until_state(&bench, &id, napping).await;
+
+    let status = bench.team.status(&id).await.unwrap();
+    let status = &status[0];
+    assert!(status.state.is_active(), "{:?}", status.state);
+    assert_eq!(status.tool.as_ref().map(|tool| tool.name.as_str()), Some("nap"));
+    assert_eq!(status.text, ["Wrote the notes.", "Now resting."]);
+    assert_eq!(status.files, ["notes.txt"]);
+    // `all` is every agent, the lead first.
+    let all = bench.team.status("all").await.unwrap();
+    let ids: Vec<&str> = all.iter().map(|status| status.id.as_str()).collect();
+    assert_eq!(ids, ["lead", id.as_str()]);
+    assert!(bench.team.status("nobody").await.is_err());
+    bench.team.stop(&id).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_question_asked_on_the_side_is_answered_while_the_agent_keeps_working() {
+    let mut bench = Bench::new(4, false).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "check A", "model": "mock/w" }], "wait": false }),
+    );
+    // Asked a moment later, while the worker naps.
+    bench.mock.push(
+        "lead",
+        MockStep::tools(
+            "",
+            &[(
+                "t2",
+                "agent_send",
+                json!({ "to": "worker-1", "message": "what are you on?", "ask": true }),
+            )],
+        )
+        .delayed(Duration::from_millis(300)),
+    );
+    bench.mock.push("lead", MockStep::text("done"));
+    bench.mock.push("lead", MockStep::text("noted"));
+    bench.mock.push(
+        "w",
+        MockStep::tools("Looking at A.", &[("n", "nap", json!({ "ms": 1500 }))]),
+    );
+    // The side question is the worker's next request on its model; its own comes after the nap.
+    bench.mock.push(
+        "w",
+        MockStep::text("I am on A.").with_usage(azazel_ai::Usage {
+            input: 10,
+            output: 5,
+            ..Default::default()
+        }),
+    );
+    bench.mock.push("w", MockStep::text("finished A"));
+    let calls = bench.run("go").await;
+    assert!(!calls[1].1, "{}", calls[1].2);
+    assert_eq!(calls[1].2, "I am on A.");
+    until_state(&bench, "worker-1", |state| *state == MemberState::Done).await;
+    bench.until_idle().await;
+
+    let requests = bench.mock.requests_for("w");
+    assert_eq!(requests.len(), 3);
+    // The question saw the worker's conversation, and the worker never saw the question.
+    let asked = user_texts(&requests[1].messages);
+    assert_eq!(asked.first().map(String::as_str), Some("check A"));
+    assert!(asked.last().unwrap().ends_with("what are you on?"));
+    assert!(
+        user_texts(&requests[2].messages)
+            .iter()
+            .all(|text| !text.contains("what are you on?"))
+    );
+    let transcript = std::fs::read_to_string(bench.team.transcript_path("worker-1").unwrap()).unwrap();
+    assert!(!transcript.contains("what are you on?"));
+    assert!(!transcript.contains("I am on A."));
+    // Counted to the lead, which asked.
+    let lead = bench.team.status("lead").await.unwrap();
+    let asked = lead[0].asked.unwrap();
+    assert_eq!(asked.input + asked.output, 15);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_message_says_how_it_reached_a_queued_a_busy_and_an_idle_agent() {
+    let bench = Bench::new(1, false).await;
+    let lead = bench.lead.info().clone();
+    bench
+        .mock
+        .push("w1", MockStep::tools("", &[("n", "nap", json!({ "ms": 800 }))]));
+    bench.mock.push("w1", MockStep::text("did A and B"));
+    bench.mock.push("w1", MockStep::text("woken"));
+    bench.mock.push("w2", MockStep::text("two done"));
+    let first = spawn_for_lead(&bench, "worker", "do A", "w1").await;
+    until_state(&bench, &first, napping).await;
+    // The only slot is taken, so the second waits for it.
+    let second = spawn_for_lead(&bench, "worker", "do two", "w2").await;
+    assert_eq!(
+        bench.team.send(&lead, &second, "before you start").unwrap(),
+        [(second.clone(), Delivery::Queued)]
+    );
+    assert_eq!(
+        bench.team.send(&lead, &first, "also B").unwrap(),
+        [(first.clone(), Delivery::NextStep)]
+    );
+    until_state(&bench, &first, |state| *state == MemberState::Done).await;
+    assert_eq!(
+        bench.team.send(&lead, &first, "once more").unwrap(),
+        [(first.clone(), Delivery::Woke)]
+    );
+    // Woken with a turn of its own, which it answers.
+    let started = Instant::now();
+    while bench.team.result(&first).map(|done| done.report) != Some("woken".to_string()) {
+        assert!(started.elapsed() < Duration::from_secs(10));
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    until_state(&bench, &second, |state| *state == MemberState::Done).await;
+    let seconds = bench.mock.requests_for("w2");
+    assert!(
+        user_texts(&seconds[0].messages)
+            .iter()
+            .any(|text| text.contains("before you start")),
+        "{:?}",
+        user_texts(&seconds[0].messages)
+    );
+    let firsts = bench.mock.requests_for("w1");
+    assert!(user_texts(&firsts[1].messages).last().unwrap().contains("also B"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn what_the_user_types_ends_a_wait_and_the_agent_reports_later() {
+    let mut bench = Bench::new(4, false).await;
+    bench.lead_calls(
+        "t1",
+        "task",
+        json!({ "agents": [{ "agent": "worker", "prompt": "slow work", "model": "mock/w" }] }),
+    );
+    bench.mock.push("lead", MockStep::text("I am here"));
+    bench.mock.push("lead", MockStep::text("noted"));
+    bench
+        .mock
+        .push("w", MockStep::tools("", &[("n", "nap", json!({ "ms": 2000 }))]));
+    bench.mock.push("w", MockStep::text("slow report"));
+    assert!(bench.lead.prompt(UserInput::text("go")));
+    until_state(&bench, "worker-1", napping).await;
+    assert!(bench.lead.steer(UserInput::text("are you there?")));
+
+    let calls = bench.until_idle().await;
+    assert!(!calls[0].1, "{}", calls[0].2);
+    assert!(calls[0].2.contains("worker-1"), "{}", calls[0].2);
+    assert!(
+        calls[0].3 < Duration::from_millis(1500),
+        "waited {:?}",
+        calls[0].3
+    );
+    assert!(bench.state("worker-1").is_active());
+    let answered = bench.mock.requests_for("lead");
+    assert_eq!(
+        user_texts(&answered[1].messages).last().map(String::as_str),
+        Some("are you there?")
+    );
+
+    // The worker went on and its report reaches the lead as a message.
+    bench.until_idle().await;
+    let last = bench.mock.requests_for("lead").pop().unwrap();
+    let delivered = user_texts(&last.messages).pop().unwrap();
+    assert!(
+        delivered.starts_with("<agent-result id=\"worker-1\" status=\"done\""),
+        "{delivered}"
+    );
+    assert!(delivered.contains("slow report"));
 }
