@@ -11,6 +11,13 @@ GitHub are its section here.
 - `azazel mcp import jcode` copies the MCP servers of jcode (`~/.jcode/mcp.json`, or `$JCODE_HOME`, and `<project>/.jcode/mcp.json`), reading its `servers` key and its `timeout_secs`. Every client's `timeout_secs` now becomes `timeout`.
 - `local://<name>` files: a scratch directory of the session, shared by the lead and its sub-agents. `read`, `write`, `edit`, `patch`, `glob` and `grep` take `local://` addresses, `read local://` lists them, and writing there is never asked about. `write`, `edit` and `patch` now refuse other schemes with a clear message instead of writing to a mangled path.
 - The `eval` tool runs Python (`python`, `python3` or `py` on `PATH`) or JavaScript (`node`, `bun` or `deno`) the agent writes, in the project directory, approved like a shell command; `AZAZEL_LOCAL` names the `local://` directory to the program. `[tools.eval] python` and `javascript` (both on; also on the Tools page of `/settings`) turn each language off; with both off, `eval` is not offered.
+- While sub-agents work, a header above the input counts them (`Agents · 2 running`, with the key of the agent hub), with a row each for the first three (definition, current tool, time, tokens) and `… N more` for the others.
+- `Left` twice on an empty input opens the agent hub. The hub lists every sub-agent of the session, finished ones and those of earlier runs included, with parent, cost and task. `Enter` opens the agent's chat: its whole transcript from its file, followed live, with a line to message it; `Esc` or `Left` twice goes back. `x` stops the agent, `f` follows it in the transcript.
+- `tui.todo_max` (default 8; Appearance page of `/settings`): a long todo list above the input folds the finished items into one row (`✓ 11 done`), shows the item in progress and the next ones, and counts the rest (`… 3 more`); `0` hides the list.
+
+### Changed
+
+- The `minimal` status-line preset counts sub-agents at work. In the agent hub, `Enter` opens the agent's chat instead of following it; following is `f`, stopping is `x`.
 
 ## [0.8.0] - 2026-11-14
 

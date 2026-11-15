@@ -3,19 +3,23 @@
 //!
 //! What every sub-agent is handed, says and does is kept here as it arrives, whether anyone
 //! looks or not, so that opening an agent shows how it got where it is. Only the newest part
-//! is kept; the agent's transcript file has all of it.
+//! is kept; an agent whose start was not seen, or whose oldest part went, is read from its
+//! transcript file when it is opened.
 
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use azazel_agent::AgentEvent;
-use azazel_ai::{Block, StopReason, StreamEvent};
+use azazel_agent::{AgentEvent, ToolOutput};
+use azazel_ai::{Block, Role as MessageRole, StopReason, StreamEvent};
+use azazel_core::session::Entry;
+use azazel_core::{EntryKind, SessionStore};
 use azazel_team::{LEAD, MemberInfo};
 use azazel_tui::components::{format_elapsed, format_tokens, markdown, tool_card};
 use azazel_tui::{Editor, Glyph, Hint, Line, Role, Scroll, Theme, text};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use super::calls::Finished;
 use super::overlay::{Action, Kind, Overlay, Widget};
@@ -27,6 +31,149 @@ const MAX_ITEMS: usize = 400;
 const THINKING_ROWS: usize = 4;
 /// The most rows the line typed to an agent takes.
 const INPUT_ROWS: usize = 3;
+/// Two presses of a key closer than this are a key held down, not a double tap.
+const TAP_MIN: Duration = Duration::from_millis(40);
+/// Two presses of a key further apart than this are two single taps.
+const TAP_MAX: Duration = Duration::from_millis(500);
+
+/// Tells a double tap of a key (`left` twice: the agent hub, or back from an agent's chat) from
+/// single presses, a key held down and a burst of presses.
+#[derive(Default)]
+pub(super) struct DoubleTap {
+    last: Option<Instant>,
+    before: Option<Instant>,
+}
+
+impl DoubleTap {
+    /// The key was pressed at `now`. True when this press completes a double tap: it came
+    /// 40 to 500 ms after the one before, which itself was not part of a quicker run of presses.
+    pub(super) fn press(&mut self, now: Instant) -> bool {
+        let previous = self.last.replace(now);
+        let earlier = std::mem::replace(&mut self.before, previous);
+        let Some(previous) = previous else {
+            return false;
+        };
+        let gap = now.saturating_duration_since(previous);
+        let burst = earlier.is_some_and(|earlier| previous.saturating_duration_since(earlier) <= TAP_MAX);
+        let double = (TAP_MIN..=TAP_MAX).contains(&gap) && !burst;
+        if double {
+            self.reset();
+        }
+        double
+    }
+
+    /// Another key came between: the next press starts afresh.
+    pub(super) fn reset(&mut self) {
+        *self = DoubleTap::default();
+    }
+}
+
+/// A sub-agent the session recorded when it finished: its definition, how it ended and its
+/// transcript file. Agents of earlier processes of the session are known only this way.
+pub(super) struct Recorded {
+    pub id: String,
+    pub def: String,
+    pub status: String,
+    pub transcript: PathBuf,
+}
+
+/// The sub-agents `entries` recorded, each once with what was recorded last, newest first.
+pub(super) fn recorded_agents(entries: &[Entry]) -> Vec<Recorded> {
+    let mut recorded: Vec<Recorded> = Vec::new();
+    for entry in entries {
+        if let EntryKind::Agent {
+            agent_id,
+            def,
+            status,
+            transcript,
+        } = &entry.kind
+        {
+            recorded.retain(|agent| agent.id != *agent_id);
+            recorded.push(Recorded {
+                id: agent_id.clone(),
+                def: def.clone(),
+                status: status.clone(),
+                transcript: PathBuf::from(transcript),
+            });
+        }
+    }
+    recorded.reverse();
+    recorded
+}
+
+/// What an agent's transcript file holds, as the items of its log: what it was handed, its
+/// replies and reasoning, and the calls that have a result. A call still running is left to
+/// the events that end it.
+fn items_of(entries: Vec<Entry>) -> Vec<Item> {
+    let mut results: HashMap<String, ToolOutput> = HashMap::new();
+    for entry in &entries {
+        let EntryKind::Message { message } = &entry.kind else {
+            continue;
+        };
+        for block in &message.content {
+            if let Block::ToolResult {
+                call_id,
+                content,
+                is_error,
+            } = block
+            {
+                let output = ToolOutput {
+                    content: content.clone(),
+                    is_error: *is_error,
+                    details: None,
+                };
+                results.insert(call_id.clone(), output);
+            }
+        }
+    }
+    let mut items = Vec::new();
+    for entry in entries {
+        match entry.kind {
+            EntryKind::Message { message } => match message.role {
+                MessageRole::User => {
+                    let text = message.text();
+                    if !text.trim().is_empty() {
+                        items.push(Item::Input(text));
+                    }
+                }
+                MessageRole::Assistant => {
+                    for block in message.content {
+                        match block {
+                            Block::Text { text } if !text.trim().is_empty() => items.push(Item::Reply(text)),
+                            Block::Thinking {
+                                text,
+                                redacted: false,
+                                ..
+                            } if !text.trim().is_empty() => {
+                                items.push(Item::Thinking(text.trim().to_string()))
+                            }
+                            Block::ToolCall { id, name, input, .. } => {
+                                if let Some(output) = results.remove(&id) {
+                                    items.push(Item::Tool(Box::new(Finished {
+                                        agent: None,
+                                        name,
+                                        input,
+                                        output,
+                                        // Not recorded with the call.
+                                        elapsed: Duration::ZERO,
+                                    })));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                MessageRole::Tool => {}
+            },
+            EntryKind::Compaction { .. } => items.push(Item::Note(
+                "the conversation up to here was summarised for the model".to_string(),
+                Role::Muted,
+            )),
+            _ => {}
+        }
+    }
+    items
+}
 
 /// One finished thing of an agent's work.
 enum Item {
@@ -58,6 +205,11 @@ pub(super) struct Log {
     tools: Vec<RunningTool>,
     /// Counts everything that happened, so a view knows when it is out of date.
     version: u64,
+    /// The log holds the agent's whole work: it saw the agent's task as its first event, or
+    /// was read from the transcript file, and nothing has been dropped since.
+    whole: bool,
+    /// Items read from the transcript file, kept beyond [`MAX_ITEMS`].
+    loaded: usize,
     /// The finished items as rows: the width they were laid out for, how many items they
     /// cover, and whether the last of them is a tool card.
     drawn: Option<(usize, usize, bool, Vec<Line>)>,
@@ -79,16 +231,42 @@ fn handed(text: &str) -> Cow<'_, str> {
 impl Log {
     fn push(&mut self, item: Item) {
         self.items.push(item);
-        if self.items.len() > MAX_ITEMS {
-            self.items.drain(..self.items.len() - MAX_ITEMS);
+        let keep = MAX_ITEMS + self.loaded;
+        if self.items.len() > keep {
+            self.items.drain(..self.items.len() - keep);
             self.drawn = None;
+            self.whole = false;
         }
     }
 
     /// The agent was handed `text`.
     pub(super) fn input(&mut self, text: String) {
+        // Its task is the first thing an agent is seen doing.
+        if self.version == 0 {
+            self.whole = true;
+        }
         self.version += 1;
         self.push(Item::Input(text));
+    }
+
+    /// Takes what the transcript file holds in place of what was seen. What is in flight stays.
+    fn load(&mut self, items: Vec<Item>) {
+        self.version += 1;
+        self.loaded = items.len();
+        self.items = items;
+        self.whole = true;
+        self.drawn = None;
+    }
+
+    /// The first line of the task the agent was handed, when it was seen.
+    fn task(&self) -> Option<String> {
+        self.items.iter().find_map(|item| match item {
+            Item::Input(text) => handed(text)
+                .lines()
+                .find(|line| !line.trim().is_empty())
+                .map(str::to_string),
+            _ => None,
+        })
     }
 
     /// Something the UI itself has to say in the agent's view.
@@ -222,7 +400,8 @@ impl Log {
                     name: &call.name,
                     input: &call.input,
                     output: &call.output,
-                    elapsed: Some(call.elapsed),
+                    // A call read from the transcript file has no time.
+                    elapsed: (!call.elapsed.is_zero()).then_some(call.elapsed),
                 };
                 out.extend(view::tool_card(call, look.show, width, theme));
             }
@@ -280,6 +459,12 @@ pub(super) struct Fleet {
     logs: HashMap<String, Log>,
     /// The row of the roster the keyboard is on; `None` while it is in the input.
     pub focus: Option<usize>,
+    /// `left` in an empty input or in the hub, towards a double tap.
+    pub taps: DoubleTap,
+    /// The open chat of an agent was opened from the hub: leaving it goes back there.
+    pub from_hub: bool,
+    /// The sub-agents the session recorded, read when the hub opened.
+    pub recorded: Vec<Recorded>,
 }
 
 impl Fleet {
@@ -287,10 +472,17 @@ impl Fleet {
         self.logs.entry(agent.to_string()).or_default()
     }
 
+    /// The first line of the task `agent` was handed, when it was seen.
+    pub(super) fn task(&self, agent: &str) -> Option<String> {
+        self.logs.get(agent).and_then(Log::task)
+    }
+
     /// The session changed: its agents went with it.
     pub(super) fn clear(&mut self) {
         self.logs.clear();
         self.focus = None;
+        self.from_hub = false;
+        self.recorded.clear();
     }
 }
 
@@ -315,6 +507,8 @@ pub struct Pane {
     /// Rows of the transcript the last render showed: the distance of a page.
     page: Cell<usize>,
     editor: Editor,
+    /// `left` twice in an empty input leaves, as `esc` does.
+    taps: DoubleTap,
 }
 
 impl Pane {
@@ -326,6 +520,7 @@ impl Pane {
             up: Cell::new(0),
             page: Cell::new(10),
             editor: Editor::new(),
+            taps: DoubleTap::default(),
         }
     }
 
@@ -347,8 +542,16 @@ impl Pane {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let empty = self.editor.is_empty();
         let page = self.page.get().max(1);
+        if key.code != KeyCode::Left {
+            self.taps.reset();
+        }
         match key.code {
             KeyCode::Esc => return PaneKey::Close,
+            KeyCode::Left if empty && key.modifiers.is_empty() && key.kind != KeyEventKind::Repeat => {
+                if self.taps.press(Instant::now()) {
+                    return PaneKey::Close;
+                }
+            }
             KeyCode::Char('c') if ctrl => return PaneKey::Close,
             KeyCode::Char('x') if ctrl => return PaneKey::Stop,
             KeyCode::PageUp => self.up.set(self.up.get().saturating_add(page)),
@@ -422,7 +625,7 @@ impl Pane {
             Hint::new("enter", "send"),
             Hint::new("pgup/pgdn", "scroll"),
             Hint::new("ctrl+x", "stop"),
-            Hint::new("esc", "close"),
+            Hint::new("esc", "back"),
         ]
     }
 }
@@ -530,19 +733,65 @@ impl Tui {
         true
     }
 
-    /// Opens the popup that shows `id` at work.
+    /// Opens the popup that shows `id` at work; closing it returns to the input.
     pub(super) fn open_agent_pane(&mut self, id: &str) {
-        if !self.backend.roster().iter().any(|member| member.id == id) {
+        self.open_chat(id, false);
+    }
+
+    /// Opens the chat of `id` from the hub; leaving it returns to the hub.
+    pub(super) fn open_agent_chat(&mut self, id: &str) {
+        self.open_chat(id, true);
+    }
+
+    fn open_chat(&mut self, id: &str, from_hub: bool) {
+        let live = self.backend.roster().iter().any(|member| member.id == id);
+        if !live && !self.fleet.recorded.iter().any(|agent| agent.id == id) {
             return self.fail(&format!("no agent named `{id}`"));
         }
+        let transcript = self.transcript_of(id);
+        let log = self.fleet.log(id);
+        // What was not seen as it happened is read from the agent's transcript file. A session
+        // in a process on another machine has its files there: then what was seen is all.
+        if !log.whole
+            && let Ok(entries) = SessionStore::branch_of(&transcript)
+        {
+            log.load(items_of(entries));
+        }
         // Laid out afresh: the theme or the symbols may have changed since it was last open.
-        self.fleet.log(id).drawn = None;
+        log.drawn = None;
+        self.fleet.from_hub = from_hub;
         self.overlay = Some(Overlay::pane(Pane::new(id), Action::AgentPane));
+    }
+
+    /// The transcript file of sub-agent `id`: where the session recorded it, or where the team
+    /// keeps the transcripts of this session's agents.
+    fn transcript_of(&self, id: &str) -> PathBuf {
+        self.fleet
+            .recorded
+            .iter()
+            .find(|agent| agent.id == id)
+            .map(|agent| agent.transcript.clone())
+            .unwrap_or_else(|| self.session.agent_transcript(id))
+    }
+
+    /// `esc` or `left` twice in a chat opened from the hub: back to the hub, on that agent.
+    /// False when the open overlay is no such chat.
+    pub(super) fn chat_back(&mut self) -> bool {
+        let Some(Kind::Pane(pane)) = self.overlay.as_ref().map(|overlay| &overlay.kind) else {
+            return false;
+        };
+        if !std::mem::take(&mut self.fleet.from_hub) {
+            return false;
+        }
+        let id = pane.agent.clone();
+        self.open_hub_at(Some(&id));
+        true
     }
 
     /// Brings the open popup of an agent up to date before it is drawn `width` columns wide
     /// inside its box: its title says how the agent stands, its rows are the agent's work.
     pub(super) fn refresh_pane(&mut self, width: usize) {
+        self.refresh_hub();
         let Some(mut overlay) = self.overlay.take() else {
             return;
         };
@@ -562,7 +811,12 @@ impl Tui {
                     format!("{} tokens", format_tokens(member.tokens)),
                 ]
                 .join(separator),
-                None => format!("{}{separator}gone", pane.agent),
+                None => match self.fleet.recorded.iter().find(|agent| agent.id == pane.agent) {
+                    Some(agent) => {
+                        [agent.id.as_str(), agent.def.as_str(), agent.status.as_str()].join(separator)
+                    }
+                    None => format!("{}{separator}gone", pane.agent),
+                },
             };
             let cwd = self.local_cwd();
             let look = Look {
@@ -814,6 +1068,110 @@ mod tests {
         };
         assert!(matches!(pane.on_key(&ctrl_x), PaneKey::Stop));
         assert!(matches!(pane.on_key(&key(KeyCode::Esc)), PaneKey::Close));
+    }
+
+    #[test]
+    fn left_twice_is_a_double_tap_but_not_when_held_or_in_a_burst() {
+        let start = Instant::now();
+        let at = |ms: u64| start + Duration::from_millis(ms);
+        let mut taps = DoubleTap::default();
+        assert!(!taps.press(at(0)));
+        assert!(taps.press(at(150)), "two presses 150 ms apart");
+        // After a double tap the next press starts afresh.
+        assert!(!taps.press(at(300)));
+
+        let mut held = DoubleTap::default();
+        assert!(!held.press(at(0)));
+        assert!(!held.press(at(20)), "a key held down repeats faster than 40 ms");
+
+        let mut slow = DoubleTap::default();
+        assert!(!slow.press(at(0)));
+        assert!(!slow.press(at(700)), "too far apart");
+        assert!(
+            slow.press(at(900)),
+            "the second of two taps counts from the press before"
+        );
+
+        // Three quick presses are a burst: neither the third nor the fourth is a double tap.
+        let mut burst = DoubleTap::default();
+        assert!(!burst.press(at(0)));
+        assert!(!burst.press(at(10)));
+        assert!(!burst.press(at(100)));
+        assert!(!burst.press(at(200)));
+
+        let mut broken = DoubleTap::default();
+        assert!(!broken.press(at(0)));
+        broken.reset();
+        assert!(!broken.press(at(100)), "another key came between");
+    }
+
+    #[test]
+    fn an_agent_not_seen_from_its_start_is_read_from_its_transcript() {
+        let entry = |id: &str, parent: Option<&str>, message: Message| Entry {
+            id: id.to_string(),
+            parent_id: parent.map(str::to_string),
+            timestamp: String::new(),
+            kind: EntryKind::Message { message },
+        };
+        let asked = Message {
+            role: azazel_ai::Role::User,
+            content: vec![Block::text("Find the lexer.")],
+            meta: None,
+        };
+        let call = Message {
+            role: azazel_ai::Role::Assistant,
+            content: vec![
+                Block::text("Searching."),
+                Block::ToolCall {
+                    id: "c1".to_string(),
+                    name: "grep".to_string(),
+                    input: json!({"pattern": "lex"}),
+                    signature: None,
+                },
+            ],
+            meta: None,
+        };
+        let result = Message {
+            role: azazel_ai::Role::Tool,
+            content: vec![Block::ToolResult {
+                call_id: "c1".to_string(),
+                content: vec![Block::text("src/lex.rs:1")],
+                is_error: false,
+            }],
+            meta: None,
+        };
+        let entries = vec![
+            entry("a", None, asked),
+            entry("b", Some("a"), call),
+            entry("c", Some("b"), result),
+            entry("d", Some("c"), said("It is in src/lex.rs.")),
+        ];
+
+        // The UI opened while the agent was at work: only its last event was seen.
+        let theme = Theme::dark();
+        let mut log = Log::default();
+        log.event(&AgentEvent::MessageStart);
+        assert!(!log.whole);
+        log.load(items_of(entries));
+        assert!(log.whole);
+        assert_eq!(log.task().as_deref(), Some("Find the lexer."));
+        let shown = plain(&log.rows(60, look(&theme))).join("\n");
+        let order = [
+            "Find the lexer.",
+            "Searching.",
+            "src/lex.rs:1",
+            "It is in src/lex.rs.",
+        ];
+        let places: Vec<usize> = order
+            .iter()
+            .map(|text| shown.find(text).unwrap_or(usize::MAX))
+            .collect();
+        assert!(places.windows(2).all(|pair| pair[0] < pair[1]), "{shown}");
+
+        // An agent seen from its task on needs no file.
+        let mut seen = Log::default();
+        seen.input("Find the lexer.".to_string());
+        assert!(seen.whole);
     }
 
     #[test]
