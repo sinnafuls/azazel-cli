@@ -53,7 +53,7 @@ azazel                               # interactive UI in the current project
 azazel -p "explain src/main.rs"      # one prompt, answer on stdout
 azazel goal "make cargo test pass"   # work until the checker verifies it
 azazel bg "fix the flaky test"       # in the background; azazel attach <id> opens it later
-azazel schedule add every 1h "triage new issues"   # on a clock, or --on ci-failure / file:<glob>
+azazel schedule add every 1h "triage new issues"   # on a clock, or --on ci-failure / pr-comment / slack:<channel> / file:<glob>
 azazel --ssh build-box               # the same UI on a session that runs on another machine
 azazel doctor                        # what is configured and what is missing
 azazel migrate --dry-run             # what would come over from pi, omp, jcode, Claude Code, Codex CLI

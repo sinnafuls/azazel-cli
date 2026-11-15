@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `azazel schedule add --on pr-comment "<prompt>"` runs an agent when someone writes `@azazel …` (the handle is `[triggers] handle`) on an open pull request of the repository, and `--on slack:<channel id>` does the same for a message that mentions the Slack bot. Each mention runs in a background session and a git worktree of its own (`[triggers] mode`, `accept-edits` by default), never pushes, and is answered on the pull request or in the Slack thread with the agent's last message and the commits it made. Only the user `gh` is signed in as and users with write access (`[triggers] github_authors`), or the Slack user ids in `[triggers] slack_users`, can start a run. See [comments and messages](docs/background-and-remote.md#comments-and-messages-as-triggers).
+
 ### Changed
 
 - The `Resume this session with` / `azazel -r <id>` lines printed on exit are in the theme's muted colour, and the command is no longer indented.
