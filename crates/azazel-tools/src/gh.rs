@@ -339,6 +339,9 @@ pub fn references(prompt: &str) -> Vec<u64> {
     found
 }
 
+/// How many `#<n>` references of one prompt are looked up.
+pub const MAX_REFERENCES: usize = 5;
+
 /// Issue or pull request `number`, as text, whichever it is; `None` when the repository of
 /// `cwd` has neither (or is not on GitHub, or `gh` is not signed in).
 pub async fn resolve(

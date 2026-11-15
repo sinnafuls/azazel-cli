@@ -1700,6 +1700,43 @@ impl App {
         }
     }
 
+    /// The issues and pull requests a prompt names with `#<n>`, as `<file path="issue://<n>">`
+    /// blocks to append to it. Only numbers `gh` resolves in the repository of the working
+    /// directory are attached; without `gh`, or outside a GitHub repository, nothing is.
+    async fn github_references(&self, prompt: &str) -> String {
+        let numbers = azazel_tools::gh::references(prompt);
+        if numbers.is_empty() {
+            return String::new();
+        }
+        let Some(program) = azazel_tools::schemes::gh_program() else {
+            return String::new();
+        };
+        let env = self
+            .registry
+            .services
+            .get::<AgentEnv>()
+            .map(|env| env.vars())
+            .unwrap_or_default();
+        let mut out = String::new();
+        for number in numbers.into_iter().take(azazel_tools::gh::MAX_REFERENCES) {
+            let Some((kind, shown)) =
+                azazel_tools::gh::resolve(&program, &self.paths.cwd, number, &env).await
+            else {
+                continue;
+            };
+            self.notify(Level::Info, &format!("attached {} #{number}", kind.label()));
+            out.push_str(&format!(
+                "
+
+<file path=\"{}://{number}\">
+{shown}
+</file>",
+                kind.noun()
+            ));
+        }
+        out
+    }
+
     /// Sends a user prompt to the lead: extensions may rewrite or reject it, mentioned files are
     /// attached, the project tree is checkpointed, then the lead starts. `Err` carries the reason
     /// an extension rejected the prompt.
@@ -1729,7 +1766,8 @@ impl App {
                 tracker.record(&active.lead.id, path, bytes);
             }
         }
-        let text = mentions.text;
+        let mut text = mentions.text;
+        text.push_str(&self.github_references(&text.clone()).await);
         for (name, bytes) in mentions.images {
             match tokio::task::spawn_blocking(move || image_block(&bytes, MAX_IMAGE_SIDE)).await {
                 Ok(Ok(block)) => images.push(block),
