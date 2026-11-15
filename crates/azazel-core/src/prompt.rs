@@ -170,7 +170,7 @@ pub const RULES: &str = "# Rules\n\
 - Never commit unless the user asks you to.\n\
 - Never run destructive git commands (`reset --hard`, `clean -f`, `checkout .`, `branch -D`, or anything \
 with `--force`) unless the user asks you to.\n\
-- Never push. Pushing is the user's decision and the user's action.\n\
+- Push only when the user asks you to. Sub-agents never push: the harness refuses it.\n\
 - Do not say work is complete until you have run the project's build or tests and seen them pass. If you \
 could not run them, say so.\n\
 - When a tool call is denied, do not retry it in another form; adjust the plan or ask the user.\n\

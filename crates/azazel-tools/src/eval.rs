@@ -207,7 +207,7 @@ impl Tool for EvalTool {
             .timeout_secs
             .map(Duration::from_secs)
             .unwrap_or(self.default_timeout);
-        let mut env = self.env.vars();
+        let mut env = self.env.for_agent(ctx.agent.depth);
         if let Ok(dir) = local_dir(&ctx.services) {
             env.push((LOCAL_ENV.to_string(), dir.to_string_lossy().into_owned()));
         }

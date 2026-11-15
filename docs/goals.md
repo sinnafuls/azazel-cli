@@ -74,7 +74,7 @@ Each change of state is recorded in the session transcript. When a session with 
 
 `goal_done` (and `/verify`) runs these stages:
 
-1. **Commands.** The commands in `verify.commands`, or the auto-detected ones when that list is empty, run one after another in the project root, in the same shell and environment as the agent's `shell` tool (including the [push guard](permissions.md#agents-never-push)). Each may take `verify.timeout_secs`. The run stops at the first command that exits non-zero, times out or cannot be started.
+1. **Commands.** The commands in `verify.commands`, or the auto-detected ones when that list is empty, run one after another in the project root, in the same shell and environment as the agent's `shell` tool (including the [push guard](permissions.md#sub-agents-never-push)). Each may take `verify.timeout_secs`. The run stops at the first command that exits non-zero, times out or cannot be started.
 2. **A command failed.** The verdict is a failure naming the command, with the last 200 lines of its output. The verifier agent does not run.
 3. **Verifier agent.** When the commands pass and `verify.agent` is true, a [`verifier`](team.md#built-in-agents) sub-agent is started. It receives the objective, the lead's summary and evidence, the command results, and the diffstat and diff of the project since the goal began (up to 60 000 bytes; taken from [checkpoints](sessions-and-checkpoints.md), so absent when checkpoints are off). If no command is known, it is told to find and run the project's build and tests itself. It can read and run commands but not `write` or `edit`.
 4. **Verdict.** The verifier's report must end with a fenced JSON block:

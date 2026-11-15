@@ -1,13 +1,13 @@
 ---
 name: git-workflow
 description: >-
-  Use when the task involves git beyond a simple status or diff: shaping commits, working on branches, resolving merge or rebase conflicts, finding the commit that introduced a bug, recovering lost work, or using worktrees. Agents never push; the user does.
+  Use when the task involves git beyond a simple status or diff: shaping commits, working on branches, resolving merge or rebase conflicts, finding the commit that introduced a bug, recovering lost work, or using worktrees. Sub-agents never push; the lead pushes only when the user asks.
 ---
 # Git workflow
 
 ## Rules that always hold
 
-- **Agents never push.** `git push` and its equivalents are refused by the harness for every agent. When work is ready to publish, say so and let the user push (they can type `!git push` themselves).
+- **Push only when the user asks.** The lead may push when the user asks it to; sub-agents never push, and the harness refuses `git push` and its equivalents for them. When work is ready to publish and nobody asked you to push, say so and let the user decide.
 - Do not rewrite history that exists on a remote, and do not force anything. Rebase and amend only commits that are local.
 - Do not discard work you did not create. Before `reset --hard`, `checkout -- <path>`, `clean` or `stash drop`, look at what would be lost and ask unless the user told you to.
 - Do not change the user's git configuration or bypass hooks (`--no-verify`) without being asked.
@@ -103,4 +103,4 @@ git diff <base>...HEAD                # what this branch changed since it left b
 
 ## Handing over
 
-When work is ready, report: the branch, the commits on it (`git log --oneline <base>..HEAD`), what was verified, and the exact command the user can run to publish (`git push -u origin <branch>`). Do not run it.
+When work is ready, report: the branch, the commits on it (`git log --oneline <base>..HEAD`), what was verified, and the exact command to publish (`git push -u origin <branch>`). Run it only when the user asked you to push.

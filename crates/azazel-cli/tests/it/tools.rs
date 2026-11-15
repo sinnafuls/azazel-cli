@@ -498,10 +498,6 @@ fn an_interactive_program_is_driven_through_its_terminal_under_the_rules_for_she
         ),
         (
             "pty",
-            json!({ "action": "send", "text": "git push origin main", "submit": true }),
-        ),
-        (
-            "pty",
             json!({ "action": "send", "id": "pty-1", "text": "Ada", "submit": true }),
         ),
         (
@@ -517,7 +513,7 @@ fn an_interactive_program_is_driven_through_its_terminal_under_the_rules_for_she
     let requests = sandbox.requests();
     assert!(tool(&requests[0], "pty").is_some(), "the pty tool is offered");
     let results = sandbox.results();
-    assert_eq!(results.len(), 5);
+    assert_eq!(results.len(), 4);
     // The call comes back with the terminal and what the program has drawn so far.
     assert!(
         results[0].starts_with("started pty-1 in a terminal"),
@@ -526,19 +522,18 @@ fn an_interactive_program_is_driven_through_its_terminal_under_the_rules_for_she
     );
     assert!(results[0].contains("name?"), "{}", results[0]);
     assert!(results[0].contains("[pty-1: running for "), "{}", results[0]);
-    // What an agent types is held to the deny rules and the push guard like a command.
+    // What an agent types is held to the deny rules like a command.
     assert!(
         results[1].starts_with("what you want to type is denied by rule `shell(curl:*)`"),
         "{}",
         results[1]
     );
-    assert!(results[2].starts_with("agents never push"), "{}", results[2]);
-    // Neither reached the program: the name it reads is the one typed next.
-    assert!(results[4].contains("got Ada"), "{}", results[4]);
+    // It did not reach the program: the name it reads is the one typed next.
+    assert!(results[3].contains("got Ada"), "{}", results[3]);
     assert!(
-        results[4].contains("[pty-1: exited with code 0; full log: artifact://pty-"),
+        results[3].contains("[pty-1: exited with code 0; full log: artifact://pty-"),
         "{}",
-        results[4]
+        results[3]
     );
     // The log is where `artifact://` reads.
     let logs: Vec<PathBuf> = std::fs::read_dir(sandbox.home().join("projects"))

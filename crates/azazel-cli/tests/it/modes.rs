@@ -113,7 +113,7 @@ fn collect(value: &Value, out: &mut Vec<String>) {
 }
 
 #[test]
-fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guard() {
+fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules() {
     let sandbox = Sandbox::new();
     sandbox.write("project/.env", "DATABASE_PASSWORD=hunter2-very-secret\n");
     sandbox.write("project/notes.txt", "the PASSWORD is in the env file\n");
@@ -125,7 +125,6 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
         call("c4", "grep", json!({ "pattern": "PASSWORD" })),
         call("c5", "write", json!({ "path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n" })),
         call("c6", "read", json!({ "path": "vault/token.txt" })),
-        call("c7", "shell", json!({ "command": "git push origin main" })),
         text("done"),
     ] });
     let deny = "permissions.deny=[\"read(vault/**)\"]";
@@ -134,7 +133,7 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
     let auto = sandbox.run(&script, &["-p", "look around", "--mode", "auto", "--set", deny]);
     assert!(auto.status.success(), "{}", stderr(&auto));
     let results = sandbox.results();
-    assert_eq!(results.len(), 8, "{results:?}");
+    assert_eq!(results.len(), 7, "{results:?}");
     let secret = "is a secret file; using it needs the user's confirmation and nobody is here to give it";
     assert!(results[1].contains(&format!("`.env` {secret}")), "{}", results[1]);
     assert!(results[2].contains(&format!("`.env` {secret}")), "{}", results[2]);
@@ -160,7 +159,6 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
         "{}",
         results[6]
     );
-    assert!(results[7].contains("agents never push"), "{}", results[7]);
     assert!(!results.join("\n").contains("hunter2"));
     assert!(!sandbox.path("project/.git/hooks/pre-commit").exists());
 
@@ -170,7 +168,6 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
         call("c4", "grep", json!({ "pattern": "PASSWORD" })),
         call("c5", "write", json!({ "path": ".git/hooks/pre-commit", "content": "#!/bin/sh\n" })),
         call("c6", "read", json!({ "path": "vault/token.txt" })),
-        call("c7", "shell", json!({ "command": "git push origin main" })),
         text("done"),
     ] });
     // The write goes through here, and the lead is not sent back to prove it (the done-check).
@@ -210,7 +207,6 @@ fn auto_mode_keeps_the_guards_and_bypass_keeps_only_deny_rules_and_the_push_guar
         "{}",
         results[4]
     );
-    assert!(results[5].contains("agents never push"), "{}", results[5]);
 }
 
 #[test]

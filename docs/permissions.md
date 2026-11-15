@@ -25,7 +25,7 @@ see only the configured ones). A read outside those roots asks in `manual` and `
 | Guard | `plan` | `manual` | `accept-edits` | `auto` | `bypass` |
 |---|---|---|---|---|---|
 | `deny` rule | refused | refused | refused | refused | refused |
-| [Push guard](#agents-never-push) | refused | refused | refused | refused | refused |
+| [Push guard](#sub-agents-never-push) | refused | refused | refused | refused | refused |
 | `ask` rule | refused unless it is a read, which asks | asks | asks | asks | runs |
 | Write to a [protected path](#protected-paths) | refused | asks | asks | asks | runs |
 | [Secret file](#secret-files) | a read asks; a write or a command is refused | asks | asks | asks | runs |
@@ -244,11 +244,11 @@ file path, or `environment or command line`. In the list:
 
 `/forget-approvals` drops every remembered approval and every rule added in this session, and says how many.
 
-## Agents never push
+## Sub-agents never push
 
-Publishing is left to you. Two layers enforce it, in every mode, `bypass` included, and no rule or hook can lift them.
+The lead pushes when you ask it to; its system prompt tells it to push only then. Sub-agents never push: two layers enforce it, in every mode, `bypass` included, and no rule or hook can lift them.
 
-**Command analysis.** A `shell` call is refused when any of its commands is:
+**Command analysis.** A sub-agent's `shell` call is refused when any of its commands is:
 
 - `git push` or `git send-pack` (with or without options such as `-C dir` before the subcommand);
 - `jj git push`, `hg push`;
@@ -257,10 +257,10 @@ Publishing is left to you. Two layers enforce it, in every mode, `bypass` includ
 A command line that could not be parsed is refused when it contains `git … push` or `git … send-pack` within one command. The model receives:
 
 ```text
-agents never push. Ask the user to push (they can type "!git push").
+sub-agents never push. Report that the work is ready; the lead or the user pushes it.
 ```
 
-**Environment.** Every process started on an agent's behalf (the `shell` tool, command hooks, verify commands, `azazel.exec` in Luau extensions) runs with `GIT_TERMINAL_PROMPT=0` and extra git configuration, passed through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`, that rewrites the push URL of `https://`, `http://`, `ssh://`, `git://`, `git@` and `file://` remotes to `azazel-push-blocked://denied/`. A push started indirectly, by a script or a package manager, therefore fails at the transport with `azazel-push-blocked` in git's error. Fetching and pulling are not affected.
+**Environment.** Every process started on a sub-agent's behalf, and every process no single agent starts (command hooks, verify commands, `azazel.exec` in Luau extensions), runs with `GIT_TERMINAL_PROMPT=0` and extra git configuration, passed through `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>`, that rewrites the push URL of `https://`, `http://`, `ssh://`, `git://`, `git@` and `file://` remotes to `azazel-push-blocked://denied/`. A push started indirectly, by a script or a package manager, therefore fails at the transport with `azazel-push-blocked` in git's error. Fetching and pulling are not affected.
 
 Commands you type yourself with the `!` prefix in the TUI (`!git push`) run in your shell outside the gate and without this environment.
 

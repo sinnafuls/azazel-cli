@@ -198,11 +198,12 @@ impl OutputBuffer {
     }
 }
 
-/// Environment added to every process started on behalf of an agent (the git guard lives here).
-/// Registered as a service; the user's own `!` commands do not use it.
+/// Environment added to every process started on behalf of an agent, the git push guard among
+/// it. Registered as a service; the user's own `!` commands do not use it.
 #[derive(Default)]
 pub struct AgentEnv {
     vars: std::sync::RwLock<Vec<(String, String)>>,
+    guard: std::sync::RwLock<Vec<(String, String)>>,
 }
 
 impl AgentEnv {
@@ -213,7 +214,38 @@ impl AgentEnv {
             .unwrap_or_else(std::sync::PoisonError::into_inner) = vars;
     }
 
+    /// The environment that makes a push fail at the transport; sub-agents get it.
+    pub fn set_guard(&self, guard: Vec<(String, String)>) {
+        *self
+            .guard
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = guard;
+    }
+
+    /// Everything, the push guard included: for processes no single agent asked for (hooks,
+    /// checks, verify commands).
     pub fn vars(&self) -> Vec<(String, String)> {
+        let mut vars = self.vars_without_guard();
+        vars.extend(
+            self.guard
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned(),
+        );
+        vars
+    }
+
+    /// What a process of the agent at `depth` gets: the lead (depth 0) may push, so it goes
+    /// without the push guard.
+    pub fn for_agent(&self, depth: u32) -> Vec<(String, String)> {
+        match depth {
+            0 => self.vars_without_guard(),
+            _ => self.vars(),
+        }
+    }
+
+    fn vars_without_guard(&self) -> Vec<(String, String)> {
         self.vars
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -453,6 +485,17 @@ pub async fn run_program(program: &Path, args: &[String], options: RunOptions) -
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_push_guard_goes_to_sub_agents_only() {
+        let env = super::AgentEnv::default();
+        env.set(vec![("A".into(), "1".into())]);
+        env.set_guard(vec![("GIT_CONFIG_COUNT".into(), "6".into())]);
+        let names = |vars: Vec<(String, String)>| vars.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
+        assert_eq!(names(env.for_agent(0)), ["A"]);
+        assert_eq!(names(env.for_agent(1)), ["A", "GIT_CONFIG_COUNT"]);
+        assert_eq!(names(env.vars()), ["A", "GIT_CONFIG_COUNT"]);
+    }
+
     use std::sync::Mutex;
     use std::time::Instant;
 

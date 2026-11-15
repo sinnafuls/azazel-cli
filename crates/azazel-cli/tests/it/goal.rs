@@ -160,15 +160,6 @@ fn a_goal_is_worked_on_by_a_team_until_the_checker_verifies_it() {
     scouts.dedup();
     assert_eq!(scouts, ["scout-1", "scout-2", "scout-3"]);
 
-    // The push never ran.
-    let push = lead_results(&events, &["t2"]);
-    assert_eq!(push[0].1["output"]["is_error"], true);
-    assert!(
-        text(push[0].1).contains("agents never push"),
-        "{}",
-        text(push[0].1)
-    );
-
     // The first claim is rejected with the failing test; the second is verified.
     let claims = lead_results(&events, &["t3", "t6"]);
     let (first_at, first) = claims[0];

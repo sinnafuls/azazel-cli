@@ -18,7 +18,7 @@
         ]
       }
     },
-    { "reply": { "tool_calls": [{ "id": "t2", "name": "shell", "input": { "command": "git push" } }] } },
+    { "reply": { "tool_calls": [{ "id": "t2", "name": "shell", "input": { "command": "git status --short" } }] } },
     {
       "reply": {
         "tool_calls": [

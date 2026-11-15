@@ -114,16 +114,8 @@ fn the_decision_table() {
         (PermissionMode::Auto, "shell", Exec, "echo hi && rm -rf /", 'd'),
         (PermissionMode::Auto, "read", Read, "secrets/key.pem", 'd'),
         (PermissionMode::Auto, "mcp__github__delete_repo", Exec, "", 'd'),
-        // The push guard wins in every mode, wherever the push hides.
-        (PermissionMode::Auto, "shell", Exec, "cargo test && git push", 'd'),
-        (PermissionMode::Auto, "shell", Exec, "echo $(git push)", 'd'),
-        (
-            PermissionMode::AcceptEdits,
-            "shell",
-            Exec,
-            "git push origin main",
-            'd',
-        ),
+        // The lead pushes like any other command: auto runs it.
+        (PermissionMode::Auto, "shell", Exec, "git push origin main", 'a'),
         // Protected paths prompt even in auto.
         (PermissionMode::Auto, "write", Write, ".git/hooks/pre-commit", 'p'),
         (PermissionMode::Auto, "edit", Write, ".azazel/config.toml", 'p'),
@@ -237,6 +229,23 @@ fn the_decision_table() {
             _ => denied(&v),
         };
         assert!(ok, "{mode} {tool}({subject}): expected {expected}, got {v:?}");
+    }
+
+    // For a sub-agent the push guard wins in every mode, wherever the push hides.
+    for mode in [
+        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
+        PermissionMode::Bypass,
+    ] {
+        f.state.set_mode(mode);
+        for command in [
+            "cargo test && git push",
+            "echo $(git push)",
+            "git push origin main",
+        ] {
+            let v = verdict_as(&f, &sub_agent(), "shell", Exec, command);
+            assert!(denied(&v), "{mode} {command}: {v:?}");
+        }
     }
 
     // A directory added while running widens the roots like a configured one.
@@ -867,7 +876,9 @@ async fn handlers_can_block_rewrite_and_waive_the_prompt_but_not_the_hard_limits
         }),
     );
     assert_eq!(
-        before(&rig3, &SHELL, json!({"command": "ls"})).await.unwrap_err(),
+        before_sub(&rig3, &SHELL, json!({"command": "ls"}))
+            .await
+            .unwrap_err(),
         shell::PUSH_DENIED
     );
 }
@@ -990,6 +1001,31 @@ impl Tool for FakePty {
     }
 }
 
+fn sub_agent() -> AgentInfo {
+    AgentInfo {
+        id: "coder-1".into(),
+        def: "coder".into(),
+        parent: Some("lead".into()),
+        depth: 1,
+        session_id: "s".into(),
+    }
+}
+
+/// As [`before`], for a sub-agent: the push guard holds for sub-agents only.
+async fn before_sub(rig: &Rig, tool: &FakeTool, input: Value) -> Result<Option<Value>, String> {
+    match rig.gate.before(&sub_agent(), tool, "c1", &input).await {
+        GateDecision::Allow { input } => Ok(input),
+        GateDecision::Deny { reason } => Err(reason),
+    }
+}
+
+async fn typing_sub(rig: &Rig, input: Value) -> Result<Option<Value>, String> {
+    match rig.gate.before(&sub_agent(), &FakePty, "c1", &input).await {
+        GateDecision::Allow { input } => Ok(input),
+        GateDecision::Deny { reason } => Err(reason),
+    }
+}
+
 async fn typing(rig: &Rig, input: Value) -> Result<Option<Value>, String> {
     match rig.gate.before(&agent(), &FakePty, "c1", &input).await {
         GateDecision::Allow { input } => Ok(input),
@@ -1029,7 +1065,7 @@ async fn typing_into_a_terminal_is_allowed_where_its_program_is_and_what_is_type
         "{denied}"
     );
     assert_eq!(
-        typing(&rig, json!({"runs": "npm init", "text": "git push origin main"}))
+        typing_sub(&rig, json!({"runs": "npm init", "text": "git push origin main"}))
             .await
             .unwrap_err(),
         super::shell::PUSH_DENIED
@@ -1078,7 +1114,7 @@ async fn bypass_keeps_deny_rules_and_the_push_guard_for_what_is_typed() {
             .is_err()
     );
     assert_eq!(
-        typing(&rig, json!({"runs": "bash", "text": "git push"}))
+        typing_sub(&rig, json!({"runs": "bash", "text": "git push"}))
             .await
             .unwrap_err(),
         super::shell::PUSH_DENIED
@@ -1338,11 +1374,11 @@ fn every_mode_against_rules_protected_paths_secrets_destructive_commands_and_pus
     // One letter per mode, in the order plan, manual, accept-edits, auto, bypass:
     // a = runs, p = the user is asked, d = refused.
     let table: &[(&str, Access, &str, &str)] = &[
-        // Deny rules and the push guard hold in every mode, bypass included.
+        // Deny rules hold in every mode, bypass included.
         ("shell", Exec, "rm -rf build", "ddddd"),
         ("read", Read, "vault/token.txt", "ddddd"),
-        ("shell", Exec, "git push origin main", "ddddd"),
-        ("shell", Exec, "cargo test && git push", "ddddd"),
+        // The lead's push is asked about or run by mode; a sub-agent's is refused (below).
+        ("shell", Exec, "git push origin main", "dppaa"),
         // Allow and ask rules.
         ("shell", Exec, "cargo test -p x", "daaaa"),
         ("shell", Exec, "cargo publish", "dpppa"),
@@ -1723,11 +1759,16 @@ async fn bypass_asks_nothing_and_keeps_deny_rules_the_push_guard_and_hooks() {
             .unwrap_err()
             .starts_with("denied by rule")
     );
+    // A sub-agent never pushes; the lead does, here without being asked.
     assert_eq!(
-        before(&rig, &SHELL, json!({"command": "git push"}))
+        before_sub(&rig, &SHELL, json!({"command": "git push"}))
             .await
             .unwrap_err(),
         shell::PUSH_DENIED
+    );
+    assert_eq!(
+        before(&rig, &SHELL, json!({"command": "git push origin main"})).await,
+        Ok(None)
     );
     assert!(answers.1.lock().unwrap().is_empty());
 

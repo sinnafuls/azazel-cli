@@ -6,7 +6,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use tree_sitter::{Node, Parser};
 
-pub const PUSH_DENIED: &str = "agents never push. Ask the user to push (they can type \"!git push\").";
+pub const PUSH_DENIED: &str =
+    "sub-agents never push. Report that the work is ready; the lead or the user pushes it.";
 
 /// One command as the shell would execute it, without leading assignments or wrappers such as
 /// `sudo` and `env`.

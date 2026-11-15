@@ -42,7 +42,7 @@ Each step is one mechanical transformation, leaves the code compiling and the te
 | Remove duplication | Make the copies identical first, then replace them with one |
 | Delete dead code | Prove it is unreferenced: search, including dynamic uses, and build |
 
-After each step: build, run the relevant tests, and commit locally if the user's workflow uses commits (agents never push). When a step breaks something and the cause is not obvious in a minute, revert the step and take a smaller one.
+After each step: build, run the relevant tests, and commit locally if the user's workflow uses commits (push only when the user asks). When a step breaks something and the cause is not obvious in a minute, revert the step and take a smaller one.
 
 ## 4. Moving code across a codebase
 

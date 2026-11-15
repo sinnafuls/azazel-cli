@@ -956,9 +956,9 @@ impl App {
             services.insert(Arc::new(OutputRedactor(azazel_tui::text::redact)));
         }
         select_tools(cli, &config, &registry)?;
-        // Every process an agent starts inherits the push guard.
+        // Every process a sub-agent starts inherits the push guard; the lead's do not.
         if let Some(env) = services.get::<AgentEnv>() {
-            env.set(guard_env(&|name| std::env::var(name).ok()));
+            env.set_guard(guard_env(&|name| std::env::var(name).ok()));
         }
 
         let client = http_client();

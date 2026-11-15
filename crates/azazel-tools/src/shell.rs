@@ -364,7 +364,7 @@ impl Tool for ShellTool {
         if !cwd.is_dir() {
             return ToolOutput::error(format!("{} is not a directory", cwd.display()));
         }
-        let env = self.env.vars();
+        let env = self.env.for_agent(ctx.agent.depth);
         if input.interactive {
             return self.interactive(&input, &cwd, &env, ctx).await;
         }

@@ -789,7 +789,7 @@ impl PermissionState {
     }
 
     /// Steps that no mode, hook or rule can override: deny rules, what the agent's definition
-    /// grants, the push guard, and `destructive = "deny"`. Also reports whether the call writes
+    /// grants, the push guard (sub-agents only), and `destructive = "deny"`. Also reports whether the call writes
     /// to a protected path, which forces a prompt in every mode but `bypass`.
     pub fn precheck(&self, call: &Call<'_>) -> Result<bool, String> {
         let cwd = self.cwd_of(call.agent);
@@ -803,7 +803,9 @@ impl PermissionState {
         {
             return Err(escape);
         }
-        if let (Some(analysis), Some(command)) = (call.shell, call.command)
+        // The lead pushes when the user asks it to; a sub-agent never does.
+        if call.agent.depth > 0
+            && let (Some(analysis), Some(command)) = (call.shell, call.command)
             && shell::pushes(command, analysis)
         {
             return Err(shell::PUSH_DENIED.to_string());
@@ -837,7 +839,9 @@ impl PermissionState {
                 hit.rule, hit.source
             ));
         }
-        if let (Some(analysis), Some(command)) = (call.shell, call.command)
+        // The lead pushes when the user asks it to; a sub-agent never does.
+        if call.agent.depth > 0
+            && let (Some(analysis), Some(command)) = (call.shell, call.command)
             && shell::pushes(command, analysis)
         {
             return Err(shell::PUSH_DENIED.to_string());

@@ -386,7 +386,7 @@ preview: 3 replacements in 2 files, nothing written. To write them, run this aga
 | `job` | `action` (`output`, `kill`, `list`), `id?`, `tail?` | Manages background jobs started by `shell` |
 | `pty` | `action` (`send`, `read`, `stop`, `list`), `id?`, `text?`, `keys?`, `submit?`, `wait?`, `wait_for?`, `timeout_secs?` | Works with a program `shell` started in a terminal; see [programs in a terminal](#programs-in-a-terminal) |
 
-`shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for an agent can never push to a git remote; see [permissions](permissions.md).
+`shell` returns stdout and stderr together, then `exit code: N`. Long output keeps its first 100 and last 300 lines; lines over 4000 characters are cut. On timeout (default `shell_timeout_secs`) or abort the whole process tree is killed. With `background: true` the call returns a job id (`job-1`, ...) at once; `job output` returns the last `tail` lines (default 100, a job keeps its last 2000) and the job's state. Background jobs are killed when the session ends. Processes started for a sub-agent can never push to a git remote; the lead's can; see [permissions](permissions.md#sub-agents-never-push).
 
 ### Programs in a terminal
 
