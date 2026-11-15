@@ -973,6 +973,7 @@ dependencies = [
  "azazel-media",
  "azazel-memory",
  "azazel-protocol",
+ "azazel-remote",
  "azazel-repomap",
  "azazel-team",
  "azazel-tools",

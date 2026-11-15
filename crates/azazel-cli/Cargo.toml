@@ -67,6 +67,9 @@ images = ["azazel-tui/images"]
 diagrams = ["images", "dep:mermaid-rs-renderer", "dep:resvg"]
 # Background sessions (`azazel bg`, `ps`, `logs`, `attach`, `kill`) on local sockets.
 detach = ["dep:interprocess", "dep:process-wrap", "dep:winsafe"]
+# `azazel remote`: a web page and a WebSocket server that follow and steer background sessions from a
+# browser or a phone.
+remote = ["dep:azazel-remote", "detach"]
 test-support = ["azazel-ai/test-support"]
 
 [dependencies]
@@ -82,6 +85,7 @@ azazel-mcp = { workspace = true, optional = true }
 azazel-memory = { workspace = true, optional = true }
 azazel-repomap = { workspace = true, optional = true }
 azazel-lua = { workspace = true, optional = true }
+azazel-remote = { workspace = true, optional = true }
 azazel-browser = { workspace = true, optional = true }
 azazel-media = { workspace = true, optional = true }
 agent-client-protocol = { workspace = true, optional = true }
@@ -146,7 +150,7 @@ flate2.workspace = true
 assert_cmd.workspace = true
 # The package depends on itself so that its tests, and the `azazel` binary they drive, are built
 # with the scripted mock provider, and so that the opt-in diagram drawing is tested and linted.
-azazel-cli = { path = ".", features = ["test-support", "diagrams"] }
+azazel-cli = { path = ".", features = ["test-support", "diagrams", "remote"] }
 agent-client-protocol.workspace = true
 dunce.workspace = true
 rmcp.workspace = true

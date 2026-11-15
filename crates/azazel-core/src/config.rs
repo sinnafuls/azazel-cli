@@ -321,6 +321,9 @@ config_table!(RemoteConfig {
     /// The port `azazel remote` listens on. It is fixed because an installed page belongs to its
     /// origin, port included; 0 lets the system choose.
     port: u16 = 7420,
+    /// How `azazel remote --share` and `/remote` reach the server from another device: a
+    /// Cloudflare quick tunnel, or Tailscale.
+    access: RemoteAccess = RemoteAccess::Cloudflare,
     /// The address of your own tunnel or reverse proxy in front of the server
     /// (`https://remote.example.com`): the origin of the pairing links, and an origin the server
     /// accepts. `azazel remote --tunnel` sets it for the run.
@@ -649,6 +652,7 @@ config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
 config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
+config_enum!(RemoteAccess { Cloudflare = "cloudflare", Tailscale = "tailscale" } default Cloudflare);
 config_enum!(QueueMode { One = "one", All = "all" } default One);
 config_enum!(Autocomplete { Words = "words", Off = "off" } default Words);
 config_enum!(StatusPreset { Default = "default", Minimal = "minimal", Powerline = "powerline", Lean = "lean", Full = "full" } default Default);

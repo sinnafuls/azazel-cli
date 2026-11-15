@@ -390,16 +390,7 @@ fn release_asset() -> Option<(String, Archive)> {
 
 /// Fetches `url`, unpacks the executable it holds into `dir` and returns its path.
 async fn download(url: &str, kind: Archive, dir: &Path) -> Result<PathBuf, String> {
-    let response = azazel_ai::tls::client()
-        .get(url)
-        .send()
-        .await
-        .and_then(|response| response.error_for_status())
-        .map_err(|e| format!("could not download {url}: {e}"))?;
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| format!("could not download {url}: {e}"))?;
+    let bytes = crate::util::download(url).await?;
     unpack(&bytes, kind, dir)
 }
 
@@ -422,21 +413,7 @@ fn unpack(bytes: &[u8], kind: Archive, dir: &Path) -> Result<PathBuf, String> {
                 .map_err(|e| format!("could not unpack rust-analyzer.exe: {e}"))?;
         }
     }
-    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
-    let target = dir.join(format!("rust-analyzer{}", std::env::consts::EXE_SUFFIX));
-    // Written beside it and moved, so that a download cut short leaves no half program behind.
-    let partial = dir.join("rust-analyzer.partial");
-    let written = std::fs::File::create(&partial).and_then(|mut file| file.write_all(&program));
-    written.map_err(|e| format!("could not write {}: {e}", partial.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| format!("could not make {} executable: {e}", partial.display()))?;
-    }
-    std::fs::rename(&partial, &target)
-        .map_err(|e| format!("could not move rust-analyzer into place: {e}"))?;
-    Ok(target)
+    crate::util::install_program(&program, dir, "rust-analyzer")
 }
 
 #[cfg(test)]

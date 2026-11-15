@@ -13,7 +13,7 @@ use toml::{Table, Value};
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
     EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, ProcessPriority,
-    QueueMode, ReadGuard, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle,
+    QueueMode, ReadGuard, RemoteAccess, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle,
     WorktreeTarget, WriteSeverity,
 };
 
@@ -511,6 +511,7 @@ settings! {
     }
     Advanced / "Remote" {
         "remote.port": Number, "Port", "The port `azazel remote` listens on; 7420 by default, 0 lets the system choose.";
+        "remote.access": Choice(RemoteAccess::NAMES), "Way in", "How --share and /remote reach the server from another device: a Cloudflare quick tunnel or Tailscale.";
         "remote.public_url": Text, "Public address", "The address of your own tunnel or reverse proxy, such as https://remote.example.com; it becomes the link and an accepted origin.";
         "remote.link_minutes": Number, "Link lifetime", "Minutes a pairing link works.";
         "remote.device_hours": Number, "Device lifetime", "Hours a paired device stays signed in.";

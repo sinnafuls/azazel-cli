@@ -15,6 +15,39 @@ pub fn parse_input<T: DeserializeOwned>(input: Value) -> Result<T, ToolOutput> {
     serde_json::from_value(input).map_err(|e| ToolOutput::error(format!("invalid arguments: {e}")))
 }
 
+/// The bytes at `url`, for a program that is installed from a release.
+pub async fn download(url: &str) -> Result<Vec<u8>, String> {
+    let response = azazel_ai::tls::client()
+        .get(url)
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map_err(|e| format!("could not download {url}: {e}"))?;
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("could not download {url}: {e}"))?;
+    Ok(bytes.to_vec())
+}
+
+/// Writes `program` as the executable `name` (with the platform's suffix) into `dir` and returns
+/// its path. It is written beside the target and moved, so that a download cut short leaves no
+/// half program behind.
+pub fn install_program(program: &[u8], dir: &Path, name: &str) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| format!("could not create {}: {e}", dir.display()))?;
+    let target = dir.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    let partial = dir.join(format!("{name}.partial"));
+    std::fs::write(&partial, program).map_err(|e| format!("could not write {}: {e}", partial.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&partial, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("could not make {} executable: {e}", partial.display()))?;
+    }
+    std::fs::rename(&partial, &target).map_err(|e| format!("could not move {name} into place: {e}"))?;
+    Ok(target)
+}
+
 /// `path` as the model wrote it, made absolute against `cwd`: `~/` expands to the home directory
 /// and `.`/`..` components are folded without touching the filesystem.
 pub fn resolve_path(cwd: &Path, path: &str) -> PathBuf {
