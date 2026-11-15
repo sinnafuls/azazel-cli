@@ -132,6 +132,7 @@ async fn the_extension_registers_the_core_tool_set() {
             "patch",
             "glob",
             "grep",
+            "eval",
             "shell",
             "job",
             "pty",
