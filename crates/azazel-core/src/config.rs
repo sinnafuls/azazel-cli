@@ -636,7 +636,7 @@ config_enum!(StatusPreset { Default = "default", Minimal = "minimal", Powerline 
 impl StatusPreset {
     /// Whether the preset is drawn as blocks of colour unless another separator is chosen.
     pub fn blocks(self) -> bool {
-        matches!(self, StatusPreset::Powerline | StatusPreset::Lean)
+        matches!(self, StatusPreset::Powerline)
     }
 }
 config_enum!(StatusSeparator { Dot = "dot", Bar = "bar", Powerline = "powerline", Space = "space" } default Dot);

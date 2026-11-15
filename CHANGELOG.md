@@ -5,6 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.10.4] - 2026-11-15
+
+### Fixed
+
+- The `lean` status line preset follows `statusline.separator`: with `dot` (the default) it is drawn with dots, not as powerline blocks. Pick `powerline` as the separator for blocks.
+
 ## [0.10.3] - 2026-11-15
 
 ### Fixed
@@ -1069,7 +1075,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.3...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...HEAD
+[0.10.4]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.3...v0.10.4
 [0.10.3]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.2...v0.10.3
 [0.10.2]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.1...v0.10.2
 [0.10.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.0...v0.10.1

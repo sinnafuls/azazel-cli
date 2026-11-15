@@ -48,7 +48,7 @@ pub struct StatusEditor {
 /// preset's own", which for `powerline` is blocks, so it is not a choice of its own there.
 fn separators(preset: StatusPreset) -> &'static [StatusSeparator] {
     match preset {
-        StatusPreset::Powerline | StatusPreset::Lean => &[
+        StatusPreset::Powerline => &[
             StatusSeparator::Powerline,
             StatusSeparator::Bar,
             StatusSeparator::Space,
