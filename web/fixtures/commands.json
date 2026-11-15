@@ -1,0 +1,250 @@
+[
+ {
+  "name": "cost",
+  "description": "Tokens and money spent in this session"
+ },
+ {
+  "name": "context",
+  "description": "What the last request was made of: tokens by category, and the text of each"
+ },
+ {
+  "name": "session",
+  "description": "What this session is: file, messages, tokens, cost, agents"
+ },
+ {
+  "name": "tools",
+  "description": "List the tools offered to the agent, by where they come from"
+ },
+ {
+  "name": "todo",
+  "description": "The agent's task list: /todo, /todo add <text>, /todo done <n>, /todo clear"
+ },
+ {
+  "name": "dirs",
+  "description": "List the directories agents may work in"
+ },
+ {
+  "name": "add-dir",
+  "description": "Let agents work in another directory too: /add-dir <path>"
+ },
+ {
+  "name": "rules",
+  "description": "List the rule files and whether each has applied in this session"
+ },
+ {
+  "name": "hooks",
+  "description": "List the hooks, where they come from and how each last ran"
+ },
+ {
+  "name": "doctor",
+  "description": "Check the installation and this project's setup"
+ },
+ {
+  "name": "trust",
+  "description": "Whether this project is trusted, and what that covers: /trust [yes|no]"
+ },
+ {
+  "name": "forget-approvals",
+  "description": "Forget every remembered approval and every rule added in this session"
+ },
+ {
+  "name": "account",
+  "description": "The accounts of a provider: usage, switch, make default, sign out, add [provider]"
+ },
+ {
+  "name": "advise",
+  "description": "Ask the advisor, a second model, about the work so far; only you see the answer [question]"
+ },
+ {
+  "name": "agents",
+  "description": "The agents of this session and the definitions they can be started from"
+ },
+ {
+  "name": "allow-edit",
+  "description": "Let the next edit of a file through, whatever the agent has read of it <path>"
+ },
+ {
+  "name": "bg",
+  "description": "Run a prompt in the background, in a copy of this session <prompt>"
+ },
+ {
+  "name": "coordinator",
+  "description": "Have the lead only plan and delegate: it keeps no tool that edits or runs commands on | off | status"
+ },
+ {
+  "name": "ext",
+  "description": "List the loaded extensions and Luau scripts, with the errors of disabled scripts"
+ },
+ {
+  "name": "fast",
+  "description": "Faster replies at a higher price (the priority tier) [on|off|status]"
+ },
+ {
+  "name": "goal",
+  "description": "Set an objective the agent works on until it is verified <objective> | status | pause | resume | drop"
+ },
+ {
+  "name": "login",
+  "description": "Sign in to a provider or store its API key [provider] [account] [--device] [--enterprise <domain>]"
+ },
+ {
+  "name": "logout",
+  "description": "Forget the stored key or login of a provider <provider> [account]"
+ },
+ {
+  "name": "lsp",
+  "description": "Language servers and their state"
+ },
+ {
+  "name": "mcp",
+  "description": "MCP servers: state, reconnect, enable or disable, approve, log in [reconnect|enable|disable|approve|reject|login|logout <server>]"
+ },
+ {
+  "name": "media",
+  "description": "Media backends, configured models and the output directory"
+ },
+ {
+  "name": "msg",
+  "description": "Send a message to an agent <agent id|all> <message>"
+ },
+ {
+  "name": "playtest",
+  "description": "Have a playtester run a build, play it and report defects with frames <launch command> [-- <what to test>]"
+ },
+ {
+  "name": "preset",
+  "description": "List the saved sets of models, apply one, or save the current one [name | save <name>]"
+ },
+ {
+  "name": "reload",
+  "description": "Drop all Luau extension state and load the scripts again"
+ },
+ {
+  "name": "repomap",
+  "description": "The repository map: the project's most referenced definitions [refresh]"
+ },
+ {
+  "name": "reset-usage",
+  "description": "Spend a banked reset of a Claude or ChatGPT subscription, after showing what it gives back [provider]"
+ },
+ {
+  "name": "review",
+  "description": "Have a reviewer read the uncommitted changes, or the commits since a ref [ref]"
+ },
+ {
+  "name": "security-review",
+  "description": "Have a reviewer look for security defects in the same changes [ref]"
+ },
+ {
+  "name": "settings",
+  "description": "Sign in, add API keys, choose models and change every setting"
+ },
+ {
+  "name": "skills",
+  "description": "List skills and where they come from"
+ },
+ {
+  "name": "slow",
+  "description": "Cheaper, slower replies (the economy tier) [on|off|status]"
+ },
+ {
+  "name": "stats",
+  "description": "Tokens and cost per day, provider, model, project and agent, from the usage log [days]"
+ },
+ {
+  "name": "stop",
+  "description": "Stop an agent and the agents it started <agent id|all>"
+ },
+ {
+  "name": "task",
+  "description": "Start an agent yourself; its report goes to the lead <agent> [name=<id>] <prompt>"
+ },
+ {
+  "name": "usage",
+  "description": "What your Claude and ChatGPT subscriptions have left, and when each window resets"
+ },
+ {
+  "name": "verify",
+  "description": "Run the project's checks and a verifier agent on the work so far [what should be true]"
+ },
+ {
+  "name": "skill:api-design",
+  "description": "Use when designing or reviewing an interface other programs call: an HTTP or RPC API, a library's public surface, or a wire format. Covers resource and RPC conventions, errors, pagination, idempotency and versioning."
+ },
+ {
+  "name": "skill:azazel-extensions",
+  "description": "Use when customising this harness: writing a Luau extension (tools, event handlers, commands), configuring hooks, defining a custom agent, adding a slash command, or writing a skill. Contains the file locations, formats and API tables for each."
+ },
+ {
+  "name": "skill:browser-testing",
+  "description": "Use to check a web page or web app in a real browser with the browser tool: confirming a change works, walking a user flow, finding why a page is broken, or capturing evidence. Snapshot, act, assert, with console and network checks."
+ },
+ {
+  "name": "skill:code-review",
+  "description": "Use to review a change (a diff, a branch, a pull request, or work another agent just finished) before it is accepted. Gives a rubric, severity levels and a findings format that separates defects from preferences."
+ },
+ {
+  "name": "skill:debugging",
+  "description": "Use when something fails, crashes, hangs or gives a wrong result and the cause is not yet known. A disciplined loop of reproduce, isolate, hypothesise, instrument, fix and prove, including bisection across history and inputs."
+ },
+ {
+  "name": "skill:design-tokens",
+  "description": "Use when starting a project's visual system or replacing scattered values with one: derives colour, type, spacing, radius and shadow tokens from a brief or an existing brand colour and emits them as CSS variables and a Tailwind theme."
+ },
+ {
+  "name": "skill:docs-writing",
+  "description": "Use when writing or restructuring documentation: a README, a getting-started tutorial, a how-to guide, reference pages or a changelog. Gives the structure for each kind and the checks that keep documentation true."
+ },
+ {
+  "name": "skill:frontend-design",
+  "description": "Use when building or restyling a user interface (a page, a component, a whole app) and the result has to look designed rather than generated. Covers hierarchy, type, spacing, colour, states, responsive behaviour and motion, and how to check the work in a real browser."
+ },
+ {
+  "name": "skill:game-dev",
+  "description": "Use when working on a game project in Godot, Unity, Unreal Engine, Roblox or Bevy: finding your way around the project, following the engine's conventions, producing and importing assets with the generate tools and sprite_sheet, and building, running and playtesting from the command line."
+ },
+ {
+  "name": "skill:git-workflow",
+  "description": "Use when the task involves git beyond a simple status or diff: shaping commits, working on branches, resolving merge or rebase conflicts, finding the commit that introduced a bug, recovering lost work, or using worktrees. Sub-agents never push; the lead pushes only when the user asks."
+ },
+ {
+  "name": "skill:mcp-builder",
+  "description": "Use when writing, extending or debugging a Model Context Protocol server so that agents can use a service, a data source or a local program as tools. Covers tool design, the stdio and HTTP transports, and testing the server against this harness."
+ },
+ {
+  "name": "skill:media-generation",
+  "description": "Use when producing images, video, 3D models or audio with the generate tools, or sprite sheets from generated frames. Prompt patterns for each kind, how to keep a set of assets in one style, and how to check results before using them."
+ },
+ {
+  "name": "skill:performance",
+  "description": "Use when something is too slow or uses too much memory, or before optimising anything. Measure first, find the bottleneck with the right profiler for the ecosystem, change one thing, and prove the gain with a benchmark."
+ },
+ {
+  "name": "skill:playtest",
+  "description": "Use to run a game or application build and try it the way a player or user would: launching it, operating it through screen capture and input (or the browser for web builds), and reporting defects with the frames that show them."
+ },
+ {
+  "name": "skill:refactoring",
+  "description": "Use when restructuring code without changing what it does: extracting, renaming, moving, splitting modules, replacing a pattern across a codebase, or cleaning up before a feature. Characterisation tests first, then small mechanical steps that each keep the build green."
+ },
+ {
+  "name": "skill:release-engineering",
+  "description": "Use when preparing a release or the machinery around one: choosing a version number, writing a changelog, setting up CI build and test matrices, cross-compiling, and packaging binaries for Windows, macOS and Linux. Publishing itself stays with the user."
+ },
+ {
+  "name": "skill:reverse-engineering",
+  "description": "Use when the task is to understand software or data without its source: triaging an unknown binary, recovering behaviour and data structures in a disassembler, working out a file format or a network protocol, or finding what changed between two builds. For software you own or are authorised to analyse."
+ },
+ {
+  "name": "skill:security-review",
+  "description": "Use to look for security defects in code you are allowed to assess: a change before merge, a feature that handles untrusted input, or a whole service. Covers injection, authorisation, secrets, deserialisation, request forgery to internal services, and dependency risk, with a findings format that requires evidence."
+ },
+ {
+  "name": "skill:testing",
+  "description": "Use when writing or extending tests, deciding what level a test belongs at, or dealing with flaky or slow tests. Covers choosing behaviours and boundaries, fixtures and test data, doubles, and making tests deterministic."
+ },
+ {
+  "name": "skill:ui-review",
+  "description": "Use to audit an existing interface for accessibility and usability problems: contrast, keyboard and focus order, semantics and names, forms and error states, responsive behaviour. Produces a findings report with severity, evidence and a fix for each item."
+ }
+]

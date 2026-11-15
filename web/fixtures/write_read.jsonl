@@ -1,0 +1,30 @@
+{"type": "agent_start", "agent": "lead"}
+{"type": "turn_start", "turn": 1, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c1", "name": "write"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"path\":\"hello.txt\",\"content\":\"hello from azazel\\n\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c1", "name": "write", "input": {"path": "hello.txt", "content": "hello from azazel\n"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c1", "name": "write", "input": {"path": "hello.txt", "content": "hello from azazel\n"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c1", "name": "write", "input": {"path": "hello.txt", "content": "hello from azazel\n"}, "agent": "lead"}
+{"type": "approval_request", "request_id": "r1", "agent": "lead", "tool": "write", "access": "write", "subjects": ["hello.txt"], "input": {"path": "hello.txt", "content": "hello from azazel\n"}, "rule": "write(hello.txt)"}
+{"type": "tool_end", "call_id": "c1", "output": {"content": [{"type": "text", "text": "created hello.txt (18 bytes)"}], "is_error": false, "details": {"path": "hello.txt", "diff": "--- a/hello.txt\n+++ b/hello.txt\n@@ -0,0 +1 @@\n+hello from azazel\n"}}, "duration_ms": 52, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 2, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c2", "name": "read"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"path\":\"hello.txt\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c2", "name": "read", "input": {"path": "hello.txt"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c2", "name": "read", "input": {"path": "hello.txt"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c2", "name": "read", "input": {"path": "hello.txt"}, "agent": "lead"}
+{"type": "tool_end", "call_id": "c2", "output": {"content": [{"type": "text", "text": "1\thello from azazel"}], "is_error": false}, "duration_ms": 0, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 3, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "text_delta", "index": 0, "delta": "Wrote and verified hello.txt."}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "text", "text": "Wrote and verified hello.txt."}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Wrote and verified hello.txt."}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "stop", "duration_ms": 0}}, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "idle", "stop": "stop", "agent": "lead"}

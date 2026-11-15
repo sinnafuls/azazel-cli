@@ -1,0 +1,5 @@
+build
+.svelte-kit
+bun.lock
+src/lib/protocol/rpc.ts
+fixtures

@@ -1,0 +1,64 @@
+{"type": "agent_start", "agent": "lead"}
+{"type": "turn_start", "turn": 1, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c1", "name": "ask_user"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"question\":\"Which colour?\",\"context\":\"Two paints are left.\",\"options\":[\"red\",\"blue\"],\"allow_freeform\":true}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c1", "name": "ask_user", "input": {"question": "Which colour?", "context": "Two paints are left.", "options": ["red", "blue"], "allow_freeform": true}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c1", "name": "ask_user", "input": {"question": "Which colour?", "context": "Two paints are left.", "options": ["red", "blue"], "allow_freeform": true}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c1", "name": "ask_user", "input": {"question": "Which colour?", "context": "Two paints are left.", "options": ["red", "blue"], "allow_freeform": true}, "agent": "lead"}
+{"type": "ui_request", "request_id": "r1", "kind": "ask", "question": "Which colour?", "context": "Two paints are left.", "expects": "select", "options": ["red", "blue"], "multi": false, "allow_freeform": true}
+{"type": "tool_end", "call_id": "c1", "output": {"content": [{"type": "text", "text": "red"}], "is_error": false, "details": {"question": "Which colour?", "context": "Two paints are left.", "type": "select", "options": ["red", "blue"], "recommended": null, "answers": ["red"], "freeform": false, "cancelled": false, "reason": null}}, "duration_ms": 51, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 2, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c2", "name": "ask_user"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"question\":\"Paint it?\",\"type\":\"confirm\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c2", "name": "ask_user", "input": {"question": "Paint it?", "type": "confirm"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c2", "name": "ask_user", "input": {"question": "Paint it?", "type": "confirm"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c2", "name": "ask_user", "input": {"question": "Paint it?", "type": "confirm"}, "agent": "lead"}
+{"type": "ui_request", "request_id": "r2", "kind": "ask", "question": "Paint it?", "expects": "confirm", "options": [], "multi": false}
+{"type": "tool_end", "call_id": "c2", "output": {"content": [{"type": "text", "text": "yes"}], "is_error": false, "details": {"question": "Paint it?", "context": null, "type": "confirm", "options": [], "recommended": null, "answers": ["yes"], "freeform": false, "cancelled": false, "reason": null}}, "duration_ms": 50, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 3, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c3", "name": "write"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"path\":\"notes/a.txt\",\"content\":\"teal\\n\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c3", "name": "write", "input": {"path": "notes/a.txt", "content": "teal\n"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c3", "name": "write", "input": {"path": "notes/a.txt", "content": "teal\n"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c3", "name": "write", "input": {"path": "notes/a.txt", "content": "teal\n"}, "agent": "lead"}
+{"type": "approval_request", "request_id": "r3", "agent": "lead", "tool": "write", "access": "write", "subjects": ["notes/a.txt"], "input": {"path": "notes/a.txt", "content": "teal\n"}, "rule": "write(notes/**)"}
+{"type": "tool_end", "call_id": "c3", "output": {"content": [{"type": "text", "text": "created notes/a.txt (5 bytes)"}], "is_error": false, "details": {"path": "notes/a.txt", "diff": "--- a/notes/a.txt\n+++ b/notes/a.txt\n@@ -0,0 +1 @@\n+teal\n"}}, "duration_ms": 52, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 4, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c4", "name": "write"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"path\":\"notes/b.txt\",\"content\":\"dry\\n\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c4", "name": "write", "input": {"path": "notes/b.txt", "content": "dry\n"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c4", "name": "write", "input": {"path": "notes/b.txt", "content": "dry\n"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c4", "name": "write", "input": {"path": "notes/b.txt", "content": "dry\n"}, "agent": "lead"}
+{"type": "approval_request", "request_id": "r4", "agent": "lead", "tool": "write", "access": "write", "subjects": ["notes/b.txt"], "input": {"path": "notes/b.txt", "content": "dry\n"}, "rule": "write(notes/**)"}
+{"type": "tool_end", "call_id": "c4", "output": {"content": [{"type": "text", "text": "created notes/b.txt (4 bytes)"}], "is_error": false, "details": {"path": "notes/b.txt", "diff": "--- a/notes/b.txt\n+++ b/notes/b.txt\n@@ -0,0 +1 @@\n+dry\n"}}, "duration_ms": 51, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 5, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_start", "index": 0, "id": "c5", "name": "ask_user"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "tool_call_delta", "index": 0, "delta": "{\"question\":\"Anything else?\"}"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "tool_call", "id": "c5", "name": "ask_user", "input": {"question": "Anything else?"}}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "tool_call", "id": "c5", "name": "ask_user", "input": {"question": "Anything else?"}}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "tool_use", "duration_ms": 0}}, "agent": "lead"}
+{"type": "tool_start", "call_id": "c5", "name": "ask_user", "input": {"question": "Anything else?"}, "agent": "lead"}
+{"type": "ui_request", "request_id": "r5", "kind": "ask", "question": "Anything else?", "expects": "text", "options": [], "multi": false}
+{"type": "tool_end", "call_id": "c5", "output": {"content": [{"type": "text", "text": "sample answer"}], "is_error": false, "details": {"question": "Anything else?", "context": null, "type": "text", "options": [], "recommended": null, "answers": ["sample answer"], "freeform": false, "cancelled": false, "reason": null}}, "duration_ms": 50, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "turn_start", "turn": 6, "agent": "lead"}
+{"type": "message_start", "agent": "lead"}
+{"type": "stream", "event": {"type": "start"}, "agent": "lead"}
+{"type": "stream", "event": {"type": "text_delta", "index": 0, "delta": "Painted."}, "agent": "lead"}
+{"type": "stream", "event": {"type": "block_end", "index": 0, "block": {"type": "text", "text": "Painted."}}, "agent": "lead"}
+{"type": "message_end", "message": {"role": "assistant", "content": [{"type": "text", "text": "Painted."}], "meta": {"provider": "mock", "model": "lead", "api": "openai-chat", "usage": {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "reasoning": 0}, "stop": "stop", "duration_ms": 0}}, "agent": "lead"}
+{"type": "turn_end", "agent": "lead"}
+{"type": "idle", "stop": "stop", "agent": "lead"}
