@@ -1033,6 +1033,17 @@ impl Tui {
                     tui.queue_mode = mode;
                 }
             }
+            ("tui.autocomplete", toml::Value::String(mode)) => {
+                if let Ok(mode) = mode.parse() {
+                    tui.autocomplete = mode;
+                }
+            }
+            ("tui.predict_next", toml::Value::Boolean(on)) => {
+                tui.predict_next = *on;
+                if !*on {
+                    self.predictor.cancel();
+                }
+            }
             ("tui.show_thinking", toml::Value::Boolean(on)) => self.show_thinking = *on,
             ("tui.expand_tools", toml::Value::Boolean(on)) => self.expand_tools = *on,
             ("editor.mode", toml::Value::String(mode)) => self.set_vim(mode == "vim"),
@@ -1053,6 +1064,7 @@ impl Tui {
             }
         }
         self.restyle_calls();
+        self.sync_ghost();
     }
 }
 

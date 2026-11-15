@@ -780,6 +780,7 @@ impl Editor {
 
     /// Saves an undo step unless this edit continues a run of the same kind.
     fn begin_edit(&mut self, run: Run) {
+        self.ghost = None;
         if run == Run::None || run != self.run {
             self.undo.push(Snapshot {
                 text: self.text.clone(),

@@ -13,6 +13,7 @@ mod diff_view;
 mod extras;
 mod fleet;
 mod form;
+mod ghost;
 mod gitcmd;
 mod history;
 mod input;
@@ -262,6 +263,10 @@ enum Internal {
     Voice(voice::Done),
     /// Text of a side question's answer, or its end.
     Btw(btw::Update),
+    /// The words of earlier prompts and of the project's files, read in the background.
+    Words(azazel_tui::components::words::WordModel),
+    /// The model's guess at the user's next message, or why there is none.
+    Prediction { id: u64, answer: Result<String, String> },
     /// A commit message was drafted, or could not be.
     CommitDraft(gitcmd::Draft),
     /// A reply to a request made outside the conversation (`/consult`, `/handoff`, `/name`).
@@ -395,6 +400,12 @@ pub struct Tui {
     /// What the session said while a full-screen view had the terminal.
     held: VecDeque<Incoming>,
     completion: Option<Completion>,
+    /// What word completion suggests from.
+    words: azazel_tui::components::words::WordModel,
+    /// The words were asked for.
+    words_loaded: bool,
+    /// The request for the user's next message.
+    predictor: ghost::Predictor,
     files: Option<Vec<String>>,
     busy: bool,
     busy_since: Instant,
@@ -664,6 +675,9 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         waiting: VecDeque::new(),
         held: VecDeque::new(),
         completion: None,
+        words: Default::default(),
+        words_loaded: false,
+        predictor: Default::default(),
         files: None,
         busy: false,
         busy_since: Instant::now(),
@@ -693,6 +707,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
     let opening = tui.attention.open();
     tui.write_out(opening);
     tui.seed_history();
+    tui.load_words();
     tui.welcome();
     let problems = [theme_problem, key_problem, images_problem].into_iter().flatten();
     for problem in problems.chain(status_problems) {
@@ -1256,6 +1271,8 @@ impl Tui {
         }
         match event {
             AgentEvent::AgentStart => {
+                self.predictor.cancel();
+                self.sync_ghost();
                 self.busy = true;
                 self.busy_since = Instant::now();
                 self.run_failed = false;
@@ -1297,6 +1314,7 @@ impl Tui {
                 let output = message.meta.as_ref().map_or(0, |meta| meta.usage.output);
                 self.rate.end(output, Instant::now());
                 self.voice_reply(&message);
+                self.words.learn(&message.text(), 1);
                 if !self.stream.saw_text && !message.text().trim().is_empty() {
                     self.open_reply();
                     self.stream.markdown.push(&message.text());
@@ -1369,6 +1387,9 @@ impl Tui {
                 // on: nothing to call the user for yet.
                 if self.run_ended && self.queued.is_empty() && self.looping.is_none() {
                     self.attend_end(None, took);
+                }
+                if self.run_ended && self.queued.is_empty() && self.looping.is_none() {
+                    self.predict_next();
                 }
                 match stop {
                     StopReason::Aborted => self.info("interrupted"),
@@ -1452,6 +1473,14 @@ impl Tui {
             Internal::Setting { path, value } => return self.apply_setting(&path, &value),
             Internal::Request(request) => return self.waiting.push_back(request),
             Internal::Btw(update) => return self.on_btw(update),
+            Internal::Words(model) => {
+                self.words.merge(model);
+                return self.sync_ghost();
+            }
+            Internal::Prediction { id, answer } => {
+                self.on_prediction(id, answer);
+                return self.sync_ghost();
+            }
             Internal::CommitDraft(draft) => return self.on_commit_draft(draft),
             Internal::Side(event) => return self.on_side(event).await,
             Internal::LoopVerdict { id, verdict } => return self.on_loop_verdict(id, verdict).await,
@@ -1773,6 +1802,12 @@ impl Tui {
             return;
         }
         self.input_key(key).await;
+        // Typing ends the wait for a prediction; the ghost text is worked out again for what
+        // is in the input now.
+        if !self.editor.is_empty() {
+            self.predictor.cancel();
+        }
+        self.sync_ghost();
     }
 
     /// What a key did to the open overlay, other than the keys it keeps open for.
@@ -1803,6 +1838,15 @@ impl Tui {
             && self.editor.is_empty()
             && self.completion.is_none()
             && self.enter_fleet()
+        {
+            return;
+        }
+        // Tab takes ghost text, with a space after a word; the menu of `/` and `@` has it first.
+        if self.completion.is_none()
+            && key.code == KeyCode::Tab
+            && key.modifiers.is_empty()
+            && key.kind != KeyEventKind::Release
+            && self.editor.accept_ghost(true)
         {
             return;
         }
@@ -1964,6 +2008,7 @@ impl Tui {
             return self.slash(&command).await;
         }
         self.carried.clear();
+        self.words.learn(trimmed, 1);
         if let Some(command) = trimmed.strip_prefix('!') {
             // `!!command` runs the same way but its output stays out of the agent's context.
             let (command, share) = match command.strip_prefix('!') {
