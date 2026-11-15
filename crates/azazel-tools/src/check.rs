@@ -737,9 +737,12 @@ async fn execute(
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         if let Some(env) = &env {
-            command.envs(env.vars());
+            command.envs(env.vars_in(Some(&runner.cwd)));
         }
     });
+    if let Some(env) = &env {
+        azazel_core::process::lower(&mut command, env.priority());
+    }
     #[cfg(unix)]
     command.wrap(process_wrap::tokio::ProcessGroup::leader());
     #[cfg(windows)]

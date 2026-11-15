@@ -275,7 +275,7 @@ async fn job_addresses_list_the_jobs_and_return_one_jobs_output() {
 
     let jobs = bench.registry.services.get::<Jobs>().unwrap();
     let id = jobs
-        .start(&Shell::resolve(""), "echo from-the-job", bench.dir.path(), &[])
+        .start(&Shell::resolve(""), "echo from-the-job", bench.dir.path(), &[], azazel_core::config::ProcessPriority::Normal)
         .unwrap();
     assert_eq!(id, "job-1");
     let mut output = String::new();

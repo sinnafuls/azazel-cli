@@ -12,6 +12,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::config::{ProcessPriority, WorktreeTarget};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShellKind {
     Bash,
@@ -204,9 +206,34 @@ impl OutputBuffer {
 pub struct AgentEnv {
     vars: std::sync::RwLock<Vec<(String, String)>>,
     guard: std::sync::RwLock<Vec<(String, String)>>,
+    priority: std::sync::RwLock<ProcessPriority>,
+    target: std::sync::RwLock<(WorktreeTarget, bool)>,
 }
 
 impl AgentEnv {
+    /// The operating-system priority processes started for agents run at.
+    pub fn set_priority(&self, priority: ProcessPriority) {
+        *self
+            .priority
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = priority;
+    }
+
+    pub fn priority(&self) -> ProcessPriority {
+        *self
+            .priority
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Where agents in a worktree build; `sccache` says whether that program is installed.
+    pub fn set_worktree_target(&self, target: WorktreeTarget, sccache: bool) {
+        *self
+            .target
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = (target, sccache);
+    }
+
     pub fn set(&self, vars: Vec<(String, String)>) {
         *self
             .vars
@@ -225,7 +252,14 @@ impl AgentEnv {
     /// Everything, the push guard included: for processes no single agent asked for (hooks,
     /// checks, verify commands).
     pub fn vars(&self) -> Vec<(String, String)> {
+        self.vars_in(None)
+    }
+
+    /// [`vars`](Self::vars) for a process that runs in `cwd`: in a worktree it also says where the
+    /// build output goes.
+    pub fn vars_in(&self, cwd: Option<&Path>) -> Vec<(String, String)> {
         let mut vars = self.vars_without_guard();
+        vars.extend(self.build_cache(cwd, &|name| std::env::var_os(name).is_some()));
         vars.extend(
             self.guard
                 .read()
@@ -238,11 +272,44 @@ impl AgentEnv {
 
     /// What a process of the agent at `depth` gets: the lead (depth 0) may push, so it goes
     /// without the push guard.
-    pub fn for_agent(&self, depth: u32) -> Vec<(String, String)> {
+    pub fn for_agent(&self, depth: u32, cwd: &Path) -> Vec<(String, String)> {
         match depth {
-            0 => self.vars_without_guard(),
-            _ => self.vars(),
+            0 => {
+                let mut vars = self.vars_without_guard();
+                vars.extend(self.build_cache(Some(cwd), &|name| std::env::var_os(name).is_some()));
+                vars
+            }
+            _ => self.vars_in(Some(cwd)),
         }
+    }
+
+    /// What `[team] worktree_target` adds for a process in `cwd`. A variable the user's environment
+    /// already sets (`is_set`) is left alone.
+    fn build_cache(&self, cwd: Option<&Path>, is_set: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+        let (target, sccache) = *self
+            .target
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut vars = Vec::new();
+        let Some(main) = cwd.and_then(main_checkout) else {
+            return vars;
+        };
+        if !main.join("Cargo.toml").is_file() {
+            return vars;
+        }
+        match target {
+            WorktreeTarget::Shared if !is_set("CARGO_TARGET_DIR") => {
+                vars.push((
+                    "CARGO_TARGET_DIR".to_string(),
+                    main.join("target").display().to_string(),
+                ));
+            }
+            WorktreeTarget::Sccache if sccache && !is_set("RUSTC_WRAPPER") => {
+                vars.push(("RUSTC_WRAPPER".to_string(), "sccache".to_string()));
+            }
+            _ => {}
+        }
+        vars
     }
 
     fn vars_without_guard(&self) -> Vec<(String, String)> {
@@ -252,6 +319,100 @@ impl AgentEnv {
             .clone()
     }
 }
+
+/// The checkout `cwd` is a worktree of, when azazel made it (`<main>/.azazel/worktrees/<id>`, with
+/// `cwd` anywhere below `<id>`).
+fn main_checkout(cwd: &Path) -> Option<PathBuf> {
+    let named = |dir: &Path, name: &str| dir.file_name().is_some_and(|n| n == name);
+    cwd.ancestors().find_map(|dir| {
+        let worktrees = dir.parent()?;
+        let azazel = worktrees.parent()?;
+        if named(worktrees, "worktrees") && named(azazel, ".azazel") {
+            azazel.parent().map(Path::to_path_buf)
+        } else {
+            None
+        }
+    })
+}
+
+/// The variables that keep the builds of agents from taking every core, from `[tools] build_jobs`:
+/// `half` of `cores` (at least 2), a number, or `all` for none. A variable `is_set` is not set again.
+pub fn build_jobs_env(setting: &str, cores: usize, is_set: &dyn Fn(&str) -> bool) -> Vec<(String, String)> {
+    let setting = setting.trim();
+    let jobs = match setting.parse::<usize>() {
+        Ok(n) if n > 0 => n,
+        _ if setting.eq_ignore_ascii_case("all") => return Vec::new(),
+        _ => (cores / 2).max(2),
+    };
+    [
+        ("CARGO_BUILD_JOBS", jobs.to_string()),
+        ("MAKEFLAGS", format!("-j{jobs}")),
+        ("CMAKE_BUILD_PARALLEL_LEVEL", jobs.to_string()),
+    ]
+    .into_iter()
+    .filter(|(name, _)| !is_set(name))
+    .map(|(name, value)| (name.to_string(), value))
+    .collect()
+}
+
+/// `program` and `args` as they are started at `priority`. On Unix that is `nice -n <value>
+/// program args...`: setting the priority in the child between fork and exec would take `unsafe`, and
+/// `nice` execs the program, so the process id and the process group stay the same. Windows sets
+/// it by creation flag instead ([`lower`]).
+pub fn lowered(program: &Path, args: &[String], priority: ProcessPriority) -> (PathBuf, Vec<String>) {
+    #[cfg(unix)]
+    {
+        let value = match priority {
+            ProcessPriority::Normal => None,
+            ProcessPriority::Low => Some("10"),
+            ProcessPriority::Idle => Some("19"),
+        };
+        if let Some(value) = value
+            && let Ok(nice) = which::which("nice")
+        {
+            let mut wrapped = vec!["-n".to_string(), value.to_string(), program.display().to_string()];
+            wrapped.extend(args.iter().cloned());
+            return (nice, wrapped);
+        }
+    }
+    let _ = priority;
+    (program.to_path_buf(), args.to_vec())
+}
+
+/// Makes the process `command` starts run at `priority` (Windows: `BELOW_NORMAL_PRIORITY_CLASS` or
+/// `IDLE_PRIORITY_CLASS`, which what it starts inherits).
+#[cfg(windows)]
+pub fn lower(command: &mut CommandWrap, priority: ProcessPriority) {
+    use windows::Win32::System::Threading::{BELOW_NORMAL_PRIORITY_CLASS, IDLE_PRIORITY_CLASS};
+    let class = match priority {
+        ProcessPriority::Normal => return,
+        ProcessPriority::Low => BELOW_NORMAL_PRIORITY_CLASS,
+        ProcessPriority::Idle => IDLE_PRIORITY_CLASS,
+    };
+    command.wrap(process_wrap::tokio::CreationFlags(class));
+}
+
+/// Lowers the priority of a process that is already running, for one started through a
+/// pseudo-terminal, which takes no creation flags. What it starts afterwards inherits the class.
+#[cfg(windows)]
+pub fn lower_running(pid: u32, priority: ProcessPriority) {
+    use winsafe::co::{PRIORITY_CLASS, PROCESS};
+    let class = match priority {
+        ProcessPriority::Normal => return,
+        ProcessPriority::Low => PRIORITY_CLASS::BELOW_NORMAL,
+        ProcessPriority::Idle => PRIORITY_CLASS::IDLE,
+    };
+    if let Ok(process) = winsafe::HPROCESS::OpenProcess(PROCESS::SET_INFORMATION, false, pid) {
+        let _ = process.SetPriorityClass(class);
+    }
+}
+
+#[cfg(not(windows))]
+pub fn lower_running(_pid: u32, _priority: ProcessPriority) {}
+
+/// On Unix the priority goes in the command line, see [`lowered`].
+#[cfg(not(windows))]
+pub fn lower(_command: &mut CommandWrap, _priority: ProcessPriority) {}
 
 /// Receives each output line of a running command.
 pub type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -271,6 +432,8 @@ pub struct RunOptions {
     /// Cancelling this lets go of the command instead of ending it: [`run`] returns at once and
     /// hands the running process over in [`RunOutput::detached`].
     pub detach: Option<CancellationToken>,
+    /// The operating-system priority the process and what it starts run at.
+    pub priority: ProcessPriority,
 }
 
 impl RunOptions {
@@ -284,6 +447,7 @@ impl RunOptions {
             on_line: None,
             keep: (100, 300),
             detach: None,
+            priority: ProcessPriority::Normal,
         }
     }
 }
@@ -322,8 +486,9 @@ pub fn spawn(
     cwd: &Path,
     env: &[(String, String)],
     stdin: bool,
+    priority: ProcessPriority,
 ) -> io::Result<Box<dyn ChildWrapper>> {
-    spawn_program(&shell.program, &shell.args(script), cwd, env, stdin)
+    spawn_program(&shell.program, &shell.args(script), cwd, env, stdin, priority)
 }
 
 /// [`spawn`] for a program started with `args` instead of a shell running a script.
@@ -333,15 +498,18 @@ pub fn spawn_program(
     cwd: &Path,
     env: &[(String, String)],
     stdin: bool,
+    priority: ProcessPriority,
 ) -> io::Result<Box<dyn ChildWrapper>> {
-    let mut command = CommandWrap::with_new(program, |c| {
-        c.args(args)
+    let (program, args) = lowered(program, args, priority);
+    let mut command = CommandWrap::with_new(&program, |c| {
+        c.args(&args)
             .current_dir(cwd)
             .envs(env.iter().map(|(k, v)| (k, v)))
             .stdin(if stdin { Stdio::piped() } else { Stdio::null() })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
     });
+    lower(&mut command, priority);
     #[cfg(unix)]
     command.wrap(process_wrap::tokio::ProcessGroup::leader());
     #[cfg(windows)]
@@ -385,7 +553,14 @@ pub async fn run(shell: &Shell, script: &str, options: RunOptions) -> io::Result
 
 /// [`run`] for a program started with `args` instead of a shell running a script.
 pub async fn run_program(program: &Path, args: &[String], options: RunOptions) -> io::Result<RunOutput> {
-    let mut child = spawn_program(program, args, &options.cwd, &options.env, options.stdin.is_some())?;
+    let mut child = spawn_program(
+        program,
+        args,
+        &options.cwd,
+        &options.env,
+        options.stdin.is_some(),
+        options.priority,
+    )?;
     if let Some(bytes) = options.stdin
         && let Some(mut stdin) = child.stdin().take()
     {
@@ -491,8 +666,8 @@ mod tests {
         env.set(vec![("A".into(), "1".into())]);
         env.set_guard(vec![("GIT_CONFIG_COUNT".into(), "6".into())]);
         let names = |vars: Vec<(String, String)>| vars.into_iter().map(|(name, _)| name).collect::<Vec<_>>();
-        assert_eq!(names(env.for_agent(0)), ["A"]);
-        assert_eq!(names(env.for_agent(1)), ["A", "GIT_CONFIG_COUNT"]);
+        assert_eq!(names(env.for_agent(0, Path::new("."))), ["A"]);
+        assert_eq!(names(env.for_agent(1, Path::new("."))), ["A", "GIT_CONFIG_COUNT"]);
         assert_eq!(names(env.vars()), ["A", "GIT_CONFIG_COUNT"]);
     }
 

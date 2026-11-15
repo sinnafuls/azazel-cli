@@ -227,6 +227,8 @@ config_table!(TeamConfig {
     max_turns: u32 = 200,
     /// The lead only plans and delegates: it is offered no tool that edits or runs commands.
     coordinator: bool = false,
+    /// Where builds of an agent working in a worktree of a Cargo project put their output.
+    worktree_target: WorktreeTarget = WorktreeTarget::Shared,
 });
 config_table!(VerifyConfig {
     /// Empty means auto-detect.
@@ -260,6 +262,14 @@ config_table!(ToolsConfig {
     call_timeout_secs: u64 = 120,
     /// Empty means auto-resolve.
     shell: String = String::new(),
+    /// Operating-system priority of the processes started for agents (the `shell` tool, jobs,
+    /// terminals, `eval`, checks, hooks); what they start inherits it. Your own `!` commands keep
+    /// normal priority.
+    priority: ProcessPriority = ProcessPriority::Low,
+    /// How many build jobs cargo, make and cmake may run at once in those processes: `half` of the
+    /// logical cores (at least 2), a number, or `all` to leave the tools' own choice. A variable
+    /// already set in your environment wins.
+    build_jobs: String = "half".to_string(),
     /// Run the file's formatter after a tool changes it: the configured one for its extension,
     /// else a built-in one the file's project uses.
     format_on_write: bool = true,
@@ -644,6 +654,18 @@ config_enum!(
     /// `auto`: `patch` instead of `edit` for OpenAI GPT and Codex models; `on`: both for every
     /// model; `off`: never `patch`.
     PatchMode { Auto = "auto", On = "on", Off = "off" } default Auto
+);
+
+config_enum!(
+    /// `low`: below normal priority; `idle`: the lowest, run only when the machine has nothing
+    /// else to do; `normal`: no change.
+    ProcessPriority { Normal = "normal", Low = "low", Idle = "idle" } default Low
+);
+config_enum!(
+    /// `shared`: an agent in a worktree of a Cargo project builds into the main checkout's
+    /// `target/`; `own`: into the worktree's own; `sccache`: into its own, with `RUSTC_WRAPPER=sccache`
+    /// when `sccache` is installed.
+    WorktreeTarget { Shared = "shared", Own = "own", Sccache = "sccache" } default Shared
 );
 
 impl From<&CompactionConfig> for CompactionSettings {

@@ -153,15 +153,16 @@ impl Checker {
     /// Runs the commands in order, with the environment every agent process gets, and stops at
     /// the first one that fails.
     pub async fn run_commands(&self, cancel: &CancellationToken) -> Vec<CommandResult> {
-        let env = self
-            .services
-            .get::<AgentEnv>()
-            .map(|env| env.vars())
+        let agent_env = self.services.get::<AgentEnv>();
+        let env = agent_env
+            .as_ref()
+            .map(|env| env.vars_in(Some(&self.project_root)))
             .unwrap_or_default();
         let mut results = Vec::new();
         for command in self.commands() {
             let mut options = RunOptions::new(self.project_root.clone());
             options.env = env.clone();
+            options.priority = agent_env.as_ref().map(|env| env.priority()).unwrap_or_default();
             options.timeout = Some(self.timeout);
             options.cancel = cancel.clone();
             options.keep = (0, TAIL_LINES);

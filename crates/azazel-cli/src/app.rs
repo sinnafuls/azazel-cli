@@ -980,6 +980,16 @@ impl App {
         // Every process a sub-agent starts inherits the push guard; the lead's do not.
         if let Some(env) = services.get::<AgentEnv>() {
             env.set_guard(guard_env(&|name| std::env::var(name).ok()));
+            // Builds the agents start must not take every core, nor start from scratch in each
+            // worktree; see `[tools] priority`, `[tools] build_jobs` and `[team] worktree_target`.
+            let cores = std::thread::available_parallelism().map_or(2, usize::from);
+            env.set(azazel_core::process::build_jobs_env(
+                &config.tools.build_jobs,
+                cores,
+                &|name| std::env::var_os(name).is_some(),
+            ));
+            env.set_priority(config.tools.priority);
+            env.set_worktree_target(config.team.worktree_target, which::which("sccache").is_ok());
         }
 
         let client = http_client();
