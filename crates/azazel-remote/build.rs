@@ -31,6 +31,11 @@ fn main() {
         walk(&build, &build, &mut files);
         files.sort();
     } else {
+        // Said out loud: a missing directory is not watched, so building the page later does not
+        // run this script again on its own (`touch crates/azazel-remote/build.rs` does).
+        println!(
+            "cargo:warning=web/build is missing: the placeholder page is embedded. Run `bun --cwd web run build`, then `touch crates/azazel-remote/build.rs` and build again"
+        );
         files.push(("index.html".to_string(), PLACEHOLDER.as_bytes().to_vec()));
     }
     let out = PathBuf::from(std::env::var("OUT_DIR").unwrap_or_default());

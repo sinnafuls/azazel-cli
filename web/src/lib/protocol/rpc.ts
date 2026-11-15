@@ -98,6 +98,14 @@ export type Request1 =
 	| {
 			type: 'get_messages';
 			leaf?: string | null;
+			before?: string | null;
+			limit?: number | null;
+	  }
+	| {
+			type: 'get_agent_messages';
+			agent: string;
+			before?: string | null;
+			limit?: number | null;
 	  }
 	| {
 			type: 'get_tree';
@@ -208,6 +216,12 @@ export type Request1 =
 			 * What a client that attaches to a background session is sent of what happened before.
 			 */
 			replay?: 'missed' | 'all' | 'none';
+			/**
+			 * Resumes after a frame: the `at` of the last frame the client saw. The frames
+			 * logged after it follow the response, and nothing before. When the log has no frame
+			 * with that `at`, `gap` is set in the answer and `replay` applies instead.
+			 */
+			since?: number | null;
 	  }
 	| {
 			type: 'stop';
@@ -1098,6 +1112,15 @@ export interface Attached {
 	 */
 	clients?: number;
 	snapshot?: Snapshot;
+	/**
+	 * The `at` the next frame will have: where live frames begin.
+	 */
+	cursor?: number;
+	/**
+	 * True when `since` named a frame the log does not hold; the client resynchronises with
+	 * `get_messages`.
+	 */
+	gap?: boolean;
 }
 /**
  * Where the session stands at this moment.

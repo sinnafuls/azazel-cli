@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "azazel-remote"
-version = "0.10.6"
+version = "0.10.7"
 dependencies = [
  "async-trait",
  "azazel-protocol",
@@ -2712,7 +2712,7 @@ version = "0.10.7"
 
 [[package]]
 name = "fake-cloudflared"
-version = "0.10.6"
+version = "0.10.7"
 
 [[package]]
 name = "fake-dap"
@@ -2756,7 +2756,7 @@ version = "0.10.7"
 
 [[package]]
 name = "fake-tailscale"
-version = "0.10.6"
+version = "0.10.7"
 dependencies = [
  "serde_json",
 ]
