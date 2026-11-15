@@ -12,7 +12,7 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView, EditorMode,
-    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, ReadGuard, SessionResume,
+    GlyphSetting, ImageMode, Indicator, PatchMode, PermissionMode, QueueMode, Autocomplete, ReadGuard, SessionResume,
     StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WriteSeverity,
 };
 
@@ -312,6 +312,10 @@ settings! {
             "Offer files that .gitignore leaves out when you type @ (target/, node_modules/ and .git/ are still skipped).", live;
         "tui.queue_mode": Choice(QueueMode::NAMES), "Queued messages",
             "How messages queued while the agent works are delivered: one per turn, or all at once.", live;
+        "tui.autocomplete": Choice(Autocomplete::NAMES), "Word completion",
+            "words shows the rest of the word you are typing as ghost text, from what you wrote before; tab or right accepts it. off shows none.", live;
+        "tui.predict_next": Switch, "Predict the next message",
+            "After a finished turn, ask the model what you will say next and show it as ghost text in the empty input; tab or right accepts it. Each finished turn costs one more request.", live;
     }
     Input / "Voice" {
         "voice.stt": Text, "Transcription model", "The model that transcribes, as provider/model.";

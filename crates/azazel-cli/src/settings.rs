@@ -711,6 +711,8 @@ mod tests {
                 "editor.fold_paste_lines",
                 "tui.complete_ignored",
                 "tui.queue_mode",
+                "tui.autocomplete",
+                "tui.predict_next",
             ]
         );
     }

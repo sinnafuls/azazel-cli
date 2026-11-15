@@ -393,6 +393,12 @@ config_table!(TuiConfig {
     redact: bool = true,
     /// How messages queued while the agent works are delivered: one per turn, or all at once.
     queue_mode: QueueMode = QueueMode::One,
+    /// Ghost text in the input: `words` completes the word being typed from what you wrote
+    /// before, `off` shows none.
+    autocomplete: Autocomplete = Autocomplete::Words,
+    /// After a finished turn, ask the session's model what you are likely to say next and show it
+    /// as ghost text in the empty input. Each finished turn costs one more request.
+    predict_next: bool = false,
 });
 config_table!(StatuslineConfig {
     /// The set of segments shown when `left` and `right` are empty.
@@ -577,6 +583,7 @@ config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
 config_enum!(QueueMode { One = "one", All = "all" } default One);
+config_enum!(Autocomplete { Words = "words", Off = "off" } default Words);
 config_enum!(StatusPreset { Default = "default", Minimal = "minimal", Powerline = "powerline", Full = "full" } default Default);
 config_enum!(StatusSeparator { Dot = "dot", Bar = "bar", Powerline = "powerline", Space = "space" } default Dot);
 config_enum!(GlyphSetting { Auto = "auto", Unicode = "unicode", Nerd = "nerd", Ascii = "ascii" } default Auto);

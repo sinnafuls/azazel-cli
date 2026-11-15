@@ -110,7 +110,19 @@ impl Side {
         on_text: &mut (dyn FnMut(&str) + Send),
         cancel: CancellationToken,
     ) -> Result<SideAnswer, String> {
-        let request = self.request(&question).await;
+        self.ask_capped(question, None, on_text, cancel).await
+    }
+
+    /// Like [`Side::ask`], with the reply limited to `max_output` tokens.
+    pub async fn ask_capped(
+        &self,
+        question: SideQuestion<'_>,
+        max_output: Option<u32>,
+        on_text: &mut (dyn FnMut(&str) + Send),
+        cancel: CancellationToken,
+    ) -> Result<SideAnswer, String> {
+        let mut request = self.request(&question).await;
+        request.max_output = max_output;
         let (model, message) = self
             .send(&question.chain, &request, question.purpose, on_text, cancel)
             .await?;
@@ -240,6 +252,39 @@ impl Side {
 /// The key side questions (`/btw`, and questions one agent asks another) are counted under.
 pub const BTW_PURPOSE: &str = "btw";
 
+/// The key the prediction of the user's next message is counted under.
+pub const PREDICTION_PURPOSE: &str = "prediction";
+
+/// Longest prediction kept, in characters.
+const PREDICTION_MAX_CHARS: usize = 500;
+/// The reply a model gives when it cannot tell what the user will say next.
+const NO_PREDICTION: &str = "NO_PREDICTION";
+
+/// Asked of the session's model, as a side question, to guess the user's next message.
+const PREDICT_QUESTION: &str = "Predict what the user is most likely to type next in this conversation. \
+Reply with that message only: one line under 20 words, in the user's own voice and language, \
+without quotes. If nothing is likely, reply exactly NO_PREDICTION.";
+
+/// Output tokens a prediction may take.
+const PREDICTION_TOKENS: u32 = 64;
+
+/// The prediction in a model's reply: the message with quotes taken off, or `None` when the
+/// model had none, the reply is empty or it is too long to be one.
+pub fn clean_prediction(reply: &str) -> Option<String> {
+    let reply = reply.trim();
+    if reply.chars().count() > PREDICTION_MAX_CHARS {
+        return None;
+    }
+    let line = reply.lines().next().unwrap_or_default().trim();
+    let line = line
+        .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '\u{201c}' | '\u{201d}' | '\u{2018}' | '\u{2019}'))
+        .trim();
+    if line.is_empty() || line.contains(NO_PREDICTION) {
+        return None;
+    }
+    Some(line.to_string())
+}
+
 /// A side question and what came back.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Exchange {
@@ -255,6 +300,8 @@ pub struct Btw {
     context: Vec<Message>,
     chain: Vec<ModelSpec>,
     question: String,
+    purpose: &'static str,
+    max_output: Option<u32>,
 }
 
 impl Btw {
@@ -304,7 +351,19 @@ impl Btw {
             context,
             chain: agent.status().chain,
             question: question.to_string(),
+            purpose: BTW_PURPOSE,
+            max_output: None,
         }
+    }
+
+    /// A request for the user's likely next message, about the lead's conversation as it is, so
+    /// that the provider's cache of it is used. Counted as [`PREDICTION_PURPOSE`]; the reply goes
+    /// through [`clean_prediction`].
+    pub fn predict(services: &Services, session: &SessionStore, lead: &AgentHandle) -> Result<Btw, String> {
+        let mut asked = Btw::prepare(services, session, lead, &[], PREDICT_QUESTION)?;
+        asked.purpose = PREDICTION_PURPOSE;
+        asked.max_output = Some(PREDICTION_TOKENS);
+        Ok(asked)
     }
 
     /// Sends the question; the answer's text goes to `on_text` as it arrives. Counted as
@@ -319,10 +378,12 @@ impl Btw {
             context: self.context,
             question: self.question,
             chain: self.chain,
-            purpose: BTW_PURPOSE,
+            purpose: self.purpose,
             framed: true,
         };
-        self.side.ask(question, on_text, cancel).await
+        self.side
+            .ask_capped(question, self.max_output, on_text, cancel)
+            .await
     }
 }
 
@@ -433,6 +494,15 @@ mod tests {
         let last = request.messages.last().unwrap();
         assert_eq!(last.role, Role::User);
         assert!(last.text().starts_with(SIDE_NOTE) && last.text().ends_with("what is the answer?"));
+    }
+
+    #[test]
+    fn a_prediction_is_one_short_line_without_quotes() {
+        assert_eq!(clean_prediction("  \"run the tests\"\n").as_deref(), Some("run the tests"));
+        assert_eq!(clean_prediction("`commit it`").as_deref(), Some("commit it"));
+        assert_eq!(clean_prediction("NO_PREDICTION"), None);
+        assert_eq!(clean_prediction("  "), None);
+        assert_eq!(clean_prediction(&"word ".repeat(150)), None);
     }
 
     #[tokio::test]
