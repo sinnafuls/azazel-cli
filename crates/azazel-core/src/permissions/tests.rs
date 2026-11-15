@@ -250,7 +250,11 @@ fn the_decision_table() {
 
     // The lead of a run a trigger started never pushes either, in any mode.
     f.state.set_never_push(true);
-    for mode in [PermissionMode::AcceptEdits, PermissionMode::Auto, PermissionMode::Bypass] {
+    for mode in [
+        PermissionMode::AcceptEdits,
+        PermissionMode::Auto,
+        PermissionMode::Bypass,
+    ] {
         f.state.set_mode(mode);
         for command in ["git push", "cargo test && git push origin main"] {
             let v = verdict(&f, "shell", Exec, command);

@@ -474,6 +474,15 @@ settings! {
         "schedule.poll_secs": Number, "CI poll", "Seconds between two looks at the CI runs of a ci-failure trigger (10 at least).";
         "schedule.loop_max": Number, "Loop rounds", "Rounds after which /loop stops by itself; 0 is no limit.";
     }
+    Advanced / "Triggers" {
+        "triggers.handle": Text, "Pull-request handle", "The handle a pull-request comment has to mention to start a run (on pr-comment).";
+        "triggers.mode": Choice(PermissionMode::NAMES), "Mode of triggered runs",
+            "The permission mode of runs started by a comment or a message; bypass counts as auto.";
+        "triggers.github_authors": List, "GitHub users who may start runs",
+            "Empty: the user gh is signed in as and users with write access.";
+        "triggers.slack_users": List, "Slack users who may start runs", "Slack user ids; empty means nobody.";
+        "triggers.slack_url": Text, "Slack API address", "Where the Slack bot token is sent.";
+    }
     Advanced / "Updates" {
         "update.check": Switch, "Look for updates", "Look for a newer release at most once a day, in the background.";
         "update.auto": Switch, "Install updates", "Download a newer release in the background and install it when the UI exits.";

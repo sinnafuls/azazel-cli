@@ -213,7 +213,11 @@ impl Inbox {
                     {
                         continue;
                     }
-                    let author = comment.user.as_ref().map(|user| user.login.clone()).unwrap_or_default();
+                    let author = comment
+                        .user
+                        .as_ref()
+                        .map(|user| user.login.clone())
+                        .unwrap_or_default();
                     if !self.github_may(scheduler, root, &author).await {
                         let why = format!(
                             "{author} may not start runs (comment {} on pull request #{number})",
@@ -344,12 +348,7 @@ impl Inbox {
                 continue;
             }
             let user = message["user"].as_str().unwrap_or_default().to_string();
-            if !scheduler
-                .triggers
-                .slack_users
-                .iter()
-                .any(|allowed| *allowed == user)
-            {
+            if !scheduler.triggers.slack_users.contains(&user) {
                 let why = format!("{user} may not start runs (message {ts} in {channel})");
                 self.refuse(scheduler, schedule, key, why);
                 continue;

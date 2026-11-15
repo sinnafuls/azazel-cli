@@ -105,9 +105,14 @@ fn main() -> ExitCode {
                 let posts = data.join("posts");
                 let _ = std::fs::create_dir_all(&posts);
                 let n = std::fs::read_dir(&posts).map(|dir| dir.count()).unwrap_or(0) + 1;
-                let kept = format!("{path}
-{}", fields.join("
-"));
+                let kept = format!(
+                    "{path}
+{}",
+                    fields.join(
+                        "
+"
+                    )
+                );
                 let _ = std::fs::write(posts.join(format!("{n}.txt")), kept);
                 println!("{{}}");
                 return ExitCode::SUCCESS;
