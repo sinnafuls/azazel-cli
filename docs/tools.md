@@ -792,7 +792,7 @@ note: called as `bash`; the tool is `shell`; `timeout` was a number in a string,
 | `memory://<id>` | One memory with its kind, scope, date and tags |
 | `memory://search/<query>` | The 20 best matches for a query |
 | `pr://`, `issue://` | The open pull requests or issues of the repository (`gh pr list`, `gh issue list`, 30 at most) |
-| `pr://<n>`, `issue://<n>` | One pull request or issue with its comments |
+| `pr://<n>`, `issue://<n>` | One pull request or issue: title, state, author, labels, description and comments; for a pull request also its branch, a summary of its checks and the changed files. `#<n>` in a prompt attaches the same text, see [GitHub](github.md) |
 | `pr://<n>/diff` | A pull request's diff |
 
 `pr://` and `issue://` run the [`gh`](https://cli.github.com) program in the agent's working directory, with the account `gh` is signed in to, and exist only when `gh` is on `PATH` (`azazel doctor` says whether it is). They count as network access to `github.com`: in `manual` mode you are asked, and the rule `web_fetch(domain:github.com)` allows them.

@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- GitHub, through the `gh` program when it is on `PATH`: `issue://<n>` and `pr://<n>` read one issue or pull request with its labels, state, comments and, for a pull request, its branch, checks and changed files. A `#12` in a prompt attaches that issue or pull request, and is left as plain text when it does not exist. `/issues` and `/prs` list them (`Tab` open/closed/all, `Enter` puts `#<n>` in the input, `o` opens the browser). `/pr [title]` opens a pull request from the current branch with a drafted title and description you edit first, and `/review [n]` has the `reviewer` review one and offers to post the findings as a comment. Anything that posts to GitHub asks first in every mode but `bypass`. See [GitHub](docs/github.md).
+
 ## [0.10.6] - 2026-11-15
 
 ### Fixed

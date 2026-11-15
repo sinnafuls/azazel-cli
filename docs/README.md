@@ -29,6 +29,7 @@ New here? Read [getting started](getting-started.md) first.
 | [Tools](tools.md) | Every tool an agent can call |
 | [Memory](memory.md) | Project memory, recall, the code index, document collections |
 | [Web and browser](web-and-browser.md) | Web search backends, web fetch, driving Chromium |
+| [GitHub](github.md) | `issue://` and `pr://`, `#12` in prompts, `/issues`, `/prs`, `/pr`, `/review` |
 | [Screen and playtesting](screen-and-playtesting.md) | Screen capture and input, the playtester agent |
 | [Media and sprites](media-and-sprites.md) | Image, video, 3D and audio generation; sprite sheets for game engines |
 | [Language servers](lsp.md) | Diagnostics after edits, definitions, references, renames |
