@@ -353,6 +353,9 @@ settings! {
         "tools.disabled": List, "Disabled tools", "Tool names withheld from every agent.";
         "tools.max_result_bytes": Number, "Largest tool result", "Tool output beyond this many bytes is cut and saved as an artifact.";
         "tools.shell_timeout_secs": Number, "Shell time limit", "The default time limit of a shell call, in seconds.";
+        "tools.cache_reads": Switch, "Cache repeated reads", "Answer a repeated read, grep or glob with a short note while the earlier result is still in the context.";
+        "tools.retries": Number, "Tool retries", "How often a read-only web, LSP or MCP call is run again after a transient failure.";
+        "tools.call_timeout_secs": Number, "Tool call time limit", "Seconds a web, LSP or MCP call may take; 0 is no limit.";
         "tools.shell": Text, "Shell", "The shell program; empty finds one (bash, sh; on Windows Git's bash, pwsh, powershell).";
         "tools.patch": Choice(PatchMode::NAMES), "Patch tool",
             "Who gets the patch tool: auto gives it instead of edit to OpenAI GPT and Codex models, on to every model.";
@@ -480,6 +483,7 @@ settings! {
             "The lead only plans and delegates: it is offered no tool that edits or runs commands.";
         "team.max_parallel": Number, "Agents at once", "Sub-agents working at the same time.";
         "team.max_depth": Number, "Spawn depth", "How deep agents may spawn agents.";
+        "team.max_turns": Number, "Sub-agent turn cap", "Requests per task for a sub-agent whose definition sets no limit; 0 is no limit.";
     }
     Advanced / "Schedules and loops" {
         "schedule.register": Switch, "Use the system scheduler",

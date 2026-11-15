@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Tool, ToolCtx, ToolOutput};
+use azazel_agent::{Access, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy};
 use azazel_ai::{HostedTool, ModelRef, WebSource};
 use azazel_core::side::{LeadModel, Side};
 use dom_smoothie::Readability;
@@ -1018,6 +1018,13 @@ impl Tool for WebSearchTool {
 
     fn replay_safe(&self, _: &Value) -> bool {
         true
+    }
+
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: true,
+            timeout: Timeout::Configured,
+        }
     }
 
     /// The host of the configured backend. A search through the lead's provider goes to the

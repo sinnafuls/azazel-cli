@@ -8,7 +8,8 @@ use azazel_agent::agent::{ABORTED_TEXT, INTERRUPTED_TEXT, TURN_LIMIT_TEXT, UNFIN
 use azazel_agent::{
     Access, Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, AllowAll,
     ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks,
-    Recovery, Resume, Services, Tool, ToolCtx, ToolOutput, TranscriptSink, UserInput,
+    Recovery, Resume, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, ToolSettings, TranscriptSink,
+    UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
@@ -70,6 +71,9 @@ impl Tool for ReadFile {
     fn replay_safe(&self, _: &Value) -> bool {
         true
     }
+    fn repeatable(&self, _: &Value) -> bool {
+        true
+    }
     async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {
         match std::fs::read_to_string(self.0.join(input["path"].as_str().unwrap_or_default())) {
             Ok(text) => ToolOutput::text(text),
@@ -109,6 +113,88 @@ impl Tool for Slow {
             _ = ctx.cancel.cancelled() => ToolOutput::error("tool saw the cancel"),
             _ = tokio::time::sleep(Duration::from_millis(self.ms)) => ToolOutput::text("x".repeat(self.bytes)),
         }
+    }
+}
+
+/// Fails with `failure` the first `failures` times it is called, then answers.
+struct Flaky {
+    name: &'static str,
+    idempotent: bool,
+    failures: usize,
+    failure: &'static str,
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait]
+impl Tool for Flaky {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "fails at first"
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Net
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: self.idempotent,
+            timeout: Timeout::Configured,
+        }
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call < self.failures {
+            ToolOutput::error(self.failure)
+        } else {
+            ToolOutput::text("fine")
+        }
+    }
+}
+
+/// Never answers.
+struct Hung;
+
+#[async_trait]
+impl Tool for Hung {
+    fn name(&self) -> &str {
+        "hung"
+    }
+    fn description(&self) -> &str {
+        "never returns"
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Net
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: false,
+            timeout: Timeout::Configured,
+        }
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        std::future::pending().await
+    }
+}
+
+fn tool_settings() -> ToolSettings {
+    ToolSettings {
+        cache_reads: true,
+        retries: 2,
+        call_timeout: Some(Duration::from_millis(100)),
+        backoff: Duration::from_millis(1),
     }
 }
 
@@ -212,6 +298,7 @@ struct Setup {
     context_window: u64,
     initial: Vec<ContextEntry>,
     roles: BTreeMap<String, Vec<ModelSpec>>,
+    settings: Option<ToolSettings>,
 }
 
 impl Default for Setup {
@@ -225,6 +312,7 @@ impl Default for Setup {
             context_window: 128_000,
             initial: Vec::new(),
             roles: BTreeMap::new(),
+            settings: None,
         }
     }
 }
@@ -257,6 +345,10 @@ fn start(setup: Setup) -> Session {
     };
     let router = Arc::new(Router::new(vec![mock.clone()], catalog, setup.roles, policy));
     let recorder = Arc::new(Recorder::default());
+    let services = Arc::new(Services::new());
+    if let Some(settings) = setup.settings {
+        services.insert(Arc::new(settings));
+    }
     let agent = Agent::spawn(AgentConfig {
         info: AgentInfo {
             id: "lead".into(),
@@ -276,7 +368,7 @@ fn start(setup: Setup) -> Session {
         router,
         gate: setup.gate,
         bus: setup.hooks,
-        services: Arc::new(Services::new()),
+        services,
         cwd: std::env::temp_dir(),
         initial_messages: setup.initial,
         sink: recorder.clone(),
@@ -1247,6 +1339,223 @@ async fn turn_limit_asks_for_a_final_report_without_tools() {
             stop: StopReason::Stop
         })
     ));
+}
+
+#[tokio::test]
+async fn a_repeated_read_is_answered_with_a_note_until_the_file_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "line one\n".repeat(50)).unwrap();
+    let mut session = start(Setup {
+        tools: vec![
+            Arc::new(ReadFile(dir.path().to_path_buf())),
+            Arc::new(WriteFile(dir.path().to_path_buf())),
+        ],
+        settings: Some(tool_settings()),
+        ..Setup::default()
+    });
+    let read = |id: &'static str| MockStep::tools("", &[(id, "read", json!({"path": "a.txt"}))]);
+    session.mock.push("a", read("c1"));
+    session.mock.push("a", read("c2"));
+    session.mock.push(
+        "a",
+        MockStep::tools(
+            "",
+            &[(
+                "c3",
+                "write",
+                json!({"path": "a.txt", "content": "changed\n".repeat(50)}),
+            )],
+        ),
+    );
+    session.mock.push("a", read("c4"));
+    session.mock.push("a", read("c5"));
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+
+    let results: Vec<String> = tool_outputs(&events)
+        .into_iter()
+        .map(|(_, _, text)| text)
+        .collect();
+    assert_eq!(results.len(), 5);
+    assert!(results[0].contains("line one"));
+    assert!(
+        results[1].starts_with("(unchanged since your identical `read` call"),
+        "{}",
+        results[1]
+    );
+    assert!(
+        results[1].len() < results[0].len() / 4,
+        "the note is far smaller than the file"
+    );
+    assert_eq!(results[2], "written");
+    assert!(
+        results[3].contains("changed"),
+        "a write in between gives the new content in full"
+    );
+    assert!(results[4].starts_with("(unchanged"), "{}", results[4]);
+}
+
+#[tokio::test]
+async fn reads_are_not_cached_when_the_setting_is_off() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("a.txt"), "line one\n".repeat(50)).unwrap();
+    let mut session = start(Setup {
+        tools: vec![Arc::new(ReadFile(dir.path().to_path_buf()))],
+        settings: Some(ToolSettings {
+            cache_reads: false,
+            ..tool_settings()
+        }),
+        ..Setup::default()
+    });
+    for id in ["c1", "c2"] {
+        session.mock.push(
+            "a",
+            MockStep::tools("", &[(id, "read", json!({"path": "a.txt"}))]),
+        );
+    }
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+    let results = tool_outputs(&events);
+    assert_eq!(results[0].2, results[1].2);
+}
+
+#[tokio::test]
+async fn an_idempotent_call_is_retried_after_a_transient_error_and_says_so() {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut session = start(Setup {
+        tools: vec![Arc::new(Flaky {
+            name: "fetch",
+            idempotent: true,
+            failures: 1,
+            failure: "https://example.test returned HTTP 503",
+            calls: calls.clone(),
+        })],
+        settings: Some(tool_settings()),
+        ..Setup::default()
+    });
+    session
+        .mock
+        .push("a", MockStep::tools("", &[("c1", "fetch", json!({}))]));
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+    let results = tool_outputs(&events);
+    assert!(!results[0].1);
+    assert!(
+        results[0].2.contains("fine") && results[0].2.contains("after 1 retry"),
+        "{}",
+        results[0].2
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn a_call_that_is_not_idempotent_or_fails_for_good_is_never_retried() {
+    let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let bad = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut session = start(Setup {
+        tools: vec![
+            Arc::new(Flaky {
+                name: "post",
+                idempotent: false,
+                failures: 5,
+                failure: "HTTP 503",
+                calls: writes.clone(),
+            }),
+            Arc::new(Flaky {
+                name: "fetch",
+                idempotent: true,
+                failures: 5,
+                failure: "https://example.test returned HTTP 404",
+                calls: bad.clone(),
+            }),
+        ],
+        settings: Some(tool_settings()),
+        ..Setup::default()
+    });
+    session.mock.push(
+        "a",
+        MockStep::tools("", &[("c1", "post", json!({})), ("c2", "fetch", json!({}))]),
+    );
+    session.mock.push("a", MockStep::text("done"));
+    session.run("go").await;
+    assert_eq!(writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(bad.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn a_hung_tool_hits_its_time_limit_and_escape_still_cancels_at_once() {
+    let mut session = start(Setup {
+        tools: vec![Arc::new(Hung)],
+        settings: Some(tool_settings()),
+        ..Setup::default()
+    });
+    session
+        .mock
+        .push("a", MockStep::tools("", &[("c1", "hung", json!({}))]));
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+    let results = tool_outputs(&events);
+    assert!(results[0].1);
+    assert!(results[0].2.contains("timed out"), "{}", results[0].2);
+
+    let mut session = start(Setup {
+        tools: vec![Arc::new(Hung)],
+        settings: Some(ToolSettings {
+            call_timeout: Some(Duration::from_secs(600)),
+            ..tool_settings()
+        }),
+        ..Setup::default()
+    });
+    session
+        .mock
+        .push("a", MockStep::tools("", &[("c1", "hung", json!({}))]));
+    assert!(session.agent.prompt(UserInput::text("go")));
+    session
+        .wait_for(|event| matches!(event, AgentEvent::ToolStart { .. }))
+        .await;
+    let started = Instant::now();
+    session.agent.abort();
+    let events = session.until_terminal().await;
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(
+        tool_outputs(&events)
+            .iter()
+            .any(|(_, _, text)| text == ABORTED_TEXT)
+    );
+}
+
+#[tokio::test]
+async fn an_agent_with_a_turn_limit_is_warned_in_its_last_two_turns() {
+    let mut session = start(Setup {
+        tools: vec![slow("dump", Access::Read, 0, 4)],
+        limits: Limits {
+            max_turns: Some(3),
+            ..Limits::default()
+        },
+        ..Setup::default()
+    });
+    for id in ["c1", "c2", "c3"] {
+        session
+            .mock
+            .push("a", MockStep::tools("", &[(id, "dump", json!({}))]));
+    }
+    session.mock.push("a", MockStep::text("final report"));
+    session.run("go").await;
+
+    let notes: Vec<String> = session
+        .mock
+        .requests_for("a")
+        .iter()
+        .map(|request| request.tail_text().unwrap_or_default())
+        .collect();
+    assert_eq!(notes.len(), 4);
+    assert!(notes[0].is_empty());
+    assert!(notes[1].contains("2 turns left: finish the task and report what is done and what is not"));
+    assert!(notes[2].contains("1 turn left"));
+    assert!(
+        notes[3].is_empty(),
+        "the final report is asked for without a warning"
+    );
 }
 
 #[derive(Default)]

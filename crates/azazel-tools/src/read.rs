@@ -126,6 +126,15 @@ impl Tool for ReadTool {
         true
     }
 
+    /// A file or a directory listing is the same read again; an address is whatever its scheme
+    /// fetches, which may change by itself.
+    fn repeatable(&self, input: &Value) -> bool {
+        input
+            .get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| split_url(path.trim()).is_none_or(|(scheme, _)| scheme == LOCAL))
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         let path = input.get("path").and_then(Value::as_str);
         let subject = self.scheme_access(input).and_then(|(_, subject)| subject);

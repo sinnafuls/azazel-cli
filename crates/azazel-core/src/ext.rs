@@ -377,6 +377,14 @@ impl Tool for Wrapped {
         self.inner.replay_safe(input)
     }
 
+    fn policy(&self, input: &Value) -> azazel_agent::ToolPolicy {
+        self.inner.policy(input)
+    }
+
+    fn repeatable(&self, input: &Value) -> bool {
+        self.inner.repeatable(input)
+    }
+
     fn approval_note(&self, input: &Value) -> Option<String> {
         self.inner.approval_note(input)
     }

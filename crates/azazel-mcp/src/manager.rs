@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGua
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Services, Tool, ToolCtx, ToolOutput, UpdateSink};
+use azazel_agent::{Access, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, UpdateSink};
 use azazel_ai::{Block, Credentials};
 use azazel_core::{AskKind, Level, Question, TrustStore, Ui};
 use rmcp::model::{
@@ -189,6 +189,14 @@ impl Tool for ProxyTool {
 
     fn subjects(&self, _: &Value) -> Vec<String> {
         Vec::new()
+    }
+
+    /// A tool that declares `readOnlyHint` is run again after a transient failure.
+    fn policy(&self, _: &Value) -> ToolPolicy {
+        ToolPolicy {
+            idempotent: self.read_only,
+            timeout: Timeout::Configured,
+        }
     }
 
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput {

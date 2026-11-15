@@ -89,7 +89,7 @@ fn result_bytes(content: &[Block]) -> usize {
         .sum()
 }
 
-fn is_elided(content: &[Block]) -> bool {
+pub(crate) fn is_elided(content: &[Block]) -> bool {
     matches!(content, [Block::Text { text }] if text.starts_with(ELIDED_PREFIX))
 }
 

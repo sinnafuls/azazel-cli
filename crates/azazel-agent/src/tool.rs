@@ -4,6 +4,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, PoisonError, RwLock};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use azazel_ai::{Block, ModelRef, ToolSpec};
@@ -23,6 +24,54 @@ pub enum Access {
     Net,
 }
 
+/// How long one call of a tool may take.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Timeout {
+    /// The tool keeps its own time (a shell command, a question to the user, a sub-agent); the
+    /// agent adds none.
+    #[default]
+    Own,
+    /// `tools.call_timeout_secs`, for a tool that has no limit of its own.
+    Configured,
+    After(Duration),
+}
+
+/// What `[tools]` asks of every agent, kept as a service: `cache_reads`, `retries`,
+/// `call_timeout_secs`. Without it nothing is cached, retried or limited.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolSettings {
+    /// A read-only call that gives the result it gave before, while that result is still in the
+    /// context, is answered with a short note instead of the result again.
+    pub cache_reads: bool,
+    /// How many times an idempotent call is run again after a transient failure.
+    pub retries: u32,
+    /// The limit of a call whose tool has none of its own.
+    pub call_timeout: Option<Duration>,
+    /// The wait before the first retry; it doubles for each one after.
+    pub backoff: Duration,
+}
+
+impl Default for ToolSettings {
+    fn default() -> Self {
+        ToolSettings {
+            cache_reads: false,
+            retries: 0,
+            call_timeout: None,
+            backoff: Duration::from_millis(500),
+        }
+    }
+}
+
+/// What the agent may do around one call of a tool: stop it when it takes too long, and run it
+/// again when it failed for a reason that passes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ToolPolicy {
+    /// The call can be run again without harm (it only reads), so a transient failure (a
+    /// timeout, a reset connection, HTTP 429 or 5xx) is retried up to `tools.retries` times.
+    pub idempotent: bool,
+    pub timeout: Timeout,
+}
+
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
@@ -40,6 +89,16 @@ pub trait Tool: Send + Sync {
     /// running when the process ended is run again when the run is resumed if so; any other is
     /// reported as interrupted.
     fn replay_safe(&self, _input: &Value) -> bool {
+        false
+    }
+    /// The time limit and retries of this call; none unless the tool says so.
+    fn policy(&self, _input: &Value) -> ToolPolicy {
+        ToolPolicy::default()
+    }
+    /// Whether the result of this call is the same when the call is made again and nothing it
+    /// reads has changed. The agent then shows the model a short note in place of a result it
+    /// already has in its context (`tools.cache_reads`); the call itself still runs.
+    fn repeatable(&self, _input: &Value) -> bool {
         false
     }
     /// Something the user should know before approving this call (that it may cost money, for

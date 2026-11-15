@@ -107,6 +107,10 @@ impl Tool for GlobTool {
         true
     }
 
+    fn repeatable(&self, _: &Value) -> bool {
+        true
+    }
+
     fn subjects(&self, input: &Value) -> Vec<String> {
         input
             .get("path")
@@ -379,6 +383,10 @@ impl Tool for GrepTool {
     }
 
     fn replay_safe(&self, _: &Value) -> bool {
+        true
+    }
+
+    fn repeatable(&self, _: &Value) -> bool {
         true
     }
 

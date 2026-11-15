@@ -629,6 +629,13 @@ impl App {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
+        services.insert(Arc::new(azazel_agent::ToolSettings {
+            cache_reads: config.tools.cache_reads,
+            retries: config.tools.retries,
+            call_timeout: (config.tools.call_timeout_secs > 0)
+                .then(|| Duration::from_secs(config.tools.call_timeout_secs)),
+            ..azazel_agent::ToolSettings::default()
+        }));
         // How long a provider may stay silent; the providers extensions add read it from here.
         let stall = StallLimits::from_secs(config.retry.first_event_secs, config.retry.stall_secs);
         services.insert(Arc::new(stall));
@@ -1138,6 +1145,7 @@ impl App {
             defs: agent_defs,
             max_parallel: config.team.max_parallel,
             max_depth: config.team.max_depth,
+            max_turns: config.team.max_turns,
             max_result_bytes: config.tools.max_result_bytes,
             compaction: (&config.compaction).into(),
             posix_shell: shell.is_posix(),

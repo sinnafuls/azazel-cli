@@ -223,6 +223,8 @@ config_table!(CheckpointsConfig {
 config_table!(TeamConfig {
     max_parallel: usize = 4,
     max_depth: u32 = 2,
+    /// Requests per task for a sub-agent whose definition sets no `max-turns`; 0 is no limit.
+    max_turns: u32 = 200,
     /// The lead only plans and delegates: it is offered no tool that edits or runs commands.
     coordinator: bool = false,
 });
@@ -248,6 +250,14 @@ config_table!(ToolsConfig {
     disabled: Vec<String> = Vec::new(),
     max_result_bytes: usize = 50_000,
     shell_timeout_secs: u64 = 120,
+    /// A `read`, `grep` or `glob` call that gives the result it gave before, while that result is
+    /// still in the context, is answered with a short note in place of the result.
+    cache_reads: bool = true,
+    /// How many times a call that only reads (web, LSP, read-only MCP tools) is run again after a
+    /// transient failure: a timeout, a reset connection, HTTP 429 or 5xx.
+    retries: u32 = 2,
+    /// Seconds a call of a tool with no limit of its own (web, LSP, MCP) may take; 0 is no limit.
+    call_timeout_secs: u64 = 120,
     /// Empty means auto-resolve.
     shell: String = String::new(),
     /// Run the file's formatter after a tool changes it: the configured one for its extension,

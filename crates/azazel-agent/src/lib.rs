@@ -17,5 +17,6 @@ pub use gate::{AllowAll, Gate, GateDecision};
 pub use hooks::{AgentHooks, LimitHandler, NoHooks, NullSink, OnLimit, Recovery, TranscriptSink};
 pub use inspect::{Category, CategoryKind, ContextReport, RequestRecord};
 pub use tool::{
-    Access, ArtifactSink, Services, Tool, ToolCtx, ToolOutput, ToolSource, UpdateSink, tool_spec,
+    Access, ArtifactSink, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, ToolSettings, ToolSource,
+    UpdateSink, tool_spec,
 };
