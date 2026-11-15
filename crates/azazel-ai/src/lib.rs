@@ -31,11 +31,11 @@ pub use models_file::ModelsFile;
 pub use oauth::{LoginUi, OAuthError, OAuthFlow, OAuthSettings};
 pub use provider::Provider;
 pub use providers::presets::{AuthStyle, Discovery, ProviderConfig, ProviderSettings};
-pub use router::{RetryPolicy, RouteEvent, RouteState, Router};
+pub use router::{RetryPolicy, RouteEvent, RouteState, Router, UsageSink};
 pub use services::{Service, ServiceStore};
 pub use stall::{StallLimits, Timeouts};
 pub use stream::{EventStream, StreamEvent};
 pub use types::{
     AssistantMeta, Block, HostedTool, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, ParseError, Request,
-    Role, StopReason, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WebSource, WireApi,
+    RequestOrigin, Role, StopReason, SystemPart, ThinkingLevel, Tier, ToolSpec, Usage, WebSource, WireApi,
 };

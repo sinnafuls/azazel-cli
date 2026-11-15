@@ -16,7 +16,8 @@ use crate::limits::LimitStore;
 use crate::provider::Provider;
 use crate::providers::http::blocked_until;
 use crate::stream::EventStream;
-use crate::types::{ModelRef, ModelSpec, Request, Role, ThinkingLevel, Tier};
+use crate::stream::StreamEvent;
+use crate::types::{ModelRef, ModelSpec, Request, RequestOrigin, Role, ThinkingLevel, Tier, Usage};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RetryPolicy {
@@ -169,6 +170,14 @@ pub struct Router {
     tierless: Mutex<HashSet<String>>,
     /// The virtual models a chain may name; each picks the models of a request made with it.
     virtuals: Arc<VirtualModels>,
+    /// Where the usage of every answered request goes.
+    usage: Option<Arc<dyn UsageSink>>,
+}
+
+/// Told what every answered request used, once per request that returned usage.
+pub trait UsageSink: Send + Sync {
+    /// `model` is the one that answered; `origin` is whoever the request says it is made for.
+    fn record(&self, model: &ModelRef, origin: Option<&RequestOrigin>, usage: &Usage);
 }
 
 /// Whether `error` is a model saying it does not take the service tier of the request.
@@ -201,7 +210,34 @@ impl Router {
             tier: RwLock::default(),
             tierless: Mutex::default(),
             virtuals: Arc::default(),
+            usage: None,
         }
+    }
+
+    /// Has every answered request's usage reported to `sink`: the one place all requests pass.
+    pub fn with_usage_sink(mut self, sink: Arc<dyn UsageSink>) -> Self {
+        self.usage = Some(sink);
+        self
+    }
+
+    /// `stream` with the usage of its final message reported to the sink, once.
+    fn counted(&self, stream: EventStream, model: &ModelRef, origin: Option<&RequestOrigin>) -> EventStream {
+        use futures::StreamExt as _;
+        let Some(sink) = self.usage.clone() else {
+            return stream;
+        };
+        let (asked, origin) = (model.clone(), origin.cloned());
+        Box::pin(stream.inspect(move |event| {
+            if let StreamEvent::Done { message } = event
+                && let Some(meta) = &message.meta
+            {
+                let model = match meta.model.is_empty() {
+                    true => asked.clone(),
+                    false => ModelRef::new(meta.provider.as_str(), meta.model.as_str()),
+                };
+                sink.record(&model, origin.as_ref(), &meta.usage);
+            }
+        }))
     }
 
     /// Lets the router move work to another stored account of a provider when the one in use
@@ -413,7 +449,7 @@ impl Router {
                         .iter()
                         .find(|(to, _)| to.provider == model.provider && to.model == model.model)
                         .map(|(_, via)| via.clone());
-                    return Ok((model.clone(), stream));
+                    return Ok((model.clone(), self.counted(stream, model, req.origin.as_ref())));
                 }
                 Err(
                     e @ (AiError::ContextOverflow
@@ -895,6 +931,49 @@ mod tests {
         assert_eq!(model.to_string(), "mock/b");
         assert_eq!(final_text(stream).await, "b again");
         assert_eq!(mock.requests_for("a").len(), 3);
+    }
+
+    #[derive(Default)]
+    struct Booked(Mutex<Vec<(String, Option<RequestOrigin>, Usage)>>);
+
+    impl UsageSink for Booked {
+        fn record(&self, model: &ModelRef, origin: Option<&RequestOrigin>, usage: &Usage) {
+            self.0
+                .lock()
+                .unwrap()
+                .push((model.to_string(), origin.cloned(), *usage));
+        }
+    }
+
+    #[tokio::test]
+    async fn usage_is_booked_once_for_the_attempt_that_answered() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", MockStep::fail(AiError::Network("reset".into())));
+        mock.push(
+            "a",
+            MockStep::text("ok").with_usage(Usage {
+                input: 7,
+                output: 3,
+                ..Usage::default()
+            }),
+        );
+        let booked = Arc::new(Booked::default());
+        let r = router(mock, &[]).with_usage_sink(booked.clone());
+        let origin = RequestOrigin::purpose("s1", "btw");
+        let request = Request {
+            origin: Some(origin.clone()),
+            ..Request::default()
+        };
+        let (_, stream) = r
+            .stream(&chain(&["mock/a"]), &request, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "ok");
+        let booked = booked.0.lock().unwrap();
+        assert_eq!(booked.len(), 1);
+        assert_eq!(booked[0].0, "mock/a");
+        assert_eq!(booked[0].1, Some(origin));
+        assert_eq!((booked[0].2.input, booked[0].2.output), (7, 3));
     }
 
     #[tokio::test]

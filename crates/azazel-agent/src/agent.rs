@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use azazel_ai::router::{RouteEvent, RouteState};
 use azazel_ai::{
-    AiError, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, Request, Role, Router, StopReason,
-    StreamEvent, SystemPart, ThinkingLevel, Usage,
+    AiError, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, Request, RequestOrigin, Role, Router,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, Usage,
 };
 use futures::StreamExt;
 use futures::future::join_all;
@@ -1212,6 +1212,7 @@ impl Core {
                 cache_boundary: false,
             }],
             messages: vec![Message::user(prompt)],
+            origin: Some(RequestOrigin::purpose(&self.info.session_id, "compaction")),
             ..Request::default()
         };
         let (_, mut stream) = self.router.stream(summariser, &request, cancel.clone()).await?;
@@ -1306,6 +1307,15 @@ impl Core {
             tier: self.router.tier(),
             hosted: Vec::new(),
             tail: Vec::new(),
+            origin: Some(RequestOrigin {
+                session: self.info.session_id.clone(),
+                agent: if self.info.depth == 0 {
+                    "lead".to_string()
+                } else {
+                    self.info.id.clone()
+                },
+                def: Some(self.info.def.clone()),
+            }),
         };
         self.hooks.before_request(&self.info, &mut request).await;
         if let Some(text) = budget_note {

@@ -468,6 +468,8 @@ config_table!(UsageConfig {
     poll_secs: u64 = 300,
     /// Show e-mail addresses as `j***@example.com`.
     redact_email: bool = true,
+    /// Keep a log of every model request's tokens and cost in `~/.azazel/usage/`, for `azazel stats`.
+    ledger: bool = true,
 });
 config_table!(AccountsConfig {
     /// Provider id to the account labels in the order they are tried.

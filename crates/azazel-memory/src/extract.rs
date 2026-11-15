@@ -155,6 +155,7 @@ pub(crate) async fn extract(
         }],
         messages: vec![Message::user(prompt)],
         thinking: ThinkingLevel::Off,
+        origin: Some(azazel_ai::RequestOrigin::purpose("", "memory")),
         ..Request::default()
     };
     let items = parse(&complete(router, &request).await?)?;

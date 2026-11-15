@@ -180,6 +180,10 @@ impl Tui {
         ) {
             return self.ask_usage(crate::usage::Ask::All);
         }
+        if let Some(Action::Stats(shown)) = self.overlay.as_ref().map(|overlay| &overlay.action) {
+            shown.apply(key);
+            return;
+        }
         // What the key acts on is copied out first: acting on it may replace the overlay.
         enum Target {
             Agent(String),

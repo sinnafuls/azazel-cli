@@ -5,6 +5,15 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- A permanent usage log, `~/.azazel/usage/YYYY-MM.jsonl`, with a line for every answered model request: the lead's, every sub-agent's and the side requests (`/btw`, prediction, memory, naming, advisor, judges, compaction). Deleting sessions or agent transcripts no longer takes the history with it. `[usage] ledger = false` turns it off. The history of your existing sessions is imported the first time; `azazel stats --rebuild` imports again.
+- `azazel stats --period day|week|month|year|all`, `--since DATE`, `--by provider|model|project|agent` and `--rebuild`; `/stats` opens a panel with tabs for Today, 7 days, 30 days, Month, Year and All, a chart, and rows with bars that `g` groups by provider, project or agent.
+
+### Changed
+
+- `azazel stats` counts each request on the day it was made, not the session on the day it was last used, and shows fresh tokens (input, output, cache writes) apart from cache reads. A cost from a subscription login is marked `≈`: it is the API price, not what was paid.
+
 ## [0.10.4] - 2026-11-15
 
 ### Fixed

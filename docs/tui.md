@@ -947,7 +947,7 @@ Session and display:
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |
 | `/usage` | A box with what each signed-in subscription has left: per account every usage window with a bar, the share used, its reset time and what it counts, the plan, and the account in use; `r` asks the providers again. See [usage](models-and-logins.md#usage) |
 | `/reset-usage [provider]` | Spend a [banked reset](models-and-logins.md#banked-resets) of a Claude or ChatGPT subscription: shows what the account holds and what the reset gives back, and asks before it is spent |
-| `/stats [days]` | Sessions, prompts, tokens and cost of the last 30 days (or `days`), over every project: what `azazel stats` prints |
+| `/stats [days]` | A box with the [usage log](sessions-and-checkpoints.md#usage-statistics) over every project: tabs Today, 7 days, 30 days, Month, Year and All (`←`/`→` or `tab`), a chart of fresh tokens per bucket, and rows with a bar per provider and model, project or agent (`g` changes the grouping). A number of days opens a tab of its own. In a session in another process it prints text |
 | `/context` | What the lead's last request was made of, tokens per category; `enter` reads a category's exact text. See [the context inspector](#the-context-inspector) |
 | `/theme [name]` | Pick or set the colour theme; each row of the picker shows the theme's accent, success, warning and error colours |
 | `/glyphs [name]` | Pick or set the symbols the UI draws with: `unicode`, `nerd`, `ascii` or `auto`. Each row of the picker is drawn in its own symbols; the choice is saved as `tui.glyphs` and applies at once |

@@ -309,7 +309,7 @@ passes 6,000.
 | `azazel sessions export [PATH\|ID] [--format F] [-o FILE] [--sanitize]` | Same as `azazel export` |
 | `azazel sessions import <FILE\|URL> [--project DIR]` | Makes a new session of this project, or of the project of `DIR`, from a session file or a JSON lines export (`--format jsonl`), read from a file or fetched from an `https://` address. Its entries are taken as they are; it gets an id of its own, and the time of its first entry |
 | `azazel open` | Starts the UI with the [`/open`](#projects-and-directories) picker up |
-| `azazel stats [--days 30] [--json]` | Sessions, prompts, tokens and cost per day (with a one-line chart), per model, per project and per tool, over every project. `/stats [days]` shows the same in the UI |
+| `azazel stats [--days 30] [--period day\|week\|month\|year\|all] [--since DATE] [--by provider\|model\|project\|agent] [--json] [--rebuild]` | Requests, tokens and cost from the [usage log](#usage-statistics), with a one-line chart and a table per provider, model, project or agent. `/stats` opens the same in a panel |
 | `azazel context [PATH\|ID] [--json]` | What the last request of a session was made of: tokens per category (each part of the system prompt, tool schemas, messages, tool results, images). The latest session of this project by default; see [the context inspector](tui.md#the-context-inspector) |
 | `azazel export [PATH\|ID] [--format markdown\|html\|jsonl] [-o FILE] [--sanitize]` | Writes a session, the latest of this project by default. The format comes from `--format`, else the file's extension, else Markdown. `-o -` writes to standard output. `--sanitize` writes it [for sharing](#sanitized-exports) |
 | `azazel bug [what went wrong] [--transcript] [--session PATH\|ID] [--issue]` | Writes a [bug report](#bug-reports) to a zip under `~/.azazel/reports/` |
@@ -447,6 +447,27 @@ sub-agents' transcripts) gets a `context.json`: the request's tokens by category
 has counted the request. `/context` and `azazel context` read it; see
 [the context inspector](tui.md#the-context-inspector). It holds numbers only, never the text of the request, and
 is deleted with the session.
+
+## Usage statistics
+
+Every answered model request is one line in `~/.azazel/usage/YYYY-MM.jsonl` (the local month of the request): the
+time, provider, model, project, session, who asked (`lead`, a sub-agent's id, or the purpose of a side request:
+`btw`, `prediction`, `memory`, `name`, `advisor`, `judge`, `compaction`, `web_search`, ...), the tokens, the cost
+estimated from the model catalogue, and whether the request went through a subscription login. Sub-agents and side
+requests are counted, and a request that was retried is counted once, for the attempt that answered. The log is
+kept apart from the sessions: `session.retention_days`, `team.agent_retention_days` and `azazel sessions delete`
+never remove it. `[usage] ledger = false` stops writing it.
+
+The first time the log is read, azazel imports the history of every project's sessions and sub-agent transcripts,
+each reply at the time it was made, and writes `~/.azazel/usage/backfilled`. `azazel stats --rebuild` imports again;
+a reply that is already in the log is not added twice.
+
+`azazel stats` prints a header with the totals, a one-line chart, and a table. `--period` takes `day`, `week`,
+`month`, `year` or `all` (`--days N` and `--since 2026-03-01` name other windows; the default is 30 days). `--by`
+groups the table by `provider` (with its models under it), `model`, `project` or `agent`. `--json` prints one object.
+Tokens are shown as *fresh* (input, output and cache writes) and *cache read* apart: a cache read repeats the same
+context on every request and would make the totals look far larger than what was asked. A cost marked `≈` includes
+requests made through a subscription login; it is what those tokens would cost at API prices, not what you paid.
 
 ## Compaction
 

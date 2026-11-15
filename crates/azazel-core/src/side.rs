@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use azazel_agent::tool::tool_spec;
 use azazel_agent::{AgentHandle, AgentInfo, Services, ToolSource};
 use azazel_ai::{
-    AiError, Block, HostedTool, Message, ModelRef, ModelSpec, Request, Role, Router, StreamEvent, SystemPart,
-    ThinkingLevel, Usage, WebSource,
+    AiError, Block, HostedTool, Message, ModelRef, ModelSpec, Request, RequestOrigin, Role, Router,
+    StreamEvent, SystemPart, ThinkingLevel, Usage, WebSource,
 };
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -167,6 +167,7 @@ impl Side {
             }],
             messages: vec![Message::user(question)],
             hosted: vec![tool],
+            origin: Some(RequestOrigin::purpose("", SEARCH_PURPOSE)),
             ..Request::default()
         };
         let chain = [ModelSpec::Model(model.clone())];
@@ -245,6 +246,10 @@ impl Side {
                 .framed
                 .then(|| format!("{}:{}", question.agent.session_id, question.agent.id)),
             hosted: Vec::new(),
+            origin: Some(RequestOrigin::purpose(
+                &question.agent.session_id,
+                question.purpose,
+            )),
         }
     }
 }

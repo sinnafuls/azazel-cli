@@ -1178,6 +1178,7 @@ mod tests {
             tier: None,
             hosted: Vec::new(),
             tail: Vec::new(),
+            origin: None,
         }
     }
 
