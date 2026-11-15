@@ -14,6 +14,73 @@ The page speaks the [RPC protocol](rpc.md) unchanged: one JSON object per WebSoc
 directions. This page describes what is around that: how a browser gets in, which commands each kind of access may
 send, and the routes the server answers.
 
+## Using it
+
+```sh
+azazel bg "run the test suite and fix what fails"
+azazel remote
+```
+
+`azazel remote` serves every background session of this machine on `http://127.0.0.1:7420` and prints a pairing
+link and a QR code. Open the link in a browser on this machine, and the page lists the sessions. Nothing listens on
+the network: the server binds `127.0.0.1` only.
+
+| Flag | Does |
+|---|---|
+| `--port <N>` | The port to listen on (`[remote] port`, 7420). When it is taken the next nine are tried and the one taken is printed. `0` lets the system choose |
+| `--view` | Makes the first link a view link: it can watch but not answer or steer |
+| `--json` | Prints `{"url", "pair", "port"}` as the first line of standard output; the rest goes to standard error |
+| `--tunnel` | Reaches the server from other devices through a [Cloudflare quick tunnel](#from-a-phone-cloudflare) |
+| `--tailscale` | Reaches it through [Tailscale](#from-a-phone-tailscale) |
+| `--share` | Reaches it the way `[remote] access` says, `cloudflare` or `tailscale` |
+| `--public-url <URL>` | The address of your own tunnel or reverse proxy in front of the server |
+
+While it runs, type `l` and Enter for a new control link, `v` for a new view link, `r` to sign every device out and
+void every link, and `q` to stop. Ending the server signs every device out; paired devices are not kept across
+restarts.
+
+## From a phone: Cloudflare
+
+```sh
+azazel remote --tunnel
+```
+
+This runs `cloudflared tunnel --url http://127.0.0.1:<port>`, reads the `https://<name>.trycloudflare.com` address it
+prints, and shows the pairing link and QR code for that address. No Cloudflare account or domain is needed. The
+tunnel stops when `azazel remote` does, and the address changes on every start, so devices pair again each time.
+
+`cloudflared` is found on `PATH` or in `~/.azazel/remote/`. When it is missing, a run at a terminal asks once:
+
+- **Install it for me** downloads the official release for your platform from
+  `github.com/cloudflare/cloudflared/releases/latest` into `~/.azazel/remote/`.
+- **Show me how** prints the install command and the download page.
+- **Cancel** ends the run.
+
+A run without a terminal, and a download that fails, print the same help: `winget install --id Cloudflare.cloudflared`
+on Windows, `brew install cloudflared` on macOS, your distribution's package or the release binary on Linux, and
+<https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/>.
+
+The address is public, so the pairing link is what protects it: it works once, for 15 minutes, and the server
+accepts the tunnel's host and nothing else besides this machine. Quick tunnels have no uptime guarantee and
+allow 200 requests in flight; the page uses one WebSocket and no server-sent events, which they do not carry. To use
+a named tunnel or a reverse proxy of your own, set `[remote] public_url` or pass `--public-url`.
+
+## From a phone: Tailscale
+
+```sh
+azazel remote --tailscale
+```
+
+This asks `tailscale status --json` for the name of this machine on your tailnet, runs `tailscale serve --bg
+--https=<port> http://127.0.0.1:<port>` on the first of the HTTPS ports 443, 8443 and 10000 that you do not serve
+yet, and shows the link and QR code for `https://<name>.ts.net`. The phone needs the Tailscale app signed in to the
+same account. When the server stops, only the entry azazel added is removed (`tailscale serve --https=<port> off`);
+your other serve settings stay.
+
+azazel never installs Tailscale. When it is missing or not signed in, the run says what to do: install it from
+<https://tailscale.com/download>, sign in with `tailscale up`, and install the app on the phone. Turn on MagicDNS and
+HTTPS certificates in the Tailscale admin console if the machine has no name.
+
 ## The HTTP and WebSocket API
 
 This section is the contract between the server (`crates/azazel-remote`) and the web page (`web/`). Everything the
@@ -30,11 +97,11 @@ page does goes through the routes below.
 - **Authentication.** Every `/api/` route except `POST /api/pair` needs a signed-in device: the cookie
   `azazel_device` (what a browser has after pairing) or the header `Authorization: Bearer <device token>` (scripts
   and tests). Without one the answer is `401`.
-- **Host check.** The `Host` header must name the server: `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`, a
-  LAN address of this machine, or the host of `remote.public_url`. Anything else gets `421`. This stops DNS
+- **Host check.** The `Host` header must name the server: `127.0.0.1:<port>`, `localhost:<port>`, `[::1]:<port>`, the
+  host of the tunnel, or the host of `remote.public_url`. Anything else gets `421`. This stops DNS
   rebinding.
 - **Origin check.** A request that has an `Origin` header must carry one of the allowed origins (the same
-  addresses as above, with the scheme the server uses, and `remote.public_url`); otherwise `403`. A request
+  addresses as above, with the scheme the server uses); otherwise `403`. A request
   signed in by cookie must have an `Origin`; a request with a Bearer token may leave it out.
 - Answers on `/api/` carry `Cache-Control: no-store`. Every answer carries `X-Content-Type-Options: nosniff`,
   `Referrer-Policy: no-referrer`, and a `Content-Security-Policy` of `default-src 'self'; connect-src 'self';

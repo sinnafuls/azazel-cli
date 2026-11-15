@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `azazel remote` serves the background sessions of this machine to a web page on `127.0.0.1:7420`. A browser pairs with a single-use link or QR code, watches a session live and, with a control link, answers approvals and questions, steers and stops it. `--tunnel` reaches it from a phone through a Cloudflare quick tunnel (azazel offers to install `cloudflared`), `--tailscale` through Tailscale; `--view` makes a watch-only link. Settings are in `[remote]`; see `docs/remote.md`. Built with the `remote` Cargo feature.
+
 ## [0.10.5] - 2026-11-15
 
 ### Added

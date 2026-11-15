@@ -248,6 +248,13 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[web]` | `search` | `"auto"` | `auto`, `provider`, `brave`, `tavily`, `exa`, `searxng` or `duckduckgo`; see [web and browser](web-and-browser.md) |
 | | `searxng_url` | `""` | Address of a SearXNG instance |
 | | `provider_search` | `true` | Under `search = "auto"`, search through the lead model's provider first when it has a search tool; see [the provider's own search](web-and-browser.md#the-providers-own-search) |
+| `[remote]` | `port` | `7420` | The port `azazel remote` listens on, on this machine only; when it is taken the next nine are tried. 0 lets the system choose; see [remote](remote.md) |
+| | `access` | `"cloudflare"` | How `azazel remote --share` and `/remote` reach the server from another device: `cloudflare` (a quick tunnel) or `tailscale` |
+| | `public_url` | `""` | The address of your own tunnel or reverse proxy in front of the server; it becomes the origin of the links and an accepted origin |
+| | `link_minutes` | `15` | Minutes a pairing link works (once) |
+| | `device_hours` | `24` | Hours a paired device stays signed in |
+| | `redact` | `true` | Replace API keys and tokens in the messages and tool results sent to a browser |
+| | `allow_bypass` | `false` | Let a browser with control access switch to the `bypass` mode |
 | `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith`; see [trace export](#trace-export) |
 | | `endpoint` | `""` | Collector address; empty uses the exporter's default |
 | | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |
@@ -381,7 +388,7 @@ Gated settings: `hooks`, `providers`, `permissions.allow`, `permissions.destruct
 is `bypass`, `lsp`, `debug.adapters`, `verify.commands`,
 `tools.shell`, `tools.format`, `tools.format_on_write`, `tools.check`, `tools.scan`, `tools.eval`, `browser.path`, `editor.command`,
 `voice.record_command`, `voice.stt_command`, `voice.play_command`, `advisor`, `telemetry`, `statusline.command`,
-`triggers.mode`, `triggers.github_authors`, `triggers.slack_users`, `triggers.slack_url`.
+`triggers.mode`, `triggers.github_authors`, `triggers.slack_users`, `triggers.slack_url`, `remote`.
 
 The interactive UI asks once per project, before it starts: `Trust this project? Its config can run commands.
 [y/N]`. The answer is stored in `~/.azazel/trust.json`. In the UI, `/trust` shows the decision and what it
@@ -498,6 +505,7 @@ unknown tier or preset) exits with status 2.
 |---|---|---|
 | `azazel init` | | Choose the default model and create the project's config file; see [getting started](getting-started.md) |
 | `azazel doctor` | | Check the installation and the project's setup |
+| `azazel remote` | | Follow and steer the background sessions from a browser or a phone: `azazel remote [--port N] [--view] [--json] [--share] [--tunnel] [--tailscale] [--public-url URL]`; see [remote](remote.md) |
 | `azazel update` | | Install the newest release; see [updating](getting-started.md#updating) |
 | `azazel completions` | | Print a completion script for a shell |
 | `azazel changelog` | | What changed in each release |
