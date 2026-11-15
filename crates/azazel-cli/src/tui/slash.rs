@@ -127,8 +127,14 @@ const BUILTIN: &[(&str, &str)] = &[
         "share",
         "Upload the conversation, secrets hidden, as a secret gist and print its link (asks first)",
     ),
-    ("issues", "List the repository's GitHub issues; enter puts #<n> in the input, o opens one in the browser"),
-    ("prs", "List the repository's pull requests; enter puts #<n> in the input, o opens one in the browser"),
+    (
+        "issues",
+        "List the repository's GitHub issues; enter puts #<n> in the input, o opens one in the browser",
+    ),
+    (
+        "prs",
+        "List the repository's pull requests; enter puts #<n> in the input, o opens one in the browser",
+    ),
     (
         "pr",
         "Open a pull request from this branch: drafts the title and description, you edit them, asks before pushing: /pr [title]",

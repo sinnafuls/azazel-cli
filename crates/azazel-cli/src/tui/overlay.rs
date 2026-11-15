@@ -171,7 +171,10 @@ pub enum Action {
         body: String,
     },
     /// `/review`: whether to post the findings as a comment; the second row says yes.
-    ReviewPost { number: u64, body: String },
+    ReviewPost {
+        number: u64,
+        body: String,
+    },
     /// `/share`: whether to upload this; the first row says yes.
     Share(Box<crate::share::Shared>),
     /// `/bug`: per row, whether the report takes the conversation along; `None` cancels.
