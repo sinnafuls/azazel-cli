@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-15
+
 ### Fixed
 
 - `azazel acp` exits with status 0 when the editor closes the connection while azazel is still writing to it; it printed `the ACP connection failed: … Broken pipe` and exited with 1.
@@ -1015,7 +1017,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/sinnafuls/azazel-cli/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.6.0...v0.7.0
