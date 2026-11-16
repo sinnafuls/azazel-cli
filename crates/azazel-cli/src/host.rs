@@ -85,17 +85,17 @@ struct Pending {
 /// What is in flight, as the frames so far say: what a client that attaches now has missed
 /// and cannot read from the session file.
 #[derive(Default)]
-struct Live {
+pub(crate) struct Live {
     /// The lead is between the start and the end of a run.
-    busy: bool,
-    streaming: Vec<Streaming>,
-    tools: Vec<(RunningTool, Instant)>,
-    queue: VecDeque<Queued>,
+    pub(crate) busy: bool,
+    pub(crate) streaming: Vec<Streaming>,
+    pub(crate) tools: Vec<(RunningTool, Instant)>,
+    pub(crate) queue: VecDeque<Queued>,
 }
 
 impl Live {
     /// Takes in an event frame.
-    fn on_frame(&mut self, kind: &str, frame: &Value) {
+    pub(crate) fn on_frame(&mut self, kind: &str, frame: &Value) {
         let agent = frame["agent"].as_str().unwrap_or_default();
         let lead = agent == LEAD;
         match kind {
