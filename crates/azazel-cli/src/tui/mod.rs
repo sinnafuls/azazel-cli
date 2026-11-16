@@ -38,6 +38,8 @@ mod running;
 mod sessions;
 mod setup;
 mod share;
+#[cfg(feature = "remote")]
+mod sharing;
 mod slash;
 mod stats;
 mod statusbar;
@@ -301,6 +303,9 @@ enum Internal {
     Models(models::Update),
     /// `/settings` opens `/models` and waits for it to close.
     OpenModels(models::Opening, bridge::Reply<()>),
+    /// A browser asked for something, or the tunnel of `/remote` came up.
+    #[cfg(feature = "remote")]
+    Remote(crate::remote::terminal::Event),
 }
 
 pub struct Tui {
@@ -316,6 +321,9 @@ pub struct Tui {
     terminal: Option<EventStream>,
     internal_tx: mpsc::UnboundedSender<Internal>,
     internal_rx: mpsc::UnboundedReceiver<Internal>,
+    /// The session is shared with browsers (`/remote`).
+    #[cfg(feature = "remote")]
+    sharing: Option<crate::remote::terminal::Sharing>,
     renderer: Renderer<io::Stdout>,
     /// What the terminal can do: links, images, notifications, progress.
     caps: Caps,
@@ -635,6 +643,8 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         terminal: Some(EventStream::new()),
         internal_tx,
         internal_rx,
+        #[cfg(feature = "remote")]
+        sharing: None,
         renderer,
         caps,
         attention,
@@ -750,6 +760,10 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         tui.other_command("settings", "");
     }
     tui.main_loop().await;
+    #[cfg(feature = "remote")]
+    if let Some(sharing) = tui.sharing.take() {
+        sharing.stop().await;
+    }
     let _ = tui.renderer.suspend();
     let closing = tui.attention.close();
     tui.write_out(&closing);
@@ -1190,6 +1204,8 @@ impl Tui {
             if let Some(notice) = &self.notice {
                 bottom.extend(view::notice(notice, width, &self.theme));
             }
+            #[cfg(feature = "remote")]
+            bottom.extend(self.sharing_notice(width));
             bottom.extend(self.strip_line(width));
             bottom.extend(self.waiting_lines(width));
             bottom.extend(self.terminal_lines(width));
@@ -1502,6 +1518,8 @@ impl Tui {
             Internal::Sent(sent) => return self.on_sent(sent),
             Internal::Github(done) => return self.on_github(done),
             Internal::Usage(entries) => return self.on_usage(entries),
+            #[cfg(feature = "remote")]
+            Internal::Remote(event) => return self.on_remote(event).await,
             Internal::Clipboard(clip) => return self.on_clipboard(clip),
             Internal::ClipboardText(text) => return self.on_clipboard_text(text),
             Internal::Migrate(step) => return self.on_migrate(step).await,
@@ -2069,6 +2087,8 @@ impl Tui {
         self.remember(&entered);
         let lines = view::user_prompt(&shown, self.width(), &self.theme);
         self.say(lines);
+        #[cfg(feature = "remote")]
+        self.share_input(if self.busy { "steer" } else { "prompt" }, &entered);
         if self.busy {
             self.backend.steer(entered, images);
             return;
@@ -2232,6 +2252,8 @@ impl Tui {
             action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
             Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
             Action::AgentPane | Action::Usage(_) | Action::Stats(_) | Action::Models { .. } => {}
+            #[cfg(feature = "remote")]
+            Action::Remote => {}
             // The screen goes back to the command that showed it, which knows what it asked for.
             Action::Settings { reply } => {
                 if let overlay::Kind::Settings(screen) = kind {

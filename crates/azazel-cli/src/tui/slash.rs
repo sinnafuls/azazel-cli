@@ -256,6 +256,11 @@ const BUILTIN: &[(&str, &str)] = &[
         "Send a prompt again and again: /loop 5 <prompt>, /loop 10m <prompt>, /loop until \"<condition>\" <prompt>; \
          /loop stop ends it",
     ),
+    #[cfg(feature = "remote")]
+    (
+        "remote",
+        "Share this session with a browser: /remote, /remote view, /remote tunnel, /remote tailscale, /remote stop",
+    ),
     ("init", "Have the agent write AGENTS.md for this project"),
     (
         "migrate",
@@ -450,6 +455,8 @@ impl Tui {
             "loop" => self.loop_command(args).await,
             "init" => self.send_prompt(INIT_PROMPT.to_string(), Vec::new()).await,
             "migrate" => self.migrate_command(),
+            #[cfg(feature = "remote")]
+            "remote" => self.remote_command(args).await,
             "voice" => self.voice_toggle().await,
             "speak" => self.speak_command(args),
             "restart" => self.restart_command(),
