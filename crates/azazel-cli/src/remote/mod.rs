@@ -5,6 +5,7 @@
 
 mod background;
 mod qr;
+pub(crate) mod terminal;
 mod tunnel;
 
 use std::io::IsTerminal;
