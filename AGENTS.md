@@ -22,6 +22,7 @@ Rust 1.99, edition 2024, tokio. It builds and is tested on Windows, Linux and ma
 | `crates/azazel-cli` | The binary: the command line (`cli.rs`), building the application (`app.rs`), the terminal UI (`src/tui/`), print mode, RPC, ACP, background sessions, settings, logins |
 | `crates/azazel-mcp`, `azazel-memory`, `azazel-browser`, `azazel-media`, `azazel-lua` | Optional features, each an `Extension`: MCP, memory and the code index, the browser and the screen, media generation, Luau scripts and `run_code` |
 | `crates/azazel-protocol`, `azazel-client` | The RPC protocol's types, and a client for it |
+| `crates/azazel-remote`, `web/` | `azazel remote`: the server (HTTP, WebSocket, pairing) with the built web page embedded in it, and the page itself, a SvelteKit app built with bun |
 | `xtask` | Maintenance tasks (`cargo xtask <task>`); `xtask/docs-check` is the docs check |
 | `tests/fixtures` | Stand-in programs the tests run (`fake-lsp`, `mcp-echo`, `fake-check`, `fake-sg`, `fake-gh`, `fake-ssh`, …), scripts for the scripted provider (`scripts/*.json`) and sample projects |
 | `skills/` | The skills built into the binary |
@@ -70,8 +71,34 @@ Other tasks:
 | `cargo xtask bench-startup` | Builds the release binary and fails when it is larger than 56 MB, or `azazel --version` takes more than 30 ms, or a scripted `azazel -p hi` more than 150 ms. Prints the size and what it gained since the last run |
 | `cargo xtask rpc-schema` | Writes `docs/rpc.schema.json` from `azazel-protocol`; run it after changing the protocol |
 | `cargo xtask catalog` | Regenerates from models.dev (needs the network) the model catalogue `crates/azazel-ai/catalog/models.json`, the generated provider rows `crates/azazel-ai/src/providers/generated.rs` and their table in `docs/models-and-logins.md` |
-| `cargo xtask dist [--target <triple>]` | Builds the release archive and its checksum into `dist/`; the release workflow runs it |
+| `cargo xtask dist [--target <triple>]` | Builds the release archive and its checksum into `dist/`; the release workflow runs it. Fails when the `remote` feature is in the build and `web/build/index.html` is missing |
 | `cargo xtask prune [--dry-run]` | Deletes the build output of earlier builds from `target/`: for every crate it keeps the version built last and any built in the last hour |
+
+### The web page (`web/`)
+
+`azazel remote` serves a SvelteKit page that lives in `web/` and is built with **bun** (never npm or pnpm; the
+lockfile is `web/bun.lock`). `crates/azazel-remote/build.rs` gzips `web/build/` into the binary; without it
+a one-page placeholder is embedded and the build warns, so Rust builds and tests need no bun. From `web/`:
+
+```sh
+bun install --frozen-lockfile
+bun run gen:types   # src/lib/protocol/rpc.ts from docs/rpc.schema.json; run after `cargo xtask rpc-schema`
+bun run check && bun run lint && bun run test
+bun run build       # web/build
+bun run test:e2e    # Playwright against a real `azazel remote`; see below
+```
+
+- **Rebuilding the embedded page.** `build.rs` does not watch a `web/build/` that did not exist when it last
+  ran. After the first `bun run build` (or whenever the warning says the placeholder is embedded), run
+  `touch crates/azazel-remote/build.rs` and build again. Later rebuilds of the page are noticed by cargo.
+  `AZAZEL_WEB_BUILD=<dir>` embeds another directory.
+- **End-to-end tests** (`web/tests/e2e`, Chromium) start their own `azazel remote` in front of a scripted
+  background session (`tests/fixtures/scripts/web_session.json`). They need a binary built with
+  `--features test-support,remote` (`cargo build -p azazel-cli --features test-support,remote`; the test uses
+  `target/debug/azazel` of `CARGO_TARGET_DIR` or `AZAZEL_BIN`) and `bunx playwright install chromium` once.
+- **CI** builds the page in the `web` job and the Linux Rust job downloads it, so tests and the binary carry
+  the real page; the `e2e` job reuses the test binary of that job. The release workflow builds the page once
+  and every platform downloads it before `cargo xtask dist`.
 
 ### Keeping `target/` small
 

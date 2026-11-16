@@ -36,6 +36,7 @@ default = [
     "images",
     "detach",
     "repomap",
+    "remote",
 ]
 lua = ["dep:azazel-lua"]
 mcp = ["dep:azazel-mcp"]
