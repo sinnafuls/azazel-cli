@@ -121,6 +121,11 @@ azazel ps
 azazel attach 3fa9      # starts it again under the same id, on the same session, and goes on
 ```
 
+On Windows, a terminal, a CI runner or another program may run its commands in a job that ends every
+process in it when the command ends. A background session leaves such a job when the job allows it. When
+it does not, `azazel bg` says so, and the session may end with the command: it is then `interrupted` and
+`azazel attach` starts it again.
+
 `azazel attach <id>` (and `azazel rpc --attach <id>`) starts the process again with the options the first one
 was started with and in the permission mode it was last in; `--mode` and `--model` on the `attach` command
 line override them. It then goes on with the run: a tool call that only reads is run again, any other call

@@ -1020,3 +1020,103 @@ fn a_named_bg_sent_again_starts_no_second_session() {
     );
     bridge.detach();
 }
+
+/// Runs `azazel bg` from a parent that ends right after it, the way a shell command does, and
+/// returns the id it printed. On Windows the parent runs in a job that kills what is left in it
+/// when it ends, as a terminal or a CI runner may run its commands, and allows leaving it.
+fn bg_from_a_short_lived_parent(sandbox: &Sandbox, prompt: &str) -> String {
+    let started = sandbox.azazel(&["bg", prompt]);
+    let program = started.get_program().to_owned();
+    let args: Vec<_> = started.get_args().map(|a| a.to_owned()).collect();
+    #[cfg(windows)]
+    let mut parent = {
+        let script = sandbox.dir.path().join("parent.ps1");
+        std::fs::write(&script, PARENT_IN_A_JOB).unwrap();
+        let mut parent = Command::new("powershell");
+        parent
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(script);
+        parent
+    };
+    #[cfg(not(windows))]
+    let mut parent = {
+        let mut parent = Command::new("sh");
+        parent.args(["-c", "\"$@\""]).arg("sh");
+        parent
+    };
+    parent.arg(&program).args(&args).stdin(Stdio::null());
+    for (name, value) in started.get_envs() {
+        if let Some(value) = value {
+            parent.env(name, value);
+        }
+    }
+    let output = parent.output().unwrap();
+    let (out, err) = text(&output);
+    assert!(output.status.success(), "{out}\n{err}");
+    let id = out.lines().next().unwrap_or_default().trim().to_string();
+    assert!(
+        id.len() == 8 && id.chars().all(|c| c.is_ascii_hexdigit()),
+        "an id: {out:?} {err:?}"
+    );
+    id
+}
+
+/// Puts this process in a job that ends what is in it when the job is closed and that lets a
+/// process created with `CREATE_BREAKAWAY_FROM_JOB` leave; runs the command; closes the job.
+#[cfg(windows)]
+const PARENT_IN_A_JOB: &str = r#"
+Add-Type @"
+using System; using System.Runtime.InteropServices;
+public class Job {
+  [DllImport("kernel32")] static extern IntPtr CreateJobObjectW(IntPtr a, string n);
+  [DllImport("kernel32")] static extern bool SetInformationJobObject(IntPtr j, int c, IntPtr i, uint l);
+  [DllImport("kernel32")] static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+  [DllImport("kernel32")] static extern bool CloseHandle(IntPtr h);
+  static IntPtr job;
+  public static void Enter() {
+    job = CreateJobObjectW(IntPtr.Zero, null);
+    IntPtr info = Marshal.AllocHGlobal(144);
+    for (int i = 0; i < 144; i++) Marshal.WriteByte(info, i, 0);
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK
+    Marshal.WriteInt32(info, 16, 0x2800);
+    if (!SetInformationJobObject(job, 9, info, 144)) throw new Exception("SetInformationJobObject");
+    if (!AssignProcessToJobObject(job, System.Diagnostics.Process.GetCurrentProcess().Handle)) throw new Exception("AssignProcessToJobObject");
+  }
+  public static void Leave() { CloseHandle(job); }
+}
+"@
+[Job]::Enter()
+& $args[0] $args[1..($args.Length - 1)]
+[Job]::Leave()
+"#;
+
+#[test]
+fn a_background_session_outlives_the_command_that_started_it() {
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/scripts/write_read.json");
+    let script: Value = serde_json::from_str(&std::fs::read_to_string(script).unwrap()).unwrap();
+    let sandbox = Sandbox::new(&script);
+    let id = bg_from_a_short_lived_parent(&sandbox, "create hello");
+
+    // The parent has ended; the session is still there and still waits at the approval.
+    sandbox.wait_for_state(&id, "waiting for you");
+    let mut client = sandbox
+        .azazel(&["attach", &id])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut typing = client.stdin.take().unwrap();
+    let shown = lines_of(client.stdout.take().unwrap());
+    read_until(&shown, "/approve");
+    writeln!(typing, "/detach").unwrap();
+    read_until(&shown, "detached");
+    assert!(client.wait().unwrap().success());
+    assert_eq!(sandbox.ps()[0]["state"], "waiting for you");
+}
