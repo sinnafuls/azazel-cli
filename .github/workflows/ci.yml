@@ -20,7 +20,38 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The web page of `azazel remote`. Its build is embedded into the Rust build below (the check job)
+  # and is what the end-to-end tests of the e2e job open in a browser.
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      # Keep in step with `packageManager` in web/package.json.
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      # The protocol types of the page come from docs/rpc.schema.json; a stale file fails here.
+      - run: bun run gen:types
+      - run: git diff --exit-code -- .
+      - run: bun run check
+      - run: bun run lint
+      - run: bun run test
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-build
+          path: web/build
+          if-no-files-found: error
+          retention-days: 7
+
   check:
+    needs: web
     strategy:
       fail-fast: false
       matrix:
@@ -40,6 +71,13 @@ jobs:
       - if: runner.os == 'Linux'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
       - uses: actions/checkout@v4
+      # The page `azazel remote` serves is embedded when the crate is built: with it, the tests and
+      # the binary below carry the real page, not the placeholder a checkout without it gets.
+      - if: runner.os == 'Linux'
+        uses: actions/download-artifact@v4
+        with:
+          name: web-build
+          path: web/build
       # Installs the toolchain and components pinned in rust-toolchain.toml.
       - run: rustup show
       # mold links the many test binaries in a fraction of the time ld takes.
@@ -80,4 +118,48 @@ jobs:
           cargo test --workspace --doc
       - if: runner.os != 'Linux'
         run: cargo test --workspace --no-fail-fast
+      # The binary the end-to-end tests drive is the one the test build above made: the integration
+      # tests of azazel-cli turn on `test-support` (the scripted provider) and `remote` for it, so
+      # no second build is needed. Upload it before the build below replaces it.
+      - if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: azazel-test-binary
+          path: target/debug/azazel
+          if-no-files-found: error
+          retention-days: 1
       - run: cargo build --no-default-features -p azazel-cli
+
+  # The browser tests: Chromium on Linux against a real `azazel remote` in front of a scripted
+  # background session (tests/fixtures/scripts/web_session.json).
+  e2e:
+    needs: [web, check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: azazel-test-binary
+          path: ${{ runner.temp }}/azazel-bin
+      - run: chmod +x "$RUNNER_TEMP/azazel-bin/azazel"
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bunx playwright install --with-deps chromium
+      - run: bun run test:e2e
+        env:
+          AZAZEL_BIN: ${{ runner.temp }}/azazel-bin/azazel
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            web/playwright-report
+            web/test-results
+          retention-days: 7

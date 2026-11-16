@@ -61,6 +61,78 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_default()
 }
 
+/// Where cargo puts what it builds: `CARGO_TARGET_DIR` when it is set (agent worktrees share the
+/// main checkout's), else `target/` of the workspace.
+fn target_dir(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"))
+}
+
+/// Whether building `package` with its default features turns `feature` on, directly or through
+/// another feature. `metadata` is what `cargo metadata --no-deps --format-version 1` prints.
+fn default_build_has(metadata: &Value, package: &str, feature: &str) -> bool {
+    let features = metadata["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|entry| entry["name"] == package)
+        .map(|entry| &entry["features"]);
+    let Some(features) = features else {
+        return false;
+    };
+    let mut seen = vec!["default".to_string()];
+    let mut next = 0;
+    while let Some(name) = seen.get(next).cloned() {
+        next += 1;
+        for enabled in features[name.as_str()].as_array().into_iter().flatten() {
+            // `dep:x` and `crate/feature` name other packages, not features of this one.
+            match enabled.as_str() {
+                Some(other) if !other.contains([':', '/']) && !seen.iter().any(|s| s == other) => {
+                    seen.push(other.to_string());
+                }
+                _ => {}
+            }
+        }
+    }
+    seen.iter().any(|name| name == feature)
+}
+
+/// The built web page that `crates/azazel-remote/build.rs` embeds: `AZAZEL_WEB_BUILD` when it is
+/// set, else `web/build`.
+fn web_build(root: &Path) -> PathBuf {
+    std::env::var_os("AZAZEL_WEB_BUILD")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("web").join("build"))
+}
+
+/// A release must not ship the placeholder page: with the `remote` feature in the build, the page
+/// has to be there before the build starts.
+fn require_web_build(root: &Path) -> Result<()> {
+    let listed = Command::new(env!("CARGO"))
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .stderr(Stdio::inherit())
+        .output()
+        .context("could not run cargo metadata")?;
+    if !listed.status.success() {
+        bail!("cargo metadata failed");
+    }
+    let metadata: Value =
+        serde_json::from_slice(&listed.stdout).context("cargo metadata did not print JSON")?;
+    let page = web_build(root).join("index.html");
+    if default_build_has(&metadata, "azazel-cli", "remote") && !page.is_file() {
+        bail!(
+            concat!(
+                "{} is missing, and the release is built with the `remote` feature, which embeds the web page. ",
+                "Build the page first: `bun install --frozen-lockfile` and `bun run build` in web/"
+            ),
+            page.display()
+        );
+    }
+    Ok(())
+}
+
 /// Compares the docs with the code and fails with the list of what differs. The check is the
 /// package `docs-check`: it links the whole program to ask it what it registers, which the other
 /// tasks should not have to wait for.
@@ -138,6 +210,7 @@ fn dist() -> Result<()> {
         [flag, triple] if flag == "--target" => Some(triple.clone()),
         _ => bail!("usage: cargo xtask dist [--target <triple>]"),
     };
+    require_web_build(&root)?;
     let mut build = Command::new(env!("CARGO"));
     build.args(["build", "--release", "-p", "azazel-cli"]);
     if let Some(triple) = &target {
@@ -150,12 +223,12 @@ fn dist() -> Result<()> {
     let (os, arch, out_dir) = match &target {
         Some(triple) => {
             let (os, arch) = platform_of(triple)?;
-            (os, arch, root.join("target").join(triple).join("release"))
+            (os, arch, target_dir(&root).join(triple).join("release"))
         }
         None => (
             std::env::consts::OS,
             std::env::consts::ARCH.to_string(),
-            root.join("target/release"),
+            target_dir(&root).join("release"),
         ),
     };
     let windows = os == "windows";
@@ -243,8 +316,7 @@ fn bench_startup() -> Result<()> {
     if !built.success() {
         bail!("the release build failed");
     }
-    let binary = root
-        .join("target")
+    let binary = target_dir(&root)
         .join("release")
         .join(format!("azazel{}", std::env::consts::EXE_SUFFIX));
     let size = std::fs::metadata(&binary)
@@ -275,7 +347,7 @@ fn bench_startup() -> Result<()> {
 
     let megabytes = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
     // The size of the previous run, so each change reports what it added.
-    let size_file = root.join("target").join("bench-size.txt");
+    let size_file = target_dir(&root).join("bench-size.txt");
     let previous = std::fs::read_to_string(&size_file)
         .ok()
         .and_then(|text| text.trim().parse::<u64>().ok());
@@ -732,6 +804,29 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_feature_is_in_the_default_build_when_default_reaches_it() {
+        let metadata = json!({ "packages": [
+            { "name": "other", "features": { "default": ["remote"], "remote": [] } },
+            { "name": "azazel-cli", "features": {
+                "default": ["lua", "screen"],
+                "lua": ["dep:azazel-lua"],
+                "screen": ["browser", "azazel-browser/screen"],
+                "browser": ["dep:azazel-browser"],
+                "remote": ["dep:azazel-remote", "detach"],
+                "detach": [],
+            } },
+        ] });
+        assert!(default_build_has(&metadata, "azazel-cli", "lua"));
+        assert!(
+            default_build_has(&metadata, "azazel-cli", "browser"),
+            "through `screen`"
+        );
+        assert!(!default_build_has(&metadata, "azazel-cli", "remote"));
+        assert!(!default_build_has(&metadata, "azazel-cli", "detach"));
+        assert!(!default_build_has(&metadata, "missing", "lua"));
+    }
 
     #[test]
     fn a_model_takes_the_efforts_its_entry_lists() {
