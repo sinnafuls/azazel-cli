@@ -27,6 +27,8 @@ test('answering the approval on one tab closes it on the other', async ({ browse
 	const first = await context.newPage();
 	await first.goto(manual.pair);
 	await first.locator('[data-session-list]:visible a').first().click();
+	// The click navigates inside the app: wait for the session's address before copying it.
+	await first.waitForURL(/\/s\/[^/]+$/);
 	// The second tab shares the device (the cookie) and opens the same session.
 	const second = await context.newPage();
 	await second.goto(first.url());
