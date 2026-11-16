@@ -2251,11 +2251,9 @@ impl Tui {
             // A form answers through `Outcome::Answers`; the popup of an agent only closes.
             action @ (Action::Ask { .. } | Action::Form { .. } | Action::Migrate(_)) => action.cancel(),
             Action::MigrateGo(pick) => self.migrate_go(*pick, choice),
-            Action::AgentPane
-            | Action::Remote
-            | Action::Usage(_)
-            | Action::Stats(_)
-            | Action::Models { .. } => {}
+            Action::AgentPane | Action::Usage(_) | Action::Stats(_) | Action::Models { .. } => {}
+            #[cfg(feature = "remote")]
+            Action::Remote => {}
             // The screen goes back to the command that showed it, which knows what it asked for.
             Action::Settings { reply } => {
                 if let overlay::Kind::Settings(screen) = kind {

@@ -125,6 +125,7 @@ pub enum Action {
     /// The popup that shows an agent at work.
     AgentPane,
     /// `/remote`: the link and its QR code.
+    #[cfg(feature = "remote")]
     Remote,
     /// `/terminals`: the terminal of each row; choosing one shows its screen.
     Terminals(Vec<String>),
