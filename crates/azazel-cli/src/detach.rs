@@ -192,18 +192,35 @@ fn spawn_host(args: &[OsString]) -> Result<Started, String> {
             line.push(' ');
             line.push_str(&quoted(arg));
         }
-        let mut startup = winsafe::STARTUPINFO::default();
-        let process = winsafe::CreateProcess(
-            None,
-            Some(&line),
-            None,
-            None,
-            false,
-            CREATE::NO_WINDOW | CREATE::NEW_PROCESS_GROUP,
-            &[],
-            None,
-            &mut startup,
-        )
+        let create = |flags: CREATE| {
+            let mut startup = winsafe::STARTUPINFO::default();
+            winsafe::CreateProcess(
+                None,
+                Some(&line),
+                None,
+                None,
+                false,
+                flags,
+                &[],
+                None,
+                &mut startup,
+            )
+        };
+        let base = CREATE::NO_WINDOW | CREATE::NEW_PROCESS_GROUP;
+        // A terminal, a CI runner or an agent harness may run its commands in a job that ends
+        // them all when the command ends, and a process started the usual way stays in it.
+        // Leaving the job is allowed only when the job says so; where it does not, the
+        // session stays in the job and ends with it.
+        let process = match create(base | CREATE::BREAKAWAY_FROM_JOB) {
+            Err(e) if e == winsafe::co::ERROR::ACCESS_DENIED => {
+                eprintln!(
+                    "azazel: the job this command runs in does not let the session leave it, so the \
+                     session may end when that job does; `azazel attach` starts it again"
+                );
+                create(base)
+            }
+            other => other,
+        }
         .map_err(|e| e.to_string())?;
         Ok(Started { process })
     }

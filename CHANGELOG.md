@@ -5,6 +5,10 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, a background session (`azazel bg`, `/bg`, or one that `azazel attach` or `azazel remote` starts again) ended with the command that started it when that command ran in a job that ends its processes, as a terminal, a CI runner or an agent harness may run it. The session now leaves that job when the job allows it. When it does not, `azazel bg` says so, and the session may end with the job; `azazel attach` starts it again.
+
 ### Added
 
 - RPC: a client of a background session can resume after a dropped connection. Every logged frame carries `at`, `attach` takes `since` (the `at` of the last frame it saw) and replays exactly the frames after it, and the answer has `cursor` and `gap` (true when `since` is unknown, so the client reloads with `get_messages`).
