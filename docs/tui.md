@@ -946,6 +946,7 @@ Session and display:
 | `/cost` | Requests, tokens and money spent in this session, with what side questions, commit drafts and the advisor cost; how much of the input was read from the [prompt cache](models-and-logins.md#prompt-cache), per model, and why a request missed it |
 | `/btw <question>` | Ask about the session on the side while the agent works; see [side questions](#side-questions) |
 | `/bg <prompt>` | Run a prompt in the background, in a copy of this session; see [background sessions](background-and-remote.md) |
+| `/remote [view\|tunnel\|tailscale\|share\|stop]` | Share this session with a browser: shows a link and QR code; see [remote](remote.md#sharing-the-session-of-your-terminal) |
 | `/loop <count \| interval \| until "<condition>"> <prompt>` | Send a prompt again and again; see [loops](#loops) |
 | `/diff [turn \| session \| uncommitted \| <ref>]` | What changed, in the [diff viewer](#diffs-and-commits): the uncommitted changes, the changes since your last prompt or since the session began, or the working tree against a commit, branch or tag (or a range such as `main..topic`) |
 | `/commit [what to say]` | Commit with a drafted message you edit first; see [diffs and commits](#diffs-and-commits) |

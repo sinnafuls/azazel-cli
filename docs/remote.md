@@ -39,6 +39,26 @@ While it runs, type `l` and Enter for a new control link, `v` for a new view lin
 void every link, and `q` to stop. Ending the server signs every device out; paired devices are not kept across
 restarts.
 
+## Sharing the session of your terminal
+
+`/remote` in the terminal UI shares the session you are working in with browsers. The terminal stays the master:
+the agents, tools and permissions are this process's, and what a browser sends runs as if you had typed it.
+
+| Command | Does |
+|---|---|
+| `/remote` | Starts the server on `127.0.0.1` (`[remote] port`) and opens a box with a control link and its QR code. The link is shown in the box, not in the scrollback |
+| `/remote view` | A view link: it can watch but not answer or steer |
+| `/remote tunnel` | Reaches the server through a [Cloudflare quick tunnel](#from-a-phone-cloudflare); a missing `cloudflared` is offered through the terminal's own popups |
+| `/remote tailscale` | Reaches it through [Tailscale](#from-a-phone-tailscale) |
+| `/remote share` | Reaches it the way `[remote] access` says |
+| `/remote stop` | Stops the server and the tunnel and signs every browser out |
+
+While the session is shared, a line above the input says so and how many browsers are attached. An approval or a
+question is shown at the terminal and in the browsers at once: the first answer wins and the other side's request
+closes. A secret that an agent asks for is asked at the terminal only. A browser can send prompts, steer, queue a
+follow-up, stop the run and change the mode, model and thinking level; every other command answers that it is not
+available from a shared terminal session. A browser that reconnects resumes from the last frame it saw.
+
 ## From a phone: Cloudflare
 
 ```sh
