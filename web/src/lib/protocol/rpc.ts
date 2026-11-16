@@ -1131,6 +1131,10 @@ export interface Snapshot {
 	 */
 	busy?: boolean;
 	/**
+	 * Why the lead's latest run failed, cleared when its next run starts.
+	 */
+	last_error?: string | null;
+	/**
 	 * The last messages of the conversation, oldest first.
 	 */
 	tail?: MessageRow[];
@@ -1194,6 +1198,10 @@ export interface Snapshot1 {
 	 * Whether the lead is working.
 	 */
 	busy?: boolean;
+	/**
+	 * Why the lead's latest run failed, cleared when its next run starts.
+	 */
+	last_error?: string | null;
 	/**
 	 * The last messages of the conversation, oldest first.
 	 */

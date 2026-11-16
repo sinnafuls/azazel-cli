@@ -5,8 +5,12 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-16
+
 ### Fixed
 
+- A browser joining or reconnecting after a failed run now shows why it stopped, instead of leaving a prompt with no answer. A shared terminal session also includes the reply and tool calls already in progress when a browser joins.
+- Joining while a tool is running no longer duplicates its card or leaves an old copy stuck as running after the call finishes.
 - On Windows, a background session (`azazel bg`, `/bg`, or one that `azazel attach` or `azazel remote` starts again) ended with the command that started it when that command ran in a job that ends its processes, as a terminal, a CI runner or an agent harness may run it. The session now leaves that job when the job allows it. When it does not, `azazel bg` says so, and the session may end with the job; `azazel attach` starts it again.
 
 ### Added
@@ -1115,7 +1119,8 @@ GitHub are its section here.
   browser tools, screen capture and playtesting, media generation and sprite sheets, language servers,
   subscription sign-in, packages, built-in skills, RPC mode, installers and `azazel update`.
 
-[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.7...HEAD
+[Unreleased]: https://github.com/sinnafuls/azazel-cli/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.7...v0.11.0
 [0.10.7]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.6...v0.10.7
 [0.10.6]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.5...v0.10.6
 [0.10.5]: https://github.com/sinnafuls/azazel-cli/compare/v0.10.4...v0.10.5

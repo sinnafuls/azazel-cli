@@ -1,6 +1,21 @@
-import { test, expect } from './stack';
+import { test, expect, Stack } from './stack';
 
 const FINAL = 'Wrote and verified hello.txt.';
+
+test('joining after a failed run shows the error, including after reload', async ({ page }) => {
+	const stack = new Stack();
+	try {
+		await stack.start('auto', true);
+		await page.goto(stack.pair);
+		await page.locator('[data-session-list]:visible a').first().click();
+		const error = page.getByText('invalid request: Test account has no quota', { exact: true });
+		await expect(error).toBeVisible();
+		await page.reload();
+		await expect(error).toBeVisible();
+	} finally {
+		await stack.stop();
+	}
+});
 
 test('pairing from the link signs the device in and lists the session', async ({ page, auto }) => {
 	await page.goto(auto.pair);
@@ -20,6 +35,8 @@ test('the chat shows the run and keeps streaming into it', async ({ page, manual
 	await page.getByRole('button', { name: 'Allow once' }).click();
 	await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toBeVisible();
 	await expect(page.locator('[data-request="approval"]')).toHaveCount(0);
+	await expect(page.locator('[data-tool="write"]')).toHaveCount(1);
+	await expect(page.locator('[data-tool="write"]')).toHaveAttribute('data-status', 'done');
 });
 
 test('answering the approval on one tab closes it on the other', async ({ browser, manual }) => {

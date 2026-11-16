@@ -74,11 +74,67 @@ describe('frame reducer over recorded runs', () => {
 		expect(same.items).toBe(m.items);
 	});
 
+	it('merges a running snapshot tool with its history card and finishes that same card', () => {
+		let m = applySnapshot(emptyModel(), {
+			busy: true,
+			tail: [
+				{
+					entry_id: 'entry-1',
+					timestamp: '',
+					message: {
+						role: 'assistant',
+						content: [{ type: 'tool_call', id: 'c1', name: 'write', input: { path: 'hello.txt' } }]
+					}
+				}
+			],
+			tools: [
+				{
+					agent: 'lead',
+					call_id: 'c1',
+					name: 'write',
+					input: { path: 'hello.txt' },
+					elapsed_ms: 20
+				}
+			]
+		} as never);
+		expect(m.items.filter((i) => i.kind === 'tool')).toHaveLength(1);
+		m = reduce(m, {
+			type: 'tool_end',
+			agent: 'lead',
+			call_id: 'c1',
+			output: {
+				content: [{ type: 'text', text: 'created' }],
+				is_error: false
+			}
+		} as AnyFrame);
+		const tools = m.items.filter((i): i is ToolItem => i.kind === 'tool');
+		expect(tools).toHaveLength(1);
+		expect(tools[0]).toMatchObject({ status: 'done', output: 'created' });
+	});
+
 	it('remembers the position of the last frame for resuming', () => {
 		let m = reduce(emptyModel(), { type: 'agent_start', agent: 'lead', at: 10 });
 		m = reduce(m, { type: 'idle', agent: 'lead', stop: 'stop', at: 42 });
 		m = reduce(m, { type: 'roster', members: [], at: 7 });
 		expect(m.lastAt).toBe(42);
+	});
+
+	it('shows the last run failure when joining after the run ended', () => {
+		const m = applySnapshot(emptyModel(), {
+			busy: false,
+			tail: [],
+			last_error: 'Usage limit reached'
+		} as never);
+		expect(m.items).toContainEqual(
+			expect.objectContaining({
+				kind: 'notice',
+				level: 'error',
+				text: 'Usage limit reached'
+			})
+		);
+		// A resync replaces the transcript instead of adding the error a second time.
+		const again = applySnapshot(m, { busy: false, last_error: 'Usage limit reached' } as never);
+		expect(again.items.filter((i) => i.kind === 'notice')).toHaveLength(1);
 	});
 
 	it('rebuilds a half-written reply and running tools from an attach snapshot', () => {

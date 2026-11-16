@@ -1,6 +1,6 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -51,12 +51,29 @@ export class Stack {
 	}
 
 	/** Starts the session (in `mode`: `manual` waits for approvals) and the server. */
-	async start(mode: 'manual' | 'auto') {
+	async start(mode: 'manual' | 'auto', failure = false) {
 		if (!existsSync(binary))
 			throw new Error(`${binary} is missing: build it with --features test-support,remote`);
 		mkdirSync(join(this.dir, 'project', '.git'), { recursive: true });
 		mkdirSync(join(this.dir, 'home'), { recursive: true });
 		cpSync(join(root, 'tests/fixtures/scripts/web_session.json'), join(this.dir, 'script.json'));
+		if (failure) {
+			writeFileSync(
+				join(this.dir, 'script.json'),
+				JSON.stringify({
+					lead: [
+						{
+							events: [
+								{
+									type: 'error',
+									error: { kind: 'invalid_request', detail: 'Test account has no quota' }
+								}
+							]
+						}
+					]
+				})
+			);
+		}
 		this.sessionId = this.run(['--mode', mode, 'bg', 'create hello']).trim();
 		const wanted = mode === 'manual' ? 'waiting for you' : 'idle';
 		const deadline = Date.now() + 30_000;

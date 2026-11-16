@@ -3055,6 +3055,13 @@
           "description": "Whether the lead is working.",
           "default": false
         },
+        "last_error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why the lead's latest run failed, cleared when its next run starts."
+        },
         "tail": {
           "type": "array",
           "items": {

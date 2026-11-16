@@ -558,15 +558,30 @@ export function applySnapshot(m: Model, snap: SnapshotRemote | undefined, tailLi
 		open[s.agent] = id;
 	}
 	for (const t of snap?.tools ?? []) {
-		seq++;
-		items.push({
-			...newTool(`t${seq}`, t.agent, t.call_id, t.name),
+		const existing = items.findIndex(
+			(i) => i.kind === 'tool' && i.agent === t.agent && i.callId === t.call_id
+		);
+		const prior = existing >= 0 ? (items[existing] as ToolItem) : undefined;
+		const tool: ToolItem = {
+			...(prior ?? newTool(`t${++seq}`, t.agent, t.call_id, t.name)),
 			input: t.input,
 			status: 'running',
 			durationMs: t.elapsed_ms
-		});
+		};
+		if (existing >= 0) items[existing] = tool;
+		else items.push(tool);
 	}
 	items = items.slice();
+	if (snap?.last_error) {
+		seq++;
+		items.push({
+			kind: 'notice',
+			id: `n${seq}`,
+			agent: 'lead',
+			level: 'error',
+			text: snap.last_error
+		});
+	}
 	return {
 		...m,
 		seq,

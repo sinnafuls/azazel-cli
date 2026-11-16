@@ -337,6 +337,7 @@ session's state rather than replaying frames:
 |---|---|
 | `busy` | Whether the lead is working |
 | `tail` | The last messages of the conversation (at most 20), oldest first, as `get_messages` gives them |
+| `last_error?` | The lead's most recent run failure, cleared when a new run starts; lets a late client show why the run stopped |
 | `streaming` | The replies being written: `{"agent", "text", "thinking?"}` with the text so far |
 | `tools` | The tool calls that run: `{"agent", "call_id", "name", "input", "elapsed_ms"}` |
 | `queue` | What clients sent the lead that it has not taken up yet: `{"kind", "text"}` |

@@ -88,6 +88,7 @@ struct Pending {
 pub(crate) struct Live {
     /// The lead is between the start and the end of a run.
     pub(crate) busy: bool,
+    pub(crate) last_error: Option<String>,
     pub(crate) streaming: Vec<Streaming>,
     pub(crate) tools: Vec<(RunningTool, Instant)>,
     pub(crate) queue: VecDeque<Queued>,
@@ -101,6 +102,7 @@ impl Live {
         match kind {
             "agent_start" if lead => {
                 self.busy = true;
+                self.last_error = None;
                 // The run is the answer to the oldest input that starts one; input that
                 // steers starts one only when nothing else waits.
                 let at = self.queue.iter().position(|queued| queued.kind != "steer");
@@ -147,6 +149,9 @@ impl Live {
                 self.tools.retain(|(tool, _)| tool.agent != agent);
                 if lead {
                     self.busy = false;
+                    if kind == "failed" {
+                        self.last_error = frame["error"].as_str().map(str::to_string);
+                    }
                 }
             }
             _ => {}
@@ -512,6 +517,7 @@ impl Host {
         });
         Snapshot {
             busy: self.live.busy,
+            last_error: self.live.last_error.clone(),
             tail,
             streaming: self.live.streaming.clone(),
             tools: self
@@ -927,6 +933,19 @@ mod tests {
             .iter()
             .map(|queued| (queued.kind.as_str(), queued.text.as_str()))
             .collect()
+    }
+
+    #[test]
+    fn the_latest_lead_failure_survives_idle_but_not_a_new_run() {
+        let mut live = Live::default();
+        live.on_frame("failed", &json!({"agent": "lead", "error": "quota exhausted"}));
+        live.on_frame("idle", &json!({"agent": "lead"}));
+        assert_eq!(live.last_error.as_deref(), Some("quota exhausted"));
+        live.on_frame("agent_start", &json!({"agent": "scout-1"}));
+        live.on_frame("failed", &json!({"agent": "scout-1", "error": "other error"}));
+        assert_eq!(live.last_error.as_deref(), Some("quota exhausted"));
+        live.on_frame("agent_start", &json!({"agent": "lead"}));
+        assert!(live.last_error.is_none());
     }
 
     #[test]

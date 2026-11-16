@@ -1173,6 +1173,9 @@ pub struct Attached {
 pub struct Snapshot {
     /// Whether the lead is working.
     pub busy: bool,
+    /// Why the lead's latest run failed, cleared when its next run starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
     /// The last messages of the conversation, oldest first.
     pub tail: Vec<MessageRow>,
     /// The replies being written, one per agent that is writing one.

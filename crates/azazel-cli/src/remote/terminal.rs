@@ -56,6 +56,7 @@ struct Sub {
 
 #[derive(Default)]
 struct Inner {
+    live: crate::host::Live,
     /// The `at` the next frame gets.
     next: u64,
     lines: VecDeque<(u64, String)>,
@@ -66,6 +67,7 @@ struct Inner {
 
 /// What a browser that attaches is given.
 pub(crate) struct Attachment {
+    pub snapshot: Snapshot,
     pub cursor: u64,
     /// The frames after `since`; empty when there was no `since` or it is unknown.
     pub replay: Vec<String>,
@@ -105,6 +107,7 @@ impl Feed {
         inner.next += 1;
         frame["at"] = json!(at);
         let kind = frame["type"].as_str().unwrap_or_default().to_string();
+        inner.live.on_frame(&kind, &frame);
         let request_id = frame["request_id"].as_str().map(str::to_string);
         let line = frame.to_string();
         match (kind.as_str(), request_id) {
@@ -180,6 +183,22 @@ impl Feed {
                 .collect()
         };
         Attachment {
+            snapshot: Snapshot {
+                busy: inner.live.busy,
+                last_error: inner.live.last_error.clone(),
+                streaming: inner.live.streaming.clone(),
+                tools: inner
+                    .live
+                    .tools
+                    .iter()
+                    .map(|(tool, since)| azazel_protocol::RunningTool {
+                        elapsed_ms: since.elapsed().as_millis() as u64,
+                        ..tool.clone()
+                    })
+                    .collect(),
+                queue: inner.live.queue.iter().cloned().collect(),
+                ..Snapshot::default()
+            },
             cursor: inner.next,
             replay: resumed.unwrap_or_default(),
             gap,
@@ -719,7 +738,7 @@ impl TerminalSessions {
                             busy: self.feed.busy(),
                             tail: self.source.tail(),
                             pending: self.open_requests(),
-                            ..Snapshot::default()
+                            ..attachment.snapshot
                         },
                         cursor: attachment.cursor,
                         gap: attachment.gap,
@@ -1147,6 +1166,30 @@ mod tests {
     fn replay_since(feed: &Feed, at: u64) -> Option<Vec<String>> {
         let attached = feed.attach(99, Some(at));
         (!attached.gap).then_some(attached.replay)
+    }
+
+    #[test]
+    fn a_late_browser_sees_the_partial_reply_and_the_last_failure() {
+        let feed = Feed::default();
+        feed.publish(json!({"type": "agent_start", "agent": "lead"}), None);
+        feed.publish(json!({"type": "message_start", "agent": "lead"}), None);
+        feed.publish(
+            json!({"type": "stream", "agent": "lead", "event": {
+                "type": "text_delta", "index": 0, "delta": "Already written"
+            }}),
+            None,
+        );
+        let snapshot = feed.attach(1, None).snapshot;
+        assert!(snapshot.busy);
+        assert_eq!(snapshot.streaming[0].text, "Already written");
+        feed.publish(
+            json!({"type": "failed", "agent": "lead", "error": "quota exhausted"}),
+            None,
+        );
+        let snapshot = feed.attach(2, None).snapshot;
+        assert!(!snapshot.busy);
+        assert!(snapshot.streaming.is_empty());
+        assert_eq!(snapshot.last_error.as_deref(), Some("quota exhausted"));
     }
 
     #[test]
