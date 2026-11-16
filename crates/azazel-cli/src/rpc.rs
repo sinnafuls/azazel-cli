@@ -7,7 +7,7 @@
 //!
 //! The session ends when the input closes.
 
-mod session;
+pub(crate) mod session;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
@@ -59,7 +59,7 @@ impl Out {
     }
 }
 
-fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+pub(crate) fn locked<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
@@ -72,12 +72,12 @@ fn data(value: impl Serialize) -> Result<Value, String> {
 #[derive(Default)]
 pub(crate) struct Waiting {
     next: AtomicU64,
-    approvals: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
-    answers: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    pub(crate) approvals: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
+    pub(crate) answers: Mutex<HashMap<String, oneshot::Sender<Value>>>,
 }
 
 impl Waiting {
-    fn id(&self) -> String {
+    pub(crate) fn id(&self) -> String {
         format!("r{}", self.next.fetch_add(1, Ordering::Relaxed) + 1)
     }
 
@@ -112,7 +112,7 @@ struct Requests {
 }
 
 /// A request line and the count of lead events that go out before it.
-type Fenced = (u64, String);
+pub(crate) type Fenced = (u64, String);
 
 impl Requests {
     fn line(&self, frame: &Frame) {
@@ -137,8 +137,28 @@ impl RpcBridge {
     }
 }
 
+/// The frame that asks the client to decide on `request`.
+pub(crate) fn approval_frame(request_id: String, request: ApprovalRequest) -> Frame {
+    let access = serde_json::to_value(request.access)
+        .ok()
+        .and_then(|access| access.as_str().map(str::to_string))
+        .unwrap_or_default();
+    Frame::ApprovalRequest {
+        request_id,
+        agent: request.agent.id,
+        tool: request.tool,
+        access,
+        subjects: request.subjects,
+        input: request.input,
+        rule: request.rule,
+        note: request.note,
+        destructive: request.destructive,
+        secret: request.secret,
+    }
+}
+
 /// A question as the protocol carries it.
-fn asked(question: &Question) -> azazel_protocol::Question {
+pub(crate) fn asked(question: &Question) -> azazel_protocol::Question {
     let (code, diff) = match &question.excerpt {
         Some(Excerpt::Code(code)) => (Some(code.clone()), None),
         Some(Excerpt::Diff(diff)) => (None, Some(diff.clone())),
@@ -164,7 +184,7 @@ fn asked(question: &Question) -> azazel_protocol::Question {
 }
 
 /// What the client's `value` answers to `question`; `None` when it is no answer to it.
-fn answered(question: &Question, value: Option<Value>) -> Option<Vec<String>> {
+pub(crate) fn answered(question: &Question, value: Option<Value>) -> Option<Vec<String>> {
     if question.kind == AskKind::Confirm {
         // A client that knows no `confirm` shows a text box: the words are taken too.
         let said = match &value {
@@ -189,7 +209,7 @@ fn answered(question: &Question, value: Option<Value>) -> Option<Vec<String>> {
     }
 }
 
-fn level_name(level: Level) -> &'static str {
+pub(crate) fn level_name(level: Level) -> &'static str {
     match level {
         Level::Info => "info",
         Level::Warn => "warn",
@@ -281,22 +301,7 @@ impl UiBridge for RpcBridge {
         let id = self.waiting.id();
         let (reply, answer) = oneshot::channel();
         locked(&self.waiting.approvals).insert(id.clone(), reply);
-        let access = serde_json::to_value(request.access)
-            .ok()
-            .and_then(|access| access.as_str().map(str::to_string))
-            .unwrap_or_default();
-        self.out.line(&Frame::ApprovalRequest {
-            request_id: id,
-            agent: request.agent.id,
-            tool: request.tool,
-            access,
-            subjects: request.subjects,
-            input: request.input,
-            rule: request.rule,
-            note: request.note,
-            destructive: request.destructive,
-            secret: request.secret,
-        });
+        self.out.line(&approval_frame(id, request));
         answer.await.ok()
     }
 
@@ -1015,34 +1020,51 @@ pub(crate) async fn serve_lines(
 }
 
 /// Request lines that wait for the events the lead emitted before them.
-struct Pending {
+pub(crate) struct Pending {
     /// The lead's events written so far, counted from its first.
-    written: u64,
-    lines: VecDeque<Fenced>,
+    pub(crate) written: u64,
+    pub(crate) lines: VecDeque<Fenced>,
 }
 
 impl Pending {
     /// Writes the lines, in the order they came, whose events of the lead have all been written.
     fn flush(&mut self, out: &Out) {
-        while let Some((_, line)) = self.lines.pop_front_if(|(after, _)| *after <= self.written) {
+        self.flush_to(|line| {
             let _ = out.0.send(Some(line));
+        });
+    }
+
+    /// Hands `write` the lines, in the order they came, whose events of the lead have all been
+    /// written.
+    pub(crate) fn flush_to(&mut self, mut write: impl FnMut(String)) {
+        while let Some((_, line)) = self.lines.pop_front_if(|(after, _)| *after <= self.written) {
+            write(line);
         }
     }
 }
 
 /// Writes what the team reports.
 fn team_line(out: &Out, session: &Session, event: TeamEvent) {
+    out.line(&team_frame(session.team.as_deref(), event));
+}
+
+/// What the team reporting `event` is to a client: the frame.
+pub(crate) fn team_frame(team: Option<&Team>, event: TeamEvent) -> Value {
     match event {
-        TeamEvent::Agent { id, event } => out.line(&event_json(&id, &event)),
-        TeamEvent::Input { id, text } => out.line(&Frame::UserInput {
+        TeamEvent::Agent { id, event } => event_json(&id, &event),
+        TeamEvent::Input { id, text } => to_value(&Frame::UserInput {
             kind: "prompt".to_string(),
             text,
             agent: Some(id),
         }),
-        TeamEvent::Roster => out.line(&Frame::Roster {
-            members: session.roster(),
+        TeamEvent::Roster => to_value(&Frame::Roster {
+            members: session::roster_of(team),
         }),
     }
+}
+
+fn to_value(frame: &Frame) -> Value {
+    serde_json::to_value(frame).unwrap_or(Value::Null)
 }
 
 #[cfg(test)]
