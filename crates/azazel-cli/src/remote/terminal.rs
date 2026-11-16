@@ -31,7 +31,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use super::tunnel::{self, Tunnel};
-use crate::app::{Active, App};
+use crate::app::App;
 use crate::print::event_json;
 use crate::rpc::session::{agent_messages_of, messages_of, roster_of, state_of, tree_of};
 use crate::rpc::{
@@ -146,10 +146,6 @@ impl Feed {
     }
 
     /// The frames after `at`, or `None` when the ring no longer reaches back to it.
-    pub(crate) fn replay_since(&self, at: u64) -> Option<Vec<String>> {
-        Self::since(&self.guard(), at)
-    }
-
     fn since(inner: &Inner, at: u64) -> Option<Vec<String>> {
         let first = inner.lines.front().map_or(inner.next, |(first, _)| *first);
         if at >= inner.next || at + 1 < first {
@@ -460,8 +456,6 @@ impl UiBridge for SharedBridge {
 
 /// What a browser asked the terminal to do, with the way back to its answer.
 pub(crate) struct Web {
-    /// The browser's connection, which is not told what it sent itself.
-    pub conn: u64,
     pub what: Asked,
     pub reply: oneshot::Sender<Result<Value, String>>,
 }
@@ -622,17 +616,17 @@ impl TerminalSessions {
     }
 
     /// Hands the terminal's loop a command and waits for what it says.
-    async fn ask_terminal(&self, conn: u64, what: Asked) -> Result<Value, String> {
+    async fn ask_terminal(&self, what: Asked) -> Result<Value, String> {
         let (reply, answer) = oneshot::channel();
         self.web
-            .send(Web { conn, what, reply })
+            .send(Web { what, reply })
             .map_err(|_| "the terminal is no longer sharing this session".to_string())?;
         answer
             .await
             .map_err(|_| "the terminal did not answer".to_string())?
     }
 
-    async fn run(&self, conn: u64, command: Command) -> Result<Value, String> {
+    async fn run(&self, command: Command) -> Result<Value, String> {
         let blocks = |images: Vec<azazel_protocol::Image>| -> Vec<Block> {
             images
                 .into_iter()
@@ -678,30 +672,24 @@ impl TerminalSessions {
                 Ok(Value::Null)
             }
             Command::Prompt { text, images, .. } => {
-                self.ask_terminal(
-                    conn,
-                    Asked::Prompt {
-                        text,
-                        images: blocks(images),
-                    },
-                )
+                self.ask_terminal(Asked::Prompt {
+                    text,
+                    images: blocks(images),
+                })
                 .await
             }
             Command::Steer { text, images } => {
-                self.ask_terminal(
-                    conn,
-                    Asked::Steer {
-                        text,
-                        images: blocks(images),
-                    },
-                )
+                self.ask_terminal(Asked::Steer {
+                    text,
+                    images: blocks(images),
+                })
                 .await
             }
-            Command::FollowUp { text } => self.ask_terminal(conn, Asked::FollowUp { text }).await,
-            Command::Abort => self.ask_terminal(conn, Asked::Abort).await,
-            Command::SetMode { mode } => self.ask_terminal(conn, Asked::SetMode(mode)).await,
-            Command::SetModel { chain } => self.ask_terminal(conn, Asked::SetModel(chain)).await,
-            Command::SetThinking { level } => self.ask_terminal(conn, Asked::SetThinking(level)).await,
+            Command::FollowUp { text } => self.ask_terminal(Asked::FollowUp { text }).await,
+            Command::Abort => self.ask_terminal(Asked::Abort).await,
+            Command::SetMode { mode } => self.ask_terminal(Asked::SetMode(mode)).await,
+            Command::SetModel { chain } => self.ask_terminal(Asked::SetModel(chain)).await,
+            Command::SetThinking { level } => self.ask_terminal(Asked::SetThinking(level)).await,
             _ => Err("not available from a shared terminal session".to_string()),
         }
     }
@@ -768,7 +756,7 @@ impl TerminalSessions {
                         Command::FollowUp { text } => Some(("follow_up", text.clone())),
                         _ => None,
                     };
-                    let outcome = self.run(conn, command).await;
+                    let outcome = self.run(command).await;
                     if outcome.is_ok()
                         && let Some((kind, text)) = echo
                     {
@@ -838,7 +826,7 @@ pub(crate) enum Event {
     /// A browser asked for something.
     Web(Web),
     /// The tunnel asked for with `/remote tunnel` or `/remote tailscale` is up, or is not.
-    Tunnel(Result<Tunnel, String>, Access),
+    Tunnel(Result<Box<Tunnel>, String>, Access),
 }
 
 /// A session shared from this terminal: the server, what it serves, and what to undo.
@@ -856,7 +844,8 @@ impl Sharing {
     /// Starts the server on this machine and puts the shared bridge in place of the terminal's.
     pub(crate) async fn start(
         app: &Arc<App>,
-        active: &Active,
+        lead: &AgentHandle,
+        session: &Arc<SessionStore>,
         web: mpsc::UnboundedSender<Web>,
     ) -> Result<Sharing, String> {
         let services = app.registry.services.clone();
@@ -870,8 +859,8 @@ impl Sharing {
         let remote = &app.config.remote;
         let source = Arc::new(LocalSource {
             app: app.clone(),
-            lead: active.lead.clone(),
-            session: active.session.clone(),
+            lead: lead.clone(),
+            session: session.clone(),
             team: team.clone(),
         });
         let sessions = TerminalSessions::new(source, feed.clone(), waiting.clone(), web, remote.redact);
@@ -879,14 +868,14 @@ impl Sharing {
             .await
             .map_err(|e| format!("could not start the server: {e}"))?;
         let (lines, requests) = mpsc::unbounded_channel();
-        let counter = active.lead.clone();
+        let counter = lead.clone();
         let out = Requests::new(lines, Arc::new(move || counter.emitted()));
         services.insert(Arc::new(Ui(Arc::new(SharedBridge::new(
             tui_bridge.clone(),
             out,
             waiting.clone(),
         )))));
-        let pump = pump(active.lead.clone(), team, requests, feed.clone());
+        let pump = pump(lead.clone(), team, requests, feed.clone());
         Ok(Sharing {
             server,
             tunnel: None,
@@ -896,6 +885,11 @@ impl Sharing {
             services,
             pump,
         })
+    }
+
+    /// The terminal's own bridge, for questions only the person at the terminal answers.
+    pub(crate) fn tui_bridge(&self) -> Arc<dyn UiBridge> {
+        self.tui_bridge.clone()
     }
 
     pub(crate) fn port(&self) -> u16 {
@@ -1150,21 +1144,26 @@ mod tests {
         assert_eq!(out.len(), 1);
     }
 
+    fn replay_since(feed: &Feed, at: u64) -> Option<Vec<String>> {
+        let attached = feed.attach(99, Some(at));
+        (!attached.gap).then_some(attached.replay)
+    }
+
     #[test]
     fn a_browser_resumes_after_the_frame_it_saw_and_learns_of_a_gap() {
         let feed = Feed::default();
         for n in 0..3 {
             feed.publish(json!({ "type": "idle", "n": n }), None);
         }
-        let after_first = feed.replay_since(0).unwrap();
+        let after_first = replay_since(&feed, 0).unwrap();
         assert_eq!(after_first.len(), 2);
         assert!(after_first[0].contains("\"at\":1"));
-        assert_eq!(feed.replay_since(2).unwrap().len(), 0);
-        assert!(feed.replay_since(9).is_none());
+        assert_eq!(replay_since(&feed, 2).unwrap().len(), 0);
+        assert!(replay_since(&feed, 9).is_none());
         for _ in 0..RING + 10 {
             feed.publish(json!({ "type": "idle" }), None);
         }
-        assert!(feed.replay_since(0).is_none());
+        assert!(replay_since(&feed, 0).is_none());
     }
 
     struct Stub;
