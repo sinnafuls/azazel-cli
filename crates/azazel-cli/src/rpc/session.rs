@@ -4,7 +4,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use azazel_agent::{AgentCmd, UserInput};
+use azazel_agent::{AgentCmd, AgentHandle, UserInput};
 use azazel_ai::Role;
 use azazel_ai::providers::presets;
 use azazel_core::session::{Entry, SessionSummary};
@@ -13,12 +13,12 @@ use azazel_protocol::{
     CommandRow, ExportFormat, Exported, Member, MessageRow, RewindWhat, SessionCopy, SessionRow, State, Todo,
     TreeRow, Usage,
 };
-use azazel_team::{Goals, MemberInfo, MemberState};
+use azazel_team::{Goals, MemberInfo, MemberState, Team};
 use azazel_tools::{TodoStatus, TodoStore};
 use serde_json::Value;
 
 use super::{Session, data};
-use crate::app::Open;
+use crate::app::{App, Open};
 use crate::export::{Format, default_file_name, render};
 use crate::tui::{REWIND_NOTE, is_note};
 
@@ -206,84 +206,194 @@ fn rewind_point(branch: &[Entry], entry_id: &str) -> Result<(Entry, String, Stri
     Ok((branch[checkpoint_at].clone(), commit.clone(), prompt))
 }
 
+/// The members of `team`, the lead first.
+pub(crate) fn roster_of(team: Option<&Team>) -> Vec<Member> {
+    team.map(|team| team.list().iter().map(member).collect())
+        .unwrap_or_default()
+}
+
+/// Where a session stands: what `get_state` answers. `busy` is the caller's: a prompt handed to
+/// the lead is work before the lead's own status says so.
+pub(crate) fn state_of(
+    app: &App,
+    lead: &AgentHandle,
+    session: &SessionStore,
+    team: Option<&Team>,
+    busy: bool,
+) -> State {
+    let status = lead.status();
+    let (services, router) = (&app.registry.services, &app.router);
+    State {
+        session_id: session.id(),
+        session_file: session.path().display().to_string(),
+        name: session.name(),
+        cwd: app.paths.cwd.display().to_string(),
+        mode: app.permissions.mode().to_string(),
+        busy,
+        turn: status.turn,
+        model: status.model.map(|model| model.to_string()),
+        via: status.via.map(|via| via.to_string()),
+        virtual_models: app.virtual_models(),
+        chain: status.chain.iter().map(ToString::to_string).collect(),
+        thinking: status.thinking.to_string(),
+        tier: app.router.tier().map(|tier| tier.as_str().to_string()),
+        context_tokens: status.context_tokens,
+        context_window: status.context_window,
+        usage: usage(&status.usage),
+        requests: status.requests,
+        agents: roster_of(team),
+        branch: azazel_core::prompt::git_branch(&app.paths.project_root),
+        coordinator: app.coordinator.is_on(),
+        agent: app.lead_agent.name(),
+        primary_agents: app
+            .lead_agent
+            .primaries()
+            .iter()
+            .map(|def| azazel_protocol::PrimaryAgent {
+                name: def.name.clone(),
+                description: def.description.clone(),
+                color: def.color.clone(),
+            })
+            .collect(),
+        goal: services
+            .get::<Goals>()
+            .and_then(|goals| goals.current())
+            .filter(|goal| goal.status.is_open())
+            .map(|goal| format!("goal {}, attempt {}", goal.status.label(), goal.iteration + 1)),
+        todo: services
+            .get::<TodoStore>()
+            .map(|store| store.get(&lead.id))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|item| Todo {
+                text: item.text,
+                status: match item.status {
+                    TodoStatus::Pending => "pending",
+                    TodoStatus::InProgress => "in_progress",
+                    TodoStatus::Done => "done",
+                }
+                .to_string(),
+            })
+            .collect(),
+        roles: router
+            .roles()
+            .keys()
+            .filter_map(|role| {
+                let first = router.resolve(&[azazel_ai::ModelSpec::Role(role.clone())]);
+                Some((role.clone(), first.first()?.to_string()))
+            })
+            .collect(),
+        // A run that is being gone on with has no end in the file yet either.
+        interrupted: (!busy)
+            .then(|| session.interrupted_run(None))
+            .flatten()
+            .map(|run| run.describe()),
+    }
+}
+
+/// `get_messages`: a page of the branch of `session` that ends at `leaf` (the current one by
+/// default).
+pub(crate) fn messages_of(
+    session: &SessionStore,
+    leaf: Option<&str>,
+    before: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Value, String> {
+    if let Some(leaf) = leaf
+        && session.entry(leaf).is_none()
+    {
+        return Err(format!("no entry `{leaf}` in this session"));
+    }
+    data(message_page(session.branch(leaf), before, limit)?)
+}
+
+/// `get_agent_messages`: a page of the transcript of sub-agent `agent`.
+pub(crate) fn agent_messages_of(
+    team: Option<&Team>,
+    agent: &str,
+    before: Option<&str>,
+    limit: Option<u32>,
+) -> Result<Value, String> {
+    let team = team.ok_or("there are no sub-agents in this session")?;
+    let path = team
+        .transcript_path(agent)
+        .ok_or_else(|| format!("no agent `{agent}` in this session"))?;
+    // An agent that has not written anything yet has no transcript file.
+    let entries = if path.exists() {
+        SessionStore::branch_of(&path)
+            .map_err(|e| format!("could not read the transcript of `{agent}`: {e}"))?
+    } else {
+        Vec::new()
+    };
+    data(message_page(entries, before, limit)?)
+}
+
+/// The rows of the tree of `session`.
+pub(crate) fn tree_of(session: &SessionStore) -> Vec<TreeRow> {
+    let mut current: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
+    let entries = session.entries();
+    // What a run noted hangs from the branch rather than being on it.
+    for entry in &entries {
+        if entry.kind.is_journal()
+            && entry
+                .parent_id
+                .as_ref()
+                .is_some_and(|parent| current.contains(parent))
+        {
+            current.insert(entry.id.clone());
+        }
+    }
+    entries
+        .into_iter()
+        .map(|entry| tree_row(entry, &current))
+        .collect()
+}
+
+/// What `run_command` takes: the commands of extensions, the reports, and the skills.
+pub(crate) fn commands_of(app: &App) -> Vec<CommandRow> {
+    let mut rows: Vec<CommandRow> = crate::reports::REPORTS
+        .iter()
+        .map(|(name, description)| CommandRow {
+            name: name.to_string(),
+            description: description.to_string(),
+        })
+        .collect();
+    for command in app.registry.commands() {
+        if rows.iter().any(|row| row.name == command.name) {
+            continue;
+        }
+        rows.push(CommandRow {
+            description: match &command.argument_hint {
+                Some(hint) => format!("{} {hint}", command.description),
+                None => command.description,
+            },
+            name: command.name,
+        });
+    }
+    for skill in app.registry.skills.list() {
+        if skill.user_invocable {
+            rows.push(CommandRow {
+                name: format!("skill:{}", skill.name),
+                description: skill.description,
+            });
+        }
+    }
+    rows
+}
+
 impl Session {
     pub(super) fn roster(&self) -> Vec<Member> {
-        self.team
-            .as_ref()
-            .map(|team| team.list().iter().map(member).collect())
-            .unwrap_or_default()
+        roster_of(self.team.as_deref())
     }
 
     pub(super) fn state(&self) -> State {
-        let status = self.active.lead.status();
-        let (services, router) = (&self.app.registry.services, &self.app.router);
-        State {
-            session_id: self.active.session.id(),
-            session_file: self.active.session.path().display().to_string(),
-            name: self.active.session.name(),
-            cwd: self.app.paths.cwd.display().to_string(),
-            mode: self.app.permissions.mode().to_string(),
-            busy: self.busy(),
-            turn: status.turn,
-            model: status.model.map(|model| model.to_string()),
-            via: status.via.map(|via| via.to_string()),
-            virtual_models: self.app.virtual_models(),
-            chain: status.chain.iter().map(ToString::to_string).collect(),
-            thinking: status.thinking.to_string(),
-            tier: self.app.router.tier().map(|tier| tier.as_str().to_string()),
-            context_tokens: status.context_tokens,
-            context_window: status.context_window,
-            usage: usage(&status.usage),
-            requests: status.requests,
-            agents: self.roster(),
-            branch: azazel_core::prompt::git_branch(&self.app.paths.project_root),
-            coordinator: self.app.coordinator.is_on(),
-            agent: self.app.lead_agent.name(),
-            primary_agents: self
-                .app
-                .lead_agent
-                .primaries()
-                .iter()
-                .map(|def| azazel_protocol::PrimaryAgent {
-                    name: def.name.clone(),
-                    description: def.description.clone(),
-                    color: def.color.clone(),
-                })
-                .collect(),
-            goal: services
-                .get::<Goals>()
-                .and_then(|goals| goals.current())
-                .filter(|goal| goal.status.is_open())
-                .map(|goal| format!("goal {}, attempt {}", goal.status.label(), goal.iteration + 1)),
-            todo: services
-                .get::<TodoStore>()
-                .map(|store| store.get(&self.active.lead.id))
-                .unwrap_or_default()
-                .into_iter()
-                .map(|item| Todo {
-                    text: item.text,
-                    status: match item.status {
-                        TodoStatus::Pending => "pending",
-                        TodoStatus::InProgress => "in_progress",
-                        TodoStatus::Done => "done",
-                    }
-                    .to_string(),
-                })
-                .collect(),
-            roles: router
-                .roles()
-                .keys()
-                .filter_map(|role| {
-                    let first = router.resolve(&[azazel_ai::ModelSpec::Role(role.clone())]);
-                    Some((role.clone(), first.first()?.to_string()))
-                })
-                .collect(),
-            // A run that is being gone on with has no end in the file yet either.
-            interrupted: (!self.busy())
-                .then(|| self.active.session.interrupted_run(None))
-                .flatten()
-                .map(|run| run.describe()),
-        }
+        state_of(
+            &self.app,
+            &self.active.lead,
+            &self.active.session,
+            self.team.as_deref(),
+            self.busy(),
+        )
     }
 
     /// The open session as its file holds it.
@@ -304,34 +414,7 @@ impl Session {
 
     /// What `run_command` takes: the commands of extensions, the reports, and the skills.
     pub(super) fn commands(&self) -> Vec<CommandRow> {
-        let mut rows: Vec<CommandRow> = crate::reports::REPORTS
-            .iter()
-            .map(|(name, description)| CommandRow {
-                name: name.to_string(),
-                description: description.to_string(),
-            })
-            .collect();
-        for command in self.app.registry.commands() {
-            if rows.iter().any(|row| row.name == command.name) {
-                continue;
-            }
-            rows.push(CommandRow {
-                description: match &command.argument_hint {
-                    Some(hint) => format!("{} {hint}", command.description),
-                    None => command.description,
-                },
-                name: command.name,
-            });
-        }
-        for skill in self.app.registry.skills.list() {
-            if skill.user_invocable {
-                rows.push(CommandRow {
-                    name: format!("skill:{}", skill.name),
-                    description: skill.description,
-                });
-            }
-        }
-        rows
+        commands_of(&self.app)
     }
 
     /// Replaces the open session with another one, keeping the model selection. When the other
@@ -442,13 +525,7 @@ impl Session {
         before: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Value, String> {
-        let session = &self.active.session;
-        if let Some(leaf) = leaf
-            && session.entry(leaf).is_none()
-        {
-            return Err(format!("no entry `{leaf}` in this session"));
-        }
-        data(message_page(session.branch(leaf), before, limit)?)
+        messages_of(&self.active.session, leaf, before, limit)
     }
 
     /// The transcript of sub-agent `agent`, a page of it like [`Self::messages`].
@@ -458,42 +535,11 @@ impl Session {
         before: Option<&str>,
         limit: Option<u32>,
     ) -> Result<Value, String> {
-        let team = self
-            .team
-            .as_ref()
-            .ok_or("there are no sub-agents in this session")?;
-        let path = team
-            .transcript_path(agent)
-            .ok_or_else(|| format!("no agent `{agent}` in this session"))?;
-        // An agent that has not written anything yet has no transcript file.
-        let entries = if path.exists() {
-            SessionStore::branch_of(&path)
-                .map_err(|e| format!("could not read the transcript of `{agent}`: {e}"))?
-        } else {
-            Vec::new()
-        };
-        data(message_page(entries, before, limit)?)
+        agent_messages_of(self.team.as_deref(), agent, before, limit)
     }
 
     pub(super) fn tree(&self) -> Vec<TreeRow> {
-        let session = &self.active.session;
-        let mut current: HashSet<String> = session.branch(None).into_iter().map(|entry| entry.id).collect();
-        let entries = session.entries();
-        // What a run noted hangs from the branch rather than being on it.
-        for entry in &entries {
-            if entry.kind.is_journal()
-                && entry
-                    .parent_id
-                    .as_ref()
-                    .is_some_and(|parent| current.contains(parent))
-            {
-                current.insert(entry.id.clone());
-            }
-        }
-        entries
-            .into_iter()
-            .map(|entry| tree_row(entry, &current))
-            .collect()
+        tree_of(&self.active.session)
     }
 
     /// Moves the session to another entry of its tree, or with `before` to the entry before
