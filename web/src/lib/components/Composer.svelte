@@ -6,7 +6,7 @@
 	import { toasts } from '$lib/toasts.svelte';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import Square from '@lucide/svelte/icons/square';
-	import Paperclip from '@lucide/svelte/icons/paperclip';
+	import Plus from '@lucide/svelte/icons/plus';
 	import X from '@lucide/svelte/icons/x';
 
 	let { session, canControl }: { session: Session; canControl: boolean } = $props();
@@ -142,7 +142,7 @@
 	<div class="col">
 		{#if mention}
 			<ul
-				class="float menu mb-2 overflow-hidden rounded-xl p-1"
+				class="float menu mb-2 overflow-hidden rounded-[20px] p-1.5"
 				role="listbox"
 				aria-label="Mentions"
 			>
@@ -188,7 +188,7 @@
 			</ul>
 		{/if}
 
-		<div class="composer flex items-end gap-1 p-1.5">
+		<div class="composer flex items-end gap-1.5 p-1.5">
 			<input
 				bind:this={fileInput}
 				type="file"
@@ -203,10 +203,10 @@
 			/>
 			<button
 				type="button"
-				class="btn btn-quiet btn-icon"
+				class="btn btn-round btn-icon"
 				aria-label="Attach an image"
 				disabled={!canControl}
-				onclick={() => fileInput?.click()}><Paperclip class="size-[18px]" /></button
+				onclick={() => fileInput?.click()}><Plus class="size-5" /></button
 			>
 			<textarea
 				bind:this={ta}
@@ -226,7 +226,7 @@
 				aria-label="Message"
 				disabled={!canControl}
 				enterkeyhint="enter"
-				class="placeholder:text-faint max-h-[200px] min-h-11 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[11px] text-[15px] leading-[22px] outline-none fine:min-h-9 fine:py-[7px]"
+				class="placeholder:text-faint max-h-[200px] min-h-11 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[11px] text-base leading-[22px] outline-none fine:min-h-9 fine:py-[7px]"
 			></textarea>
 			{#if busy}
 				<button

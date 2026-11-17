@@ -26,7 +26,7 @@
 	);
 	const home = (p: string) =>
 		p.replace(/^\/home\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/, '~');
-	const frame = $derived(card ? 'surface divide-y overflow-hidden rounded-xl' : 'space-y-0.5');
+	const frame = $derived(card ? 'group-card divide-y' : 'space-y-1');
 </script>
 
 <nav aria-label="Sessions" data-session-list>
@@ -44,13 +44,13 @@
 		</ul>
 	{:else if sessions.error}
 		<p
-			class="text-destructive rounded-lg px-3 py-3 text-sm {card ? 'surface px-4' : ''}"
+			class="text-destructive rounded-lg px-3 py-3 text-sm {card ? 'group-card px-4' : ''}"
 			role="alert"
 		>
 			{sessions.error}
 		</p>
 	{:else if list.length === 0}
-		<div class="px-3 py-6 {card ? 'surface rounded-xl px-5' : ''}">
+		<div class="px-3 py-6 {card ? 'group-card px-5' : ''}">
 			<p class="text-sm font-medium tracking-[-0.015em]">No sessions running</p>
 			<p class="text-muted-foreground mt-1 text-sm leading-relaxed">
 				Start one on this machine and it shows up here.
@@ -66,13 +66,13 @@
 				<li>
 					<a
 						href="/s/{encodeURIComponent(s.id)}"
-						class="row flex gap-3 {card ? 'in-card px-4 py-3.5' : 'rounded-lg px-3 py-2.5'}"
+						class="row flex gap-3 {card ? 'in-card px-4 py-4' : 'rounded-[14px] px-3 py-2.5'}"
 						aria-current={current === s.id ? 'page' : undefined}
 						onclick={onnavigate}
 					>
 						<StateDot state={s.state} class="mt-[5px]" />
 						<span class="min-w-0 flex-1">
-							<span class="block truncate text-sm font-medium tracking-[-0.015em]"
+							<span class="block truncate text-[15px] font-medium tracking-[-0.015em]"
 								>{s.name ?? basename(s.cwd)}</span
 							>
 							<span class="mt-0.5 flex items-baseline gap-3">

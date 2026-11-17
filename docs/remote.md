@@ -39,6 +39,13 @@ While it runs, type `l` and Enter for a new control link, `v` for a new view lin
 void every link, and `q` to stop. Ending the server signs every device out; paired devices are not kept across
 restarts.
 
+## Reading a session
+
+The page shows what the lead says as text and what it does as quiet rows: tool calls that follow one another are one
+row that says what they did (`Created a file, ran 2 commands`), with a spinner while one runs and the last lines of a
+command that is still running beneath it. The row opens a sheet with the calls on a timeline; each call opens in full,
+with its command or input, the change it made and its output, and a button that copies each.
+
 ## The model picker
 
 The model chip of a session names the role the lead follows and the model it answers with, `@lead · deepseek/deepseek-chat`,

@@ -37,8 +37,15 @@ test('the chat shows the run and keeps streaming into it', async ({ page, manual
 	await page.getByRole('button', { name: 'Allow once' }).click();
 	await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toBeVisible();
 	await expect(page.locator('[data-request="approval"]')).toHaveCount(0);
-	await expect(page.locator('[data-tool="write"]')).toHaveCount(1);
-	await expect(page.locator('[data-tool="write"]')).toHaveAttribute('data-status', 'done');
+	// The write and the read that follows it are told as one run, which opens on its steps.
+	await page.getByRole('button', { name: /Created a file, read a file/ }).click();
+	const steps = page.locator('dialog[open]');
+	await expect(steps.getByRole('heading', { name: 'Created a file, read a file' })).toBeVisible();
+	await expect(steps.locator('[data-tool="write"]')).toHaveAttribute('data-status', 'done');
+	await steps.locator('[data-tool="write"]').click();
+	await expect(steps.getByRole('heading', { name: 'Changes' })).toBeVisible();
+	await steps.getByRole('button', { name: 'Back' }).click();
+	await expect(steps.locator('[data-tool="read"]')).toHaveAttribute('data-status', 'done');
 });
 
 test('answering the approval on one tab closes it on the other', async ({ browser, manual }) => {

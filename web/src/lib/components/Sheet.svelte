@@ -10,6 +10,7 @@
 	import { viewport } from '$lib/media.svelte';
 	import StateDot from './StateDot.svelte';
 	import X from '@lucide/svelte/icons/x';
+	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
 	import { cn } from '$lib/utils';
 
 	let {
@@ -20,8 +21,10 @@
 		dismissible = true,
 		attention = false,
 		onclose,
+		onback,
 		children,
 		footer,
+		actions,
 		class: className
 	}: {
 		open: boolean;
@@ -32,8 +35,12 @@
 		/** Marks the sheet with the accent: it is waiting for you. */
 		attention?: boolean;
 		onclose?: () => void;
+		/** Shows a back button instead of the close button: the sheet is a step into something. */
+		onback?: () => void;
 		children: Snippet;
 		footer?: Snippet;
+		/** Buttons on the right of the title. */
+		actions?: Snippet;
 		class?: string;
 	} = $props();
 
@@ -79,8 +86,8 @@
 	class={cn(
 		'sheet text-foreground m-0 w-full max-w-none overflow-hidden p-0',
 		modal
-			? 'float mt-auto max-h-[88dvh] rounded-t-2xl border-x-0 border-b-0 md:m-auto md:max-h-[80dvh] md:max-w-md md:rounded-xl md:border'
-			: 'surface-2 relative mx-auto mb-3 max-h-[56dvh] w-[calc(100%-4rem)] max-w-[43rem] rounded-xl',
+			? 'float mt-auto max-h-[90dvh] rounded-t-[28px] border-x-0 border-b-0 md:m-auto md:max-h-[82dvh] md:max-w-lg md:rounded-[24px] md:border'
+			: 'surface-2 relative mx-auto mb-3 max-h-[56dvh] w-[calc(100%-2rem)] max-w-[43rem] rounded-[24px] md:w-[calc(100%-4rem)]',
 		className
 	)}
 	data-attention={attention && !modal ? '' : undefined}
@@ -103,34 +110,46 @@
 					onpointercancel={up}
 					role="presentation"
 				>
-					<span class="bg-input/60 h-1 w-9 rounded-full" aria-hidden="true"></span>
+					<span class="bg-input/50 h-[5px] w-10 rounded-full" aria-hidden="true"></span>
 				</div>
 			{/if}
-			<header class="flex shrink-0 items-start gap-3 px-4 pt-3 pb-3 md:px-5 md:pt-4">
-				{#if attention}<StateDot state="waiting for you" class="mt-[7px]" />{/if}
-				<div class="min-w-0 flex-1">
+			<header
+				class="grid shrink-0 grid-cols-[2.75rem_minmax(0,1fr)_2.75rem] items-center gap-2 px-3 pt-2 pb-3 md:px-4 md:pt-4 fine:grid-cols-[2.25rem_minmax(0,1fr)_2.25rem]"
+			>
+				<div class="flex justify-start">
+					{#if onback}
+						<button type="button" class="btn btn-round btn-icon" aria-label="Back" onclick={onback}>
+							<ChevronLeft class="size-[18px]" />
+						</button>
+					{:else if dismissible && onclose}
+						<button
+							type="button"
+							class="btn btn-round btn-icon"
+							aria-label="Close"
+							onclick={onclose}
+						>
+							<X class="size-[18px]" />
+						</button>
+					{:else if attention}
+						<StateDot state="waiting for you" class="ml-2" />
+					{/if}
+				</div>
+				<div class="min-w-0 text-center">
 					<h2
 						id={titleId}
 						bind:this={heading}
 						tabindex="-1"
-						class="text-[15px] leading-6 font-semibold tracking-[-0.02em] outline-none"
+						class="truncate text-[17px] leading-6 font-semibold tracking-[-0.02em] outline-none"
 					>
 						{title}
 					</h2>
-					{#if subtitle}<p class="text-muted-foreground meta mt-0.5 truncate">{subtitle}</p>{/if}
+					{#if subtitle}<p class="text-muted-foreground mt-0.5 truncate text-xs">{subtitle}</p>{/if}
 				</div>
-				{#if dismissible && onclose}
-					<button
-						type="button"
-						class="btn btn-quiet btn-icon -mt-1.5 -mr-2 md:-mt-1"
-						aria-label="Close"
-						onclick={onclose}
-					>
-						<X class="size-4" />
-					</button>
-				{/if}
+				<div class="flex justify-end">
+					{#if actions}{@render actions()}{/if}
+				</div>
 			</header>
-			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 pb-4 md:px-5">
+			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-4 pb-5 md:px-5">
 				{@render children()}
 			</div>
 			{#if footer}

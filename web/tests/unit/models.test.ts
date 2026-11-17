@@ -51,3 +51,17 @@ describe('the roles of the picker', () => {
 		expect(pickableRoles(null, '')).toEqual([]);
 	});
 });
+
+import { describeSteps, stepVerb } from '$lib/tools';
+
+describe('a run of tool calls', () => {
+	it('is told in a few words, kind by kind in the order they came', () => {
+		expect(describeSteps(['write', 'shell', 'shell'])).toBe('Created a file, ran 2 commands');
+		expect(describeSteps(['shell'])).toBe('Ran a command');
+		expect(describeSteps(['read', 'grep', 'read', 'mystery'])).toBe(
+			'Read 2 files, searched the code, used a tool'
+		);
+		expect(stepVerb('edit', true)).toBe('Editing');
+		expect(stepVerb('shell', false)).toBe('Ran');
+	});
+});

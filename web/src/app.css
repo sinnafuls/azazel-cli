@@ -14,7 +14,8 @@
  *   - the main action is ink (white on dark, black on light); one accent, ember, means
  *     "this needs you" and keyboard focus, nothing else;
  *   - status colours (blue working, green done, red failed) carry state and never decorate;
- *   - radii: 6 controls, 8 cards, 12 panels and the composer, 16 a sheet on a phone;
+ *   - shapes: controls are pills and circles; cards and grouped rows 20, the composer 26 and
+ *     a sheet 28 at the top, so the page reads as a few soft objects rather than many boxes;
  *   - Geist with tight tracking for the interface, Geist Mono for paths, commands and numbers.
  *
  * Three layers: primitives (OKLCH), semantic roles (what components use), and Tailwind's @theme
@@ -40,13 +41,13 @@
 	color-scheme: light dark;
 
 	/* surface ladder */
-	--rail: light-dark(oklch(0.965 0.002 260), oklch(0.118 0.003 260));
-	--background: light-dark(oklch(0.992 0.001 260), oklch(0.158 0.003 260));
-	--card: light-dark(oklch(1 0 0), oklch(0.192 0.004 260));
-	--raised: light-dark(oklch(0.95 0.003 260), oklch(0.238 0.005 260));
-	--overlay: light-dark(oklch(1 0 0), oklch(0.205 0.004 260));
-	--inset: light-dark(oklch(0.973 0.002 260), oklch(0.128 0.003 260));
-	--field: light-dark(oklch(1 0 0), oklch(0.135 0.003 260));
+	--rail: light-dark(oklch(0.958 0.002 260), oklch(0.128 0.002 260));
+	--background: light-dark(oklch(0.988 0.001 260), oklch(0.168 0.002 260));
+	--card: light-dark(oklch(1 0 0), oklch(0.218 0.003 260));
+	--raised: light-dark(oklch(0.945 0.003 260), oklch(0.262 0.004 260));
+	--overlay: light-dark(oklch(1 0 0), oklch(0.198 0.003 260));
+	--inset: light-dark(oklch(0.966 0.002 260), oklch(0.146 0.002 260));
+	--field: light-dark(oklch(1 0 0), oklch(0.15 0.002 260));
 
 	/* a wash over whatever is beneath: the hover and the pressed state of a row */
 	--hover: light-dark(oklch(0.2 0.01 260 / 0.045), oklch(1 0 0 / 0.055));
@@ -183,13 +184,14 @@
 	--text-2xl: 1.5rem;
 	--text-2xl--line-height: 2rem;
 
-	/* radius: controls 6, cards 8, panels and the composer 12, a sheet on a phone 16 */
-	--radius-xs: 4px;
-	--radius-sm: 5px;
-	--radius-md: 6px;
-	--radius-lg: 8px;
-	--radius-xl: 12px;
-	--radius-2xl: 16px;
+	/* radius: small marks 6, fields and rows 12, wells 14, cards 20, the composer 26, a sheet 28 */
+	--radius-xs: 6px;
+	--radius-sm: 8px;
+	--radius-md: 12px;
+	--radius-lg: 14px;
+	--radius-xl: 20px;
+	--radius-2xl: 28px;
+	--radius-pill: 999px;
 
 	--shadow-e1: var(--elev-1), var(--highlight);
 	--shadow-e2: var(--elev-2), var(--highlight);
@@ -212,7 +214,7 @@
 		background: var(--background);
 		color: var(--foreground);
 		font-family: var(--font-sans);
-		font-size: 14px;
+		font-size: 15px;
 		line-height: 1.5;
 		letter-spacing: -0.011em;
 		-webkit-font-smoothing: antialiased;
@@ -318,8 +320,8 @@
 	/* The message box: the nearest thing on the page, with an edge that reads as a control. */
 	.composer {
 		background: var(--card);
-		border: 1px solid var(--input);
-		border-radius: var(--radius-xl);
+		border: 1px solid var(--border-strong);
+		border-radius: 1.625rem;
 		box-shadow: var(--elev-2), var(--highlight);
 		transition:
 			border-color var(--dur) var(--ease-out),
@@ -374,10 +376,10 @@
 		justify-content: center;
 		gap: 0.5rem;
 		height: 2.75rem;
-		padding: 0 0.875rem;
+		padding: 0 1.125rem;
 		border: 1px solid transparent;
-		border-radius: var(--radius-md);
-		font-size: 0.875rem;
+		border-radius: var(--radius-pill);
+		font-size: 0.9375rem;
 		font-weight: 500;
 		line-height: 1;
 		letter-spacing: -0.006em;
@@ -402,13 +404,26 @@
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.btn {
-			height: 2rem;
-			padding: 0 0.75rem;
-			font-size: 0.8125rem;
+			height: 2.25rem;
+			padding: 0 0.875rem;
+			font-size: 0.875rem;
 		}
 		.btn-icon {
-			width: 2rem;
+			width: 2.25rem;
 			padding: 0;
+		}
+	}
+	/* A round control that sits on the page by itself: a header button, a sheet's close. */
+	.btn-round {
+		background: var(--raised);
+		color: var(--foreground);
+		box-shadow:
+			inset 0 0 0 1px var(--border),
+			var(--highlight);
+	}
+	@media (hover: hover) {
+		.btn-round:hover:not(:disabled) {
+			background: color-mix(in oklab, var(--raised) 80%, var(--foreground));
 		}
 	}
 	.btn-primary {
@@ -475,7 +490,7 @@
 		background: var(--field);
 		border: 1px solid var(--input);
 		border-radius: var(--radius-md);
-		font-size: 0.875rem;
+		font-size: 0.9375rem;
 		outline: none;
 		box-shadow: inset 0 1px 2px color-mix(in oklab, var(--shade) light-dark(4%, 30%), transparent);
 		transition:
@@ -496,8 +511,8 @@
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.field:not(textarea) {
-			height: 2rem;
-			font-size: 0.8125rem;
+			height: 2.25rem;
+			font-size: 0.875rem;
 		}
 	}
 
@@ -509,14 +524,15 @@
 		gap: 2px;
 		padding: 3px;
 		background: var(--inset);
-		border-radius: var(--radius-lg);
+		border-radius: var(--radius-pill);
 		box-shadow:
 			inset 0 0 0 1px var(--border),
 			inset 0 1px 2px color-mix(in oklab, var(--shade) light-dark(5%, 34%), transparent);
 	}
 	.seg > button {
 		min-height: 2.5rem;
-		border-radius: var(--radius-sm);
+		padding-inline: 0.5rem;
+		border-radius: var(--radius-pill);
 		font-size: 0.8125rem;
 		font-weight: 500;
 		color: var(--muted-foreground);
@@ -554,7 +570,7 @@
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.seg > button {
-			min-height: 1.625rem;
+			min-height: 1.875rem;
 		}
 	}
 
@@ -588,10 +604,10 @@
 		min-height: 2.75rem;
 		align-items: center;
 		gap: 0.75rem;
-		padding: 0.375rem 0.625rem;
+		padding: 0.5rem 0.75rem;
 		border-radius: var(--radius-md);
 		text-align: left;
-		font-size: 0.875rem;
+		font-size: 0.9375rem;
 		transition: background-color var(--dur-fast) var(--ease-out);
 	}
 	.opt[aria-current='true'],
@@ -605,7 +621,7 @@
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.opt {
-			min-height: 2.125rem;
+			min-height: 2.375rem;
 		}
 	}
 
@@ -621,7 +637,7 @@
 		align-items: center;
 		gap: 0.375rem;
 		height: 2.75rem;
-		padding: 0 0.625rem;
+		padding: 0 0.75rem;
 		font-size: 0.8125rem;
 		color: var(--ink-2);
 		white-space: nowrap;
@@ -632,8 +648,8 @@
 		position: absolute;
 		inset: 6px 0;
 		z-index: -1;
-		border: 1px solid var(--input);
-		border-radius: var(--radius-md);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-pill);
 		background: var(--card);
 		box-shadow: var(--highlight);
 		transition:
@@ -666,8 +682,8 @@
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.chip {
-			height: 1.75rem;
-			padding: 0 0.5rem;
+			height: 1.875rem;
+			padding: 0 0.75rem;
 		}
 		.chip::before {
 			inset: 0;
@@ -726,7 +742,7 @@
 	/* A well of mono text: a command's output, a tool's input. */
 	.well {
 		background: var(--inset);
-		border-radius: var(--radius-md);
+		border-radius: var(--radius-lg);
 		font-family: var(--font-mono);
 		font-size: 0.8125rem;
 		line-height: 1.55;
@@ -755,13 +771,87 @@
 		animation: shimmer 1.8s linear infinite;
 	}
 
+	/*
+	 * A grouped card: rows of one kind held in one soft object (settings, folders, a tool's
+	 * steps). Hairlines divide the rows; the card itself has no shadow on the canvas.
+	 */
+	.group-card {
+		background: var(--card);
+		border-radius: var(--radius-xl);
+		box-shadow: inset 0 0 0 1px var(--border);
+		overflow: hidden;
+	}
+	/* A section label above a grouped card. */
+	.group-label {
+		padding-inline: 0.25rem;
+		margin-bottom: 0.5rem;
+		font-size: 0.8125rem;
+		font-weight: 500;
+		color: var(--muted-foreground);
+	}
+
+	/* A quiet row in the transcript that stands for work: a tool call, or a run of them. */
+	.step {
+		display: flex;
+		width: 100%;
+		min-height: 2.75rem;
+		align-items: center;
+		gap: 0.75rem;
+		margin-inline: -0.5rem;
+		padding: 0.375rem 0.5rem;
+		border-radius: var(--radius-md);
+		color: var(--muted-foreground);
+		text-align: left;
+		transition:
+			background-color var(--dur-fast) var(--ease-out),
+			color var(--dur-fast) var(--ease-out);
+	}
+	.step:active {
+		background: var(--active);
+	}
+	@media (hover: hover) {
+		.step:hover {
+			background: var(--hover);
+			color: var(--foreground);
+		}
+	}
+	@media (min-width: 768px) and (pointer: fine) {
+		.step {
+			min-height: 2.25rem;
+		}
+	}
+
+	/* Three dots that rise in turn: the lead is working. */
+	.dots {
+		display: inline-flex;
+		gap: 3px;
+	}
+	.dots > span {
+		width: 5px;
+		height: 5px;
+		border-radius: 999px;
+		background: var(--ember);
+		animation: dot-rise 1.2s var(--ease-out) infinite;
+	}
+	.dots > span:nth-child(2) {
+		animation-delay: 0.15s;
+	}
+	.dots > span:nth-child(3) {
+		animation-delay: 0.3s;
+	}
+
 	/* Rendered model markdown. Everything inside is sanitised first. */
 	.md {
-		font-size: 0.9375rem;
-		line-height: 1.65;
+		font-size: 1rem;
+		line-height: 1.7;
 		letter-spacing: -0.008em;
 		overflow-wrap: anywhere;
 		color: var(--foreground);
+	}
+	@media (max-width: 767px) {
+		.md {
+			font-size: 1.0625rem;
+		}
 	}
 	.md > * + * {
 		margin-top: 0.85em;
@@ -946,6 +1036,18 @@
 @keyframes shimmer {
 	to {
 		background-position: -220% 0;
+	}
+}
+@keyframes dot-rise {
+	0%,
+	60%,
+	100% {
+		transform: translateY(0);
+		opacity: 0.45;
+	}
+	30% {
+		transform: translateY(-4px);
+		opacity: 1;
 	}
 }
 @keyframes caret {

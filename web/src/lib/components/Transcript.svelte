@@ -1,7 +1,7 @@
 <script lang="ts">
-	import type { Item } from '$lib/session/reduce';
+	import type { Item, ToolItem } from '$lib/session/reduce';
 	import Markdown from './Markdown.svelte';
-	import ToolCard from './ToolCard.svelte';
+	import ToolSteps from './ToolSteps.svelte';
 	import Brand from './Brand.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
@@ -25,6 +25,19 @@
 		showAgent?: boolean;
 		empty?: string;
 	} = $props();
+
+	// Tool calls that follow one another are told as one run.
+	type Part = Exclude<Item, ToolItem> | { kind: 'steps'; id: string; tools: ToolItem[] };
+	const parts = $derived.by(() => {
+		const out: Part[] = [];
+		for (const item of items) {
+			const last = out[out.length - 1];
+			if (item.kind !== 'tool') out.push(item);
+			else if (last?.kind === 'steps') last.tools.push(item);
+			else out.push({ kind: 'steps', id: `steps-${item.id}`, tools: [item] });
+		}
+		return out;
+	});
 
 	let scroller = $state<HTMLDivElement>();
 	let pinned = $state(true);
@@ -72,7 +85,7 @@
 		class="scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
 		data-transcript
 	>
-		<div class="col flex min-h-full flex-col gap-5 py-6 md:py-8">
+		<div class="col flex min-h-full flex-col gap-4 py-6 md:py-8">
 			{#if canLoadEarlier}
 				<button
 					type="button"
@@ -94,10 +107,10 @@
 				</div>
 			{/if}
 
-			{#each items as item (item.id)}
+			{#each parts as item (item.id)}
 				{#if item.kind === 'user'}
 					<div class="flex animate-enter flex-col items-end" data-item="user">
-						<div class="surface max-w-[88%] rounded-xl px-3.5 py-2.5 md:max-w-[80%]">
+						<div class="bg-raised max-w-[86%] rounded-[22px] px-4 py-2.5 md:max-w-[78%]">
 							{#if item.previews?.length}
 								<div class="mb-2 flex flex-wrap justify-end gap-2" data-previews>
 									{#each item.previews as src, i (i)}
@@ -109,7 +122,9 @@
 									{/each}
 								</div>
 							{/if}
-							<p class="text-base break-words whitespace-pre-wrap">{item.text}</p>
+							<p class="text-base leading-6 break-words whitespace-pre-wrap md:text-[15px]">
+								{item.text}
+							</p>
 						</div>
 						<div class="text-faint meta mt-1.5 flex gap-2 px-1 empty:hidden">
 							{#if item.via !== 'prompt'}<span class="text-accent-text"
@@ -176,16 +191,15 @@
 							</div>
 						{/if}
 					</div>
-				{:else if item.kind === 'tool'}
-					<div class="animate-enter"><ToolCard tool={item} /></div>
+				{:else if item.kind === 'steps'}
+					<div class="animate-enter"><ToolSteps tools={item.tools} /></div>
 				{:else}
 					<div
-						class="border-l-2 py-0.5 pl-3 text-sm leading-relaxed break-words {item.level ===
-						'error'
-							? 'border-destructive text-destructive'
+						class="rounded-2xl px-4 py-3 text-sm leading-relaxed break-words {item.level === 'error'
+							? 'bg-destructive/10 text-destructive'
 							: item.level === 'warn'
-								? 'border-ember text-accent-text'
-								: 'border-border-strong text-muted-foreground'}"
+								? 'bg-ember/10 text-accent-text'
+								: 'bg-hover text-muted-foreground'}"
 						role={item.level === 'error' ? 'alert' : undefined}
 					>
 						{item.text}
@@ -194,12 +208,9 @@
 			{/each}
 
 			{#if busy && items[items.length - 1]?.kind !== 'assistant'}
-				<div class="text-muted-foreground flex items-center gap-2.5 text-xs" aria-hidden="true">
-					<span class="relative grid size-2.5 place-items-center">
-						<span class="bg-info absolute inset-0 animate-ping-soft rounded-full"></span>
-						<span class="bg-info size-2 rounded-full"></span>
-					</span>
-					<span class="shimmer">Working</span>
+				<div class="flex items-center gap-3 py-1" aria-hidden="true">
+					<span class="dots"><span></span><span></span><span></span></span>
+					<span class="text-accent-text text-[15px]">Working…</span>
 				</div>
 			{/if}
 		</div>

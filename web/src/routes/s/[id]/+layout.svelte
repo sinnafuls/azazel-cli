@@ -18,7 +18,7 @@
 	import StateDot from '$lib/components/StateDot.svelte';
 	import Sheet from '$lib/components/Sheet.svelte';
 	import SessionList from '$lib/components/SessionList.svelte';
-	import ArrowLeft from '@lucide/svelte/icons/arrow-left';
+	import ChevronLeft from '@lucide/svelte/icons/chevron-left';
 	import Users from '@lucide/svelte/icons/users';
 	import WifiOff from '@lucide/svelte/icons/wifi-off';
 
@@ -67,22 +67,25 @@
 
 <div class="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
 	<div class="flex min-h-0 min-w-0 flex-col">
-		<header class="shrink-0 border-b pt-[env(safe-area-inset-top)]">
-			<div class="flex h-14 items-center gap-1 px-1.5 lg:h-12 lg:pr-3 lg:pl-5">
+		<header class="shrink-0 pt-[env(safe-area-inset-top)] lg:border-b">
+			<div class="flex h-16 items-center gap-2 px-3 lg:h-14 lg:gap-1 lg:pr-3 lg:pl-5">
 				<a
 					href="/"
-					class="btn btn-quiet btn-icon lg:hidden"
+					class="btn btn-round btn-icon lg:hidden"
 					aria-label="All sessions"
 					onclick={(e) => {
 						if (viewport.wide) {
 							e.preventDefault();
 							menu = true;
 						}
-					}}><ArrowLeft class="size-[18px]" /></a
+					}}><ChevronLeft class="size-5" /></a
 				>
-				<div class="min-w-0 flex-1 pl-1 lg:flex lg:items-baseline lg:gap-3 lg:pl-0">
+				<!-- A phone: the title rides in a pill between round buttons. Wide: a plain heading. -->
+				<div
+					class="bg-raised flex h-11 min-w-0 flex-1 flex-col items-center justify-center rounded-full px-4 shadow-[inset_0_0_0_1px_var(--border)] lg:h-auto lg:flex-row lg:items-baseline lg:justify-start lg:gap-3 lg:rounded-none lg:bg-transparent lg:px-0 lg:shadow-none"
+				>
 					<h1
-						class="flex min-w-0 items-center gap-2.5 text-[15px] leading-5 font-semibold tracking-[-0.02em]"
+						class="flex max-w-full min-w-0 items-center gap-2 text-[15px] leading-5 font-semibold tracking-[-0.02em]"
 					>
 						<StateDot state={stateName} />
 						<span class="truncate">{title}</span>
@@ -91,7 +94,9 @@
 							>{/if}
 					</h1>
 					{#if where}
-						<p class="text-muted-foreground meta mt-0.5 min-w-0 truncate pl-5 lg:mt-0 lg:pl-0">
+						<p
+							class="text-muted-foreground max-w-full min-w-0 truncate text-xs leading-4 lg:font-mono"
+						>
 							{where}{#if session.state?.branch}<span class="text-faint"
 									>{` · ${session.state.branch}`}</span
 								>{/if}
@@ -101,7 +106,7 @@
 				{#if newChat.available && where}
 					<button
 						type="button"
-						class="btn btn-quiet btn-icon"
+						class="btn btn-round btn-icon"
 						aria-label="New chat in this folder"
 						title="New chat in this folder"
 						onclick={() => newChat.show(where)}><SquarePen class="size-[18px]" /></button
@@ -109,7 +114,7 @@
 				{/if}
 				<button
 					type="button"
-					class="btn btn-quiet xl:hidden {live ? 'gap-1.5 px-3' : 'btn-icon'}"
+					class="btn btn-round xl:hidden {live ? 'gap-1.5 px-3.5' : 'btn-icon'}"
 					aria-label="Agents and usage"
 					onclick={() => (panel = 'agents')}
 				>

@@ -77,3 +77,75 @@ export function parseDiff(diff: string): DiffLine[] {
 			return { kind: 'ctx', text: text.startsWith(' ') ? text.slice(1) : text };
 		});
 }
+
+/** What kind of work a tool does, for the words and the icon of its row. */
+export type ToolKind =
+	'command' | 'read' | 'create' | 'edit' | 'search' | 'web' | 'agents' | 'other';
+
+export function toolKind(name: string): ToolKind {
+	switch (name) {
+		case 'shell':
+			return 'command';
+		case 'read':
+		case 'ls':
+			return 'read';
+		case 'write':
+			return 'create';
+		case 'edit':
+			return 'edit';
+		case 'grep':
+		case 'glob':
+			return 'search';
+		case 'task':
+			return 'agents';
+		default:
+			return name.startsWith('web') ? 'web' : 'other';
+	}
+}
+
+const PHRASES: Record<ToolKind, [one: string, many: (n: number) => string]> = {
+	command: ['ran a command', (n) => `ran ${n} commands`],
+	read: ['read a file', (n) => `read ${n} files`],
+	create: ['created a file', (n) => `created ${n} files`],
+	edit: ['edited a file', (n) => `edited ${n} files`],
+	search: ['searched the code', (n) => `searched the code ${n} times`],
+	web: ['looked something up', (n) => `looked ${n} things up`],
+	agents: ['handed work to agents', (n) => `handed work to agents ${n} times`],
+	other: ['used a tool', (n) => `used ${n} tools`]
+};
+
+/** A run of tool calls in a few words: `Created a file, ran 2 commands`. */
+export function describeSteps(names: string[]): string {
+	const counts = new Map<ToolKind, number>();
+	for (const n of names) counts.set(toolKind(n), (counts.get(toolKind(n)) ?? 0) + 1);
+	const text = [...counts]
+		.map(([kind, n]) => (n === 1 ? PHRASES[kind][0] : PHRASES[kind][1](n)))
+		.join(', ');
+	return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** One call as a row says it: the verb, and what it worked on. */
+export function stepVerb(name: string, running: boolean): string {
+	const kind = toolKind(name);
+	const verbs: Record<ToolKind, [done: string, now: string]> = {
+		command: ['Ran', 'Running'],
+		read: ['Read', 'Reading'],
+		create: ['Created', 'Creating'],
+		edit: ['Edited', 'Editing'],
+		search: ['Searched', 'Searching'],
+		web: ['Looked up', 'Looking up'],
+		agents: ['Handed off', 'Handing off'],
+		other: [name, name]
+	};
+	return verbs[kind][running ? 1 : 0];
+}
+
+/** The size of a change: lines added and taken away. */
+export function diffStats(diff: string | undefined): { add: number; del: number } | null {
+	if (!diff) return null;
+	const ls = parseDiff(diff);
+	return {
+		add: ls.filter((l) => l.kind === 'add').length,
+		del: ls.filter((l) => l.kind === 'del').length
+	};
+}

@@ -12,6 +12,7 @@ GitHub are its section here.
 
 ### Changed
 
+- The web page of `azazel remote` has a new look on phones and desktops: round and pill-shaped controls, larger reading text, sheets with a round close button and a centred title, a floating message box, and usage as grouped cards with meters. Tool calls that follow one another are now one quiet row (`Created a file, ran 2 commands`) that opens them on a timeline, each with its command, changes and output and a copy button, instead of a card per call.
 - The model chip of the browser shows the role the lead follows with the model it answers with (`@lead · deepseek/deepseek-chat`) instead of `@lead` alone.
 
 ### Fixed
