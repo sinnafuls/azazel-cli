@@ -70,39 +70,28 @@
 	dismissible={false}
 >
 	<div class="space-y-3" data-request="approval">
-		<div class="flex flex-wrap items-center gap-1.5">
-			<span
-				class="bg-raised rounded-md border px-1.5 py-0.5 font-mono text-[10.5px] tracking-wide uppercase"
-				>{f.access}</span
-			>
-			{#if f.destructive}<span
-					class="border-destructive/50 text-destructive rounded-md border px-1.5 py-0.5 text-[11px] font-medium"
-					>Destroys work</span
-				>{/if}
-			{#if f.secret}<span
-					class="border-destructive/50 text-destructive rounded-md border px-1.5 py-0.5 text-[11px] font-medium"
-					>Secret file</span
-				>{/if}
-			{#if f.agent !== 'lead'}<span class="text-muted-foreground font-mono text-[11px]"
-					>{f.agent}</span
-				>{/if}
-		</div>
+		{#if f.destructive || f.secret || f.agent !== 'lead'}
+			<div class="flex flex-wrap items-center gap-2">
+				{#if f.destructive}<span class="tag tag-danger">Destroys work</span>{/if}
+				{#if f.secret}<span class="tag tag-danger">Secret file</span>{/if}
+				{#if f.agent !== 'lead'}<span class="tag font-mono">{f.agent}</span>{/if}
+			</div>
+		{/if}
 
 		{#if f.subjects?.length}
-			<ul class="space-y-0.5 font-mono text-[13px] break-all">
+			<ul class="space-y-0.5 font-mono text-[13px] leading-relaxed break-all">
 				{#each f.subjects as s (s)}<li>{s}</li>{/each}
 			</ul>
 		{:else}
-			<p class="font-mono text-[13px] break-all">{summarize(f.tool, f.input)}</p>
+			<p class="font-mono text-[13px] leading-relaxed break-all">{summarize(f.tool, f.input)}</p>
 		{/if}
 
-		{#if f.note}<p class="text-accent-text text-[13px]">{f.note}</p>{/if}
+		{#if f.note}<p class="text-accent-text text-sm">{f.note}</p>{/if}
 
 		{#if diff}
 			<DiffView {diff} max={14} />
 		{:else}
-			<pre
-				class="bg-inset scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5 whitespace-pre-wrap break-words">{prettyInput(
+			<pre class="well scroll-thin max-h-40 overflow-auto border p-3">{prettyInput(
 					f.input,
 					900
 				)}</pre>
@@ -110,15 +99,15 @@
 
 		{#if denying}
 			<label class="block">
-				<span class="text-muted-foreground mb-1 block text-xs">Tell the model why (optional)</span>
+				<span class="label mb-1.5 block">Tell the model why (optional)</span>
 				<textarea
-					class="bg-inset focus-visible:ring-ring min-h-20 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
+					class="field min-h-20"
 					bind:value={feedback}
 					placeholder="Use a temporary directory instead."></textarea>
 			</label>
 		{/if}
-		{#if error}<p class="text-destructive text-[13px]" role="alert">{error}</p>{/if}
-		{#if !canControl}<p class="text-muted-foreground text-[13px]">
+		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
+		{#if !canControl}<p class="text-muted-foreground text-sm">
 				Waiting for an answer from someone with a control link.
 			</p>{/if}
 	</div>
@@ -126,23 +115,24 @@
 	{#snippet footer()}
 		{#if canControl}
 			{#if denying}
-				<div class="flex gap-2">
-					<Button variant="outline" class="h-11 flex-1 md:h-9" onclick={() => (denying = false)}
+				<div class="flex gap-2 md:justify-end">
+					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (denying = false)}
 						>Back</Button
 					>
 					<Button
 						variant="destructive"
-						class="h-11 flex-1 md:h-9"
+						class="flex-1 md:flex-none"
 						disabled={busy}
 						onclick={() => answer('deny', feedback.trim() || undefined)}>Deny</Button
 					>
 				</div>
 			{:else}
-				<div class="grid grid-cols-2 gap-2">
+				<!-- A phone stacks the answers with the main one on top; a wide screen puts them in one row. -->
+				<div class="grid grid-cols-2 gap-2 md:flex md:items-center">
 					{#if f.destructive}
 						<button
 							type="button"
-							class="bg-primary text-primary-foreground focus-visible:ring-ring relative col-span-2 h-11 touch-none overflow-hidden rounded-lg text-sm font-medium select-none focus-visible:ring-2 disabled:opacity-50 md:h-9"
+							class="btn btn-primary relative col-span-2 touch-none overflow-hidden md:min-w-36"
 							disabled={busy}
 							onpointerdown={holdStart}
 							onpointerup={holdEnd}
@@ -155,21 +145,21 @@
 							onblur={holdEnd}
 						>
 							<span
-								class="bg-primary-foreground/25 absolute inset-0 origin-left {holding
+								class="bg-ember/55 absolute inset-0 origin-left {holding
 									? 'animate-[hold_1.2s_linear_forwards]'
 									: 'scale-x-0'}"
 							></span>
 							<span class="relative">{holding ? 'Keep holding…' : 'Hold to allow'}</span>
 						</button>
 					{:else}
-						<Button class="col-span-2 h-11 md:h-9" disabled={busy} onclick={() => answer('allow')}
+						<Button class="col-span-2 md:min-w-36" disabled={busy} onclick={() => answer('allow')}
 							>Allow once</Button
 						>
 					{/if}
 					{#if f.rule}
 						<Button
 							variant="outline"
-							class="h-11 md:h-9"
+							class={f.secret ? 'col-span-2' : ''}
 							disabled={busy}
 							onclick={() => answer('session')}
 							title={f.rule}>This session</Button
@@ -177,7 +167,6 @@
 						{#if !f.secret}
 							<Button
 								variant="outline"
-								class="h-11 md:h-9"
 								disabled={busy}
 								onclick={() => answer('always')}
 								title={f.rule}>Always</Button
@@ -186,16 +175,14 @@
 					{/if}
 					<Button
 						variant="destructive"
-						class="{f.rule && !f.secret ? 'col-span-2' : 'col-span-2'} h-11 md:h-9"
+						class="col-span-2 md:ml-auto"
 						disabled={busy}
 						onclick={() => (denying = true)}>Deny…</Button
 					>
 				</div>
 			{/if}
 		{:else}
-			<p class="text-muted-foreground text-center text-xs">
-				View link: you can watch but not answer.
-			</p>
+			<p class="text-muted-foreground text-xs">View link: you can watch but not answer.</p>
 		{/if}
 	{/snippet}
 </Sheet>

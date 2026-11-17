@@ -46,42 +46,39 @@
 	{onclose}
 >
 	<div class="space-y-4">
-		<div class="grid grid-cols-2 gap-1 rounded-lg border p-1" role="radiogroup" aria-label="Access">
+		<div class="seg" role="radiogroup" aria-label="Access">
 			{#each [['view', 'Watch only'], ['control', 'Full control']] as [v, label] (v)}
 				<button
 					type="button"
 					role="radio"
 					aria-checked={access === v}
 					disabled={v === 'control' && !app.canControl}
-					class="min-h-11 rounded-md text-sm disabled:opacity-40 md:min-h-9 {access === v
-						? 'bg-raised font-medium'
-						: 'text-muted-foreground'}"
 					onclick={() => ((access = v as 'view' | 'control'), (link = null))}>{label}</button
 				>
 			{/each}
 		</div>
 		{#if !link}
-			<Button class="h-11 w-full md:h-9" disabled={busy} onclick={make}>Make a link</Button>
+			<Button class="w-full" disabled={busy} onclick={make}>Make a link</Button>
 		{:else}
 			<div
-				class="mx-auto w-48 rounded-lg bg-white p-2 text-black [&>svg]:h-auto [&>svg]:w-full"
+				class="border-border-strong mx-auto w-48 animate-enter rounded-xl border bg-white p-2.5 text-black shadow-e2 [&>svg]:h-auto [&>svg]:w-full"
 				role="img"
 				aria-label="QR code of the link"
 			>
 				<!-- eslint-disable-next-line svelte/no-at-html-tags -->
 				{@html svg}
 			</div>
-			<code class="bg-inset block rounded-md border p-2.5 text-xs break-all">{link.url}</code>
-			<Button variant="outline" class="h-11 w-full md:h-9" onclick={copy}
+			<code class="well text-ink-2 block border p-3 break-all">{link.url}</code>
+			<Button variant="outline" class="w-full" onclick={copy}
 				>{copied ? 'Copied' : 'Copy link'}</Button
 			>
-			<p class="text-muted-foreground text-xs">
+			<p class="text-muted-foreground text-xs leading-relaxed">
 				Expires {new Date(link.expires).toLocaleTimeString([], {
 					hour: '2-digit',
 					minute: '2-digit'
 				})}. Anyone who opens it first gets in, so share it only with yourself.
 			</p>
 		{/if}
-		{#if error}<p class="text-destructive text-[13px]" role="alert">{error}</p>{/if}
+		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
 	</div>
 </Sheet>

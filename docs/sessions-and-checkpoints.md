@@ -476,7 +476,9 @@ two steps. Both are recorded as new entries; the original messages stay in the s
 
 1. **Eliding old tool results.** When the estimate passes `micro_threshold` of the window, the body of every tool
    result older than the newest `keep_tool_results` becomes
-   `[result elided: <n> bytes; session_recall expand=<entry id>]`.
+   `[result elided: <n> bytes; session_recall expand=<entry id>]`. Eliding changes messages the provider has
+   cached, so the next request writes the whole conversation to the cache again; it is therefore done in
+   batches, once the results to elide add up to `micro_min_savings` of the window (or when a summary is due).
 2. **Summarising.** When the estimate comes within `reserve_tokens` of the window, everything except roughly the
    last `keep_recent_tokens` is replaced by a summary with the headings Goal, Constraints, Progress, Decisions,
    Files read, Files modified and Next steps. The cut never separates a tool call from its result, and an earlier
@@ -507,6 +509,7 @@ reserve_tokens = 16384
 keep_recent_tokens = 20000
 keep_tool_results = 8
 micro_threshold = 0.6
+micro_min_savings = 0.1
 ```
 
 `pre_compact` and `post_compact` [hooks](hooks.md) run around a summary; a `pre_compact` hook can cancel `/compact`.

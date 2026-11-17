@@ -636,6 +636,7 @@ impl App {
                 .then(|| Duration::from_secs(config.tools.call_timeout_secs)),
             ..azazel_agent::ToolSettings::default()
         }));
+        services.insert(Arc::new(azazel_agent::Deferral(config.tools.defer.clone())));
         // How long a provider may stay silent; the providers extensions add read it from here.
         let stall = StallLimits::from_secs(config.retry.first_event_secs, config.retry.stall_secs);
         services.insert(Arc::new(stall));
@@ -1079,6 +1080,15 @@ impl App {
         let mut router = Router::new(providers, catalog, config.roles.clone(), policy)
             .with_accounts(credentials.clone())
             .with_virtual(registry.virtual_models.clone());
+        {
+            let (accounts, configs) = (credentials.clone(), endpoints.clone());
+            router = router.with_logins(Arc::new(move |provider: &str| {
+                configs
+                    .iter()
+                    .find(|p| p.id == provider)
+                    .is_some_and(|p| crate::models::login(&accounts, p))
+            }));
+        }
         if config.usage.ledger {
             let accounts = credentials.clone();
             let configs = endpoints.clone();
@@ -1202,7 +1212,17 @@ impl App {
         let side_costs = Arc::new(SideCosts::default());
         // What the prompt cache did for each request; with `cache.warming` it is also kept alive
         // while the session waits for its user.
-        let cache = Arc::new(CacheLedger::new(&config.cache));
+        let cache = {
+            let (accounts, configs) = (credentials.clone(), endpoints.clone());
+            Arc::new(
+                CacheLedger::new(&config.cache).with_logins(Arc::new(move |provider: &str| {
+                    configs
+                        .iter()
+                        .find(|p| p.id == provider)
+                        .is_some_and(|p| crate::models::login(&accounts, p))
+                })),
+            )
+        };
         services.insert(cache.clone());
         if cache.warms() {
             tokio::spawn(

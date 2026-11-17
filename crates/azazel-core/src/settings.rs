@@ -12,9 +12,9 @@ use toml::{Table, Value};
 
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
-    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PatchMode, PermissionMode, ProcessPriority,
-    QueueMode, ReadGuard, RemoteAccess, SessionResume, StatusPreset, StatusSeparator, TelemetryExporter,
-    ToolStyle, WorktreeTarget, WriteSeverity,
+    EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, PasteMode, PatchMode, PermissionMode,
+    ProcessPriority, QueueMode, ReadGuard, RemoteAccess, SessionResume, StatusPreset, StatusSeparator,
+    TelemetryExporter, ToolStyle, WorktreeTarget, WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -309,6 +309,8 @@ settings! {
             "The program that opens a draft; empty uses $VISUAL, then $EDITOR, then notepad or vi.", live;
         "editor.fold_paste_lines": Number, "Fold long pastes",
             "Pastes longer than this many lines fold into one token; 0 never folds.", live;
+        "editor.paste": Choice(PasteMode::NAMES), "Send long pastes",
+            "attachment wraps a folded paste in <attachment> tags, file saves it as local://paste-N.md for the agent to read, inline sends it as typed.", live;
         "tui.complete_ignored": Switch, "Ignored files in @",
             "Offer files that .gitignore leaves out when you type @ (target/, node_modules/ and .git/ are still skipped).", live;
         "tui.queue_mode": Choice(QueueMode::NAMES), "Queued messages",
@@ -352,6 +354,7 @@ settings! {
     }
     Tools / "Tools" {
         "tools.disabled": List, "Disabled tools", "Tool names withheld from every agent.";
+        "tools.defer": List, "Deferred tools", "Tools kept out of the prompt until the model searches for them, on Claude 4.5 and later through Anthropic's API; a trailing * covers every name it starts.";
         "tools.max_result_bytes": Number, "Largest tool result", "Tool output beyond this many bytes is cut and saved as an artifact.";
         "tools.shell_timeout_secs": Number, "Shell time limit", "The default time limit of a shell call, in seconds.";
         "tools.cache_reads": Switch, "Cache repeated reads", "Answer a repeated read, grep or glob with a short note while the earlier result is still in the context.";
@@ -453,10 +456,16 @@ settings! {
     Sessions / "Compaction" {
         "compaction.enabled": Switch, "Compaction", "Summarise the conversation when the context window fills up.";
         "compaction.reserve_tokens": Number, "Reserve", "Summarise when the context is within this many tokens of the window.";
+        "compaction.auto_percent": Number, "Summarise at %",
+            "Summarise once the context fills this percentage of the window (70 summarises at 70%); 0 leaves it to the reserve. Whichever comes first applies.";
         "compaction.keep_recent_tokens": Number, "Kept verbatim", "Roughly how many tokens of recent context are kept as they are.";
         "compaction.keep_tool_results": Number, "Tool results kept", "The newest tool results that are never elided.";
         "compaction.micro_threshold": Number, "Elide old results at",
             "The fraction of the window (0 to 1) at which old tool results are elided.";
+        "compaction.micro_min_savings": Number, "Elide in batches of",
+            "Old tool results are elided only once they add up to this fraction of the window: each elision makes the provider cache the whole conversation again.";
+        "compaction.login_max_tokens": Number, "Summarise logins at",
+            "On a subscription login the context is summarised as if the window held this many tokens (0: the model's window): every request counts against the usage window by its size.";
     }
     Sessions / "Memory" {
         "memory.enabled": Switch, "Memory", "Project memory and its tools.";

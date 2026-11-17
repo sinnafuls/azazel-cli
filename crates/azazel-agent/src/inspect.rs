@@ -328,6 +328,7 @@ mod tests {
             name: name.to_string(),
             description: "does a thing".to_string(),
             schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            defer: false,
         }
     }
 

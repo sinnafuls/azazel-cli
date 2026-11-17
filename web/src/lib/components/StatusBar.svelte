@@ -27,12 +27,16 @@
 	const slash = $derived(current.indexOf('/'));
 	const provider = $derived(slash > 0 ? current.slice(0, slash + 1) : '');
 	const modelId = $derived(slash > 0 ? current.slice(slash + 1) : current);
+	// An unknown model (the list not read yet) offers every level rather than claiming it
+	// cannot think; only a model the list says does not reason gets `off` alone.
 	const levels = $derived(
-		model && model.reasoning
-			? model.thinking_levels?.length
-				? ['off', ...model.thinking_levels]
-				: [...THINKING_LEVELS]
-			: ['off']
+		!model
+			? [...THINKING_LEVELS]
+			: model.reasoning
+				? model.thinking_levels?.length
+					? ['off', ...model.thinking_levels.filter((l) => l !== 'off')]
+					: [...THINKING_LEVELS]
+				: ['off']
 	);
 	const filtered = $derived(
 		session.models
@@ -55,31 +59,32 @@
 		if (!canControl) return;
 		query = '';
 		which = w;
+		if ((w === 'model' || w === 'thinking') && !session.models.length) {
+			session.modelsError = null;
+			void session.refreshModels();
+		}
 	}
-
-	const chip =
-		'press hover:bg-raised enabled:hover:border-border-strong flex h-8 shrink-0 items-center gap-1.5 rounded-lg border px-2.5 text-xs disabled:cursor-default';
 </script>
 
 <div
-	class="no-scrollbar flex items-center gap-1.5 overflow-x-auto py-2 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)] md:[mask-image:none]"
+	class="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-3 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)] md:[mask-image:none] lg:px-5 fine:pb-2.5"
 	data-statusbar
 >
 	<button
-		class="{chip} font-medium"
+		class="chip"
 		disabled={!canControl}
 		onclick={() => open('model')}
 		aria-label="Model: {current}"
 		title={current}
 	>
 		<Cpu class="text-faint size-3.5" />
-		<span class="max-w-[15rem] truncate font-mono text-[11.5px]"
+		<span class="text-foreground max-w-[15rem] truncate font-mono text-xs"
 			><span class="text-faint">{provider}</span>{modelId}</span
 		>
 		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
 	<button
-		class={chip}
+		class="chip"
 		disabled={!canControl}
 		onclick={() => open('thinking')}
 		aria-label="Thinking: {st?.thinking ?? 'off'}"
@@ -89,7 +94,7 @@
 		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
 	<button
-		class="{chip} {st?.mode === 'bypass' ? 'border-destructive/40 text-destructive' : ''}"
+		class="chip {st?.mode === 'bypass' ? 'text-destructive font-medium' : ''}"
 		disabled={!canControl}
 		onclick={() => open('mode')}
 		aria-label="Mode: {st?.mode ?? ''}"
@@ -100,7 +105,7 @@
 	</button>
 	{#if st?.primary_agents && st.primary_agents.length > 1}
 		<button
-			class={chip}
+			class="chip"
 			disabled={!canControl}
 			onclick={() => open('agent')}
 			aria-label="Agent: {st.agent}"
@@ -111,9 +116,10 @@
 		</button>
 	{/if}
 	{#if st && st.context_window}
-		<span
-			class="text-faint num ml-auto hidden shrink-0 pl-2 font-mono text-[11px] sm:inline"
-			title="Context in use">{tokens(st.context_tokens)}/{tokens(st.context_window)}</span
+		<span class="text-faint meta ml-auto hidden shrink-0 pl-2.5 sm:inline" title="Context in use"
+			><span class="text-muted-foreground">{tokens(st.context_tokens)}</span> / {tokens(
+				st.context_window
+			)}</span
 		>
 	{/if}
 </div>
@@ -125,51 +131,57 @@
 	onclose={() => (which = null)}
 >
 	<input
-		class="bg-inset focus-visible:ring-ring mb-2 h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
+		class="field mb-2"
 		placeholder="Search models"
 		aria-label="Search models"
 		bind:value={query}
 	/>
-	<ul class="-mx-1">
+	<ul class="-mx-2 space-y-px">
 		{#each filtered as m (m.model)}
 			<li>
 				<button
-					class="hover:bg-raised flex min-h-11 w-full items-center gap-2 rounded-md px-2 text-left md:min-h-9"
+					class="opt"
+					aria-current={m.model === current ? 'true' : undefined}
 					onclick={() => run(() => session.setModel(m.model))}
 				>
-					<span class="min-w-0 flex-1">
-						<span class="block truncate font-mono text-[13px]">{m.model}</span>
-						<span class="text-muted-foreground num block text-[11px]">
+					<span class="min-w-0 flex-1 py-1">
+						<span class="block truncate font-mono text-xs">{m.model}</span>
+						<span class="text-muted-foreground meta mt-0.5 block">
 							{tokens(m.context_window)} ctx{m.reasoning ? ' · thinks' : ''}{m.vision
 								? ' · images'
 								: ''}{m.cost ? ` · $${m.cost.input}/${m.cost.output} per M` : ''}
 						</span>
 					</span>
-					{#if m.model === current}<Check class="text-primary size-4" />{/if}
+					{#if m.model === current}<Check class="text-accent-text size-4 shrink-0" />{/if}
 				</button>
 			</li>
 		{:else}
-			<li class="text-muted-foreground py-6 text-center text-sm">
-				{session.models.length ? 'No model matches.' : 'Loading models…'}
+			<li class="text-muted-foreground px-2 py-6 text-sm">
+				{session.models.length
+					? 'No model matches.'
+					: session.modelsError
+						? `Could not load models: ${session.modelsError}`
+						: 'Loading models…'}
 			</li>
 		{/each}
 	</ul>
 </Sheet>
 
 <Sheet open={which === 'thinking'} title="Thinking level" onclose={() => (which = null)}>
-	<ul class="-mx-1">
+	<ul class="-mx-2">
 		{#each levels as l (l)}
 			<li>
 				<button
-					class="hover:bg-raised flex min-h-11 w-full items-center justify-between rounded-md px-2 text-sm md:min-h-9"
+					class="opt justify-between"
+					aria-current={l === st?.thinking ? 'true' : undefined}
 					onclick={() => run(() => session.setThinking(l))}
 				>
-					{l}{#if l === st?.thinking}<Check class="text-primary size-4" />{/if}
+					{l}{#if l === st?.thinking}<Check class="text-accent-text size-4" />{/if}
 				</button>
 			</li>
 		{/each}
 	</ul>
-	{#if levels.length === 1}<p class="text-muted-foreground mt-2 text-xs">
+	{#if model && levels.length === 1}<p class="text-muted-foreground mt-2 text-sm">
 			This model does not think.
 		</p>{/if}
 </Sheet>
@@ -181,32 +193,32 @@
 	onclose={() => ((which = null), (confirmBypass = false))}
 >
 	{#if confirmBypass}
-		<div class="space-y-3 py-1">
-			<p class="text-sm">
+		<div class="space-y-4">
+			<p class="text-sm leading-relaxed">
 				Bypass lifts every guard except deny rules and the push guard. Agents will edit files and
 				run commands without asking.
 			</p>
 			<div class="flex gap-2">
-				<button class="h-11 flex-1 rounded-lg border md:h-9" onclick={() => (confirmBypass = false)}
+				<button class="btn btn-secondary flex-1" onclick={() => (confirmBypass = false)}
 					>Cancel</button
 				>
-				<button
-					class="bg-destructive text-destructive-foreground h-11 flex-1 rounded-lg font-medium md:h-9"
-					onclick={() => run(() => session.setMode('bypass'))}>Use bypass</button
+				<button class="btn btn-destroy flex-1" onclick={() => run(() => session.setMode('bypass'))}
+					>Use bypass</button
 				>
 			</div>
 		</div>
 	{:else}
-		<ul class="-mx-1">
+		<ul class="-mx-2">
 			{#each MODES.filter((m) => m !== 'bypass' || app.me?.allow_bypass) as m (m)}
 				<li>
 					<button
-						class="hover:bg-raised flex min-h-11 w-full items-center justify-between rounded-md px-2 text-sm md:min-h-9"
+						class="opt justify-between"
+						aria-current={m === st?.mode ? 'true' : undefined}
 						onclick={() =>
 							m === 'bypass' ? (confirmBypass = true) : run(() => session.setMode(m))}
 					>
 						<span class={m === 'bypass' ? 'text-destructive' : ''}>{m}</span
-						>{#if m === st?.mode}<Check class="text-primary size-4" />{/if}
+						>{#if m === st?.mode}<Check class="text-accent-text size-4" />{/if}
 					</button>
 				</li>
 			{/each}
@@ -215,19 +227,20 @@
 </Sheet>
 
 <Sheet open={which === 'agent'} title="Primary agent" onclose={() => (which = null)}>
-	<ul class="-mx-1">
+	<ul class="-mx-2">
 		{#each st?.primary_agents ?? [] as a (a.name)}
 			<li>
 				<button
-					class="hover:bg-raised flex min-h-11 w-full items-center justify-between gap-3 rounded-md px-2 text-left md:min-h-9"
+					class="opt justify-between"
+					aria-current={a.name === st?.agent ? 'true' : undefined}
 					onclick={() => run(() => session.setAgent(a.name))}
 				>
-					<span
-						><span class="block text-sm">{a.name}</span><span
-							class="text-muted-foreground block text-xs">{a.description}</span
+					<span class="min-w-0 py-1"
+						><span class="block text-sm font-medium">{a.name}</span><span
+							class="text-muted-foreground mt-0.5 block text-xs leading-snug">{a.description}</span
 						></span
 					>
-					{#if a.name === st?.agent}<Check class="text-primary size-4 shrink-0" />{/if}
+					{#if a.name === st?.agent}<Check class="text-accent-text size-4 shrink-0" />{/if}
 				</button>
 			</li>
 		{/each}

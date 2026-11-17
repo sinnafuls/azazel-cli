@@ -46,6 +46,8 @@ export class Session {
 	statusDetail = $state<string | undefined>(undefined);
 	attached = $state.raw<AttachedRemote | null>(null);
 	models = $state.raw<ModelRow[]>([]);
+	/** Why the model list could not be read, shown in the picker instead of waiting forever. */
+	modelsError = $state<string | null>(null);
 	usage = $state.raw<AccountUsage[]>([]);
 	roles = $state.raw<Roles | null>(null);
 	commands = $state.raw<CommandRow[]>([]);
@@ -158,7 +160,12 @@ export class Session {
 	}
 	async refreshModels() {
 		if (this.models.length) return;
-		this.models = await this.client.send<ModelRow[]>({ type: 'list_models' });
+		try {
+			this.models = await this.client.send<ModelRow[]>({ type: 'list_models' });
+			this.modelsError = null;
+		} catch (e) {
+			this.modelsError = e instanceof Error ? e.message : String(e);
+		}
 	}
 	async refreshUsage() {
 		this.usage = await this.client.send<AccountUsage[]>({ type: 'get_usage' });
@@ -214,7 +221,9 @@ export class Session {
 			{ ...this.model, runs: { ...this.model.runs, lead: { busy: true } } },
 			text,
 			via,
-			images.length
+			images.length,
+			'lead',
+			images.map((im) => `data:${im.mime};base64,${im.data}`)
 		);
 	}
 	async followUp(text: string) {

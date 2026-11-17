@@ -2,59 +2,70 @@
 	import SessionList from '$lib/components/SessionList.svelte';
 	import Brand from '$lib/components/Brand.svelte';
 	import PairDevice from '$lib/components/PairDevice.svelte';
+	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import { app } from '$lib/app.svelte';
+	import { sessions } from '$lib/sessions.svelte';
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import LogOut from '@lucide/svelte/icons/log-out';
-	import Sun from '@lucide/svelte/icons/sun';
 
 	let pairing = $state(false);
+	const waiting = $derived(sessions.list.filter((s) => s.state === 'waiting for you').length);
+	const summary = $derived(
+		!sessions.loaded
+			? 'Looking for sessions…'
+			: sessions.list.length === 0
+				? 'On this machine'
+				: `${sessions.list.length} on this machine${waiting ? `, ${waiting} need${waiting === 1 ? 's' : ''} you` : ''}`
+	);
 </script>
 
 <!-- Phone and tablet: the list is the page. Desktop has it in the sidebar, so this is a quiet prompt. -->
 <div class="flex min-h-0 flex-1 flex-col lg:hidden">
 	<header
-		class="flex h-12 shrink-0 items-center justify-between border-b px-4 pt-[env(safe-area-inset-top)] box-content"
+		class="box-content flex h-14 shrink-0 items-center justify-between pt-[env(safe-area-inset-top)] pr-1.5 pl-4"
 	>
 		<Brand />
-		<div class="-mr-2 flex">
+		<div class="flex">
 			<button
-				class="text-muted-foreground hover:text-foreground grid size-11 place-items-center"
+				type="button"
+				class="btn btn-quiet btn-icon"
 				aria-label="Open on another device"
 				onclick={() => (pairing = true)}><QrCode class="size-[18px]" /></button
 			>
+			<ThemeToggle />
 			<button
-				class="text-muted-foreground hover:text-foreground grid size-11 place-items-center"
-				aria-label="Theme: {app.theme}"
-				onclick={() =>
-					app.setTheme(app.theme === 'dark' ? 'light' : app.theme === 'light' ? 'system' : 'dark')}
-				><Sun class="size-[18px]" /></button
-			>
-			<button
-				class="text-muted-foreground hover:text-foreground grid size-11 place-items-center"
+				type="button"
+				class="btn btn-quiet btn-icon"
 				aria-label="Sign out"
 				onclick={() => app.logout()}><LogOut class="size-[18px]" /></button
 			>
 		</div>
 	</header>
 	<div
-		class="scroll-thin min-h-0 flex-1 overflow-y-auto p-2 pb-[max(0.5rem,env(safe-area-inset-bottom))]"
+		class="scroll-thin min-h-0 flex-1 overflow-y-auto pb-[max(1rem,env(safe-area-inset-bottom))]"
 	>
-		<h1 class="text-muted-foreground px-2 pt-2 pb-2 text-xs">Sessions on this machine</h1>
-		<SessionList />
+		<div class="mx-auto w-full max-w-2xl px-4">
+			<div class="pt-5 pb-4">
+				<h1 class="text-2xl font-semibold tracking-[-0.04em]">Sessions</h1>
+				<p class="text-muted-foreground mt-0.5 text-sm">{summary}</p>
+			</div>
+			<SessionList card />
+		</div>
 	</div>
 </div>
 
-<div
-	class="hidden min-h-0 flex-1 flex-col items-center justify-center gap-3 p-8 text-center lg:flex"
->
-	<p class="text-sm font-medium">Choose a session</p>
-	<p class="text-muted-foreground max-w-xs text-[13px] leading-relaxed">
-		Pick one on the left to follow it live. Sessions that wait for you are listed first.
-	</p>
-	<button
-		class="hover:bg-raised mt-1 flex h-9 items-center gap-2 rounded-md border px-3 text-[13px]"
-		onclick={() => (pairing = true)}><QrCode class="size-4" /> Open on your phone</button
-	>
+<div class="relative hidden min-h-0 flex-1 place-items-center p-8 lg:grid">
+	<div class="dotgrid" aria-hidden="true"></div>
+	<div class="relative flex w-full max-w-sm flex-col items-center text-center">
+		<Brand size={40} word={false} />
+		<h1 class="mt-6 text-xl font-semibold tracking-[-0.03em]">Choose a session</h1>
+		<p class="text-muted-foreground mt-2 text-sm leading-relaxed">
+			Pick one on the left to follow it live. Sessions that wait for you are listed first.
+		</p>
+		<button type="button" class="btn btn-secondary mt-6" onclick={() => (pairing = true)}
+			><QrCode class="size-4" /> Open on your phone</button
+		>
+	</div>
 </div>
 
 <PairDevice open={pairing} onclose={() => (pairing = false)} />

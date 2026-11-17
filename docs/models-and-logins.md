@@ -272,6 +272,13 @@ request makes everything after it new, so azazel keeps what changes out of the p
   memory keeps in the prompt, and the agent's task list. Switching the mode, setting a goal, saving a memory or
   passing midnight therefore leaves the cache as it was.
 - Tools are sent in name order, whatever order they were registered in.
+- On the `anthropic-messages` API the cache marks go on the system prompt, the last two user turns, and, once
+  the conversation has 32 messages, on a user turn before its middle. That mark moves only every 16 messages,
+  so when something near the end changes (a rewind, a retried reply) the older half is still read from the
+  cache.
+- On a Claude subscription login every mark asks for a 1-hour cache instead of the 5-minute one: the login
+  pays out of its usage window, not by the token, and a cache that outlives a pause saves sending the whole
+  conversation again.
 
 Editing `AGENTS.md`, connecting an MCP server, changing the model or the thinking level, and compaction do
 change the prefix; the next request pays for it once.
@@ -288,7 +295,7 @@ cause, the first thing in the request that was not what it had been:
 | the system prompt part `<name>` changed, was gained or lost | For example `context_files` after an edit to `AGENTS.md` |
 | the thinking level changed | Anthropic keys the conversation's cache on it |
 | message N of M is not what was sent before | An old tool result was shortened, or a hook rewrote the conversation |
-| N min passed since the request before | The provider keeps an unused cache for 5 minutes |
+| N min passed since the request before | The provider keeps an unused cache for 5 minutes (an hour on a Claude subscription login) |
 | nothing that was sent changed | The provider dropped it |
 
 `[cache] report_misses = true` also prints the miss in the transcript when it happens.
@@ -309,8 +316,8 @@ request cannot renew.
 
 ### Keeping the cache warm
 
-A cache that nothing reads for 5 minutes is gone, and the next prompt pays full price for the whole
-conversation. `[cache] warming = "idle"` prevents that while you think: 30 seconds before the cache would
+A cache that nothing reads for 5 minutes (an hour on a Claude subscription login) is gone, and the next prompt
+pays full price for the whole conversation. `[cache] warming = "idle"` prevents that while you think: 30 seconds before the cache would
 expire, azazel sends the lead's last request again asking for a single token, which reads the cache and so
 renews it. Reading costs a tenth of the input price; writing the conversation anew costs more than the full
 price.

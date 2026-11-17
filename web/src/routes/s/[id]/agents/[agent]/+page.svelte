@@ -58,19 +58,17 @@
 	}
 </script>
 
-<div class="bg-card flex shrink-0 items-center gap-3 border-b px-3 py-2 md:px-6">
-	<a
-		href="/s/{encodeURIComponent(session.id)}"
-		class="text-muted-foreground hover:text-foreground hover:bg-raised flex min-h-11 items-center gap-1.5 rounded-md pr-2 text-xs md:min-h-8"
+<div class="bg-inset flex shrink-0 items-center gap-2 border-b px-1.5 py-1 lg:px-3">
+	<a href="/s/{encodeURIComponent(session.id)}" class="btn btn-quiet gap-1.5 px-2.5 text-xs"
 		><ArrowLeft class="size-4" /> Lead</a
 	>
 	<div class="min-w-0 flex-1">
 		<div class="flex items-center gap-2">
 			<StateDot state={member?.state ?? 'idle'} /><span
-				class="truncate font-mono text-[13px] font-medium">{agent}</span
-			><span class="text-muted-foreground text-xs">{member?.state ?? 'gone'}</span>
+				class="truncate font-mono text-xs font-medium">{agent}</span
+			><span class="text-muted-foreground shrink-0 text-xs">{member?.state ?? 'gone'}</span>
 		</div>
-		{#if member?.activity}<p class="text-muted-foreground truncate text-xs">
+		{#if member?.activity}<p class="text-muted-foreground truncate pl-[18px] text-xs">
 				{member.activity}
 			</p>{/if}
 	</div>
@@ -84,20 +82,21 @@
 />
 
 {#if app.canControl}
+	<!-- The same box as the lead's composer, on the same column. -->
 	<form
-		class="bg-background border-t px-3 pt-2.5 pb-[max(0.625rem,env(safe-area-inset-bottom))] md:px-6"
+		class="shrink-0 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-5"
 		onsubmit={(e) => (e.preventDefault(), send())}
 	>
-		<div
-			class="bg-card focus-within:border-ring mx-auto flex max-w-3xl items-center gap-1 rounded-xl border p-1.5"
-		>
-			<input
-				class="placeholder:text-muted-foreground h-11 min-w-0 flex-1 bg-transparent px-2 text-[15px] outline-none md:h-9"
-				placeholder="Message {agent}…"
-				aria-label="Message {agent}"
-				bind:value={text}
-			/>
-			<Button type="submit" class="h-11 md:h-9" disabled={sending || !text.trim()}>Send</Button>
+		<div class="col">
+			<div class="composer flex items-center gap-1 p-1.5">
+				<input
+					class="placeholder:text-faint h-11 min-w-0 flex-1 bg-transparent px-2.5 text-[15px] outline-none fine:h-9"
+					placeholder="Message {agent}…"
+					aria-label="Message {agent}"
+					bind:value={text}
+				/>
+				<Button type="submit" disabled={sending || !text.trim()}>Send</Button>
+			</div>
 		</div>
 	</form>
 {/if}

@@ -1,6 +1,6 @@
 <script lang="ts">
 	import type { ToolItem } from '$lib/session/reduce';
-	import { previewDiff, prettyInput, summarize } from '$lib/tools';
+	import { parseDiff, previewDiff, prettyInput, summarize } from '$lib/tools';
 	import { duration } from '$lib/format';
 	import DiffView from './DiffView.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -11,8 +11,7 @@
 	import Globe from '@lucide/svelte/icons/globe';
 	import Users from '@lucide/svelte/icons/users';
 	import Cpu from '@lucide/svelte/icons/cpu';
-	import Check from '@lucide/svelte/icons/check';
-	import X from '@lucide/svelte/icons/x';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 
 	let { tool }: { tool: ToolItem } = $props();
 
@@ -25,6 +24,15 @@
 	const lines = $derived(body ? body.split('\n').length : 0);
 	const isShell = $derived(tool.name === 'shell');
 	const edits = $derived(tool.name === 'edit' || tool.name === 'write');
+	// The size of the change sits in the header, so the diff below needs no caption of its own.
+	const stats = $derived.by(() => {
+		if (!diff) return null;
+		const ls = parseDiff(diff);
+		return {
+			add: ls.filter((l) => l.kind === 'add').length,
+			del: ls.filter((l) => l.kind === 'del').length
+		};
+	});
 	const Icon = $derived(
 		isShell
 			? Terminal
@@ -46,108 +54,96 @@
 	});
 </script>
 
+<!-- A finished call is quiet: colour is kept for the two states that need the reader, running and failed. -->
 <div
-	class="surface overflow-hidden rounded-xl transition-colors {failed
-		? 'border-destructive/50'
-		: running
-			? 'border-info/35'
-			: ''}"
+	class="tool surface overflow-hidden rounded-lg"
 	data-tool={tool.name}
 	data-status={tool.status}
 >
 	<button
 		type="button"
-		class="hover:bg-raised/50 flex min-h-12 w-full items-center gap-3 px-3.5 py-2 text-left md:min-h-10"
+		class="hover:bg-hover flex min-h-11 w-full items-center gap-2.5 px-3 text-left -outline-offset-2 transition-colors duration-100 fine:min-h-9"
 		aria-expanded={open}
 		onclick={() => (open = !open)}
 	>
-		<span
-			class="bg-raised grid size-7 shrink-0 place-items-center rounded-md border {failed
-				? 'text-destructive'
-				: running
-					? 'text-info'
-					: 'text-muted-foreground'}"
+		<Icon
+			class="size-4 shrink-0 {failed ? 'text-destructive' : running ? 'text-info' : 'text-faint'}"
 			aria-hidden="true"
-		>
-			<Icon class="size-3.5" />
-		</span>
-		<span class="min-w-0 flex-1">
-			<span class="flex items-baseline gap-2">
-				<span class="text-[13px] font-medium">{tool.name}</span>
-				<span class="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs"
-					>{summary}</span
+		/>
+		<span class="shrink-0 font-mono text-xs font-medium">{tool.name}</span>
+		<span class="text-muted-foreground min-w-0 flex-1 truncate font-mono text-xs">{summary}</span>
+		<span class="flex shrink-0 items-center gap-2.5">
+			{#if stats && (stats.add || stats.del)}
+				<span class="meta"
+					><span class="text-diff-add-fg">+{stats.add}</span>
+					<span class="text-diff-del-fg">−{stats.del}</span></span
 				>
-			</span>
-		</span>
-		<span class="flex shrink-0 items-center gap-2 text-xs">
+			{/if}
 			{#if running}
-				<span
-					class="bg-inset relative hidden h-1 w-10 overflow-hidden rounded-full sm:block"
-					aria-hidden="true"
+				<span class="tag tag-info"
+					><LoaderCircle class="size-3 animate-spin" aria-hidden="true" />running</span
 				>
-					<span
-						class="bg-info absolute inset-y-0 left-0 w-1/3 animate-[bar_1.3s_ease-in-out_infinite] rounded-full"
-					></span>
-				</span>
-				<span class="text-info">running</span>
 			{:else if failed}
-				<X class="text-destructive size-3.5" /><span class="text-destructive font-medium"
-					>failed</span
-				>
-			{:else}
-				<Check class="text-success size-3.5" />
-				{#if tool.durationMs !== undefined}<span class="text-muted-foreground num font-mono"
-						>{duration(tool.durationMs)}</span
-					>{/if}
+				<span class="tag tag-danger">failed</span>
+			{:else if tool.durationMs !== undefined}
+				<span class="text-faint meta">{duration(tool.durationMs)}</span>
 			{/if}
 			<ChevronRight
-				class="text-faint size-3.5 transition-transform duration-150 {open ? 'rotate-90' : ''}"
+				class="text-faint size-4 transition-transform duration-150 {open ? 'rotate-90' : ''}"
+				aria-hidden="true"
 			/>
 		</span>
 	</button>
 
-	{#if diff && !open}
-		<div class="px-3 pb-3"><DiffView {diff} max={7} /></div>
-	{:else if !open && isShell && body}
-		<div class="px-3 pb-3">
-			<pre
-				class="bg-inset text-ink-2 max-h-24 overflow-hidden rounded-lg border px-3 py-2 text-[12px] leading-[1.55] whitespace-pre-wrap break-words">{body
+	{#if !open}
+		{#if diff}
+			<DiffView {diff} max={7} flush />
+		{:else if isShell && body}
+			<pre class="well text-ink-2 max-h-24 overflow-hidden rounded-none border-t px-3 py-2.5">{body
 					.split('\n')
 					.slice(-4)
 					.join('\n')}</pre>
-		</div>
-	{/if}
-
-	{#if open}
-		<div class="space-y-3 border-t px-3.5 py-3">
-			{#if diff}<DiffView {diff} max={60} />{/if}
-			{#if !edits}
-				<div>
-					<div class="label mb-1.5">Input</div>
-					<pre
-						class="bg-inset scroll-thin max-h-48 overflow-auto rounded-lg border p-3 text-[12px] leading-[1.55] whitespace-pre-wrap break-words">{prettyInput(
-							tool.input
-						)}</pre>
+		{/if}
+	{:else}
+		{#if diff}<DiffView {diff} max={60} flush />{/if}
+		{#if !edits}
+			<div class="border-t px-3 py-3">
+				<div class="label mb-1.5">Input</div>
+				<pre class="well scroll-thin max-h-48 overflow-auto border p-3">{prettyInput(
+						tool.input
+					)}</pre>
+			</div>
+		{/if}
+		{#if body}
+			<div class="border-t px-3 py-3">
+				<div class="label mb-1.5 flex justify-between">
+					<span>{tool.output ? 'Result' : 'Output so far'}</span><span class="meta text-faint"
+						>{lines} line{lines === 1 ? '' : 's'}</span
+					>
 				</div>
-			{/if}
-			{#if body}
-				<div>
-					<div class="label mb-1.5 flex justify-between">
-						<span>{tool.output ? 'Result' : 'Output so far'}</span><span
-							class="num normal-case tracking-normal">{lines} line{lines === 1 ? '' : 's'}</span
-						>
-					</div>
-					<pre
-						class="bg-inset scroll-thin max-h-72 overflow-auto rounded-lg border p-3 text-[12px] leading-[1.55] whitespace-pre-wrap break-words {failed
-							? 'text-destructive'
-							: 'text-ink-2'}">{body}</pre>
-				</div>
-			{:else if tool.status === 'done' && !diff}
-				<p class="text-muted-foreground text-xs">No output.</p>
-			{/if}
-			{#if tool.imageCount}<p class="text-muted-foreground text-xs">
-					{tool.imageCount} image{tool.imageCount > 1 ? 's' : ''} in the result (not shown here).
-				</p>{/if}
-		</div>
+				<pre
+					class="well scroll-thin max-h-72 overflow-auto border p-3 {failed
+						? 'text-destructive'
+						: 'text-ink-2'}">{body}</pre>
+			</div>
+		{:else if tool.status === 'done' && !diff}
+			<p class="text-muted-foreground border-t px-3 py-3 text-xs">No output.</p>
+		{/if}
+		{#if tool.imageCount}<p class="text-muted-foreground border-t px-3 py-3 text-xs">
+				{tool.imageCount} image{tool.imageCount > 1 ? 's' : ''} in the result (not shown here).
+			</p>{/if}
 	{/if}
 </div>
+
+<style>
+	.tool {
+		transition: border-color var(--dur) var(--ease-out);
+	}
+	.tool[data-status='running'],
+	.tool[data-status='pending'] {
+		border-color: color-mix(in oklab, var(--info) 38%, transparent);
+	}
+	.tool[data-status='error'] {
+		border-color: color-mix(in oklab, var(--destructive) 50%, transparent);
+	}
+</style>

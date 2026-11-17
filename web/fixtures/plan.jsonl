@@ -1,0 +1,17 @@
+{"type":"agent_start","agent":"lead"}
+{"type":"turn_start","turn":1,"agent":"lead"}
+{"type":"message_start","agent":"lead"}
+{"type":"stream","event":{"type":"start"},"agent":"lead"}
+{"type":"stream","event":{"type":"text_delta","index":0,"delta":"I read the store module. Here is the plan before I change anything."},"agent":"lead"}
+{"type":"stream","event":{"type":"block_end","index":0,"block":{"type":"text","text":"I read the store module. Here is the plan before I change anything."}},"agent":"lead"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"I read the store module. Here is the plan before I change anything."}],"meta":{"provider":"mock","model":"lead","api":"openai-chat","usage":{"input":0,"output":0,"cache_read":0,"cache_write":0,"reasoning":0},"stop":"end","duration_ms":0}},"agent":"lead"}
+{"type":"ui_request","request_id":"p1","kind":"plan","path":".azazel/plans/sqlite-store.md","plan":"# Move sessions to SQLite\n\nKeep the in-memory store for tests and put a file-backed store behind the same trait.\n\n## Steps\n\n1. Add `SqliteStore` in `src/store/sqlite.rs` behind the `Store` trait\n2. Migrate on start: create `sessions` when it is missing\n3. Switch `main.rs` to the new store when `SESSIONS_DB` is set\n4. Run the store tests against both back ends\n\n## Schema\n\n```sql\nCREATE TABLE sessions (\n  id   TEXT PRIMARY KEY,\n  data BLOB NOT NULL,\n  seen INTEGER NOT NULL\n);\n```\n\n## Risks\n\n- A crash between write and fsync loses the last session; **WAL mode** covers it\n- The file must not live on a network share\n"}
+{"type":"turn_end","agent":"lead"}
+{"type":"turn_start","turn":2,"agent":"lead"}
+{"type":"message_start","agent":"lead"}
+{"type":"stream","event":{"type":"start"},"agent":"lead"}
+{"type":"stream","event":{"type":"text_delta","index":0,"delta":"Plan approved. Starting with the trait."},"agent":"lead"}
+{"type":"stream","event":{"type":"block_end","index":0,"block":{"type":"text","text":"Plan approved. Starting with the trait."}},"agent":"lead"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Plan approved. Starting with the trait."}],"meta":{"provider":"mock","model":"lead","api":"openai-chat","usage":{"input":0,"output":0,"cache_read":0,"cache_write":0,"reasoning":0},"stop":"end","duration_ms":0}},"agent":"lead"}
+{"type":"turn_end","agent":"lead"}
+{"type":"idle","stop":"end","agent":"lead"}

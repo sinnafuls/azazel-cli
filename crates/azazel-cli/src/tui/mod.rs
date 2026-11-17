@@ -343,6 +343,8 @@ pub struct Tui {
     vim: Option<Vim>,
     /// Pastes longer than this many lines fold into a token.
     fold_paste_lines: usize,
+    /// How a folded paste reaches the agent (`[editor] paste`).
+    paste_mode: azazel_core::config::PasteMode,
     /// `[editor] command`, as the settings menu last left it.
     editor_command: String,
     /// Models the cycling keys step through, as written in `tui.favourites`.
@@ -656,6 +658,7 @@ async fn run_on(mut backend: Box<dyn Backend>, env: Env, first_prompt: Option<St
         editor: Editor::new(),
         vim: (editor_config.mode == azazel_core::config::EditorMode::Vim).then(Vim::new),
         fold_paste_lines: editor_config.fold_paste_lines,
+        paste_mode: editor_config.paste,
         editor_command: editor_config.command,
         favourites: tui_config.favourites.iter().map(ToString::to_string).collect(),
         strip: None,
@@ -2022,6 +2025,33 @@ impl Tui {
         }
     }
 
+    /// Takes the input to send, with every folded paste as `[editor] paste` asks: wrapped in
+    /// `<attachment>` tags, so neither the model nor the harness reads it as the user's own
+    /// words (a `#1` in a pasted log is not a pull request), saved as a `local://` file, or as is.
+    fn take_input(&mut self) -> String {
+        use azazel_core::config::PasteMode;
+        let mode = self.paste_mode;
+        let dir = self.backend.local().map(|local| local.active.session.local_dir());
+        let mut failed = None;
+        let text = self.editor.take_with(&mut |text| match (mode, dir.as_deref()) {
+            (PasteMode::Inline, _) => text.to_string(),
+            (PasteMode::File, Some(dir)) => match save_paste(dir, text) {
+                Ok(name) => format!("local://{name} (pasted text, {} lines)", text.lines().count()),
+                Err(e) => {
+                    failed = Some(e.to_string());
+                    as_attachment(text)
+                }
+            },
+            _ => as_attachment(text),
+        });
+        if let Some(e) = failed {
+            self.notice = Some(format!(
+                "could not save the paste to a file ({e}); it was sent as an attachment"
+            ));
+        }
+        text
+    }
+
     async fn submit(&mut self, follow_up: bool) {
         if self.editor.is_empty() {
             return;
@@ -2030,7 +2060,7 @@ impl Tui {
         // attached image is its label, `[Image #1]`, in both.
         let shown = self.editor.shown();
         let images = self.claim_images();
-        let entered = self.editor.take();
+        let entered = self.take_input();
         self.completion = None;
         let trimmed = entered.trim();
         if let Some(command) = trimmed.strip_prefix('/') {
@@ -2641,6 +2671,60 @@ pub(crate) fn project_files(root: &std::path::Path, ignored: bool) -> Vec<String
 fn first_line(prompt: &str) -> String {
     let line = prompt.lines().next().unwrap_or_default();
     text::truncate(line, 70, "…")
+}
+
+/// A folded paste as the agent receives it: in `<attachment>` tags, so it is read as material
+/// the user handed over rather than as their own words.
+fn as_attachment(text: &str) -> String {
+    format!("\n<attachment>\n{}\n</attachment>\n", text.trim_end_matches('\n'))
+}
+
+/// Saves a paste as `paste-N.md` in the session's scratch directory, the first name not taken,
+/// and returns the name, which `local://` addresses.
+fn save_paste(dir: &std::path::Path, text: &str) -> io::Result<String> {
+    std::fs::create_dir_all(dir)?;
+    for n in 1.. {
+        let name = format!("paste-{n}.md");
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join(&name))
+        {
+            Ok(mut file) => {
+                file.write_all(text.as_bytes())?;
+                return Ok(name);
+            }
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    unreachable!("the names run out only after usize::MAX pastes")
+}
+
+#[cfg(test)]
+mod paste_tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    #[test]
+    fn a_paste_is_wrapped_as_an_attachment_and_its_numbers_are_not_references() {
+        let sent = format!("look at this{}", as_attachment("step #1 failed\nsee #2\n"));
+        assert!(
+            sent.contains("<attachment>\nstep #1 failed\nsee #2\n</attachment>"),
+            "{sent}"
+        );
+        assert!(azazel_tools::gh::references(&sent).is_empty(), "{sent}");
+    }
+
+    #[test]
+    fn pastes_saved_as_files_never_overwrite_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("local");
+        assert_eq!(save_paste(&local, "one").unwrap(), "paste-1.md");
+        assert_eq!(save_paste(&local, "two").unwrap(), "paste-2.md");
+        assert_eq!(std::fs::read_to_string(local.join("paste-1.md")).unwrap(), "one");
+        assert_eq!(std::fs::read_to_string(local.join("paste-2.md")).unwrap(), "two");
+    }
 }
 
 #[cfg(test)]

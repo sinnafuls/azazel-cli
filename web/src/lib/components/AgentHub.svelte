@@ -4,7 +4,6 @@
 	import { cost, duration, tokens } from '$lib/format';
 	import { toasts } from '$lib/toasts.svelte';
 	import Square from '@lucide/svelte/icons/square';
-	import Users from '@lucide/svelte/icons/users';
 	import { onMount } from 'svelte';
 
 	let {
@@ -52,49 +51,43 @@
 
 <section aria-label="Agents" data-agent-hub>
 	{#if subs === 0}
-		<div class="flex flex-col items-center gap-3 px-2 py-10 text-center">
-			<span
-				class="bg-raised text-muted-foreground grid size-10 place-items-center rounded-xl border"
-				><Users class="size-[18px]" /></span
-			>
-			<p class="text-sm font-medium">Working alone</p>
-			<p class="text-muted-foreground max-w-[15rem] text-[13px] leading-relaxed">
+		<div class="py-2">
+			<p class="text-sm font-medium tracking-[-0.015em]">Working alone</p>
+			<p class="text-muted-foreground mt-1 text-sm leading-relaxed">
 				When the lead hands work to sub-agents they appear here, live. Open one to read its work,
 				message it or stop it.
 			</p>
 		</div>
 	{:else}
-		<div class="mb-3 flex items-center justify-between">
-			<span class="label">Agents · {members.length}</span>
-			{#if live}<span class="text-info num text-xs">{live} active</span>{/if}
+		<div class="mb-2 flex items-baseline justify-between">
+			<span class="label">Agents <span class="text-faint meta ml-1">{members.length}</span></span>
+			{#if live}<span class="tag tag-info num">{live} active</span>{/if}
 		</div>
-		<ul class="space-y-1.5">
+		<!-- One list with hairlines, not a card per agent: the tree is read down its left edge. -->
+		<ul class="-mx-2 space-y-0.5">
 			{#each members as m (m.id)}
-				<li style="margin-left: {Math.min(m.depth, 3) * 12}px">
-					<div
-						class="surface flex items-stretch overflow-hidden rounded-xl {active === m.id
-							? 'border-border-strong bg-raised'
-							: ''}"
-					>
+				<li>
+					<div class="flex items-stretch gap-1">
 						<a
-							class="hover:bg-raised/60 flex min-h-[3.75rem] min-w-0 flex-1 items-center gap-3 px-3.5 py-2.5"
+							class="row flex min-h-14 min-w-0 flex-1 gap-3 rounded-lg py-2 pr-2"
+							style="padding-left: {8 + Math.min(m.depth, 3) * 14}px"
 							href={href(m.id)}
 							aria-current={active === m.id ? 'page' : undefined}
 						>
-							<StateDot state={m.state} />
+							<StateDot state={m.state} class="mt-[5px]" />
 							<span class="min-w-0 flex-1">
 								<span class="flex items-baseline gap-2">
-									<span class="truncate font-mono text-[13px] font-medium">{m.id}</span>
-									<span class="text-muted-foreground shrink-0 text-[11px]">{m.state}</span>
+									<span class="truncate font-mono text-xs font-medium">{m.id}</span>
+									<span class="text-muted-foreground shrink-0 text-xs">{m.state}</span>
+									{#if elapsed(m) >= 1000}<span class="text-faint meta ml-auto shrink-0"
+											>{duration(elapsed(m))}</span
+										>{/if}
 								</span>
 								<span class="text-muted-foreground mt-0.5 block truncate text-xs"
 									>{m.activity ||
 										(m.id === 'lead' ? 'Lead agent' : `Started by ${m.parent ?? 'lead'}`)}</span
 								>
-							</span>
-							<span class="text-faint num shrink-0 text-right font-mono text-[11px] leading-4">
-								{#if elapsed(m) >= 1000}<span class="block">{duration(elapsed(m))}</span>{/if}
-								{#if m.tokens > 0}<span class="block"
+								{#if m.tokens > 0}<span class="text-faint meta mt-0.5 block"
 										>{tokens(m.tokens)} tok{m.cost_usd ? ` · ${cost(m.cost_usd)}` : ''}</span
 									>{/if}
 							</span>
@@ -102,7 +95,7 @@
 						{#if canControl && m.id !== 'lead' && stoppable(m.state)}
 							<button
 								type="button"
-								class="text-muted-foreground hover:text-destructive hover:bg-destructive/10 grid w-12 shrink-0 place-items-center border-l"
+								class="btn btn-quiet btn-icon stop self-center"
 								aria-label="Stop {m.id}"
 								onclick={() => (confirming = m.id)}><Square class="size-3.5" /></button
 							>
@@ -110,19 +103,17 @@
 					</div>
 					{#if confirming === m.id}
 						<div
-							class="float mt-1.5 flex animate-enter items-center gap-2 rounded-xl p-2.5 text-[13px]"
+							class="surface mx-2 mt-1 mb-2 animate-enter rounded-lg p-3 text-sm"
 							role="alertdialog"
 							aria-label="Confirm stop"
 						>
-							<span class="min-w-0 flex-1">Stop {m.id} and the agents it started?</span>
-							<button
-								class="hover:bg-raised h-9 rounded-lg border px-3"
-								onclick={() => (confirming = null)}>Keep</button
-							>
-							<button
-								class="bg-destructive text-destructive-foreground h-9 rounded-lg px-3 font-medium"
-								onclick={() => stop(m.id)}>Stop</button
-							>
+							<p>Stop {m.id} and the agents it started?</p>
+							<div class="mt-3 flex gap-2">
+								<button class="btn btn-secondary flex-1" onclick={() => (confirming = null)}
+									>Keep</button
+								>
+								<button class="btn btn-destroy flex-1" onclick={() => stop(m.id)}>Stop</button>
+							</div>
 						</div>
 					{/if}
 				</li>
@@ -130,3 +121,21 @@
 		</ul>
 	{/if}
 </section>
+
+<style>
+	.row {
+		transition: background-color var(--dur-fast) var(--ease-out);
+	}
+	.row[aria-current='page'] {
+		background: var(--hover);
+		box-shadow: inset 0 0 0 1px var(--border);
+	}
+	@media (hover: hover) {
+		.row:hover {
+			background: var(--hover);
+		}
+		.stop:hover {
+			color: var(--destructive);
+		}
+	}
+</style>

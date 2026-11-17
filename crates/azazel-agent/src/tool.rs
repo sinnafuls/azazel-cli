@@ -36,6 +36,36 @@ pub enum Timeout {
     After(Duration),
 }
 
+/// How a tool is put in front of the model.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Offer {
+    /// In every request (kept out of the prompt until searched for when `[tools] defer` names it
+    /// and the provider searches for tools itself).
+    #[default]
+    Always,
+    /// Waits to be found: where the provider searches for tools itself it is always sent kept out
+    /// of the prompt (so finding it changes nothing the provider cached); elsewhere it is offered
+    /// once a search tool of the harness (MCP's `tool_search`) has `found` it.
+    Searchable { found: bool },
+    /// A search tool of the harness, offered only where the provider does not search itself.
+    Search,
+}
+
+/// The tools `[tools] defer` names, kept as a service: where the provider searches for tools
+/// itself, they are kept out of the prompt until the model looks for them. A name ending in `*`
+/// covers every tool it starts.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Deferral(pub Vec<String>);
+
+impl Deferral {
+    pub fn covers(&self, name: &str) -> bool {
+        self.0.iter().any(|entry| match entry.strip_suffix('*') {
+            Some(prefix) => name.starts_with(prefix),
+            None => entry == name,
+        })
+    }
+}
+
 /// What `[tools]` asks of every agent, kept as a service: `cache_reads`, `retries`,
 /// `call_timeout_secs`. Without it nothing is cached, retried or limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +146,10 @@ pub trait Tool: Send + Sync {
     fn offered_to(&self, _model: &ModelRef) -> bool {
         true
     }
+    /// How the tool is put in front of the model; see [`Offer`].
+    fn offer(&self) -> Offer {
+        Offer::Always
+    }
     async fn call(&self, input: Value, ctx: &ToolCtx) -> ToolOutput;
 }
 
@@ -124,6 +158,7 @@ pub fn tool_spec(tool: &dyn Tool) -> ToolSpec {
         name: tool.name().to_string(),
         description: tool.description().to_string(),
         schema: tool.schema(),
+        defer: false,
     }
 }
 

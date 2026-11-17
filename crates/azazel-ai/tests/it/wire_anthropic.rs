@@ -303,6 +303,124 @@ fn midstream_error_fixture_ends_with_overloaded_and_completed_blocks() {
 // ---- decoder: protocol details ----
 
 #[test]
+fn a_server_tool_call_without_its_result_is_not_sent_back() {
+    let call = |id: &str| Block::Opaque {
+        provider: "mock".to_string(),
+        item: json!({"type": "server_tool_use", "id": id, "name": "tool_search_tool_bm25", "input": {"query": "browser"}}),
+    };
+    let result = Block::Opaque {
+        provider: "mock".to_string(),
+        item: json!({"type": "tool_search_tool_result", "tool_use_id": "srvtoolu_2", "content": {"type": "tool_search_tool_search_result", "tool_references": []}}),
+    };
+    let reply = assistant(vec![
+        call("srvtoolu_1"),
+        call("srvtoolu_2"),
+        result,
+        Block::ToolCall {
+            id: "toolu_1".to_string(),
+            name: "read".to_string(),
+            input: json!({}),
+            signature: None,
+        },
+    ]);
+    let req = request(vec![
+        Message::user("go"),
+        reply,
+        Message::tool(vec![Block::tool_result("toolu_1", "ok", false)]),
+    ]);
+    let body = build(&req);
+    let sent: Vec<String> = body["messages"][1]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| {
+            format!(
+                "{} {}",
+                b["type"].as_str().unwrap(),
+                b["id"].as_str().or(b["tool_use_id"].as_str()).unwrap_or_default()
+            )
+        })
+        .collect();
+    // The call that was never answered is left out; the answered pair stays.
+    assert_eq!(
+        sent,
+        [
+            "server_tool_use srvtoolu_2",
+            "tool_search_tool_result srvtoolu_2",
+            "tool_use toolu_1"
+        ]
+    );
+}
+
+#[test]
+fn a_tool_search_keeps_its_call_and_its_result_for_the_next_request() {
+    let result = json!({
+        "type": "tool_search_tool_result",
+        "tool_use_id": "srvtoolu_1",
+        "content": {
+            "type": "tool_search_tool_search_result",
+            "tool_references": [{"type": "tool_reference", "tool_name": "browser"}]
+        }
+    });
+    let mut records = vec![
+        message_start(),
+        block_start(
+            0,
+            json!({"type": "server_tool_use", "id": "srvtoolu_1", "name": "tool_search_tool_bm25"}),
+        ),
+        block_delta(
+            0,
+            json!({"type": "input_json_delta", "partial_json": "{\"query\":\"browser\"}"}),
+        ),
+        block_stop(0),
+        block_start(1, result.clone()),
+        block_stop(1),
+    ];
+    records.push(block_start(
+        2,
+        json!({"type": "tool_use", "id": "toolu_1", "name": "browser", "input": {}}),
+    ));
+    records.push(block_stop(2));
+    records.extend([message_delta("tool_use"), message_stop()]);
+    let message = done(&decode(&sse(&records))).clone();
+    let kinds: Vec<String> = message
+        .content
+        .iter()
+        .map(|b| match b {
+            Block::Opaque { item, .. } => item["type"].as_str().unwrap_or_default().to_string(),
+            Block::ToolCall { name, .. } => format!("call {name}"),
+            other => format!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        ["server_tool_use", "tool_search_tool_result", "call browser"]
+    );
+
+    // Replayed, the pair goes back unchanged and in order.
+    let mut req = request(vec![
+        Message::user("open the page"),
+        message,
+        Message::tool(vec![Block::tool_result("toolu_1", "ok", false)]),
+    ]);
+    req.tools = vec![ToolSpec {
+        name: "browser".to_string(),
+        description: "Browse".to_string(),
+        schema: json!({"type": "object"}),
+        defer: true,
+    }];
+    let body = build(&req);
+    let sent: Vec<&str> = body["messages"][1]["content"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|b| b["type"].as_str().unwrap())
+        .collect();
+    assert_eq!(sent, ["server_tool_use", "tool_search_tool_result", "tool_use"]);
+    assert_eq!(body["messages"][1]["content"][1], result);
+}
+
+#[test]
 fn server_blocks_stay_opaque_and_api_indexes_become_dense() {
     let search_result = json!({
         "type": "web_search_tool_result",
@@ -568,11 +686,13 @@ fn tools_map_to_input_schema_and_only_the_last_is_cached() {
             name: "edit".to_string(),
             description: "Edit a file".to_string(),
             schema: schema.clone(),
+            defer: false,
         },
         ToolSpec {
             name: "read".to_string(),
             description: "Read a file".to_string(),
             schema: Value::Null,
+            defer: false,
         },
     ];
     assert_eq!(
@@ -673,10 +793,13 @@ fn cache_markers_cover_the_last_two_user_turns_and_stay_within_four() {
         name: "read".to_string(),
         description: "Read a file".to_string(),
         schema: json!({"type": "object"}),
+        defer: false,
     }];
     let body = build(&req);
 
-    assert_eq!(count_cache_markers(&body), 4);
+    // The system prompt's mark covers the tools before it, so they get none of their own.
+    assert_eq!(count_cache_markers(&body), 3);
+    assert_eq!(count_cache_markers(&body["tools"]), 0);
     let messages = body["messages"].as_array().unwrap();
     assert_eq!(count_cache_markers(&messages[0]), 0);
     assert_eq!(messages[2]["content"][0]["cache_control"], cache_marker());
@@ -690,10 +813,206 @@ fn cache_markers_cover_the_last_two_user_turns_and_stay_within_four() {
     );
 }
 
+/// Indexes of the messages that carry a cache mark.
+fn marked_messages(body: &Value) -> Vec<usize> {
+    body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .enumerate()
+        .filter(|(_, message)| count_cache_markers(message) > 0)
+        .map(|(index, _)| index)
+        .collect()
+}
+
+#[test]
+fn a_long_conversation_gets_a_mark_deep_inside_that_stays_put_while_it_grows() {
+    let conversation = |turns: usize| {
+        let mut messages = Vec::new();
+        for n in 0..turns {
+            messages.push(Message::user(format!("question {n}")));
+            messages.push(assistant(vec![Block::text(format!("answer {n}"))]));
+        }
+        messages.push(Message::user("last"));
+        let mut req = request(messages);
+        req.system = vec![SystemPart {
+            text: "rules".to_string(),
+            name: String::new(),
+            cache_boundary: true,
+        }];
+        req.tools = vec![ToolSpec {
+            name: "read".to_string(),
+            description: "Read a file".to_string(),
+            schema: json!({"type": "object"}),
+            defer: false,
+        }];
+        build(&req)
+    };
+
+    // A short one has only the marks at its end.
+    assert_eq!(marked_messages(&conversation(5)), vec![8, 10]);
+
+    // From 32 messages on, a user turn before the middle is marked too, and the mark does not
+    // move with every turn: requests keep finding what an earlier one wrote there.
+    let deep = |turns: usize| marked_messages(&conversation(turns))[0];
+    assert_eq!(marked_messages(&conversation(20)), vec![14, 38, 40]);
+    for turns in 16..32 {
+        let body = conversation(turns);
+        assert_eq!(deep(turns), 14, "{turns} turns");
+        assert_eq!(count_cache_markers(&body), 4, "{turns} turns");
+    }
+    assert_eq!(deep(32), 30);
+}
+
+#[test]
+fn deferred_tools_are_sent_for_the_api_to_search_and_never_carry_a_cache_mark() {
+    let client = azazel_ai::tls::client();
+    let (provider, model) = (provider(), model(MANUAL_MODEL));
+    let tool = |name: &str, defer: bool| ToolSpec {
+        name: name.to_string(),
+        description: format!("{name} things"),
+        schema: json!({"type": "object"}),
+        defer,
+    };
+    let send = |req: &azazel_ai::Request| {
+        anthropic::build_request(&client, &provider, &model, req, &Auth::ApiKey("sk-mock".into()))
+            .build()
+            .unwrap()
+    };
+    let beta_of = |sent: &reqwest::Request| {
+        sent.headers()
+            .get("anthropic-beta")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let mut req = request(vec![Message::user("hi")]);
+    req.tools = vec![tool("read", false), tool("zz_browser", true)];
+    let sent = send(&req);
+    assert!(
+        beta_of(&sent).contains("advanced-tool-use-2025-11-20"),
+        "{}",
+        beta_of(&sent)
+    );
+    let body: Value = serde_json::from_slice(sent.body().unwrap().as_bytes().unwrap()).unwrap();
+    let tools = body["tools"].as_array().unwrap();
+    let browser = tools.iter().find(|t| t["name"] == "zz_browser").unwrap();
+    assert_eq!(browser["defer_loading"], json!(true));
+    assert!(browser.get("cache_control").is_none(), "{browser}");
+    assert!(
+        tools
+            .iter()
+            .any(|t| t["type"] == "tool_search_tool_bm25_20251119"),
+        "{tools:?}"
+    );
+    // The mark goes on the last tool that is in the prompt.
+    let read = tools.iter().find(|t| t["name"] == "read").unwrap();
+    assert_eq!(read["cache_control"], cache_marker());
+
+    // Without deferred tools there is no search tool and no beta.
+    req.tools = vec![tool("read", false)];
+    let sent = send(&req);
+    let body: Value = serde_json::from_slice(sent.body().unwrap().as_bytes().unwrap()).unwrap();
+    assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    assert!(
+        !beta_of(&sent).contains("advanced-tool-use"),
+        "{}",
+        beta_of(&sent)
+    );
+}
+
+#[test]
+fn a_one_off_request_writes_no_cache_nothing_would_read() {
+    let mut req = request(vec![Message::user("summarise this")]);
+    req.system = vec![SystemPart {
+        text: "You summarise.".to_string(),
+        name: String::new(),
+        cache_boundary: false,
+    }];
+    assert_eq!(count_cache_markers(&build(&req)), 0);
+
+    // The first request of a conversation has a stable prompt to cache.
+    req.system[0].cache_boundary = true;
+    assert!(count_cache_markers(&build(&req)) > 0);
+}
+
+#[test]
+fn only_claude_4_5_and_later_search_deferred_tools() {
+    for id in [
+        "claude-sonnet-4-5",
+        "claude-opus-4-5-20251101",
+        "claude-haiku-4-5",
+        "claude-opus-4-6",
+        "claude-fable-5-2",
+    ] {
+        assert!(anthropic::searches_tools(id), "{id}");
+    }
+    for id in [
+        "claude-sonnet-4-20250514",
+        "claude-opus-4-1",
+        "claude-3-7-sonnet-latest",
+        "glm-4.6",
+        "kimi-k2",
+    ] {
+        assert!(!anthropic::searches_tools(id), "{id}");
+    }
+}
+
+#[test]
+fn a_subscription_login_has_every_cache_mark_kept_for_an_hour() {
+    let client = azazel_ai::tls::client();
+    let (provider, model) = (provider(), model(MANUAL_MODEL));
+    let mut req = request(vec![
+        Message::user("first"),
+        assistant(vec![Block::text("one")]),
+        Message::user("second"),
+    ]);
+    req.system = vec![SystemPart {
+        text: "rules".to_string(),
+        name: String::new(),
+        cache_boundary: true,
+    }];
+    let marks = |auth: Auth| -> Vec<Value> {
+        let sent = anthropic::build_request(&client, &provider, &model, &req, &auth)
+            .build()
+            .unwrap();
+        let body: Value = serde_json::from_slice(sent.body().unwrap().as_bytes().unwrap()).unwrap();
+        let mut found = Vec::new();
+        for block in body["system"].as_array().unwrap() {
+            found.extend(block.get("cache_control").cloned());
+        }
+        for message in body["messages"].as_array().unwrap() {
+            for block in message["content"].as_array().unwrap() {
+                found.extend(block.get("cache_control").cloned());
+            }
+        }
+        found
+    };
+
+    let login = marks(Auth::OAuth {
+        access: "tok-mock".to_string(),
+        fields: BTreeMap::new(),
+    });
+    assert_eq!(login.len(), 3);
+    assert!(
+        login
+            .iter()
+            .all(|mark| *mark == json!({"type": "ephemeral", "ttl": "1h"})),
+        "{login:?}"
+    );
+    // A key pays by the token, and an hour's cache costs twice the input price to write.
+    let key = marks(Auth::ApiKey("sk-mock".to_string()));
+    assert_eq!(key.len(), 3);
+    assert!(key.iter().all(|mark| *mark == cache_marker()), "{key:?}");
+}
+
 #[test]
 fn assistant_turn_replays_thinking_and_opaque_blocks_in_original_order() {
     let server_call = json!({
         "type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "x"}
+    });
+    let server_result = json!({
+        "type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []
     });
     let req = request(vec![
         Message::user("go"),
@@ -709,6 +1028,10 @@ fn assistant_turn_replays_thinking_and_opaque_blocks_in_original_order() {
             Block::Opaque {
                 provider: "mock".to_string(),
                 item: server_call.clone(),
+            },
+            Block::Opaque {
+                provider: "mock".to_string(),
+                item: server_result.clone(),
             },
             Block::Opaque {
                 provider: "other".to_string(),
@@ -727,7 +1050,8 @@ fn assistant_turn_replays_thinking_and_opaque_blocks_in_original_order() {
                 {"type": "text", "text": "On it."},
                 {"type": "thinking", "thinking": "progress update", "signature": "sig-2"},
                 {"type": "tool_use", "id": "call_1", "name": "read", "input": {"path": "a"}},
-                server_call
+                server_call,
+                server_result
             ]
         })
     );
@@ -1311,6 +1635,7 @@ fn the_tail_follows_the_cache_marks_so_a_changed_note_leaves_the_cached_prefix_a
         name: "read".to_string(),
         description: "Read a file".to_string(),
         schema: json!({"type": "object"}),
+        defer: false,
     }];
     first.tail = vec![note("now", "Date: 2026-11-13"), note("plan", "[Plan] 0/1 done")];
     let body = build(&first);
@@ -1327,7 +1652,7 @@ fn the_tail_follows_the_cache_marks_so_a_changed_note_leaves_the_cached_prefix_a
             "text": "<system-note>\nDate: 2026-11-13\n\n[Plan] 0/1 done\n</system-note>"
         })
     );
-    assert_eq!(count_cache_markers(&body), 4);
+    assert_eq!(count_cache_markers(&body), 3);
 
     // The next request: the conversation went on, the mode changed and the plan moved.
     let mut second = first.clone();
@@ -1416,4 +1741,116 @@ fn a_reply_the_safety_system_stopped_is_an_error_that_says_why() {
         "{error:?}"
     );
     assert_eq!(partial.as_ref().map(|m| m.text()), Some("I can".to_string()));
+}
+
+/// What the prompt cache keys on, in order: tools, system blocks, then every message block with
+/// its role. Cache marks are left out, as they move with the conversation's end.
+fn cache_sequence(body: &Value) -> (Vec<String>, Option<usize>) {
+    let mut sequence = Vec::new();
+    let mut last_mark = None;
+    let mut push = |role: &str, block: &Value| {
+        let mut block = block.clone();
+        if block
+            .as_object_mut()
+            .and_then(|o| o.remove("cache_control"))
+            .is_some()
+        {
+            last_mark = Some(sequence.len());
+        }
+        sequence.push(format!("{role}:{block}"));
+    };
+    for tool in body["tools"].as_array().into_iter().flatten() {
+        push("tool", tool);
+    }
+    for block in body["system"].as_array().into_iter().flatten() {
+        push("system", block);
+    }
+    for message in body["messages"].as_array().into_iter().flatten() {
+        let role = message["role"].as_str().unwrap_or_default();
+        for block in message["content"].as_array().into_iter().flatten() {
+            push(role, block);
+        }
+    }
+    (sequence, last_mark)
+}
+
+/// Everything but the conversation: a change here makes the provider drop the cached messages.
+fn parameters(body: &Value) -> Value {
+    let mut body = body.clone();
+    for key in ["messages", "system", "tools"] {
+        body.as_object_mut().unwrap().remove(key);
+    }
+    body
+}
+
+#[test]
+fn consecutive_requests_keep_the_cached_prefix_byte_for_byte() {
+    for (model_id, level) in [
+        (ADAPTIVE_MODEL, ThinkingLevel::High),
+        (MANUAL_MODEL, ThinkingLevel::Medium),
+        (ADAPTIVE_MODEL, ThinkingLevel::Off),
+    ] {
+        let mut req = Request {
+            system: vec![SystemPart {
+                text: "You are a test agent.".to_string(),
+                name: String::new(),
+                cache_boundary: true,
+            }],
+            tools: vec![ToolSpec {
+                name: "read".to_string(),
+                description: "Reads a file".to_string(),
+                schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+                defer: false,
+            }],
+            messages: vec![Message::user("read the files")],
+            thinking: level,
+            thinking_explicit: true,
+            ..Request::default()
+        };
+        let mut previous: Option<Value> = None;
+        for round in 0..6 {
+            // A note that changes every request rides after the conversation, outside the cache.
+            req.tail = vec![SystemPart {
+                text: format!("turn {round}"),
+                name: "turn-budget".to_string(),
+                cache_boundary: false,
+            }];
+            let body = anthropic::build_body(&provider(), &model(model_id), &req);
+            if let Some(before) = &previous {
+                let (old, mark) = cache_sequence(before);
+                let (new, _) = cache_sequence(&body);
+                let end = mark.expect("the earlier request has a cache mark") + 1;
+                assert_eq!(
+                    new[..end],
+                    old[..end],
+                    "{model_id} {level:?} round {round}: the prefix up to the last cache mark changed"
+                );
+                assert_eq!(
+                    parameters(&body),
+                    parameters(before),
+                    "{model_id} {level:?} round {round}"
+                );
+            }
+            previous = Some(body);
+            let id = format!("call_{round}");
+            req.messages.push(assistant(vec![
+                Block::Thinking {
+                    text: format!("thinking {round}"),
+                    signature: Some(format!("sig{round}")),
+                    redacted: false,
+                },
+                Block::ToolCall {
+                    id: id.clone(),
+                    name: "read".to_string(),
+                    input: json!({"path": format!("{round}.rs")}),
+                    signature: None,
+                },
+            ]));
+            req.messages.push(Message::tool(vec![Block::tool_result(
+                id,
+                "x".repeat(200),
+                false,
+            )]));
+        }
+    }
 }

@@ -219,6 +219,12 @@ impl Editor {
 
     /// The content with every folded paste written out and every atom as its label.
     pub fn expanded(&self) -> String {
+        self.expanded_with(&mut |text| text.to_string())
+    }
+
+    /// The content with every folded paste replaced by what `send` makes of its text, and every
+    /// atom as its label.
+    pub fn expanded_with(&self, send: &mut dyn FnMut(&str) -> String) -> String {
         let spans = self.token_spans();
         if spans.is_empty() {
             return self.shown();
@@ -227,7 +233,7 @@ impl Editor {
         let mut at = 0;
         for (start, end, paste) in spans {
             out.push_str(&self.text[at..start]);
-            out.push_str(&self.pastes[paste].text);
+            out.push_str(&send(&self.pastes[paste].text));
             at = end;
         }
         out.push_str(&self.text[at..]);
@@ -379,8 +385,14 @@ impl Editor {
     /// Returns the content with folded pastes written out and atoms as their labels, records
     /// it in the prompt history and clears the editor.
     pub fn take(&mut self) -> String {
-        let text = self.expanded();
-        self.push_history(text.clone());
+        self.take_with(&mut |text| text.to_string())
+    }
+
+    /// [`Editor::take`] with every folded paste replaced by what `send` makes of its text. The
+    /// history keeps the pasted text itself, so recalling it does not bring back the wrapping.
+    pub fn take_with(&mut self, send: &mut dyn FnMut(&str) -> String) -> String {
+        let text = self.expanded_with(send);
+        self.push_history(self.expanded());
         self.clear();
         text
     }

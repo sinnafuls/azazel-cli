@@ -1,0 +1,13 @@
+{"type":"agent_start","agent":"lead"}
+{"type":"turn_start","turn":1,"agent":"lead"}
+{"type":"retry","model":"bedrock/anthropic.claude-opus-4-8","attempt":2,"agent":"lead"}
+{"type":"message_start","agent":"lead"}
+{"type":"stream","event":{"type":"start"},"agent":"lead"}
+{"type":"stream","event":{"type":"text_delta","index":0,"delta":"Bumped 14 dependencies. Two need a look before they merge."},"agent":"lead"}
+{"type":"stream","event":{"type":"block_end","index":0,"block":{"type":"text","text":"Bumped 14 dependencies. Two need a look before they merge."}},"agent":"lead"}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"Bumped 14 dependencies. Two need a look before they merge."}],"meta":{"provider":"mock","model":"lead","api":"openai-chat","usage":{"input":0,"output":0,"cache_read":0,"cache_write":0,"reasoning":0},"stop":"end","duration_ms":0}},"agent":"lead"}
+{"type":"ui_request","request_id":"n1","kind":"notify","level":"info","text":"Your answer was sent to lead."}
+{"type":"ui_request","request_id":"n2","kind":"notify","level":"warn","text":"The 7-day allowance of anthropic is at 81%."}
+{"type":"ui_request","request_id":"n3","kind":"notify","level":"error","text":"Could not write Cargo.lock: the file is locked by another process."}
+{"type":"turn_end","agent":"lead"}
+{"type":"failed","error":"provider error: 529 overloaded, gave up after 3 attempts","agent":"lead"}

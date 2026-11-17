@@ -580,6 +580,13 @@ impl Provider for HttpProvider {
         wire::hosted_api(&self.config).is_some()
     }
 
+    fn searches_tools(&self, model: &ModelInfo) -> bool {
+        // Only Anthropic's own API: gateways that speak its format may refuse the beta.
+        self.config.api_for(&model.id) == WireApi::AnthropicMessages
+            && self.config.base_url.contains("api.anthropic.com")
+            && wire::anthropic::searches_tools(&model.id)
+    }
+
     async fn stream(
         &self,
         model: &ModelInfo,

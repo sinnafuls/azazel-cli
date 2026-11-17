@@ -58,19 +58,18 @@
 			(m) => m.id !== 'lead' && (m.state === 'running' || m.state === 'queued')
 		).length
 	);
+	const where = $derived(session.state?.cwd ?? info?.cwd ?? '');
 </script>
 
 <svelte:head><title>{waiting ? '(!) ' : ''}{title} · azazel</title></svelte:head>
 
 <div class="grid min-h-0 flex-1 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_20rem]">
 	<div class="flex min-h-0 min-w-0 flex-col">
-		<header
-			class="bg-background/90 shrink-0 border-b pt-[env(safe-area-inset-top)] backdrop-blur-none"
-		>
-			<div class="flex h-14 items-center gap-1 px-2 md:px-5">
+		<header class="shrink-0 border-b pt-[env(safe-area-inset-top)]">
+			<div class="flex h-14 items-center gap-1 px-1.5 lg:h-12 lg:pr-3 lg:pl-5">
 				<a
 					href="/"
-					class="text-muted-foreground hover:text-foreground grid size-11 place-items-center lg:hidden"
+					class="btn btn-quiet btn-icon lg:hidden"
 					aria-label="All sessions"
 					onclick={(e) => {
 						if (viewport.wide) {
@@ -79,59 +78,63 @@
 						}
 					}}><ArrowLeft class="size-[18px]" /></a
 				>
-				<div class="min-w-0 flex-1">
+				<div class="min-w-0 flex-1 pl-1 lg:flex lg:items-baseline lg:gap-3 lg:pl-0">
 					<h1
-						class="flex items-center gap-2.5 truncate text-[15px] font-semibold tracking-[-0.015em]"
+						class="flex min-w-0 items-center gap-2.5 text-[15px] leading-5 font-semibold tracking-[-0.02em]"
 					>
-						<StateDot state={stateName} class={waiting ? '' : ''} />
+						<StateDot state={stateName} />
 						<span class="truncate">{title}</span>
-						{#if agentId}<span class="text-muted-foreground font-mono text-xs font-normal"
+						{#if agentId}<span class="text-muted-foreground meta shrink-0 font-normal"
 								>/ {agentId}</span
 							>{/if}
 					</h1>
-					<p class="text-muted-foreground truncate font-mono text-[11px]">
-						{session.state?.cwd ?? info?.cwd ?? ''}{session.state?.branch
-							? ` · ${session.state.branch}`
-							: ''}
-					</p>
+					{#if where}
+						<p class="text-muted-foreground meta mt-0.5 min-w-0 truncate pl-5 lg:mt-0 lg:pl-0">
+							{where}{#if session.state?.branch}<span class="text-faint"
+									>{` · ${session.state.branch}`}</span
+								>{/if}
+						</p>
+					{/if}
 				</div>
 				<button
-					class="text-muted-foreground hover:text-foreground relative grid size-11 place-items-center xl:hidden"
+					type="button"
+					class="btn btn-quiet xl:hidden {live ? 'gap-1.5 px-3' : 'btn-icon'}"
 					aria-label="Agents and usage"
 					onclick={() => (panel = 'agents')}
 				>
 					<Users class="size-[18px]" />
-					{#if live}<span
-							class="bg-info text-background num absolute top-2 right-1.5 grid size-4 place-items-center rounded-full text-[10px] font-bold"
-							>{live}</span
-						>{/if}
+					{#if live}<span class="text-info meta font-medium">{live}</span>{/if}
 				</button>
 			</div>
-			<div class="border-t px-3 md:px-5"><StatusBar {session} canControl={app.canControl} /></div>
+			<StatusBar {session} canControl={app.canControl} />
 		</header>
 
 		{#if session.status === 'reconnecting' || session.status === 'connecting'}
 			<div
-				class="bg-raised text-muted-foreground flex items-center gap-2 border-b px-4 py-1.5 text-xs"
+				class="bg-inset text-muted-foreground flex items-center gap-2 border-b px-4 py-2 text-xs lg:px-5"
 				role="status"
 			>
-				<WifiOff class="size-3.5" />
+				<WifiOff class="size-3.5 shrink-0" />
 				{session.status === 'connecting' ? 'Connecting…' : 'Connection lost. Reconnecting…'}
 			</div>
 		{:else if session.status === 'ended'}
-			<div class="bg-raised border-b px-4 py-2 text-xs" role="status">
-				This session has ended. <a class="text-accent-text underline" href="/">Back to the list</a>
-			</div>
-		{:else if session.status === 'missing'}
-			<div class="bg-raised border-b px-4 py-2 text-xs" role="alert">
-				This session is not running any more. <a class="text-accent-text underline" href="/"
+			<div class="bg-inset border-b px-4 py-2 text-xs lg:px-5" role="status">
+				This session has ended. <a class="text-accent-text underline underline-offset-2" href="/"
 					>Back to the list</a
 				>
 			</div>
+		{:else if session.status === 'missing'}
+			<div class="bg-inset border-b px-4 py-2 text-xs lg:px-5" role="alert">
+				This session is not running any more. <a
+					class="text-accent-text underline underline-offset-2"
+					href="/">Back to the list</a
+				>
+			</div>
 		{:else if session.status === 'unauthorized'}
-			<div class="bg-destructive/10 text-destructive border-b px-4 py-2 text-xs" role="alert">
-				This device was signed out. <button class="underline" onclick={() => app.init()}
-					>Check again</button
+			<div class="bg-inset text-destructive border-b px-4 py-2 text-xs lg:px-5" role="alert">
+				This device was signed out. <button
+					class="underline underline-offset-2"
+					onclick={() => app.init()}>Check again</button
 				>
 			</div>
 		{/if}
@@ -139,26 +142,20 @@
 		{@render children()}
 	</div>
 
-	<aside
-		class="bg-card scroll-thin hidden min-h-0 flex-col overflow-y-auto border-l xl:flex"
-		aria-label="Agents and usage"
-	>
-		<div
-			class="sticky top-0 z-10 grid h-12 shrink-0 grid-cols-2 border-b bg-card px-2"
-			role="tablist"
-		>
-			{#each ['agents', 'usage'] as t (t)}
-				<button
-					role="tab"
-					aria-selected={rightTab === t}
-					class="text-sm capitalize {rightTab === t
-						? 'border-primary border-b-2 font-medium'
-						: 'text-muted-foreground'}"
-					onclick={() => (rightTab = t as 'agents' | 'usage')}>{t}</button
-				>
-			{/each}
+	<aside class="hidden min-h-0 flex-col border-l xl:flex" aria-label="Agents and usage">
+		<div class="flex h-12 shrink-0 items-center px-3">
+			<div class="seg w-full" role="tablist">
+				{#each ['agents', 'usage'] as t (t)}
+					<button
+						role="tab"
+						aria-selected={rightTab === t}
+						class="capitalize"
+						onclick={() => (rightTab = t as 'agents' | 'usage')}>{t}</button
+					>
+				{/each}
+			</div>
 		</div>
-		<div class="p-4">
+		<div class="scroll-thin min-h-0 flex-1 overflow-y-auto p-4">
 			{#if rightTab === 'agents'}<AgentHub
 					{session}
 					canControl={app.canControl}
@@ -173,14 +170,12 @@
 	title={panel === 'usage' ? 'Usage' : 'Agents'}
 	onclose={() => (panel = null)}
 >
-	<div class="mb-3 grid grid-cols-2 gap-1 rounded-lg border p-1" role="tablist">
+	<div class="seg mb-4" role="tablist">
 		{#each ['agents', 'usage'] as t (t)}
 			<button
 				role="tab"
 				aria-selected={panel === t}
-				class="min-h-11 rounded-md text-sm capitalize {panel === t
-					? 'bg-raised font-medium'
-					: 'text-muted-foreground'}"
+				class="capitalize"
 				onclick={() => (panel = t as 'agents' | 'usage')}>{t}</button
 			>
 		{/each}
@@ -193,5 +188,5 @@
 </Sheet>
 
 <Sheet open={menu} title="Sessions" onclose={() => (menu = false)}>
-	<SessionList current={id} onnavigate={() => (menu = false)} />
+	<div class="-mx-2"><SessionList current={id} onnavigate={() => (menu = false)} /></div>
 </Sheet>

@@ -713,9 +713,21 @@ The four `generate_*` tools are registered only when a media backend has credent
 |---|---|---|
 | `mcp__<server>__<tool>` | the server's own schema | A tool of a connected MCP server |
 | `list_mcp_resources` | `server?` | Lists resources as `mcp://<server>/<uri>  name` |
-| `tool_search` | `query`, `limit?` | Present only when there are too many MCP tools to list: finds tools by description and makes the hits callable. `limit` defaults to 8 (at most 25) |
+| `tool_search` | `query`, `limit?` | Present only when there are too many MCP tools to list and the model cannot search for tools itself: finds tools by description and makes the hits callable. `limit` defaults to 8 (at most 25) |
 
 See [mcp](mcp.md).
+
+### Deferred tools
+
+On Claude 4.5 and later through Anthropic's own API, the tools `[tools] defer` names are sent with
+`defer_loading`: the API keeps them out of the prompt, the model finds them with the API's own tool search,
+and the system prompt lists their names so it knows they are there. Finding a tool adds nothing to the tool
+list, so the cached prompt stays valid. The default list holds every MCP tool (`mcp__*`) and built-in tools
+most sessions never call (`browser`, `screen`, `debug`, `sprite_sheet`, `generate_*`, `schedule`, `pty`,
+`http`, `list_mcp_resources`, `worktree_apply`, `worktree_discard`, `memory_forget`). With more MCP tools
+than `[mcp] defer_threshold`, every MCP tool is deferred this way and `tool_search` is not offered.
+
+On every other provider and model the tools are sent in full, as before; `defer = []` turns deferral off.
 
 ## Repeated reads, retries and time limits
 
@@ -833,6 +845,7 @@ javascript = true                     # eval may run JavaScript
 | Key | Default | Meaning |
 |---|---|---|
 | `disabled` | `[]` | Tools removed for every agent, by name (also MCP and extension tools) |
+| `defer` | MCP tools and seldom used built-in tools | Tools kept out of the prompt until the model searches for them; see [deferred tools](#deferred-tools) |
 | `max_result_bytes` | `50000` | Size above which a result is cut and spilled to an artifact |
 | `shell_timeout_secs` | `120` | Timeout of a `shell` call without `timeout_secs` |
 | `cache_reads` | `true` | Answers a repeated `read`, `grep` or `glob` with a note; see [repeated reads, retries and time limits](#repeated-reads-retries-and-time-limits) |

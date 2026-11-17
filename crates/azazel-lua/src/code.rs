@@ -24,8 +24,8 @@ use crate::convert::{from_lua, to_lua, tool_input};
 use crate::script::{describe, locked};
 
 pub const NAME: &str = "run_code";
-/// The description's list of callable tools stays within about 3,000 tokens.
-const LISTING_CHARS: usize = 12_000;
+/// The description's list of callable tool names stays within about 500 tokens.
+const LISTING_CHARS: usize = 2_000;
 /// What `print` keeps; a script that prints more is told so.
 const MAX_PRINTED_BYTES: usize = 1024 * 1024;
 /// How long a cancelled script gets to wind down the tool call it is waiting for.
@@ -171,34 +171,25 @@ fn first_sentence(description: &str) -> String {
     sentence.trim_end_matches('.').chars().take(140).collect()
 }
 
-/// The description with the tools a script can call: one line each while they fit the budget,
-/// the rest by name.
+/// The description with the tools a script can call, by name only: their arguments are those of
+/// the tools the model is offered, and `tools.describe` gives them for the rest. Listing every
+/// signature here cost more than a thousand tokens of every request.
 fn describe_tools(tools: &[Arc<dyn Tool>]) -> String {
-    let mut out = format!("{INTRO}\n\nCallable tools:\n");
-    let mut unlisted: Vec<&str> = Vec::new();
-    for tool in tools.iter().filter(|tool| !blocked(tool.name())) {
-        let line = signature(tool.as_ref());
-        if unlisted.is_empty() && out.len() + line.len() < LISTING_CHARS {
-            out.push_str(&line);
-            out.push('\n');
-        } else {
-            unlisted.push(tool.name());
+    let mut names = tools
+        .iter()
+        .map(|tool| tool.name())
+        .filter(|name| !blocked(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if names.len() > LISTING_CHARS {
+        let mut end = LISTING_CHARS;
+        while !names.is_char_boundary(end) {
+            end -= 1;
         }
+        names.truncate(end);
+        names.push('…');
     }
-    if !unlisted.is_empty() {
-        let mut names = unlisted.join(", ");
-        if names.len() > 2000 {
-            let mut end = 2000;
-            while !names.is_char_boundary(end) {
-                end -= 1;
-            }
-            names.truncate(end);
-            names.push('…');
-        }
-        out.push_str(&format!(
-            "Also callable, with the arguments their own descriptions give: {names}\n"
-        ));
-    }
+    let mut out = format!("{INTRO}\n\nCallable tools: {names}\n");
     out.push_str(
         "Any other tool you have is callable by name in the same way; a name that is not an identifier \
          is written `tools[\"the-name\"]{ ... }`.",
@@ -916,27 +907,24 @@ mod tests {
             shown(NAME, "Run a script.", &schema),
         ];
         let listed = describe_tools(&tools);
-        assert!(listed.contains("\n- read{  }: Read a file\n"), "{listed}");
+        assert!(listed.contains("\nCallable tools: read\n"), "{listed}");
         assert!(
-            !listed.contains("- task") && !listed.contains("- run_code"),
+            !listed.contains("task,") && !listed.contains("run_code,"),
             "{listed}"
         );
-        assert!(!listed.contains("Also callable"), "{listed}");
 
-        // Past the budget the tools are still named, so the model knows they are there.
+        // Many tools are named up to the budget, and the description stays short.
         let long = "x".repeat(130);
         for i in 0..120 {
             tools.push(shown(&format!("mcp__server__tool_{i}"), &long, &schema));
         }
         let listed = describe_tools(&tools);
-        assert!(listed.len() < LISTING_CHARS + 2600, "{}", listed.len());
-        assert!(listed.contains("\n- mcp__server__tool_0{  }: xxx"), "{listed}");
         assert!(
-            listed.contains(
-                "Also callable, with the arguments their own descriptions give: mcp__server__tool_"
-            ),
-            "{listed}"
+            listed.len() < INTRO.len() + LISTING_CHARS + 400,
+            "{}",
+            listed.len()
         );
-        assert!(listed.contains("mcp__server__tool_119"), "{listed}");
+        assert!(listed.contains("read, mcp__server__tool_0, "), "{listed}");
+        assert!(!listed.contains("xxx"), "{listed}");
     }
 }

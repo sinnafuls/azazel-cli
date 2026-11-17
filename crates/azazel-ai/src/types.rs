@@ -547,6 +547,10 @@ pub struct ToolSpec {
     pub description: String,
     /// JSON Schema of the input object.
     pub schema: Value,
+    /// The provider may keep the tool out of the prompt until the model searches for it. Only
+    /// the Anthropic Messages API does; every other wire API sends the tool as usual.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub defer: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

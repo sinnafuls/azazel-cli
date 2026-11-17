@@ -2,11 +2,18 @@
 	import { sessions, STATE_LABEL } from '$lib/sessions.svelte';
 	import { basename, cost, ago } from '$lib/format';
 	import StateDot from './StateDot.svelte';
-	import Terminal from '@lucide/svelte/icons/terminal';
 	import { onMount } from 'svelte';
 
-	let { current = null, onnavigate }: { current?: string | null; onnavigate?: () => void } =
-		$props();
+	let {
+		current = null,
+		card = false,
+		onnavigate
+	}: {
+		current?: string | null;
+		/** The list is the page (a phone): one raised card of divided rows instead of loose rows. */
+		card?: boolean;
+		onnavigate?: () => void;
+	} = $props();
 	onMount(() => sessions.watch());
 
 	// Sessions that need you come first, then the rest by start time.
@@ -19,70 +26,108 @@
 	);
 	const home = (p: string) =>
 		p.replace(/^\/home\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/, '~');
+	const frame = $derived(card ? 'surface divide-y overflow-hidden rounded-xl' : 'space-y-0.5');
 </script>
 
 <nav aria-label="Sessions" data-session-list>
 	{#if !sessions.loaded}
-		<ul class="space-y-1.5" aria-busy="true">
-			{#each [0, 1, 2] as i (i)}<li
-					class="bg-raised/50 h-[74px] animate-pulse rounded-xl"
-					style="animation-delay: {i * 120}ms"
-				></li>{/each}
+		<ul class={frame} aria-busy="true">
+			{#each [0, 1, 2] as i (i)}
+				<li class="flex gap-3 px-3 py-3.5 {card ? 'px-4' : ''}" style="opacity: {1 - i * 0.28}">
+					<span class="skeleton mt-1 size-2.5 shrink-0 rounded-full"></span>
+					<span class="flex-1 space-y-2.5 py-0.5">
+						<span class="skeleton block h-3 w-3/5 rounded-sm"></span>
+						<span class="skeleton block h-2.5 w-4/5 rounded-sm"></span>
+					</span>
+				</li>
+			{/each}
 		</ul>
 	{:else if sessions.error}
-		<p class="text-destructive p-3 text-sm" role="alert">{sessions.error}</p>
+		<p
+			class="text-destructive rounded-lg px-3 py-3 text-sm {card ? 'surface px-4' : ''}"
+			role="alert"
+		>
+			{sessions.error}
+		</p>
 	{:else if list.length === 0}
-		<div class="flex flex-col items-center gap-3 px-4 py-12 text-center">
-			<span
-				class="bg-raised text-muted-foreground grid size-11 place-items-center rounded-xl border"
-				><Terminal class="size-5" /></span
-			>
-			<p class="text-sm font-medium">No sessions running</p>
-			<p class="text-muted-foreground max-w-[16rem] text-[13px] leading-relaxed">
+		<div class="px-3 py-6 {card ? 'surface rounded-xl px-5' : ''}">
+			<p class="text-sm font-medium tracking-[-0.015em]">No sessions running</p>
+			<p class="text-muted-foreground mt-1 text-sm leading-relaxed">
 				Start one on this machine and it shows up here.
 			</p>
-			<code class="bg-inset rounded-lg border px-3 py-1.5 text-xs">azazel bg "fix the build"</code>
+			<code class="well text-ink-2 mt-4 flex gap-2 border px-3 py-2.5"
+				><span class="text-faint select-none" aria-hidden="true">$</span>azazel bg "fix the build"</code
+			>
 		</div>
 	{:else}
-		<ul class="space-y-1">
+		<ul class={frame}>
 			{#each list as s (s.id)}
 				{@const needs = s.state === 'waiting for you'}
 				<li>
 					<a
 						href="/s/{encodeURIComponent(s.id)}"
-						class="press group relative block rounded-xl border px-3.5 py-3 transition-colors {current ===
-						s.id
-							? 'bg-raised border-border-strong shadow-[var(--edge)]'
-							: 'hover:bg-raised/60 border-transparent'}"
+						class="row flex gap-3 {card ? 'in-card px-4 py-3.5' : 'rounded-lg px-3 py-2.5'}"
 						aria-current={current === s.id ? 'page' : undefined}
 						onclick={onnavigate}
 					>
-						{#if needs}<span
-								class="bg-primary absolute top-3 bottom-3 left-0 w-[3px] rounded-r-full"
-							></span>{/if}
-						<div class="flex items-center gap-2.5">
-							<StateDot state={s.state} />
-							<span class="min-w-0 flex-1 truncate text-[14px] font-medium tracking-[-0.01em]"
+						<StateDot state={s.state} class="mt-[5px]" />
+						<span class="min-w-0 flex-1">
+							<span class="block truncate text-sm font-medium tracking-[-0.015em]"
 								>{s.name ?? basename(s.cwd)}</span
 							>
-							<span
-								class="shrink-0 text-[11px] {needs
-									? 'bg-primary/15 text-accent-text rounded-full px-2 py-0.5 font-medium'
-									: 'text-muted-foreground'}">{STATE_LABEL[s.state] ?? s.state}</span
-							>
-						</div>
-						<p class="text-muted-foreground mt-1 truncate pl-5 font-mono text-[11.5px]">
-							{home(s.cwd)}
-						</p>
-						<p class="text-faint num mt-0.5 flex gap-1.5 pl-5 text-[11.5px]">
-							{#if s.mode}<span>{s.mode}</span><span aria-hidden="true">·</span>{/if}
-							<span>{cost(s.cost_usd)}</span><span aria-hidden="true">·</span><span
-								>{ago(s.started)}</span
-							>
-						</p>
+							<span class="mt-0.5 flex items-baseline gap-3">
+								<span class="text-muted-foreground meta min-w-0 flex-1 truncate">{home(s.cwd)}</span
+								>
+								<span class="text-faint num shrink-0 text-xs">{ago(s.started)}</span>
+							</span>
+							<span class="num mt-1.5 flex min-w-0 items-center gap-1.5 text-xs">
+								{#if needs}
+									<span class="tag tag-ember">{STATE_LABEL[s.state] ?? s.state}</span>
+								{:else}
+									<span class="text-muted-foreground">{STATE_LABEL[s.state] ?? s.state}</span>
+								{/if}
+								{#if s.mode}
+									<span class="text-faint" aria-hidden="true">·</span>
+									<span class="text-faint">{s.mode}</span>
+								{/if}
+								<span class="text-faint" aria-hidden="true">·</span>
+								<span class="text-faint">{cost(s.cost_usd)}</span>
+							</span>
+						</span>
 					</a>
 				</li>
 			{/each}
 		</ul>
 	{/if}
 </nav>
+
+<style>
+	.row {
+		transition:
+			background-color var(--dur-fast) var(--ease-out),
+			box-shadow var(--dur-fast) var(--ease-out);
+	}
+	/* Inside the card the ring would be cut by the rounded corners: draw it inwards. */
+	.row.in-card {
+		outline-offset: -2px;
+	}
+	.row:active {
+		background: var(--active);
+	}
+	@media (hover: hover) {
+		.row:hover {
+			background: var(--hover);
+		}
+	}
+	/* The open session is lifted out of the rail. */
+	.row[aria-current='page']:not(.in-card) {
+		background: var(--card);
+		box-shadow:
+			0 0 0 1px var(--border),
+			var(--elev-1),
+			var(--highlight);
+	}
+	.row.in-card[aria-current='page'] {
+		background: var(--hover);
+	}
+</style>

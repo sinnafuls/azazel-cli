@@ -318,13 +318,58 @@ pub async fn list(program: &Path, cwd: &Path, kind: Kind, state: State) -> Resul
     parse_list(&json)
 }
 
+/// The prompt with what the user did not write as a reference blanked out: tagged blocks
+/// (`<attachment>` around a pasted text, `<file>`, `<memory>`, …) and fenced code blocks. A
+/// number in a pasted log or an attached file is not a request to fetch an issue.
+fn own_words(prompt: &str) -> String {
+    let mut out = String::with_capacity(prompt.len());
+    let mut fenced = false;
+    for line in prompt.split_inclusive('\n') {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            out.push('\n');
+            continue;
+        }
+        out.push_str(if fenced { "\n" } else { line });
+    }
+    let mut rest = out.as_str();
+    let mut kept = String::with_capacity(out.len());
+    while let Some(open) = rest.find('<') {
+        kept.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        let close = format!("</{name}>");
+        match after.find(&close).filter(|_| !name.is_empty()) {
+            Some(end) => {
+                kept.push(' ');
+                rest = &after[end + close.len()..];
+            }
+            None => {
+                kept.push('<');
+                rest = after;
+            }
+        }
+    }
+    kept.push_str(rest);
+    kept
+}
+
 /// What `#<n>` in a prompt can mean: the numbers of a prompt that are whole words made of
-/// digits, in order, once each.
+/// digits, in order, once each, outside tagged and fenced blocks.
 pub fn references(prompt: &str) -> Vec<u64> {
     let mut found: Vec<u64> = Vec::new();
+    let prompt = own_words(prompt);
     let chars: Vec<(usize, char)> = prompt.char_indices().collect();
     for (at, &(_, c)) in chars.iter().enumerate() {
         if c != '#' || (at > 0 && !chars[at - 1].1.is_whitespace() && !"([\"'".contains(chars[at - 1].1)) {
+            continue;
+        }
+        // `[Image #1]` is the placeholder of a pasted picture, not an issue.
+        let before: String = chars[..at].iter().map(|&(_, c)| c).collect();
+        if before.trim_end().to_ascii_lowercase().ends_with("[image") {
             continue;
         }
         let digits: String = chars[at + 1..]
@@ -380,6 +425,14 @@ mod tests {
             assert!(references(plain).is_empty(), "{plain}");
         }
         assert_eq!(references("#3"), [3]);
+        // Pasted pictures are named `[Image #1]`; only the real reference counts.
+        assert_eq!(references("see [Image #1] and [image #2] for #5"), [5]);
+    }
+
+    #[test]
+    fn numbers_in_pasted_text_attached_files_memories_and_code_are_not_references() {
+        let prompt = "look at #4\n<attachment>\nerror in step #1\n</attachment>\n\n<memory>\n- read as pull request #2\n</memory>\n<file path=\"a.md\">\n#3\n</file>\n```\n#6\n```\nand #5 too, a < b";
+        assert_eq!(references(prompt), [4, 5]);
     }
 
     #[test]

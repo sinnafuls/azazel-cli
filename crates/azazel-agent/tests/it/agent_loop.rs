@@ -7,9 +7,9 @@ use async_trait::async_trait;
 use azazel_agent::agent::{ABORTED_TEXT, INTERRUPTED_TEXT, TURN_LIMIT_TEXT, UNFINISHED_TEXT};
 use azazel_agent::{
     Access, Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, AllowAll,
-    ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Gate, GateDecision, Limits, NoHooks,
-    Recovery, Resume, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, ToolSettings, TranscriptSink,
-    UserInput,
+    ArtifactSink, CategoryKind, CompactionSettings, ContextEntry, Deferral, Gate, GateDecision, Limits,
+    NoHooks, Recovery, Resume, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, ToolSettings,
+    TranscriptSink, UserInput,
 };
 use azazel_ai::testing::{MockProvider, MockStep};
 use azazel_ai::{
@@ -299,6 +299,10 @@ struct Setup {
     initial: Vec<ContextEntry>,
     roles: BTreeMap<String, Vec<ModelSpec>>,
     settings: Option<ToolSettings>,
+    /// The mock provider is used through a subscription login.
+    login: bool,
+    /// `[tools] defer`, and whether the provider searches for tools itself.
+    deferral: Option<(Deferral, bool)>,
 }
 
 impl Default for Setup {
@@ -313,6 +317,8 @@ impl Default for Setup {
             initial: Vec::new(),
             roles: BTreeMap::new(),
             settings: None,
+            login: false,
+            deferral: None,
         }
     }
 }
@@ -343,11 +349,18 @@ fn start(setup: Setup) -> Session {
         max_jitter: Duration::ZERO,
         max_stalls: 3,
     };
-    let router = Arc::new(Router::new(vec![mock.clone()], catalog, setup.roles, policy));
+    let login = setup.login;
+    let router = Arc::new(
+        Router::new(vec![mock.clone()], catalog, setup.roles, policy).with_logins(Arc::new(move |_| login)),
+    );
     let recorder = Arc::new(Recorder::default());
     let services = Arc::new(Services::new());
     if let Some(settings) = setup.settings {
         services.insert(Arc::new(settings));
+    }
+    if let Some((deferral, searching)) = setup.deferral {
+        services.insert(Arc::new(deferral));
+        mock.set_searches_tools(searching);
     }
     let agent = Agent::spawn(AgentConfig {
         info: AgentInfo {
@@ -1014,6 +1027,9 @@ async fn old_tool_results_are_elided_once_the_context_passes_the_micro_threshold
             keep_recent_tokens: 300,
             keep_tool_results: 1,
             micro_threshold: 0.5,
+            micro_min_savings: 0.0,
+            login_max_tokens: 0,
+            auto_percent: 0,
         },
         ..Setup::default()
     });
@@ -1043,6 +1059,165 @@ async fn old_tool_results_are_elided_once_the_context_passes_the_micro_threshold
     );
 }
 
+/// How often a request did not start with the messages of the one before it: each time, the
+/// provider's prompt cache misses and the whole conversation is written to it again.
+async fn history_rewrites(micro_min_savings: f64) -> usize {
+    // 1600-byte results are ~400 tokens; eliding starts above 3000 of a 10000-token window. The
+    // conversation before them (~3500 tokens) keeps the context above that line, as in a long
+    // session, where eliding never brings it back below.
+    let mut session = start(Setup {
+        initial: vec![ContextEntry {
+            id: "i0".to_string(),
+            message: Message::user("y".repeat(14_000)),
+            summary: false,
+        }],
+        tools: vec![slow("dump", Access::Read, 0, 1600)],
+        context_window: 10_000,
+        compaction: CompactionSettings {
+            enabled: true,
+            reserve_tokens: 100,
+            keep_recent_tokens: 300,
+            keep_tool_results: 1,
+            micro_threshold: 0.3,
+            micro_min_savings,
+            login_max_tokens: 0,
+            auto_percent: 0,
+        },
+        ..Setup::default()
+    });
+    big_rounds(&session, 20);
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+    assert!(!events.iter().any(|e| matches!(e, AgentEvent::Compaction { .. })));
+    let requests = session.mock.requests_for("a");
+    assert_eq!(requests.len(), 21);
+    let elided = result_texts(requests.last().unwrap())
+        .iter()
+        .filter(|text| text.starts_with("[result elided"))
+        .count();
+    assert!(elided >= 5, "old results are still elided: {elided}");
+    requests
+        .windows(2)
+        .filter(|pair| !pair[1].messages.starts_with(&pair[0].messages))
+        .count()
+}
+
+#[tokio::test]
+async fn eliding_old_results_rewrites_cached_history_in_batches_not_every_turn() {
+    // One result per turn, as before the batching: nearly every request breaks the cache.
+    let every_turn = history_rewrites(0.0).await;
+    assert!(every_turn >= 15, "{every_turn}");
+    // In batches of 20% of the window (five results): a few rewrites in twenty requests.
+    let batched = history_rewrites(0.2).await;
+    assert!(batched <= 3, "{batched}");
+}
+
+/// The tools of the first request as `(name, deferred)`, and its system prompt, with `[tools] defer`
+/// naming `browser` and `mcp__*`, on a provider that searches for tools itself or not.
+async fn offered_with(searching: bool) -> (Vec<(String, bool)>, String) {
+    let mut session = start(Setup {
+        tools: vec![
+            slow("read", Access::Read, 0, 10),
+            slow("browser", Access::Read, 0, 10),
+            slow("mcp__srv__thing", Access::Read, 0, 10),
+        ],
+        deferral: Some((Deferral(vec!["browser".into(), "mcp__*".into()]), searching)),
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::text("done"));
+    session.run("go").await;
+    let request = session.mock.requests_for("a").remove(0);
+    let tools = request.tools.iter().map(|t| (t.name.clone(), t.defer)).collect();
+    let system = request
+        .system
+        .iter()
+        .map(|p| p.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    (tools, system)
+}
+
+#[tokio::test]
+async fn seldom_used_tools_are_deferred_only_where_the_provider_searches_for_them() {
+    let (tools, system) = offered_with(true).await;
+    let mut deferred: Vec<_> = tools
+        .iter()
+        .filter(|(_, d)| *d)
+        .map(|(n, _)| n.as_str())
+        .collect();
+    deferred.sort_unstable();
+    assert_eq!(deferred, vec!["browser", "mcp__srv__thing"], "{tools:?}");
+    assert_eq!(tools.len(), 3);
+    // The model is told what it can search for.
+    assert!(system.contains("browser, mcp__srv__thing"), "{system}");
+
+    // Elsewhere every tool is sent in full and the prompt says nothing of a search.
+    let (tools, system) = offered_with(false).await;
+    assert!(tools.iter().all(|(_, d)| !d), "{tools:?}");
+    assert_eq!(tools.len(), 3);
+    assert!(!system.contains("tool search"), "{system}");
+}
+
+#[tokio::test]
+async fn a_deferred_tool_the_model_found_can_be_called() {
+    let mut session = start(Setup {
+        tools: vec![
+            slow("read", Access::Read, 0, 10),
+            slow("browser", Access::Read, 0, 10),
+        ],
+        deferral: Some((Deferral(vec!["browser".into()]), true)),
+        ..Setup::default()
+    });
+    session
+        .mock
+        .push("a", MockStep::tools("", &[("c1", "browser", json!({}))]));
+    session.mock.push("a", MockStep::text("done"));
+    session.run("go").await;
+    let second = session.mock.requests_for("a").remove(1);
+    let result = second
+        .messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|b| match b {
+            Block::ToolResult { is_error, .. } => Some(*is_error),
+            _ => None,
+        });
+    assert_eq!(result, Some(false), "{:?}", second.messages);
+}
+
+/// Whether four rounds of ~400-token results in a 100k window are summarised, on a login or not,
+/// when a login's context is kept to 2000 tokens.
+async fn summarised_with(login: bool) -> bool {
+    let mut session = start(Setup {
+        tools: vec![slow("dump", Access::Read, 0, 1600)],
+        context_window: 100_000,
+        compaction: CompactionSettings {
+            enabled: true,
+            reserve_tokens: 500,
+            keep_recent_tokens: 500,
+            keep_tool_results: 100,
+            micro_threshold: 1.0,
+            micro_min_savings: 0.0,
+            login_max_tokens: 2000,
+            auto_percent: 0,
+        },
+        login,
+        ..Setup::default()
+    });
+    big_rounds(&session, 4);
+    session.mock.push("a", MockStep::text("## Goal\nship it"));
+    session.mock.push("a", MockStep::text("done"));
+    let events = session.run("go").await;
+    events.iter().any(|e| matches!(e, AgentEvent::Compaction { .. }))
+}
+
+#[tokio::test]
+async fn a_subscription_login_summarises_long_before_the_model_window_is_full() {
+    assert!(summarised_with(true).await);
+    // Paid by the token, the same context is far from the model's window.
+    assert!(!summarised_with(false).await);
+}
+
 #[tokio::test]
 async fn full_compaction_summarises_the_old_span_and_keeps_the_recent_tail() {
     let mut session = start(Setup {
@@ -1054,6 +1229,9 @@ async fn full_compaction_summarises_the_old_span_and_keeps_the_recent_tail() {
             keep_recent_tokens: 500,
             keep_tool_results: 100,
             micro_threshold: 1.0,
+            micro_min_savings: 0.0,
+            login_max_tokens: 0,
+            auto_percent: 0,
         },
         ..Setup::default()
     });
@@ -1123,6 +1301,9 @@ async fn with_the_recall_tool_elided_results_and_summaries_name_the_entries_that
             keep_recent_tokens: 300,
             keep_tool_results: 1,
             micro_threshold: 0.5,
+            micro_min_savings: 0.0,
+            login_max_tokens: 0,
+            auto_percent: 0,
         },
         ..Setup::default()
     });
@@ -1166,6 +1347,9 @@ async fn with_the_recall_tool_elided_results_and_summaries_name_the_entries_that
             keep_recent_tokens: 500,
             keep_tool_results: 100,
             micro_threshold: 1.0,
+            micro_min_savings: 0.0,
+            login_max_tokens: 0,
+            auto_percent: 0,
         },
         ..Setup::default()
     });

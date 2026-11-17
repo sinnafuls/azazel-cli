@@ -709,6 +709,7 @@ mod tests {
                 "editor.mode",
                 "editor.command",
                 "editor.fold_paste_lines",
+                "editor.paste",
                 "tui.complete_ignored",
                 "tui.queue_mode",
                 "tui.autocomplete",

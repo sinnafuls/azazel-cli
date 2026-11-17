@@ -250,9 +250,36 @@ config_table!(CompactionConfig {
     keep_recent_tokens: u64 = 20_000,
     keep_tool_results: usize = 8,
     micro_threshold: f64 = 0.6,
+    micro_min_savings: f64 = 0.1,
+    login_max_tokens: u64 = 300_000,
+    /// Summarise once the context reaches this percentage of the window; 0 leaves it to
+    /// `reserve_tokens`.
+    auto_percent: u8 = 0,
 });
+/// The tools `[tools] defer` names by default: every MCP tool, and built-in tools most sessions
+/// never call, together some 6k tokens of every request.
+pub const DEFAULT_DEFERRED: [&str; 13] = [
+    "mcp__*",
+    "browser",
+    "screen",
+    "debug",
+    "sprite_sheet",
+    "generate_*",
+    "schedule",
+    "pty",
+    "http",
+    "list_mcp_resources",
+    "worktree_apply",
+    "worktree_discard",
+    "memory_forget",
+];
+
 config_table!(ToolsConfig {
     disabled: Vec<String> = Vec::new(),
+    /// Tools kept out of the prompt until the model searches for them, where the provider
+    /// searches for tools itself (Claude 4.5 and later on Anthropic's API). A name ending in `*`
+    /// covers every tool it starts.
+    defer: Vec<String> = DEFAULT_DEFERRED.iter().map(|name| name.to_string()).collect(),
     max_result_bytes: usize = 50_000,
     shell_timeout_secs: u64 = 120,
     /// A `read`, `grep` or `glob` call that gives the result it gave before, while that result is
@@ -545,6 +572,9 @@ config_table!(EditorConfig {
     command: String = String::new(),
     /// Pastes longer than this many lines are folded into one token.
     fold_paste_lines: usize = 10,
+    /// How a folded paste reaches the agent: wrapped in `<attachment>` tags, saved as a
+    /// `local://paste-N.md` file it reads when it needs to, or inline as typed.
+    paste: PasteMode = PasteMode::Attachment,
 });
 config_table!(VoiceConfig {
     /// `provider/model` used for transcription.
@@ -648,6 +678,7 @@ config_enum!(DestructivePolicy { Ask = "ask", Allow = "allow", Deny = "deny" } d
 config_enum!(ImageMode { Auto = "auto", Off = "off", Kitty = "kitty", Iterm = "iterm", Sixel = "sixel" } default Auto);
 config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "system", Off = "off" } default Auto);
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
+config_enum!(PasteMode { Attachment = "attachment", File = "file", Inline = "inline" } default Attachment);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
 config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
@@ -708,6 +739,9 @@ impl From<&CompactionConfig> for CompactionSettings {
             keep_recent_tokens: c.keep_recent_tokens,
             keep_tool_results: c.keep_tool_results,
             micro_threshold: c.micro_threshold,
+            micro_min_savings: c.micro_min_savings,
+            login_max_tokens: c.login_max_tokens,
+            auto_percent: c.auto_percent,
         }
     }
 }

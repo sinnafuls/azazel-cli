@@ -5,6 +5,32 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-17
+
+### Fixed
+
+- `/remote`: a picture sent from the browser reached the model but the page showed only the text; the message now shows its pictures, and the thumbnail in the message box shows the whole picture.
+- A pasted picture's placeholder `[Image #1]` was read as a GitHub reference and attached issue or pull request #1 to the prompt.
+- `/remote`: the model picker of a browser on a shared terminal session waited on "Loading models…" forever, because the terminal answered `list_models` with an error the page never showed. A shared terminal now answers the model, provider, role, command, file and usage lists, and the picker shows an error when a list cannot be read.
+- Long sessions used up a Claude subscription many times faster than they should. Once the context passed 60% of the window, an old tool result was elided before nearly every request, which changed history the provider had cached, so each request wrote the whole conversation (up to ~860k tokens) to the cache again. Old results are now elided in batches, once they add up to 10% of the window (`[compaction] micro_min_savings`), so the cache holds between batches.
+- `/remote`: the thinking picker offered only `off` and said "This model does not think" until the model list had loaded. It now offers every level until it knows the model, then that model's own levels.
+- On a Claude subscription login the prompt cache is now kept for an hour instead of 5 minutes, so a pause between prompts no longer makes the next one send the whole conversation again. The expiry notice, `/cost` miss causes and `[cache] warming` follow the longer lifetime.
+- A subscription login now summarises the conversation once it nears 300k tokens instead of the model's whole window (up to 1M), since every request counts against the usage window by its size (`[compaction] login_max_tokens`, `0` for the old behaviour).
+- Long conversations on the Anthropic API now carry a cache mark deep inside them as well, so a rewind or a retried reply near the end still reads the older half from the cache. The tools no longer take a mark of their own where the system prompt's covers them.
+- The `run_code` tool's description named every callable tool with its arguments, about 1,300 tokens of every request; it now names them only (`tools.describe` gives the arguments).
+- On Claude 4.5 and later through Anthropic's API, MCP tools and seldom used built-in tools (`browser`, `screen`, `debug`, `schedule`, `pty`, `http`, …) are now kept out of the prompt until the model searches for them, about 6k tokens of every request without MCP servers and far more with them (`[tools] defer`). Finding an MCP tool no longer makes the provider cache the whole conversation again: it used to be added to the tool list through `tool_search`.
+- A number in a long paste (`step #1 failed`), an attached file or a code block was read as a GitHub reference and attached that issue or pull request to the prompt. Only `#N` in your own words is looked up now, and a folded paste reaches the agent in `<attachment>` tags.
+- When an automatic summary failed, the next turn tried again, and every turn after it; after 3 failures in a row no automatic summary is tried until one succeeds (`/compact` still works).
+- One-off requests (summaries, memory extraction, hook judges) no longer write a prompt cache nothing reads again; on a subscription login that write cost twice the input price.
+- `/remote`: your messages showed the `<memory>` block of recalled memories azazel adds for the model; the page now shows only what you wrote, live and after a reload. The model still receives the memories.
+- `/remote`: the `@` menu of the message box never opened in a session without sub-agents, and picking several pictures at once attached only the first.
+
+### Added
+
+- `[compaction] auto_percent`: summarise once the context fills that percentage of the window (`70` summarises at 70%), or earlier when `reserve_tokens` comes first.
+- `[editor] paste`: how a folded paste reaches the agent: `attachment` (default), `file` (saved as `local://paste-N.md` for the agent to read when it needs to, keeping a huge log out of the conversation) or `inline`.
+- `/remote`: a redesigned web page in a light and a dark theme: the session sits on a raised panel beside the session list, sessions that wait for you are counted and listed first, and tool cards show running and failed states, on phones and desktops.
+
 ## [0.11.0] - 2026-11-16
 
 ### Fixed

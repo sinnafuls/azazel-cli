@@ -1051,6 +1051,11 @@ impl Tui {
             ("editor.fold_paste_lines", toml::Value::Integer(lines)) => {
                 self.fold_paste_lines = usize::try_from(*lines).unwrap_or(0);
             }
+            ("editor.paste", toml::Value::String(mode)) => {
+                if let Ok(mode) = mode.parse() {
+                    self.paste_mode = mode;
+                }
+            }
             ("tui.favourites", toml::Value::Array(list)) => {
                 self.favourites = list
                     .iter()

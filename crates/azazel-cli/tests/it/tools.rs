@@ -141,9 +141,15 @@ fn a_script_does_several_steps_in_one_call_and_its_calls_pass_the_permission_rul
     let description = tool(&requests[0], "run_code").unwrap()["description"]
         .as_str()
         .unwrap();
-    assert!(description.contains("\n- read{ path: string, "), "{description}");
-    assert!(description.contains("\n- shell{ "), "{description}");
-    assert!(!description.contains("\n- task{"), "{description}");
+    let callable: Vec<&str> = description
+        .lines()
+        .find_map(|line| line.strip_prefix("Callable tools: "))
+        .unwrap_or_else(|| panic!("{description}"))
+        .split(", ")
+        .collect();
+    assert!(callable.contains(&"read"), "{description}");
+    assert!(callable.contains(&"shell"), "{description}");
+    assert!(!callable.contains(&"task"), "{description}");
     assert_eq!(
         tool(&requests[1], "run_code").unwrap()["description"],
         description

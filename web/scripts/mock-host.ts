@@ -127,6 +127,47 @@ const scenarios: Scenario[] = [
 		prompt: 'Summarise the changelog.',
 		prefill: (f) => f.length,
 		autostart: true
+	},
+	// The states the recorded runs do not reach: a failed and a running tool call with a
+	// destructive approval, a plan to review, and every level of toast.
+	{
+		id: 'states',
+		name: 'Clean rebuild of net-client',
+		state: 'waiting for you',
+		cwd: '/home/dev/net-client',
+		cost: 0.47,
+		mode: 'manual',
+		started: minutesAgo(4),
+		frames: 'states.jsonl',
+		prompt: 'Run the retry tests, then rebuild from a clean tree.',
+		prefill: (f) => firstIndex(f, (x) => x.type === 'approval_request') + 1,
+		autostart: true
+	},
+	{
+		id: 'plan',
+		name: 'Move sessions to SQLite',
+		state: 'waiting for you',
+		cwd: '/home/dev/sessions-svc',
+		cost: 0.09,
+		mode: 'plan',
+		started: minutesAgo(2),
+		frames: 'plan.jsonl',
+		prompt: 'Plan how to keep sessions across restarts.',
+		prefill: (f) => firstIndex(f, (x) => x.type === 'ui_request') + 1,
+		autostart: true
+	},
+	{
+		id: 'toasts',
+		name: 'Nightly dependency bump',
+		state: 'interrupted',
+		cwd: '/home/dev/api-server',
+		cost: 0.22,
+		mode: 'auto',
+		started: minutesAgo(300),
+		frames: 'toasts.jsonl',
+		prompt: 'Bump the dependencies and open a pull request.',
+		prefill: (f) => f.length,
+		autostart: true
 	}
 ];
 
@@ -147,6 +188,8 @@ class MockSession {
 	clients = new Set<Client>();
 	waiting = new Map<string, () => void>();
 	pendingFrames = new Map<string, Frame>();
+	/** Tool calls that have started and not ended, with when they started. */
+	running = new Map<string, { frame: Frame; since: number }>();
 	state: Frame;
 	runId = 0;
 	started = false;
@@ -211,6 +254,8 @@ class MockSession {
 	private index(f: Frame) {
 		const id = `e${this.rows.length + 1}`;
 		const ts = new Date().toISOString();
+		if (f.type === 'tool_start') this.running.set(f.call_id, { frame: f, since: Date.now() });
+		if (f.type === 'tool_end') this.running.delete(f.call_id);
 		if (f.type === 'user_input' && !f.agent) {
 			this.rows.push({
 				entry_id: id,
@@ -239,7 +284,7 @@ class MockSession {
 			this.state.agents = f.members;
 		} else if (f.type === 'agent_start' && f.agent === 'lead') {
 			this.busy = true;
-		} else if (f.type === 'idle' && f.agent === 'lead') {
+		} else if ((f.type === 'idle' || f.type === 'failed') && f.agent === 'lead') {
 			this.busy = false;
 		}
 	}
@@ -249,16 +294,23 @@ class MockSession {
 			busy: this.busy,
 			tail: this.rows.slice(-20),
 			streaming: [],
-			tools: [],
+			tools: [...this.running.values()].map(({ frame, since }) => ({
+				agent: frame.agent,
+				call_id: frame.call_id,
+				name: frame.name,
+				input: frame.input,
+				elapsed_ms: Date.now() - since
+			})),
 			queue: [],
 			pending: [...this.pendingFrames.keys()]
 		};
 	}
 
-	async run(frames: Frame[], prefill: number, prompt: string) {
+	/** `from` is the client that typed the prompt: it has shown it already and gets no echo. */
+	async run(frames: Frame[], prefill: number, prompt: string, from?: Client) {
 		const my = ++this.runId;
 		this.aborted = false;
-		this.emit({ type: 'user_input', kind: 'prompt', text: prompt });
+		this.emit({ type: 'user_input', kind: 'prompt', text: prompt }, from);
 		for (let i = 0; i < frames.length; i++) {
 			if (my !== this.runId || this.aborted) return;
 			let f = frames[i];
@@ -323,7 +375,7 @@ function device(req: Request): 'view' | 'control' | null {
 const me = (access: 'view' | 'control') => ({
 	access,
 	expires: new Date(Date.now() + 24 * 3600_000).toISOString(),
-	allow_bypass: false,
+	allow_bypass: process.env.MOCK_BYPASS !== '0',
 	protocol: 1,
 	version: '0.11.0-mock'
 });
@@ -444,11 +496,14 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', msg: Fram
 		case 'steer':
 		case 'follow_up': {
 			respond(c, id, null);
-			s.emit({ type: 'user_input', kind: type === 'prompt' ? 'prompt' : type, text: msg.text }, c);
 			if (type === 'prompt' && !s.busy) {
-				const scenario = lines(s.s.frames);
-				void s.run(scenario, 0, msg.text).catch(() => {});
-				// `run` emits its own user_input; the sender does not see it twice because it ignores echoes.
+				// `run` emits the user_input itself, to everyone but the sender.
+				void s.run(lines(s.s.frames), 0, msg.text, c).catch(() => {});
+			} else {
+				s.emit(
+					{ type: 'user_input', kind: type === 'prompt' ? 'prompt' : type, text: msg.text },
+					c
+				);
 			}
 			return;
 		}
@@ -579,7 +634,11 @@ const server = Bun.serve<WsData>({
 					cost_usd: s.cost,
 					mode: s.mode,
 					started: s.started,
-					state: sessions.get(s.id)?.busy ? 'working' : s.state
+					state: sessions.get(s.id)?.pendingFrames.size
+						? 'waiting for you'
+						: sessions.get(s.id)?.busy
+							? 'working'
+							: s.state
 				}))
 			});
 		}

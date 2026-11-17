@@ -85,6 +85,7 @@ fn a_conversation_becomes_the_native_message_shapes() {
             name: "read".into(),
             description: "Reads a file".into(),
             schema: json!({"type": "object", "properties": {"path": {"type": "string"}}}),
+            defer: false,
         }],
         max_output: Some(2048),
         temperature: Some(0.2),

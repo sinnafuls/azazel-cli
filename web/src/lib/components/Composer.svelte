@@ -23,10 +23,10 @@
 	const roster = $derived(session.model.roster.filter((m) => m.id !== 'lead'));
 
 	// `@name` at the caret opens a list of agents, then files.
+	const mentionQuery = $derived(/(?:^|\s)@([\w./-]*)$/.exec(text)?.[1] ?? null);
 	const mention = $derived.by(() => {
-		const m = /(?:^|\s)@([\w./-]*)$/.exec(text);
-		if (!m) return null;
-		const q = m[1].toLowerCase();
+		if (mentionQuery === null) return null;
+		const q = mentionQuery.toLowerCase();
 		const agents = roster
 			.filter((a) => a.id.toLowerCase().includes(q))
 			.map((a) => ({ label: a.id, kind: 'agent' as const }));
@@ -35,10 +35,14 @@
 			.slice(0, 6)
 			.map((f) => ({ label: f, kind: 'file' as const }));
 		const all = [...agents, ...files].slice(0, 8);
-		return all.length ? { q: m[1], items: all } : null;
+		return all.length ? { q: mentionQuery, items: all } : null;
+	});
+	// The files are fetched as soon as an `@` is typed: with no sub-agents the list is empty until then.
+	$effect(() => {
+		if (mentionQuery !== null) void session.loadFiles().catch(() => {});
 	});
 	$effect(() => {
-		if (mention) void session.loadFiles().catch(() => {});
+		void mention;
 		mentionIdx = 0;
 	});
 
@@ -128,17 +132,17 @@
 </script>
 
 <form
-	class="relative px-3 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:px-8 md:pb-5"
+	class="relative shrink-0 pt-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-5"
 	onsubmit={(e) => {
 		e.preventDefault();
 		void submit();
 	}}
 	data-composer
 >
-	<div class="mx-auto max-w-[46rem]">
+	<div class="col">
 		{#if mention}
 			<ul
-				class="bg-card mb-2 overflow-hidden rounded-lg border shadow-lg"
+				class="float menu mb-2 overflow-hidden rounded-xl p-1"
 				role="listbox"
 				aria-label="Mentions"
 			>
@@ -146,17 +150,17 @@
 					<li role="option" aria-selected={i === mentionIdx}>
 						<button
 							type="button"
-							class="flex min-h-11 w-full items-center gap-2 px-3 text-left font-mono text-[13px] md:min-h-8 {i ===
-							mentionIdx
-								? 'bg-raised'
-								: ''}"
+							class="opt font-mono text-xs {i === mentionIdx ? 'is-active' : ''}"
 							onmousedown={(e) => {
 								e.preventDefault();
 								applyMention(i);
 							}}
 						>
-							<span class="text-muted-foreground w-9 text-[10px] uppercase">{it.kind}</span
-							>{it.label}
+							<span class="text-faint w-10 shrink-0">{it.kind}</span><span
+								class="min-w-0 flex-1 truncate">{it.label}</span
+							>{#if i === mentionIdx}<span class="kbd hidden fine:inline-grid" aria-hidden="true"
+									>↵</span
+								>{/if}
 						</button>
 					</li>
 				{/each}
@@ -164,17 +168,17 @@
 		{/if}
 
 		{#if images.length}
-			<ul class="mb-2 flex gap-2 overflow-x-auto">
+			<ul class="no-scrollbar mb-2 flex gap-3 overflow-x-auto pt-2.5 pr-2.5 pl-0.5">
 				{#each images as im, i (i)}
-					<li class="relative shrink-0">
+					<li class="relative shrink-0 animate-enter">
 						<img
 							src={im.preview}
 							alt="Attached {i + 1}"
-							class="size-14 rounded-md border object-cover"
+							class="bg-inset border-border-strong size-16 rounded-lg border object-cover shadow-e1"
 						/>
 						<button
 							type="button"
-							class="bg-card absolute -top-1.5 -right-1.5 grid size-6 place-items-center rounded-full border"
+							class="bg-overlay border-input text-ink-2 hover:text-foreground absolute -top-2 -right-2 grid size-6 place-items-center rounded-full border shadow-e1 transition-colors duration-100 before:absolute before:-inset-2.5"
 							aria-label="Remove image {i + 1}"
 							onclick={() => (images = images.filter((_, j) => j !== i))}
 							><X class="size-3" /></button
@@ -184,9 +188,7 @@
 			</ul>
 		{/if}
 
-		<div
-			class="surface focus-within:border-ring/70 focus-within:shadow-[var(--glow)] flex items-end gap-1 rounded-2xl p-1.5 shadow-[var(--shadow-md)] transition-[border-color,box-shadow] duration-150"
-		>
+		<div class="composer flex items-end gap-1 p-1.5">
 			<input
 				bind:this={fileInput}
 				type="file"
@@ -194,13 +196,14 @@
 				multiple
 				hidden
 				onchange={(e) => {
-					void addFiles(e.currentTarget.files ?? []);
+					// A copy: clearing the input empties its live list while the images are still being read.
+					void addFiles([...(e.currentTarget.files ?? [])]);
 					e.currentTarget.value = '';
 				}}
 			/>
 			<button
 				type="button"
-				class="text-muted-foreground hover:text-foreground hover:bg-raised grid size-11 shrink-0 place-items-center rounded-xl disabled:opacity-40 md:size-9"
+				class="btn btn-quiet btn-icon"
 				aria-label="Attach an image"
 				disabled={!canControl}
 				onclick={() => fileInput?.click()}><Paperclip class="size-[18px]" /></button
@@ -223,21 +226,21 @@
 				aria-label="Message"
 				disabled={!canControl}
 				enterkeyhint="enter"
-				class="placeholder:text-muted-foreground max-h-[200px] min-h-11 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[11px] text-[15px] leading-[22px] outline-none md:min-h-9 md:py-[7px]"
+				class="placeholder:text-faint max-h-[200px] min-h-11 min-w-0 flex-1 resize-none bg-transparent px-1.5 py-[11px] text-[15px] leading-[22px] outline-none fine:min-h-9 fine:py-[7px]"
 			></textarea>
 			{#if busy}
 				<button
 					type="button"
-					class="bg-destructive/15 text-destructive hover:bg-destructive/25 press grid size-11 shrink-0 place-items-center rounded-xl disabled:opacity-40 md:size-9"
+					class="btn btn-danger btn-icon"
 					aria-label="Stop the agent"
 					disabled={!canControl}
 					onclick={() => session.abort().catch((e) => toasts.push(String(e.message ?? e), 'error'))}
-					><Square class="size-4 fill-current" /></button
+					><Square class="size-3.5 fill-current" /></button
 				>
 			{/if}
 			<button
 				type="submit"
-				class="bg-primary text-primary-foreground hover:bg-[var(--primary-hover)] press grid size-11 shrink-0 place-items-center rounded-xl transition-[opacity,background-color] disabled:opacity-30 md:size-9"
+				class="btn btn-primary btn-icon"
 				aria-label={label}
 				disabled={!canControl || sending || (!text.trim() && !images.length)}
 				><ArrowUp class="size-[18px]" /></button
@@ -245,14 +248,16 @@
 		</div>
 
 		{#if busy && canControl}
-			<div class="text-muted-foreground mt-1.5 flex items-center justify-between px-1 text-xs">
-				<span
+			<div
+				class="text-muted-foreground mt-1.5 flex items-center justify-between gap-3 px-1 text-xs"
+			>
+				<span class="min-w-0 flex-1"
 					>The agent is working. Your message {followUp
 						? 'waits until it is done'
 						: 'reaches it before its next step'}.</span
 				>
-				<label class="flex min-h-8 items-center gap-1.5">
-					<input type="checkbox" bind:checked={followUp} class="accent-primary size-4" /> Follow-up
+				<label class="text-ink-2 flex min-h-11 shrink-0 items-center gap-2 fine:min-h-8">
+					<input type="checkbox" bind:checked={followUp} class="size-4 accent-(--ember)" /> Follow-up
 				</label>
 			</div>
 		{/if}

@@ -14,6 +14,30 @@ pub struct CompactionSettings {
     pub keep_tool_results: usize,
     /// Eliding starts when the estimate exceeds this fraction of the context window.
     pub micro_threshold: f64,
+    /// Eliding waits until the results it would elide add up to this fraction of the window.
+    /// Every elision changes a message far back in the conversation, so the provider's prompt
+    /// cache misses and the whole conversation is written to it again: eliding one result per
+    /// turn costs a full cache write per turn.
+    pub micro_min_savings: f64,
+    /// On a subscription login the context is treated as if the window held at most this many
+    /// tokens; 0 uses the model's whole window. Every request of a login counts against its
+    /// usage window by its size, so a conversation near a 1M window costs several times what a
+    /// summarised one does.
+    pub login_max_tokens: u64,
+    /// Summarise once the context reaches this percentage of the window (0 to 100); 0 leaves it
+    /// to `reserve_tokens`. Whichever comes first applies.
+    pub auto_percent: u8,
+}
+
+impl CompactionSettings {
+    /// The context size, in tokens, past which a window of `window` tokens is summarised.
+    pub fn compact_at(&self, window: u64) -> u64 {
+        let reserve = window.saturating_sub(self.reserve_tokens);
+        match self.auto_percent.min(100) {
+            0 => reserve,
+            percent => reserve.min(window * u64::from(percent) / 100),
+        }
+    }
 }
 
 impl Default for CompactionSettings {
@@ -24,6 +48,9 @@ impl Default for CompactionSettings {
             keep_recent_tokens: 20_000,
             keep_tool_results: 8,
             micro_threshold: 0.6,
+            micro_min_savings: 0.1,
+            login_max_tokens: 300_000,
+            auto_percent: 0,
         }
     }
 }
@@ -118,6 +145,21 @@ pub fn micro_targets(entries: &[ContextEntry], keep: usize) -> Vec<usize> {
     }
     targets.reverse();
     targets
+}
+
+/// Tokens that eliding `entry` would take out of the context.
+pub fn elidable_tokens(entry: &ContextEntry) -> u64 {
+    entry
+        .message
+        .content
+        .iter()
+        .map(|b| match b {
+            Block::ToolResult { content, .. } if !is_elided(content) => {
+                content.iter().map(estimate_block).sum()
+            }
+            _ => 0,
+        })
+        .sum()
 }
 
 /// Replaces the body of every tool result in `entry` with the elision note, which names the
@@ -415,6 +457,23 @@ mod tests {
         let cut = cut_point(&entries, 1500, false).unwrap();
         assert_eq!(cut, 7);
         assert_eq!(entries[cut].message.role, Role::Assistant);
+    }
+
+    #[test]
+    fn a_percentage_summarises_earlier_than_the_reserve_and_never_later() {
+        let at = |reserve_tokens, auto_percent| {
+            CompactionSettings {
+                reserve_tokens,
+                auto_percent,
+                ..CompactionSettings::default()
+            }
+            .compact_at(200_000)
+        };
+        assert_eq!(at(16_384, 0), 183_616);
+        assert_eq!(at(16_384, 70), 140_000);
+        // The reserve still applies when it comes first; past 100 is 100.
+        assert_eq!(at(16_384, 95), 183_616);
+        assert_eq!(at(0, 250), 200_000);
     }
 
     #[test]

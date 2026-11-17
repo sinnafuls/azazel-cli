@@ -402,11 +402,13 @@ fn tools_are_sent_as_function_declarations_with_raw_json_schema() {
                 "required": ["path"],
                 "additionalProperties": false
             }),
+            defer: false,
         },
         ToolSpec {
             name: "status".into(),
             description: "No arguments".into(),
             schema: Value::Null,
+            defer: false,
         },
     ];
     let body = body(&model(), &req);

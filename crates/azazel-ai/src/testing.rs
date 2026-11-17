@@ -223,6 +223,8 @@ pub struct MockProvider {
     /// Every request is also appended here as one JSON line `{"model", "request"}`, so a test
     /// driving the binary can see what was sent.
     record: Option<std::path::PathBuf>,
+    /// Acts as a provider that searches tools itself ([`Provider::searches_tools`]).
+    searches_tools: std::sync::atomic::AtomicBool,
 }
 
 fn locked<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -276,6 +278,12 @@ impl MockProvider {
             .collect()
     }
 
+    /// Makes the provider one that searches tools itself, so deferred tools reach it marked.
+    pub fn set_searches_tools(&self, on: bool) {
+        self.searches_tools
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Steps not yet consumed for `model`.
     pub fn remaining(&self, model: &str) -> usize {
         locked(&self.queues).get(model).map_or(0, VecDeque::len)
@@ -290,6 +298,10 @@ impl Provider for MockProvider {
 
     fn hosts_web_search(&self) -> bool {
         locked(&self.queues).contains_key(MOCK_SEARCH_QUEUE)
+    }
+
+    fn searches_tools(&self, _model: &ModelInfo) -> bool {
+        self.searches_tools.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     async fn stream(

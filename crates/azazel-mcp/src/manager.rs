@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGua
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use azazel_agent::{Access, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, UpdateSink};
+use azazel_agent::{Access, Offer, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolPolicy, UpdateSink};
 use azazel_ai::{Block, Credentials};
 use azazel_core::{AskKind, Level, Question, TrustStore, Ui};
 use rmcp::model::{
@@ -189,6 +189,29 @@ impl Tool for ProxyTool {
 
     fn subjects(&self, _: &Value) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Past `defer_threshold` MCP tools, each waits to be found: through `tool_search`, or by the
+    /// provider's own search where it has one.
+    fn offer(&self) -> Offer {
+        let Some(inner) = self.inner.upgrade() else {
+            return Offer::Always;
+        };
+        let count: usize = inner
+            .read()
+            .values()
+            .filter_map(Entry::offers)
+            .map(|catalog| catalog.tools.len())
+            .sum();
+        if count <= inner.options.defer_threshold {
+            return Offer::Always;
+        }
+        let found = inner
+            .activated
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains(&self.name);
+        Offer::Searchable { found }
     }
 
     /// A tool that declares `readOnlyHint` is run again after a transient failure.
@@ -1111,15 +1134,12 @@ impl McpManager {
         self.proxies().len() > self.0.options.defer_threshold
     }
 
-    /// The MCP tools to offer right now: all of them, or, when there are too many, only those
-    /// found through `tool_search` so far.
+    /// Every MCP tool agents may use. When there are too many to list, each says through
+    /// [`Tool::offer`] that it waits to be found, and the agent leaves out those not found yet
+    /// unless the provider searches for tools itself.
     pub fn tools(&self) -> Vec<Arc<dyn Tool>> {
-        let proxies = self.proxies();
-        let deferring = proxies.len() > self.0.options.defer_threshold;
-        let activated = self.0.activated.read().unwrap_or_else(PoisonError::into_inner);
-        proxies
+        self.proxies()
             .into_iter()
-            .filter(|tool| !deferring || activated.contains(&tool.name))
             .map(|tool| tool as Arc<dyn Tool>)
             .collect()
     }

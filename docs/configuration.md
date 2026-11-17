@@ -164,9 +164,12 @@ thinking = "low"
 | | `branch_summary` | `true` | Going back with `/tree` has the `smol` role tell the agent in a few lines what happened on the branch you left; see [sessions](sessions-and-checkpoints.md#branch-summaries) |
 | `[compaction]` | `enabled` | `true` | Automatic context compaction |
 | | `reserve_tokens` | `16384` | Summarise when the context is within this many tokens of the window |
+| | `auto_percent` | `0` | Summarise once the context fills this percentage of the window (`70` summarises at 70%); `0` leaves it to `reserve_tokens`. Whichever comes first applies, and on a subscription login the percentage is of `login_max_tokens` |
 | | `keep_recent_tokens` | `20000` | Roughly how much recent context is kept verbatim |
 | | `keep_tool_results` | `8` | Newest tool results that are never elided |
 | | `micro_threshold` | `0.6` | Fraction of the window at which old tool results are elided |
+| | `micro_min_savings` | `0.1` | Old tool results are elided only once they add up to this fraction of the window, since each elision makes the provider cache the whole conversation again |
+| | `login_max_tokens` | `300000` | On a subscription login, old tool results are elided and the context summarised as if the model's window held at most this many tokens, since every request counts against the usage window by its size; `0` uses the model's whole window |
 | `[team]` | `max_parallel` | `4` | Sub-agents running at once; see [team](team.md) |
 | | `max_depth` | `2` | How deep agents may spawn agents |
 | | `max_turns` | `200` | Requests per task for a sub-agent whose definition sets no `max-turns`; `0` is no limit |
@@ -185,6 +188,7 @@ thinking = "low"
 | | `warn_cost_usd` | `0` | Spend at which a warning is shown once, and from which the cost in the [status line](tui.md#status-line) is in the warning colour; `0` is no warning |
 | | `max_turns` | `0` | Requests the lead may make per prompt; `0` is no limit. `--max-turns` sets it for one run |
 | `[tools]` | `disabled` | `[]` | Tool names withheld from every agent; see [tools](tools.md) |
+| | `defer` | `["mcp__*", "browser", "screen", "debug", "sprite_sheet", "generate_*", "schedule", "pty", "http", "list_mcp_resources", "worktree_apply", "worktree_discard", "memory_forget"]` | Tools kept out of the prompt until the model searches for them, on Claude 4.5 and later through Anthropic's API; a trailing `*` covers every name it starts; see [deferred tools](tools.md#deferred-tools) |
 | | `max_result_bytes` | `50000` | Tool output beyond this is cut and saved as an artifact |
 | | `shell_timeout_secs` | `120` | Default time limit of a `shell` call |
 | | `cache_reads` | `true` | A repeated `read`, `grep` or `glob` that gives the same result while the earlier one is still in the context is answered with a short note; see [tools](tools.md#repeated-reads-retries-and-time-limits) |
@@ -314,6 +318,7 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | `[editor]` | `mode` | `"emacs"` | `emacs` or `vim` keys in the input; `/vim` switches; see [Vim keys](tui.md#vim-keys) |
 | | `command` | `""` | Program `Ctrl+G` opens the draft in; empty uses `$VISUAL`, then `$EDITOR`, then `notepad` or `vi` |
 | | `fold_paste_lines` | `10` | Pastes longer than this many lines fold into one token; `0` never folds |
+| | `paste` | `"attachment"` | How a folded paste reaches the agent: `attachment` wraps it in `<attachment>` tags, `file` saves it as `local://paste-N.md` for the agent to read when it needs to, `inline` sends it as typed; see [pasting](tui.md#pasting) |
 | `[compat]` | `claude` | `true` | Also read `CLAUDE.md` and `.claude/` skills, agents and commands |
 | `[notify]` | `bell` | `true` | Ring the terminal bell when an agent needs you or a long run ends, while the terminal is not focused; see [attention](tui.md#attention-title-and-progress) |
 | | `desktop` | `"auto"` | Desktop notification at the same moments: `auto`, `terminal`, `system` or `off` |

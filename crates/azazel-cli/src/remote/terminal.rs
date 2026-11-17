@@ -498,6 +498,8 @@ pub(crate) trait Source: Send + Sync + 'static {
     fn tree(&self) -> Result<Value, String>;
     fn tail(&self) -> Vec<MessageRow>;
     fn about(&self) -> About;
+    /// What a browser lists: models, roles, commands, files and usage windows.
+    fn listing(&self, command: &Command) -> Option<Result<Value, String>>;
 }
 
 pub(crate) struct About {
@@ -515,6 +517,8 @@ pub(crate) struct LocalSource {
     pub lead: AgentHandle,
     pub session: Arc<SessionStore>,
     pub team: Option<Arc<Team>>,
+    /// The model lists providers gave while shared.
+    pub listed: crate::models::Listed,
 }
 
 impl Source for LocalSource {
@@ -558,6 +562,46 @@ impl Source for LocalSource {
             .collect();
         rows.reverse();
         rows
+    }
+
+    fn listing(&self, command: &Command) -> Option<Result<Value, String>> {
+        let to_value = |v: Result<Value, serde_json::Error>| v.map_err(|e| e.to_string());
+        Some(match command {
+            Command::ListModels { all } => azazel_ai::providers::presets::resolve(&self.app.config.providers)
+                .and_then(|providers| {
+                    to_value(serde_json::to_value(crate::models::rows(
+                        &self.app.router,
+                        &self.listed,
+                        &providers,
+                        &self.app.credentials,
+                        self.app.provider.as_deref(),
+                        *all,
+                    )))
+                }),
+            Command::ListProviders => azazel_ai::providers::presets::resolve(&self.app.config.providers)
+                .and_then(|providers| {
+                    to_value(serde_json::to_value(crate::models::provider_rows(
+                        &self.app.router,
+                        &self.listed,
+                        &providers,
+                        &self.app.credentials,
+                        self.app.provider.as_deref(),
+                    )))
+                }),
+            Command::ListRoles => {
+                let place = crate::roles::Place::of(&self.app, Some((&self.lead, Some(&*self.session))));
+                to_value(serde_json::to_value(crate::roles::list(&place)))
+            }
+            Command::ListCommands => {
+                to_value(serde_json::to_value(crate::rpc::session::commands_of(&self.app)))
+            }
+            Command::ListFiles => to_value(serde_json::to_value(crate::tui::project_files(
+                &self.app.paths.cwd,
+                self.app.config.tui.complete_ignored,
+            ))),
+            Command::GetUsage => to_value(serde_json::to_value(self.app.router.limits().snapshot())),
+            _ => return None,
+        })
     }
 
     fn about(&self) -> About {
@@ -664,6 +708,19 @@ impl TerminalSessions {
                 self.source.agent_messages(&agent, before.as_deref(), limit)
             }
             Command::GetTree => self.source.tree(),
+            Command::ListModels { .. }
+            | Command::ListProviders
+            | Command::ListRoles
+            | Command::ListCommands
+            | Command::ListFiles
+            | Command::GetUsage => {
+                let source = self.source.clone();
+                let command = command.clone();
+                tokio::task::spawn_blocking(move || source.listing(&command))
+                    .await
+                    .map_err(|e| e.to_string())?
+                    .unwrap_or_else(|| Err("not available from a shared terminal session".to_string()))
+            }
             Command::ApprovalResponse {
                 request_id,
                 decision,
@@ -881,6 +938,7 @@ impl Sharing {
             lead: lead.clone(),
             session: session.clone(),
             team: team.clone(),
+            listed: crate::models::Listed::default(),
         });
         let sessions = TerminalSessions::new(source, feed.clone(), waiting.clone(), web, remote.redact);
         let server = Server::start(options(&app.config), sessions)
@@ -1227,6 +1285,11 @@ mod tests {
         fn tail(&self) -> Vec<MessageRow> {
             Vec::new()
         }
+        fn listing(&self, command: &Command) -> Option<Result<Value, String>> {
+            matches!(command, Command::ListModels { .. }).then(|| {
+                Ok(json!([{ "model": "mock/lead", "reasoning": true, "thinking_levels": ["low", "high"] }]))
+            })
+        }
         fn about(&self) -> About {
             About {
                 session_id: "s1".into(),
@@ -1290,5 +1353,20 @@ mod tests {
         assert_eq!(refused["id"], 3);
         assert_eq!(refused["success"], false);
         let _ = AtomicUsize::new(0);
+    }
+
+    #[tokio::test]
+    async fn a_browser_on_a_shared_terminal_can_read_the_model_list() {
+        let (web, _loop_rx) = mpsc::unbounded_channel();
+        let sessions = TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false);
+        let mut conn = sessions.open(ID).await.unwrap();
+        assert_eq!(frame(&mut conn).await["type"], "hello");
+        conn.commands
+            .send(json!({ "id": 1, "type": "list_models" }).to_string())
+            .await
+            .unwrap();
+        let models = frame(&mut conn).await;
+        assert_eq!(models["success"], true, "{models}");
+        assert_eq!(models["data"][0]["thinking_levels"], json!(["low", "high"]));
     }
 }

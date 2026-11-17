@@ -172,7 +172,12 @@ pub struct Router {
     virtuals: Arc<VirtualModels>,
     /// Where the usage of every answered request goes.
     usage: Option<Arc<dyn UsageSink>>,
+    /// Which providers are used through a subscription login, by id.
+    logins: Option<LoginCheck>,
 }
+
+/// Whether a provider, by id, is used through a subscription login.
+pub type LoginCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 /// Told what every answered request used, once per request that returned usage.
 pub trait UsageSink: Send + Sync {
@@ -211,7 +216,28 @@ impl Router {
             tierless: Mutex::default(),
             virtuals: Arc::default(),
             usage: None,
+            logins: None,
         }
+    }
+
+    /// Tells the router which providers are used through a subscription login.
+    pub fn with_logins(mut self, logins: LoginCheck) -> Self {
+        self.logins = Some(logins);
+        self
+    }
+
+    /// Whether the provider of `model` searches tools itself, so tools marked to be deferred stay
+    /// out of the prompt until the model looks for them.
+    pub fn searches_tools(&self, model: &ModelRef) -> bool {
+        self.providers
+            .get(&model.provider)
+            .is_some_and(|provider| provider.searches_tools(&self.model_info(model)))
+    }
+
+    /// Whether `model` is used through a subscription login, which is paid for by a usage window
+    /// rather than by the token.
+    pub fn is_login(&self, model: &ModelRef) -> bool {
+        self.logins.as_ref().is_some_and(|check| check(&model.provider))
     }
 
     /// Has every answered request's usage reported to `sink`: the one place all requests pass.
@@ -583,12 +609,22 @@ impl Router {
         let info = self.model_info_discovered(model).await;
         let thinking = level_for(model, req);
         let tier = req.tier.filter(|_| !self.is_tierless(model));
-        let mut req: Cow<'_, Request> = match thinking != req.thinking || tier != req.tier {
-            true => Cow::Owned(Request {
-                thinking,
-                tier,
-                ..req.clone()
-            }),
+        // A provider that does not search tools itself is sent every tool in full.
+        let undefer = req.tools.iter().any(|tool| tool.defer) && !provider.searches_tools(&info);
+        let mut req: Cow<'_, Request> = match thinking != req.thinking || tier != req.tier || undefer {
+            true => {
+                let mut owned = Request {
+                    thinking,
+                    tier,
+                    ..req.clone()
+                };
+                if undefer {
+                    for tool in &mut owned.tools {
+                        tool.defer = false;
+                    }
+                }
+                Cow::Owned(owned)
+            }
             false => Cow::Borrowed(req),
         };
         loop {

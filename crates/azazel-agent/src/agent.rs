@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use azazel_ai::router::{RouteEvent, RouteState};
 use azazel_ai::{
     AiError, Block, INVALID_JSON_KEY, Message, ModelRef, ModelSpec, Request, RequestOrigin, Role, Router,
-    StopReason, StreamEvent, SystemPart, ThinkingLevel, Usage,
+    StopReason, StreamEvent, SystemPart, ThinkingLevel, ToolSpec, Usage,
 };
 use futures::StreamExt;
 use futures::future::join_all;
@@ -24,8 +24,8 @@ use crate::hooks::{AgentHooks, Recovery, TranscriptSink};
 use crate::inspect::RequestRecord;
 use crate::repair::{self, Prepared};
 use crate::tool::{
-    ArtifactSink, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolSettings, ToolSource, UpdateSink,
-    tool_spec,
+    ArtifactSink, Deferral, Offer, Services, Timeout, Tool, ToolCtx, ToolOutput, ToolSettings, ToolSource,
+    UpdateSink, tool_spec,
 };
 
 pub const TURN_LIMIT_TEXT: &str = "Turn limit reached. Reply with your final report now.";
@@ -51,6 +51,10 @@ fn stop_name(stop: StopReason) -> &'static str {
 /// Replies a rule may withdraw per prompt; after that the reply stands, so two rules that
 /// contradict each other cannot keep an agent going forever.
 const MAX_RULE_STOPS: u32 = 2;
+
+/// Automatic summaries that may fail in a row before none is tried any more; see
+/// `Core::compact_failures`.
+const MAX_COMPACT_FAILURES: u32 = 3;
 
 /// What one request produced.
 enum Reply {
@@ -351,6 +355,7 @@ impl Agent {
                 compaction: config.compaction,
                 entries: config.initial_messages,
                 anchor: None,
+                compact_failures: 0,
                 hub: hub.clone(),
                 status: status.clone(),
                 requests: 0,
@@ -459,6 +464,10 @@ struct Core {
     entries: Vec<ContextEntry>,
     /// `(entries.len(), context tokens)` as of the last response that reported usage.
     anchor: Option<(usize, u64)>,
+    /// Automatic summaries that failed in a row. From [`MAX_COMPACT_FAILURES`] on none is tried
+    /// again until one asked for by hand succeeds: a context that cannot be summarised would
+    /// otherwise cost a doomed request every turn.
+    compact_failures: u32,
     hub: Arc<EventHub>,
     status: Arc<Mutex<AgentStatus>>,
     /// Requests of its own the agent has built.
@@ -1103,8 +1112,11 @@ impl Core {
     ) -> Result<(), AiError> {
         // A virtual model has no window of its own: that of the model that answered last holds.
         let answered = locked(&self.status).model.clone();
-        let window = match self.router.limits_model(chain, answered.as_ref()) {
-            Some(model) => self.router.model_info(&model).context_window,
+        let (window, login) = match self.router.limits_model(chain, answered.as_ref()) {
+            Some(model) => (
+                self.router.model_info(&model).context_window,
+                self.router.is_login(&model),
+            ),
             None => return Ok(()),
         };
         let mut estimate = self.estimate();
@@ -1116,10 +1128,27 @@ impl Core {
         if !self.compaction.enabled {
             return Ok(());
         }
+        // A login pays for every request by its size out of a usage window, so its context is
+        // kept to a smaller budget than the model's window.
+        let window = match self.compaction.login_max_tokens {
+            cap if login && cap > 0 => window.min(cap),
+            _ => window,
+        };
+        let compact_at = self.compaction.compact_at(window);
         if estimate as f64 > self.compaction.micro_threshold * window as f64 {
+            let targets = compaction::micro_targets(&self.entries, self.compaction.keep_tool_results);
+            let freed: u64 = targets
+                .iter()
+                .map(|&i| compaction::elidable_tokens(&self.entries[i]))
+                .sum();
+            // An elision rewrites history the provider has cached, so it is done in batches worth
+            // that cost, or when the alternative is a summary, which rewrites it anyway.
+            let worth_it =
+                freed as f64 >= self.compaction.micro_min_savings * window as f64 || estimate > compact_at;
+            let targets = if worth_it { targets } else { Vec::new() };
             let mut changed = false;
             let recall = self.recall_offered();
-            for i in compaction::micro_targets(&self.entries, self.compaction.keep_tool_results) {
+            for i in targets {
                 if let Some(note) = compaction::elide(&mut self.entries[i], recall) {
                     self.sink.context_edit(&self.entries[i].id, &note);
                     changed = true;
@@ -1130,8 +1159,12 @@ impl Core {
                 estimate = self.estimate();
             }
         }
-        if estimate > window.saturating_sub(self.compaction.reserve_tokens) {
-            self.compact(chain, cancel, false, false, None).await?;
+        if estimate > compact_at
+            && self.compact_failures < MAX_COMPACT_FAILURES
+            && let Err(error) = self.compact(chain, cancel, false, false, None).await
+        {
+            self.compact_failures += 1;
+            return Err(error);
         }
         Ok(())
     }
@@ -1253,6 +1286,7 @@ impl Core {
         });
         self.entries.extend(kept);
         self.anchor = None;
+        self.compact_failures = 0;
         let tokens_after = self.estimate();
         locked(&self.status).context_tokens = tokens_after;
         self.emit(AgentEvent::Compaction {
@@ -1290,13 +1324,18 @@ impl Core {
         } else {
             Vec::new()
         };
-        if let Some(model) = self.router.resolve(chain).first() {
+        let model = self.router.resolve(chain).first().cloned();
+        if let Some(model) = &model {
             tools.retain(|tool| tool.offered_to(model));
         }
+        let searching = model
+            .as_ref()
+            .is_some_and(|model| self.router.searches_tools(model));
+        let (specs, system) = self.offer_tools(&mut tools, searching);
         let mut request = Request {
-            system: self.system.clone(),
+            system,
             messages,
-            tools: tools.iter().map(|t| tool_spec(t.as_ref())).collect(),
+            tools: specs,
             thinking: thinking.unwrap_or_default(),
             thinking_explicit: thinking.is_some(),
             max_output: None,
@@ -1328,6 +1367,61 @@ impl Core {
         // A hook may have withdrawn tools; only what was offered can be called.
         tools.retain(|t| request.tools.iter().any(|spec| spec.name == t.name()));
         (request, tools)
+    }
+
+    /// The specs of `tools` and the system prompt for a request. Where the provider searches for
+    /// tools itself (`searching`), tools waiting to be found and those `[tools] defer` names are
+    /// sent marked to stay out of the prompt, and the prompt names them so the model knows to
+    /// search; the harness's own search tools are left out. Elsewhere the tools waiting to be
+    /// found are left out until a search tool of the harness finds them. Deferred tools stay in
+    /// `tools`: the model may call them once it found them.
+    fn offer_tools(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        searching: bool,
+    ) -> (Vec<ToolSpec>, Vec<SystemPart>) {
+        tools.retain(|tool| match tool.offer() {
+            Offer::Always => true,
+            Offer::Searchable { found } => searching || found,
+            Offer::Search => !searching,
+        });
+        let deferral = self.services.get::<Deferral>();
+        let mut specs: Vec<ToolSpec> = tools
+            .iter()
+            .map(|tool| ToolSpec {
+                defer: searching
+                    && (matches!(tool.offer(), Offer::Searchable { .. })
+                        || deferral
+                            .as_ref()
+                            .is_some_and(|deferral| deferral.covers(tool.name()))),
+                ..tool_spec(tool.as_ref())
+            })
+            .collect();
+        let mut system = self.system.clone();
+        // The API wants at least one tool in the prompt.
+        if specs.iter().all(|spec| spec.defer) {
+            for spec in &mut specs {
+                spec.defer = false;
+            }
+        }
+        let mut deferred: Vec<&str> = specs
+            .iter()
+            .filter(|spec| spec.defer)
+            .map(|spec| spec.name.as_str())
+            .collect();
+        if !deferred.is_empty() {
+            deferred.sort_unstable();
+            system.push(SystemPart {
+                text: format!(
+                    "These tools are not shown until you find them with the tool search tool; search by what \
+                     you need and they become callable: {}",
+                    deferred.join(", ")
+                ),
+                name: "deferred-tools".to_string(),
+                cache_boundary: false,
+            });
+        }
+        (specs, system)
     }
 
     async fn run_tool(&self, call: Prepared, cancel: &CancellationToken) -> Block {

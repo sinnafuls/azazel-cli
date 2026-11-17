@@ -125,15 +125,15 @@
 	subtitle={multiple ? `${tab + 1} of ${questions.length}` : undefined}
 	dismissible={false}
 >
-	<div class="space-y-3.5" data-request="ui" data-kind={f.kind}>
+	<div class="space-y-3" data-request="ui" data-kind={f.kind}>
 		{#if isPlan}
-			<p class="text-muted-foreground font-mono text-xs break-all">{f.path}</p>
-			<div class="bg-inset scroll-thin max-h-[42dvh] overflow-y-auto rounded-md border p-3.5">
+			<p class="text-muted-foreground meta break-all">{f.path}</p>
+			<div class="bg-inset scroll-thin max-h-[42dvh] overflow-y-auto rounded-lg border p-4">
 				<Markdown text={String(f.plan)} />
 			</div>
 			{#if revising}
 				<textarea
-					class="bg-inset focus-visible:ring-ring min-h-24 w-full rounded-md border p-2.5 text-sm outline-none focus-visible:ring-2"
+					class="field min-h-24"
 					bind:value={feedback}
 					placeholder="What should change?"
 					aria-label="Feedback on the plan"></textarea>
@@ -150,10 +150,10 @@
 							type="button"
 							role="tab"
 							aria-selected={tab === i}
-							class="flex min-h-9 shrink-0 items-center gap-1.5 rounded-md border px-3 text-[13px] {tab ===
+							class="flex min-h-11 shrink-0 items-center gap-1.5 rounded-md px-3 text-sm transition-colors duration-100 fine:min-h-8 {tab ===
 							i
-								? 'bg-raised border-input font-medium'
-								: 'text-muted-foreground'}"
+								? 'bg-raised font-medium'
+								: 'text-muted-foreground hover:text-foreground'}"
 							onclick={() => (tab = i)}
 						>
 							{#if answerOf(qq, drafts[i] ?? emptyDraft(qq)) !== null}<Check
@@ -165,17 +165,17 @@
 				</div>
 			{/if}
 
-			{#if q.context}<p
-					class="text-muted-foreground text-[13px] leading-relaxed whitespace-pre-wrap"
-				>
+			{#if q.context}<p class="text-muted-foreground text-sm leading-relaxed whitespace-pre-wrap">
 					{q.context}
 				</p>{/if}
-			<p class="text-[15px] leading-snug font-medium whitespace-pre-wrap">{q.question}</p>
+			<p class="text-base leading-snug font-medium tracking-[-0.015em] whitespace-pre-wrap">
+				{q.question}
+			</p>
 			{#if q.diff}
 				<DiffView diff={q.diff} max={12} />
 			{:else if q.code}
 				<pre
-					class="bg-inset scroll-thin max-h-40 overflow-auto rounded-md border p-2.5 font-mono text-xs leading-5">{q.code}</pre>
+					class="well scroll-thin max-h-40 overflow-auto border p-3 whitespace-pre">{q.code}</pre>
 			{/if}
 
 			{#if q.expects === 'confirm'}
@@ -185,14 +185,12 @@
 							type="button"
 							role="radio"
 							aria-checked={d.confirm === v}
-							class="relative min-h-11 rounded-lg border px-3 text-sm font-medium {d.confirm === v
-								? 'border-primary bg-primary/15'
-								: 'hover:bg-raised'}"
+							class="choice min-h-11 px-3 py-1.5 text-sm font-medium"
 							onclick={() => (d.confirm = v as boolean)}
 						>
 							{label}
 							{#if (q.recommended === 'yes') === v && q.recommended}<span
-									class="text-muted-foreground block text-[11px] font-normal">suggested</span
+									class="text-muted-foreground block text-xs font-normal">suggested</span
 								>{/if}
 						</button>
 					{/each}
@@ -201,6 +199,7 @@
 				<ul
 					class="space-y-1.5"
 					role={q.expects === 'select' ? 'radiogroup' : 'group'}
+					data-options
 					aria-label={q.question}
 				>
 					{#each q.options as opt (opt)}
@@ -210,23 +209,21 @@
 								type="button"
 								role={q.expects === 'select' ? 'radio' : 'checkbox'}
 								aria-checked={on}
-								class="flex min-h-11 w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm {on
-									? 'border-primary bg-primary/15'
-									: 'hover:bg-raised'}"
+								class="choice flex min-h-11 w-full items-center gap-3 px-3 py-2 text-left text-sm"
 								onclick={() => pick(opt)}
 							>
 								<span
 									class="grid size-4 shrink-0 place-items-center border {q.expects === 'select'
 										? 'rounded-full'
-										: 'rounded-sm'} {on
-										? 'border-primary bg-primary text-primary-foreground'
+										: 'rounded-xs'} {on
+										? 'border-ember bg-ember text-ember-foreground'
 										: 'border-input'}"
 									aria-hidden="true"
 								>
 									{#if on}<Check class="size-3" />{/if}
 								</span>
 								<span class="min-w-0 flex-1 break-words">{opt}</span>
-								{#if q.recommended === opt}<span class="text-accent-text shrink-0 text-[11px]"
+								{#if q.recommended === opt}<span class="text-muted-foreground shrink-0 text-xs"
 										>suggested</span
 									>{/if}
 							</button>
@@ -237,11 +234,10 @@
 
 			{#if q.expects === 'text' || q.allow_freeform}
 				<label class="block">
-					{#if q.allow_freeform}<span class="text-muted-foreground mb-1 block text-xs"
-							>Or write your own answer</span
+					{#if q.allow_freeform}<span class="label mb-1.5 block">Or write your own answer</span
 						>{/if}
 					<input
-						class="bg-inset focus-visible:ring-ring h-11 w-full rounded-md border px-3 text-sm outline-none focus-visible:ring-2 md:h-9"
+						class="field"
 						type={secret ? 'password' : 'text'}
 						autocomplete="off"
 						spellcheck="false"
@@ -254,47 +250,50 @@
 				</label>
 			{/if}
 		{/if}
-		{#if error}<p class="text-destructive text-[13px]" role="alert">{error}</p>{/if}
+		{#if error}<p class="text-destructive text-sm" role="alert">{error}</p>{/if}
 	</div>
 
 	{#snippet footer()}
 		{#if !canControl}
-			<p class="text-muted-foreground text-center text-xs">
+			<p class="text-muted-foreground text-xs">
 				View link: waiting for someone with a control link to answer.
 			</p>
 		{:else if isPlan}
 			{#if revising}
-				<div class="flex gap-2">
-					<Button variant="outline" class="h-11 flex-1 md:h-9" onclick={() => (revising = false)}
+				<div class="flex gap-2 md:justify-end">
+					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (revising = false)}
 						>Back</Button
 					>
 					<Button
-						class="h-11 flex-1 md:h-9"
+						class="flex-1 md:flex-none"
 						disabled={busy || !feedback.trim()}
 						onclick={() => send(feedback.trim())}>Send feedback</Button
 					>
 				</div>
 			{:else}
-				<div class="flex gap-2">
-					<Button variant="outline" class="h-11 flex-1 md:h-9" onclick={() => (revising = true)}
+				<div class="flex gap-2 md:justify-end">
+					<Button variant="outline" class="flex-1 md:flex-none" onclick={() => (revising = true)}
 						>Ask for changes</Button
 					>
-					<Button class="h-11 flex-1 md:h-9" disabled={busy} onclick={() => send(true)}
+					<Button class="flex-1 md:min-w-36 md:flex-none" disabled={busy} onclick={() => send(true)}
 						>Approve plan</Button
 					>
 				</div>
 			{/if}
 		{:else}
 			<div class="flex gap-2">
-				<Button variant="outline" class="h-11 md:h-9" disabled={busy} onclick={() => send(null)}
+				<Button variant="ghost" class="md:mr-auto" disabled={busy} onclick={() => send(null)}
 					>Dismiss</Button
 				>
 				{#if multiple && tab < questions.length - 1}
-					<Button variant="secondary" class="h-11 flex-1 md:h-9" onclick={() => tab++}>Next</Button>
+					<Button variant="secondary" class="flex-1 md:flex-none" onclick={() => tab++}>Next</Button
+					>
 				{/if}
 				{#if !multiple || tab === questions.length - 1 || drafts.some((_, i) => answerOf(questions[i], drafts[i]) !== null)}
-					<Button class="h-11 flex-1 md:h-9" disabled={busy || !ready} onclick={() => void submit()}
-						>Send answer</Button
+					<Button
+						class="flex-1 md:min-w-36 md:flex-none"
+						disabled={busy || !ready}
+						onclick={() => void submit()}>Send answer</Button
 					>
 				{/if}
 			</div>

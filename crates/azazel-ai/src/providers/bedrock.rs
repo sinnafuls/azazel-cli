@@ -1169,6 +1169,7 @@ mod tests {
                 name: "grep".into(),
                 description: "Search files".into(),
                 schema: json!({ "type": "object", "properties": { "pattern": { "type": "string" } } }),
+                defer: false,
             }],
             thinking: ThinkingLevel::Off,
             thinking_explicit: false,

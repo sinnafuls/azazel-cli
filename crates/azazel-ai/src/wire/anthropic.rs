@@ -13,7 +13,7 @@
 //!   version every platform serves and the one that returns its results as plain blocks. The pages
 //!   come back as `web_search_tool_result` blocks and as `citations` on the text that uses them.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use reqwest::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use serde_json::{Map, Value, json};
@@ -40,10 +40,20 @@ const VERSION_HEADER: &str = "anthropic-version";
 const BETA_HEADER: &str = "anthropic-beta";
 /// Needed for fast mode on the models where it is a preview or deprecated.
 const FAST_MODE_BETA: &str = "fast-mode-2026-02-01";
+/// Sent with a request that keeps tools out of the prompt until the model searches for them.
+const TOOL_SEARCH_BETA: &str = "advanced-tool-use-2025-11-20";
+/// The server tool that searches deferred tools by what they do.
+const TOOL_SEARCH_TOOL: &str = "tool_search_tool_bm25_20251119";
 /// What every header of a subscription's unified rate limit starts with.
 const UNIFIED: &str = "anthropic-ratelimit-unified-";
 /// The API accepts at most this many `cache_control` markers in one request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
+/// The mark deep in the conversation sits on a user turn at or before its middle, rounded down to
+/// a multiple of this many messages, so that it stays where it is for many requests.
+const ANCHOR_STEP: usize = 16;
+/// How long a subscription login has its prompt cached. A session paid for by the window, not by
+/// the token, gains from a cache that outlives a coffee break more than a write costs it.
+const LOGIN_CACHE_TTL: &str = "1h";
 /// Output tokens kept for the answer on top of a manual thinking budget.
 const ANSWER_RESERVE: u32 = 1024;
 /// Largest page the list-models endpoint serves.
@@ -60,12 +70,44 @@ pub fn build_body(provider: &ProviderConfig, model: &ModelInfo, req: &Request) -
     let mut breakpoints = MAX_CACHE_BREAKPOINTS;
     let system = system_blocks(&req.system, &mut breakpoints);
     let mut tools = tool_definitions(&req.tools, &mut breakpoints);
+    if defers_tools(req) {
+        tools.push(json!({"type": TOOL_SEARCH_TOOL, "name": "tool_search_tool_bm25"}));
+    }
     tools.extend(req.hosted.iter().map(hosted_definition));
     let mut messages = wire_messages(&provider.id, &req.messages);
-    for message in messages.iter_mut().rev().filter(|m| m.role == USER).take(2) {
+    // A one-off (a summary, a memory extraction, a judge's verdict): one message and a system
+    // prompt with no cache boundary. Nothing reads its cache again, so writing it is pure cost,
+    // twice the input price on a login's hour-long cache.
+    let one_off = req.messages.len() == 1 && !req.system.iter().any(|part| part.cache_boundary);
+    if one_off {
+        breakpoints = 0;
+    }
+    let mut marked = Vec::new();
+    for (index, message) in messages
+        .iter_mut()
+        .enumerate()
+        .rev()
+        .filter(|(_, m)| m.role == USER)
+        .take(2)
+    {
         if let Some(block) = message.content.last_mut() {
             mark_cached(block, &mut breakpoints);
+            marked.push(index);
         }
+    }
+    // A mark further back keeps the older half of the conversation cached when something near
+    // its end changes (a rewind, a hook that rewrites a turn, a retried reply).
+    let middle = messages.len() / 2 / ANCHOR_STEP * ANCHOR_STEP;
+    if let Some(message) = messages
+        .iter_mut()
+        .enumerate()
+        .take(middle)
+        .rev()
+        .find(|(index, m)| m.role == USER && !marked.contains(index))
+        .map(|(_, m)| m)
+        && let Some(block) = message.content.last_mut()
+    {
+        mark_cached(block, &mut breakpoints);
     }
 
     let mut thinking = thinking_config(provider, model, req);
@@ -148,21 +190,99 @@ pub fn build_request(
         // does not identify as the CLI the token was issued to.
         system.insert(0, json!({"type": "text", "text": CLIENT_IDENTITY}));
     }
+    if caches_for_an_hour(provider, auth) {
+        extend_cache(&mut body);
+    }
     let mut headers = headers(provider, auth, true);
     crate::wire::openai_chat::copilot_turn(provider, req, &mut headers);
     if fast_mode(model, req) && fast_mode_is_beta(&model.id) {
-        let betas = match headers.get(BETA_HEADER).and_then(|value| value.to_str().ok()) {
-            Some(others) if !others.trim().is_empty() => format!("{others},{FAST_MODE_BETA}"),
-            _ => FAST_MODE_BETA.to_string(),
-        };
-        if let Ok(value) = HeaderValue::from_str(&betas) {
-            headers.insert(HeaderName::from_static(BETA_HEADER), value);
-        }
+        add_beta(&mut headers, FAST_MODE_BETA);
+    }
+    if defers_tools(req) {
+        add_beta(&mut headers, TOOL_SEARCH_BETA);
     }
     client
         .post(format!("{}/v1/messages", provider.base_url))
         .headers(headers)
         .json(&body)
+}
+
+/// Adds `beta` to the `anthropic-beta` header, after what it holds already.
+fn add_beta(headers: &mut HeaderMap, beta: &str) {
+    let betas = match headers.get(BETA_HEADER).and_then(|value| value.to_str().ok()) {
+        Some(others) if others.split(',').any(|b| b.trim() == beta) => return,
+        Some(others) if !others.trim().is_empty() => format!("{others},{beta}"),
+        _ => beta.to_string(),
+    };
+    if let Ok(value) = HeaderValue::from_str(&betas) {
+        headers.insert(HeaderName::from_static(BETA_HEADER), value);
+    }
+}
+
+/// Whether the request keeps some of its tools out of the prompt until the model searches for
+/// them. The router clears the marks for a provider that does not search tools itself.
+fn defers_tools(req: &Request) -> bool {
+    req.tools.iter().any(|tool| tool.defer)
+}
+
+/// Whether `model_id` can search deferred tools: Claude 4.5 and later (Haiku 4.5, Sonnet 4.5,
+/// Opus 4.5 and every newer line). Ids that name no Claude model belong to compatible endpoints,
+/// which do not.
+pub fn searches_tools(model_id: &str) -> bool {
+    claude_version(model_id).is_some_and(|version| version >= (4, 5))
+}
+
+/// The `(major, minor)` version in a Claude model id; see [`thinking_shape`] for the forms.
+fn claude_version(model_id: &str) -> Option<(u32, u32)> {
+    let id = model_id.to_ascii_lowercase();
+    let family = id.find("claude")?;
+    let mut parts = id[family..]
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .map(version_part)
+        .skip_while(Option::is_none);
+    let major = parts.next().flatten()?;
+    Some((major, parts.next().flatten().unwrap_or(0)))
+}
+
+/// Whether requests made with `auth` have their prompt cached for an hour: a Claude subscription
+/// login. Copilot's Messages route takes a GitHub login, which is billed otherwise.
+pub fn caches_for_an_hour(provider: &ProviderConfig, auth: &Auth) -> bool {
+    matches!(auth, Auth::OAuth { .. }) && !crate::wire::openai_chat::is_copilot(provider)
+}
+
+/// Gives every cache mark of `body` the login's longer lifetime. All marks get the same one: the
+/// API wants longer-lived entries before shorter ones.
+fn extend_cache(body: &mut Value) {
+    let mark = |block: &mut Value| {
+        if let Some(control) = block.get_mut("cache_control").and_then(Value::as_object_mut) {
+            control.insert("ttl".to_string(), json!(LOGIN_CACHE_TTL));
+        }
+    };
+    for key in ["system", "tools"] {
+        for block in body
+            .get_mut(key)
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            mark(block);
+        }
+    }
+    for message in body
+        .get_mut("messages")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        for block in message
+            .get_mut("content")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten()
+        {
+            mark(block);
+        }
+    }
 }
 
 /// Whether the request asks a Claude model for fast mode. Other models behind compatible
@@ -528,7 +648,39 @@ fn wire_messages(provider_id: &str, messages: &[Message]) -> Vec<WireMessage> {
             _ => out.push(WireMessage { role, content }),
         }
     }
+    for message in out.iter_mut().filter(|m| m.role == ASSISTANT) {
+        pair_server_blocks(&mut message.content);
+    }
+    out.retain(|m| !m.content.is_empty());
     out
+}
+
+/// Keeps a server tool's call (`server_tool_use`) only with its result (`…_tool_result` naming
+/// it), and the other way round: the API refuses either alone. A reply can end on client tool
+/// calls before the server ran its tool, which leaves the call without a result.
+fn pair_server_blocks(content: &mut Vec<Value>) {
+    let id_of = |block: &Value, key: &str| block.get(key).and_then(Value::as_str).map(str::to_string);
+    let is_result =
+        |block: &Value| block_type(block).is_some_and(|t| t.ends_with("_tool_result") && t != "tool_result");
+    let calls: HashSet<String> = content
+        .iter()
+        .filter(|b| block_type(b) == Some("server_tool_use"))
+        .filter_map(|b| id_of(b, "id"))
+        .collect();
+    let answered: HashSet<String> = content
+        .iter()
+        .filter(|b| is_result(b))
+        .filter_map(|b| id_of(b, "tool_use_id"))
+        .collect();
+    content.retain(|block| {
+        if block_type(block) == Some("server_tool_use") {
+            id_of(block, "id").is_some_and(|id| answered.contains(&id))
+        } else if is_result(block) {
+            id_of(block, "tool_use_id").is_some_and(|id| calls.contains(&id))
+        } else {
+            true
+        }
+    });
 }
 
 fn wire_block(provider_id: &str, role: &str, block: &Block) -> Option<Value> {
@@ -627,10 +779,22 @@ fn tool_definitions(tools: &[ToolSpec], breakpoints: &mut usize) -> Vec<Value> {
             } else {
                 json!({"type": "object", "properties": {}})
             };
-            json!({"name": tool.name, "description": tool.description, "input_schema": schema})
+            let mut definition =
+                json!({"name": tool.name, "description": tool.description, "input_schema": schema});
+            if tool.defer {
+                definition["defer_loading"] = json!(true);
+            }
+            definition
         })
         .collect();
-    if let Some(last) = definitions.last_mut() {
+    // The tools come first, so a mark on the system prompt covers them too; theirs is left to
+    // the conversation then. A deferred tool may not carry one.
+    if *breakpoints == MAX_CACHE_BREAKPOINTS
+        && let Some(last) = definitions
+            .iter_mut()
+            .rev()
+            .find(|definition| definition.get("defer_loading").is_none())
+    {
         mark_cached(last, breakpoints);
     }
     definitions

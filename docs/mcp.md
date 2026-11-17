@@ -150,6 +150,10 @@ Each server tool becomes a tool named `mcp__<server>__<tool>`; characters outsid
 
 When the servers offer more tools than `defer_threshold` (default 40), counting those of servers that wait for their first call, MCP tools are no longer listed in every request. Agents get `tool_search { query, limit? }` instead: it ranks all MCP tools against the query (BM25 over names and descriptions), returns each hit with its description and input schema, and makes the hits callable from the agent's next step for the rest of the session. In a `run_code` script, `tools.search(query)` does the same search and the script can call what it found at once (see [code execution](tools.md#code-execution)).
 
+On Claude 4.5 and later through Anthropic's own API, `tool_search` is not offered: every MCP tool is sent
+kept out of the prompt and the model finds it with the API's own search, which leaves the cached prompt valid
+(see [deferred tools](tools.md#deferred-tools)).
+
 ## Resources and prompts
 
 - `list_mcp_resources { server? }` lists resources and resource templates as `mcp://<server>/<uri>  name`. Without `server` it asks the servers that are connected; naming a `lazy` server that is not running starts it, as reading one of its resources does.

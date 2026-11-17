@@ -11,6 +11,8 @@ export interface UserItem {
 	text: string;
 	via: 'prompt' | 'steer' | 'follow_up';
 	images: number;
+	/** Data URLs of the pictures this page sent, shown as thumbnails. */
+	previews?: string[];
 }
 export interface TextBlock {
 	index: number;
@@ -110,6 +112,13 @@ export function emptyModel(): Model {
 export function leadBusy(m: Model): boolean {
 	return m.runs['lead']?.busy ?? m.state?.busy ?? false;
 }
+
+/** The memories azazel recalls for a prompt are appended to it in a `<memory>` block for the
+ * model; the transcript shows only what the user wrote. */
+export const withoutMemory = (text: string): string => {
+	const at = text.lastIndexOf('\n\n<memory>\n');
+	return at >= 0 && text.trimEnd().endsWith('</memory>') ? text.slice(0, at) : text;
+};
 
 const textOf = (blocks: Block[] | undefined): string =>
 	(blocks ?? [])
@@ -443,15 +452,13 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 			return { ...base, requests: base.requests.filter((r) => r.id !== f.request_id) };
 		case 'user_input': {
 			const [m2, id] = next(base, 'u');
+			const text = withoutMemory(f.text as string);
 			const via = (['prompt', 'steer', 'follow_up'] as const).find((v) => v === f.kind) ?? 'prompt';
 			const agentId = (f.agent as string | null | undefined) ?? 'lead';
 			return {
 				...m2,
-				items: [
-					...m2.items,
-					{ kind: 'user', id, agent: agentId, text: f.text as string, via, images: 0 }
-				],
-				queue: m2.queue.filter((q) => q.text !== f.text)
+				items: [...m2.items, { kind: 'user', id, agent: agentId, text, via, images: 0 }],
+				queue: m2.queue.filter((q) => q.text !== text)
 			};
 		}
 		default:
@@ -467,10 +474,13 @@ export function addLocalUser(
 	text: string,
 	via: UserItem['via'],
 	images: number,
-	agent = 'lead'
+	agent = 'lead',
+	previews: string[] = []
 ): Model {
 	const [m2, id] = next(m, 'u');
-	return { ...m2, items: [...m2.items, { kind: 'user', id, agent, text, via, images }] };
+	const item: UserItem = { kind: 'user', id, agent, text, via, images };
+	if (previews.length) item.previews = previews;
+	return { ...m2, items: [...m2.items, item] };
 }
 
 export function takeToasts(m: Model): [Model, Toast[]] {
@@ -486,7 +496,7 @@ export function rowsToItems(rows: Row[], agent = 'lead', prefix = 'h'): Item[] {
 		if (!msg) continue;
 		const id = `${prefix}${row.entry_id}`;
 		if (msg.role === 'user') {
-			const text = textOf(msg.content);
+			const text = withoutMemory(textOf(msg.content));
 			const images = msg.content.filter((b) => b.type === 'image').length;
 			if (text || images) items.push({ kind: 'user', id, agent, text, via: 'prompt', images });
 		} else if (msg.role === 'assistant') {

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use azazel_agent::{Access, AgentInfo, Tool, ToolCtx, ToolOutput, ToolSource};
+use azazel_agent::{Access, AgentInfo, Offer, Tool, ToolCtx, ToolOutput, ToolSource};
 use azazel_ai::Block;
 use azazel_core::commands::split_args;
 use azazel_core::{
@@ -54,6 +54,12 @@ impl Tool for ToolSearchTool {
 
     fn subjects(&self, _: &Value) -> Vec<String> {
         Vec::new()
+    }
+
+    /// Where the provider searches for tools itself, its search finds MCP tools without
+    /// adding them to the tool list, which would make it cache the conversation again.
+    fn offer(&self) -> Offer {
+        Offer::Search
     }
 
     async fn call(&self, input: Value, _: &ToolCtx) -> ToolOutput {

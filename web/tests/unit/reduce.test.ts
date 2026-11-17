@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { AnyFrame } from '$lib/protocol';
 import {
+	addLocalUser,
 	applySnapshot,
 	emptyModel,
 	leadBusy,
@@ -112,6 +113,15 @@ describe('frame reducer over recorded runs', () => {
 		expect(tools[0]).toMatchObject({ status: 'done', output: 'created' });
 	});
 
+	it('keeps thumbnails of the pictures this page sent', () => {
+		const m = addLocalUser(emptyModel(), 'look', 'prompt', 1, 'lead', ['data:image/png;base64,AA']);
+		expect(m.items[0]).toMatchObject({
+			kind: 'user',
+			images: 1,
+			previews: ['data:image/png;base64,AA']
+		});
+	});
+
 	it('remembers the position of the last frame for resuming', () => {
 		let m = reduce(emptyModel(), { type: 'agent_start', agent: 'lead', at: 10 });
 		m = reduce(m, { type: 'idle', agent: 'lead', stop: 'stop', at: 42 });
@@ -186,5 +196,38 @@ describe('frame reducer over recorded runs', () => {
 		});
 		const open = next.items.filter((i): i is AssistantItem => i.kind === 'assistant').at(-1);
 		expect(open?.blocks[0].text).toBe('Half a sentence');
+	});
+
+	it('shows a prompt without the memories recalled for the model, live and after a reload', () => {
+		const sent = 'check the cache\n\n<memory>\n- [fact] usage is logged\n</memory>';
+		const live = reduce(emptyModel(), {
+			type: 'user_input',
+			kind: 'prompt',
+			text: sent
+		} as unknown as AnyFrame);
+		const reloaded = applySnapshot(emptyModel(), {
+			busy: false,
+			tail: [
+				{
+					entry_id: 'e1',
+					timestamp: '',
+					message: { role: 'user', content: [{ type: 'text', text: sent }] }
+				}
+			] as never,
+			streaming: [],
+			tools: [],
+			queue: []
+		});
+		for (const m of [live, reloaded]) {
+			expect(m.items).toHaveLength(1);
+			expect(m.items[0]).toMatchObject({ kind: 'user', text: 'check the cache' });
+		}
+		// A prompt that only mentions the tag is left as written.
+		const own = reduce(emptyModel(), {
+			type: 'user_input',
+			kind: 'prompt',
+			text: 'what is the <memory> block?'
+		} as unknown as AnyFrame);
+		expect(own.items[0]).toMatchObject({ text: 'what is the <memory> block?' });
 	});
 });

@@ -28,6 +28,11 @@ use crate::ui::Ui;
 
 /// How long a provider keeps a cached prefix that nothing reads.
 pub const CACHE_TTL: Duration = Duration::from_secs(300);
+/// How long a Claude subscription login has its prefix cached (see `wire::anthropic`).
+pub const LOGIN_CACHE_TTL: Duration = Duration::from_secs(3600);
+
+/// Whether a provider is used through a subscription login, by its id.
+pub type LoginCheck = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// How long before the cache would expire it is read again.
 const WARM_MARGIN: Duration = Duration::from_secs(30);
 /// A prefix shorter than this is not worth a request to keep.
@@ -297,6 +302,8 @@ struct WarmTarget {
     answered: Instant,
     /// When the cache was last read: `answered`, or the last warming request.
     touched: Instant,
+    /// How long the provider keeps it.
+    ttl: Duration,
 }
 
 /// The lead's cached prefix as its last answered request left it.
@@ -310,6 +317,8 @@ struct LeadPrefix {
     seq: u64,
     /// When the cache was last read: by the request, or by a warming request since.
     touched: Instant,
+    /// How long the provider keeps it.
+    ttl: Duration,
 }
 
 /// The lead's prompt cache at the moment the provider drops it for want of a request.
@@ -452,7 +461,8 @@ pub struct CacheLedger {
     warm: bool,
     warm_for: Duration,
     report_misses: bool,
-    ttl: Duration,
+    /// Which providers are used through a login, whose cache lasts longer.
+    logins: Option<LoginCheck>,
     state: Mutex<State>,
     /// Woken whenever the request to keep warm changes.
     changed: Notify,
@@ -464,9 +474,25 @@ impl CacheLedger {
             warm: config.warming == CacheWarming::Idle,
             warm_for: Duration::from_secs(u64::from(config.warm_minutes) * 60),
             report_misses: config.report_misses,
-            ttl: CACHE_TTL,
+            logins: None,
             state: Mutex::default(),
             changed: Notify::new(),
+        }
+    }
+
+    /// Tells the ledger which providers are used through a login: a Claude subscription has its
+    /// prompt cached for an hour.
+    pub fn with_logins(mut self, logins: LoginCheck) -> Self {
+        self.logins = Some(logins);
+        self
+    }
+
+    /// How long the provider keeps what a request to `provider` over `api` cached.
+    fn ttl_of(&self, provider: &str, api: WireApi) -> Duration {
+        let login = self.logins.as_ref().is_some_and(|check| check(provider));
+        match api {
+            WireApi::AnthropicMessages if login => LOGIN_CACHE_TTL,
+            _ => CACHE_TTL,
         }
     }
 
@@ -503,6 +529,7 @@ impl CacheLedger {
         let meta = message.meta.as_ref()?;
         let now = Instant::now();
         let print = Fingerprint::of(request, message, now)?;
+        let ttl = self.ttl_of(&meta.provider, meta.api);
         let mut state = locked(&self.state);
         state.enter(&agent.session_id);
         state
@@ -519,7 +546,7 @@ impl CacheLedger {
                 model: print.model.clone(),
                 read: print.cache_read,
                 read_before: before.cache_read,
-                cause: print.cause(before, self.ttl),
+                cause: print.cause(before, ttl),
             })
         });
         if let Some(miss) = &miss {
@@ -540,6 +567,7 @@ impl CacheLedger {
                 renewable: meta.api == WireApi::AnthropicMessages,
                 seq: state.seq,
                 touched: now,
+                ttl,
             });
         }
         if self.warm && agent.depth == 0 {
@@ -566,6 +594,7 @@ impl CacheLedger {
                     prefix,
                     answered: now,
                     touched: now,
+                    ttl,
                 });
             }
             drop(state);
@@ -639,8 +668,8 @@ impl CacheLedger {
         Some(Expiry {
             model: lead.model.clone(),
             prefix: lead.prefix,
-            at: lead.touched + self.ttl,
-            ttl: self.ttl,
+            at: lead.touched + lead.ttl,
+            ttl: lead.ttl,
             renewable: lead.renewable,
         })
     }
@@ -681,7 +710,6 @@ impl Warmer {
     /// Runs until the process ends.
     pub async fn run(self) {
         let ledger = &self.ledger;
-        let every = ledger.ttl.saturating_sub(WARM_MARGIN.min(ledger.ttl / 10));
         loop {
             let changed = ledger.changed.notified();
             tokio::pin!(changed);
@@ -691,6 +719,7 @@ impl Warmer {
                 changed.await;
                 continue;
             };
+            let every = target.ttl.saturating_sub(WARM_MARGIN.min(target.ttl / 10));
             let due = target.touched + every;
             let end = target.answered + ledger.warm_for;
             if due > end {
@@ -812,6 +841,7 @@ mod tests {
             name: name.into(),
             description: description.into(),
             schema: json!({"type": "object"}),
+            defer: false,
         }
     }
 

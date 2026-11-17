@@ -790,9 +790,19 @@ for `Ctrl+V` and reads the clipboard, so a screenshot is attached however the te
 terminals keep `Ctrl+Shift+V` for their own paste, which arrives as pasted text and is treated as described
 next.
 
+#### Pasting
+
 A paste of more than 10 lines (`editor.fold_paste_lines`) or 800 characters goes into the input as one token,
 `[paste #2 +41 lines]`. The cursor steps over the token as over one character, `Backspace` after it removes it
-whole, and the agent receives the full text. The transcript shows the token.
+whole, and the transcript shows the token. What the agent receives depends on `editor.paste`:
+
+| `editor.paste` | The agent receives |
+|---|---|
+| `attachment` (default) | The full text in `<attachment>` tags, so a `#1` or a path in a pasted log is read as material you handed over, not as your own words or a GitHub reference |
+| `file` | `local://paste-N.md`, a file in the session's scratch directory the agent reads when it needs to; this keeps a huge log out of the conversation |
+| `inline` | The full text as if typed |
+
+The prompt history keeps the pasted text itself.
 
 Windows consoles do not mark pasted text, so there azazel treats keys that arrive faster than anyone types as a
 paste: line breaks inside it do not send the prompt. One short line that ends with a line break is taken as
