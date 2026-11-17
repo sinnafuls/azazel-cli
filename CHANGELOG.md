@@ -5,14 +5,6 @@ GitHub are its section here.
 
 ## [Unreleased]
 
-### Changed
-
-- The web page of `azazel remote` has a new design: a dark-first look with a warm glow over a cool ground, cards and panels with a lit top edge and real depth, the main action in ember, buttons that rise under the pointer and sink when pressed, and a session that needs you glowing in the list. A device that is not paired yet opens on a first screen that shows what the page does and the command that makes a link.
-
-### Fixed
-
-- Several shadows and edges of the web page were never drawn because their colour was written in a form browsers reject; the page had less depth than it was meant to.
-
 ## [0.13.0] - 2026-11-17
 
 ### Added
@@ -22,11 +14,12 @@ GitHub are its section here.
 
 ### Changed
 
-- The web page of `azazel remote` has a new look on phones and desktops: round and pill-shaped controls, larger reading text, sheets with a round close button and a centred title, a floating message box, and usage as grouped cards with meters. Tool calls that follow one another are now one quiet row (`Created a file, ran 2 commands`) that opens them on a timeline, each with its command, changes and output and a copy button, instead of a card per call.
+- The web page of `azazel remote` has a new design on phones and desktops: dark first, with a warm glow over a cool ground, cards and panels with a lit top edge and real depth, round and pill-shaped controls, larger reading text, the main action in ember, buttons that rise under the pointer and sink when pressed, sheets with a round close button and a centred title, a floating message box, usage as grouped cards with meters, and a session that needs you glowing in the list. Tool calls that follow one another are one quiet row (`Created a file, ran 2 commands`) that opens them on a timeline, each with its command, changes and output and a copy button, instead of a card per call. A device that is not paired yet opens on a first screen that shows what the page does and the command that makes a link.
 - The model chip of the browser shows the role the lead follows with the model it answers with (`@lead · deepseek/deepseek-chat`) instead of `@lead` alone.
 
 ### Fixed
 
+- Several shadows and edges of the web page were never drawn because their colour was written in a form browsers reject; the page had less depth than it was meant to.
 - Bedrock and Vertex models filled the model lists (`/model`, `Ctrl+L`, `azazel models`, the browser's picker) on machines with no AWS or Google Cloud credentials, and so did local servers that need no key (`llamacpp`, `lmstudio`, …) that nobody had set up. Bedrock and Vertex are listed once their credentials or settings can be found, and a local server once `[providers.<id>]` names it, a variable of its address or key is set, or it listed its models; a model named in full still works.
 
 ## [0.12.0] - 2026-11-17
