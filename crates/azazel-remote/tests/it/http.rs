@@ -272,3 +272,124 @@ async fn a_taken_port_gives_way_to_the_next_one() {
     assert!((port + 1..port + 10).contains(&server.port()));
     assert!(server.urls()[0].ends_with(&server.port().to_string()));
 }
+
+#[tokio::test]
+async fn a_controller_starts_a_session_in_a_folder_it_may_use() {
+    let (server, fake, _) = server().await;
+    let port = server.port();
+    let control = format!("Bearer {}", pair(&server, Access::Control).await);
+    let view = format!("Bearer {}", pair(&server, Access::View).await);
+    // A browser reads what it may do from the pairing answer first.
+    let link = server.link(Access::Control);
+    let body = serde_json::json!({ "secret": secret(&link.url), "bearer": true }).to_string();
+    let paired = request(port, "POST", "/api/pair", &[("X-Azazel", "1")], &body).await;
+    assert_eq!(paired.json()["can_start"], true);
+    let me =
+        |auth: String| async move { request(port, "GET", "/api/me", &[("Authorization", &auth)], "").await };
+    assert_eq!(me(control.clone()).await.json()["can_start"], true);
+    assert_eq!(me(view.clone()).await.json()["can_start"], false);
+
+    let post = |auth: String, path: &'static str, body: &'static str| async move {
+        request(
+            port,
+            "POST",
+            path,
+            &[("Authorization", &auth), ("X-Azazel", "1")],
+            body,
+        )
+        .await
+    };
+    let listed = post(control.clone(), "/api/folders", "{}").await;
+    assert_eq!(listed.status, 200, "{}", listed.text());
+    assert_eq!(listed.json()["folders"][0]["path"], "/work");
+    let inside = post(control.clone(), "/api/folders", r#"{"under":"/work"}"#).await;
+    assert_eq!(inside.json()["folders"][0]["path"], "/work/app");
+    assert_eq!(
+        post(control.clone(), "/api/folders", r#"{"under":"/etc"}"#)
+            .await
+            .status,
+        403
+    );
+
+    let started = post(
+        control.clone(),
+        "/api/sessions",
+        r#"{"cwd":"/work","prompt":"hi","mode":"auto","request_id":"r1"}"#,
+    )
+    .await;
+    assert_eq!(started.status, 200, "{}", started.text());
+    assert_eq!(started.json()["id"], "s2");
+    let asked = fake.started.lock().unwrap()[0].clone();
+    assert_eq!(
+        (
+            asked.prompt.as_deref(),
+            asked.mode.as_deref(),
+            asked.request_id.as_deref()
+        ),
+        (Some("hi"), Some("auto"), Some("r1"))
+    );
+    assert_eq!(
+        post(control.clone(), "/api/sessions", r#"{"cwd":"/missing"}"#)
+            .await
+            .status,
+        400
+    );
+    assert_eq!(
+        post(control.clone(), "/api/sessions", r#"{"cwd":"/etc"}"#)
+            .await
+            .status,
+        403
+    );
+    assert_eq!(
+        post(control.clone(), "/api/sessions", r#"{"cwd":"  "}"#)
+            .await
+            .status,
+        400
+    );
+
+    // A viewer can neither look nor start, and a page without the header cannot either.
+    assert_eq!(post(view.clone(), "/api/folders", "{}").await.status, 403);
+    assert_eq!(
+        post(view, "/api/sessions", r#"{"cwd":"/work"}"#).await.status,
+        403
+    );
+    let bare = request(
+        port,
+        "POST",
+        "/api/sessions",
+        &[("Authorization", &control)],
+        r#"{"cwd":"/work"}"#,
+    )
+    .await;
+    assert_eq!(bare.status, 403);
+    assert_eq!(fake.started.lock().unwrap().len(), 3);
+}
+
+#[tokio::test]
+async fn bypass_is_refused_to_a_new_session_unless_allowed_and_starts_are_limited() {
+    let (server, fake, _) = server().await;
+    let port = server.port();
+    let control = format!("Bearer {}", pair(&server, Access::Control).await);
+    let post = |body: &'static str| {
+        let control = control.clone();
+        async move {
+            request(
+                port,
+                "POST",
+                "/api/sessions",
+                &[("Authorization", &control), ("X-Azazel", "1")],
+                body,
+            )
+            .await
+        }
+    };
+    assert_eq!(post(r#"{"cwd":"/work","mode":"bypass"}"#).await.status, 403);
+    assert!(fake.started.lock().unwrap().is_empty());
+    for _ in 0..10 {
+        assert_eq!(post(r#"{"cwd":"/work"}"#).await.status, 200);
+    }
+    let over = post(r#"{"cwd":"/work"}"#).await;
+    assert_eq!(over.status, 429);
+    assert_eq!(over.headers["retry-after"], "60");
+    assert_eq!(fake.started.lock().unwrap().len(), 10);
+}

@@ -617,3 +617,121 @@ fn tailscale_that_is_not_signed_in_is_left_alone_and_the_run_says_what_to_do() {
     let calls = std::fs::read_to_string(tool.join("tailscale-data/calls.log")).unwrap();
     assert!(!calls.contains("--bg"), "nothing was served: {calls}");
 }
+
+/// POSTs `body` to `path` with the device's token; the status and the JSON answer.
+async fn post(base: &str, token: &str, path: &str, body: Value) -> (u16, Value) {
+    let response = azazel_ai::tls::client()
+        .post(format!("{base}{path}"))
+        .header("X-Azazel", "1")
+        .bearer_auth(token)
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    (status, response.json().await.unwrap_or(Value::Null))
+}
+
+// The terminal is read with blocking calls while the request waits on another thread.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_browser_starts_a_session_in_a_folder_and_the_terminal_allows_an_untrusted_one() {
+    let sandbox = Sandbox::new();
+    let work = sandbox.dir.path().join("work");
+    let app = work.join("app");
+    std::fs::create_dir_all(app.join(".git")).unwrap();
+    let app = azazel_core::paths::canonical(&app);
+    let folders = format!("remote.folders=['{}']", work.display());
+    let mut remote = sandbox.remote(&["--set", &folders], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+
+    let me = azazel_ai::tls::client()
+        .get(format!("{base}/api/me"))
+        .bearer_auth(&token)
+        .send()
+        .await
+        .unwrap()
+        .json::<Value>()
+        .await
+        .unwrap();
+    assert_eq!(me["can_start"], true, "{me}");
+    let (status, listed) = post(&base, &token, "/api/folders", json!({})).await;
+    assert_eq!(status, 200, "{listed}");
+    assert_eq!(listed["folders"][0]["kind"], "root", "{listed}");
+    let (_, inside) = post(&base, &token, "/api/folders", json!({ "under": work })).await;
+    assert_eq!(
+        inside["folders"][0]["path"],
+        app.display().to_string(),
+        "{inside}"
+    );
+    assert_eq!(inside["folders"][0]["trusted"], false, "{inside}");
+
+    // Outside the folders it was given: refused, and nothing is asked.
+    let (status, refused) = post(
+        &base,
+        &token,
+        "/api/sessions",
+        json!({ "cwd": sandbox.dir.path() }),
+    )
+    .await;
+    assert_eq!(status, 403, "{refused}");
+
+    // The folder is not trusted: the terminal is asked, and no is no.
+    let asking = {
+        let (base, token, app) = (base.clone(), token.clone(), app.clone());
+        tokio::spawn(async move { post(&base, &token, "/api/sessions", json!({ "cwd": app })).await })
+    };
+    remote.said("which is not trusted");
+    writeln!(remote.child.stdin.as_mut().unwrap(), "n").unwrap();
+    let (status, said) = asking.await.unwrap();
+    assert_eq!(status, 403, "{said}");
+
+    // Yes starts it there, on its first message.
+    let asking = {
+        let (base, token, app) = (base.clone(), token.clone(), app.clone());
+        tokio::spawn(async move {
+            post(
+                &base,
+                &token,
+                "/api/sessions",
+                json!({ "cwd": app, "prompt": "create hello", "mode": "auto" }),
+            )
+            .await
+        })
+    };
+    remote.said("which is not trusted");
+    writeln!(remote.child.stdin.as_mut().unwrap(), "y").unwrap();
+    let (status, started) = asking.await.unwrap();
+    assert_eq!(status, 200, "{started}");
+    let id = started["id"].as_str().unwrap().to_string();
+    let listed = sandbox.ok(&["ps", "--json"]);
+    let row = listed
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|row| row["id"] == id.as_str())
+        .unwrap_or_else(|| panic!("{id} is not listed: {listed}"));
+    assert_eq!(row["cwd"], app.display().to_string());
+    assert_eq!(row["mode"], "auto");
+
+    let mut socket = connect(remote.port(), &id, Some(&token), &base).await;
+    assert_eq!(next(&mut socket).await["type"], "hello");
+    assert_eq!(attach(&mut socket, "all").await["success"], true);
+    until(&mut socket, |frame| frame["type"] == "idle").await;
+    assert!(app.join("hello.txt").is_file());
+}
+
+#[tokio::test]
+async fn with_bypass_allowed_a_browser_starts_anywhere_without_a_question() {
+    let sandbox = Sandbox::new();
+    let anywhere = azazel_core::paths::canonical(&sandbox.dir.path().join("anywhere"));
+    std::fs::create_dir_all(&anywhere).unwrap();
+    let mut remote = sandbox.remote(&["--set", "remote.allow_bypass=true"], &[]);
+    let base = remote.base();
+    let token = remote.pair_with(&remote.secret()).await;
+    let (status, listed) = post(&base, &token, "/api/folders", json!({})).await;
+    assert_eq!((status, &listed["anywhere"]), (200, &json!(true)), "{listed}");
+    let (status, started) = post(&base, &token, "/api/sessions", json!({ "cwd": anywhere })).await;
+    assert_eq!(status, 200, "{started}");
+    let listed = sandbox.ok(&["ps", "--json"]);
+    assert!(listed.contains(started["id"].as_str().unwrap()), "{listed}");
+}

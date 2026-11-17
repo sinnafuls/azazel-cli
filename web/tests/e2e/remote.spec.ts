@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { test, expect, Stack } from './stack';
 
 const FINAL = 'Wrote and verified hello.txt.';
@@ -75,4 +77,51 @@ test('a link works once', async ({ browser, auto }) => {
 	await expect(stranger.locator('[data-session-list]:visible').first()).toBeVisible();
 	await mine.close();
 	await other.close();
+});
+
+test('the model chip names the role the lead follows, and a role can be picked', async ({
+	page,
+	auto
+}) => {
+	await page.goto(auto.pair);
+	await page.locator('[data-session-list]:visible a').first().click();
+	// The scripted lead follows its role, which resolves to the scripted model.
+	const chip = page.locator('[data-statusbar]').getByRole('button', { name: /^Model:/ });
+	await expect(chip).toHaveAccessibleName(/^Model: @\w+ \(mock\/lead\)$/);
+	await chip.click();
+	const roles = page.getByRole('list', { name: 'Roles' });
+	await expect(roles.getByRole('button', { name: /@default/ })).toBeVisible();
+	await roles.getByRole('button', { name: /@default/ }).click();
+	await expect(chip).toHaveAccessibleName('Model: @default (mock/lead)');
+});
+
+test('a new chat starts in a folder once the computer allows it', async ({ page }) => {
+	const stack = new Stack();
+	try {
+		const work = join(stack.dir, 'work');
+		mkdirSync(join(work, 'app', '.git'), { recursive: true });
+		await stack.start('auto', false, ['--set', `remote.folders=['${work}']`]);
+		await page.goto(stack.pair);
+		await page.getByRole('button', { name: 'New chat', exact: true }).first().click();
+		const sheet = page.getByRole('dialog', { name: 'New chat' });
+		const folders = sheet.getByRole('list', { name: 'Folders' });
+		await folders
+			.getByRole('button', { name: /^Open / })
+			.first()
+			.click();
+		await folders.getByRole('button', { name: /app/ }).first().click();
+		await sheet.getByLabel('First message').fill('create hello');
+		await sheet.getByRole('radio', { name: 'auto' }).click();
+		await expect(sheet.getByText('This folder is not trusted')).toBeVisible();
+		const seen = stack.heardSoFar();
+		await sheet.getByRole('button', { name: 'Start', exact: true }).click();
+		await expect(sheet.getByRole('button', { name: /Waiting for the computer/ })).toBeVisible();
+		await stack.heardLine('which is not trusted', seen);
+		stack.type('y');
+		await page.waitForURL(/\/s\/[^/]+$/);
+		await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toBeVisible();
+		expect(existsSync(join(work, 'app', 'hello.txt'))).toBe(true);
+	} finally {
+		await stack.stop();
+	}
 });

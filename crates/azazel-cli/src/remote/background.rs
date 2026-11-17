@@ -1,15 +1,17 @@
 //! The background sessions of this machine, as the sessions a remote server can reach.
 
+use std::ffi::OsString;
 use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_core::Paths;
-use azazel_remote::{Conn, Kind, SessionInfo, Sessions};
+use azazel_remote::{Conn, Folders, Kind, NewSession, SessionInfo, Sessions, StartError};
 use clap::Parser;
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
+use super::start::{Ask, Rules, host_args};
 use crate::cli::Cli;
 use crate::detach::{revive, socket};
 use crate::running;
@@ -20,11 +22,29 @@ const QUEUE: usize = 8192;
 pub struct BackgroundSessions {
     paths: Paths,
     redact: bool,
+    /// The options `azazel remote` was started with, which a session it starts is started with.
+    carried: Vec<OsString>,
+    /// Where a browser may start a session.
+    rules: Rules,
+    /// The terminal that allows a session in a folder nobody trusted; none without one.
+    asks: Option<mpsc::Sender<Ask>>,
 }
 
 impl BackgroundSessions {
-    pub fn new(paths: Paths, redact: bool) -> Arc<BackgroundSessions> {
-        Arc::new(BackgroundSessions { paths, redact })
+    pub fn new(
+        paths: Paths,
+        redact: bool,
+        carried: Vec<OsString>,
+        rules: Rules,
+        asks: Option<mpsc::Sender<Ask>>,
+    ) -> Arc<BackgroundSessions> {
+        Arc::new(BackgroundSessions {
+            paths,
+            redact,
+            carried,
+            rules,
+            asks,
+        })
     }
 }
 
@@ -99,6 +119,41 @@ impl Sessions for BackgroundSessions {
             }
         });
         Ok(Conn { frames, commands })
+    }
+
+    fn can_start(&self) -> bool {
+        true
+    }
+
+    async fn folders(&self, under: Option<&str>) -> Result<Folders, StartError> {
+        let (rules, under) = (self.rules.clone(), under.map(str::to_string));
+        tokio::task::spawn_blocking(move || rules.folders(under.as_deref()))
+            .await
+            .map_err(|e| StartError::Failed(e.to_string()))?
+    }
+
+    async fn start(&self, new: NewSession) -> Result<String, StartError> {
+        let (dir, trust) = self.rules.admit(&new, self.asks.as_ref()).await?;
+        let home = &self.paths.home;
+        let id = crate::detach::new_id(home);
+        if let Some(request) = &new.request_id {
+            match running::claim_request(home, request, &id) {
+                Ok(Ok(())) => {}
+                // Sent again: the session the first one started.
+                Ok(Err(started)) => return Ok(started),
+                Err(e) => return Err(StartError::Failed(format!("cannot note the request: {e}"))),
+            }
+        }
+        let args = host_args(&self.carried, &dir, &new, trust, &id);
+        match crate::detach::start(home, args, &id).await {
+            Ok(()) => Ok(id),
+            Err(e) => {
+                if let Some(request) = &new.request_id {
+                    running::release_request(home, request);
+                }
+                Err(StartError::Failed(e))
+            }
+        }
     }
 }
 

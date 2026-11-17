@@ -258,7 +258,8 @@ Hook events: `pre_tool_use`, `post_tool_use`, `post_tool_use_failure`, `user_pro
 | | `link_minutes` | `15` | Minutes a pairing link works (once) |
 | | `device_hours` | `24` | Hours a paired device stays signed in |
 | | `redact` | `true` | Replace API keys and tokens in the messages and tool results sent to a browser |
-| | `allow_bypass` | `false` | Let a browser with control access switch to the `bypass` mode |
+| | `allow_bypass` | `false` | Let a browser with control access switch to the `bypass` mode, and [start sessions](remote.md#starting-a-session-from-the-browser) in any folder without asking at the computer |
+| | `folders` | `[]` | Folders a browser may [start sessions](remote.md#starting-a-session-from-the-browser) in, and the folders inside them, beside the projects sessions have worked in; `~` is the home directory |
 | `[telemetry]` | `exporter` | `"off"` | `off`, `otlp` or `langsmith`; see [trace export](#trace-export) |
 | | `endpoint` | `""` | Collector address; empty uses the exporter's default |
 | | `project` | `""` | Project name shown by the backend: LangSmith's project, `service.name` over OTLP |

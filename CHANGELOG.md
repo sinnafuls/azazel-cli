@@ -5,6 +5,19 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Added
+
+- `azazel remote`: **New chat** starts a background session from the browser, in a folder you pick, with an optional first message and permission mode; the pen at the top of a session starts one in the same folder. A browser may name the projects sessions have worked in and the folders of the new `[remote] folders` (and the folders inside them), or any folder once `[remote] allow_bypass` is set. A folder that is not trusted starts only once you answer `y` in the terminal of `azazel remote`, unless bypass is allowed.
+- The model picker of the browser lists the roles above the models: picking one puts the lead on that role.
+
+### Changed
+
+- The model chip of the browser shows the role the lead follows with the model it answers with (`@lead · deepseek/deepseek-chat`) instead of `@lead` alone.
+
+### Fixed
+
+- Bedrock and Vertex models filled the model lists (`/model`, `Ctrl+L`, `azazel models`, the browser's picker) on machines with no AWS or Google Cloud credentials, and so did local servers that need no key (`llamacpp`, `lmstudio`, …) that nobody had set up. Bedrock and Vertex are listed once their credentials or settings can be found, and a local server once `[providers.<id>]` names it, a variable of its address or key is set, or it listed its models; a model named in full still works.
+
 ## [0.12.0] - 2026-11-17
 
 ### Fixed

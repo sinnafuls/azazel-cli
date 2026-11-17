@@ -1,5 +1,6 @@
-// The HTTP half of the remote API (docs/remote.md): pairing, who am I, the session list, links.
-import type { Me, SessionInfo } from '$lib/protocol';
+// The HTTP half of the remote API (docs/remote.md): pairing, who am I, the session list, links,
+// and starting a session in a folder.
+import type { Folders, Me, NewSession, SessionInfo } from '$lib/protocol';
 
 export class ApiError extends Error {
 	constructor(
@@ -46,7 +47,13 @@ export const api = {
 			method: 'POST',
 			body: JSON.stringify({ access })
 		}),
-	logout: () => call<void>('/api/logout', { method: 'POST', body: '{}' })
+	logout: () => call<void>('/api/logout', { method: 'POST', body: '{}' }),
+	/** The folders a session may start in, or the folders inside `under`. */
+	folders: (under?: string) =>
+		call<Folders>('/api/folders', { method: 'POST', body: JSON.stringify(under ? { under } : {}) }),
+	/** Starts a background session; it may wait while the computer is asked to allow it. */
+	start: async (body: NewSession) =>
+		(await call<{ id: string }>('/api/sessions', { method: 'POST', body: JSON.stringify(body) })).id
 };
 
 /** The secret in `#pair=<secret>`, or null. */

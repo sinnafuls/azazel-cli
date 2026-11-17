@@ -68,12 +68,94 @@ pub struct Conn {
     pub commands: mpsc::Sender<String>,
 }
 
+/// A session a browser asks to start.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NewSession {
+    /// The directory it works in; `~` stands for the home directory.
+    pub cwd: String,
+    /// The first message; without one the session waits for the browser.
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// The permission mode; the configured one when not given.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// A name for the request: the same request sent again starts nothing and answers with the
+    /// session the first one started.
+    #[serde(default)]
+    pub request_id: Option<String>,
+}
+
+/// Why a session was not started.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartError {
+    /// The request asks for something that is not there (a folder that does not exist).
+    Invalid(String),
+    /// It is not allowed, or the person at this machine said no.
+    Refused(String),
+    /// It was allowed but could not be started.
+    Failed(String),
+}
+
+/// What a session can be started in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FolderKind {
+    /// A project a session has worked in.
+    Project,
+    /// A folder of `remote.folders`.
+    Root,
+    /// A folder inside one of those, or anywhere when every folder is allowed.
+    Dir,
+}
+
+/// One folder a browser may start a session in, or look into.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Folder {
+    /// The full path, as `cwd` takes it.
+    pub path: String,
+    /// The path as people read it, with `~` for the home directory.
+    pub name: String,
+    pub kind: FolderKind,
+    /// Whether its project is trusted. An untrusted one is started only once the person at
+    /// this machine allows it, unless bypass is allowed.
+    pub trusted: bool,
+    /// Whether a session may be started in it; a folder that only leads to others may not.
+    pub startable: bool,
+}
+
+/// The answer of `GET /api/folders`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct Folders {
+    /// The folder looked into, when one was; its parent when that may be looked into too.
+    pub at: Option<String>,
+    pub parent: Option<String>,
+    pub folders: Vec<Folder>,
+    /// Whether any folder of this machine may be typed in (bypass is allowed).
+    pub anywhere: bool,
+}
+
 /// The sessions a server can reach.
 #[async_trait]
 pub trait Sessions: Send + Sync + 'static {
     async fn list(&self) -> Vec<SessionInfo>;
     /// Connects to a session. The error says why it cannot be reached (it may have ended).
     async fn open(&self, id: &str) -> Result<Conn, String>;
+    /// Whether [`Sessions::start`] can work at all; the page offers a new chat only then.
+    fn can_start(&self) -> bool {
+        false
+    }
+    /// The folders a session may be started in, or with `under` the folders inside that one.
+    async fn folders(&self, _under: Option<&str>) -> Result<Folders, StartError> {
+        Err(StartError::Refused(
+            "new sessions cannot be started from here".to_string(),
+        ))
+    }
+    /// Starts a session and answers with its id.
+    async fn start(&self, _new: NewSession) -> Result<String, StartError> {
+        Err(StartError::Refused(
+            "new sessions cannot be started from here".to_string(),
+        ))
+    }
 }
 
 pub struct Options {

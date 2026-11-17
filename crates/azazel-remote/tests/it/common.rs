@@ -4,7 +4,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use azazel_remote::{Access, Conn, Kind, Options, Server, SessionInfo, Sessions};
+use azazel_remote::{
+    Access, Conn, Folder, FolderKind, Folders, Kind, NewSession, Options, Server, SessionInfo, Sessions,
+    StartError,
+};
 use futures::{SinkExt, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
@@ -19,6 +22,8 @@ pub const WAIT: Duration = Duration::from_secs(10);
 pub struct Fake {
     sent: mpsc::UnboundedSender<String>,
     open: Mutex<Vec<mpsc::Sender<String>>>,
+    /// The sessions it was asked to start.
+    pub started: Mutex<Vec<NewSession>>,
 }
 
 impl Fake {
@@ -27,6 +32,7 @@ impl Fake {
         let fake = Arc::new(Fake {
             sent,
             open: Mutex::new(Vec::new()),
+            started: Mutex::new(Vec::new()),
         });
         (fake, received)
     }
@@ -72,6 +78,45 @@ impl Sessions for Fake {
             }
         });
         Ok(Conn { frames, commands })
+    }
+
+    fn can_start(&self) -> bool {
+        true
+    }
+
+    /// `/work` may be started in; `/work` leads to `/work/app`.
+    async fn folders(&self, under: Option<&str>) -> Result<Folders, StartError> {
+        let folder = |path: &str, kind| Folder {
+            path: path.into(),
+            name: path.into(),
+            kind,
+            trusted: true,
+            startable: true,
+        };
+        match under {
+            None => Ok(Folders {
+                folders: vec![folder("/work", FolderKind::Root)],
+                ..Folders::default()
+            }),
+            Some("/work") => Ok(Folders {
+                at: Some("/work".into()),
+                parent: None,
+                folders: vec![folder("/work/app", FolderKind::Dir)],
+                anywhere: false,
+            }),
+            Some(other) => Err(StartError::Refused(format!("{other} is not open to browsers"))),
+        }
+    }
+
+    /// Starts `s2` in `/work`; `/missing` does not exist and anything else is refused.
+    async fn start(&self, new: NewSession) -> Result<String, StartError> {
+        let cwd = new.cwd.clone();
+        self.started.lock().unwrap().push(new);
+        match cwd.as_str() {
+            "/work" => Ok("s2".into()),
+            "/missing" => Err(StartError::Invalid("no such folder".into())),
+            _ => Err(StartError::Refused("not open to browsers".into())),
+        }
     }
 }
 

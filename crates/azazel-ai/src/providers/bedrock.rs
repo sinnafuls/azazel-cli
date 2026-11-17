@@ -748,10 +748,47 @@ impl Live {
     }
 }
 
+/// The variables any of which the AWS default credential chain takes credentials from.
+const AWS_VARIABLES: [&str; 5] = [
+    "AWS_ACCESS_KEY_ID",
+    "AWS_PROFILE",
+    "AWS_WEB_IDENTITY_TOKEN_FILE",
+    "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
+    "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+];
+
+/// Whether the AWS default chain has anything to find: one of its variables, or a shared
+/// credentials or config file. The chain itself is not run: it can take seconds and asks the
+/// network.
+pub fn aws_found(env: crate::providers::presets::Env<'_>, home: Option<&std::path::Path>) -> bool {
+    let set = |name: &str| env(name).filter(|value| !value.trim().is_empty());
+    if AWS_VARIABLES.iter().any(|name| set(name).is_some()) {
+        return true;
+    }
+    let file = |variable: &str, name: &str| {
+        set(variable)
+            .map(std::path::PathBuf::from)
+            .or_else(|| home.map(|home| home.join(".aws").join(name)))
+    };
+    [
+        file("AWS_SHARED_CREDENTIALS_FILE", "credentials"),
+        file("AWS_CONFIG_FILE", "config"),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|path| path.is_file())
+}
+
 #[async_trait]
 impl Provider for BedrockProvider {
     fn id(&self) -> &str {
         BEDROCK
+    }
+
+    fn configured(&self) -> bool {
+        self.region.is_some()
+            || self.profile.is_some()
+            || aws_found(&|name| std::env::var(name).ok(), std::env::home_dir().as_deref())
     }
 
     async fn stream(
@@ -815,6 +852,32 @@ mod tests {
 
     use super::*;
     use crate::types::{SystemPart, ThinkingLevel, ToolSpec};
+
+    #[test]
+    fn bedrock_counts_as_set_up_only_when_aws_has_something_to_find() {
+        let home = tempfile::tempdir().unwrap();
+        let none = |_: &str| None;
+        assert!(!aws_found(&none, Some(home.path())));
+        assert!(aws_found(
+            &|name| (name == "AWS_PROFILE").then(|| "work".to_string()),
+            Some(home.path())
+        ));
+        assert!(!aws_found(
+            &|name| (name == "AWS_PROFILE").then(|| " ".to_string()),
+            Some(home.path())
+        ));
+        std::fs::create_dir(home.path().join(".aws")).unwrap();
+        std::fs::write(
+            home.path().join(".aws").join("config"),
+            "[default]\nregion = us-east-1\n",
+        )
+        .unwrap();
+        assert!(aws_found(&none, Some(home.path())));
+        // A file named elsewhere stands for the one in the home directory.
+        let elsewhere = home.path().join("nowhere");
+        let moved = |name: &str| (name == "AWS_CONFIG_FILE").then(|| elsewhere.display().to_string());
+        assert!(!aws_found(&moved, Some(home.path())));
+    }
 
     fn model(id: &str) -> ModelInfo {
         ModelInfo {

@@ -767,17 +767,16 @@ impl Backend for Local {
         for name in self.app.virtual_models() {
             rows.push((name, crate::models::VIRTUAL_DETAIL.to_string()));
         }
-        // Providers that can be reached: a credential is present, or none is needed.
+        // Providers that can be reached: set up, with a credential where one is needed.
         let configured = self.configured();
         for provider in router.provider_ids() {
-            let config = configured.iter().find(|p| p.id == provider);
-            let usable = config.is_none_or(|config| crate::models::usable(&self.app.credentials, config));
+            // A provider used through a subscription login is not paid for by the token.
+            let (usable, login) =
+                crate::models::standing(router, &self.listed, provider, configured, &self.app.credentials);
             // `--provider` leaves one provider to choose from.
             if !usable || self.app.provider.as_deref().is_some_and(|only| only != provider) {
                 continue;
             }
-            // A provider used through a subscription login is not paid for by the token.
-            let login = config.is_some_and(|config| crate::models::login(&self.app.credentials, config));
             for model in router.catalog().for_provider(provider) {
                 let detail = crate::settings::model_detail(model.context_window, model.cost.as_ref(), login);
                 rows.push((model.key(), detail));
@@ -827,7 +826,8 @@ impl Backend for Local {
                 .await
                 .map(|models| {
                     let config = presets::resolve(&app.config.providers).unwrap_or_default();
-                    let (usable, login) = crate::models::standing(&provider, &config, &app.credentials);
+                    let (usable, login) =
+                        crate::models::standing(&app.router, &listed, &provider, &config, &app.credentials);
                     models
                         .iter()
                         .map(|model| crate::models::model_row(model, usable, login))

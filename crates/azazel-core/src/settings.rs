@@ -525,7 +525,8 @@ settings! {
         "remote.link_minutes": Number, "Link lifetime", "Minutes a pairing link works.";
         "remote.device_hours": Number, "Device lifetime", "Hours a paired device stays signed in.";
         "remote.redact": Switch, "Redact output", "Replace API keys and tokens in the messages and tool results sent to a browser.";
-        "remote.allow_bypass": Switch, "Allow bypass", "Let a browser with control access switch to the bypass mode.";
+        "remote.allow_bypass": Switch, "Allow bypass", "Let a browser with control access switch to the bypass mode, and start sessions in any folder without asking here.";
+        "remote.folders": List, "Folders for new chats", "Folders a browser may start sessions in, and the folders inside them, beside the projects sessions have worked in.";
     }
     Advanced / "Updates" {
         "update.check": Switch, "Look for updates", "Look for a newer release at most once a day, in the background.";

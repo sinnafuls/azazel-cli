@@ -1,5 +1,6 @@
 //! The server: binding, the accept loop, and what every request handler shares.
 
+use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Mutex, RwLock};
@@ -13,11 +14,13 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::auth::Auth;
-use crate::limits::{Clock, Connections, SystemClock};
+use crate::limits::{Clock, Connections, SystemClock, Window, since_epoch};
 use crate::{Access, Link, Options, Sessions};
 
 /// How many ports from the configured one are tried when it is taken.
 const PORT_TRIES: u16 = 10;
+/// Sessions one device may start a minute.
+const STARTS_A_MINUTE: usize = 10;
 
 /// The address of a tunnel or proxy in front of the server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +65,8 @@ pub(crate) struct Shared {
     pub bind: IpAddr,
     pub public: RwLock<Option<Public>>,
     pub connections: Arc<Mutex<Connections>>,
+    /// The sessions each device started lately.
+    pub starts: Mutex<HashMap<String, Window>>,
     pub cancel: CancellationToken,
 }
 
@@ -111,6 +116,21 @@ impl Shared {
             Some(public) => public.origin,
             None => format!("http://{}", SocketAddr::new(self.bind, self.port)),
         }
+    }
+
+    /// Counts a session `device` starts, or says it has started enough for now.
+    pub fn may_start(&self, device: &str) -> bool {
+        let now = since_epoch(self.auth.now());
+        let mut starts = self.starts.lock().unwrap_or_else(|e| e.into_inner());
+        starts.retain(|_, window| !window.is_idle(now));
+        let window = starts
+            .entry(device.to_string())
+            .or_insert_with(|| Window::new(std::time::Duration::from_secs(60), STARTS_A_MINUTE));
+        if !window.open(now) {
+            return false;
+        }
+        window.record(now);
+        true
     }
 
     pub fn link(&self, access: Access, origin: &str) -> Link {
@@ -178,6 +198,7 @@ impl Server {
             bind: options.bind,
             public: RwLock::new(public),
             connections: Arc::new(Mutex::new(Connections::default())),
+            starts: Mutex::new(HashMap::new()),
             cancel: CancellationToken::new(),
         });
         let task = tokio::spawn(accept(listener, shared.clone()));

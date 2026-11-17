@@ -26,6 +26,13 @@ pub trait Provider: Send + Sync {
         false
     }
 
+    /// Whether the user has set the provider up, judged without asking anyone: a provider that
+    /// finds its own credentials (a cloud SDK) says no when there is nothing for it to find, and
+    /// is then left out of the model lists. It can still be named in full.
+    fn configured(&self) -> bool {
+        true
+    }
+
     /// Starts one response. An `Err` means nothing was streamed; failures after the first event
     /// arrive as `StreamEvent::Error`.
     async fn stream(

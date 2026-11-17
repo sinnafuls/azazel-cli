@@ -760,7 +760,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
 }
 
 /// `path` as the status line names it: `~` stands for `home`, with forward slashes below it.
-pub(super) fn display_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
+pub(crate) fn display_path(path: &std::path::Path, home: Option<&std::path::Path>) -> String {
     match home.and_then(|home| path.strip_prefix(home).ok()) {
         Some(rest) if rest.as_os_str().is_empty() => "~".to_string(),
         Some(rest) => format!("~/{}", rest.to_string_lossy().replace('\\', "/")),

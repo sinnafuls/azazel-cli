@@ -45,6 +45,8 @@ mod stats;
 mod statusbar;
 mod statusedit;
 mod statusline;
+#[cfg(feature = "remote")]
+pub(crate) use statusline::display_path;
 mod team;
 mod term;
 mod terminal;

@@ -5,6 +5,8 @@
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import { app } from '$lib/app.svelte';
 	import { sessions } from '$lib/sessions.svelte';
+	import { newChat } from '$lib/newchat.svelte';
+	import Plus from '@lucide/svelte/icons/plus';
 	import QrCode from '@lucide/svelte/icons/qr-code';
 	import LogOut from '@lucide/svelte/icons/log-out';
 
@@ -26,6 +28,14 @@
 	>
 		<Brand />
 		<div class="flex">
+			{#if newChat.available}
+				<button
+					type="button"
+					class="btn btn-quiet btn-icon"
+					aria-label="New chat"
+					onclick={() => newChat.show()}><Plus class="size-[18px]" /></button
+				>
+			{/if}
 			<button
 				type="button"
 				class="btn btn-quiet btn-icon"
@@ -62,9 +72,16 @@
 		<p class="text-muted-foreground mt-2 text-sm leading-relaxed">
 			Pick one on the left to follow it live. Sessions that wait for you are listed first.
 		</p>
-		<button type="button" class="btn btn-secondary mt-6" onclick={() => (pairing = true)}
-			><QrCode class="size-4" /> Open on your phone</button
-		>
+		<div class="mt-6 flex flex-wrap justify-center gap-2">
+			{#if newChat.available}
+				<button type="button" class="btn btn-primary" onclick={() => newChat.show()}
+					><Plus class="size-4" /> New chat</button
+				>
+			{/if}
+			<button type="button" class="btn btn-secondary" onclick={() => (pairing = true)}
+				><QrCode class="size-4" /> Open on your phone</button
+			>
+		</div>
 	</div>
 </div>
 

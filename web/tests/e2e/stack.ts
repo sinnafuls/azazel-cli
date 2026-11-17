@@ -50,8 +50,8 @@ export class Stack {
 		return out.stdout;
 	}
 
-	/** Starts the session (in `mode`: `manual` waits for approvals) and the server. */
-	async start(mode: 'manual' | 'auto', failure = false) {
+	/** Starts the session (in `mode`: `manual` waits for approvals) and the server, with `remote` added to its arguments. */
+	async start(mode: 'manual' | 'auto', failure = false, remote: string[] = []) {
 		if (!existsSync(binary))
 			throw new Error(`${binary} is missing: build it with --features test-support,remote`);
 		mkdirSync(join(this.dir, 'project', '.git'), { recursive: true });
@@ -86,7 +86,7 @@ export class Stack {
 			if (Date.now() > deadline) throw new Error(`session ${this.sessionId} never was ${wanted}`);
 			await new Promise((r) => setTimeout(r, 100));
 		}
-		this.child = spawn(binary, this.azazel(['remote', '--port', '0', '--json']), {
+		this.child = spawn(binary, this.azazel(['remote', '--port', '0', '--json', ...remote]), {
 			env: this.env(),
 			stdio: ['pipe', 'pipe', 'pipe']
 		});
@@ -110,6 +110,23 @@ export class Stack {
 		this.waiters = this.waiters.filter((w) => !line.includes(w.wanted));
 	}
 
+	/** How many lines the server has printed so far. */
+	heardSoFar() {
+		return this.lines.length;
+	}
+
+	/** The first line the server prints after the first `since`, that contains `wanted`. */
+	heardLine(wanted: string, since = 0) {
+		const already = this.lines.slice(since).find((l) => l.includes(wanted));
+		if (already) return Promise.resolve(already);
+		return new Promise<string>((res) => this.waiters.push({ wanted, resolve: res }));
+	}
+
+	/** Types `text` + Enter on the server's stdin. */
+	type(text: string) {
+		this.child!.stdin!.write(`${text}\n`);
+	}
+
 	/** Types `key` + Enter on the server's stdin (`l` makes a control link) and returns the next link it prints. */
 	async newLink(key = 'l') {
 		const seen = this.lines.length;
@@ -131,8 +148,14 @@ export class Stack {
 			this.child.stdin!.write('q\n');
 			this.child.kill();
 		}
+		// The session it started with, and every one a browser started.
 		try {
-			spawnSync(binary, this.azazel(['kill', this.sessionId]), { env: this.env() });
+			const rows = this.run(['ps', '--json'])
+				.split('\n')
+				.filter((l) => l.startsWith('{'))
+				.map((l) => JSON.parse(l) as { id: string });
+			for (const id of new Set([this.sessionId, ...rows.map((r) => r.id)]))
+				spawnSync(binary, this.azazel(['kill', id]), { env: this.env() });
 		} catch {
 			// Already gone.
 		}

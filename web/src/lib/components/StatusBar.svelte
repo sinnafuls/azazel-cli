@@ -12,6 +12,7 @@
 	import Shield from '@lucide/svelte/icons/shield';
 	import Bot from '@lucide/svelte/icons/bot';
 	import { tokens } from '$lib/format';
+	import { modelLabel, pickableRoles, splitModel } from '$lib/models';
 
 	let { session, canControl }: { session: Session; canControl: boolean } = $props();
 
@@ -21,12 +22,13 @@
 	let confirmBypass = $state(false);
 
 	const st = $derived(session.state);
-	const current = $derived(st?.chain?.[0] ?? st?.model ?? '…');
-	const model = $derived(session.models.find((m) => m.model === (st?.model ?? current)));
+	// A lead that follows a role shows the role and the model it answers with.
+	const label = $derived(modelLabel(st));
+	const current = $derived(label.role ? `@${label.role}` : label.model);
+	const model = $derived(session.models.find((m) => m.model === (st?.model ?? label.model)));
 	// Always the whole `provider/id`: that is what set_model takes. The provider is dimmed.
-	const slash = $derived(current.indexOf('/'));
-	const provider = $derived(slash > 0 ? current.slice(0, slash + 1) : '');
-	const modelId = $derived(slash > 0 ? current.slice(slash + 1) : current);
+	const shown = $derived(splitModel(label.model));
+	const roles = $derived(pickableRoles(session.roles, query));
 	// An unknown model (the list not read yet) offers every level rather than claiming it
 	// cannot think; only a model the list says does not reason gets `off` alone.
 	const levels = $derived(
@@ -63,6 +65,7 @@
 			session.modelsError = null;
 			void session.refreshModels();
 		}
+		if (w === 'model') void session.refreshRoles().catch(() => {});
 	}
 </script>
 
@@ -74,12 +77,14 @@
 		class="chip"
 		disabled={!canControl}
 		onclick={() => open('model')}
-		aria-label="Model: {current}"
-		title={current}
+		aria-label="Model: {label.role ? `@${label.role} (${label.model})` : label.model}"
+		title={label.role ? `@${label.role}: ${label.model}` : label.model}
 	>
 		<Cpu class="text-faint size-3.5" />
 		<span class="text-foreground max-w-[15rem] truncate font-mono text-xs"
-			><span class="text-faint">{provider}</span>{modelId}</span
+			>{#if label.role}<span class="text-accent-text">@{label.role}</span><span class="text-faint">
+					·
+				</span>{/if}<span class="text-faint">{shown.provider}</span>{shown.id}</span
 		>
 		{#if canControl}<ChevronDown class="text-faint size-3" />{/if}
 	</button>
@@ -132,11 +137,34 @@
 >
 	<input
 		class="field mb-2"
-		placeholder="Search models"
-		aria-label="Search models"
+		placeholder="Search roles and models"
+		aria-label="Search roles and models"
 		bind:value={query}
 	/>
-	<ul class="-mx-2 space-y-px">
+	{#if roles.length}
+		<p class="text-muted-foreground meta mt-1 mb-1">Roles</p>
+		<ul class="-mx-2 mb-2 space-y-px" aria-label="Roles">
+			{#each roles as r (r.role)}
+				<li>
+					<button
+						class="opt"
+						aria-current={`@${r.role}` === current ? 'true' : undefined}
+						onclick={() => run(() => session.setModel(`@${r.role}`))}
+					>
+						<span class="min-w-0 flex-1 py-1">
+							<span class="block truncate font-mono text-xs">@{r.role}</span>
+							<span class="text-muted-foreground meta mt-0.5 block truncate">
+								{r.resolved[0]}{r.source !== 'builtin' ? ` · ${r.source}` : ''}
+							</span>
+						</span>
+						{#if `@${r.role}` === current}<Check class="text-accent-text size-4 shrink-0" />{/if}
+					</button>
+				</li>
+			{/each}
+		</ul>
+		<p class="text-muted-foreground meta mb-1">Models</p>
+	{/if}
+	<ul class="-mx-2 space-y-px" aria-label="Models">
 		{#each filtered as m (m.model)}
 			<li>
 				<button

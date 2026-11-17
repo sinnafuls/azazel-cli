@@ -102,9 +102,10 @@ pub fn check_virtual(chain: &[ModelSpec], router: &Router, only: Option<&str>) -
     Ok(())
 }
 
-/// Whether `provider` can be asked: it needs no key, or one is available.
+/// Whether `provider` can be asked: a credential is available, or it needs none and the user
+/// set it up (`[providers.<id>]`, or a variable of its address or key).
 pub fn usable(credentials: &Credentials, provider: &ProviderConfig) -> bool {
-    !provider.requires_key || credentials.source(provider).is_some()
+    credentials.source(provider).is_some() || (!provider.requires_key && provider.named)
 }
 
 /// The models `azazel models` lists: of providers with a credential, or of all with `all`.
@@ -529,12 +530,26 @@ pub fn model_row(model: &ModelInfo, usable: bool, login: bool) -> ModelRow {
     }
 }
 
-/// Whether `id` (a provider of the router) can be used, and through a sign-in. A provider the
-/// configuration does not describe (the scripted one of the tests) needs no credential.
-pub fn standing(id: &str, providers: &[ProviderConfig], credentials: &Credentials) -> (bool, bool) {
+/// Whether `id` (a provider of the router) can be used, and through a sign-in. A provider that
+/// listed its models in this process answered, so it can. One the configuration does not
+/// describe (a cloud SDK, an extension's, the scripted one of the tests) says itself whether it
+/// is set up.
+pub fn standing(
+    router: &Router,
+    listed: &Listed,
+    id: &str,
+    providers: &[ProviderConfig],
+    credentials: &Credentials,
+) -> (bool, bool) {
     match providers.iter().find(|p| p.id == id) {
-        Some(config) => (usable(credentials, config), login(credentials, config)),
-        None => (true, false),
+        Some(config) => (
+            usable(credentials, config) || listed.get(id).is_some(),
+            login(credentials, config),
+        ),
+        None => (
+            router.provider(id).is_none_or(|provider| provider.configured()),
+            false,
+        ),
     }
 }
 
@@ -554,7 +569,7 @@ pub fn rows(
         .into_iter()
         .filter(|id| only.is_none_or(|only| only == *id))
     {
-        let (ready, login) = standing(id, providers, credentials);
+        let (ready, login) = standing(router, listed, id, providers, credentials);
         if !ready && !all {
             continue;
         }
@@ -582,7 +597,7 @@ pub fn provider_rows(
         .filter(|id| only.is_none_or(|only| only == *id))
         .map(|id| {
             let config = providers.iter().find(|p| p.id == id);
-            let (usable, login) = standing(id, providers, credentials);
+            let (usable, login) = standing(router, listed, id, providers, credentials);
             ProviderRow {
                 id: id.to_string(),
                 name: config.map_or_else(|| id.to_string(), |config| config.name.clone()),
@@ -699,6 +714,36 @@ mod tests {
             )),
             ["claude-fable-5"]
         );
+    }
+
+    #[test]
+    fn a_local_server_is_offered_only_once_it_is_set_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let credentials =
+            Credentials::with_env(dir.path().join("auth.json"), std::sync::Arc::new(|_: &str| None));
+        let find =
+            |providers: &[ProviderConfig], id: &str| providers.iter().find(|p| p.id == id).cloned().unwrap();
+        let none = |_: &str| None;
+        let plain = presets::resolve_with(&BTreeMap::new(), &none).unwrap();
+        for id in ["llamacpp", "lmstudio", "ollama", "litellm"] {
+            assert!(!usable(&credentials, &find(&plain, id)), "{id}");
+        }
+        // Named in the configuration, even with nothing in its table.
+        let mut settings = BTreeMap::new();
+        settings.insert("ollama".to_string(), ProviderSettings::default());
+        let named = presets::resolve_with(&settings, &none).unwrap();
+        assert!(usable(&credentials, &find(&named, "ollama")));
+        assert!(!usable(&credentials, &find(&named, "llamacpp")));
+        // The variable its address reads.
+        let address = |name: &str| (name == "LITELLM_BASE_URL").then(|| "http://box:4000/v1".to_string());
+        let from_env = presets::resolve_with(&BTreeMap::new(), &address).unwrap();
+        assert!(usable(&credentials, &find(&from_env, "litellm")));
+        // A key for it.
+        let keyed = Credentials::with_env(
+            dir.path().join("auth.json"),
+            std::sync::Arc::new(|name: &str| (name == "LMSTUDIO_API_KEY").then(|| "k".to_string())),
+        );
+        assert!(usable(&keyed, &find(&plain, "lmstudio")));
     }
 
     #[test]

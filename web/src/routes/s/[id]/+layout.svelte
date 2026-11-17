@@ -10,6 +10,8 @@
 	import { sessions } from '$lib/sessions.svelte';
 	import { basename } from '$lib/format';
 	import { viewport } from '$lib/media.svelte';
+	import { newChat } from '$lib/newchat.svelte';
+	import SquarePen from '@lucide/svelte/icons/square-pen';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import AgentHub from '$lib/components/AgentHub.svelte';
 	import UsagePanel from '$lib/components/UsagePanel.svelte';
@@ -96,6 +98,15 @@
 						</p>
 					{/if}
 				</div>
+				{#if newChat.available && where}
+					<button
+						type="button"
+						class="btn btn-quiet btn-icon"
+						aria-label="New chat in this folder"
+						title="New chat in this folder"
+						onclick={() => newChat.show(where)}><SquarePen class="size-[18px]" /></button
+					>
+				{/if}
 				<button
 					type="button"
 					class="btn btn-quiet xl:hidden {live ? 'gap-1.5 px-3' : 'btn-icon'}"

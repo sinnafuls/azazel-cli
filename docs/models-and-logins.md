@@ -117,7 +117,7 @@ resolved in this order:
 1. `@role` names a role.
 2. `provider/id` with a provider azazel knows is taken as written, listed in the catalogue or not (local servers
    name their own models). `virtual/<name>` is a [virtual model](#virtual-models) an extension defines.
-3. A model id, among the providers that need no key or have one (all providers when `--api-key` is given).
+3. A model id, among the providers you can use: those with a credential, the local servers you [set up](#which-providers-are-listed) and the cloud platforms (all providers when `--api-key` is given).
 4. The single best fuzzy match of `provider/id` among the same models, so `fable` or `haiku:high` work.
 
 When several models match equally well, the run stops with status 2 and names up to five of them. Configuration
@@ -130,7 +130,20 @@ provider you signed in to, `free`), the thinking levels it takes (`yes` when the
 reads images, and the roles that answer with it first. `--all` lists every provider in the catalogue, those without
 a credential headed `no credential`. With `--json` each model is one object: `model`, `name`, `context_window`,
 `max_output`, `vision`, `reasoning`, `thinking_levels`, `cost`, `roles` (the roles that answer with it), `login`
-(used through a sign-in) and `usable` (its provider has a credential).
+(used through a sign-in) and `usable` (its provider is set up).
+
+### Which providers are listed
+
+`azazel models`, `/model`, `Ctrl+L` and the model picker of [remote](remote.md) list the models of the providers
+that are set up, and leave the others out:
+
+- A provider that needs a key: once it has a credential.
+- A local server that needs none (`ollama`, `lmstudio`, `llamacpp`, `litellm`, `vllm`, …): once `[providers.<id>]`
+  names it (an empty table is enough), a variable its address or key is read from is set (`LITELLM_BASE_URL`,
+  `OLLAMA_API_KEY`), or it listed its models in this session (`/models`, then refresh).
+- Bedrock and Vertex: once their credentials can be [found](#bedrock-vertex-and-azure).
+
+A provider that is left out still answers a model named in full (`ollama/qwen3:8b`), and `--all` lists it.
 
 ```sh
 azazel --model anthropic/claude-sonnet-4-5 --model ollama/<local-model> -p "summarise src/"
@@ -1005,6 +1018,7 @@ api = "azure-openai-chat"    # default: azure-openai-responses
 auth = "azure-cli"           # optional: a Microsoft Entra token from `az` instead of a key
 ```
 
+- **Bedrock** and **Vertex** are listed only when they are set up, which is judged without asking the network: Bedrock when `region` or `profile` is set, an AWS credential variable is (`AWS_ACCESS_KEY_ID`, `AWS_PROFILE`, `AWS_WEB_IDENTITY_TOKEN_FILE`, `AWS_CONTAINER_CREDENTIALS_RELATIVE_URI` or `_FULL_URI`), or `~/.aws/credentials` or `~/.aws/config` exists (or the files `AWS_SHARED_CREDENTIALS_FILE` and `AWS_CONFIG_FILE` name); Vertex when `project` is set, `GOOGLE_APPLICATION_CREDENTIALS`, `GOOGLE_CLOUD_PROJECT` or `GCLOUD_PROJECT` is, or the file `gcloud auth application-default login` writes exists. A model named in full works either way.
 - **Bedrock** uses the AWS default credential chain and region unless `region` or `profile` is set. Models are `bedrock/<model id>`, for example `bedrock/anthropic.claude-haiku-4-5-20251001-v1:0`. Thinking is requested for Claude models only.
 - **Vertex** uses Google application default credentials (`gcloud auth application-default login` or `GOOGLE_APPLICATION_CREDENTIALS`). `project` falls back to `GOOGLE_CLOUD_PROJECT`, `GCLOUD_PROJECT`, then the project of the credentials; `location` defaults to `global`. Model ids containing `claude` are sent to the Anthropic publisher (`vertex/claude-sonnet-4-5@20250929`), all others to the Google publisher.
 - **Azure OpenAI** is the provider id `azure`. Its address is `AZURE_OPENAI_BASE_URL`, else `https://$AZURE_OPENAI_RESOURCE_NAME.openai.azure.com`, else `base_url`; a trailing `/openai` or `/openai/v1` is accepted. Its key comes from `AZURE_OPENAI_API_KEY` and is sent as an `api-key` header; for Microsoft Entra set `auth = "azure-cli"`: every request then carries a token from `az account get-access-token --resource https://cognitiveservices.azure.com` (run `az login` first), asked for again five minutes before it runs out and after the resource refuses one, and keys are not used. A model is a deployment: `azure/<deployment>`. When deployments are not named after their models, `AZURE_OPENAI_DEPLOYMENT_NAME_MAP="gpt-x=prod-x,gpt-y=prod-y"` maps them. `AZURE_OPENAI_API_VERSION` sets `api-version` (the chat API needs one and defaults to `2024-10-21`; the Responses API sends none unless it is set). The model list is the resource's deployments: with `azure-cli` and an address at `*.openai.azure.com`, `*.cognitiveservices.azure.com` or `*.services.ai.azure.com`, Azure Resource Manager (the resource found by name through Resource Graph in every subscription your account can read, then its deployments; a token for `https://management.azure.com` comes from `az` too); otherwise, or when that fails, the resource's own `GET /openai/deployments?api-version=2022-12-01` with the key or the token. A deployment is listed under its own name, with the model it serves as its display name when that differs. Deployments that are not finished are left out. The older form `api = "openai-responses"` with `base_url = "https://<resource>.openai.azure.com/openai/v1"` keeps working.

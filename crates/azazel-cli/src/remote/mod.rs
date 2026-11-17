@@ -5,6 +5,7 @@
 
 mod background;
 mod qr;
+mod start;
 pub(crate) mod terminal;
 mod tunnel;
 
@@ -20,10 +21,12 @@ use azazel_remote::{Access, Link, Options, Server};
 use azazel_tui::{GlyphLevel, Glyphs};
 use serde_json::json;
 use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::sync::mpsc;
 
-use crate::cli::RemoteArgs;
+use crate::cli::{Cli, RemoteArgs};
 use crate::print::{EXIT_FAILED, EXIT_OK};
 use background::BackgroundSessions;
+use start::{Ask, Rules};
 use tunnel::{Chooser, Tunnel};
 
 /// Which way in to take.
@@ -77,7 +80,7 @@ const fn answer_count() -> usize {
     3
 }
 
-pub async fn run(paths: &Paths, config: &Config, args: &RemoteArgs) -> u8 {
+pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -> u8 {
     let remote = &config.remote;
     let way = way(args, config);
     let public_url = args
@@ -93,7 +96,17 @@ pub async fn run(paths: &Paths, config: &Config, args: &RemoteArgs) -> u8 {
         redact: remote.redact,
         allow_bypass: remote.allow_bypass,
     };
-    let sessions = BackgroundSessions::new(paths.clone(), remote.redact);
+    let rules = Rules {
+        home: paths.home.clone(),
+        user_home: std::env::home_dir(),
+        roots: remote.folders.clone(),
+        anywhere: remote.allow_bypass,
+    };
+    // The terminal answers the question about a folder nobody trusted, while it is there to.
+    let (asks, asked) = mpsc::channel::<Ask>(8);
+    // `--trust` trusts the project `azazel remote` was started in, not every folder a browser names.
+    let carried = cli.carried().into_iter().filter(|arg| arg != "--trust").collect();
+    let sessions = BackgroundSessions::new(paths.clone(), remote.redact, carried, rules, Some(asks));
     let server = match Server::start(options, sessions).await {
         Ok(server) => server,
         Err(e) => {
@@ -122,7 +135,7 @@ pub async fn run(paths: &Paths, config: &Config, args: &RemoteArgs) -> u8 {
         std::env::var(name).ok()
     }));
     announce(&server, &link, args.json, glyphs);
-    let code = wait(&server, glyphs, args.json).await;
+    let code = wait(&server, glyphs, args.json, asked).await;
     server.shutdown().await;
     if let Some(tunnel) = tunnel {
         tunnel.stop().await;
@@ -188,7 +201,9 @@ fn describe(link: &Link, glyphs: Glyphs) -> String {
 }
 
 /// Serves until `q`, the end of the terminal's input after `q`, or Ctrl+C; the keys make links.
-async fn wait(server: &Server, glyphs: Glyphs, json: bool) -> u8 {
+/// A question from a browser that wants a session in a folder nobody trusted is asked here, one
+/// at a time, and the next line answers it; once the input ends, every one is answered no.
+async fn wait(server: &Server, glyphs: Glyphs, json: bool, asked: mpsc::Receiver<Ask>) -> u8 {
     let say = |text: String| {
         if json {
             eprint!("{text}");
@@ -198,15 +213,50 @@ async fn wait(server: &Server, glyphs: Glyphs, json: bool) -> u8 {
     };
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     let mut input_open = true;
+    let mut asked = Some(asked);
+    let mut pending: Option<Ask> = None;
     loop {
+        let waiting = pending.is_some();
         tokio::select! {
             _ = tokio::signal::ctrl_c() => return EXIT_OK,
+            ask = async {
+                match asked.as_mut() {
+                    Some(asked) => asked.recv().await,
+                    None => std::future::pending().await,
+                }
+            }, if !waiting => match ask {
+                Some(ask) => {
+                    say(ask.question.clone());
+                    pending = Some(ask);
+                }
+                None => asked = None,
+            },
+            () = async {
+                match pending.as_mut() {
+                    Some(ask) => ask.answer.closed().await,
+                    None => std::future::pending().await,
+                }
+            }, if waiting => {
+                pending = None;
+                say("\nthe browser stopped waiting for an answer\n".to_string());
+            },
             line = lines.next_line(), if input_open => {
                 let Ok(Some(line)) = line else {
-                    // No input (a background run, a closed pipe): serve until interrupted.
+                    // No input (a background run, a closed pipe): serve until interrupted, and
+                    // nobody is here to allow a session.
                     input_open = false;
+                    asked = None;
+                    if let Some(ask) = pending.take() {
+                        let _ = ask.answer.send(false);
+                    }
                     continue;
                 };
+                if let Some(ask) = pending.take() {
+                    let yes = matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes");
+                    let _ = ask.answer.send(yes);
+                    say(if yes { "allowed\n" } else { "refused\n" }.to_string());
+                    continue;
+                }
                 match line.trim() {
                     "l" => say(describe(&server.link(Access::Control), glyphs)),
                     "v" => say(describe(&server.link(Access::View), glyphs)),

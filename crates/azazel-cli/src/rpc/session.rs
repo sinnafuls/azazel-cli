@@ -679,7 +679,13 @@ impl Session {
         let providers = presets::resolve(&self.app.config.providers)?;
         let cache = self.app.paths.models_cache();
         let models = crate::models::refresh(&self.app.router, &self.listed, &cache, provider).await?;
-        let (usable, login) = crate::models::standing(provider, &providers, &self.app.credentials);
+        let (usable, login) = crate::models::standing(
+            &self.app.router,
+            &self.listed,
+            provider,
+            &providers,
+            &self.app.credentials,
+        );
         data(
             models
                 .iter()

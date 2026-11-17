@@ -39,6 +39,43 @@ While it runs, type `l` and Enter for a new control link, `v` for a new view lin
 void every link, and `q` to stop. Ending the server signs every device out; paired devices are not kept across
 restarts.
 
+## The model picker
+
+The model chip of a session names the role the lead follows and the model it answers with, `@lead · deepseek/deepseek-chat`,
+or the model alone when one was picked by name. Its picker lists the roles that resolve to a model you can use, with that
+model and where the role is set, above the models of the providers that are [set up](models-and-logins.md#which-providers-are-listed).
+Picking a role puts the lead on it (`set_model` with `["@<role>"]`); picking a model puts it on that model. Either lasts
+for the session.
+
+## Starting a session from the browser
+
+A device with control access can start a background session: **New chat** (the `+` beside the list of sessions) asks
+for a folder, an optional first message and a permission mode, and opens the session once it runs. In a session, the
+pen at the top starts a new chat in the same folder. The session is the same as one `azazel bg` starts: it runs
+on the computer, with the options `azazel remote` was started with, and keeps running when the page closes.
+
+Which folders a browser may name:
+
+- The projects sessions have worked in on this computer, and the folders of `[remote] folders` with every folder
+  inside them. The sheet lists them and opens a folder to show the ones inside it; hidden folders are left out.
+- Any folder of the computer once `[remote] allow_bypass` is set. The folder can then be typed in as well.
+
+A folder whose project is not trusted could run commands through its configuration, so:
+
+- With `[remote] allow_bypass` the session starts, trusting the folder for that session only.
+- Otherwise the terminal of `azazel remote` asks: `A browser asks to start a session in ~/work/app, which is not
+  trusted…`. `y` and Enter start it, trusting the folder for that session only; anything else, two minutes without an
+  answer, or no terminal at all (its input closed) refuse it, and the browser says why. The questions come one at a
+  time.
+
+Trusting a folder for good is done on the computer, by running azazel in it once. `/remote`, which shares the session
+of a terminal, does not start other sessions.
+
+```toml
+[remote]
+folders = ["~/work", "~/src/site"]
+```
+
 ## Sharing the session of your terminal
 
 `/remote` in the terminal UI shares the session you are working in with browsers. The terminal stays the master:
@@ -137,6 +174,8 @@ page does goes through the routes below.
 | `POST /api/pair` | the pairing secret | Turns a pairing secret into a signed-in device. |
 | `GET /api/me` | a device | Who this device is and what it may do. |
 | `GET /api/sessions` | a device | The sessions this server can reach. |
+| `POST /api/sessions` | a control device | Starts a session in a folder. |
+| `POST /api/folders` | a control device | The folders a session may be started in, or those inside one. |
 | `POST /api/links` | a device | Makes a new pairing link. |
 | `POST /api/logout` | a device | Signs this device out. |
 | `GET /api/ws/{id}` | a device | Upgrades to a WebSocket on one session. |
@@ -147,7 +186,7 @@ An unknown route under `/api/` is `404`, a wrong method `405`.
 
 Request: `{"secret": "<the part of the link after #pair=>", "bearer": false}`. `bearer` is optional.
 
-Answer `200`: `{"access": "view" | "control", "expires": "<RFC 3339>", "allow_bypass": false}`, with a
+Answer `200`: `{"access": "view" | "control", "expires": "<RFC 3339>", "allow_bypass": false, "can_start": true}`, with a
 `Set-Cookie: azazel_device=<token>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<seconds>` (and `Secure` when the
 page is served over https). With `"bearer": true` the answer also has `"token"`, and no cookie is set: this is for
 programs, which send the token as `Authorization: Bearer`.
@@ -164,13 +203,15 @@ Answer `200`:
   "access": "control",
   "expires": "2026-11-16T09:30:00Z",
   "allow_bypass": false,
+  "can_start": true,
   "protocol": 1,
   "version": "0.11.0"
 }
 ```
 
-`allow_bypass` tells the page whether it may offer the `bypass` mode. The page uses `access` to hide what the
-server would refuse anyway.
+`allow_bypass` tells the page whether it may offer the `bypass` mode, and `can_start` whether it may start sessions
+(a control device of `azazel remote`; not of `/remote`). The page uses them and `access` to hide what the server would
+refuse anyway.
 
 #### `GET /api/sessions`
 
@@ -188,6 +229,34 @@ Answer `200`: `{"sessions": [ … ]}`, newest first. Each session:
 | `started` | RFC 3339. |
 
 The page asks again when it needs a fresh list; there is no push.
+
+#### `POST /api/folders`
+
+Request: `{}` for the folders to start in, or `{"under": "<folder>"}` for the folders inside one.
+
+Answer `200`:
+
+| Member | Meaning |
+|---|---|
+| `at` | The folder looked into, or `null`. |
+| `parent` | Its parent, when that may be looked into too; else `null`. |
+| `folders` | Each with `path`, `name` (the path with `~` for the home directory), `kind` (`project`, `root` for one of `remote.folders`, `dir` for one inside it or anywhere), `trusted` and `startable`. |
+| `anywhere` | Whether any folder may be named (`remote.allow_bypass`). |
+
+A folder that may not be looked into is `403`, one that does not exist `400`. A view device gets `403`.
+
+#### `POST /api/sessions` (start)
+
+Request: `{"cwd": "<folder>", "prompt": "…", "mode": "auto", "request_id": "…"}`. Only `cwd` is needed; `~` is the
+home directory. Without `prompt` the session waits for a message. `mode` is the configured one when left out, and
+`bypass` is refused unless `remote.allow_bypass` is set. The same `request_id` sent again starts nothing and answers with
+the session the first request started.
+
+Answer `200`: `{"id": "<session id>"}`, which goes into `/api/ws/{id}`. The answer waits while the terminal is asked
+about a folder that is not trusted (see [starting a session from the browser](#starting-a-session-from-the-browser)).
+A folder that does not exist or a `cwd` that is not a whole path is `400`; a folder outside those allowed, a refusal at
+the terminal, a view device or a refused mode `403`; more than 10 starts a minute from one device `429`; a session that
+could not start `500`. Each says why in `error`.
 
 #### `POST /api/links`
 
@@ -260,6 +329,7 @@ Ten failed pairing attempts in a row void every open link; a new one has to be m
 | Commands | 20 a second per connection, burst 40 |
 | Message size | 12 MiB |
 | Outbound queue | 4096 frames, then the socket is closed with `4408` |
+| Sessions started | 10 a minute per device |
 
 ### What each access level may send
 
@@ -284,7 +354,7 @@ A control device may not send:
 | `run_command` of anything outside `cost`, `context`, `session`, `tools`, `todo`, `rules`, `doctor`, `skill:<name>` and the commands extensions mark as safe | `trust`, `add-dir`, `hooks` and `forget-approvals` change what agents may do. |
 
 The server has no route that reads or writes files, so a browser cannot read `auth.json`, credentials or
-configuration, cannot sign in or out of a provider and cannot change what is trusted. The server never approves
+configuration (it lists the names of folders, only where it may [start a session](#starting-a-session-from-the-browser)), cannot sign in or out of a provider and cannot change what is trusted. The server never approves
 anything on its own.
 
 When several clients are attached, the first answer to an approval or a question wins: the others get

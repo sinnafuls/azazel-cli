@@ -9,6 +9,9 @@
 	import Brand from '$lib/components/Brand.svelte';
 	import SessionList from '$lib/components/SessionList.svelte';
 	import PairDevice from '$lib/components/PairDevice.svelte';
+	import NewChat from '$lib/components/NewChat.svelte';
+	import { newChat } from '$lib/newchat.svelte';
+	import Plus from '@lucide/svelte/icons/plus';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
 	import { Button } from '$lib/components/ui/button';
 	import X from '@lucide/svelte/icons/x';
@@ -52,12 +55,21 @@
 			</div>
 			<div class="flex shrink-0 items-center justify-between px-4 pt-2 pb-1.5">
 				<h2 class="label">Sessions</h2>
-				{#if sessions.loaded && sessions.list.length}
-					<span class="flex items-center gap-1.5">
+				<span class="flex items-center gap-1.5">
+					{#if sessions.loaded && sessions.list.length}
 						{#if waiting}<span class="tag tag-ember num">{waiting} waiting</span>{/if}
 						<span class="text-faint meta">{sessions.list.length}</span>
-					</span>
-				{/if}
+					{/if}
+					{#if newChat.available}
+						<button
+							type="button"
+							class="btn btn-quiet btn-icon -mr-2"
+							aria-label="New chat"
+							title="New chat"
+							onclick={() => newChat.show()}><Plus class="size-4" /></button
+						>
+					{/if}
+				</span>
 			</div>
 			<div class="scroll-thin min-h-0 flex-1 overflow-y-auto px-2 pb-2">
 				<SessionList {current} />
@@ -92,6 +104,7 @@
 		<main class="panel flex min-h-0 min-w-0 flex-col">{@render children()}</main>
 	</div>
 	<PairDevice open={pairing} onclose={() => (pairing = false)} />
+	{#if newChat.available}<NewChat />{/if}
 {:else if app.auth === 'checking' || app.auth === 'pairing'}
 	<div class="bg-background relative grid h-dvh place-items-center p-6">
 		<div class="dotgrid" aria-hidden="true"></div>

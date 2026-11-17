@@ -72,8 +72,37 @@ export interface Me {
 	access: 'view' | 'control';
 	expires: string;
 	allow_bypass: boolean;
+	/** Whether this device may start sessions (`POST /api/sessions`). */
+	can_start?: boolean;
 	protocol: number;
 	version: string;
+}
+
+/** One folder of `POST /api/folders`. */
+export interface Folder {
+	path: string;
+	/** The path as people read it, `~` for the home directory. */
+	name: string;
+	kind: 'project' | 'root' | 'dir';
+	trusted: boolean;
+	startable: boolean;
+}
+
+/** `POST /api/folders`: the folders to start in, or those inside `at`. */
+export interface Folders {
+	at: string | null;
+	parent: string | null;
+	folders: Folder[];
+	/** Any folder of the machine may be typed in. */
+	anywhere: boolean;
+}
+
+/** `POST /api/sessions`. */
+export interface NewSession {
+	cwd: string;
+	prompt?: string;
+	mode?: string;
+	request_id?: string;
 }
 
 /** One entry of `GET /api/sessions`. */

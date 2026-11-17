@@ -153,10 +153,33 @@ impl VertexProvider {
     }
 }
 
+/// Whether Google application default credentials or a project are there to be found: the
+/// variables that name them, or the file `gcloud auth application-default login` writes. The
+/// lookup itself is not run: off Google Cloud its last step waits for a server that is not there.
+pub fn google_found(env: crate::providers::presets::Env<'_>, home: Option<&std::path::Path>) -> bool {
+    let set = |name: &str| env(name).filter(|value| !value.trim().is_empty());
+    if set("GOOGLE_APPLICATION_CREDENTIALS").is_some() || PROJECT_ENV.iter().any(|name| set(name).is_some()) {
+        return true;
+    }
+    let config = set("CLOUDSDK_CONFIG").map(std::path::PathBuf::from).or_else(|| {
+        if cfg!(windows) {
+            set("APPDATA").map(|dir| std::path::PathBuf::from(dir).join("gcloud"))
+        } else {
+            home.map(|home| home.join(".config").join("gcloud"))
+        }
+    });
+    config.is_some_and(|dir| dir.join("application_default_credentials.json").is_file())
+}
+
 #[async_trait]
 impl Provider for VertexProvider {
     fn id(&self) -> &str {
         VERTEX
+    }
+
+    fn configured(&self) -> bool {
+        self.project.is_some()
+            || google_found(&|name| std::env::var(name).ok(), std::env::home_dir().as_deref())
     }
 
     async fn stream(
@@ -235,6 +258,22 @@ mod tests {
     use super::*;
     use crate::stream::StreamEvent;
     use crate::types::{Message, SystemPart};
+
+    #[test]
+    fn vertex_counts_as_set_up_only_when_google_credentials_or_a_project_are_there() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join("gcloud");
+        let only_config = |name: &str| (name == "CLOUDSDK_CONFIG").then(|| config.display().to_string());
+        assert!(!google_found(&only_config, Some(home.path())));
+        std::fs::create_dir(&config).unwrap();
+        std::fs::write(config.join("application_default_credentials.json"), "{}").unwrap();
+        assert!(google_found(&only_config, Some(home.path())));
+        let none = |_: &str| None;
+        let empty = tempfile::tempdir().unwrap();
+        assert!(!google_found(&none, Some(empty.path())));
+        let project = |name: &str| (name == "GOOGLE_CLOUD_PROJECT").then(|| "p".to_string());
+        assert!(google_found(&project, Some(empty.path())));
+    }
 
     const GEMINI: &str = concat!(
         "data: {\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"from gemini\"}]},",

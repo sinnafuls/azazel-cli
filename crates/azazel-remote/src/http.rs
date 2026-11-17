@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::protocol::{Role, WebSocketConfig};
 use crate::assets;
 use crate::auth::{Device, PairError};
 use crate::server::{Shared, rfc3339};
-use crate::{Access, ws};
+use crate::{Access, NewSession, StartError, ws};
 
 pub(crate) type Res = Response<Full<Bytes>>;
 
@@ -136,6 +136,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
                     "access": device.access,
                     "expires": rfc3339(device.expires),
                     "allow_bypass": shared.allow_bypass,
+                    "can_start": device.access == Access::Control && shared.sessions.can_start(),
                     "protocol": azazel_protocol::PROTOCOL,
                     "version": env!("CARGO_PKG_VERSION"),
                 }),
@@ -151,6 +152,8 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
             Err(res) => *res,
         },
         (Method::POST, "/api/links") => links(shared, req).await,
+        (Method::POST, "/api/folders") => folders(shared, req).await,
+        (Method::POST, "/api/sessions") => start(shared, req).await,
         (Method::POST, "/api/logout") => match signed_in(shared, &req, true) {
             Ok((token, _)) => {
                 shared.auth.sign_out(&token);
@@ -166,7 +169,7 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
             Err(res) => *res,
         },
         (Method::GET, p) if p.starts_with("/api/ws/") => socket(shared, &mut req, &p["/api/ws/".len()..]),
-        (_, "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout") => {
+        (_, "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout" | "/api/folders") => {
             error(405, "that route does not take this method")
         }
         (_, p) if p.starts_with("/api/ws/") => error(405, "that route does not take this method"),
@@ -247,6 +250,7 @@ async fn pair(shared: &Arc<Shared>, peer: IpAddr, req: Request<Incoming>) -> Res
                 "access": device.access,
                 "expires": rfc3339(device.expires),
                 "allow_bypass": shared.allow_bypass,
+                "can_start": device.access == Access::Control && shared.sessions.can_start(),
             });
             if pair.bearer {
                 answer["token"] = Value::String(token);
@@ -301,6 +305,88 @@ async fn links(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
         200,
         serde_json::to_value(shared.link(wanted.access, &origin)).unwrap_or_default(),
     )
+}
+
+/// A device that may start sessions: signed in with control access.
+fn controller(shared: &Shared, req: &Request<Incoming>) -> Result<crate::auth::Device, Box<Res>> {
+    let (_, device) = signed_in(shared, req, true)?;
+    if device.access != Access::Control {
+        return Err(Box::new(error(
+            403,
+            "this is a view link: starting a session needs a control link",
+        )));
+    }
+    Ok(device)
+}
+
+fn start_error(why: StartError) -> Res {
+    match why {
+        StartError::Invalid(why) => error(400, &why),
+        StartError::Refused(why) => error(403, &why),
+        StartError::Failed(why) => error(500, &why),
+    }
+}
+
+#[derive(Deserialize)]
+struct FoldersBody {
+    #[serde(default)]
+    under: Option<String>,
+}
+
+async fn folders(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
+    if let Err(res) = controller(shared, &req) {
+        return *res;
+    }
+    let bytes = match body(req).await {
+        Ok(bytes) => bytes,
+        Err(res) => return *res,
+    };
+    let Ok(wanted) = serde_json::from_slice::<FoldersBody>(&bytes) else {
+        return error(400, "send {} or {\"under\": \"<folder>\"}");
+    };
+    let under = wanted.under.filter(|under| !under.trim().is_empty());
+    match shared.sessions.folders(under.as_deref()).await {
+        Ok(folders) => json_reply(200, serde_json::to_value(folders).unwrap_or_default()),
+        Err(why) => start_error(why),
+    }
+}
+
+async fn start(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
+    let device = match controller(shared, &req) {
+        Ok(device) => device,
+        Err(res) => return *res,
+    };
+    let bytes = match body(req).await {
+        Ok(bytes) => bytes,
+        Err(res) => return *res,
+    };
+    let Ok(new) = serde_json::from_slice::<NewSession>(&bytes) else {
+        return error(
+            400,
+            "send {\"cwd\": \"<folder>\"}, with `prompt` and `mode` if you like",
+        );
+    };
+    if new.cwd.trim().is_empty() {
+        return error(400, "`cwd` names the folder the session works in");
+    }
+    if let Some(mode) = &new.mode
+        && let Err(why) = crate::check(
+            Access::Control,
+            &json!({ "type": "set_mode", "mode": mode }),
+            shared.allow_bypass,
+        )
+    {
+        return error(403, &why);
+    }
+    if !shared.may_start(&device.id) {
+        let mut res = error(429, "too many sessions started: wait a minute");
+        res.headers_mut().insert(RETRY_AFTER, value("60"));
+        return res;
+    }
+    match shared.sessions.start(new).await {
+        Ok(id) => json_reply(200, json!({ "id": id })),
+        Err(why) => start_error(why),
+    }
 }
 
 fn socket(shared: &Arc<Shared>, req: &mut Request<Incoming>, id: &str) -> Res {

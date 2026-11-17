@@ -45,6 +45,10 @@ pub struct ProviderConfig {
     pub oauth_headers: BTreeMap<String, String>,
     /// When false, a request without credentials is sent unauthenticated (local servers).
     pub requires_key: bool,
+    /// The user set the provider up: `[providers.<id>]` names it, or a variable its address
+    /// reads is set. A provider that needs no key is offered only then, so that a local server
+    /// nobody runs does not fill the model lists.
+    pub named: bool,
     /// How the key is presented.
     pub auth_style: AuthStyle,
     /// The authorisation server `azazel login` signs in with, when the provider has one.
@@ -80,6 +84,7 @@ impl ProviderConfig {
             headers: BTreeMap::new(),
             oauth_headers: BTreeMap::new(),
             requires_key: false,
+            named: false,
             auth_style: AuthStyle::Auto,
             oauth: None,
             discovery: Discovery::Auto,
@@ -94,10 +99,7 @@ impl ProviderConfig {
     /// endpoint is per account (a Cloudflare account, an Azure resource) cannot be reached
     /// before it is named.
     pub fn unset_variable(&self) -> Option<&str> {
-        let start = self.base_url.find("${")? + 2;
-        let rest = &self.base_url[start..];
-        let end = rest.find([':', '}']).unwrap_or(rest.len());
-        Some(&rest[..end])
+        address_variable(&self.base_url)
     }
 
     /// The wire API `model` is asked on: the route its id matches, else the provider's.
@@ -354,6 +356,8 @@ fn from_row(row: &Preset, env: Env<'_>) -> ProviderConfig {
         headers: expand_headers(&headers, env),
         oauth_headers,
         requires_key: !row.keyless,
+        named: address_variable(row.base_url)
+            .is_some_and(|name| env(name).is_some_and(|v| !v.trim().is_empty())),
         auth_style: row.auth,
         oauth,
         discovery: row.discovery,
@@ -461,6 +465,7 @@ pub fn resolve_with(
         let Some(provider) = providers.get_mut(id) else {
             continue;
         };
+        provider.named = true;
         if let Some(api) = s.api {
             provider.api = api;
         }
@@ -499,6 +504,14 @@ pub fn resolve_with(
         provider.timeouts = s.timeouts();
     }
     Ok(providers.into_values().collect())
+}
+
+/// The variable a preset's address reads (`${LITELLM_BASE_URL:-…}`), when it reads one.
+fn address_variable(base_url: &str) -> Option<&str> {
+    let start = base_url.find("${")? + 2;
+    let rest = &base_url[start..];
+    let end = rest.find([':', '}']).unwrap_or(rest.len());
+    Some(&rest[..end])
 }
 
 fn trim_url(url: &str) -> String {

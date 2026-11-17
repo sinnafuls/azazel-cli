@@ -361,8 +361,12 @@ config_table!(RemoteConfig {
     device_hours: u64 = 24,
     /// Hide secrets in the messages and tool results sent to a browser.
     redact: bool = true,
-    /// Let a browser with control access switch to the `bypass` mode.
+    /// Let a browser with control access switch to the `bypass` mode, and start sessions in any
+    /// folder of this machine without asking here first.
     allow_bypass: bool = false,
+    /// Folders a browser may start sessions in, beside the projects sessions have worked in;
+    /// the folders inside them too. `~` is the home directory.
+    folders: Vec<String> = Vec::new(),
 });
 config_table!(GuardsConfig {
     /// Send the lead back once when it stops on changed code and ran no build or test since.

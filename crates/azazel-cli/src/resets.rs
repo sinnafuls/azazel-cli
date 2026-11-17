@@ -457,12 +457,16 @@ impl LimitFlow {
             }
         }
         for provider in router.provider_ids() {
-            let config = self.providers.iter().find(|config| config.id == provider);
-            let usable = config.is_none_or(|config| crate::models::usable(credentials, config));
+            let (usable, login) = crate::models::standing(
+                &router,
+                &crate::models::Listed::default(),
+                provider,
+                &self.providers,
+                credentials,
+            );
             if !usable || self.only.as_deref().is_some_and(|only| only != provider) {
                 continue;
             }
-            let login = config.is_some_and(|config| crate::models::login(credentials, config));
             for info in router.catalog().for_provider(provider) {
                 let model = ModelRef::new(info.provider.as_str(), info.id.as_str());
                 if out(&model) {

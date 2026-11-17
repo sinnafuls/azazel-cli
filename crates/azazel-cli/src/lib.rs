@@ -529,7 +529,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
             let Some(config) = load_config(&cli, &paths, trusted) else {
                 return print::EXIT_FAILED;
             };
-            return remote::run(&paths, &config, args).await;
+            return remote::run(&cli, &paths, &config, args).await;
         }
         #[cfg(feature = "detach")]
         Some(Sub::Schedule { action }) => {
