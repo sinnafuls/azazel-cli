@@ -5,6 +5,8 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-17
+
 ### Added
 
 - `azazel remote`: **New chat** starts a background session from the browser, in a folder you pick, with an optional first message and permission mode; the pen at the top of a session starts one in the same folder. A browser may name the projects sessions have worked in and the folders of the new `[remote] folders` (and the folders inside them), or any folder once `[remote] allow_bypass` is set. A folder that is not trusted starts only once you answer `y` in the terminal of `azazel remote`, unless bypass is allowed.
