@@ -5,6 +5,14 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Changed
+
+- The web page of `azazel remote` has a new design: a dark-first look with a warm glow over a cool ground, cards and panels with a lit top edge and real depth, the main action in ember, buttons that rise under the pointer and sink when pressed, and a session that needs you glowing in the list. A device that is not paired yet opens on a first screen that shows what the page does and the command that makes a link.
+
+### Fixed
+
+- Several shadows and edges of the web page were never drawn because their colour was written in a form browsers reject; the page had less depth than it was meant to.
+
 ## [0.13.0] - 2026-11-17
 
 ### Added

@@ -10,14 +10,13 @@
 	import SessionList from '$lib/components/SessionList.svelte';
 	import PairDevice from '$lib/components/PairDevice.svelte';
 	import NewChat from '$lib/components/NewChat.svelte';
+	import Welcome from '$lib/components/Welcome.svelte';
 	import { newChat } from '$lib/newchat.svelte';
 	import Plus from '@lucide/svelte/icons/plus';
 	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { Button } from '$lib/components/ui/button';
 	import X from '@lucide/svelte/icons/x';
 	import LogOut from '@lucide/svelte/icons/log-out';
 	import QrCode from '@lucide/svelte/icons/qr-code';
-	import RotateCw from '@lucide/svelte/icons/rotate-cw';
 
 	const TOAST_DOT = {
 		error: 'bg-destructive',
@@ -116,36 +115,11 @@
 		</div>
 	</div>
 {:else}
-	<div class="bg-background relative grid min-h-dvh place-items-center p-4 sm:p-6">
-		<div class="dotgrid" aria-hidden="true"></div>
-		<div class="surface-2 relative w-full max-w-[25rem] animate-enter rounded-xl p-6 sm:p-7">
-			<Brand />
-			{#if app.auth === 'needs-link'}
-				<h1 class="mt-7 text-xl font-semibold tracking-[-0.03em]">
-					{app.error ? 'That link did not work' : 'This device is not paired'}
-				</h1>
-				<p class="text-muted-foreground mt-2 text-sm leading-relaxed">
-					{app.error ?? 'Open the pairing link or scan the QR code that azazel printed.'}
-				</p>
-				<div class="mt-6 border-t pt-5">
-					<p class="label">On the machine that runs azazel</p>
-					<code class="well text-ink-2 mt-2 flex items-center gap-2 border px-3 py-2.5"
-						><span class="text-faint select-none" aria-hidden="true">$</span>azazel remote</code
-					>
-					<p class="text-muted-foreground mt-3 text-sm leading-relaxed">
-						Press <kbd class="kbd mx-0.5">l</kbd> there for a new control link. A link works once and
-						expires after a few minutes.
-					</p>
-				</div>
-			{:else}
-				<h1 class="mt-7 text-xl font-semibold tracking-[-0.03em]">Cannot reach azazel</h1>
-				<p class="text-muted-foreground mt-2 text-sm leading-relaxed" role="alert">{app.error}</p>
-				<Button class="mt-6 w-full" onclick={() => app.init()}
-					><RotateCw class="size-4" /> Try again</Button
-				>
-			{/if}
-		</div>
-	</div>
+	<Welcome
+		mode={app.auth === 'needs-link' ? 'needs-link' : 'error'}
+		error={app.error}
+		onretry={() => app.init()}
+	/>
 {/if}
 
 <div

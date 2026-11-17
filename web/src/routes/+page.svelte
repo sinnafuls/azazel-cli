@@ -64,15 +64,24 @@
 	</div>
 </div>
 
-<div class="relative hidden min-h-0 flex-1 place-items-center p-8 lg:grid">
-	<div class="dotgrid" aria-hidden="true"></div>
-	<div class="relative flex w-full max-w-sm flex-col items-center text-center">
-		<Brand size={40} word={false} />
-		<h1 class="mt-6 text-xl font-semibold tracking-[-0.03em]">Choose a session</h1>
-		<p class="text-muted-foreground mt-2 text-sm leading-relaxed">
-			Pick one on the left to follow it live. Sessions that wait for you are listed first.
+<div class="relative isolate hidden min-h-0 flex-1 place-items-center overflow-hidden p-8 lg:grid">
+	<div class="ground-lit absolute inset-0 -z-10 opacity-80" aria-hidden="true"></div>
+	<div class="dotgrid -z-10" aria-hidden="true"></div>
+	<div class="enter-seq relative flex w-full max-w-md flex-col items-center text-center">
+		<Brand size={44} word={false} />
+		<h1 class="mt-7 text-[2rem] leading-tight font-semibold tracking-[-0.045em] text-balance">
+			{waiting
+				? `${waiting} session${waiting === 1 ? ' needs' : 's need'} you`
+				: sessions.list.length
+					? 'Pick up where an agent is'
+					: 'Nothing running yet'}
+		</h1>
+		<p class="text-muted-foreground mt-3 text-[15px] leading-relaxed">
+			{sessions.list.length
+				? 'Choose a session on the left to follow it live. Those waiting for an answer are listed first.'
+				: 'Start a session here, or run azazel bg on the computer, and it shows up on the left.'}
 		</p>
-		<div class="mt-6 flex flex-wrap justify-center gap-2">
+		<div class="mt-8 flex flex-wrap justify-center gap-2.5">
 			{#if newChat.available}
 				<button type="button" class="btn btn-primary" onclick={() => newChat.show()}
 					><Plus class="size-4" /> New chat</button
@@ -82,6 +91,22 @@
 				><QrCode class="size-4" /> Open on your phone</button
 			>
 		</div>
+		{#if sessions.list.length}
+			<dl class="edge-lit bg-card/70 mt-10 grid w-full grid-cols-3 rounded-[20px] backdrop-blur">
+				{#each [['Running', sessions.list.length], ['Need you', waiting], ['Working', sessions.list.filter((s) => s.state === 'working').length]] as [k, v] (k)}
+					<div class="flex flex-col-reverse px-4 py-4">
+						<dt class="text-muted-foreground mt-1 text-xs">{k}</dt>
+						<dd
+							class="num text-2xl font-semibold tracking-[-0.04em] {k === 'Need you' && v
+								? 'text-accent-text'
+								: ''}"
+						>
+							{v}
+						</dd>
+					</div>
+				{/each}
+			</dl>
+		{/if}
 	</div>
 </div>
 

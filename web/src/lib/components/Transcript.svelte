@@ -82,7 +82,7 @@
 	<div
 		bind:this={scroller}
 		{onscroll}
-		class="scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
+		class="fade-foot scroll-thin absolute inset-0 overflow-y-auto overscroll-contain"
 		data-transcript
 	>
 		<div class="col flex min-h-full flex-col gap-4 py-6 md:py-8">
@@ -229,6 +229,10 @@
 </div>
 
 <style>
+	/* What scrolls fades out just above the message box instead of being cut by a hard edge. */
+	.fade-foot {
+		mask-image: linear-gradient(to bottom, black calc(100% - 28px), transparent);
+	}
 	/* Centred with a margin, so the entrance can move it without fighting a translate. */
 	.latest {
 		translate: -50% 0;

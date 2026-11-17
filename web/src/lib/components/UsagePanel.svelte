@@ -122,6 +122,6 @@
 	/* A meter's groove: set into the surface, so the fill reads as raised out of it. */
 	.track {
 		background: var(--active);
-		box-shadow: inset 0 1px 1px color-mix(in oklab, var(--shade) light-dark(6%, 40%), transparent);
+		box-shadow: inset 0 1px 1px light-dark(oklch(0.25 0.02 260 / 6%), oklch(0 0 0 / 40%));
 	}
 </style>

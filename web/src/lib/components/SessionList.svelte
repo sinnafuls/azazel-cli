@@ -26,7 +26,7 @@
 	);
 	const home = (p: string) =>
 		p.replace(/^\/home\/[^/]+/, '~').replace(/^[A-Za-z]:\\Users\\[^\\]+/, '~');
-	const frame = $derived(card ? 'group-card divide-y' : 'space-y-1');
+	const frame = $derived(card ? 'space-y-2.5' : 'space-y-1');
 </script>
 
 <nav aria-label="Sessions" data-session-list>
@@ -66,7 +66,9 @@
 				<li>
 					<a
 						href="/s/{encodeURIComponent(s.id)}"
-						class="row flex gap-3 {card ? 'in-card px-4 py-4' : 'rounded-[14px] px-3 py-2.5'}"
+						class="row lift flex gap-3 {card
+							? 'in-card edge-lit bg-card/80 rounded-[20px] px-4 py-4 shadow-e1 backdrop-blur'
+							: 'rounded-[14px] px-3 py-2.5'} {needs && card ? 'needs' : ''}"
 						aria-current={current === s.id ? 'page' : undefined}
 						onclick={onnavigate}
 					>
@@ -115,8 +117,11 @@
 		background: var(--active);
 	}
 	@media (hover: hover) {
-		.row:hover {
+		.row:not(.in-card):hover {
 			background: var(--hover);
+		}
+		.row.in-card:hover {
+			background: var(--card);
 		}
 	}
 	/* The open session is lifted out of the rail. */
@@ -128,6 +133,12 @@
 			var(--highlight);
 	}
 	.row.in-card[aria-current='page'] {
-		background: var(--hover);
+		background: var(--raised);
+	}
+	/* A session that waits for you carries the accent along its edge. */
+	.row.needs {
+		box-shadow:
+			0 0 0 1px color-mix(in oklab, var(--ember) 45%, transparent),
+			0 8px 28px -12px color-mix(in oklab, var(--ember) 45%, transparent);
 	}
 </style>
