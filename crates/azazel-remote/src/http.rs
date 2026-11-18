@@ -124,8 +124,8 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
     {
         return error(403, "that origin is not one of this server's pages");
     }
-    if req.method() == Method::POST && header(&req, "x-azazel") != Some("1") {
-        return error(403, "a POST needs the header `X-Azazel: 1`");
+    if matches!(*req.method(), Method::POST | Method::DELETE) && header(&req, "x-azazel") != Some("1") {
+        return error(403, "a POST or DELETE needs the header `X-Azazel: 1`");
     }
     match (req.method().clone(), path.as_str()) {
         (Method::POST, "/api/pair") => pair(shared, peer, req).await,
@@ -135,7 +135,8 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
                 json!({
                     "access": device.access,
                     "expires": rfc3339(device.expires),
-                    "allow_bypass": shared.allow_bypass,
+                    "allow_bypass": shared.grants.allow_bypass || shared.grants.full_access,
+                    "full_access": shared.grants.full_access,
                     "can_start": device.access == Access::Control && shared.sessions.can_start(),
                     "protocol": azazel_protocol::PROTOCOL,
                     "version": env!("CARGO_PKG_VERSION"),
@@ -143,6 +144,8 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
             ),
             Err(res) => *res,
         },
+        (Method::GET, "/api/devices") => devices(shared, &req),
+        (Method::DELETE, "/api/devices") => sign_out_all(shared, &req),
         (Method::GET, "/api/sessions") => match signed_in(shared, &req, false) {
             Ok(_) => {
                 let mut sessions = shared.sessions.list().await;
@@ -169,9 +172,11 @@ async fn route(shared: &Arc<Shared>, peer: IpAddr, mut req: Request<Incoming>) -
             Err(res) => *res,
         },
         (Method::GET, p) if p.starts_with("/api/ws/") => socket(shared, &mut req, &p["/api/ws/".len()..]),
-        (_, "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout" | "/api/folders") => {
-            error(405, "that route does not take this method")
-        }
+        (
+            _,
+            "/api/pair" | "/api/me" | "/api/sessions" | "/api/links" | "/api/logout" | "/api/folders"
+            | "/api/devices",
+        ) => error(405, "that route does not take this method"),
         (_, p) if p.starts_with("/api/ws/") => error(405, "that route does not take this method"),
         _ => error(404, "no such route"),
     }
@@ -249,7 +254,8 @@ async fn pair(shared: &Arc<Shared>, peer: IpAddr, req: Request<Incoming>) -> Res
             let mut answer = json!({
                 "access": device.access,
                 "expires": rfc3339(device.expires),
-                "allow_bypass": shared.allow_bypass,
+                "allow_bypass": shared.grants.allow_bypass || shared.grants.full_access,
+                "full_access": shared.grants.full_access,
                 "can_start": device.access == Access::Control && shared.sessions.can_start(),
             });
             if pair.bearer {
@@ -305,6 +311,56 @@ async fn links(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
         200,
         serde_json::to_value(shared.link(wanted.access, &origin)).unwrap_or_default(),
     )
+}
+
+/// The paired devices, for a device with control access. Only a short label (the first characters of
+/// the hash of the token) names one: no token or secret leaves the server.
+fn devices(shared: &Shared, req: &Request<Incoming>) -> Res {
+    let (_, me) = match signed_in(shared, req, false) {
+        Ok(found) => found,
+        Err(res) => return *res,
+    };
+    if me.access != Access::Control {
+        return error(403, "this is a view link: listing devices needs a control link");
+    }
+    let rows: Vec<Value> = shared
+        .auth
+        .devices()
+        .iter()
+        .map(|device| {
+            json!({
+                "id": device.id,
+                "access": device.access,
+                "paired": rfc3339(device.paired),
+                "expires": rfc3339(device.expires),
+                "current": device.id == me.id,
+            })
+        })
+        .collect();
+    json_reply(200, json!({ "devices": rows }))
+}
+
+/// Signs every device out and voids every link, as `r` does in the server's terminal.
+fn sign_out_all(shared: &Shared, req: &Request<Incoming>) -> Res {
+    let (_, me) = match signed_in(shared, req, true) {
+        Ok(found) => found,
+        Err(res) => return *res,
+    };
+    if me.access != Access::Control {
+        return error(
+            403,
+            "this is a view link: signing everyone out needs a control link",
+        );
+    }
+    shared.auth.revoke_all();
+    let mut res = reply(204, "application/json", Bytes::new());
+    res.headers_mut().insert(
+        SET_COOKIE,
+        value(&format!(
+            "{COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"
+        )),
+    );
+    res
 }
 
 /// A device that may start sessions: signed in with control access.
@@ -373,7 +429,7 @@ async fn start(shared: &Arc<Shared>, req: Request<Incoming>) -> Res {
         && let Err(why) = crate::check(
             Access::Control,
             &json!({ "type": "set_mode", "mode": mode }),
-            shared.allow_bypass,
+            shared.grants,
         )
     {
         return error(403, &why);

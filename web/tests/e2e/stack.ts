@@ -1,6 +1,14 @@
 import { test as base, expect, type Page } from '@playwright/test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+	cpSync,
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -18,6 +26,20 @@ export class Stack {
 	private lines: string[] = [];
 	private waiters: { wanted: string; resolve: (line: string) => void }[] = [];
 	readonly dir = mkdtempSync(join(tmpdir(), 'azazel-e2e-'));
+	/** The folder the scripted session works in. */
+	get project() {
+		return join(this.dir, 'project');
+	}
+
+	/**
+	 * What the scripted run wrote. The script's closing text says the file was written whatever
+	 * happened, so a test that waits for it checks the file as well. The project is new for every
+	 * stack (see `start`), so the file is there only when this run's `write` succeeded.
+	 */
+	hello(dir = this.project) {
+		return readFileSync(join(dir, 'hello.txt'), 'utf8');
+	}
+
 	/** The first pairing link, `http://127.0.0.1:<port>/#pair=<secret>`. */
 	pair = '';
 	port = 0;
@@ -54,7 +76,10 @@ export class Stack {
 	async start(mode: 'manual' | 'auto', failure = false, remote: string[] = []) {
 		if (!existsSync(binary))
 			throw new Error(`${binary} is missing: build it with --features test-support,remote`);
-		mkdirSync(join(this.dir, 'project', '.git'), { recursive: true });
+		// A file left over from an earlier run would make `write` fail while the script still claims it worked.
+		if (existsSync(join(this.project, 'hello.txt')))
+			throw new Error('the project is not new: hello.txt exists before the run');
+		mkdirSync(join(this.project, '.git'), { recursive: true });
 		mkdirSync(join(this.dir, 'home'), { recursive: true });
 		cpSync(join(root, 'tests/fixtures/scripts/web_session.json'), join(this.dir, 'script.json'));
 		if (failure) {

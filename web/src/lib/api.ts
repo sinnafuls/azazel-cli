@@ -2,6 +2,15 @@
 // and starting a session in a folder.
 import type { Folders, Me, NewSession, SessionInfo } from '$lib/protocol';
 
+/** A row of `GET /api/devices`: a short label, never a token. */
+export interface DeviceRow {
+	id: string;
+	access: 'view' | 'control';
+	paired: string;
+	expires: string;
+	current: boolean;
+}
+
 export class ApiError extends Error {
 	constructor(
 		readonly status: number,
@@ -39,6 +48,10 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 export const api = {
 	me: () => call<Me>('/api/me'),
+	/** The paired devices (a control device only; an older server answers 404). */
+	devices: async () => (await call<{ devices: DeviceRow[] }>('/api/devices')).devices,
+	/** Signs every device out, this one included. */
+	signOutAll: () => call<void>('/api/devices', { method: 'DELETE' }),
 	sessions: async () => (await call<{ sessions: SessionInfo[] }>('/api/sessions')).sessions,
 	pair: (secret: string) =>
 		call<Me>('/api/pair', { method: 'POST', body: JSON.stringify({ secret }) }),

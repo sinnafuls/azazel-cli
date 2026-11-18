@@ -13,6 +13,19 @@ use crate::frontmatter;
 use crate::paths::Paths;
 use crate::process::{RunOptions, Shell, run};
 
+/// The id of the extension that registers the custom commands.
+pub const OWNER: &str = "custom-commands";
+
+/// Prefixes only skills (`skill:<name>`) and MCP prompts (`mcp:<server>:<prompt>`) may have. A
+/// custom command or a script command named like one could pass for them, so none may take it.
+pub const RESERVED_PREFIXES: [&str; 2] = ["skill:", "mcp:"];
+
+/// Whether `name` starts with a prefix that belongs to skills or MCP prompts.
+pub fn is_reserved(name: &str) -> bool {
+    let name = name.trim_start_matches('/').to_ascii_lowercase();
+    RESERVED_PREFIXES.iter().any(|prefix| name.starts_with(prefix))
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustomCommand {
     /// Path below the commands directory without `.md`, with `/` written as `:`.
@@ -67,6 +80,10 @@ fn collect(dir: &Path, prefix: &str, out: &mut Vec<CustomCommand>) {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
+        // `commands/mcp/x.md` is named `mcp:x`, which is a name for MCP prompts.
+        if is_reserved(&format!("{prefix}{stem}")) {
+            continue;
+        }
         let body = body.trim().to_string();
         let description = field("description")
             .unwrap_or_else(|| body.lines().next().unwrap_or_default().chars().take(80).collect());
@@ -212,7 +229,7 @@ pub struct CustomCommandsExt {
 
 impl Extension for CustomCommandsExt {
     fn id(&self) -> &str {
-        "custom-commands"
+        OWNER
     }
 
     fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
@@ -370,6 +387,23 @@ mod tests {
         assert_eq!(review.body, "Project body $ARGUMENTS");
         // Without frontmatter the first line stands in as the description.
         assert_eq!(commands[0].description, "Fetch and rebase onto $1.");
+    }
+
+    #[test]
+    fn a_custom_command_never_takes_the_prefix_of_skills_or_mcp_prompts() {
+        let tmp = tempfile::tempdir().unwrap();
+        for rel in ["mcp/x.md", "skill/y.md", "MCP/z.md", "ok/x.md", "mcpish.md"] {
+            let path = tmp.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "Body").unwrap();
+        }
+        let names: Vec<String> = discover(&[tmp.path().to_path_buf()])
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, ["mcpish", "ok:x"]);
+        assert!(is_reserved("mcp:github:triage") && is_reserved("/Skill:review"));
+        assert!(!is_reserved("mcp") && !is_reserved("skills"));
     }
 
     #[tokio::test]

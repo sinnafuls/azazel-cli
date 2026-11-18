@@ -185,6 +185,8 @@ page does goes through the routes below.
 | `POST /api/folders` | a control device | The folders a session may be started in, or those inside one. |
 | `POST /api/links` | a device | Makes a new pairing link. |
 | `POST /api/logout` | a device | Signs this device out. |
+| `GET /api/devices` | a control device | The paired devices, without their tokens. |
+| `DELETE /api/devices` | a control device | Signs every device out and voids every link. |
 | `GET /api/ws/{id}` | a device | Upgrades to a WebSocket on one session. |
 
 An unknown route under `/api/` is `404`, a wrong method `405`.
@@ -193,7 +195,7 @@ An unknown route under `/api/` is `404`, a wrong method `405`.
 
 Request: `{"secret": "<the part of the link after #pair=>", "bearer": false}`. `bearer` is optional.
 
-Answer `200`: `{"access": "view" | "control", "expires": "<RFC 3339>", "allow_bypass": false, "can_start": true}`, with a
+Answer `200`: `{"access": "view" | "control", "expires": "<RFC 3339>", "allow_bypass": false, "full_access": false, "can_start": true}`, with a
 `Set-Cookie: azazel_device=<token>; HttpOnly; SameSite=Strict; Path=/; Max-Age=<seconds>` (and `Secure` when the
 page is served over https). With `"bearer": true` the answer also has `"token"`, and no cookie is set: this is for
 programs, which send the token as `Authorization: Bearer`.
@@ -210,6 +212,7 @@ Answer `200`:
   "access": "control",
   "expires": "2026-11-16T09:30:00Z",
   "allow_bypass": false,
+  "full_access": false,
   "can_start": true,
   "protocol": 1,
   "version": "0.11.0"
@@ -275,6 +278,20 @@ and for `remote.link_minutes`. The page shows it as text and as a QR code.
 #### `POST /api/logout`
 
 Signs this device out and clears the cookie. Answer `204`. Its WebSockets close with `4401`.
+
+#### `GET /api/devices`
+
+Lists the devices that are signed in, the one paired first at the top. A view device gets `403`.
+
+Answer `200`: `{"devices": [{"id": "<short label>", "access": "view" | "control", "paired": "<RFC 3339>",
+"expires": "<RFC 3339>", "current": true}]}`. `id` is the first characters of a hash of the token, only a name for the
+row; no token or pairing secret is ever returned. `current` is true for the device that asked.
+
+#### `DELETE /api/devices`
+
+Signs every device out, this one too, and voids every pairing link that was not used: what `r` does in the terminal
+where `azazel remote` runs. It needs the header `X-Azazel: 1` and, as with other changes, an `Origin` when the cookie
+signs the request in. A view device gets `403`. Answer `204` and clears the cookie. Every WebSocket closes with `4401`.
 
 ### The WebSocket
 
@@ -345,10 +362,10 @@ The server checks every command before it reaches the session; this is the polic
 
 | Access | Commands it may send |
 |---|---|
-| **view** | `attach`, `get_state`, `get_messages`, `get_agent_messages`, `get_tree`, `get_usage`, `list_models`, `list_roles`, `list_commands`. Frames arrive as for any client; a view client shows requests as "waiting for an answer" and cannot answer them. |
+| **view** | `attach`, `get_state`, `get_messages`, `get_agent_messages`, `get_tree`, `get_usage`, `get_theme`, `get_context`, `get_cost`, `list_models`, `list_roles`, `list_commands`. Frames arrive as for any client; a view client shows requests as "waiting for an answer" and cannot answer them. |
 | **control** | Everything, except the commands in the next table. |
 
-A control device may not send:
+Without `remote.full_access` a control device may not send:
 
 | Command | Why |
 |---|---|
@@ -358,7 +375,14 @@ A control device may not send:
 | `set_role` with `save` other than `session` | It would change the config files. |
 | `save_preset` | It would change the config files. |
 | `set_mode` to `bypass` | Refused unless `remote.allow_bypass` is set. |
-| `run_command` of anything outside `cost`, `context`, `session`, `tools`, `todo`, `rules`, `doctor`, `skill:<name>` and the commands extensions mark as safe | `trust`, `add-dir`, `hooks` and `forget-approvals` change what agents may do. |
+| `run_command` of a command outside the list a browser may run | The list is the reports (`cost`, `context`, `session`, `tools`, `todo`, `rules`, `doctor`, `usage`, `memory`, `agents`, ...), the commands of the built-in extensions that act on the session itself, `skill:<name>` and `mcp:<server>:<prompt>`. Commands that reach the machine are never run: `login`, `logout`, `settings`, `trust`, `add-dir`, `hooks`, `forget-approvals`, `reload`, `bg` and the like. A project's own custom commands and the commands of Luau scripts run only with `remote.allow_bypass`, whatever their name: the session knows where each command comes from (`source` in `list_commands`: `builtin`, `skill`, `mcp`, `custom` or `script`) and refuses to run a `custom` or `script` command for a browser that may not, so a project command named like `/memory` or `/mcp` does not pass for the built-in one. The prefixes `skill:` and `mcp:` belong to skills and MCP prompts; a custom command or a script cannot take them. |
+| `run_command` of `/preset` with anything but a name | `/preset <name>` (letters, digits, `-`, `_`, `.`) is fine; `/preset save ...` would change the config files. |
+| `run_command` of `/mcp` with anything but no arguments, `list` or `reconnect <server>` | An allowlist, so `enable`, `disable`, `approve`, `reject`, `login` and `logout` are refused, and so is any argument with a quote or a character other than letters, digits, `-`, `_` and `.` (the command strips quotes, so `"approve" srv` is `approve srv`). |
+| `run_command` of `/memory` or `/media` with arguments | `/memory` and `/memory list` and a bare `/media` are fine; `/memory forget` and `/memory auto` change what is stored, and `/media` takes no arguments. |
+| `set_setting` with a `scope` other than `session`, or for a trust-gated key or the `remote` table | It would change the config files or what agents may do. `session` scope changes a live setting for this session only. A missing `scope` is `session`. |
+| `trust_project`, `add_dir`, `forget_approvals` | They change what the machine trusts and what agents may reach. |
+
+With `remote.full_access` none of the refusals above applies to a control link (a command with no name is still no command), and the menu of `list_commands` is not filtered. A view link stays view-only. See [full access](#full-access).
 
 The server has no route that reads or writes files, so a browser cannot read `auth.json`, credentials or
 configuration (it lists the names of folders, only where it may [start a session](#starting-a-session-from-the-browser)), cannot sign in or out of a provider and cannot change what is trusted. The server never approves
@@ -366,3 +390,9 @@ anything on its own.
 
 When several clients are attached, the first answer to an approval or a question wins: the others get
 `request_closed`, and a second answer is refused.
+
+## Full access
+
+By default a control link cannot reach the machine: it cannot run `shell`, write files through `export` or `resume_session` with a path, save presets, save a role or a setting to a config file, run `/login`, `/logout`, `/settings`, `/trust`, `/add-dir`, `/hooks`, `/forget-approvals`, `/reload`, `/bg`, `/preset save`, `/mcp approve` or any other `/mcp`, `/memory` or `/media` subcommand that changes anything, or send `trust_project`, `add_dir` and `forget_approvals`. A browser may run the other commands (reports, `/usage`, `/memory`, `/agents`, `/preset <name>`, `/mcp reconnect`, skills and MCP prompts), and `set_setting` with `scope: session` for a setting that is not trust-gated (never the `remote` table). `get_settings`, `get_theme`, `get_context` and `get_cost` are read-only; the last two and `get_theme` are open to view links.
+
+With `[remote] full_access = true` a control link may send everything the terminal can, including every command above, the `bypass` mode, project commands, any `set_setting` scope and sessions in any folder. A view link stays view-only. `azazel remote` prints a warning when it starts with it on, and `/api/me` and `/api/pair` report `full_access` (and `allow_bypass` as on, since full access allows `bypass`) so the page shows a banner and offers the mode. `/remote` in the terminal shows the same warning when it starts sharing. Turn it on only on a machine and with links you trust.

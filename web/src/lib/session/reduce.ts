@@ -49,8 +49,20 @@ export interface NoticeItem {
 	agent: string;
 	level: 'info' | 'warn' | 'error';
 	text: string;
+	/** A quiet note that belongs to the conversation (what the branch left behind did), not a problem. */
+	summary?: boolean;
 }
-export type Item = UserItem | AssistantItem | ToolItem | NoticeItem;
+/** What a slash command answered with (`run_command` -> `show`): local to this page, never sent. */
+export interface CommandItem {
+	kind: 'command';
+	id: string;
+	agent: string;
+	/** The command as typed, without the slash. */
+	name: string;
+	args: string;
+	text: string;
+}
+export type Item = UserItem | AssistantItem | ToolItem | NoticeItem | CommandItem;
 
 /** A request that waits for an answer: an approval, or a question from `ask_user` and friends. */
 export type OpenRequest =
@@ -119,6 +131,14 @@ export const withoutMemory = (text: string): string => {
 	const at = text.lastIndexOf('\n\n<memory>\n');
 	return at >= 0 && text.trimEnd().endsWith('</memory>') ? text.slice(0, at) : text;
 };
+
+/** How the note about a branch that was left starts (`BRANCH_NOTE` in crates/azazel-cli/src/branch.rs). */
+export const BRANCH_NOTE =
+	'I went back to an earlier point of this conversation. What happened on the branch I left, in short:';
+
+/** The summary a branch note carries, or null when `text` is not one. The terminal shows it as a note too. */
+export const branchSummary = (text: string): string | null =>
+	text.startsWith(BRANCH_NOTE) ? text.slice(BRANCH_NOTE.length).trim() : null;
 
 const textOf = (blocks: Block[] | undefined): string =>
 	(blocks ?? [])
@@ -308,9 +328,17 @@ function messageEnd(
 	return { ...out, open: rest };
 }
 
-function addNotice(m: Model, agent: string, level: NoticeItem['level'], text: string): Model {
+function addNotice(
+	m: Model,
+	agent: string,
+	level: NoticeItem['level'],
+	text: string,
+	summary = false
+): Model {
 	const [m2, id] = next(m, 'n');
-	return { ...m2, items: [...m2.items, { kind: 'notice', id, agent, level, text }] };
+	const item: NoticeItem = { kind: 'notice', id, agent, level, text };
+	if (summary) item.summary = true;
+	return { ...m2, items: [...m2.items, item] };
 }
 
 function closeStreaming(m: Model, agent: string): Model {
@@ -337,9 +365,14 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 	const agent = (f.agent as string | undefined) ?? 'lead';
 	switch (f.type) {
 		case 'agent_start':
-			return setRun(base, agent, { busy: true });
+			// A run that starts is the answer to the oldest follow-up that waited for it.
+			return setRun(agent === 'lead' ? takeQueued(base, false) : base, agent, { busy: true });
 		case 'turn_start':
-			return agent === 'lead' ? { ...base, turn: f.turn as number } : base;
+			if (agent !== 'lead') return base;
+			// Input that steers is taken up between two requests.
+			return (f.turn as number) > 1
+				? takeQueued({ ...base, turn: f.turn as number }, true)
+				: { ...base, turn: f.turn as number };
 		case 'message_start': {
 			const [m2, id] = next(base, 'a');
 			const item: AssistantItem = { kind: 'assistant', id, agent, blocks: [], streaming: true };
@@ -451,14 +484,19 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 		case 'request_closed':
 			return { ...base, requests: base.requests.filter((r) => r.id !== f.request_id) };
 		case 'user_input': {
-			const [m2, id] = next(base, 'u');
 			const text = withoutMemory(f.text as string);
 			const via = (['prompt', 'steer', 'follow_up'] as const).find((v) => v === f.kind) ?? 'prompt';
 			const agentId = (f.agent as string | null | undefined) ?? 'lead';
+			const note = branchSummary(text);
+			if (note !== null) return addNotice(base, agentId, 'info', note, true);
+			// A follow-up of another client waits in the queue above the message box until the agent
+			// takes it up; any other input is part of the conversation at once.
+			if (via === 'follow_up' && agentId === 'lead') return addQueued(base, via, text);
+			const [m2, id] = next(base, 'u');
 			return {
 				...m2,
 				items: [...m2.items, { kind: 'user', id, agent: agentId, text, via, images: 0 }],
-				queue: m2.queue.filter((q) => q.text !== text)
+				queue: m2.queue.filter((q) => !(q.kind === via && q.text === text))
 			};
 		}
 		default:
@@ -467,6 +505,36 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 }
 
 const frame0 = (f: unknown) => f as AnyFrame;
+
+/** Puts input the lead has not taken up yet into the queue shown above the message box. */
+export function addQueued(m: Model, kind: UserItem['via'], text: string): Model {
+	return { ...m, queue: [...m.queue, { kind, text }] };
+}
+
+/**
+ * The lead took up queued input, which becomes a message of the conversation. A run that starts
+ * takes the oldest input that does not steer (`steers` false); `steers` takes every input that
+ * steers, which the agent reads between two requests. The host counts its queue the same way.
+ */
+function takeQueued(m: Model, steers: boolean): Model {
+	// Input that steers starts a run only when nothing else waits.
+	const at = Math.max(
+		0,
+		m.queue.findIndex((q) => q.kind !== 'steer')
+	);
+	const taken = steers ? m.queue.filter((q) => q.kind === 'steer') : m.queue.slice(at, at + 1);
+	if (!taken.length) return m;
+	let out: Model = { ...m, queue: m.queue.filter((q) => !taken.includes(q)) };
+	for (const q of taken) {
+		const [m2, id] = next(out, 'u');
+		const via = q.kind === 'steer' || q.kind === 'follow_up' ? q.kind : 'prompt';
+		out = {
+			...m2,
+			items: [...m2.items, { kind: 'user', id, agent: 'lead', text: q.text, via, images: 0 }]
+		};
+	}
+	return out;
+}
 
 /** What the page itself sent: the host does not echo a client's own input back to it. */
 export function addLocalUser(
@@ -481,6 +549,24 @@ export function addLocalUser(
 	const item: UserItem = { kind: 'user', id, agent, text, via, images };
 	if (previews.length) item.previews = previews;
 	return { ...m2, items: [...m2.items, item] };
+}
+
+/** Puts the text a slash command showed into the transcript as a card. */
+export function addCommandCard(
+	m: Model,
+	name: string,
+	args: string,
+	text: string,
+	agent = 'lead'
+): Model {
+	const [m2, id] = next(m, 'c');
+	const item: CommandItem = { kind: 'command', id, agent, name, args: args.trim(), text };
+	return { ...m2, items: [...m2.items, item] };
+}
+
+/** The command cards of `m`, to carry over a rebuild of the transcript from a snapshot. */
+export function commandCards(m: Model): CommandItem[] {
+	return m.items.filter((i): i is CommandItem => i.kind === 'command');
 }
 
 export function takeToasts(m: Model): [Model, Toast[]] {
@@ -498,7 +584,10 @@ export function rowsToItems(rows: Row[], agent = 'lead', prefix = 'h'): Item[] {
 		if (msg.role === 'user') {
 			const text = withoutMemory(textOf(msg.content));
 			const images = msg.content.filter((b) => b.type === 'image').length;
-			if (text || images) items.push({ kind: 'user', id, agent, text, via: 'prompt', images });
+			const note = branchSummary(text);
+			if (note !== null)
+				items.push({ kind: 'notice', id, agent, level: 'info', text: note, summary: true });
+			else if (text || images) items.push({ kind: 'user', id, agent, text, via: 'prompt', images });
 		} else if (msg.role === 'assistant') {
 			const blocks: TextBlock[] = msg.content.flatMap((b, index): TextBlock[] =>
 				(b.type === 'text' || b.type === 'thinking') && b.text.trim()

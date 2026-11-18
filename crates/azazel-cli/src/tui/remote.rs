@@ -1298,6 +1298,7 @@ impl Backend for Remote {
         let command = Command::RunCommand {
             name: name.to_string(),
             args: args.to_string(),
+            only: None,
         };
         tokio::spawn(async move {
             let outcome = match ask::<CommandResult>(&client, command).await {
@@ -1318,6 +1319,7 @@ impl Backend for Remote {
         let command = Command::RunCommand {
             name: name.to_string(),
             args: args.to_string(),
+            only: None,
         };
         Some(match ask::<CommandResult>(&self.client, command).await {
             Ok(CommandResult::Show { text }) => Ok(text),

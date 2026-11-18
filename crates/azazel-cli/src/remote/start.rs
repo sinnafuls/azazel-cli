@@ -2,9 +2,9 @@
 //! the terminal of `azazel remote` is asked before a session works in a folder nobody trusted.
 //!
 //! A browser may start sessions in the projects sessions have worked in and in the folders of
-//! `[remote] folders`, or anywhere once `[remote] allow_bypass` is set. A folder whose project
-//! is not trusted is started trusted for that session only, and only when bypass is allowed or
-//! the person at the terminal says yes.
+//! `[remote] folders`, or anywhere once `[remote] allow_bypass` or `[remote] full_access` is
+//! set. A folder whose project is not trusted is started trusted for that session only, and only
+//! when one of those is set or the person at the terminal says yes.
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -39,11 +39,25 @@ pub(crate) struct Rules {
     pub user_home: Option<PathBuf>,
     /// `[remote] folders`, as written.
     pub roots: Vec<String>,
-    /// `[remote] allow_bypass`: any folder, and no question.
+    /// `[remote] allow_bypass` or `[remote] full_access`: any folder, and no question.
     pub anywhere: bool,
 }
 
 impl Rules {
+    /// The rules `[remote]` sets: full access opens every folder as bypass does.
+    pub fn of(
+        home: PathBuf,
+        user_home: Option<PathBuf>,
+        remote: &azazel_core::config::RemoteConfig,
+    ) -> Rules {
+        Rules {
+            home,
+            user_home,
+            roots: remote.folders.clone(),
+            anywhere: remote.allow_bypass || remote.full_access,
+        }
+    }
+
     /// `typed` as a folder: `~` is the home directory, and the path must be whole.
     fn path(&self, typed: &str) -> Option<PathBuf> {
         let typed = typed.trim();
@@ -380,6 +394,41 @@ mod tests {
         drop(asked);
         assert!(matches!(
             given.admit(&request, Some(&asks)).await,
+            Err(StartError::Refused(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn full_access_starts_an_untrusted_folder_anywhere_without_asking_the_terminal() {
+        let scratch = tempfile::tempdir().unwrap();
+        let home = scratch.path().join("azazel");
+        let elsewhere = scratch.path().join("elsewhere");
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let remote = |allow_bypass: bool, full_access: bool| azazel_core::config::RemoteConfig {
+            allow_bypass,
+            full_access,
+            ..Default::default()
+        };
+        let (asks, mut asked) = mpsc::channel::<Ask>(1);
+        for (bypass, full) in [(false, true), (true, false)] {
+            let rules = Rules::of(
+                home.clone(),
+                Some(scratch.path().to_path_buf()),
+                &remote(bypass, full),
+            );
+            let (dir, trust) = rules.admit(&new(&elsewhere), Some(&asks)).await.unwrap();
+            assert_eq!((dir, trust), (azazel_core::paths::canonical(&elsewhere), true));
+            assert!(asked.try_recv().is_err(), "the terminal was asked");
+        }
+        // Neither: the folder is not open to browsers.
+        let closed = Rules::of(
+            home.clone(),
+            Some(scratch.path().to_path_buf()),
+            &remote(false, false),
+        );
+        assert!(matches!(
+            closed.admit(&new(&elsewhere), Some(&asks)).await,
             Err(StartError::Refused(_))
         ));
     }

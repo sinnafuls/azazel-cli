@@ -322,6 +322,14 @@ pub trait CommandHandler: Send + Sync {
     async fn run(&self, args: &str, ctx: &ExtCtx) -> CommandOutcome;
 }
 
+/// Who provides a command: the id of the extension that registered it (or its source).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandProvider {
+    pub owner: String,
+    /// Whether it comes from a [`CommandSource`], not from `Registrar::command`.
+    pub dynamic: bool,
+}
+
 /// Commands that come and go while the session runs (a connected server's prompts, for example).
 pub trait CommandSource: Send + Sync {
     fn commands(&self) -> Vec<Command>;
@@ -870,6 +878,34 @@ impl Registry {
 
     pub fn command(&self, name: &str) -> Option<Command> {
         self.commands().into_iter().find(|c| c.name == name)
+    }
+
+    /// Who provides the command `name` that [`Registry::command`] resolves, and whether it comes
+    /// from a dynamic source (a script, an MCP server) rather than a registration. Both
+    /// lookups follow the order of [`Registry::commands`], so the answer is for the same command.
+    pub fn command_provider(&self, name: &str) -> Option<CommandProvider> {
+        let registered = self
+            .commands
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(_, command)| command.name == name)
+            .map(|(owner, _)| owner.clone());
+        if let Some(owner) = registered {
+            return Some(CommandProvider {
+                owner,
+                dynamic: false,
+            });
+        }
+        let sources: Vec<(String, Arc<dyn CommandSource>)> = self
+            .command_sources
+            .read()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone();
+        sources
+            .into_iter()
+            .find(|(_, source)| source.commands().iter().any(|c| c.name == name))
+            .map(|(owner, _)| CommandProvider { owner, dynamic: true })
     }
 
     /// The names of the commands extensions registered outright, sorted: those of dynamic

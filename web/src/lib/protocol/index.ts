@@ -1,13 +1,13 @@
 // Types of the RPC protocol, from the generated schema, plus what the schema does not carry yet:
 // the optional members of the remote protocol (`at`, `since`, `cursor`, `gap`, paged history).
-import type { Frame, Request, Attached, Snapshot, MessageRow } from './rpc';
+import type { Frame, Request, Attached, Snapshot, MessageRow, ThemeColors } from './rpc';
 
 export type {
 	Frame,
 	Request,
 	State,
 	Member,
-	Question1 as Question,
+	Question,
 	ModelRow,
 	AccountUsage,
 	Window,
@@ -17,6 +17,19 @@ export type {
 	RoleRow,
 	Roles,
 	CommandRow,
+	CommandResult,
+	SaveTo,
+	SettingRow,
+	SettingList,
+	SettingChanged,
+	ContextReport,
+	ContextCategory,
+	CostReport,
+	ModelSpend,
+	SideSpend,
+	TrustState,
+	DirList,
+	Forgotten,
 	Image,
 	Decision,
 	MessageRow,
@@ -27,6 +40,9 @@ export type {
 	Queued,
 	StreamEvent
 } from './rpc';
+
+/** What `get_theme` answers and the `theme` frame carries beside its `type`. */
+export type TerminalTheme = ThemeColors;
 
 /** One frame of a given `type`, with the log position the host added. */
 export type FrameOf<T extends Frame['type']> = Extract<Frame, { type: T }> & { at?: number };
@@ -72,6 +88,8 @@ export interface Me {
 	access: 'view' | 'control';
 	expires: string;
 	allow_bypass: boolean;
+	/** `[remote] full_access`: this device may do anything the terminal can. */
+	full_access: boolean;
 	/** Whether this device may start sessions (`POST /api/sessions`). */
 	can_start?: boolean;
 	protocol: number;

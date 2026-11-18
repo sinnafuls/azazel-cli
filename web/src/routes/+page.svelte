@@ -1,113 +1,78 @@
 <script lang="ts">
+	// No session is open. Wide: a quiet start (the sessions are in the sidebar). A phone: the list is
+	// the page, under a bar that opens the sidebar.
 	import SessionList from '$lib/components/SessionList.svelte';
 	import Brand from '$lib/components/Brand.svelte';
-	import PairDevice from '$lib/components/PairDevice.svelte';
-	import ThemeToggle from '$lib/components/ThemeToggle.svelte';
-	import { app } from '$lib/app.svelte';
+	import { ui } from '$lib/ui.svelte';
+	import { viewport } from '$lib/media.svelte';
 	import { sessions } from '$lib/sessions.svelte';
 	import { newChat } from '$lib/newchat.svelte';
-	import Plus from '@lucide/svelte/icons/plus';
+	import SquarePen from '@lucide/svelte/icons/square-pen';
 	import QrCode from '@lucide/svelte/icons/qr-code';
-	import LogOut from '@lucide/svelte/icons/log-out';
+	import PanelLeft from '@lucide/svelte/icons/panel-left';
 
-	let pairing = $state(false);
 	const waiting = $derived(sessions.list.filter((s) => s.state === 'waiting for you').length);
 	const summary = $derived(
 		!sessions.loaded
 			? 'Looking for sessions…'
 			: sessions.list.length === 0
-				? 'On this machine'
-				: `${sessions.list.length} on this machine${waiting ? `, ${waiting} need${waiting === 1 ? 's' : ''} you` : ''}`
+				? 'On this computer'
+				: `${sessions.list.length} on this computer${waiting ? `, ${waiting} need${waiting === 1 ? 's' : ''} you` : ''}`
 	);
 </script>
 
-<!-- Phone and tablet: the list is the page. Desktop has it in the sidebar, so this is a quiet prompt. -->
-<div class="flex min-h-0 flex-1 flex-col lg:hidden">
-	<header
-		class="box-content flex h-14 shrink-0 items-center justify-between pt-[env(safe-area-inset-top)] pr-1.5 pl-4"
-	>
-		<Brand />
-		<div class="flex">
+{#if !viewport.wide}
+	<div class="flex min-h-0 flex-1 flex-col">
+		<header class="flex h-12 shrink-0 items-center gap-1 px-2 pt-[env(safe-area-inset-top)]">
+			<button
+				type="button"
+				class="icon-btn"
+				aria-label="Open the sidebar"
+				onclick={() => (ui.drawer = true)}><PanelLeft class="size-[18px]" /></button
+			>
+			<span class="mr-auto pl-1"><Brand size={22} /></span>
 			{#if newChat.available}
-				<button
-					type="button"
-					class="btn btn-quiet btn-icon"
-					aria-label="New chat"
-					onclick={() => newChat.show()}><Plus class="size-[18px]" /></button
+				<button type="button" class="icon-btn" aria-label="New chat" onclick={() => newChat.show()}
+					><SquarePen class="size-[18px]" /></button
 				>
 			{/if}
-			<button
-				type="button"
-				class="btn btn-quiet btn-icon"
-				aria-label="Open on another device"
-				onclick={() => (pairing = true)}><QrCode class="size-[18px]" /></button
-			>
-			<ThemeToggle />
-			<button
-				type="button"
-				class="btn btn-quiet btn-icon"
-				aria-label="Sign out"
-				onclick={() => app.logout()}><LogOut class="size-[18px]" /></button
-			>
-		</div>
-	</header>
-	<div
-		class="scroll-thin min-h-0 flex-1 overflow-y-auto pb-[max(1rem,env(safe-area-inset-bottom))]"
-	>
-		<div class="mx-auto w-full max-w-2xl px-4">
-			<div class="pt-5 pb-4">
-				<h1 class="text-2xl font-semibold tracking-[-0.04em]">Sessions</h1>
+		</header>
+		<div
+			class="scroll-thin min-h-0 flex-1 overflow-y-auto pb-[max(1rem,env(safe-area-inset-bottom))]"
+		>
+			<div class="px-4 pt-4 pb-3">
+				<h1 class="text-2xl font-semibold tracking-[-0.03em]">Sessions</h1>
 				<p class="text-muted-foreground mt-0.5 text-sm">{summary}</p>
 			</div>
-			<SessionList card />
+			<div class="px-2"><SessionList /></div>
 		</div>
 	</div>
-</div>
-
-<div class="relative isolate hidden min-h-0 flex-1 place-items-center overflow-hidden p-8 lg:grid">
-	<div class="ground-lit absolute inset-0 -z-10 opacity-80" aria-hidden="true"></div>
-	<div class="dotgrid -z-10" aria-hidden="true"></div>
-	<div class="enter-seq relative flex w-full max-w-md flex-col items-center text-center">
-		<Brand size={44} word={false} />
-		<h1 class="mt-7 text-[2rem] leading-tight font-semibold tracking-[-0.045em] text-balance">
-			{waiting
-				? `${waiting} session${waiting === 1 ? ' needs' : 's need'} you`
-				: sessions.list.length
-					? 'Pick up where an agent is'
-					: 'Nothing running yet'}
-		</h1>
-		<p class="text-muted-foreground mt-3 text-[15px] leading-relaxed">
-			{sessions.list.length
-				? 'Choose a session on the left to follow it live. Those waiting for an answer are listed first.'
-				: 'Start a session here, or run azazel bg on the computer, and it shows up on the left.'}
-		</p>
-		<div class="mt-8 flex flex-wrap justify-center gap-2.5">
-			{#if newChat.available}
-				<button type="button" class="btn btn-primary" onclick={() => newChat.show()}
-					><Plus class="size-4" /> New chat</button
+{:else}
+	<div class="grid min-h-0 flex-1 place-items-center overflow-y-auto p-8">
+		<div class="enter-seq flex w-full max-w-md flex-col items-center text-center">
+			<Brand size={40} word={false} />
+			<h1 class="mt-6 text-[1.75rem] leading-tight font-semibold tracking-[-0.035em] text-balance">
+				{waiting
+					? `${waiting} session${waiting === 1 ? ' needs' : 's need'} you`
+					: sessions.list.length
+						? 'Pick up where an agent is'
+						: 'What should azazel do?'}
+			</h1>
+			<p class="text-muted-foreground mt-2.5 text-[15px] leading-relaxed text-pretty">
+				{sessions.list.length
+					? 'Choose a session in the sidebar to follow it live. Those waiting for an answer are listed first.'
+					: 'Start a chat in a folder of this computer. It keeps running when you close the browser.'}
+			</p>
+			<div class="mt-7 flex flex-wrap justify-center gap-2.5">
+				{#if newChat.available}
+					<button type="button" class="btn btn-primary" onclick={() => newChat.show()}
+						><SquarePen class="size-4" /> New chat</button
+					>
+				{/if}
+				<button type="button" class="btn btn-secondary" onclick={() => (ui.pairing = true)}
+					><QrCode class="size-4" /> Open on your phone</button
 				>
-			{/if}
-			<button type="button" class="btn btn-secondary" onclick={() => (pairing = true)}
-				><QrCode class="size-4" /> Open on your phone</button
-			>
+			</div>
 		</div>
-		{#if sessions.list.length}
-			<dl class="edge-lit bg-card/70 mt-10 grid w-full grid-cols-3 rounded-[20px] backdrop-blur">
-				{#each [['Running', sessions.list.length], ['Need you', waiting], ['Working', sessions.list.filter((s) => s.state === 'working').length]] as [k, v] (k)}
-					<div class="flex flex-col-reverse px-4 py-4">
-						<dt class="text-muted-foreground mt-1 text-xs">{k}</dt>
-						<dd
-							class="num text-2xl font-semibold tracking-[-0.04em] {k === 'Need you' && v
-								? 'text-accent-text'
-								: ''}"
-						>
-							{v}
-						</dd>
-					</div>
-				{/each}
-			</dl>
-		{/if}
 	</div>
-</div>
-
-<PairDevice open={pairing} onclose={() => (pairing = false)} />
+{/if}

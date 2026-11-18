@@ -629,6 +629,7 @@ impl App {
 
         let services = Arc::new(Services::new());
         services.insert(Arc::new(Ui(Arc::new(Headless))));
+        services.insert(Arc::new(crate::rpc::admin::SessionSettings::default()));
         services.insert(Arc::new(azazel_agent::ToolSettings {
             cache_reads: config.tools.cache_reads,
             retries: config.tools.retries,

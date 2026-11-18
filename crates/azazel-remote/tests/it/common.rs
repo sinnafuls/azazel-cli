@@ -129,6 +129,8 @@ pub fn options() -> Options {
         device_ttl: Duration::from_secs(3600),
         redact: true,
         allow_bypass: false,
+        full_access: false,
+        gated: |_| false,
     }
 }
 

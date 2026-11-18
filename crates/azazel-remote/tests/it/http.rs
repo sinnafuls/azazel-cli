@@ -393,3 +393,115 @@ async fn bypass_is_refused_to_a_new_session_unless_allowed_and_starts_are_limite
     assert_eq!(over.headers["retry-after"], "60");
     assert_eq!(fake.started.lock().unwrap().len(), 10);
 }
+
+#[tokio::test]
+async fn me_says_whether_the_server_gives_full_access() {
+    let me_of = |full_access: bool| async move {
+        let (fake, _received) = Fake::new();
+        let server = azazel_remote::Server::start(
+            azazel_remote::Options {
+                full_access,
+                ..options()
+            },
+            fake,
+        )
+        .await
+        .unwrap();
+        let port = server.port();
+        let link = server.link(Access::Control);
+        let body = serde_json::json!({ "secret": secret(&link.url), "bearer": true }).to_string();
+        let paired = request(port, "POST", "/api/pair", &[("X-Azazel", "1")], &body).await;
+        let auth = format!("Bearer {}", paired.json()["token"].as_str().unwrap());
+        request(port, "GET", "/api/me", &[("Authorization", &auth)], "")
+            .await
+            .json()
+    };
+    assert_eq!(me_of(false).await["full_access"], false);
+    assert_eq!(me_of(true).await["full_access"], true);
+}
+
+#[tokio::test]
+async fn a_control_device_lists_the_paired_devices_without_their_tokens() {
+    let (server, ..) = server().await;
+    let port = server.port();
+    let control = pair(&server, Access::Control).await;
+    let view = pair(&server, Access::View).await;
+    let auth = format!("Bearer {control}");
+
+    let listed = request(port, "GET", "/api/devices", &[("Authorization", &auth)], "").await;
+    assert_eq!(listed.status, 200, "{}", listed.text());
+    let devices = listed.json()["devices"].as_array().unwrap().clone();
+    assert_eq!(devices.len(), 2);
+    let accesses: Vec<_> = devices.iter().map(|d| d["access"].as_str().unwrap()).collect();
+    assert_eq!(accesses, ["control", "view"]);
+    let current: Vec<_> = devices.iter().map(|d| d["current"].as_bool().unwrap()).collect();
+    assert_eq!(current, [true, false]);
+    for device in &devices {
+        assert!(device["paired"].as_str().unwrap().contains('T'));
+        assert!(device["expires"].as_str().unwrap().contains('T'));
+        assert!(!device["id"].as_str().unwrap().is_empty());
+    }
+    let text = listed.text();
+    assert!(
+        !text.contains(&control) && !text.contains(&view),
+        "a token left the server"
+    );
+
+    let auth = format!("Bearer {view}");
+    let refused = request(port, "GET", "/api/devices", &[("Authorization", &auth)], "").await;
+    assert_eq!(refused.status, 403);
+    assert_eq!(request(port, "GET", "/api/devices", &[], "").await.status, 401);
+}
+
+#[tokio::test]
+async fn signing_everyone_out_ends_every_device_and_void_links() {
+    let (server, ..) = server().await;
+    let port = server.port();
+    let control = pair(&server, Access::Control).await;
+    let other = pair(&server, Access::View).await;
+    let pending = server.link(Access::Control);
+    let auth = format!("Bearer {control}");
+
+    // Like every state-changing request, it needs `X-Azazel`.
+    let plain = request(port, "DELETE", "/api/devices", &[("Authorization", &auth)], "").await;
+    assert_eq!(plain.status, 403);
+    let view = format!("Bearer {other}");
+    let view_try = request(
+        port,
+        "DELETE",
+        "/api/devices",
+        &[("Authorization", &view), ("X-Azazel", "1")],
+        "",
+    )
+    .await;
+    assert_eq!(view_try.status, 403);
+    assert_eq!(
+        request(port, "GET", "/api/me", &[("Authorization", &view)], "")
+            .await
+            .status,
+        200
+    );
+
+    let done = request(
+        port,
+        "DELETE",
+        "/api/devices",
+        &[("Authorization", &auth), ("X-Azazel", "1")],
+        "",
+    )
+    .await;
+    assert_eq!(done.status, 204);
+    assert!(done.headers["set-cookie"].contains("Max-Age=0"));
+    for token in [&control, &other] {
+        let auth = format!("Bearer {token}");
+        assert_eq!(
+            request(port, "GET", "/api/me", &[("Authorization", &auth)], "")
+                .await
+                .status,
+            401
+        );
+    }
+    let body = serde_json::json!({ "secret": secret(&pending.url) }).to_string();
+    let again = request(port, "POST", "/api/pair", &[("X-Azazel", "1")], &body).await;
+    assert_eq!(again.status, 401);
+}

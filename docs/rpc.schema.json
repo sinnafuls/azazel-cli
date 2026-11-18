@@ -847,13 +847,150 @@
             },
             "args": {
               "type": "string"
+            },
+            "only": {
+              "type": [
+                "array",
+                "null"
+              ],
+              "items": {
+                "$ref": "#/$defs/CommandOrigin"
+              }
             }
           },
           "required": [
             "type",
             "name"
           ],
-          "description": "Runs a slash command by name (without the slash). Answers with [`CommandResult`]."
+          "description": "Runs a slash command by name (without the slash). Answers with [`CommandResult`].\nWith `only`, the command runs only when it comes from one of those sources (see\n[`CommandRow::source`]); one that comes from another is refused. `azazel remote` sets it\nfor a browser that may not run the project's own commands, so that the command it\napproved by name is the one that runs."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_settings"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Every setting the settings screen of the terminal can change: where it is shown, how it\nis edited, its value, its default and who set it. Answers with [`SettingList`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_setting"
+            },
+            "path": {
+              "type": "string"
+            },
+            "value": true,
+            "scope": {
+              "$ref": "#/$defs/SaveTo",
+              "default": "session"
+            }
+          },
+          "required": [
+            "type",
+            "path",
+            "value"
+          ],
+          "description": "Changes one setting (`path` as `table.key`, `value` as JSON of the setting's kind; `null`\ntakes it out of the file `scope` names, back to what the layers below say). `session`\nchanges it for this session only and takes only settings that apply at once (`live`);\n`home` writes the home config, `project` the project's (only in a trusted project, and a\ntrust-gated key only there). The value is checked against the configuration first. A\nchange of `tui.theme` is followed by a `theme` frame. Answers with [`SettingChanged`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_theme"
+            },
+            "light": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The colours of the configured terminal theme. A theme that follows the terminal's\nbackground takes its light palette when `light` is true. Answers with [`ThemeColors`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_context"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "What the lead's last request was made of, by category. Answers with [`ContextReport`], or\n`null` when the session has sent no request yet."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "get_cost"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Tokens and money spent in this session, with the prompt cache by model and the requests\nmade on the side. Answers with [`CostReport`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "trust_project"
+            },
+            "trusted": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Trusts the project (or with `trusted: false` stops trusting it) from the next start of\nazazel, as `/trust yes|no` does. Answers with [`TrustState`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "add_dir"
+            },
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "path"
+          ],
+          "description": "Lets agents work in another directory too, until azazel exits, as `/add-dir` does. A\nrelative path is taken from the working directory. Answers with [`DirList`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "forget_approvals"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "Forgets every remembered approval and every rule added in this session, as\n`/forget-approvals` does. Answers with [`Forgotten`]."
         },
         {
           "type": "object",
@@ -1001,6 +1138,36 @@
         }
       ],
       "description": "Where `set_role` keeps a change."
+    },
+    "CommandOrigin": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "builtin",
+          "description": "Azazel itself or one of its extensions: a report, `/fast`, `/memory`, ..."
+        },
+        {
+          "type": "string",
+          "const": "skill",
+          "description": "A skill, named `skill:<name>`."
+        },
+        {
+          "type": "string",
+          "const": "mcp",
+          "description": "A prompt of an MCP server, named `mcp:<server>:<prompt>`."
+        },
+        {
+          "type": "string",
+          "const": "custom",
+          "description": "A Markdown file of the user's or the project's `commands` directory."
+        },
+        {
+          "type": "string",
+          "const": "script",
+          "description": "A command a Luau script registered."
+        }
+      ],
+      "description": "Where a command of `list_commands` comes from."
     },
     "Replay": {
       "oneOf": [
@@ -1751,6 +1918,20 @@
           "description": "What an agent was handed from outside its own work. Without `agent` (background\nsessions only) it is what a client sent the lead: `kind` is `prompt`, `steer` or\n`follow_up`; it is in the log, in what a later client is replayed and in what the other\nclients read, never in what the sender itself reads. With `agent` it is what a sub-agent\nwas given: `kind` is `prompt`, for the task it started with and for every message sent\nto it since."
         },
         {
+          "$ref": "#/$defs/ThemeColors",
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "theme"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "description": "The colours of the terminal theme changed: the theme setting was changed with\n`set_setting`, or in the terminal UI a browser shares."
+        },
+        {
           "type": "object",
           "properties": {
             "type": {
@@ -1788,6 +1969,14 @@
             "string",
             "null"
           ],
+          "default": null
+        },
+        "code": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Why a failed command failed, when a client may want to tell: `refused` is the access of\nthe device (`azazel remote` refuses a command it does not allow it).",
           "default": null
         }
       },
@@ -2106,6 +2295,32 @@
         "question"
       ],
       "description": "A question from an agent: an `ask` request, or one of the questions of a `form`."
+    },
+    "ThemeColors": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The theme as the setting names it (`auto`, `nord`, a file's name)."
+        },
+        "light": {
+          "type": "boolean",
+          "description": "Whether the palette is one for a light background."
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Every colour role (`text`, `muted`, `accent`, `code_bg`, `user_bg`, `diff_add_bg`, ...) as\n`#rrggbb`. The terminal's own colours are given as a usual dark or light terminal has them."
+        }
+      },
+      "required": [
+        "name",
+        "light",
+        "roles"
+      ],
+      "description": "The data of `get_theme` and the `theme` frame."
     },
     "State": {
       "type": "object",
@@ -3268,13 +3483,440 @@
         },
         "description": {
           "type": "string"
+        },
+        "source": {
+          "$ref": "#/$defs/CommandOrigin",
+          "description": "Where the command comes from."
         }
       },
       "required": [
         "name",
-        "description"
+        "description",
+        "source"
       ],
       "description": "One command of `list_commands`."
+    },
+    "SettingList": {
+      "type": "object",
+      "properties": {
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SettingRow"
+          }
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The pages in the order of the settings screen's tabs."
+        },
+        "project": {
+          "type": "boolean",
+          "description": "Whether the project is trusted, which `set_setting` with `scope: project` needs."
+        },
+        "home_config": {
+          "type": "string",
+          "description": "The files `home` and `project` write."
+        },
+        "project_config": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "settings",
+        "pages",
+        "project",
+        "home_config",
+        "project_config"
+      ],
+      "description": "The data of `get_settings`."
+    },
+    "SettingRow": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Where it lives in the config file, as `table.key`."
+        },
+        "page": {
+          "type": "string",
+          "description": "The page of the settings screen it is on (`Appearance`), and the heading it stands under."
+        },
+        "group": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "kind": {
+          "type": "string",
+          "description": "How it is edited: `switch` (a boolean), `choice` (one of `choices`), `theme` (one of\n`choices`, the themes there are), `number`, `text`, `list` (of texts), `table` (of names\nto values) or `role` (a model chain, which `set_role` changes)."
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "live": {
+          "type": "boolean",
+          "description": "The running session takes a new value at once; the others apply to the next session."
+        },
+        "description": {
+          "type": "string"
+        },
+        "value": {
+          "description": "The value in effect; `null` when nothing sets it and it has no default."
+        },
+        "default": {
+          "description": "`null` for a setting with no default (the `default` role)."
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Who set the value in effect: `session`, `flag` (the command line), `env`, `local`\n(`config.local.toml`), `project` or `home`; absent when it is the default."
+        },
+        "gated": {
+          "type": "boolean",
+          "description": "A project's config may set it only once the project is trusted."
+        }
+      },
+      "required": [
+        "path",
+        "page",
+        "group",
+        "label",
+        "kind",
+        "live",
+        "description",
+        "value",
+        "default",
+        "gated"
+      ],
+      "description": "One setting of `get_settings`."
+    },
+    "SettingChanged": {
+      "type": "object",
+      "properties": {
+        "setting": {
+          "$ref": "#/$defs/SettingRow",
+          "description": "The setting as it is now."
+        },
+        "message": {
+          "type": "string",
+          "description": "What happened, as the terminal says it (`tui.theme = nord`)."
+        }
+      },
+      "required": [
+        "setting",
+        "message"
+      ],
+      "description": "The data of `set_setting`."
+    },
+    "ContextReport": {
+      "type": "object",
+      "properties": {
+        "agent": {
+          "type": "string"
+        },
+        "request": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "Which of the agent's requests this was, counted from 1."
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The `provider/model` that answered; `null` until one has.",
+          "default": null
+        },
+        "window": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The model's context window; 0 when unknown."
+        },
+        "estimate": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The sum of the categories' estimates."
+        },
+        "reported": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Input tokens the provider counted, cached ones included.",
+          "default": null
+        },
+        "tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The sum of the categories' tokens: `reported` when there is one, else `estimate`."
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ContextCategory"
+          }
+        }
+      },
+      "required": [
+        "agent",
+        "request",
+        "window",
+        "estimate",
+        "tokens",
+        "categories"
+      ],
+      "description": "The data of `get_context`: the token breakdown of the lead's last request."
+    },
+    "ContextCategory": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "`system`, `tools`, `messages`, `tool_results` or `images`."
+        },
+        "name": {
+          "type": "string",
+          "description": "The part, the MCP server or the kind of message; empty for the rest of its kind."
+        },
+        "label": {
+          "type": "string",
+          "description": "The row's label as `/context` shows it."
+        },
+        "items": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Parts, tools, blocks or images counted here."
+        },
+        "estimate": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Tokens by the counter compaction uses."
+        },
+        "tokens": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The estimate scaled so that the categories add up to what the provider counted."
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "label",
+        "items",
+        "estimate",
+        "tokens"
+      ],
+      "description": "One category of a [`ContextReport`]."
+    },
+    "CostReport": {
+      "type": "object",
+      "properties": {
+        "requests": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "description": "The lead's requests and what they used; `usage.cost_usd` is absent when no price is known."
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "What the figure leaves out, when something is (a service tier without prices)."
+        },
+        "cache_hit_rate": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The share of every agent's input read from the prompt cache, in percent."
+        },
+        "models": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ModelSpend"
+          },
+          "description": "Every agent's requests by model."
+        },
+        "side": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SideSpend"
+          },
+          "description": "Requests made outside the conversation, by purpose."
+        },
+        "warming": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SideSpend"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The requests that kept the prompt cache warm; absent when warming is off."
+        }
+      },
+      "required": [
+        "requests",
+        "usage",
+        "models",
+        "side"
+      ],
+      "description": "The data of `get_cost`."
+    },
+    "ModelSpend": {
+      "type": "object",
+      "properties": {
+        "model": {
+          "type": "string"
+        },
+        "requests": {
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0
+        },
+        "input": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Input tokens that were neither read from the cache nor written to it."
+        },
+        "cache_read": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "cache_write": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "hit_rate": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "The share of the input read from the cache, in percent; absent when there was no input."
+        }
+      },
+      "required": [
+        "model",
+        "requests",
+        "input",
+        "cache_read",
+        "cache_write"
+      ],
+      "description": "One model's requests in a [`CostReport`], as the prompt cache counted them."
+    },
+    "SideSpend": {
+      "type": "object",
+      "properties": {
+        "purpose": {
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/$defs/Usage"
+        }
+      },
+      "required": [
+        "purpose",
+        "usage"
+      ],
+      "description": "Requests made for one purpose outside the conversation (`btw`, `name`, `memory`, ...)."
+    },
+    "TrustState": {
+      "type": "object",
+      "properties": {
+        "root": {
+          "type": "string",
+          "description": "The project root the decision is about."
+        },
+        "trusted": {
+          "type": "boolean",
+          "description": "Whether the project is trusted in this run."
+        },
+        "saved": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "The decision that is kept for the next start; `null` when there is none."
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "root",
+        "trusted",
+        "message"
+      ],
+      "description": "The data of `trust_project`."
+    },
+    "DirList": {
+      "type": "object",
+      "properties": {
+        "dirs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Every directory agents may work in."
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "dirs",
+        "message"
+      ],
+      "description": "The data of `add_dir`."
+    },
+    "Forgotten": {
+      "type": "object",
+      "properties": {
+        "count": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0,
+          "description": "How many rules and approvals were forgotten."
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "count",
+        "message"
+      ],
+      "description": "The data of `forget_approvals`."
     }
   }
 }

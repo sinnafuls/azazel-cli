@@ -83,6 +83,9 @@ impl Tui {
                     }
                 });
                 self.sharing = Some(sharing);
+                if self.env.config.remote.full_access {
+                    self.warn(crate::remote::FULL_ACCESS_WARNING);
+                }
                 true
             }
             Err(why) => {

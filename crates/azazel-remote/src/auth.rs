@@ -29,6 +29,7 @@ pub(crate) struct Device {
     /// Names it in counts and logs; not a secret.
     pub id: String,
     pub access: Access,
+    pub paired: SystemTime,
     pub expires: SystemTime,
     /// Cancelled when the device is signed out, revoked or expires.
     pub cancel: CancellationToken,
@@ -135,6 +136,7 @@ impl Auth {
         let device = Device {
             id: digest.chars().take(10).collect(),
             access: link.access,
+            paired: now,
             expires: now + self.device_ttl,
             cancel: CancellationToken::new(),
         };
@@ -154,6 +156,21 @@ impl Auth {
             return None;
         }
         Some(device.clone())
+    }
+
+    /// Every device that is signed in, the one paired first at the top. Tokens are not kept, so
+    /// none can be given out.
+    pub fn devices(&self) -> Vec<Device> {
+        let now = self.clock.now();
+        let mut devices: Vec<Device> = self
+            .lock()
+            .devices
+            .values()
+            .filter(|device| device.expires > now)
+            .cloned()
+            .collect();
+        devices.sort_by_key(|device| device.paired);
+        devices
     }
 
     pub fn sign_out(&self, token: &str) {

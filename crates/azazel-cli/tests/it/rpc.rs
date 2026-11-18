@@ -497,3 +497,252 @@ fn commands_change_the_session_and_mistakes_are_answered() {
 
     assert_eq!(client.finish(), Some(0));
 }
+
+#[test]
+fn settings_are_listed_and_changed_in_the_scope_asked_for() {
+    let mut client = Client::start("write_read.json");
+
+    let (_, list) = client.ask(1, json!({ "type": "get_settings" }));
+    let rows = list["data"]["settings"].as_array().unwrap();
+    let find = |path: &str| {
+        rows.iter()
+            .find(|row| row["path"] == path)
+            .unwrap_or_else(|| panic!("{path}"))
+    };
+    let theme = find("tui.theme");
+    assert_eq!(theme["kind"], "theme");
+    assert_eq!(theme["live"], true);
+    assert!(
+        theme["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|name| name == "nord"),
+        "{theme}"
+    );
+    assert_eq!(theme["default"], theme["value"]);
+    assert!(theme.get("source").is_none(), "{theme}");
+    assert_eq!(find("permissions.mode")["gated"], true);
+    assert_eq!(find("remote.full_access")["value"], false);
+    assert_eq!(list["data"]["project"], false);
+    assert!(
+        list["data"]["pages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|page| page == "Appearance")
+    );
+
+    // A live setting changed for this session: the configuration is untouched, a `theme`
+    // frame follows and the page's colours are the new theme's.
+    let (before, changed) = client.ask(
+        2,
+        json!({ "type": "set_setting", "path": "tui.theme", "value": "light", "scope": "session" }),
+    );
+    assert_eq!(changed["success"], true, "{changed}");
+    assert_eq!(changed["data"]["setting"]["value"], "light");
+    assert_eq!(changed["data"]["setting"]["source"], "session");
+    // Kept for the session only: the user's config is as it was.
+    assert_eq!(
+        std::fs::read_to_string(client.dir.path().join("home/config.toml")).unwrap(),
+        ""
+    );
+    let frame = before
+        .iter()
+        .find(|line| line["type"] == "theme")
+        .unwrap_or_else(|| panic!("no theme frame in {before:?}"));
+    assert_eq!(frame["name"], "light");
+    assert_eq!(frame["light"], true);
+    let (_, theme) = client.ask(3, json!({ "type": "get_theme" }));
+    assert_eq!(theme["data"]["name"], "light");
+    assert_eq!(theme["data"]["roles"], frame["roles"]);
+    assert_eq!(theme["data"]["roles"].as_object().unwrap().len(), 23);
+    assert!(
+        theme["data"]["roles"]["accent"]
+            .as_str()
+            .unwrap()
+            .starts_with('#')
+    );
+    let (_, dark) = client.ask(4, json!({ "type": "get_theme", "light": false }));
+    assert_eq!(dark["data"]["name"], "light");
+
+    // A setting that applies to the next session cannot be kept for this one.
+    let (_, later) = client.ask(
+        5,
+        json!({ "type": "set_setting", "path": "cache.report_misses", "value": true, "scope": "session" }),
+    );
+    assert!(
+        later["error"].as_str().unwrap().contains("next session"),
+        "{later}"
+    );
+    // Only the theme has an effect for a session without a terminal, and a theme is a name:
+    // a path is never read.
+    let (_, kept) = client.ask(
+        60,
+        json!({ "type": "set_setting", "path": "tui.indicator", "value": "kitt", "scope": "session" }),
+    );
+    assert_eq!(kept["success"], false, "{kept}");
+    assert!(
+        kept["error"].as_str().unwrap().contains("only the theme"),
+        "{kept}"
+    );
+    for bad in ["/dev/zero", r"\\host\share\t", "../x", r"C:\t.toml", "nope"] {
+        let (_, path) = client.ask(
+            61,
+            json!({ "type": "set_setting", "path": "tui.theme", "value": bad, "scope": "session" }),
+        );
+        assert_eq!(path["success"], false, "{bad}: {path}");
+        assert!(
+            path["error"].as_str().unwrap().contains("no theme named"),
+            "{path}"
+        );
+    }
+    let (_, auto) = client.ask(
+        62,
+        json!({ "type": "set_setting", "path": "tui.theme", "value": "auto", "scope": "session" }),
+    );
+    assert_eq!(auto["success"], true, "{auto}");
+    let (_, unknown) = client.ask(
+        6,
+        json!({ "type": "set_setting", "path": "no.such", "value": 1, "scope": "home" }),
+    );
+    assert!(
+        unknown["error"].as_str().unwrap().contains("not a setting"),
+        "{unknown}"
+    );
+    let (_, invalid) = client.ask(
+        7,
+        json!({ "type": "set_setting", "path": "editor.mode", "value": "emacs-pro", "scope": "home" }),
+    );
+    assert_eq!(invalid["success"], false, "{invalid}");
+
+    // The home scope writes the user's config and reads back with its layer.
+    let (_, saved) = client.ask(
+        8,
+        json!({ "type": "set_setting", "path": "tui.todo_max", "value": 7, "scope": "home" }),
+    );
+    assert_eq!(saved["success"], true, "{saved}");
+    assert_eq!(saved["data"]["setting"]["value"], 7);
+    assert_eq!(saved["data"]["setting"]["source"], "home");
+    let text = std::fs::read_to_string(client.dir.path().join("home/config.toml")).unwrap();
+    assert!(text.contains("todo_max = 7"), "{text}");
+    let (_, list) = client.ask(9, json!({ "type": "get_settings" }));
+    let row = list["data"]["settings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["path"] == "tui.todo_max")
+        .unwrap()
+        .clone();
+    assert_eq!((&row["value"], &row["source"]), (&json!(7), &json!("home")));
+    // `null` takes it out of the file again.
+    let (_, reset) = client.ask(
+        10,
+        json!({ "type": "set_setting", "path": "tui.todo_max", "value": null, "scope": "home" }),
+    );
+    assert_eq!(reset["success"], true, "{reset}");
+    assert!(
+        !std::fs::read_to_string(client.dir.path().join("home/config.toml"))
+            .unwrap()
+            .contains("todo_max")
+    );
+
+    // The project's config is written only in a trusted project.
+    let (_, project) = client.ask(
+        11,
+        json!({ "type": "set_setting", "path": "tui.todo_max", "value": 3, "scope": "project" }),
+    );
+    assert!(
+        project["error"].as_str().unwrap().contains("trusted"),
+        "{project}"
+    );
+    assert!(!client.project().join(".azazel/config.toml").exists());
+    let (_, refused) = client.ask(
+        12,
+        json!({ "type": "set_setting", "path": "permissions.mode", "value": "bypass", "scope": "project" }),
+    );
+    assert!(
+        refused["error"].as_str().unwrap().contains("trusted"),
+        "{refused}"
+    );
+    assert!(!client.project().join(".azazel/config.toml").exists());
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn the_reports_are_data() {
+    let mut client = Client::start("write_read.json");
+
+    let (_, context) = client.ask(1, json!({ "type": "get_context" }));
+    assert_eq!(context["data"], Value::Null, "{context}");
+    let (_, cost) = client.ask(2, json!({ "type": "get_cost" }));
+    assert_eq!(cost["data"]["requests"], 0);
+    assert_eq!(cost["data"]["usage"]["input"], 0);
+    assert_eq!(cost["data"]["models"], json!([]));
+    assert_eq!(cost["data"]["side"], json!([]));
+
+    client.ask(3, json!({ "type": "set_mode", "mode": "auto" }));
+    client.ask(4, json!({ "type": "prompt", "text": "create hello" }));
+    client.until(|line| line["type"] == "idle");
+    let (_, context) = client.ask(5, json!({ "type": "get_context" }));
+    let report = &context["data"];
+    assert_eq!(report["agent"], "lead");
+    assert!(report["request"].as_u64().unwrap() >= 1);
+    assert!(report["tokens"].as_u64().unwrap() > 0, "{report}");
+    let categories = report["categories"].as_array().unwrap();
+    assert!(
+        categories
+            .iter()
+            .any(|c| c["kind"] == "tools" && c["label"] == "tool schemas"),
+        "{report}"
+    );
+    assert_eq!(
+        categories
+            .iter()
+            .map(|c| c["tokens"].as_u64().unwrap())
+            .sum::<u64>(),
+        report["tokens"].as_u64().unwrap()
+    );
+    let (_, cost) = client.ask(6, json!({ "type": "get_cost" }));
+    assert!(cost["data"]["requests"].as_u64().unwrap() >= 1, "{cost}");
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
+fn trust_directories_and_approvals_are_changed_like_the_slash_commands() {
+    let mut client = Client::start("write_read.json");
+
+    let (_, trust) = client.ask(1, json!({ "type": "trust_project", "trusted": false }));
+    assert_eq!(trust["data"]["trusted"], false, "{trust}");
+    assert_eq!(trust["data"]["saved"], false);
+    let (_, trust) = client.ask(2, json!({ "type": "trust_project" }));
+    assert_eq!(trust["data"]["saved"], true);
+    // Not in effect before the next start.
+    assert_eq!(trust["data"]["trusted"], false);
+    assert!(trust["data"]["message"].as_str().unwrap().contains("next start"));
+    let trust_file = std::fs::read_to_string(client.dir.path().join("home/trust.json")).unwrap_or_default();
+    assert!(!trust_file.is_empty());
+
+    let other = client.dir.path().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let (_, added) = client.ask(3, json!({ "type": "add_dir", "path": other.to_str().unwrap() }));
+    let dirs: Vec<&str> = added["data"]["dirs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|d| d.as_str().unwrap())
+        .collect();
+    assert!(dirs.iter().any(|dir| dir.ends_with("other")), "{added}");
+    let (_, missing) = client.ask(4, json!({ "type": "add_dir", "path": "no-such-dir" }));
+    assert!(
+        missing["error"].as_str().unwrap().contains("not a directory"),
+        "{missing}"
+    );
+
+    let (_, forgot) = client.ask(5, json!({ "type": "forget_approvals" }));
+    assert_eq!(forgot["data"]["count"], 0, "{forgot}");
+
+    assert_eq!(client.finish(), Some(0));
+}

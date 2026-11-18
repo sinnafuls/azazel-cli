@@ -364,6 +364,10 @@ config_table!(RemoteConfig {
     /// Let a browser with control access switch to the `bypass` mode, and start sessions in any
     /// folder of this machine without asking here first.
     allow_bypass: bool = false,
+    /// Let a browser with control access do everything the terminal can: run shell commands,
+    /// write files and the configuration, sign in, trust projects and start sessions in any
+    /// folder. A view link stays view-only.
+    full_access: bool = false,
     /// Folders a browser may start sessions in, beside the projects sessions have worked in;
     /// the folders inside them too. `~` is the home directory.
     folders: Vec<String> = Vec::new(),
@@ -1419,6 +1423,20 @@ pub fn trust_gated_names() -> Vec<String> {
         .collect();
     names.push("permissions.mode".to_string());
     names
+}
+
+/// Whether the key `table.key` (or anything below it) is trust-gated: a project's configuration
+/// may set it only once the project is trusted. `permissions.mode` counts, as it can be `bypass`.
+pub fn is_trust_gated(path: &str) -> bool {
+    let (table, key) = match path.split_once('.') {
+        Some((table, key)) => (table, Some(key)),
+        None => (path, None),
+    };
+    let key_head = key.map(|key| key.split('.').next().unwrap_or(key));
+    TRUST_GATED
+        .iter()
+        .any(|(gated, only)| *gated == table && only.is_none_or(|only| key_head == Some(only)))
+        || path == "permissions.mode"
 }
 
 /// The trust-gated settings a configuration file gives a value to, as they are written in

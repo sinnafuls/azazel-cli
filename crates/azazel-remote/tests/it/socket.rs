@@ -89,6 +89,41 @@ async fn a_controller_cannot_reach_the_machine_through_the_session() {
 }
 
 #[tokio::test]
+async fn a_browser_is_offered_only_the_commands_it_may_run() {
+    let (server, fake, mut received) = server().await;
+    let token = pair(&server, Access::Control).await;
+    let mut socket = connect(server.port(), "s1", Some(&token)).await;
+    next_json(&mut socket).await;
+    send(&mut socket, json!({ "id": "l", "type": "list_commands" })).await;
+    assert_eq!(sent(&mut received).await["type"], "list_commands");
+    let rows = [
+        "cost",
+        "trust",
+        "login",
+        "skill:review",
+        "mcp:github:triage",
+        "goal",
+        "deploy",
+    ]
+    .map(|name| json!({ "name": name, "description": "" }));
+    let answer = json!({ "type": "response", "id": "l", "success": true, "data": rows });
+    fake.push(&answer.to_string()).await;
+    let listed = next_json(&mut socket).await;
+    let names: Vec<&str> = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["name"].as_str().unwrap())
+        .collect();
+    // `deploy`, a project's own command, needs `allow_bypass`, which this server does not set.
+    assert_eq!(names, ["cost", "skill:review", "mcp:github:triage", "goal"]);
+    // Another response with the same shape is not touched.
+    let other = json!({ "type": "response", "id": "m", "success": true, "data": [{ "name": "trust" }] });
+    fake.push(&other.to_string()).await;
+    assert_eq!(next_json(&mut socket).await["data"][0]["name"], "trust");
+}
+
+#[tokio::test]
 async fn a_message_that_is_not_a_command_or_not_text_is_not_forwarded() {
     let (server, ..) = server().await;
     let token = pair(&server, Access::Control).await;

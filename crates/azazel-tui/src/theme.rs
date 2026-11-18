@@ -543,6 +543,25 @@ impl Theme {
         is_light_color(self.color(Role::CodeBg))
     }
 
+    /// The colour of every role as RGB, for a client that is not a terminal. The terminal's own
+    /// colour (`Default`) is what a usual dark or light terminal shows, as the theme's code
+    /// background says which of the two it is for; palette colours are the xterm ones.
+    pub fn rgb_roles(&self) -> Vec<(Role, (u8, u8, u8))> {
+        let light = self.is_light();
+        Role::ALL
+            .into_iter()
+            .map(|role| {
+                let fallback = match (role.is_background(), light) {
+                    (true, true) => (255, 255, 255),
+                    (true, false) => (24, 26, 32),
+                    (false, true) => (36, 41, 47),
+                    (false, false) => (220, 223, 228),
+                };
+                (role, self.color(role).to_rgb().unwrap_or(fallback))
+            })
+            .collect()
+    }
+
     /// SGR sequence selecting `color` as the foreground at this theme's colour depth.
     pub fn fg_color(&self, color: Color) -> String {
         self.sgr(color, false)
@@ -623,6 +642,27 @@ impl Default for Theme {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_role_has_an_rgb_value_and_the_terminal_default_follows_the_background() {
+        let dark = Theme::dark().rgb_roles();
+        assert_eq!(dark.len(), Role::ALL.len());
+        let text = |roles: &[(Role, (u8, u8, u8))], role| {
+            roles.iter().find(|(r, _)| *r == role).map(|(_, rgb)| *rgb)
+        };
+        // `Default` has no colour of its own: a light theme gets dark text, a dark one light text.
+        let light = Theme::light().rgb_roles();
+        let (dark_text, light_text) = (
+            text(&dark, Role::Text).unwrap(),
+            text(&light, Role::Text).unwrap(),
+        );
+        assert!(u32::from(dark_text.0) > 128 && u32::from(light_text.0) < 128);
+        assert_eq!(text(&dark, Role::Accent), Some((180, 142, 245)));
+        // Palette colours resolve as xterm has them.
+        let mut indexed = Theme::dark();
+        indexed.set_color(Role::Error, Color::Indexed(9));
+        assert_eq!(text(&indexed.rgb_roles(), Role::Error), Some((255, 0, 0)));
+    }
 
     #[test]
     fn parses_colour_forms() {

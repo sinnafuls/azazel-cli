@@ -5,7 +5,10 @@
 //
 // It speaks the contract of docs/remote.md: /api/pair, /api/me, /api/sessions, /api/links,
 // /api/logout and /api/ws/{id}, and replays frames recorded from the real `azazel rpc` with the
-// scripted provider (fixtures/*.jsonl). A secret starting with `view` pairs a view-only device.
+// scripted provider (fixtures/*.jsonl). A secret starting with `view` pairs a view-only device, one
+// starting with `full` a device with full access (`[remote] full_access`), which shows the red strip.
+// The 0.14 commands (get_theme, get_settings, set_setting, get_context, get_cost, run_command) answer
+// with made-up but realistic data; `MOCK_THEME=light` makes the terminal's theme a light one.
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 
@@ -33,7 +36,10 @@ const VIEW_COMMANDS = new Set([
 	'get_usage',
 	'list_models',
 	'list_roles',
-	'list_commands'
+	'list_commands',
+	'get_theme',
+	'get_context',
+	'get_cost'
 ]);
 
 // --- sessions ------------------------------------------------------------------------------
@@ -157,6 +163,19 @@ const scenarios: Scenario[] = [
 		autostart: true
 	},
 	{
+		id: 'docs',
+		name: 'Rewrite the getting-started guide',
+		state: 'idle',
+		cwd: '/home/dev/docs-site',
+		cost: 0.58,
+		mode: 'accept-edits',
+		started: minutesAgo(60 * 49),
+		frames: 'mention.jsonl',
+		prompt: 'Rewrite the getting-started guide for 0.14.',
+		prefill: (f) => f.length,
+		autostart: true
+	},
+	{
 		id: 'toasts',
 		name: 'Nightly dependency bump',
 		state: 'interrupted',
@@ -180,6 +199,7 @@ class Client {
 interface WsData {
 	session: string;
 	access: 'view' | 'control';
+	full: boolean;
 }
 
 class MockSession {
@@ -362,22 +382,57 @@ for (const s of sessions.values()) if (s.s.autostart) s.start(true);
 
 // --- devices -------------------------------------------------------------------------------
 
-const devices = new Map<string, 'view' | 'control'>();
+interface Device {
+	id: string;
+	access: 'view' | 'control';
+	full: boolean;
+	name: string;
+	paired: string;
+	seen: string;
+}
+const devices = new Map<string, Device>();
 const usedSecrets = new Set<string>();
 const links = new Map<string, 'view' | 'control'>();
+const VERSION = '0.14.0-mock';
 
-function device(req: Request): 'view' | 'control' | null {
-	const cookie = req.headers.get('cookie') ?? '';
-	const m = /azazel_device=([^;]+)/.exec(cookie);
-	return m ? (devices.get(m[1]) ?? null) : null;
+function token(req: Request): string | null {
+	return /azazel_device=([^;]+)/.exec(req.headers.get('cookie') ?? '')?.[1] ?? null;
+}
+function device(req: Request): Device | null {
+	const d = devices.get(token(req) ?? '');
+	if (d) d.seen = new Date().toISOString();
+	return d ?? null;
+}
+function deviceName(ua: string): string {
+	const os = /iPhone/.test(ua)
+		? 'iPhone'
+		: /Android/.test(ua)
+			? 'Android'
+			: /Mac OS/.test(ua)
+				? 'Mac'
+				: /Windows/.test(ua)
+					? 'Windows'
+					: 'Linux';
+	const browser = /Edg\//.test(ua)
+		? 'Edge'
+		: /Chrome\//.test(ua)
+			? 'Chrome'
+			: /Firefox\//.test(ua)
+				? 'Firefox'
+				: /Safari\//.test(ua)
+					? 'Safari'
+					: 'Browser';
+	return `${browser} on ${os}`;
 }
 
-const me = (access: 'view' | 'control') => ({
-	access,
+const me = (d: Device) => ({
+	access: d.access,
 	expires: new Date(Date.now() + 24 * 3600_000).toISOString(),
 	allow_bypass: process.env.MOCK_BYPASS !== '0',
+	can_start: d.access === 'control',
+	full_access: d.full,
 	protocol: 1,
-	version: '0.11.0-mock'
+	version: VERSION
 });
 const j = (body: unknown, init: ResponseInit = {}) =>
 	new Response(JSON.stringify(body), {
@@ -391,7 +446,672 @@ const j = (body: unknown, init: ResponseInit = {}) =>
 
 // --- commands ------------------------------------------------------------------------------
 
-const roles = { roles: [], presets: [], project: false };
+const OPUS = 'bedrock/anthropic.claude-opus-4-8';
+const roleRow = (
+	role: string,
+	chain: string[],
+	source: string,
+	thinking: string | null = null
+) => ({
+	role,
+	chain,
+	source,
+	builtin: [OPUS],
+	resolved: chain.length ? chain : [OPUS],
+	thinking
+});
+const roles = {
+	roles: [
+		roleRow('default', [OPUS, 'anthropic/claude-sonnet-4-5'], 'home', 'medium'),
+		roleRow('smol', ['anthropic/claude-haiku-4-5'], 'home'),
+		roleRow('slow', [OPUS], 'builtin', 'high'),
+		roleRow('plan', [], 'unset'),
+		roleRow('judge', ['openai/gpt-5.1'], 'project'),
+		roleRow('vision', [], 'unset')
+	],
+	presets: ['fast', 'careful', 'cheap'],
+	project: true
+};
+
+const THEME_DARK = {
+	name: 'tokyo-night',
+	light: false,
+	roles: {
+		text: '#c0caf5',
+		muted: '#9aa5ce',
+		accent: '#7aa2f7',
+		success: '#9ece6a',
+		warning: '#e0af68',
+		error: '#f7768e',
+		border: '#7a84b0',
+		code_bg: '#16161e',
+		diff_add: '#9ece6a',
+		diff_del: '#f7768e',
+		user_bg: '#292e42',
+		user_text: '#c0caf5',
+		selected_bg: '#283457',
+		border_muted: '#3b4261',
+		diff_add_bg: '#20303b',
+		diff_del_bg: '#37222c',
+		thinking: '#9aa5ce',
+		bash: '#bb9af7',
+		mode_plan: '#7dcfff',
+		mode_edits: '#9ece6a',
+		mode_auto: '#e0af68',
+		surface: '#1a1b26',
+		backdrop: '#16161e'
+	}
+};
+const THEME_LIGHT = {
+	name: 'paper',
+	light: true,
+	roles: {
+		text: '#2e3440',
+		muted: '#5c6370',
+		accent: '#2f5fb3',
+		success: '#2f7d32',
+		// On purpose too pale for text on white: the page must fall back for these two.
+		warning: '#e8c06a',
+		error: '#ff9aa2',
+		border: '#8a8f98',
+		code_bg: '#f2efe8',
+		diff_add: '#2f7d32',
+		diff_del: '#b3261e',
+		user_bg: '#ece8df',
+		user_text: '#2e3440',
+		selected_bg: '#e4dfd3',
+		border_muted: '#cfc9bb',
+		diff_add_bg: '#e3f1e0',
+		diff_del_bg: '#f8e3e0',
+		thinking: '#5c6370',
+		bash: '#6b3fa0',
+		mode_plan: '#2f5fb3',
+		mode_edits: '#2f7d32',
+		mode_auto: '#8a5a00',
+		surface: '#faf8f3',
+		backdrop: '#e9e5db'
+	}
+};
+let theme = process.env.MOCK_THEME === 'light' ? THEME_LIGHT : THEME_DARK;
+
+type Kind = { type: string; choices?: string[] };
+const sw: Kind = { type: 'switch' };
+const num: Kind = { type: 'number' };
+const txt: Kind = { type: 'text' };
+const lst: Kind = { type: 'list' };
+const pick = (...choices: string[]): Kind => ({ type: 'choice', choices });
+const GATED = new Set([
+	'remote.full_access',
+	'remote.allow_bypass',
+	'hooks.enabled',
+	'shell.program'
+]);
+const setting = (
+	page: string,
+	group: string,
+	path: string,
+	label: string,
+	kind: Kind,
+	def: unknown,
+	description: string,
+	live = true,
+	value: unknown = def,
+	source?: string
+) => ({
+	path,
+	page,
+	group,
+	label,
+	kind: kind.type,
+	...(kind.choices ? { choices: kind.choices } : {}),
+	live,
+	description,
+	value,
+	default: def,
+	...(source ? { source } : {}),
+	gated: GATED.has(path)
+});
+const settings = [
+	setting(
+		'Appearance',
+		'Theme',
+		'tui.theme',
+		'Theme',
+		{ type: 'theme', choices: ['auto', 'tokyo-night', 'paper', 'gruvbox', 'mono'] },
+		'auto',
+		'The colours of the terminal UI. "Match terminal" in the browser follows it.',
+		true,
+		'tokyo-night',
+		'home'
+	),
+	setting(
+		'Appearance',
+		'Theme',
+		'tui.symbols',
+		'Symbols',
+		pick('unicode', 'ascii', 'nerd'),
+		'unicode',
+		'The set of symbols drawn for marks, spinners and borders.'
+	),
+	setting(
+		'Appearance',
+		'Layout',
+		'tui.popups',
+		'Popups',
+		sw,
+		true,
+		'Pickers and menus open as popups instead of inline.'
+	),
+	setting(
+		'Appearance',
+		'Layout',
+		'tui.status_line',
+		'Status line',
+		lst,
+		['model', 'mode', 'context', 'cost'],
+		'What the status line shows, in order.'
+	),
+	setting(
+		'Appearance',
+		'Layout',
+		'tui.max_width',
+		'Maximum width',
+		num,
+		120,
+		'Columns the transcript may use; 0 uses the whole terminal.'
+	),
+	setting(
+		'Appearance',
+		'Transcript',
+		'tui.show_thinking',
+		'Show thinking',
+		sw,
+		true,
+		"Show the model's reasoning as it arrives.",
+		true,
+		false,
+		'session'
+	),
+	setting(
+		'Appearance',
+		'Transcript',
+		'tui.tool_output_lines',
+		'Tool output lines',
+		num,
+		12,
+		"Lines of a tool's output shown before it is folded."
+	),
+	setting(
+		'Models',
+		'Roles',
+		'roles.default',
+		'Default',
+		{ type: 'role' },
+		[OPUS],
+		'The chain of models the lead uses, first that answers.',
+		true,
+		[OPUS, 'anthropic/claude-sonnet-4-5'],
+		'home'
+	),
+	setting(
+		'Models',
+		'Roles',
+		'roles.smol',
+		'Small',
+		{ type: 'role' },
+		[],
+		'For names, summaries and other small requests.',
+		true,
+		['anthropic/claude-haiku-4-5'],
+		'home'
+	),
+	setting(
+		'Models',
+		'Thinking',
+		'model.thinking',
+		'Thinking level',
+		pick('off', 'low', 'medium', 'high', 'max'),
+		'medium',
+		'How hard the model thinks before it answers.'
+	),
+	setting(
+		'Models',
+		'Thinking',
+		'model.fast',
+		'Fast tier',
+		sw,
+		false,
+		"Ask for the provider's faster, dearer tier when it has one."
+	),
+	setting(
+		'Models',
+		'Requests',
+		'model.max_retries',
+		'Retries',
+		num,
+		4,
+		'Times a failed request is sent again before the next model of the chain is tried.'
+	),
+	setting(
+		'Models',
+		'Requests',
+		'model.cache',
+		'Prompt cache',
+		pick('auto', 'short', 'long', 'off'),
+		'auto',
+		'How long the provider keeps the prompt prefix.',
+		false
+	),
+	setting(
+		'Session',
+		'History',
+		'session.auto_name',
+		'Name sessions',
+		sw,
+		true,
+		'Name a session after its first prompt.'
+	),
+	setting(
+		'Session',
+		'History',
+		'session.branch_summary',
+		'Summarise branches',
+		sw,
+		true,
+		'When you leave a branch, add a summary of it to the conversation.'
+	),
+	setting(
+		'Session',
+		'Compaction',
+		'compaction.auto',
+		'Compact automatically',
+		sw,
+		true,
+		'Summarise the conversation when the context is nearly full.'
+	),
+	setting(
+		'Session',
+		'Compaction',
+		'compaction.threshold',
+		'Compact at',
+		num,
+		0.85,
+		'The share of the context window at which compaction starts.'
+	),
+	setting(
+		'Session',
+		'Compaction',
+		'compaction.keep_recent',
+		'Keep recent turns',
+		num,
+		6,
+		'Turns kept word for word after a compaction.'
+	),
+	setting(
+		'Session',
+		'Checkpoints',
+		'checkpoints.enabled',
+		'Checkpoints',
+		sw,
+		true,
+		'Save the files before each prompt, so that a rewind can restore them.',
+		false
+	),
+	setting(
+		'Permissions',
+		'Mode',
+		'permissions.mode',
+		'Default mode',
+		pick('plan', 'manual', 'accept-edits', 'auto'),
+		'manual',
+		'The permission mode a session starts in.'
+	),
+	setting(
+		'Permissions',
+		'Rules',
+		'permissions.allow',
+		'Allow',
+		lst,
+		[],
+		'Tool calls that never ask.',
+		true,
+		['read(**)', 'shell(cargo test *)', 'shell(git status)', 'edit(src/**)'],
+		'project'
+	),
+	setting(
+		'Permissions',
+		'Rules',
+		'permissions.ask',
+		'Ask',
+		lst,
+		[],
+		'Tool calls that always ask, whatever the mode.',
+		true,
+		['shell(git push *)'],
+		'home'
+	),
+	setting(
+		'Permissions',
+		'Rules',
+		'permissions.deny',
+		'Deny',
+		lst,
+		[],
+		'Tool calls that are always refused.',
+		true,
+		['shell(rm -rf *)', 'read(.env*)', 'web_fetch(http://*)'],
+		'home'
+	),
+	setting(
+		'Tools',
+		'Shell',
+		'shell.program',
+		'Shell',
+		txt,
+		'bash',
+		'The program that runs shell commands.',
+		false
+	),
+	setting(
+		'Tools',
+		'Shell',
+		'shell.timeout_secs',
+		'Timeout',
+		num,
+		120,
+		'Seconds a command may run before it is stopped.'
+	),
+	setting(
+		'Tools',
+		'Web',
+		'web.search',
+		'Web search',
+		sw,
+		true,
+		'Offer the web search tool to agents.'
+	),
+	setting(
+		'Tools',
+		'Web',
+		'web.allow_hosts',
+		'Allowed hosts',
+		lst,
+		[],
+		'Hosts the web tools may reach; empty allows all.'
+	),
+	setting(
+		'Tools',
+		'Checks',
+		'checks.on_write',
+		'Check on write',
+		sw,
+		true,
+		"Run the language's checker after a file is written."
+	),
+	setting(
+		'Team',
+		'Agents',
+		'team.max_agents',
+		'Agents at once',
+		num,
+		4,
+		'Sub-agents that may run at the same time.',
+		true,
+		6,
+		'project'
+	),
+	setting(
+		'Team',
+		'Agents',
+		'team.worktree_target',
+		'Worktree target',
+		pick('shared', 'own'),
+		'shared',
+		"Whether an agent's worktree shares the build directory.",
+		false
+	),
+	setting(
+		'Team',
+		'Goals',
+		'team.checker',
+		'Checker',
+		sw,
+		true,
+		'A second model judges whether a goal was met.'
+	),
+	setting(
+		'Memory',
+		'Memory',
+		'memory.enabled',
+		'Remember',
+		sw,
+		true,
+		'Keep facts, decisions and preferences for later sessions.'
+	),
+	setting(
+		'Memory',
+		'Memory',
+		'memory.extract',
+		'Extract after a session',
+		sw,
+		true,
+		'Read a finished session for things worth remembering.'
+	),
+	setting(
+		'Memory',
+		'Index',
+		'memory.index',
+		'Code index',
+		sw,
+		false,
+		'Index the project for semantic search.',
+		false
+	),
+	setting(
+		'Remote',
+		'Access',
+		'remote.allow_bypass',
+		'Allow bypass mode',
+		sw,
+		false,
+		'Let a paired device switch a session to bypass mode.',
+		false,
+		true,
+		'home'
+	),
+	setting(
+		'Remote',
+		'Access',
+		'remote.full_access',
+		'Full access',
+		sw,
+		false,
+		'Let a paired device do anything the terminal can.',
+		false
+	),
+	setting(
+		'Remote',
+		'Access',
+		'remote.link_minutes',
+		'Link lifetime',
+		num,
+		15,
+		'Minutes a pairing link works.'
+	),
+	setting(
+		'Hooks',
+		'Hooks',
+		'hooks.enabled',
+		'Run hooks',
+		sw,
+		true,
+		'Run the programs the configuration hangs on events.',
+		false
+	),
+	setting(
+		'Notifications',
+		'Notifications',
+		'notify.desktop',
+		'Desktop notifications',
+		sw,
+		true,
+		'Notify when a session needs you or is done.'
+	),
+	setting(
+		'Notifications',
+		'Notifications',
+		'notify.sound',
+		'Sound',
+		pick('off', 'chime', 'bell'),
+		'off',
+		'What plays with a notification.'
+	)
+];
+
+const contextReport = (s: MockSession) => {
+	// The real host answers null until the first request has gone out.
+	if (!s.rows.length && !s.busy) return null;
+	const cat = (kind: string, name: string, label: string, items: number, estimate: number) => ({
+		kind,
+		name,
+		label,
+		items,
+		estimate,
+		tokens: estimate
+	});
+	// The kinds and labels the real host gives (`crates/azazel-cli/src/context.rs`).
+	const categories = [
+		cat('system', '', 'system prompt: other', 3, 4_180),
+		cat('system', 'context_files', 'AGENTS and context files', 2, 2_870),
+		cat('system', 'skills', 'skill index', 21, 1_450),
+		cat('system', 'memory', 'memory', 1, 620),
+		cat('tools', '', 'tool schemas', 34, 11_940),
+		cat('tools', 'github', 'tool schemas: MCP github', 9, 3_260),
+		cat('messages', 'user', 'user messages', s.rows.length, 9_730),
+		cat('tool_results', '', 'tool results', 14, 4_350)
+	];
+	const estimate = categories.reduce((n, c) => n + c.estimate, 0);
+	return {
+		agent: 'lead',
+		request: 3,
+		model: s.state.model,
+		window: s.state.context_window,
+		estimate,
+		reported: s.state.context_tokens,
+		tokens: s.state.context_tokens,
+		categories
+	};
+};
+const costReport = (s: MockSession) => {
+	const total = s.s.cost ?? 0;
+	return {
+		requests: total ? 7 : 0,
+		usage: {
+			input: 51_200,
+			output: 6_410,
+			cache_read: 31_000,
+			cache_write: 4_000,
+			reasoning: 0,
+			...(total ? { cost_usd: total } : {})
+		},
+		cache_hit_rate: Math.round((31_000 / (51_200 + 31_000)) * 100),
+		models: total
+			? [
+					{
+						model: OPUS,
+						requests: 6,
+						input: 44_900,
+						cache_read: 29_400,
+						cache_write: 4_000,
+						hit_rate: 38
+					},
+					{
+						model: 'anthropic/claude-haiku-4-5',
+						requests: 1,
+						input: 6_300,
+						cache_read: 1_600,
+						cache_write: 0,
+						hit_rate: 20
+					}
+				]
+			: [],
+		side: []
+	};
+};
+const usd = (n: number) => `$${n.toFixed(2)}`;
+const k = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
+function costText(s: MockSession): string {
+	const c = costReport(s);
+	const u = c.usage;
+	const rows = c.models.map(
+		(m) =>
+			`${m.model.padEnd(36)} ${String(m.requests).padStart(4)} ${k(m.input).padStart(7)} ${k(m.cache_read).padStart(7)} ${`${m.hit_rate}%`.padStart(5)}`
+	);
+	return [
+		`Session cost   ${u.cost_usd === undefined ? 'unknown' : usd(u.cost_usd)}`,
+		`Tokens         ${k(u.input)} in, ${k(u.output)} out`,
+		`Cache          ${k(u.cache_read)} read, ${k(u.cache_write)} written (${c.cache_hit_rate}% hit rate)`,
+		'',
+		`${'Model'.padEnd(36)} ${'req'.padStart(4)} ${'in'.padStart(7)} ${'cached'.padStart(7)} ${'hit'.padStart(5)}`,
+		...rows
+	].join('\n');
+}
+/** What `run_command` answers, by command. */
+function runCommand(s: MockSession, name: string, args: string): Frame | string {
+	const commands: Frame[] = json('commands.json');
+	if (!commands.some((c) => c.name === name)) return `There is no command /${name}.`;
+	if (name.startsWith('skill:'))
+		return { outcome: 'prompt', text: `Use the ${name.slice(6)} skill${args ? `: ${args}` : '.'}` };
+	switch (name) {
+		case 'cost':
+			return { outcome: 'show', text: costText(s) };
+		case 'context': {
+			const r = contextReport(s);
+			return {
+				outcome: 'show',
+				text: [
+					`${r.model}: about ${k(r.estimate)} of ${k(r.window)} tokens`,
+					'',
+					...r.categories.map(
+						(c) =>
+							`${c.label.padEnd(28)} ${String(c.items).padStart(3)}  ${k(c.estimate).padStart(6)}`
+					)
+				].join('\n')
+			};
+		}
+		case 'session':
+			return {
+				outcome: 'show',
+				text: `File      ~/.azazel/sessions/${s.s.id}.jsonl\nMessages  ${s.rows.length}\nRequests  ${s.state.requests}\nAgents    ${s.state.agents.length}\nCost      ${usd(s.s.cost ?? 0)}`
+			};
+		case 'tools':
+			return {
+				outcome: 'show',
+				text: 'Built in   read write edit glob grep shell job web_fetch web_search lsp todo task\nMCP        github (6)  linear (3)\nExtensions run_code'
+			};
+		case 'dirs':
+			return { outcome: 'show', text: `${s.s.cwd}\n/home/dev/shared-protos (added)` };
+		case 'rules':
+			return {
+				outcome: 'show',
+				text: 'allow  read(**)\nallow  shell(cargo test *)\nask    shell(git push *)\ndeny   shell(rm -rf *)'
+			};
+		case 'doctor':
+			return {
+				outcome: 'show',
+				text: 'ok    git 2.47\nok    ripgrep 14.1\nok    3 providers signed in\nwarn  ast-grep not found: ast_grep is off'
+			};
+		case 'review':
+		case 'security-review':
+		case 'verify':
+			return {
+				outcome: 'prompt',
+				text: `Review the changes on this branch${args ? `: ${args}` : '.'}`
+			};
+		default:
+			return { outcome: 'done' };
+	}
+}
 const usage = [
 	{
 		provider: 'anthropic',
@@ -428,11 +1148,166 @@ function fail(c: Client, id: unknown, error: string) {
 	c.send({ type: 'response', id, success: false, error });
 }
 
-function handle(s: MockSession, c: Client, access: 'view' | 'control', msg: Frame) {
+function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boolean, msg: Frame) {
 	const { id, type } = msg;
 	if (access === 'view' && !VIEW_COMMANDS.has(type))
 		return fail(c, id, `A view link cannot send \`${type}\`. Ask for a control link.`);
 	switch (type) {
+		case 'get_theme':
+			return respond(c, id, theme);
+		case 'get_settings':
+			return respond(c, id, {
+				settings,
+				pages: [...new Set(settings.map((r) => r.page))],
+				project: true,
+				home_config: '~/.azazel/config.toml',
+				project_config: `${s.s.cwd}/.azazel/config.toml`
+			});
+		case 'set_setting': {
+			const row = settings.find((r) => r.path === msg.path);
+			if (!row) return fail(c, id, `There is no setting \`${msg.path}\`.`);
+			if (!full && msg.scope !== 'session')
+				return fail(
+					c,
+					id,
+					'This device may only change settings for the session. Full access is off.'
+				);
+			if (!full && GATED.has(msg.path))
+				return fail(c, id, `\`${msg.path}\` can only be changed with full access.`);
+			if (row.kind === 'role')
+				return fail(c, id, `\`${msg.path}\` is a model role: use \`set_role\`.`);
+			if (msg.scope === 'session' && !row.live)
+				return fail(c, id, `\`${msg.path}\` takes effect when azazel starts again.`);
+			if (row.kind === 'number' && msg.value !== null && typeof msg.value !== 'number')
+				return fail(c, id, `\`${msg.path}\` takes a number.`);
+			const removed = msg.value === null;
+			row.value = removed ? row.default : msg.value;
+			if (removed) delete (row as { source?: string }).source;
+			else (row as { source?: string }).source = msg.scope;
+			if (msg.path === 'tui.theme') {
+				theme = row.value === 'paper' ? THEME_LIGHT : THEME_DARK;
+				for (const x of s.clients) x.send({ type: 'theme', ...theme });
+			}
+			if (msg.path === 'permissions.mode') s.state.mode = msg.value;
+			return respond(c, id, {
+				setting: row,
+				message: removed ? `Removed ${msg.path}.` : `${msg.path} = ${JSON.stringify(msg.value)}`
+			});
+		}
+		case 'get_context':
+			return respond(c, id, contextReport(s));
+		case 'get_cost':
+			return respond(c, id, costReport(s));
+		case 'run_command': {
+			const r = runCommand(s, String(msg.name), String(msg.args ?? ''));
+			if (typeof r === 'string') return fail(c, id, r);
+			respond(c, id, r);
+			if (r.outcome === 'prompt') {
+				if (s.busy) s.emit({ type: 'user_input', kind: 'follow_up', text: r.text });
+				else void s.run(lines(s.s.frames), 0, r.text).catch(() => {});
+			}
+			return;
+		}
+		case 'compact':
+			respond(c, id, null);
+			s.state.context_tokens = Math.round(s.state.context_tokens * 0.4);
+			s.emit({ type: 'compaction', agent: 'lead', before: 38_400, after: s.state.context_tokens });
+			return;
+		case 'retry': {
+			const last = [...s.rows].reverse().find((r) => r.message.role === 'user');
+			respond(c, id, null);
+			if (last && !s.busy)
+				void s.run(lines(s.s.frames), 0, last.message.content[0].text).catch(() => {});
+			return;
+		}
+		case 'set_name':
+			s.state.name = msg.name;
+			s.s.name = msg.name;
+			return respond(c, id, null);
+		case 'fork_session': {
+			const at = s.rows.findIndex((r) => r.entry_id === msg.entry_id);
+			if (at >= 0) s.rows = s.rows.slice(0, at + 1);
+			s.state.name = `${s.s.name ?? 'Session'} (fork)`;
+			s.s.name = s.state.name;
+			return respond(c, id, { ...s.state, busy: s.busy });
+		}
+		case 'new_session':
+			s.rows = [];
+			s.state.name = null;
+			s.s.name = null;
+			return respond(c, id, { ...s.state, busy: false });
+		case 'export': {
+			const ext = msg.format === 'html' ? 'html' : msg.format === 'jsonl' ? 'jsonl' : 'md';
+			if (msg.path && !full) return fail(c, id, 'A path can only be given with full access.');
+			return respond(c, id, { path: msg.path ?? `${s.s.cwd}/.azazel/exports/${s.s.id}.${ext}` });
+		}
+		case 'btw':
+			return void setTimeout(
+				() =>
+					respond(c, id, {
+						answer: `Briefly: ${String(msg.question).replace(/\?$/, '')} is covered by \`src/retry.rs\`. The cap is 30 s and the factor is 2, so the fourth attempt already waits 8 s.`,
+						model: 'anthropic/claude-haiku-4-5'
+					}),
+				700 / speed
+			);
+		case 'get_tree':
+			return respond(
+				c,
+				id,
+				s.rows.map((r, i) => ({
+					id: r.entry_id,
+					parent_id: i ? s.rows[i - 1].entry_id : null,
+					timestamp: r.timestamp,
+					kind: 'message',
+					role: r.message.role,
+					text:
+						(r.message.content as Frame[])
+							.filter((b) => b.type === 'text')
+							.map((b) => b.text)
+							.join(' ')
+							.slice(0, 80) || null,
+					current: true
+				}))
+			);
+		case 'rewind':
+		case 'set_leaf': {
+			const at = s.rows.findIndex((r) => r.entry_id === msg.entry_id);
+			if (at < 0) return fail(c, id, 'That entry is not in this session.');
+			s.rows = s.rows.slice(0, at);
+			return respond(c, id, type === 'rewind' ? null : { ...s.state, busy: s.busy });
+		}
+		case 'stop':
+			respond(c, id, null);
+			sessions.delete(s.s.id);
+			scenarios.splice(scenarios.indexOf(s.s), 1);
+			for (const x of s.clients) x.ws.close(1000, 'the session ended');
+			return;
+		case 'set_role': {
+			if (!full && msg.save && msg.save !== 'session')
+				return fail(
+					c,
+					id,
+					'This device may only change roles for the session. Full access is off.'
+				);
+			let row = roles.roles.find((r) => r.role === msg.role);
+			if (!row) roles.roles.push((row = roleRow(msg.role, [], 'unset')));
+			row.chain = msg.chain ?? [];
+			row.resolved = row.chain.length ? row.chain : [OPUS];
+			row.source = msg.chain ? (msg.save ?? 'session') : 'unset';
+			if (msg.role === 'default') {
+				s.state.model = row.resolved[0];
+				s.state.chain = row.resolved;
+			}
+			return respond(c, id, roles);
+		}
+		case 'save_preset':
+			if (!full) return fail(c, id, 'Saving a preset needs full access.');
+			if (!roles.presets.includes(msg.name)) roles.presets.push(msg.name);
+			return respond(c, id, roles);
+		case 'apply_preset':
+			if (!roles.presets.includes(msg.name))
+				return fail(c, id, `There is no preset \`${msg.name}\`.`);
+			return respond(c, id, roles);
 		case 'attach': {
 			const since: number | undefined = msg.since;
 			const known =
@@ -461,7 +1336,33 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', msg: Fram
 		case 'list_roles':
 			return respond(c, id, roles);
 		case 'list_commands':
-			return respond(c, id, json('commands.json'));
+			return respond(
+				c,
+				id,
+				(json('commands.json') as Frame[])
+					// A device without full access is not offered what it may not run.
+					.filter(
+						(r) =>
+							full ||
+							![
+								'login',
+								'logout',
+								'trust',
+								'add-dir',
+								'forget-approvals',
+								'reload',
+								'ext'
+							].includes(r.name)
+					)
+					.map((r) => ({
+						...r,
+						source: r.name.startsWith('skill:')
+							? 'skill'
+							: ['review', 'security-review', 'playtest', 'verify'].includes(r.name)
+								? 'extension'
+								: 'builtin'
+					}))
+			);
 		case 'list_files':
 			return respond(c, id, files);
 		case 'get_messages': {
@@ -605,25 +1506,110 @@ const server = Bun.serve<WsData>({
 				);
 			const access = links.get(secret) ?? (secret.startsWith('view') ? 'view' : 'control');
 			if (!secret.endsWith('-demo')) usedSecrets.add(secret);
-			const token = `tok${++ids.counter}${Math.random().toString(36).slice(2)}`;
-			devices.set(token, access);
-			return j(me(access), {
+			const tok = `tok${++ids.counter}${Math.random().toString(36).slice(2)}`;
+			const now = new Date().toISOString();
+			const d: Device = {
+				id: `d${ids.counter}`,
+				access,
+				full: secret.startsWith('full'),
+				name: deviceName(req.headers.get('user-agent') ?? ''),
+				paired: now,
+				seen: now
+			};
+			devices.set(tok, d);
+			return j(me(d), {
 				headers: {
-					'set-cookie': `azazel_device=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`
+					'set-cookie': `azazel_device=${tok}; HttpOnly; SameSite=Strict; Path=/; Max-Age=86400`
 				}
 			});
 		}
-		const access = device(req);
-		if (!access) {
+		const dev = device(req);
+		const access = dev?.access;
+		if (!dev || !access) {
 			if (p.startsWith('/api/ws/') && req.headers.get('upgrade') === 'websocket') {
 				// A close code needs an upgraded socket.
-				return srv.upgrade(req, { data: { session: '!401', access: 'view' } })
+				return srv.upgrade(req, { data: { session: '!401', access: 'view', full: false } })
 					? undefined
 					: new Response('unauthorised', { status: 401 });
 			}
 			return j({ error: 'Not signed in. Open a pairing link.' }, { status: 401 });
 		}
-		if (p === '/api/me') return j(me(access));
+		if (p === '/api/me') return j(me(dev));
+		// The paired devices, for a control device (docs/remote.md).
+		if (p === '/api/devices' && dev.access !== 'control')
+			return j({ error: 'this is a view link' }, { status: 403 });
+		if (p === '/api/devices' && req.method === 'GET') {
+			return j({
+				devices: [...devices.values()].map((d) => ({
+					id: d.id,
+					access: d.access,
+					paired: d.paired,
+					expires: new Date(Date.parse(d.paired) + 86_400_000).toISOString(),
+					current: d === dev
+				}))
+			});
+		}
+		if (p === '/api/devices' && req.method === 'DELETE') {
+			devices.clear();
+			return new Response(null, {
+				status: 204,
+				headers: { 'set-cookie': 'azazel_device=; Path=/; Max-Age=0' }
+			});
+		}
+		if (p === '/api/folders' && req.method === 'POST') {
+			const { under } = (await req.json().catch(() => ({}))) as { under?: string };
+			const folder = (path: string, kind: string, trusted = true) => ({
+				path,
+				name: path.replace(/^\/home\/dev/, '~'),
+				kind,
+				trusted,
+				startable: true
+			});
+			return j(
+				under
+					? {
+							at: under,
+							parent: under.replace(/\/[^/]+$/, '') || null,
+							folders: ['src', 'tests', 'docs'].map((n) => folder(`${under}/${n}`, 'dir', false)),
+							anywhere: dev.full
+						}
+					: {
+							at: null,
+							parent: null,
+							folders: [
+								...[...new Set(scenarios.map((s) => s.cwd))].map((c) => folder(c, 'project')),
+								folder('/home/dev', 'root', false)
+							],
+							anywhere: dev.full
+						}
+			);
+		}
+		if (p === '/api/sessions' && req.method === 'POST') {
+			if (access !== 'control')
+				return j({ error: 'A view device cannot start sessions.' }, { status: 403 });
+			const body = (await req.json().catch(() => ({}))) as {
+				cwd?: string;
+				prompt?: string;
+				mode?: string;
+			};
+			const sc: Scenario = {
+				...scenarios.find((x) => x.frames === 'showcase.jsonl')!,
+				id: `new${++ids.counter}`,
+				name: body.prompt ? body.prompt.slice(0, 40) : null,
+				state: 'idle',
+				cwd: body.cwd ?? '/home/dev/project',
+				cost: null,
+				mode: body.mode ?? 'manual',
+				started: new Date().toISOString(),
+				prefill: () => 0,
+				autostart: false
+			};
+			scenarios.unshift(sc);
+			const ms = new MockSession(sc);
+			sessions.set(sc.id, ms);
+			if (body.prompt) ms.start(false, body.prompt);
+			return j({ id: sc.id });
+		}
 		if (p === '/api/sessions') {
 			return j({
 				sessions: scenarios.map((s) => ({
@@ -657,6 +1643,7 @@ const server = Bun.serve<WsData>({
 			});
 		}
 		if (p === '/api/logout' && req.method === 'POST') {
+			devices.delete(token(req) ?? '');
 			return new Response(null, {
 				status: 204,
 				headers: { 'set-cookie': 'azazel_device=; Max-Age=0; Path=/' }
@@ -665,7 +1652,7 @@ const server = Bun.serve<WsData>({
 		const m = /^\/api\/ws\/([^/]+)$/.exec(p);
 		if (m) {
 			const id = decodeURIComponent(m[1]);
-			return srv.upgrade(req, { data: { session: id, access } })
+			return srv.upgrade(req, { data: { session: id, access, full: dev.full } })
 				? undefined
 				: new Response('upgrade required', { status: 426 });
 		}
@@ -681,10 +1668,10 @@ const server = Bun.serve<WsData>({
 			(ws as unknown as { client: Client }).client = c;
 			s.clients.add(c);
 			void access;
-			c.send({ type: 'hello', protocol: 1, version: '0.11.0-mock' });
+			c.send({ type: 'hello', protocol: 1, version: VERSION });
 		},
 		message(ws, raw) {
-			const { session, access } = ws.data;
+			const { session, access, full } = ws.data;
 			const s = sessions.get(session);
 			const c = (ws as unknown as { client: Client }).client;
 			if (!s || !c) return;
@@ -694,7 +1681,7 @@ const server = Bun.serve<WsData>({
 			} catch {
 				return c.send({ type: 'response', id: null, success: false, error: 'not JSON' });
 			}
-			handle(s, c, access, msg);
+			handle(s, c, access, full, msg);
 		},
 		close(ws) {
 			const c = (ws as unknown as { client?: Client }).client;
@@ -706,3 +1693,4 @@ const server = Bun.serve<WsData>({
 console.log(`mock azazel remote on http://127.0.0.1:${server.port}`);
 console.log(`control link: http://127.0.0.1:${server.port}/#pair=ctl-demo`);
 console.log(`view link:    http://127.0.0.1:${server.port}/#pair=view-demo`);
+console.log(`full access:  http://127.0.0.1:${server.port}/#pair=full-demo`);

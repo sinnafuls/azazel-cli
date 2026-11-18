@@ -487,7 +487,7 @@ fn dirs(app: &App) -> String {
     format!("agents may work in:\n{}", roots.join("\n"))
 }
 
-fn add_dir(app: &App, args: &str) -> Result<String, String> {
+pub(crate) fn add_dir(app: &App, args: &str) -> Result<String, String> {
     if args.is_empty() {
         return Err("usage: /add-dir <path>".to_string());
     }
@@ -506,10 +506,21 @@ fn add_dir(app: &App, args: &str) -> Result<String, String> {
 
 /// `/forget-approvals`: drops every remembered approval and every rule of this session.
 fn forget_approvals(app: &App) -> Result<String, String> {
+    forget_approvals_counted(app).map(|(_, message)| message)
+}
+
+/// [`forget_approvals`] with how many rules and approvals it dropped.
+pub(crate) fn forget_approvals_counted(app: &App) -> Result<(usize, String), String> {
     match app.permissions.clear_remembered() {
-        Ok(0) => Ok("there were no remembered approvals or session rules".to_string()),
-        Ok(1) => Ok("forgot 1 rule; the agent asks again from now on".to_string()),
-        Ok(count) => Ok(format!("forgot {count} rules; the agent asks again from now on")),
+        Ok(0) => Ok((
+            0,
+            "there were no remembered approvals or session rules".to_string(),
+        )),
+        Ok(1) => Ok((1, "forgot 1 rule; the agent asks again from now on".to_string())),
+        Ok(count) => Ok((
+            count,
+            format!("forgot {count} rules; the agent asks again from now on"),
+        )),
         Err(e) => Err(format!(
             "could not edit {}: {e}",
             app.paths.project_local_config().display()
@@ -518,7 +529,7 @@ fn forget_approvals(app: &App) -> Result<String, String> {
 }
 
 /// `/trust`: whether this project is trusted and what that covers; `/trust yes|no` decides.
-fn trust(app: &App, args: &str) -> Result<String, String> {
+pub(crate) fn trust(app: &App, args: &str) -> Result<String, String> {
     let paths = &app.paths;
     let store = TrustStore::new(paths.trust_file());
     let decide = match args.to_ascii_lowercase().as_str() {

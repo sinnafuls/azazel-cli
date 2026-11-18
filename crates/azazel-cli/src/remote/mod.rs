@@ -80,6 +80,9 @@ const fn answer_count() -> usize {
     3
 }
 
+/// Shown whenever a server starts with `remote.full_access` on, by `azazel remote` and by `/remote`.
+pub(crate) const FULL_ACCESS_WARNING: &str = "WARNING: remote.full_access is on. A browser with a control link can run shell commands, write files and the configuration, sign in and out, trust projects and work in any folder of this machine. Share control links only with yourself.";
+
 pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -> u8 {
     let remote = &config.remote;
     let way = way(args, config);
@@ -95,13 +98,10 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
         device_ttl: Duration::from_secs(remote.device_hours.max(1) * 3600),
         redact: remote.redact,
         allow_bypass: remote.allow_bypass,
+        full_access: remote.full_access,
+        gated: azazel_core::config::is_trust_gated,
     };
-    let rules = Rules {
-        home: paths.home.clone(),
-        user_home: std::env::home_dir(),
-        roots: remote.folders.clone(),
-        anywhere: remote.allow_bypass,
-    };
+    let rules = Rules::of(paths.home.clone(), std::env::home_dir(), remote);
     // The terminal answers the question about a folder nobody trusted, while it is there to.
     let (asks, asked) = mpsc::channel::<Ask>(8);
     // `--trust` trusts the project `azazel remote` was started in, not every folder a browser names.
@@ -134,6 +134,10 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
     let glyphs = Glyphs::new(GlyphLevel::detect(config.tui.glyphs.as_str(), |name| {
         std::env::var(name).ok()
     }));
+    if remote.full_access {
+        // On standard error, so that `--json` keeps standard output to its one line.
+        eprintln!("azazel: {FULL_ACCESS_WARNING}");
+    }
     announce(&server, &link, args.json, glyphs);
     let code = wait(&server, glyphs, args.json, asked).await;
     server.shutdown().await;

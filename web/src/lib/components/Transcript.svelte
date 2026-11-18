@@ -5,6 +5,13 @@
 	import Brand from './Brand.svelte';
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
+	import Copy from '@lucide/svelte/icons/copy';
+	import Check from '@lucide/svelte/icons/check';
+	import RotateCcw from '@lucide/svelte/icons/rotate-ccw';
+	import GitFork from '@lucide/svelte/icons/git-fork';
+	import History from '@lucide/svelte/icons/history';
+	import Pencil from '@lucide/svelte/icons/pencil';
+	import Terminal from '@lucide/svelte/icons/terminal';
 	import { tokens } from '$lib/format';
 	import { tick } from 'svelte';
 
@@ -15,7 +22,8 @@
 		loadingEarlier = false,
 		onEarlier,
 		showAgent = false,
-		empty = 'Nothing has been said in this session yet.'
+		empty = 'Nothing has been said in this session yet.',
+		onaction
 	}: {
 		items: Item[];
 		busy?: boolean;
@@ -24,7 +32,33 @@
 		onEarlier?: () => void;
 		showAgent?: boolean;
 		empty?: string;
+		/** Given when the reader may act on a message: retry, fork, rewind, edit. Copy needs nothing. */
+		onaction?: (action: 'retry' | 'fork' | 'rewind' | 'edit', item: Item) => void;
 	} = $props();
+
+	// The last prompt can be rewritten and the last reply asked for again, once the agent is done.
+	const lastUser = $derived(
+		[...items].reverse().find((i) => i.kind === 'user' && i.agent === 'lead')
+	);
+	const lastReply = $derived(
+		[...items].reverse().find((i) => i.kind === 'assistant' && i.agent === 'lead')
+	);
+
+	let copied = $state<string | null>(null);
+	async function copy(id: string, text: string) {
+		try {
+			await navigator.clipboard.writeText(text);
+			copied = id;
+			setTimeout(() => copied === id && (copied = null), 1600);
+		} catch {
+			/* no clipboard here (an insecure origin): nothing to say */
+		}
+	}
+	const replyText = (blocks: { type: string; text: string }[]) =>
+		blocks
+			.filter((b) => b.type === 'text')
+			.map((b) => b.text)
+			.join('\n\n');
 
 	// Tool calls that follow one another are told as one run.
 	type Part = Exclude<Item, ToolItem> | { kind: 'steps'; id: string; tools: ToolItem[] };
@@ -78,6 +112,24 @@
 	const isOpen = (id: string, streaming: boolean) => thinkingOpen[id] ?? streaming;
 </script>
 
+{#snippet copyBtn(id: string, text: string)}
+	<button
+		type="button"
+		class="icon-btn"
+		aria-label={copied === id ? 'Copied' : 'Copy'}
+		title="Copy"
+		onclick={() => copy(id, text)}
+		>{#if copied === id}<Check class="text-success size-3.5" />{:else}<Copy
+				class="size-3.5"
+			/>{/if}</button
+	>
+{/snippet}
+{#snippet act(label: string, Icon: typeof Copy, run: () => void)}
+	<button type="button" class="icon-btn" aria-label={label} title={label} onclick={run}
+		><Icon class="size-3.5" /></button
+	>
+{/snippet}
+
 <div class="relative min-h-0 flex-1">
 	<div
 		bind:this={scroller}
@@ -98,9 +150,8 @@
 			{/if}
 
 			{#if items.length === 0}
-				<div class="relative grid flex-1 place-items-center py-16">
-					<div class="dotgrid" aria-hidden="true"></div>
-					<div class="relative flex flex-col items-center gap-5 text-center">
+				<div class="grid flex-1 place-items-center py-16">
+					<div class="flex flex-col items-center gap-5 text-center">
 						<Brand size={36} word={false} />
 						<p class="text-muted-foreground max-w-[18rem] text-sm leading-relaxed">{empty}</p>
 					</div>
@@ -109,8 +160,10 @@
 
 			{#each parts as item (item.id)}
 				{#if item.kind === 'user'}
-					<div class="flex animate-enter flex-col items-end" data-item="user">
-						<div class="bg-raised max-w-[86%] rounded-[22px] px-4 py-2.5 md:max-w-[78%]">
+					<div class="msg flex animate-enter flex-col items-end" data-item="user">
+						<div
+							class="bg-bubble text-bubble-foreground max-w-[86%] rounded-3xl px-4 py-2.5 md:max-w-[78%]"
+						>
 							{#if item.previews?.length}
 								<div class="mb-2 flex flex-wrap justify-end gap-2" data-previews>
 									{#each item.previews as src, i (i)}
@@ -127,15 +180,25 @@
 							</p>
 						</div>
 						<div class="text-faint meta mt-1.5 flex gap-2 px-1 empty:hidden">
-							{#if item.via !== 'prompt'}<span class="text-accent-text"
-									>{item.via === 'steer' ? 'steering' : 'queued follow-up'}</span
+							{#if item.via !== 'prompt'}<span class="text-ember-text"
+									>{item.via === 'steer' ? 'steering' : 'follow-up'}</span
 								>{/if}
 							{#if showAgent && item.agent !== 'lead'}<span>{item.agent}</span>{/if}
 							{#if item.images}<span>{item.images} image{item.images > 1 ? 's' : ''}</span>{/if}
 						</div>
+						<div class="msg-actions mt-1 flex gap-0.5" data-actions>
+							{@render copyBtn(item.id, item.text)}
+							{#if onaction && item.agent === 'lead'}
+								{#if item === lastUser && !busy}
+									{@render act('Edit and resend', Pencil, () => onaction('edit', item))}
+								{/if}
+								{@render act('Fork from here', GitFork, () => onaction('fork', item))}
+								{@render act('Rewind to here', History, () => onaction('rewind', item))}
+							{/if}
+						</div>
 					</div>
 				{:else if item.kind === 'assistant'}
-					<div class="animate-enter space-y-3" data-item="assistant">
+					<div class="msg animate-enter space-y-3" data-item="assistant">
 						{#if showAgent && item.agent !== 'lead'}<div class="text-muted-foreground meta">
 								{item.agent}
 							</div>{/if}
@@ -190,15 +253,68 @@
 									: ''}
 							</div>
 						{/if}
+						{#if !item.streaming && item.blocks.some((b) => b.type === 'text')}
+							<div
+								class="msg-actions -ml-1 flex gap-0.5 {item === lastReply && !busy
+									? 'is-shown'
+									: ''}"
+								data-actions
+							>
+								{@render copyBtn(item.id, replyText(item.blocks))}
+								{#if onaction && item.agent === 'lead'}
+									{#if item === lastReply && !busy}
+										{@render act('Retry', RotateCcw, () => onaction('retry', item))}
+									{/if}
+									{@render act('Fork from here', GitFork, () => onaction('fork', item))}
+								{/if}
+							</div>
+						{/if}
 					</div>
 				{:else if item.kind === 'steps'}
 					<div class="animate-enter"><ToolSteps tools={item.tools} /></div>
+				{:else if item.kind === 'command'}
+					<!-- What a slash command answered: shown here only, it is not part of the conversation. -->
+					<section
+						class="msg bg-card animate-enter overflow-hidden rounded-2xl shadow-[inset_0_0_0_1px_var(--border)]"
+						aria-label="Result of /{item.name}"
+						data-item="command"
+						data-command={item.name}
+					>
+						<header class="flex h-9 items-center gap-2 border-b pr-1.5 pl-3.5">
+							<Terminal class="text-muted-foreground size-3.5 shrink-0" />
+							<span class="min-w-0 flex-1 truncate font-mono text-xs"
+								><span class="text-foreground">/{item.name.replace(/^skill:/, '')}</span
+								>{#if item.args}<span class="text-muted-foreground">{` ${item.args}`}</span
+									>{/if}</span
+							>
+							<span class="text-faint hidden text-xs sm:inline">Only you see this</span>
+							{@render copyBtn(item.id, item.text)}
+						</header>
+						{#if item.name === 'btw'}
+							<div class="px-3.5 py-3"><Markdown text={item.text} /></div>
+						{:else}
+							<pre
+								class="scroll-thin text-ink-2 max-h-[28rem] overflow-auto px-3.5 py-3 font-mono text-[13px] leading-[1.6]">{item.text}</pre>
+						{/if}
+					</section>
+				{:else if item.summary}
+					<!-- What happened on the branch that was left, told to the agent: a quiet note, not a message of yours. -->
+					<aside
+						class="text-muted-foreground border-border-strong animate-enter border-l-2 py-1 pl-3.5 text-[13px] leading-relaxed"
+						aria-label="Summary of the branch you left"
+						data-item="branch-summary"
+					>
+						<p class="text-faint meta mb-0.5">
+							The agent was told what happened on the branch you left
+						</p>
+						<p class="break-words whitespace-pre-wrap">{item.text}</p>
+					</aside>
 				{:else}
 					<div
 						class="rounded-2xl px-4 py-3 text-sm leading-relaxed break-words {item.level === 'error'
 							? 'bg-destructive/10 text-destructive'
 							: item.level === 'warn'
-								? 'bg-ember/10 text-accent-text'
+								? 'bg-ember/10 text-ember-text'
 								: 'bg-hover text-muted-foreground'}"
 						role={item.level === 'error' ? 'alert' : undefined}
 					>
@@ -210,7 +326,7 @@
 			{#if busy && items[items.length - 1]?.kind !== 'assistant'}
 				<div class="flex items-center gap-3 py-1" aria-hidden="true">
 					<span class="dots"><span></span><span></span><span></span></span>
-					<span class="text-accent-text text-[15px]">Working…</span>
+					<span class="shimmer text-sm">Working</span>
 				</div>
 			{/if}
 		</div>
@@ -237,5 +353,20 @@
 	.latest {
 		translate: -50% 0;
 		animation: pop-in var(--dur) var(--ease-out) both;
+	}
+	/* The actions of a message: there on hover and on focus; always there on touch and on the last reply. */
+	.msg-actions {
+		opacity: 0;
+		transition: opacity var(--dur-fast) var(--ease-out);
+	}
+	.msg:hover .msg-actions,
+	.msg:focus-within .msg-actions,
+	.msg-actions.is-shown {
+		opacity: 1;
+	}
+	@media (hover: none), (pointer: coarse) {
+		.msg-actions {
+			opacity: 1;
+		}
 	}
 </style>

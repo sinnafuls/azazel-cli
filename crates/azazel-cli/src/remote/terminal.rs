@@ -600,6 +600,19 @@ impl Source for LocalSource {
                 self.app.config.tui.complete_ignored,
             ))),
             Command::GetUsage => to_value(serde_json::to_value(self.app.router.limits().snapshot())),
+            Command::GetSettings => crate::rpc::admin::get_settings(&self.app)
+                .and_then(|list| to_value(serde_json::to_value(list))),
+            Command::GetTheme { light } => crate::rpc::admin::get_theme(&self.app, *light)
+                .and_then(|theme| to_value(serde_json::to_value(theme))),
+            Command::GetContext => to_value(serde_json::to_value(crate::rpc::admin::get_context(
+                &self.lead,
+                &self.session,
+            ))),
+            Command::GetCost => to_value(serde_json::to_value(crate::rpc::admin::get_cost(
+                &self.app,
+                &self.lead,
+                &self.session,
+            ))),
             _ => return None,
         })
     }
@@ -713,7 +726,11 @@ impl TerminalSessions {
             | Command::ListRoles
             | Command::ListCommands
             | Command::ListFiles
-            | Command::GetUsage => {
+            | Command::GetUsage
+            | Command::GetSettings
+            | Command::GetTheme { .. }
+            | Command::GetContext
+            | Command::GetCost => {
                 let source = self.source.clone();
                 let command = command.clone();
                 tokio::task::spawn_blocking(move || source.listing(&command))
@@ -1015,6 +1032,8 @@ fn options(config: &Config) -> Options {
         device_ttl: Duration::from_secs(remote.device_hours.max(1) * 3600),
         redact: remote.redact,
         allow_bypass: remote.allow_bypass,
+        full_access: remote.full_access,
+        gated: azazel_core::config::is_trust_gated,
     }
 }
 
@@ -1353,6 +1372,31 @@ mod tests {
         assert_eq!(refused["id"], 3);
         assert_eq!(refused["success"], false);
         let _ = AtomicUsize::new(0);
+    }
+
+    #[tokio::test]
+    async fn a_shared_terminal_answers_what_it_cannot_do_instead_of_waiting() {
+        let (web, mut loop_rx) = mpsc::unbounded_channel();
+        let sessions = TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false);
+        let mut conn = sessions.open(ID).await.unwrap();
+        assert_eq!(frame(&mut conn).await["type"], "hello");
+        let commands = [
+            json!({ "type": "set_setting", "path": "tui.theme", "value": "auto" }),
+            json!({ "type": "trust_project", "trusted": true }),
+            json!({ "type": "add_dir", "path": "." }),
+            json!({ "type": "forget_approvals" }),
+        ];
+        for (n, mut command) in commands.into_iter().enumerate() {
+            command["id"] = json!(n + 1);
+            conn.commands.send(command.to_string()).await.unwrap();
+            let answer = tokio::time::timeout(std::time::Duration::from_secs(5), frame(&mut conn))
+                .await
+                .expect("an answer, not a wait");
+            assert_eq!(answer["success"], false, "{answer}");
+            assert_eq!(answer["error"], "not available from a shared terminal session");
+        }
+        // Nothing reached the terminal's loop.
+        assert!(loop_rx.try_recv().is_err());
     }
 
     #[tokio::test]

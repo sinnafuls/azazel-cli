@@ -15,7 +15,7 @@ use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 
 use crate::auth::Device;
 use crate::limits::{Bucket, Connections, since_epoch};
-use crate::policy;
+use crate::policy::{self, Grants};
 use crate::server::Shared;
 
 /// Frames that may wait for a client that reads slowly; a client that lets this many pile up is
@@ -33,10 +33,46 @@ async fn close<S: AsyncRead + AsyncWrite + Unpin>(socket: &mut WebSocketStream<S
     let _ = tokio::time::timeout(Duration::from_secs(5), socket.close(Some(frame))).await;
 }
 
-/// A refusal the client reads like any other response.
+/// A response the client reads like any other.
+fn answer(response: Response) -> Message {
+    Message::text(serde_json::to_string(&Frame::Response(response)).unwrap_or_default())
+}
+
+/// A command the server does not take from this device; the response says so with a `code` the
+/// page can rely on.
 fn refusal(id: Value, why: impl Into<String>) -> Message {
-    let line = serde_json::to_string(&Frame::Response(Response::err(id, why))).unwrap_or_default();
-    Message::text(line)
+    answer(Response::refused(id, why))
+}
+
+/// A line that is not a command, or a command sent too fast.
+fn failure(id: Value, why: impl Into<String>) -> Message {
+    answer(Response::err(id, why))
+}
+
+/// A response to one of the `list_commands` in `listings` keeps only the commands a browser may
+/// run, so that its menu offers nothing the policy would refuse. Any other line goes out as it is.
+fn only_allowed(line: String, listings: &mut Vec<Value>, grants: Grants) -> String {
+    if !line.contains("\"response\"") {
+        return line;
+    }
+    let Ok(mut frame) = serde_json::from_str::<Value>(&line) else {
+        return line;
+    };
+    if frame["type"] != "response" {
+        return line;
+    }
+    let Some(at) = listings.iter().position(|id| *id == frame["id"]) else {
+        return line;
+    };
+    listings.remove(at);
+    if let Some(rows) = frame.get_mut("data").and_then(Value::as_array_mut) {
+        rows.retain(|row| {
+            row["name"]
+                .as_str()
+                .is_some_and(|name| policy::command_listed(name, row["source"].as_str(), grants))
+        });
+    }
+    frame.to_string()
 }
 
 pub(crate) async fn run<S>(
@@ -64,6 +100,8 @@ pub(crate) async fn run<S>(
         .unwrap_or_default();
     let expiry = tokio::time::sleep(left);
     tokio::pin!(expiry);
+    // The ids of `list_commands` sent and not answered yet.
+    let mut listings: Vec<Value> = Vec::new();
     loop {
         tokio::select! {
             _ = device.cancel.cancelled() => return close(&mut socket, 4401, "signed out").await,
@@ -76,6 +114,10 @@ pub(crate) async fn run<S>(
                 if conn.frames.len() >= QUEUE {
                     return close(&mut socket, 4408, "too slow: reconnect and attach with `since`").await;
                 }
+                let line = match listings.is_empty() {
+                    true => line,
+                    false => only_allowed(line, &mut listings, shared.grants),
+                };
                 match tokio::time::timeout(SEND_LIMIT, socket.send(Message::text(line))).await {
                     Ok(Ok(())) => {}
                     _ => return,
@@ -97,28 +139,42 @@ pub(crate) async fn run<S>(
                     _ => continue,
                 };
                 let Ok(value) = serde_json::from_str::<Value>(text.as_str()) else {
-                    if socket.send(refusal(Value::Null, "not JSON: a message is one command as a JSON object")).await.is_err() {
+                    if socket.send(failure(Value::Null, "not JSON: a message is one command as a JSON object")).await.is_err() {
                         return;
                     }
                     continue;
                 };
                 let id = value.get("id").cloned().unwrap_or(Value::Null);
+                // Only the policy's own refusals carry the `refused` code.
                 let verdict = if !value.is_object() {
-                    Err("a command is a JSON object".to_string())
+                    Err(failure(id.clone(), "a command is a JSON object"))
                 } else if !bucket.take(since_epoch(shared.auth.now())) {
-                    Err("too many commands at once: slow down".to_string())
+                    Err(failure(id.clone(), "too many commands at once: slow down"))
                 } else {
-                    policy::check(device.access, &value, shared.allow_bypass)
+                    policy::check(device.access, &value, shared.grants).map_err(|why| refusal(id.clone(), why))
                 };
+                let mut value = value;
                 match verdict {
                     Ok(()) => {
+                        // The session runs a command by name; what it resolves the name to must be
+                        // what the policy approved.
+                        policy::confine(&mut value, shared.grants);
+                        // A listing is matched to its response by id, so one with no id, or with
+                        // an id still waiting, is not tracked: it goes out as the session lists it.
+                        if value["type"] == "list_commands"
+                            && listings.len() < 16
+                            && !id.is_null()
+                            && !listings.contains(&id)
+                        {
+                            listings.push(id);
+                        }
                         // One line: the session reads its commands line by line.
                         if conn.commands.send(value.to_string()).await.is_err() {
                             return close(&mut socket, 1000, "the session ended").await;
                         }
                     }
-                    Err(why) => {
-                        if socket.send(refusal(id, why)).await.is_err() {
+                    Err(message) => {
+                        if socket.send(message).await.is_err() {
                             return;
                         }
                     }

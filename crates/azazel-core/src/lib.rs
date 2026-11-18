@@ -42,9 +42,9 @@ pub mod ui;
 pub use artifacts::{ArtifactScheme, ArtifactStore};
 pub use config::{Config, ConfigError, LoadOptions, LoadedConfig, PermissionMode};
 pub use ext::{
-    Command, CommandHandler, CommandOutcome, CommandSource, Event, EventBus, EventHandler, EventKind, ExtCtx,
-    ExtError, Extension, Level, McpRegistrar, McpServers, Outcome, Registrar, Registry, RegistryHandle,
-    StartSource, ToolListing, ToolRegistry, ToolWrap,
+    Command, CommandHandler, CommandOutcome, CommandProvider, CommandSource, Event, EventBus, EventHandler,
+    EventKind, ExtCtx, ExtError, Extension, Level, McpRegistrar, McpServers, Outcome, Registrar, Registry,
+    RegistryHandle, StartSource, ToolListing, ToolRegistry, ToolWrap,
 };
 pub use memory::{Memory, MemoryApi, MemoryHit};
 pub use paths::Paths;

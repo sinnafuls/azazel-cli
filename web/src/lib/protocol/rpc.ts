@@ -7,9 +7,7 @@ export type Request = {
 	/**
 	 * Any JSON value of the client's choosing; `null` when left out.
 	 */
-	id?: {
-		[k: string]: unknown;
-	};
+	id?: unknown;
 } & Request1;
 export type Request1 =
 	| {
@@ -74,9 +72,7 @@ export type Request1 =
 	| {
 			type: 'ui_response';
 			request_id: string;
-			value?: {
-				[k: string]: unknown;
-			};
+			value?: unknown;
 	  }
 	| {
 			type: 'new_session';
@@ -208,6 +204,40 @@ export type Request1 =
 			type: 'run_command';
 			name: string;
 			args?: string;
+			only?: CommandOrigin[] | null;
+	  }
+	| {
+			type: 'get_settings';
+	  }
+	| {
+			type: 'set_setting';
+			path: string;
+			value: unknown;
+			/**
+			 * Where `set_role` keeps a change.
+			 */
+			scope?: 'session' | 'home' | 'project';
+	  }
+	| {
+			type: 'get_theme';
+			light?: boolean | null;
+	  }
+	| {
+			type: 'get_context';
+	  }
+	| {
+			type: 'get_cost';
+	  }
+	| {
+			type: 'trust_project';
+			trusted?: boolean;
+	  }
+	| {
+			type: 'add_dir';
+			path: string;
+	  }
+	| {
+			type: 'forget_approvals';
 	  }
 	| {
 			type: 'attach';
@@ -236,6 +266,10 @@ export type Decision = 'allow' | 'session' | 'always' | 'deny';
  */
 export type ExportFormat = 'markdown' | 'html' | 'jsonl';
 /**
+ * Where a command of `list_commands` comes from.
+ */
+export type CommandOrigin = 'builtin' | 'skill' | 'mcp' | 'custom' | 'script';
+/**
  * What `rewind` takes back.
  */
 export type RewindWhat = 'both' | 'code' | 'conversation';
@@ -257,7 +291,9 @@ export type Frame =
 			protocol: number;
 			version: string;
 	  }
-	| Response
+	| (Response & {
+			type: 'response';
+	  })
 	| {
 			type: 'agent_start';
 			agent: string;
@@ -394,10 +430,12 @@ export type Frame =
 			secret?: boolean;
 	  }
 	| ((
-			| Question
+			| (Question & {
+					kind: 'ask';
+			  })
 			| {
 					kind: 'form';
-					questions: Question1[];
+					questions: Question[];
 			  }
 			| {
 					kind: 'confirm';
@@ -438,6 +476,9 @@ export type Frame =
 			text: string;
 			agent?: string | null;
 	  }
+	| (ThemeColors & {
+			type: 'theme';
+	  })
 	| {
 			type: 'request_closed';
 			request_id: string;
@@ -510,14 +551,16 @@ export interface Rpc {
 	RewindWhat?: RewindWhat;
 	ExportFormat?: ExportFormat;
 	SaveTo?: SaveTo;
+	CommandOrigin?: CommandOrigin;
 	Replay?: Replay;
 	Frame?: Frame;
-	Response?: Response1;
+	Response?: Response;
 	StreamEvent?: StreamEvent;
 	ToolOutput?: ToolOutput;
 	Member?: Member;
 	AskKind?: AskKind;
-	Question?: Question1;
+	Question?: Question;
+	ThemeColors?: ThemeColors;
 	State?: State;
 	Usage?: Usage1;
 	PrimaryAgent?: PrimaryAgent;
@@ -548,6 +591,17 @@ export interface Rpc {
 	Mentioned?: Mentioned;
 	SessionCopy?: SessionCopy;
 	CommandRow?: CommandRow;
+	SettingList?: SettingList;
+	SettingRow?: SettingRow;
+	SettingChanged?: SettingChanged;
+	ContextReport?: ContextReport;
+	ContextCategory?: ContextCategory;
+	CostReport?: CostReport;
+	ModelSpend?: ModelSpend;
+	SideSpend?: SideSpend;
+	TrustState?: TrustState;
+	DirList?: DirList;
+	Forgotten?: Forgotten;
 }
 /**
  * An image sent with a prompt.
@@ -566,7 +620,18 @@ export interface Image {
  * The answer to one command. `data` is present when `success` is true, `error` when it is not.
  */
 export interface Response {
-	type: 'response';
+	/**
+	 * The `id` of the command; `null` for a line that was not a command.
+	 */
+	id?: unknown;
+	success: boolean;
+	data?: unknown;
+	error?: string | null;
+	/**
+	 * Why a failed command failed, when a client may want to tell: `refused` is the access of
+	 * the device (`azazel remote` refuses a command it does not allow it).
+	 */
+	code?: string | null;
 }
 /**
  * What a tool returned.
@@ -580,9 +645,7 @@ export interface ToolOutput {
 	/**
 	 * Structured data for display (diffs, exit codes); the model never sees it.
 	 */
-	details?: {
-		[k: string]: unknown;
-	};
+	details?: unknown;
 }
 /**
  * One agent of the roster.
@@ -608,17 +671,9 @@ export interface Member {
 	activity?: string | null;
 }
 /**
- * A question from an agent. Expects what `expects` says: a list of the chosen options
- * (`select`, `multiselect`), a string (`text`), or `true` or `false` (`confirm`). With
- * `allow_freeform`, a string that is none of the options is an answer the user typed.
- */
-export interface Question {
-	kind: 'ask';
-}
-/**
  * A question from an agent: an `ask` request, or one of the questions of a `form`.
  */
-export interface Question1 {
+export interface Question {
 	question: string;
 	/**
 	 * A word or two naming the question among the others of a form.
@@ -655,20 +710,24 @@ export interface Question1 {
 	allow_freeform?: boolean;
 }
 /**
- * The answer to one command. `data` is present when `success` is true, `error` when it is not.
+ * The data of `get_theme` and the `theme` frame.
  */
-export interface Response1 {
+export interface ThemeColors {
 	/**
-	 * The `id` of the command; `null` for a line that was not a command.
+	 * The theme as the setting names it (`auto`, `nord`, a file's name).
 	 */
-	id?: {
-		[k: string]: unknown;
+	name: string;
+	/**
+	 * Whether the palette is one for a light background.
+	 */
+	light: boolean;
+	/**
+	 * Every colour role (`text`, `muted`, `accent`, `code_bg`, `user_bg`, `diff_add_bg`, ...) as
+	 * `#rrggbb`. The terminal's own colours are given as a usual dark or light terminal has them.
+	 */
+	roles: {
+		[k: string]: string;
 	};
-	success: boolean;
-	data?: {
-		[k: string]: unknown;
-	};
-	error?: string | null;
 }
 /**
  * The session as `get_state` and the session commands report it.
@@ -857,9 +916,7 @@ export interface MessageRow {
 	/**
 	 * `role` (`user`, `assistant`, `tool`), `content` blocks and, for replies, `meta`.
 	 */
-	message: {
-		[k: string]: unknown;
-	};
+	message: unknown;
 }
 /**
  * One entry of the session file.
@@ -1285,4 +1342,281 @@ export interface SessionCopy {
 export interface CommandRow {
 	name: string;
 	description: string;
+	/**
+	 * Where a command of `list_commands` comes from.
+	 */
+	source: 'builtin' | 'skill' | 'mcp' | 'custom' | 'script';
+}
+/**
+ * The data of `get_settings`.
+ */
+export interface SettingList {
+	settings: SettingRow[];
+	/**
+	 * The pages in the order of the settings screen's tabs.
+	 */
+	pages: string[];
+	/**
+	 * Whether the project is trusted, which `set_setting` with `scope: project` needs.
+	 */
+	project: boolean;
+	/**
+	 * The files `home` and `project` write.
+	 */
+	home_config: string;
+	project_config: string;
+}
+/**
+ * One setting of `get_settings`.
+ */
+export interface SettingRow {
+	/**
+	 * Where it lives in the config file, as `table.key`.
+	 */
+	path: string;
+	/**
+	 * The page of the settings screen it is on (`Appearance`), and the heading it stands under.
+	 */
+	page: string;
+	group: string;
+	label: string;
+	/**
+	 * How it is edited: `switch` (a boolean), `choice` (one of `choices`), `theme` (one of
+	 * `choices`, the themes there are), `number`, `text`, `list` (of texts), `table` (of names
+	 * to values) or `role` (a model chain, which `set_role` changes).
+	 */
+	kind: string;
+	choices?: string[];
+	/**
+	 * The running session takes a new value at once; the others apply to the next session.
+	 */
+	live: boolean;
+	description: string;
+	/**
+	 * The value in effect; `null` when nothing sets it and it has no default.
+	 */
+	value: unknown;
+	/**
+	 * `null` for a setting with no default (the `default` role).
+	 */
+	default: {
+		[k: string]: unknown;
+	};
+	/**
+	 * Who set the value in effect: `session`, `flag` (the command line), `env`, `local`
+	 * (`config.local.toml`), `project` or `home`; absent when it is the default.
+	 */
+	source?: string | null;
+	/**
+	 * A project's config may set it only once the project is trusted.
+	 */
+	gated: boolean;
+}
+/**
+ * The data of `set_setting`.
+ */
+export interface SettingChanged {
+	setting: SettingRow1;
+	/**
+	 * What happened, as the terminal says it (`tui.theme = nord`).
+	 */
+	message: string;
+}
+/**
+ * One setting of `get_settings`.
+ */
+export interface SettingRow1 {
+	/**
+	 * Where it lives in the config file, as `table.key`.
+	 */
+	path: string;
+	/**
+	 * The page of the settings screen it is on (`Appearance`), and the heading it stands under.
+	 */
+	page: string;
+	group: string;
+	label: string;
+	/**
+	 * How it is edited: `switch` (a boolean), `choice` (one of `choices`), `theme` (one of
+	 * `choices`, the themes there are), `number`, `text`, `list` (of texts), `table` (of names
+	 * to values) or `role` (a model chain, which `set_role` changes).
+	 */
+	kind: string;
+	choices?: string[];
+	/**
+	 * The running session takes a new value at once; the others apply to the next session.
+	 */
+	live: boolean;
+	description: string;
+	/**
+	 * The value in effect; `null` when nothing sets it and it has no default.
+	 */
+	value: unknown;
+	/**
+	 * `null` for a setting with no default (the `default` role).
+	 */
+	default: {
+		[k: string]: unknown;
+	};
+	/**
+	 * Who set the value in effect: `session`, `flag` (the command line), `env`, `local`
+	 * (`config.local.toml`), `project` or `home`; absent when it is the default.
+	 */
+	source?: string | null;
+	/**
+	 * A project's config may set it only once the project is trusted.
+	 */
+	gated: boolean;
+}
+/**
+ * The data of `get_context`: the token breakdown of the lead's last request.
+ */
+export interface ContextReport {
+	agent: string;
+	/**
+	 * Which of the agent's requests this was, counted from 1.
+	 */
+	request: number;
+	/**
+	 * The `provider/model` that answered; `null` until one has.
+	 */
+	model?: string | null;
+	/**
+	 * The model's context window; 0 when unknown.
+	 */
+	window: number;
+	/**
+	 * The sum of the categories' estimates.
+	 */
+	estimate: number;
+	/**
+	 * Input tokens the provider counted, cached ones included.
+	 */
+	reported?: number | null;
+	/**
+	 * The sum of the categories' tokens: `reported` when there is one, else `estimate`.
+	 */
+	tokens: number;
+	categories: ContextCategory[];
+}
+/**
+ * One category of a [`ContextReport`].
+ */
+export interface ContextCategory {
+	/**
+	 * `system`, `tools`, `messages`, `tool_results` or `images`.
+	 */
+	kind: string;
+	/**
+	 * The part, the MCP server or the kind of message; empty for the rest of its kind.
+	 */
+	name: string;
+	/**
+	 * The row's label as `/context` shows it.
+	 */
+	label: string;
+	/**
+	 * Parts, tools, blocks or images counted here.
+	 */
+	items: number;
+	/**
+	 * Tokens by the counter compaction uses.
+	 */
+	estimate: number;
+	/**
+	 * The estimate scaled so that the categories add up to what the provider counted.
+	 */
+	tokens: number;
+}
+/**
+ * The data of `get_cost`.
+ */
+export interface CostReport {
+	/**
+	 * The lead's requests and what they used; `usage.cost_usd` is absent when no price is known.
+	 */
+	requests: number;
+	usage: Usage1;
+	/**
+	 * What the figure leaves out, when something is (a service tier without prices).
+	 */
+	note?: string | null;
+	/**
+	 * The share of every agent's input read from the prompt cache, in percent.
+	 */
+	cache_hit_rate?: number | null;
+	/**
+	 * Every agent's requests by model.
+	 */
+	models: ModelSpend[];
+	/**
+	 * Requests made outside the conversation, by purpose.
+	 */
+	side: SideSpend[];
+	/**
+	 * The requests that kept the prompt cache warm; absent when warming is off.
+	 */
+	warming?: SideSpend | null;
+}
+/**
+ * One model's requests in a [`CostReport`], as the prompt cache counted them.
+ */
+export interface ModelSpend {
+	model: string;
+	requests: number;
+	/**
+	 * Input tokens that were neither read from the cache nor written to it.
+	 */
+	input: number;
+	cache_read: number;
+	cache_write: number;
+	/**
+	 * The share of the input read from the cache, in percent; absent when there was no input.
+	 */
+	hit_rate?: number | null;
+}
+/**
+ * Requests made for one purpose outside the conversation (`btw`, `name`, `memory`, ...).
+ */
+export interface SideSpend {
+	purpose: string;
+	usage: Usage1;
+}
+/**
+ * The data of `trust_project`.
+ */
+export interface TrustState {
+	/**
+	 * The project root the decision is about.
+	 */
+	root: string;
+	/**
+	 * Whether the project is trusted in this run.
+	 */
+	trusted: boolean;
+	/**
+	 * The decision that is kept for the next start; `null` when there is none.
+	 */
+	saved?: boolean | null;
+	message: string;
+}
+/**
+ * The data of `add_dir`.
+ */
+export interface DirList {
+	/**
+	 * Every directory agents may work in.
+	 */
+	dirs: string[];
+	message: string;
+}
+/**
+ * The data of `forget_approvals`.
+ */
+export interface Forgotten {
+	/**
+	 * How many rules and approvals were forgotten.
+	 */
+	count: number;
+	message: string;
 }

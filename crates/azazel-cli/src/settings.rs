@@ -7,7 +7,7 @@
 //! of prompts.
 
 mod screen;
-mod store;
+pub(crate) mod store;
 
 use std::path::Path;
 use std::sync::Arc;

@@ -896,6 +896,47 @@ fn what_a_ui_elsewhere_needs_is_answered() {
 }
 
 #[test]
+fn a_command_says_where_it_comes_from_and_a_confined_run_refuses_the_project_s() {
+    let mut client = Client::start_in(&json!({ "lead": [] }), &["--no-memory"], |home| {
+        let commands = home.join("commands");
+        std::fs::create_dir_all(commands.join("mcp")).unwrap();
+        std::fs::write(commands.join("deploy.md"), "Deploy $ARGUMENTS").unwrap();
+        // Named like a command of the memory feature, which this run does not have.
+        std::fs::write(commands.join("memory.md"), "Not the memory command").unwrap();
+        // `mcp:x` is a name for MCP prompts; a file cannot take it.
+        std::fs::write(commands.join("mcp").join("x.md"), "Pretend").unwrap();
+    });
+    let rows = client.ok(json!({ "type": "list_commands" }));
+    let source = |name: &str| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["name"] == name)
+            .map(|row| row["source"].as_str().unwrap().to_string())
+    };
+    assert_eq!(source("deploy").as_deref(), Some("custom"));
+    assert_eq!(source("memory").as_deref(), Some("custom"));
+    assert_eq!(source("fast").as_deref(), Some("builtin"));
+    assert_eq!(source("cost").as_deref(), Some("builtin"));
+    assert_eq!(source("mcp:x"), None);
+
+    let only = json!(["builtin", "skill", "mcp"]);
+    for name in ["deploy", "memory", "/memory"] {
+        let refused = client.error(json!({ "type": "run_command", "name": name, "only": only }));
+        assert!(refused.contains("project or of a script"), "{name}: {refused}");
+    }
+    // The program's own commands and the reports run under the same limit.
+    let cost = client.ok(json!({ "type": "run_command", "name": "cost", "only": only }));
+    assert_eq!(cost["outcome"], "show");
+    // Without the limit a project's command is a prompt like any other.
+    assert_eq!(
+        client.error(json!({ "type": "run_command", "name": "mcp:x" })),
+        "no command named `mcp:x`"
+    );
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
 fn moving_between_sessions_waits_for_the_lead() {
     let script = json!({ "lead": [{ "delay_ms": 2000, "reply": { "text": "slow" } }] });
     let mut client = Client::start(&script, &[]);

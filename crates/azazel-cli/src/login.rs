@@ -472,7 +472,7 @@ impl CommandHandler for LoginCommand {
                     .collect();
                 match ui.0.select("Log in to which provider?", &names).await {
                     Ok(index) => names[index].clone(),
-                    Err(_) => return CommandOutcome::Done,
+                    Err(_) => return CommandOutcome::Show("sign-in cancelled".to_string()),
                 }
             }
             Some(id) => id.to_string(),
@@ -498,7 +498,7 @@ impl CommandHandler for LoginCommand {
                 Ok(line) => CommandOutcome::Show(line),
                 Err(why) => CommandOutcome::Error(why),
             },
-            Err(_) => CommandOutcome::Done,
+            Err(_) => CommandOutcome::Show("sign-in cancelled".to_string()),
         }
     }
 }

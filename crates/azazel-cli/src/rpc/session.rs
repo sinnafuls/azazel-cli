@@ -10,8 +10,8 @@ use azazel_ai::providers::presets;
 use azazel_core::session::{Entry, SessionSummary};
 use azazel_core::{EntryKind, SessionStore, StartSource};
 use azazel_protocol::{
-    CommandRow, ExportFormat, Exported, Member, MessageRow, RewindWhat, SessionCopy, SessionRow, State, Todo,
-    TreeRow, Usage,
+    CommandOrigin, CommandRow, ExportFormat, Exported, Member, MessageRow, RewindWhat, SessionCopy,
+    SessionRow, State, Todo, TreeRow, Usage,
 };
 use azazel_team::{Goals, MemberInfo, MemberState, Team};
 use azazel_tools::{TodoStatus, TodoStore};
@@ -44,7 +44,7 @@ fn member(member: &MemberInfo) -> Member {
     }
 }
 
-fn usage(usage: &azazel_ai::Usage) -> Usage {
+pub(crate) fn usage(usage: &azazel_ai::Usage) -> Usage {
     Usage {
         input: usage.input,
         output: usage.output,
@@ -349,6 +349,26 @@ pub(crate) fn tree_of(session: &SessionStore) -> Vec<TreeRow> {
         .collect()
 }
 
+/// Where the command `name` that `run_command` runs comes from. The same resolution as the
+/// command itself: a report first, then a skill, then the registry, whose first registration of
+/// a name wins and whose dynamic sources come after the registered commands.
+pub(crate) fn origin_of(app: &App, name: &str) -> Option<CommandOrigin> {
+    let name = name.trim_start_matches('/');
+    if crate::reports::REPORTS.iter().any(|(report, _)| *report == name) {
+        return Some(CommandOrigin::Builtin);
+    }
+    if name.starts_with("skill:") {
+        return Some(CommandOrigin::Skill);
+    }
+    let provider = app.registry.command_provider(name)?;
+    Some(match (provider.dynamic, provider.owner.as_str()) {
+        (true, "mcp") => CommandOrigin::Mcp,
+        (true, _) => CommandOrigin::Script,
+        (false, azazel_core::commands::OWNER) => CommandOrigin::Custom,
+        (false, _) => CommandOrigin::Builtin,
+    })
+}
+
 /// What `run_command` takes: the commands of extensions, the reports, and the skills.
 pub(crate) fn commands_of(app: &App) -> Vec<CommandRow> {
     let mut rows: Vec<CommandRow> = crate::reports::REPORTS
@@ -356,6 +376,7 @@ pub(crate) fn commands_of(app: &App) -> Vec<CommandRow> {
         .map(|(name, description)| CommandRow {
             name: name.to_string(),
             description: description.to_string(),
+            source: CommandOrigin::Builtin,
         })
         .collect();
     for command in app.registry.commands() {
@@ -367,6 +388,7 @@ pub(crate) fn commands_of(app: &App) -> Vec<CommandRow> {
                 Some(hint) => format!("{} {hint}", command.description),
                 None => command.description,
             },
+            source: origin_of(app, &command.name).unwrap_or(CommandOrigin::Script),
             name: command.name,
         });
     }
@@ -375,6 +397,7 @@ pub(crate) fn commands_of(app: &App) -> Vec<CommandRow> {
             rows.push(CommandRow {
                 name: format!("skill:{}", skill.name),
                 description: skill.description,
+                source: CommandOrigin::Skill,
             });
         }
     }

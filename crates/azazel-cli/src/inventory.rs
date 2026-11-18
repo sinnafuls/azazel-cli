@@ -86,3 +86,38 @@ pub async fn default_app(home: &Path, project: &Path) -> Result<Inventory> {
         conditional_tools: conditional_tools(),
     })
 }
+
+#[cfg(all(test, feature = "remote"))]
+mod tests {
+    use super::*;
+
+    /// A command somebody adds must be decided on for a browser: allowed in `azazel remote`'s
+    /// policy, or never. This fails for a registered command that is in neither list.
+    #[tokio::test]
+    async fn every_registered_slash_command_is_decided_for_a_browser() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (home, project) = (tmp.path().join("home"), tmp.path().join("project"));
+        std::fs::create_dir_all(project.join(".azazel")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let cli = Cli::parse_from([
+            "azazel".as_ref(),
+            "--home".as_ref(),
+            home.as_os_str(),
+            "--cwd".as_ref(),
+            project.as_os_str(),
+        ]);
+        let paths = discover_paths(&cli).unwrap();
+        let app = App::build(&cli, paths, false, &[]).await.unwrap();
+        let undecided: Vec<String> = app
+            .registry
+            .registered_commands()
+            .into_iter()
+            .chain(crate::reports::REPORTS.iter().map(|(name, _)| name.to_string()))
+            .filter(|name| !azazel_remote::command_decided(name))
+            .collect();
+        assert!(
+            undecided.is_empty(),
+            "add these to COMMANDS or NEVER in crates/azazel-remote/src/policy.rs: {undecided:?}"
+        );
+    }
+}

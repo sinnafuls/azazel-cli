@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import type { AnyFrame } from '$lib/protocol';
 import {
 	addLocalUser,
+	addQueued,
 	applySnapshot,
 	emptyModel,
 	leadBusy,
@@ -229,5 +230,107 @@ describe('frame reducer over recorded runs', () => {
 			text: 'what is the <memory> block?'
 		} as unknown as AnyFrame);
 		expect(own.items[0]).toMatchObject({ text: 'what is the <memory> block?' });
+	});
+});
+
+describe('the queue of follow-ups', () => {
+	const input = (kind: string, text: string) =>
+		({ type: 'user_input', kind, text }) as unknown as AnyFrame;
+	const start = { type: 'agent_start', agent: 'lead' } as unknown as AnyFrame;
+
+	it('holds a follow-up in the queue, not in the transcript, until the agent takes it up', () => {
+		let m = addQueued(emptyModel(), 'follow_up', 'then run the tests');
+		expect(m.queue).toEqual([{ kind: 'follow_up', text: 'then run the tests' }]);
+		expect(m.items).toHaveLength(0);
+		m = reduce(m, start);
+		expect(m.queue).toEqual([]);
+		expect(m.items).toHaveLength(1);
+		expect(m.items[0]).toMatchObject({
+			kind: 'user',
+			text: 'then run the tests',
+			via: 'follow_up'
+		});
+	});
+
+	it('queues the follow-up another client sent, and takes the oldest one per run', () => {
+		let m = reduce(emptyModel(), input('follow_up', 'one'));
+		m = reduce(m, input('follow_up', 'two'));
+		expect(m.queue.map((q) => q.text)).toEqual(['one', 'two']);
+		expect(m.items).toHaveLength(0);
+		m = reduce(m, start);
+		expect(m.queue.map((q) => q.text)).toEqual(['two']);
+		expect(m.items.map((i) => i.kind === 'user' && i.text)).toEqual(['one']);
+	});
+
+	it('takes steering at the next request, and leaves a follow-up waiting', () => {
+		const snap = applySnapshot(emptyModel(), {
+			busy: true,
+			tail: [],
+			streaming: [],
+			tools: [],
+			queue: [
+				{ kind: 'follow_up', text: 'later' },
+				{ kind: 'steer', text: 'now' }
+			]
+		});
+		expect(snap.queue).toHaveLength(2);
+		const first = reduce(snap, {
+			type: 'turn_start',
+			agent: 'lead',
+			turn: 1
+		} as unknown as AnyFrame);
+		expect(first.queue).toHaveLength(2);
+		const second = reduce(snap, {
+			type: 'turn_start',
+			agent: 'lead',
+			turn: 2
+		} as unknown as AnyFrame);
+		expect(second.queue).toEqual([{ kind: 'follow_up', text: 'later' }]);
+		expect(second.items).toMatchObject([{ kind: 'user', text: 'now', via: 'steer' }]);
+	});
+});
+
+describe('the summary of a branch that was left', () => {
+	const NOTE =
+		'I went back to an earlier point of this conversation. What happened on the branch I left, in short:';
+	const summary = `${NOTE}\nThe user asked for a cache.\nIt was half written.`;
+
+	it("is a quiet notice, live and after a reload, never the user's own bubble", () => {
+		const live = reduce(emptyModel(), {
+			type: 'user_input',
+			kind: 'prompt',
+			text: summary
+		} as unknown as AnyFrame);
+		const reloaded = applySnapshot(emptyModel(), {
+			busy: false,
+			tail: [
+				{
+					entry_id: 'e1',
+					timestamp: '',
+					message: { role: 'user', content: [{ type: 'text', text: summary }] }
+				}
+			] as never,
+			streaming: [],
+			tools: [],
+			queue: []
+		});
+		for (const m of [live, reloaded]) {
+			expect(m.items).toHaveLength(1);
+			expect(m.items[0]).toMatchObject({
+				kind: 'notice',
+				level: 'info',
+				summary: true,
+				text: 'The user asked for a cache.\nIt was half written.'
+			});
+		}
+	});
+
+	it('leaves a prompt that merely mentions it alone', () => {
+		const m = reduce(emptyModel(), {
+			type: 'user_input',
+			kind: 'prompt',
+			text: `why does it say "${NOTE}"?`
+		} as unknown as AnyFrame);
+		expect(m.items[0]).toMatchObject({ kind: 'user' });
 	});
 });

@@ -15,6 +15,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::auth::Auth;
 use crate::limits::{Clock, Connections, SystemClock, Window, since_epoch};
+use crate::policy::Grants;
 use crate::{Access, Link, Options, Sessions};
 
 /// How many ports from the configured one are tried when it is taken.
@@ -60,7 +61,7 @@ pub(crate) fn parse_public(url: &str) -> Result<Public, String> {
 pub(crate) struct Shared {
     pub auth: Auth,
     pub sessions: Arc<dyn Sessions>,
-    pub allow_bypass: bool,
+    pub grants: Grants,
     pub port: u16,
     pub bind: IpAddr,
     pub public: RwLock<Option<Public>>,
@@ -193,7 +194,11 @@ impl Server {
         let shared = Arc::new(Shared {
             auth: Auth::new(clock, options.link_ttl, options.device_ttl),
             sessions,
-            allow_bypass: options.allow_bypass,
+            grants: Grants {
+                allow_bypass: options.allow_bypass,
+                full_access: options.full_access,
+                gated: options.gated,
+            },
             port: addr.port(),
             bind: options.bind,
             public: RwLock::new(public),

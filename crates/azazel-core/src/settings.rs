@@ -526,6 +526,7 @@ settings! {
         "remote.device_hours": Number, "Device lifetime", "Hours a paired device stays signed in.";
         "remote.redact": Switch, "Redact output", "Replace API keys and tokens in the messages and tool results sent to a browser.";
         "remote.allow_bypass": Switch, "Allow bypass", "Let a browser with control access switch to the bypass mode, and start sessions in any folder without asking here.";
+        "remote.full_access": Switch, "Full access", "Let a browser with control access do everything the terminal can: shell commands, files, settings, sign-ins, trust and any folder. Use it only on a machine and with links you trust.";
         "remote.folders": List, "Folders for new chats", "Folders a browser may start sessions in, and the folders inside them, beside the projects sessions have worked in.";
     }
     Advanced / "Updates" {
@@ -593,6 +594,45 @@ mod tests {
             .try_into::<Config>()
             .map(|_| ())
             .map_err(|e| e.message().to_string())
+    }
+
+    /// `get_settings` sends every row to a browser. A row holds a name, a switch or a command,
+    /// never a credential: a setting that could hold one must be decided on here, with the way it
+    /// is kept out (`remote.redact` hides what looks like a secret in every response).
+    #[test]
+    fn no_setting_holds_a_credential() {
+        const SECRETISH: [&str; 7] = [
+            "token",
+            "secret",
+            "password",
+            "header",
+            "headers",
+            "key",
+            "credential",
+        ];
+        // Switches, lists of patterns and the name of an environment variable are no credential.
+        const KNOWN: [&str; 5] = [
+            "tools.redact_output",
+            "tools.scan.secrets",
+            "permissions.secret_paths",
+            "telemetry.api_key_env",
+            "tui.redact",
+        ];
+        let found: Vec<&str> = SETTINGS
+            .iter()
+            .map(|setting| setting.path)
+            .filter(|path| path.split(['.', '_']).any(|word| SECRETISH.contains(&word)))
+            .filter(|path| !KNOWN.contains(path))
+            .collect();
+        assert!(
+            found.is_empty(),
+            "decide how these are kept from a browser: {found:?}"
+        );
+        assert!(
+            !SETTINGS
+                .iter()
+                .any(|setting| setting.path.starts_with("providers"))
+        );
     }
 
     #[test]

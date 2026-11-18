@@ -6,20 +6,20 @@
 /*
  * azazel web: design tokens.
  *
- * Register: a dense product console, layered rather than boxed. One system:
- *   - neutral near-black and near-white (a trace of blue, hue 260), stepped as a ladder of
- *     surfaces: rail < canvas < card < overlay, with `inset` as the well code sits in;
- *   - depth is the ladder, a 1px hairline of low alpha, a stacked soft shadow and a 1px inner
- *     highlight on what is raised; never one heavy drop shadow, never a thick border;
- *   - the main action is ink (white on dark, black on light); one accent, ember, means
- *     "this needs you" and keyboard focus, nothing else;
- *   - status colours (blue working, green done, red failed) carry state and never decorate;
- *   - shapes: controls are pills and circles; cards and grouped rows 20, the composer 26 and
- *     a sheet 28 at the top, so the page reads as a few soft objects rather than many boxes;
- *   - Geist with tight tracking for the interface, Geist Mono for paths, commands and numbers.
+ * Register: a calm desktop app. Neutral greys carry everything; colour is information only.
+ *   - surfaces are a ladder of pure greys: rail (the sidebar) < canvas (the chat) < card < overlay
+ *     (menus, popovers, the settings window), with `inset` as the well code sits in;
+ *   - a row under the pointer or chosen takes a translucent wash, never a box;
+ *   - the main action is ink (near-white on dark, near-black on light); blue is the accent for
+ *     links, the focus ring and what is selected; amber means "this needs you";
+ *   - green, amber and red carry state and never decorate;
+ *   - shapes: menu rows 12, cards 16, the composer and a bubble 24; top-bar buttons are 24px glyphs;
+ *   - Geist for the interface, Geist Mono for paths, commands and numbers.
  *
- * Three layers: primitives (OKLCH), semantic roles (what components use), and Tailwind's @theme
- * mapping. light-dark() picks the value per theme; `html.light` / `html.dark` overrides the system.
+ * Dark is the default; `html.light` is the light theme. "Match terminal" sets the same variables
+ * inline from the terminal's theme (src/lib/theme.ts), after a contrast check per pair.
+ * The built-in values are mirrored as hex in src/lib/theme.ts (BUILTIN); tests/unit/theme.test.ts
+ * fails when the two drift apart or a pair drops under its contrast floor.
  */
 
 @font-face {
@@ -38,101 +38,111 @@
 }
 
 :root {
-	color-scheme: light dark;
+	color-scheme: dark;
 
 	/* surface ladder */
-	--rail: light-dark(oklch(0.962 0.003 255), oklch(0.118 0.005 255));
-	--background: light-dark(oklch(0.988 0.002 255), oklch(0.148 0.005 255));
-	--card: light-dark(oklch(1 0 0), oklch(0.19 0.006 255));
-	--raised: light-dark(oklch(0.95 0.004 255), oklch(0.235 0.007 255));
-	--overlay: light-dark(oklch(1 0 0), oklch(0.18 0.006 255));
-	--inset: light-dark(oklch(0.968 0.003 255), oklch(0.128 0.005 255));
-	--field: light-dark(oklch(1 0 0), oklch(0.135 0.005 255));
+	--rail: light-dark(oklch(0.97 0 0), oklch(0.16 0 0));
+	--background: light-dark(oklch(1 0 0), oklch(0.2 0 0));
+	--card: light-dark(oklch(0.98 0 0), oklch(0.235 0 0));
+	--raised: light-dark(oklch(0.945 0 0), oklch(0.27 0 0));
+	--overlay: light-dark(oklch(1 0 0), oklch(0.27 0 0));
+	--inset: light-dark(oklch(0.965 0 0), oklch(0.165 0 0));
+	--field: light-dark(oklch(1 0 0), oklch(0.18 0 0));
+	--composer: light-dark(oklch(1 0 0), oklch(0.235 0 0));
+	/* what the person said */
+	--bubble: light-dark(oklch(0.945 0 0), oklch(0.27 0 0));
+	--bubble-foreground: light-dark(oklch(0.2 0 0), oklch(0.95 0 0));
 
-	/* a wash over whatever is beneath: the hover and the pressed state of a row */
-	--hover: light-dark(oklch(0.2 0.01 260 / 0.045), oklch(1 0 0 / 0.055));
-	--active: light-dark(oklch(0.2 0.01 260 / 0.075), oklch(1 0 0 / 0.09));
+	/* a wash over whatever is beneath: the hover and the chosen state of a row */
+	--hover: light-dark(oklch(0 0 0 / 0.05), oklch(1 0 0 / 0.06));
+	--active: light-dark(oklch(0 0 0 / 0.08), oklch(1 0 0 / 0.1));
 
 	/* hairlines are alpha, so they sit right on every step; --input is a control's edge at 3:1 */
-	--border: light-dark(oklch(0.2 0.01 260 / 0.1), oklch(1 0 0 / 0.085));
-	--border-strong: light-dark(oklch(0.2 0.01 260 / 0.17), oklch(1 0 0 / 0.15));
-	--input: light-dark(oklch(0.63 0.004 260), oklch(0.53 0.005 260));
+	--border: light-dark(oklch(0 0 0 / 0.09), oklch(1 0 0 / 0.08));
+	--border-strong: light-dark(oklch(0 0 0 / 0.15), oklch(1 0 0 / 0.14));
+	--input: light-dark(oklch(0.58 0 0), oklch(0.63 0 0));
 
 	/* ink: four strengths, the last only for meta */
-	--foreground: light-dark(oklch(0.2 0.004 260), oklch(0.95 0.002 260));
-	--ink-2: light-dark(oklch(0.36 0.004 260), oklch(0.83 0.003 260));
-	--muted-foreground: light-dark(oklch(0.46 0.004 260), oklch(0.72 0.004 260));
-	--faint: light-dark(oklch(0.51 0.004 260), oklch(0.655 0.004 260));
+	--foreground: light-dark(oklch(0.2 0 0), oklch(0.95 0 0));
+	--ink-2: light-dark(oklch(0.33 0 0), oklch(0.86 0 0));
+	--muted-foreground: light-dark(oklch(0.43 0 0), oklch(0.77 0 0));
+	--faint: light-dark(oklch(0.47 0 0), oklch(0.74 0 0));
+	--thinking: var(--muted-foreground);
 
-	/* the main action: ember, filled, with a dark label (the one filled accent of a view) */
-	--primary: light-dark(oklch(0.68 0.17 48), oklch(0.74 0.155 52));
-	--primary-hover: light-dark(oklch(0.64 0.175 46), oklch(0.79 0.14 56));
-	--primary-foreground: oklch(0.2 0.045 45);
+	/* the main action: ink */
+	--primary: light-dark(oklch(0.2 0 0), oklch(0.96 0 0));
+	--primary-hover: light-dark(oklch(0.32 0 0), oklch(0.86 0 0));
+	--primary-foreground: light-dark(oklch(0.985 0 0), oklch(0.18 0 0));
 
-	/* the accent: ember. Attention and focus. */
-	--ember: light-dark(oklch(0.62 0.18 45), oklch(0.74 0.16 52));
-	--ember-foreground: oklch(0.2 0.04 45);
-	--accent-text: light-dark(oklch(0.5 0.16 40), oklch(0.8 0.13 60));
-	--ring: light-dark(oklch(0.58 0.18 45), oklch(0.74 0.16 52));
+	/* the accent: links, what is selected, keyboard focus */
+	--accent-text: light-dark(oklch(0.45 0.16 255), oklch(0.8 0.1 250));
+	--ring: light-dark(oklch(0.5 0.18 255), oklch(0.74 0.13 250));
+
+	/* attention: this needs you */
+	--ember: light-dark(oklch(0.62 0.14 60), oklch(0.8 0.13 75));
+	--ember-text: light-dark(oklch(0.45 0.1 60), oklch(0.84 0.11 80));
+	--ember-foreground: oklch(0.2 0.04 60);
 
 	/* status */
-	--info: light-dark(oklch(0.49 0.17 255), oklch(0.74 0.12 250));
-	--success: light-dark(oklch(0.5 0.14 155), oklch(0.77 0.15 155));
-	--destructive: light-dark(oklch(0.5 0.2 25), oklch(0.72 0.16 22));
+	--info: light-dark(oklch(0.46 0.16 255), oklch(0.78 0.11 250));
+	--success: light-dark(oklch(0.45 0.12 155), oklch(0.8 0.14 155));
+	--destructive: light-dark(oklch(0.48 0.19 25), oklch(0.76 0.14 22));
 	--destructive-foreground: light-dark(oklch(0.99 0 0), oklch(0.16 0.03 22));
+	/* the strip that says this browser may do anything: the same loud red in both themes */
+	--alarm: oklch(0.5 0.2 27);
+	--alarm-foreground: oklch(0.99 0 0);
+
+	/* how a session's mode is marked */
+	--mode-plan: var(--info);
+	--mode-edits: var(--success);
+	--mode-auto: var(--ember-text);
+	--bash: var(--ink-2);
 
 	/* diff: a tint behind the line, the sign carries the colour */
-	--diff-add: light-dark(oklch(0.955 0.04 155), oklch(0.235 0.04 155));
-	--diff-del: light-dark(oklch(0.96 0.028 22), oklch(0.235 0.045 22));
-	--diff-add-fg: light-dark(oklch(0.38 0.11 155), oklch(0.84 0.11 155));
-	--diff-del-fg: light-dark(oklch(0.44 0.15 22), oklch(0.84 0.09 22));
+	--diff-add: light-dark(oklch(0.955 0.04 155), oklch(0.27 0.04 155));
+	--diff-del: light-dark(oklch(0.96 0.028 22), oklch(0.27 0.045 22));
+	--diff-add-fg: light-dark(oklch(0.38 0.11 155), oklch(0.86 0.11 155));
+	--diff-del-fg: light-dark(oklch(0.44 0.15 22), oklch(0.86 0.09 22));
 
 	/* syntax: quiet, the accent stays out of code */
-	--syn-key: light-dark(oklch(0.48 0.1 300), oklch(0.8 0.09 300));
+	--syn-key: light-dark(oklch(0.45 0.1 300), oklch(0.82 0.09 300));
 
 	/*
-	 * depth: stacked small offsets, the way light falls, never one blurred drop.
-	 * e1 a card on the canvas, e2 the composer and a docked request, e3 what floats (menu, sheet, toast).
+	 * depth: the ladder does most of it. e1 a card, e2 the composer (one soft, wide shadow),
+	 * e3 what floats (menu, dialog, toast).
 	 */
-	--shade: light-dark(oklch(0.25 0.02 260), oklch(0 0 0));
-	--highlight: inset 0 1px 0 0 light-dark(oklch(1 0 0 / 0.7), oklch(1 0 0 / 0.055));
-	--elev-1:
-		0 1px 1px light-dark(oklch(0.25 0.02 260 / 4%), oklch(0 0 0 / 28%)),
-		0 2px 4px -1px light-dark(oklch(0.25 0.02 260 / 5%), oklch(0 0 0 / 30%));
+	--highlight: inset 0 1px 0 0 light-dark(oklch(1 0 0 / 0), oklch(1 0 0 / 0.04));
+	--elev-1: 0 1px 2px light-dark(oklch(0 0 0 / 5%), oklch(0 0 0 / 24%));
 	--elev-2:
-		0 1px 1px light-dark(oklch(0.25 0.02 260 / 4%), oklch(0 0 0 / 30%)),
-		0 4px 8px -2px light-dark(oklch(0.25 0.02 260 / 6%), oklch(0 0 0 / 36%)),
-		0 14px 28px -10px light-dark(oklch(0.25 0.02 260 / 10%), oklch(0 0 0 / 50%));
+		0 1px 2px light-dark(oklch(0 0 0 / 4%), oklch(0 0 0 / 20%)),
+		0 10px 30px -8px light-dark(oklch(0 0 0 / 10%), oklch(0 0 0 / 38%));
 	--elev-3:
-		0 1px 1px light-dark(oklch(0.25 0.02 260 / 5%), oklch(0 0 0 / 34%)),
-		0 8px 16px -4px light-dark(oklch(0.25 0.02 260 / 8%), oklch(0 0 0 / 44%)),
-		0 28px 56px -12px light-dark(oklch(0.25 0.02 260 / 18%), oklch(0 0 0 / 66%));
-	--glow: 0 0 0 3px color-mix(in oklab, var(--ring) 24%, transparent);
-	--scrim: light-dark(oklch(0.25 0.01 260 / 0.38), oklch(0.05 0.003 260 / 0.66));
+		0 2px 6px light-dark(oklch(0 0 0 / 6%), oklch(0 0 0 / 30%)),
+		0 20px 48px -12px light-dark(oklch(0 0 0 / 18%), oklch(0 0 0 / 60%));
+	--glow: 0 0 0 3px color-mix(in oklab, var(--ring) 28%, transparent);
+	--scrim: light-dark(oklch(0.2 0 0 / 0.35), oklch(0 0 0 / 0.6));
+	--edge-hi: light-dark(oklch(1 0 0 / 0), oklch(1 0 0 / 0.05));
 
-	/*
-	 * the lit ground: one warm pool of ember high on the page and a cool one low, over the
-	 * ground, with a grain you see only up close. Never behind running text at strength.
-	 */
-	--glow-warm: light-dark(oklch(0.86 0.09 60 / 0.55), oklch(0.62 0.16 48 / 0.22));
-	--glow-cool: light-dark(oklch(0.9 0.04 240 / 0.6), oklch(0.5 0.08 240 / 0.14));
-	--grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .07 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-	/* a lit top edge on what stands off the page */
-	--edge-hi: light-dark(oklch(1 0 0 / 0.9), oklch(1 0 0 / 0.09));
-
-	/* motion: one ease-out; hover 150 in and 120 out, press 90, a surface entering 260 */
-	--ease-out: cubic-bezier(0.22, 1, 0.36, 1);
-	--ease-ui: cubic-bezier(0.2, 0.8, 0.2, 1);
+	/* motion: `out` for what enters and answers a press, `pane` for what slides (sidebar, drawer) */
+	--ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+	--ease-pane: cubic-bezier(0.32, 0.72, 0, 1);
+	--ease-ui: cubic-bezier(0.23, 1, 0.32, 1);
 	--dur-press: 90ms;
 	--dur-fast: 120ms;
 	--dur: 160ms;
-	--dur-slow: 260ms;
+	--dur-slow: 240ms;
+
+	/* General > Text size: every rem follows it */
+	--text-scale: 100%;
 }
 :root.light {
 	color-scheme: light;
 }
 :root.dark {
 	color-scheme: dark;
+}
+html {
+	font-size: var(--text-scale);
 }
 
 @theme inline {
@@ -173,6 +183,15 @@
 	--color-diff-del: var(--diff-del);
 	--color-diff-add-fg: var(--diff-add-fg);
 	--color-diff-del-fg: var(--diff-del-fg);
+	--color-composer: var(--composer);
+	--color-bubble: var(--bubble);
+	--color-bubble-foreground: var(--bubble-foreground);
+	--color-ember-text: var(--ember-text);
+	--color-alarm: var(--alarm);
+	--color-alarm-foreground: var(--alarm-foreground);
+	--color-thinking: var(--thinking);
+	--color-active: var(--active);
+	--color-field: var(--field);
 
 	--font-sans:
 		'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI Variable', 'Segoe UI', Roboto,
@@ -195,13 +214,14 @@
 	--text-2xl: 1.5rem;
 	--text-2xl--line-height: 2rem;
 
-	/* radius: small marks 6, fields and rows 12, wells 14, cards 20, the composer 26, a sheet 28 */
+	/* radius: small marks 6, fields 10, rows of a menu 12, cards 16, the composer and a bubble 24 */
 	--radius-xs: 6px;
 	--radius-sm: 8px;
-	--radius-md: 12px;
-	--radius-lg: 14px;
-	--radius-xl: 20px;
-	--radius-2xl: 28px;
+	--radius-md: 10px;
+	--radius-lg: 12px;
+	--radius-xl: 12px;
+	--radius-2xl: 16px;
+	--radius-3xl: 24px;
 	--radius-pill: 999px;
 
 	--shadow-e1: var(--elev-1), var(--highlight);
@@ -223,10 +243,6 @@
 	}
 	body {
 		background: var(--background);
-		background-image:
-			var(--grain), radial-gradient(70% 38% at 50% -10%, var(--glow-warm), transparent 70%),
-			radial-gradient(60% 40% at 100% 110%, var(--glow-cool), transparent 72%);
-		background-attachment: fixed;
 		color: var(--foreground);
 		font-family: var(--font-sans);
 		font-size: 15px;
@@ -237,15 +253,6 @@
 		text-rendering: optimizeLegibility;
 		-webkit-text-size-adjust: 100%;
 		-webkit-tap-highlight-color: transparent;
-	}
-	/* On a wide screen the page is the rail and the work sits on it as a panel. */
-	@media (min-width: 1024px) {
-		body {
-			background-color: var(--rail);
-			background-image:
-				var(--grain), radial-gradient(38% 30% at 4% -8%, var(--glow-warm), transparent 72%),
-				radial-gradient(40% 34% at 100% 112%, var(--glow-cool), transparent 72%);
-		}
 	}
 	code,
 	kbd,
@@ -270,7 +277,7 @@
 		cursor: not-allowed;
 	}
 	::selection {
-		background: color-mix(in oklab, var(--ember) 32%, transparent);
+		background: color-mix(in oklab, var(--ring) 36%, transparent);
 	}
 	@media (pointer: coarse) {
 		input:not([type='checkbox']),
@@ -298,7 +305,7 @@
 	/* The reading column: the transcript, the composer and a docked request share its edges. */
 	.col {
 		width: 100%;
-		max-width: 47rem;
+		max-width: 58rem;
 		margin-inline: auto;
 		padding-inline: 1rem;
 	}
@@ -323,23 +330,9 @@
 		font-variant-numeric: tabular-nums;
 	}
 
-	/*
-	 * The lit ground: a warm pool high, a cool pool low, and grain, fixed behind everything. Put it
-	 * on a full-screen layer (the page, the rail, an empty screen); never on a card.
-	 */
+	/* The ground of a full-screen state (not paired, connecting): the canvas, nothing on it. */
 	.ground-lit {
 		background-color: var(--background);
-		background-image:
-			var(--grain), radial-gradient(60% 45% at 50% -8%, var(--glow-warm), transparent 70%),
-			radial-gradient(55% 40% at 85% 108%, var(--glow-cool), transparent 72%);
-		background-attachment: fixed;
-	}
-	.ground-lit-rail {
-		background-color: var(--rail);
-		background-image:
-			radial-gradient(42% 32% at 6% -6%, var(--glow-warm), transparent 72%),
-			radial-gradient(40% 30% at 100% 110%, var(--glow-cool), transparent 72%);
-		background-attachment: fixed;
 	}
 	/* A hairline that is brighter at the top: light falls on what stands off the page. */
 	.edge-lit {
@@ -391,18 +384,6 @@
 				100% 1px;
 		}
 	}
-	/* A row that leads somewhere lifts 2px under a fine pointer. */
-	@media (hover: hover) and (pointer: fine) {
-		.lift {
-			transition:
-				transform 180ms var(--ease-ui),
-				background-color var(--dur-fast) var(--ease-out),
-				box-shadow 180ms var(--ease-ui);
-		}
-		.lift:hover {
-			transform: translateY(-2px);
-		}
-	}
 	/* The first screen enters once: its parts in order, then it stands. */
 	.enter-seq > * {
 		animation: rise 700ms var(--ease-out) both;
@@ -432,27 +413,19 @@
 		border: 1px solid var(--border-strong);
 		box-shadow: var(--elev-2), var(--highlight);
 	}
-	/* The message box: the nearest thing on the page, with an edge that reads as a control. */
+	/* The message box: the nearest thing on the page, soft-cornered, on one wide shadow. */
 	.composer {
-		background: var(--card);
-		border: 1px solid var(--border-strong);
-		border-radius: 1.625rem;
-		box-shadow: var(--elev-2), var(--highlight);
+		background: var(--composer);
+		/* a control's edge: --input holds 3:1 against the page in every theme */
+		border: 1px solid var(--input);
+		border-radius: var(--radius-3xl);
+		box-shadow: var(--elev-2);
 		transition:
 			border-color var(--dur) var(--ease-out),
 			box-shadow var(--dur) var(--ease-out);
 	}
 	.composer:focus-within {
-		border-color: color-mix(in oklab, var(--ring) 70%, transparent);
-		box-shadow:
-			0 0 0 4px color-mix(in oklab, var(--ember) 12%, transparent),
-			0 10px 40px -12px
-				light-dark(
-					color-mix(in oklab, var(--ember) 30%, transparent),
-					color-mix(in oklab, var(--ember) 40%, transparent)
-				),
-			var(--elev-2),
-			var(--highlight);
+		border-color: var(--ring);
 	}
 	/* A menu that opens above the composer. */
 	.menu {
@@ -464,23 +437,6 @@
 		background: var(--overlay);
 		border: 1px solid var(--border-strong);
 		box-shadow: var(--elev-3), var(--highlight);
-	}
-	/* The work area on a wide screen: a panel set into the rail. */
-	.panel {
-		background: transparent;
-	}
-	@media (min-width: 1024px) {
-		.panel {
-			margin: 0.5rem 0.5rem 0.5rem 0;
-			background: var(--background);
-			border: 1px solid var(--border);
-			border-radius: var(--radius-xl);
-			box-shadow:
-				0 24px 60px -24px light-dark(oklch(0.25 0.02 260 / 14%), oklch(0 0 0 / 70%)),
-				var(--elev-1),
-				var(--highlight);
-			overflow: hidden;
-		}
 	}
 	/* A field of dots that fades out: the backdrop of an empty or a waiting screen. */
 	.dotgrid {
@@ -523,11 +479,6 @@
 		transform: translateY(1px) scale(0.985);
 		transition-duration: var(--dur-press);
 	}
-	@media (hover: hover) and (pointer: fine) {
-		.btn:not(.btn-quiet):hover:not(:disabled):not(:active) {
-			transform: translateY(-1px);
-		}
-	}
 	.btn:disabled {
 		opacity: 0.45;
 	}
@@ -562,15 +513,7 @@
 	.btn-primary {
 		background: var(--primary);
 		color: var(--primary-foreground);
-		font-weight: 600;
-		box-shadow:
-			0 1px 2px color-mix(in oklab, var(--ember) 30%, transparent),
-			0 6px 18px -6px
-				light-dark(
-					color-mix(in oklab, var(--ember) 45%, transparent),
-					color-mix(in oklab, var(--ember) 55%, transparent)
-				),
-			inset 0 1px 0 0 oklch(1 0 0 / 0.35);
+		font-weight: 500;
 	}
 	/* Off, the main action goes neutral instead of a dimmed ink. */
 	.btn-primary:disabled {
@@ -665,7 +608,7 @@
 		background: var(--inset);
 		border-radius: var(--radius-pill);
 		box-shadow:
-			inset 0 0 0 1px var(--border),
+			inset 0 0 0 1px var(--input),
 			inset 0 1px 2px light-dark(oklch(0.25 0.02 260 / 5%), oklch(0 0 0 / 34%));
 	}
 	.seg > button {
@@ -726,7 +669,7 @@
 	}
 	.choice[aria-checked='true'] {
 		border-color: var(--ring);
-		background: color-mix(in oklab, var(--ember) 9%, var(--card));
+		background: color-mix(in oklab, var(--ring) 10%, var(--card));
 		box-shadow: 0 0 0 1px var(--ring);
 	}
 	@media (hover: hover) {
@@ -789,8 +732,7 @@
 		z-index: -1;
 		border: 1px solid var(--border-strong);
 		border-radius: var(--radius-pill);
-		background: linear-gradient(180deg, var(--raised), var(--card));
-		box-shadow: var(--highlight);
+		background: transparent;
 		transition:
 			background-color var(--dur-fast) var(--ease-out),
 			border-color var(--dur-fast) var(--ease-out);
@@ -815,14 +757,14 @@
 			color: var(--foreground);
 		}
 		.chip:hover:not(:disabled)::before {
-			background: var(--raised);
-			border-color: var(--muted-foreground);
+			background: var(--hover);
 		}
 	}
 	@media (min-width: 768px) and (pointer: fine) {
 		.chip {
-			height: 1.875rem;
-			padding: 0 0.75rem;
+			height: 1.625rem;
+			padding: 0 0.625rem;
+			font-size: 0.75rem;
 		}
 		.chip::before {
 			inset: 0;
@@ -853,7 +795,7 @@
 	.tag-ember {
 		background: color-mix(in oklab, var(--ember) 13%, transparent);
 		box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--ember) 34%, transparent);
-		color: var(--accent-text);
+		color: var(--ember-text);
 	}
 	.tag-info {
 		background: color-mix(in oklab, var(--info) 12%, transparent);
@@ -889,6 +831,283 @@
 		overflow-wrap: anywhere;
 	}
 
+	/*
+	 * A glyph button: the top bar, a row's ••• and the actions under a message. 24px with a fine
+	 * pointer; on touch the box is 36 and the target 44.
+	 */
+	.icon-btn {
+		position: relative;
+		display: inline-grid;
+		flex-shrink: 0;
+		place-items: center;
+		width: 1.5rem;
+		height: 1.5rem;
+		border-radius: var(--radius-sm);
+		color: var(--muted-foreground);
+		transition:
+			background-color var(--dur-fast) var(--ease-out),
+			color var(--dur-fast) var(--ease-out);
+	}
+	.icon-btn[aria-expanded='true'],
+	.icon-btn[aria-pressed='true'] {
+		background: var(--active);
+		color: var(--foreground);
+	}
+	.icon-btn:disabled {
+		opacity: 0.45;
+	}
+	@media (hover: hover) {
+		.icon-btn:hover:not(:disabled) {
+			background: var(--hover);
+			color: var(--foreground);
+		}
+	}
+	@media (pointer: coarse) {
+		.icon-btn {
+			width: 2.25rem;
+			height: 2.25rem;
+			border-radius: var(--radius-md);
+		}
+		.icon-btn::after {
+			content: '';
+			position: absolute;
+			inset: -0.25rem;
+		}
+	}
+
+	/* A popover: a menu, the `/` list, a picker. 13px rows, 27 tall, each a rounded row. */
+	.pop {
+		background: var(--overlay);
+		border: 1px solid var(--border-strong);
+		border-radius: var(--radius-2xl);
+		box-shadow: var(--elev-3);
+		padding: 0.25rem;
+		font-size: 0.8125rem;
+		line-height: 1.125rem;
+		color: var(--foreground);
+		animation: pop var(--dur) var(--ease-out) both;
+	}
+	.pop-item {
+		display: flex;
+		width: 100%;
+		min-height: 1.6875rem;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0.25rem 0.5rem;
+		border-radius: var(--radius-xl);
+		color: var(--ink-2);
+		text-align: left;
+		transition: background-color var(--dur-fast) var(--ease-out);
+	}
+	.pop-item[data-active='true'],
+	.pop-item[aria-selected='true'] {
+		background: var(--hover);
+		color: var(--foreground);
+	}
+	.pop-item:focus-visible {
+		outline-offset: -2px;
+	}
+	.pop-item:disabled,
+	.pop-item[aria-disabled='true'] {
+		opacity: 0.5;
+		cursor: not-allowed;
+	}
+	.pop-item.is-danger {
+		color: var(--destructive);
+	}
+	@media (hover: hover) {
+		.pop-item:hover:not(:disabled) {
+			background: var(--hover);
+			color: var(--foreground);
+		}
+		.pop-item.is-danger:hover:not(:disabled) {
+			color: var(--destructive);
+		}
+	}
+	@media (pointer: coarse) {
+		.pop-item {
+			min-height: 2.75rem;
+			padding-inline: 0.75rem;
+			font-size: 0.9375rem;
+		}
+	}
+	.pop-label {
+		padding: 0.375rem 0.5rem 0.125rem;
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		color: var(--muted-foreground);
+	}
+	.pop-sep {
+		height: 1px;
+		margin: 0.25rem 0.5rem;
+		background: var(--border);
+	}
+
+	/* A row of the sidebar: a session, a folder, an action. A wash marks hover and the open one. */
+	.side-row {
+		display: flex;
+		width: 100%;
+		min-height: 2rem;
+		align-items: center;
+		gap: 0.5rem;
+		padding: 0 0.5rem;
+		border-radius: var(--radius-xl);
+		font-size: 0.8125rem;
+		line-height: 1.125rem;
+		color: var(--ink-2);
+		text-align: left;
+		transition:
+			background-color var(--dur-fast) var(--ease-out),
+			color var(--dur-fast) var(--ease-out);
+	}
+	.side-row[aria-current='page'],
+	.side-row.is-open {
+		background: var(--active);
+		color: var(--foreground);
+	}
+	.side-row:focus-visible {
+		outline-offset: -2px;
+	}
+	@media (hover: hover) {
+		.side-row:hover {
+			background: var(--hover);
+			color: var(--foreground);
+		}
+		.side-row[aria-current='page']:hover {
+			background: var(--active);
+		}
+	}
+	@media (pointer: coarse) {
+		.side-row {
+			min-height: 2.75rem;
+			font-size: 0.9375rem;
+		}
+	}
+
+	/* An on/off control. Off is a hairline track, on is ink; the thumb slides. */
+	.switch {
+		position: relative;
+		flex-shrink: 0;
+		width: 2.25rem;
+		height: 1.25rem;
+		border-radius: 999px;
+		background: var(--hover);
+		box-shadow: inset 0 0 0 1px var(--input);
+		transition:
+			background-color var(--dur) var(--ease-out),
+			box-shadow var(--dur) var(--ease-out);
+	}
+	.switch::before {
+		content: '';
+		position: absolute;
+		top: 3px;
+		left: 3px;
+		width: 0.875rem;
+		height: 0.875rem;
+		border-radius: 999px;
+		background: var(--muted-foreground);
+		transition:
+			transform var(--dur) var(--ease-out),
+			background-color var(--dur) var(--ease-out);
+	}
+	.switch[aria-checked='true'] {
+		background: var(--primary);
+		box-shadow: none;
+	}
+	.switch[aria-checked='true']::before {
+		transform: translateX(1rem);
+		background: var(--primary-foreground);
+	}
+	.switch:disabled {
+		opacity: 0.45;
+	}
+	.switch::after {
+		content: '';
+		position: absolute;
+		inset: -0.5rem -0.25rem;
+	}
+
+	/* A <select> drawn like a field. */
+	.select {
+		height: 2.25rem;
+		padding: 0 1.75rem 0 0.625rem;
+		background: var(--field)
+			url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+			no-repeat right 0.5rem center;
+		border: 1px solid var(--input);
+		border-radius: var(--radius-md);
+		font-size: 0.8125rem;
+		color: var(--foreground);
+		appearance: none;
+		max-width: 100%;
+	}
+	.select:disabled {
+		opacity: 0.5;
+	}
+	@media (pointer: coarse) {
+		.select {
+			height: 2.75rem;
+			font-size: 1rem;
+		}
+	}
+
+	/* The settings window: a heading per group, then rows of a label and its control. */
+	.set-h {
+		margin: 1.5rem 0 0.375rem;
+		font-size: 0.75rem;
+		line-height: 1rem;
+		font-weight: 500;
+		color: var(--muted-foreground);
+	}
+	.set-h:first-child {
+		margin-top: 0.25rem;
+	}
+	.set-row {
+		display: flex;
+		min-height: 3rem;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem 1.5rem;
+		padding: 0.5rem 0;
+		border-top: 1px solid var(--border);
+	}
+	.set-h + .set-row,
+	.set-h + dl > .set-row:first-child,
+	.set-row:first-child {
+		border-top: 0;
+	}
+	.set-label {
+		font-size: 0.8125rem;
+		line-height: 1.125rem;
+		font-weight: 500;
+		color: var(--foreground);
+	}
+	.set-hint {
+		margin-top: 0.125rem;
+		font-size: 0.75rem;
+		line-height: 1.0625rem;
+		color: var(--muted-foreground);
+		text-wrap: pretty;
+	}
+	@media (max-width: 30rem) {
+		/* On a phone a row is its label, then its control at full width (utilities set otherwise). */
+		.set-row.stacks {
+			flex-direction: column;
+			align-items: stretch !important;
+		}
+		.set-row.stacks > * {
+			width: auto !important;
+			max-width: none !important;
+		}
+	}
+
+	/* The strip that says this browser may do anything. Always on screen, never dismissable. */
+	.alarm {
+		background: var(--alarm);
+		color: var(--alarm-foreground);
+	}
+
 	/* Shimmer for text that stands for work in progress. */
 	.shimmer {
 		background: linear-gradient(
@@ -916,10 +1135,8 @@
 	 */
 	.group-card {
 		background: var(--card);
-		border-radius: var(--radius-xl);
-		box-shadow:
-			inset 0 0 0 1px var(--border),
-			inset 0 1px 0 0 var(--edge-hi);
+		border-radius: var(--radius-2xl);
+		box-shadow: inset 0 0 0 1px var(--border);
 		overflow: hidden;
 	}
 	/* A section label above a grouped card. */
@@ -971,7 +1188,7 @@
 		width: 5px;
 		height: 5px;
 		border-radius: 999px;
-		background: var(--ember);
+		background: var(--muted-foreground);
 		animation: dot-rise 1.2s var(--ease-out) infinite;
 	}
 	.dots > span:nth-child(2) {
@@ -1158,6 +1375,17 @@
 		transform: translateY(6px) scale(0.985);
 	}
 }
+@keyframes pop {
+	from {
+		opacity: 0;
+		transform: scale(0.96);
+	}
+}
+@keyframes slide-in-left {
+	from {
+		transform: translateX(-100%);
+	}
+}
 @keyframes fade-in {
 	from {
 		opacity: 0;
@@ -1221,9 +1449,7 @@
 		transition-duration: 0.001ms !important;
 		scroll-behavior: auto !important;
 	}
-	.btn:active:not(:disabled),
-	.btn:hover:not(:disabled),
-	.lift:hover {
+	.btn:active:not(:disabled) {
 		transform: none !important;
 	}
 	.enter-seq > * {

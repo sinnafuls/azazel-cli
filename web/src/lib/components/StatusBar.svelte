@@ -3,6 +3,7 @@
 	import type { Session } from '$lib/session/session.svelte';
 	import { MODES, THINKING_LEVELS } from '$lib/protocol';
 	import { app } from '$lib/app.svelte';
+	import { ui } from '$lib/ui.svelte';
 	import { toasts } from '$lib/toasts.svelte';
 	import Sheet from './Sheet.svelte';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
@@ -57,6 +58,13 @@
 			toasts.push(e instanceof Error ? e.message : String(e), 'error');
 		}
 	}
+	// A `/model`, `/mode` or `/thinking` typed in the message box opens the picker here.
+	$effect(() => {
+		const w = ui.picker;
+		if (!w) return;
+		ui.picker = null;
+		open(w);
+	});
 	function open(w: Which) {
 		if (!canControl) return;
 		query = '';
@@ -70,7 +78,7 @@
 </script>
 
 <div
-	class="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-3 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)] md:[mask-image:none] lg:px-5 fine:pb-2.5"
+	class="no-scrollbar flex items-center gap-1.5 overflow-x-auto px-3 [mask-image:linear-gradient(to_right,black_calc(100%-28px),transparent)] md:[mask-image:none] md:px-4 fine:pb-2"
 	data-statusbar
 >
 	<button

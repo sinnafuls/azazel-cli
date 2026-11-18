@@ -228,6 +228,11 @@ fn registering(lua: &Lua, shared: &Arc<Shared>, azazel: &Table) -> mlua::Result<
                 "{NAME}: `name` must be one word, such as \"deploy\""
             )));
         }
+        if azazel_core::commands::is_reserved(&name) {
+            return Err(runtime(format!(
+                "{NAME}: `name` may not start with `skill:` or `mcp:`, which are for skills and MCP prompts"
+            )));
+        }
         let command = CommandDef {
             name,
             description: optional(&spec, NAME, "description")?.unwrap_or_default(),

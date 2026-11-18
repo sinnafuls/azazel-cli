@@ -79,9 +79,13 @@ describe('reconnect', () => {
 			type: 'response',
 			id: h.sockets[0].sent.at(-1)!.id,
 			success: false,
-			error: 'A view link cannot send `abort`.'
+			error: 'A view link cannot send `abort`.',
+			code: 'refused'
 		});
-		await expect(bad).rejects.toThrow('view link');
+		await expect(bad).rejects.toMatchObject({
+			message: expect.stringContaining('view link'),
+			code: 'refused'
+		});
 	});
 
 	it('comes back after a drop with backoff and asks only for what it missed', () => {

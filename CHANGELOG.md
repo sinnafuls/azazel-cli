@@ -5,6 +5,32 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-11-18
+
+### Added
+
+- `azazel remote`: the browser has a `/` menu in the message box. It lists the session's own commands (compact, retry, name, fork, new, export, btw, model, mode, thinking, rewind), the commands of extensions and every skill, filtered as you type; what a command prints appears as a card in the conversation that only you see. A browser is offered only the commands it may run.
+- `azazel remote`: a settings window (`Ctrl+.`, or the gear in the sidebar) with panes for the look, models and roles, permissions, usage and cost, the context window as a chart with a Compact button, every setting of the terminal's settings screen (for this session, your config or the project's), paired devices, keyboard shortcuts and the version.
+- `azazel remote`: the page can follow the terminal's theme (Settings, General, **Match terminal**), or stay dark or light; a terminal colour too faint to read on the page keeps the page's own.
+- `azazel remote`: a sidebar that groups sessions by project folder into Needs you, Running and Recent, can be resized, collapses to a rail (`Ctrl+Shift+S`) and is a drawer on phones; each session has a menu to rename, fork, export or end it. `Ctrl+K` searches sessions.
+- `azazel remote`: messages can be copied, the last reply retried, a conversation forked or rewound from a message, and the last prompt edited and sent again. Esc stops a run, `Ctrl+Shift+O` starts a new chat and `Ctrl+/` lists the shortcuts.
+- `azazel remote`: the list of paired devices and signing every device out from the browser (`GET` and `DELETE /api/devices`).
+- azazel has a logo: the browser tab, the phone home-screen icon and the page show it.
+- `azazel remote`: `[remote] full_access` lets a browser with a control link do everything the terminal can (shell, settings files, sign-ins, trust, any folder); `azazel remote` warns when it is on and view links stay view-only. [Full access](docs/remote.md#full-access) lists what a browser may do without it.
+- RPC: `get_settings` and `set_setting` (scope `session`, `home` or `project`) for every setting of the settings screen, `get_theme` and a `theme` frame, `get_context`, `get_cost`, `trust_project`, `add_dir` and `forget_approvals`. A session without a terminal changes only `tui.theme` for itself (by name, never a path) and says so for the other settings.
+- RPC: `list_commands` rows have a `source` (`builtin`, `skill`, `mcp`, `custom` or `script`), `run_command` takes `only` to run a command only from those sources, and a refused command answers with `code: "refused"`.
+- `azazel remote`: `/mcp` is limited to `list` and `reconnect <server>`, `/preset` to `<name>`, `/memory` to `list` and `/media` to nothing, for a browser without full access; a project's custom commands cannot pass for them. Custom commands cannot be named `skill:…` or `mcp:…`.
+- `azazel remote`: with `full_access`, the page offers the `bypass` mode, and `/remote` in the terminal shows the full-access warning.
+
+### Changed
+
+- `azazel remote`: messages you send while a run is going are shown above the message box until the run takes them.
+- `azazel remote`: the summary of a branch you left is a quiet note, not your own message.
+- `azazel remote`: an unknown `/word` stays in the message box with a notice instead of going to the model.
+- `azazel remote`: a view link shows "not available from this device" for what it may not see, instead of an empty pane.
+- `azazel remote`: the message box and the segmented controls have stronger edges.
+- `azazel remote`: a theme change in the terminal reaches the page in the palette for its own light or dark background; settings that need full access are locked in the list for other devices.
+
 ## [0.13.0] - 2026-11-17
 
 ### Added

@@ -7,6 +7,7 @@
 //!
 //! The session ends when the input closes.
 
+pub(crate) mod admin;
 pub(crate) mod session;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -24,8 +25,8 @@ use azazel_core::{
     PlanDecision, Question, StartSource, Ui, UiBridge, UiError,
 };
 use azazel_protocol::{
-    BtwAnswer, Command, CommandResult, Decision, Frame, Models, PROTOCOL, Request, Response, RunState,
-    ShellResult, UiRequest,
+    BtwAnswer, Command, CommandOrigin, CommandResult, Decision, Frame, Models, PROTOCOL, Request, Response,
+    RunState, ShellResult, UiRequest,
 };
 use azazel_team::{Team, TeamEvent};
 use futures::StreamExt;
@@ -702,7 +703,32 @@ impl Session {
                 data(files).map(Some)
             }
             Command::GetUsage => data(self.app.router.limits().snapshot()).map(Some),
-            Command::RunCommand { name, args } => self.command(id, &name, args).await,
+            Command::GetSettings => data(admin::get_settings(&self.app)?).map(Some),
+            Command::SetSetting { path, value, scope } => {
+                let changed = admin::set_setting(&self.app, &path, value, scope).await?;
+                // The setting is changed: a frame that cannot be made must not fail the response.
+                // A client with a light background asks `get_theme` again with its own `light`.
+                if path == "tui.theme"
+                    && let Ok(theme) = admin::get_theme(&self.app, None)
+                {
+                    self.out.line(&Frame::Theme(theme));
+                }
+                data(changed).map(Some)
+            }
+            Command::GetTheme { light } => data(admin::get_theme(&self.app, light)?).map(Some),
+            Command::GetContext => {
+                data(admin::get_context(&self.active.lead, &self.active.session)).map(Some)
+            }
+            Command::GetCost => data(admin::get_cost(
+                &self.app,
+                &self.active.lead,
+                &self.active.session,
+            ))
+            .map(Some),
+            Command::TrustProject { trusted } => data(admin::trust_project(&self.app, trusted)?).map(Some),
+            Command::AddDir { path } => data(admin::add_dir(&self.app, &path)?).map(Some),
+            Command::ForgetApprovals => data(admin::forget_approvals(&self.app)?).map(Some),
+            Command::RunCommand { name, args, only } => self.command(id, &name, args, only.as_deref()).await,
             // A background session answers these itself, before its lines get here.
             Command::Attach { .. } | Command::Stop { .. } => Err(
                 "this is not a background session: it serves the one client it was started for".to_string(),
@@ -785,8 +811,26 @@ impl Session {
 
     /// `run_command`: a skill (`skill:<name>`) or a command an extension registered. Registered
     /// commands run beside the loop: some ask the user, and the answer arrives as a command.
-    async fn command(&mut self, id: &Value, name: &str, args: String) -> Result<Option<Value>, String> {
+    ///
+    /// `only` limits where the command may come from: a remote browser that may not run the
+    /// project's own commands sends it, and a command that resolves to another source is
+    /// refused, whatever its name says.
+    async fn command(
+        &mut self,
+        id: &Value,
+        name: &str,
+        args: String,
+        only: Option<&[CommandOrigin]>,
+    ) -> Result<Option<Value>, String> {
         let name = name.trim_start_matches('/');
+        if let Some(only) = only
+            && let Some(origin) = session::origin_of(&self.app, name)
+            && !only.contains(&origin)
+        {
+            return Err(format!(
+                "`/{name}` is a command of the project or of a script; this client may not run those"
+            ));
+        }
         // What the session says about itself is text, whoever asks.
         if let Some(report) = crate::reports::run(&self.app, &self.active, name, &args).await {
             return data(CommandResult::Show { text: report? }).map(Some);

@@ -54,8 +54,8 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `shell` | `command`, `share?` | Runs a command in your shell, outside the permission rules. With `share` (the default) the lead is told what was run and what it printed | `{"output": "...", "status": "exit code: 0"}` |
 | `btw` | `question` | Asks a question on the side, without interrupting the lead. The answer streams as `btw_delta` frames | `{"answer": "...", "model": "...", "dropped_tools?": [...]}` |
 | `export` | `format?`, `path?` | Writes the session to a file: `markdown`, `html` or `jsonl`. The format comes from `format`, else from the file name, else it is Markdown; the default file is `azazel-session-<id>.<ext>` in the working directory | `{"path": "..."}` |
-| `run_command` | `name`, `args?` | Runs a slash command an extension registered (`fast`, `preset`, a custom command), one of the session's reports (`cost`, `context` (also `context json` and `context text <request> <category>`; see [the context inspector](tui.md#the-context-inspector)), `session`, `tools`, `todo`, `dirs`, `add-dir`, `rules`, `hooks`, `doctor`, `trust`, `forget-approvals`), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
-| `list_commands` | | What `run_command` takes | A list of `{"name", "description"}` |
+| `run_command` | `name`, `args?`, `only?` (a list of `source`s: the command runs only if it comes from one of them, else it is refused) | Runs a slash command an extension registered (`fast`, `preset`, a custom command), one of the session's reports (`cost`, `context` (also `context json` and `context text <request> <category>`; see [the context inspector](tui.md#the-context-inspector)), `session`, `tools`, `todo`, `dirs`, `add-dir`, `rules`, `hooks`, `doctor`, `trust`, `forget-approvals`), or a skill as `skill:<name>` | `{"outcome": "done"}`, `{"outcome": "show", "text": "..."}`, or `{"outcome": "prompt", "text": "..."}` when it sent a prompt to the lead |
+| `list_commands` | | What `run_command` takes | A list of `{"name", "description", "source": "builtin\|skill\|mcp\|custom\|script"}` |
 | `list_files` | | The files of the working directory, relative to it, for completing `@` mentions; ignored files are left out and the list is cut at 20,000 | A list of strings |
 | `list_models` | `all?` | The models of the providers you have a credential for; with `all: true`, of every provider. A provider `refresh_models` asked has its rows from that answer | A list of [models](#models-and-providers) |
 | `list_providers` | | Every provider, whether it can be used, and how | A list of [providers](#models-and-providers) |
@@ -65,6 +65,14 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `save_preset` | `name` | Writes every role as it is now under `[presets.<name>.roles]` in the home config | [Roles](#roles) |
 | `apply_preset` | `name` | Points every role of a saved preset at its models for this session | [Roles](#roles) |
 | `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status", "scope?"}], "blocked_until?", "blocks?": [{"until", "since", "window?", "scope?"}]}`. A window or block with a `scope` is about one model family only; `blocked_until` is about every model |
+| `get_settings` | | Every setting of the terminal's settings screen | `{"settings": [{"path", "page", "group", "label", "kind": "switch\|choice\|theme\|number\|text\|list\|table\|role", "choices?", "live", "description", "value", "default", "source?": "session\|flag\|env\|local\|project\|home", "gated"}], "pages", "project", "home_config", "project_config"}` |
+| `set_setting` | `path`, `value`, `scope?` (`session`, `home`, `project`; default `session`) | Changes one setting; `value: null` takes it out of the file `scope` names. `session` changes nothing on disk. A session with a terminal UI takes every `live` setting; any other session (`azazel rpc`, a background session) takes only `tui.theme`, by name (`auto`, a built-in theme or one in the home's `themes` directory, never a path), and refuses the rest with a message. `project` needs a trusted project. A change of `tui.theme` sends a `theme` frame before the response (the frame is left out, and the response still succeeds, when the theme cannot be read) | `{"setting": <row of get_settings>, "message"}` |
+| `get_theme` | `light?` | The colours of the configured theme | `{"name", "light", "roles": {"text": "#rrggbb", ...}}` |
+| `get_context` | | What the lead's last request was made of | `null` before a request, else `{"agent", "request", "model?", "window", "estimate", "reported?", "tokens", "categories": [{"kind", "name", "label", "items", "estimate", "tokens"}]}` |
+| `get_cost` | | Tokens and money of the session | `{"requests", "usage", "note?", "cache_hit_rate?", "models": [{"model", "requests", "input", "cache_read", "cache_write", "hit_rate?"}], "side": [{"purpose", "usage"}], "warming?"}` |
+| `trust_project` | `trusted?` (default true) | As `/trust yes` or `/trust no` | `{"root", "trusted", "saved", "message"}` |
+| `add_dir` | `path` | As `/add-dir` | `{"dirs", "message"}` |
+| `forget_approvals` | | As `/forget-approvals` | `{"count", "message"}` |
 
 The session commands report the saved sessions and the open one, change which session is open, or change where in it the conversation continues. Those that change something are refused while the lead works; send `abort` first.
 
@@ -170,7 +178,7 @@ The events of a run that is still going on arrive on the connection as they woul
 {"id": 2, "type": "response", "success": false, "error": "unknown command `dance`"}
 ```
 
-A response means the command was accepted or rejected, not that the work is finished: `prompt` answers at once and the work shows up as events. `shell`, `btw` and `run_command` answer when they are done, and other commands are answered meanwhile. A line that is not a JSON object is answered with `"id": null`. A `prompt` can be rejected, for example by a `user_prompt_submit` hook; the reason is the `error`.
+A response means the command was accepted or rejected, not that the work is finished: `prompt` answers at once and the work shows up as events. `shell`, `btw` and `run_command` answer when they are done, and other commands are answered meanwhile. A line that is not a JSON object is answered with `"id": null`. A failed response may carry a `code`: `refused` means the server does not allow this device the command (`azazel remote` for a browser). A `prompt` can be rejected, for example by a `user_prompt_submit` hook; the reason is the `error`.
 
 ## Events
 
@@ -198,7 +206,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 
 One prompt produces `agent_start`, then per model request `turn_start`, `message_start`, `stream`…, `message_end`, any `tool_start` / `tool_update` / `tool_end`, `turn_end`, and finally `idle` or `failed`. A request whose reply a rule withdrew has `rule` where `message_end` would be. Stream deltas are for display; `message_end` carries the authoritative message.
 
-Five more frame types come from the session rather than an agent.
+Six more frame types come from the session rather than an agent.
 
 ### `roster`
 
@@ -294,6 +302,10 @@ A client that shows the request takes it away. The client that answered is not s
 ### `btw_delta`
 
 A piece of the answer to a `btw` command: `{"type": "btw_delta", "id": <the command's id>, "delta": "..."}`. The command's response carries the whole answer.
+
+### `theme`
+
+Sent when the terminal theme changed because `set_setting` changed `tui.theme`: `{"type": "theme", "name": "nord", "light": false, "roles": {"text": "#d8dee9", "accent": "#88c0d0", ...}}`. It has the members of the `get_theme` response, made for a dark background. It comes before the response to the `set_setting` that caused it. A client that follows the terminal's background should ask `get_theme` again with its own `light`.
 
 ## Background sessions
 

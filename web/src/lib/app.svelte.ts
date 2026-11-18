@@ -1,36 +1,126 @@
-// Page-wide state: who this device is, the theme, toasts.
+// Page-wide state: who this device is, the theme and the other choices of Settings > General.
 import { api, ApiError, pairSecret } from '$lib/api';
-import type { Me } from '$lib/protocol';
+import type { Me, TerminalTheme } from '$lib/protocol';
+import { MAPPED_VARS, mapTheme, toHex, type Mapped } from '$lib/theme';
 
 export type Auth = 'checking' | 'pairing' | 'ok' | 'needs-link' | 'error';
+export type ThemeChoice = 'terminal' | 'dark' | 'light';
+export type TextSize = 'small' | 'default' | 'large';
+/** What Enter does in the message box; `auto` sends with a keyboard and makes a line on touch. */
+export type EnterKey = 'auto' | 'send' | 'newline';
+
+export const THEMES: { value: ThemeChoice; label: string; hint: string }[] = [
+	{ value: 'terminal', label: 'Match terminal', hint: 'The colours of the azazel theme in use' },
+	{ value: 'dark', label: 'Dark', hint: 'Neutral greys on a dark ground' },
+	{ value: 'light', label: 'Light', hint: 'The same, on white' }
+];
+const TEXT_SCALE: Record<TextSize, string> = { small: '93.75%', default: '100%', large: '112.5%' };
+
+const KEYS = {
+	theme: 'azazel-theme',
+	terminal: 'azazel-terminal-theme',
+	text: 'azazel-text-size',
+	enter: 'azazel-enter',
+	notify: 'azazel-notify'
+};
+const read = (k: string) => {
+	try {
+		return localStorage.getItem(k);
+	} catch {
+		return null;
+	}
+};
+const store = (k: string, v: string | null) => {
+	try {
+		if (v === null) localStorage.removeItem(k);
+		else localStorage.setItem(k, v);
+	} catch {
+		/* private mode: the choice lasts for this page */
+	}
+};
+const oneOf = <T extends string>(v: string | null, all: readonly T[], or: T): T =>
+	all.includes(v as T) ? (v as T) : or;
 
 class App {
 	me = $state<Me | null>(null);
 	auth = $state<Auth>('checking');
 	error = $state<string | null>(null);
-	theme = $state<'system' | 'light' | 'dark'>('system');
 
+	theme = $state<ThemeChoice>('dark');
+	/** The terminal's theme, as the last session reported it; kept so the next visit starts in it. */
+	terminal = $state.raw<TerminalTheme | null>(null);
+	/** What "Match terminal" made of it: which variables it set and which fell back. */
+	mapped = $state.raw<Mapped | null>(null);
+	textSize = $state<TextSize>('default');
+	enter = $state<EnterKey>('auto');
+	notify = $state(false);
+
+	/** Reads the stored choices and paints; called once, before the first frame. */
 	applyTheme() {
-		const stored = (localStorage.getItem('azazel-theme') as App['theme'] | null) ?? 'system';
-		this.theme = stored;
+		this.theme = oneOf(read(KEYS.theme), ['terminal', 'dark', 'light'] as const, 'dark');
+		this.textSize = oneOf(read(KEYS.text), ['small', 'default', 'large'] as const, 'default');
+		this.enter = oneOf(read(KEYS.enter), ['auto', 'send', 'newline'] as const, 'auto');
+		this.notify = read(KEYS.notify) === '1';
+		try {
+			const t = JSON.parse(read(KEYS.terminal) ?? 'null') as TerminalTheme | null;
+			if (t && typeof t.roles === 'object') this.terminal = t;
+		} catch {
+			/* a stored theme that does not parse is as good as none */
+		}
 		this.paint();
 	}
-	setTheme(t: App['theme']) {
+	setTheme(t: ThemeChoice) {
 		this.theme = t;
-		if (t === 'system') localStorage.removeItem('azazel-theme');
-		else localStorage.setItem('azazel-theme', t);
+		store(KEYS.theme, t);
 		this.paint();
 	}
+	/** A session told us the terminal's theme (`get_theme`, or a `theme` frame when it changes). */
+	setTerminalTheme(t: TerminalTheme | null | undefined) {
+		if (!t || typeof t.roles !== 'object' || !t.roles) return;
+		this.terminal = { name: String(t.name ?? ''), light: !!t.light, roles: t.roles };
+		store(KEYS.terminal, JSON.stringify(this.terminal));
+		if (this.theme === 'terminal') this.paint();
+	}
+	setTextSize(s: TextSize) {
+		this.textSize = s;
+		store(KEYS.text, s === 'default' ? null : s);
+		this.paint();
+	}
+	setEnter(e: EnterKey) {
+		this.enter = e;
+		store(KEYS.enter, e === 'auto' ? null : e);
+	}
+	/** Turns notifications on (asking the browser when it has not been asked) or off. */
+	async setNotify(on: boolean): Promise<boolean> {
+		if (on) {
+			if (typeof Notification === 'undefined') return false;
+			const p =
+				Notification.permission === 'default'
+					? await Notification.requestPermission()
+					: Notification.permission;
+			if (p !== 'granted') {
+				this.notify = false;
+				store(KEYS.notify, null);
+				return false;
+			}
+		}
+		this.notify = on;
+		store(KEYS.notify, on ? '1' : null);
+		return true;
+	}
+
 	private paint() {
 		const el = document.documentElement;
-		el.classList.toggle('light', this.theme === 'light');
-		el.classList.toggle('dark', this.theme === 'dark');
-		const dark =
-			this.theme === 'dark' ||
-			(this.theme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches);
-		document
-			.querySelector('meta[name=theme-color]')
-			?.setAttribute('content', dark ? '#0f1012' : '#f6f6f7');
+		const mapped = this.theme === 'terminal' && this.terminal ? mapTheme(this.terminal) : null;
+		const light = this.theme === 'light' || (this.theme === 'terminal' && !!mapped?.light);
+		this.mapped = mapped;
+		el.classList.toggle('light', light);
+		el.classList.toggle('dark', !light);
+		for (const v of MAPPED_VARS) el.style.removeProperty(v);
+		if (mapped) for (const [k, v] of Object.entries(mapped.vars)) el.style.setProperty(k, v);
+		el.style.setProperty('--text-scale', TEXT_SCALE[this.textSize]);
+		const canvas = mapped ? toHex(mapped.palette.background) : light ? '#ffffff' : '#161616';
+		document.querySelector('meta[name=theme-color]')?.setAttribute('content', canvas);
 	}
 
 	/** Pairs when the URL carries `#pair=…`, then asks who this device is. */
@@ -61,6 +151,10 @@ class App {
 
 	get canControl() {
 		return this.me?.access === 'control';
+	}
+	/** This browser may do anything on the computer: settings, rules, every command. */
+	get fullAccess() {
+		return this.me?.full_access === true;
 	}
 	async logout() {
 		await api.logout().catch(() => {});

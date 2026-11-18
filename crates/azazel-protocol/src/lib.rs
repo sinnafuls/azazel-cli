@@ -302,11 +302,56 @@ pub enum Command {
     /// [`AccountUsage`].
     GetUsage,
     /// Runs a slash command by name (without the slash). Answers with [`CommandResult`].
+    /// With `only`, the command runs only when it comes from one of those sources (see
+    /// [`CommandRow::source`]); one that comes from another is refused. `azazel remote` sets it
+    /// for a browser that may not run the project's own commands, so that the command it
+    /// approved by name is the one that runs.
     RunCommand {
         name: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         args: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        only: Option<Vec<CommandOrigin>>,
     },
+    /// Every setting the settings screen of the terminal can change: where it is shown, how it
+    /// is edited, its value, its default and who set it. Answers with [`SettingList`].
+    GetSettings,
+    /// Changes one setting (`path` as `table.key`, `value` as JSON of the setting's kind; `null`
+    /// takes it out of the file `scope` names, back to what the layers below say). `session`
+    /// changes it for this session only and takes only settings that apply at once (`live`);
+    /// `home` writes the home config, `project` the project's (only in a trusted project, and a
+    /// trust-gated key only there). The value is checked against the configuration first. A
+    /// change of `tui.theme` is followed by a `theme` frame. Answers with [`SettingChanged`].
+    SetSetting {
+        path: String,
+        value: Value,
+        #[serde(default)]
+        scope: SaveTo,
+    },
+    /// The colours of the configured terminal theme. A theme that follows the terminal's
+    /// background takes its light palette when `light` is true. Answers with [`ThemeColors`].
+    GetTheme {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        light: Option<bool>,
+    },
+    /// What the lead's last request was made of, by category. Answers with [`ContextReport`], or
+    /// `null` when the session has sent no request yet.
+    GetContext,
+    /// Tokens and money spent in this session, with the prompt cache by model and the requests
+    /// made on the side. Answers with [`CostReport`].
+    GetCost,
+    /// Trusts the project (or with `trusted: false` stops trusting it) from the next start of
+    /// azazel, as `/trust yes|no` does. Answers with [`TrustState`].
+    TrustProject {
+        #[serde(default = "yes")]
+        trusted: bool,
+    },
+    /// Lets agents work in another directory too, until azazel exits, as `/add-dir` does. A
+    /// relative path is taken from the working directory. Answers with [`DirList`].
+    AddDir { path: String },
+    /// Forgets every remembered approval and every rule added in this session, as
+    /// `/forget-approvals` does. Answers with [`Forgotten`].
+    ForgetApprovals,
     /// Background sessions only, and the first command on a connection to one: makes the
     /// connection a client of the session, beside any that are attached already. The frames
     /// `replay` asks for follow the response, then the requests that still wait for an answer,
@@ -342,7 +387,14 @@ pub struct Response {
     pub data: Value,
     #[serde(default)]
     pub error: Option<String>,
+    /// Why a failed command failed, when a client may want to tell: `refused` is the access of
+    /// the device (`azazel remote` refuses a command it does not allow it).
+    #[serde(default)]
+    pub code: Option<String>,
 }
+
+/// The `code` of a response to a command the server does not allow this device.
+pub const REFUSED: &str = "refused";
 
 impl Response {
     pub fn ok(id: Value, data: Value) -> Self {
@@ -351,6 +403,7 @@ impl Response {
             success: true,
             data,
             error: None,
+            code: None,
         }
     }
 
@@ -360,6 +413,15 @@ impl Response {
             success: false,
             data: Value::Null,
             error: Some(error.into()),
+            code: None,
+        }
+    }
+
+    /// A refusal: the device may not send this command (see [`REFUSED`]).
+    pub fn refused(id: Value, error: impl Into<String>) -> Self {
+        Response {
+            code: Some(REFUSED.to_string()),
+            ..Response::err(id, error)
         }
     }
 
@@ -377,13 +439,16 @@ impl Response {
 // failed one never does.
 impl Serialize for Response {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        let mut out = serializer.serialize_struct("Response", 3)?;
+        let mut out = serializer.serialize_struct("Response", 4)?;
         out.serialize_field("id", &self.id)?;
         out.serialize_field("success", &self.success)?;
         if self.success {
             out.serialize_field("data", &self.data)?;
         } else {
             out.serialize_field("error", self.error.as_deref().unwrap_or_default())?;
+            if let Some(code) = &self.code {
+                out.serialize_field("code", code)?;
+            }
         }
         out.end()
     }
@@ -712,6 +777,9 @@ pub enum Frame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
     },
+    /// The colours of the terminal theme changed: the theme setting was changed with
+    /// `set_setting`, or in the terminal UI a browser shares.
+    Theme(ThemeColors),
     /// Background sessions only: the `approval_request` or `ui_request` with this id no longer
     /// waits. Another client answered it, or whoever asked gave up.
     RequestClosed {
@@ -1139,6 +1207,24 @@ pub struct SessionCopy {
 pub struct CommandRow {
     pub name: String,
     pub description: String,
+    /// Where the command comes from.
+    pub source: CommandOrigin,
+}
+
+/// Where a command of `list_commands` comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandOrigin {
+    /// Azazel itself or one of its extensions: a report, `/fast`, `/memory`, ...
+    Builtin,
+    /// A skill, named `skill:<name>`.
+    Skill,
+    /// A prompt of an MCP server, named `mcp:<server>:<prompt>`.
+    Mcp,
+    /// A Markdown file of the user's or the project's `commands` directory.
+    Custom,
+    /// A command a Luau script registered.
+    Script,
 }
 
 /// The data of `attach`.
@@ -1229,6 +1315,178 @@ pub enum CommandResult {
     Prompt { text: String },
 }
 
+/// One setting of `get_settings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingRow {
+    /// Where it lives in the config file, as `table.key`.
+    pub path: String,
+    /// The page of the settings screen it is on (`Appearance`), and the heading it stands under.
+    pub page: String,
+    pub group: String,
+    pub label: String,
+    /// How it is edited: `switch` (a boolean), `choice` (one of `choices`), `theme` (one of
+    /// `choices`, the themes there are), `number`, `text`, `list` (of texts), `table` (of names
+    /// to values) or `role` (a model chain, which `set_role` changes).
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    /// The running session takes a new value at once; the others apply to the next session.
+    pub live: bool,
+    pub description: String,
+    /// The value in effect; `null` when nothing sets it and it has no default.
+    pub value: Value,
+    /// `null` for a setting with no default (the `default` role).
+    pub default: Value,
+    /// Who set the value in effect: `session`, `flag` (the command line), `env`, `local`
+    /// (`config.local.toml`), `project` or `home`; absent when it is the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// A project's config may set it only once the project is trusted.
+    pub gated: bool,
+}
+
+/// The data of `get_settings`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingList {
+    pub settings: Vec<SettingRow>,
+    /// The pages in the order of the settings screen's tabs.
+    pub pages: Vec<String>,
+    /// Whether the project is trusted, which `set_setting` with `scope: project` needs.
+    pub project: bool,
+    /// The files `home` and `project` write.
+    pub home_config: String,
+    pub project_config: String,
+}
+
+/// The data of `set_setting`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SettingChanged {
+    /// The setting as it is now.
+    pub setting: SettingRow,
+    /// What happened, as the terminal says it (`tui.theme = nord`).
+    pub message: String,
+}
+
+/// The data of `get_theme` and the `theme` frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ThemeColors {
+    /// The theme as the setting names it (`auto`, `nord`, a file's name).
+    pub name: String,
+    /// Whether the palette is one for a light background.
+    pub light: bool,
+    /// Every colour role (`text`, `muted`, `accent`, `code_bg`, `user_bg`, `diff_add_bg`, ...) as
+    /// `#rrggbb`. The terminal's own colours are given as a usual dark or light terminal has them.
+    pub roles: std::collections::BTreeMap<String, String>,
+}
+
+/// One category of a [`ContextReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextCategory {
+    /// `system`, `tools`, `messages`, `tool_results` or `images`.
+    pub kind: String,
+    /// The part, the MCP server or the kind of message; empty for the rest of its kind.
+    pub name: String,
+    /// The row's label as `/context` shows it.
+    pub label: String,
+    /// Parts, tools, blocks or images counted here.
+    pub items: u64,
+    /// Tokens by the counter compaction uses.
+    pub estimate: u64,
+    /// The estimate scaled so that the categories add up to what the provider counted.
+    pub tokens: u64,
+}
+
+/// The data of `get_context`: the token breakdown of the lead's last request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ContextReport {
+    pub agent: String,
+    /// Which of the agent's requests this was, counted from 1.
+    pub request: u32,
+    /// The `provider/model` that answered; `null` until one has.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// The model's context window; 0 when unknown.
+    pub window: u64,
+    /// The sum of the categories' estimates.
+    pub estimate: u64,
+    /// Input tokens the provider counted, cached ones included.
+    #[serde(default)]
+    pub reported: Option<u64>,
+    /// The sum of the categories' tokens: `reported` when there is one, else `estimate`.
+    pub tokens: u64,
+    pub categories: Vec<ContextCategory>,
+}
+
+/// One model's requests in a [`CostReport`], as the prompt cache counted them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ModelSpend {
+    pub model: String,
+    pub requests: u32,
+    /// Input tokens that were neither read from the cache nor written to it.
+    pub input: u64,
+    pub cache_read: u64,
+    pub cache_write: u64,
+    /// The share of the input read from the cache, in percent; absent when there was no input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hit_rate: Option<u64>,
+}
+
+/// Requests made for one purpose outside the conversation (`btw`, `name`, `memory`, ...).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct SideSpend {
+    pub purpose: String,
+    pub usage: Usage,
+}
+
+/// The data of `get_cost`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct CostReport {
+    /// The lead's requests and what they used; `usage.cost_usd` is absent when no price is known.
+    pub requests: u32,
+    pub usage: Usage,
+    /// What the figure leaves out, when something is (a service tier without prices).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The share of every agent's input read from the prompt cache, in percent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_hit_rate: Option<u64>,
+    /// Every agent's requests by model.
+    pub models: Vec<ModelSpend>,
+    /// Requests made outside the conversation, by purpose.
+    pub side: Vec<SideSpend>,
+    /// The requests that kept the prompt cache warm; absent when warming is off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warming: Option<SideSpend>,
+}
+
+/// The data of `trust_project`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TrustState {
+    /// The project root the decision is about.
+    pub root: String,
+    /// Whether the project is trusted in this run.
+    pub trusted: bool,
+    /// The decision that is kept for the next start; `null` when there is none.
+    pub saved: Option<bool>,
+    pub message: String,
+}
+
+/// The data of `add_dir`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DirList {
+    /// Every directory agents may work in.
+    pub dirs: Vec<String>,
+    pub message: String,
+}
+
+/// The data of `forget_approvals`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Forgotten {
+    /// How many rules and approvals were forgotten.
+    pub count: u64,
+    pub message: String,
+}
+
 /// The JSON Schema of the protocol: a line is a [`Request`] or a [`Frame`]; the results are
 /// among the definitions.
 pub fn schema() -> Value {
@@ -1254,6 +1512,14 @@ pub fn schema() -> Value {
     generator.subschema_for::<Mentioned>();
     generator.subschema_for::<SessionCopy>();
     generator.subschema_for::<CommandRow>();
+    generator.subschema_for::<CommandOrigin>();
+    generator.subschema_for::<SettingList>();
+    generator.subschema_for::<SettingChanged>();
+    generator.subschema_for::<ContextReport>();
+    generator.subschema_for::<CostReport>();
+    generator.subschema_for::<TrustState>();
+    generator.subschema_for::<DirList>();
+    generator.subschema_for::<Forgotten>();
     let definitions = generator.take_definitions(true);
     serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",

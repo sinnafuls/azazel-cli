@@ -24,7 +24,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
 
 pub use limits::{Clock, SystemClock};
-pub use policy::{check, policy};
+pub use policy::{Grants, check, command_decided, confine, policy};
 pub use qr::{qr_matrix, qr_svg};
 pub use server::Server;
 
@@ -169,6 +169,12 @@ pub struct Options {
     pub device_ttl: Duration,
     pub redact: bool,
     pub allow_bypass: bool,
+    /// `[remote] full_access`: a control device may do all the terminal can. A view device stays
+    /// view-only.
+    pub full_access: bool,
+    /// Whether a configuration key may be set by a project only once it is trusted (and so is
+    /// not for a browser to change either).
+    pub gated: fn(&str) -> bool,
 }
 
 /// A pairing link.

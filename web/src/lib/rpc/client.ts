@@ -43,7 +43,15 @@ export interface ClientOptions {
 	random?: () => number;
 }
 
-export class CommandError extends Error {}
+export class CommandError extends Error {
+	constructor(
+		message: string,
+		/** Why the command failed, when the server says: `refused` is the access of this device. */
+		readonly code?: string
+	) {
+		super(message);
+	}
+}
 
 export function backoffMs(n: number, random: () => number = Math.random): number {
 	const base = Math.min(15_000, 500 * 2 ** n);
@@ -162,7 +170,13 @@ export class RpcClient {
 
 	private onMessage(socket: SocketLike, data: unknown) {
 		if (socket !== this.socket || typeof data !== 'string') return;
-		let frame: AnyFrame & { id?: number; success?: boolean; error?: string; data?: unknown };
+		let frame: AnyFrame & {
+			id?: number;
+			success?: boolean;
+			error?: string;
+			code?: string;
+			data?: unknown;
+		};
 		try {
 			frame = JSON.parse(data);
 		} catch {
@@ -177,7 +191,7 @@ export class RpcClient {
 			if (!p) return;
 			this.pending.delete(frame.id as number);
 			if (frame.success) p.resolve(frame.data);
-			else p.reject(new CommandError(frame.error ?? 'The command failed'));
+			else p.reject(new CommandError(frame.error ?? 'The command failed', frame.code));
 			return;
 		}
 		this.o.onFrame(frame);
