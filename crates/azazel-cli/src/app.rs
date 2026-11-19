@@ -796,16 +796,20 @@ impl App {
             providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
         })?;
         let endpoints_now = presets::resolve(&config.providers).map_err(|e| anyhow!(e))?;
-        let logged_in_credentials = credentials.clone();
+        let access_credentials = credentials.clone();
+        // The router is built after the extensions, so the check asks for it when it is used.
+        let access_services = Arc::downgrade(&services);
         registry.load(&crate::routing::RoutingExt {
             book: Arc::new(crate::profiles::Book::new(
                 crate::profiles::all_in(&config.profiles.entries, &loaded.layers),
-                Arc::new(move |id| {
-                    endpoints_now
-                        .iter()
-                        .find(|p| p.id == id)
-                        .is_none_or(|p| crate::models::usable(&logged_in_credentials, p))
-                }),
+                Arc::new(crate::profiles::access(
+                    endpoints_now,
+                    access_credentials,
+                    move |id| {
+                        let router = access_services.upgrade()?.get::<Router>()?;
+                        Some(router.provider(id).is_some())
+                    },
+                )),
                 cli.profile.clone(),
             )),
             home_config: paths.home_config(),

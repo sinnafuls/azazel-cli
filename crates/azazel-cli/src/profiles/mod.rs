@@ -45,12 +45,48 @@ impl ProfileSource {
     }
 }
 
-/// Whether the logins a profile needs are there.
+/// Whether a provider a profile names can be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    /// It has credentials, or finds its own.
+    Ready,
+    /// It is a provider of this process that has no credentials.
+    NoLogin,
+    /// No provider of this process has that id: a typo, or an extension that is not installed.
+    Unknown,
+}
+
+/// What a provider id means to a profile, as [`usability`] asks it.
+pub type AccessCheck = Arc<dyn Fn(&str) -> Access + Send + Sync>;
+
+/// Whether the providers a profile names are there and logged in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Usability {
     pub usable: bool,
     /// Providers the profile names that have no credentials, sorted.
     pub missing_logins: Vec<String>,
+    /// Providers the profile names that no registered provider has, sorted.
+    pub unknown_providers: Vec<String>,
+}
+
+impl Usability {
+    /// What stops the profile from being used, as one sentence; `None` when it can be used.
+    pub fn problem(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if !self.unknown_providers.is_empty() {
+            let names: Vec<String> = self
+                .unknown_providers
+                .iter()
+                .map(|id| format!("`{id}`"))
+                .collect();
+            let noun = if names.len() == 1 { "provider" } else { "providers" };
+            parts.push(format!("names an unknown {noun} {}", names.join(" and ")));
+        }
+        if let Some(login) = crate::routing::needs_login(&self.missing_logins) {
+            parts.push(login);
+        }
+        (!parts.is_empty()).then(|| parts.join("; "))
+    }
 }
 
 /// No profile has the name asked for.
@@ -170,38 +206,53 @@ pub fn resolve_in(entries: &BTreeMap<String, ProfileConfig>, name: &str) -> Resu
     }
 }
 
-/// Which providers `profile` names that `logged_in` says have no credentials.
-pub fn usability(profile: &Profile, logged_in: &dyn Fn(&str) -> bool) -> Usability {
-    let mut missing: Vec<String> = profile
+/// Which providers `profile` names that `access` says have no credentials or do not exist.
+pub fn usability(profile: &Profile, access: &dyn Fn(&str) -> Access) -> Usability {
+    let mut named: Vec<&str> = profile
         .roles
         .values()
         .flatten()
         .filter_map(|spec| match spec {
-            ModelSpec::Model(model) => Some(model.provider.clone()),
+            ModelSpec::Model(model) => Some(model.provider.as_str()),
             ModelSpec::Role(_) => None,
         })
-        .filter(|provider| !logged_in(provider))
         .collect();
-    missing.sort();
-    missing.dedup();
+    named.sort_unstable();
+    named.dedup();
+    let mut missing_logins = Vec::new();
+    let mut unknown_providers = Vec::new();
+    for id in named {
+        match access(id) {
+            Access::Ready => {}
+            Access::NoLogin => missing_logins.push(id.to_string()),
+            Access::Unknown => unknown_providers.push(id.to_string()),
+        }
+    }
     Usability {
-        usable: missing.is_empty(),
-        missing_logins: missing,
+        usable: missing_logins.is_empty() && unknown_providers.is_empty(),
+        missing_logins,
+        unknown_providers,
     }
 }
 
 /// The check `azazel models` and the model picker use for "has a credential" (`models::usable`),
-/// as the function [`usability`] takes. A provider that is not an HTTP endpoint (an extension's)
-/// finds its own credentials and counts as available.
-pub fn logged_in<'a>(
-    providers: &'a [ProviderConfig],
-    credentials: &'a Credentials,
-) -> impl Fn(&str) -> bool + 'a {
+/// as the function [`usability`] takes. `registered` says whether the router has a provider of
+/// that id (`None` while it is not built yet). A registered provider that is not an HTTP
+/// endpoint (an extension's, `mock`) finds its own credentials and counts as available; an id
+/// no provider has is [`Access::Unknown`].
+pub fn access(
+    providers: Vec<ProviderConfig>,
+    credentials: Arc<Credentials>,
+    registered: impl Fn(&str) -> Option<bool> + Send + Sync + 'static,
+) -> impl Fn(&str) -> Access + Send + Sync + 'static {
     move |id| {
-        providers
-            .iter()
-            .find(|provider| provider.id == id)
-            .is_none_or(|provider| crate::models::usable(credentials, provider))
+        if registered(id) == Some(false) {
+            return Access::Unknown;
+        }
+        match providers.iter().find(|provider| provider.id == id) {
+            Some(provider) if !crate::models::usable(&credentials, provider) => Access::NoLogin,
+            _ => Access::Ready,
+        }
     }
 }
 
@@ -246,20 +297,16 @@ pub(crate) fn switch(
 /// terminal's picker all switch through it, so that they agree on what can be used.
 pub struct Book {
     profiles: Mutex<Vec<Profile>>,
-    logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    access: AccessCheck,
     /// The profile `--profile` named, which is the current one until a switch is recorded.
     launch: Option<String>,
 }
 
 impl Book {
-    pub fn new(
-        profiles: Vec<Profile>,
-        logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
-        launch: Option<String>,
-    ) -> Book {
+    pub fn new(profiles: Vec<Profile>, access: AccessCheck, launch: Option<String>) -> Book {
         Book {
             profiles: Mutex::new(profiles),
-            logged_in,
+            access,
             launch,
         }
     }
@@ -284,13 +331,14 @@ impl Book {
             })
     }
 
-    /// Whether a provider has a login, for the code that decides on its own (a usage limit).
-    pub fn logged_in_fn(&self) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
-        self.logged_in.clone()
+    /// Whether a provider exists and has a login, for the code that decides on its own (a usage
+    /// limit).
+    pub fn access_fn(&self) -> AccessCheck {
+        self.access.clone()
     }
 
     pub fn usability(&self, profile: &Profile) -> Usability {
-        usability(profile, &*self.logged_in)
+        usability(profile, &*self.access)
     }
 
     /// The profile the session is on: the last switch recorded in it, else the one `--profile`
@@ -310,6 +358,7 @@ impl Book {
                     source: profile.source.as_str().to_string(),
                     usable: usable.usable,
                     missing_logins: usable.missing_logins,
+                    unknown_providers: usable.unknown_providers,
                     roles: profile
                         .roles
                         .iter()
@@ -343,7 +392,7 @@ impl Book {
     }
 
     /// Moves the session to profile `name` with [`switch`], unless a provider it names has no
-    /// login. Returns the line [`switch`] gives.
+    /// login or does not exist. Returns the line [`switch`] gives.
     pub(crate) fn switch(
         &self,
         name: &str,
@@ -354,7 +403,7 @@ impl Book {
     ) -> Result<String, String> {
         let profile = self.find(name)?;
         let usable = self.usability(&profile);
-        if let Some(why) = crate::routing::needs_login(&usable.missing_logins) {
+        if let Some(why) = usable.problem() {
             return Err(format!("profile {name} {why}"));
         }
         Ok(switch(&profile, router, lead, team, reason))
@@ -497,16 +546,20 @@ mod tests {
         let config = Config::default();
         let gpt = resolve(&config, "gpt").unwrap();
         let claude = resolve(&config, "claude").unwrap();
-        let only_anthropic = |id: &str| id == "anthropic";
+        let only_anthropic = |id: &str| match id {
+            "anthropic" => Access::Ready,
+            _ => Access::NoLogin,
+        };
         assert_eq!(
             usability(&gpt, &only_anthropic),
             Usability {
                 usable: false,
                 missing_logins: vec!["openai-codex".to_string()],
+                unknown_providers: Vec::new(),
             }
         );
         assert!(usability(&claude, &only_anthropic).usable);
-        let nobody = |_: &str| false;
+        let nobody = |_: &str| Access::NoLogin;
         assert_eq!(usability(&claude, &nobody).missing_logins, ["anthropic"]);
         // Roles that name only other roles need nothing.
         let alias = Profile {
@@ -515,6 +568,34 @@ mod tests {
             roles: BTreeMap::from([("smol".to_string(), chain(&["@default"]))]),
         };
         assert!(usability(&alias, &nobody).usable);
+    }
+
+    #[test]
+    fn a_provider_nobody_registered_makes_a_profile_unusable() {
+        let profile = Profile {
+            name: "typo".to_string(),
+            source: ProfileSource::User,
+            roles: BTreeMap::from([("default".to_string(), chain(&["anthropc/claude-x", "acme/a"]))]),
+        };
+        let credentials = Arc::new(Credentials::new(std::path::PathBuf::from("auth.json")));
+        // The router has `acme` (an extension's provider, no HTTP endpoint) and `mock`.
+        let check = access(Vec::new(), credentials.clone(), |id| {
+            Some(matches!(id, "acme" | "mock"))
+        });
+        let usable = usability(&profile, &check);
+        assert!(!usable.usable);
+        assert_eq!(usable.unknown_providers, ["anthropc"]);
+        assert!(usable.missing_logins.is_empty());
+        assert_eq!(usable.problem().unwrap(), "names an unknown provider `anthropc`");
+
+        let fine = Profile {
+            roles: BTreeMap::from([("default".to_string(), chain(&["acme/a", "mock/lead"]))]),
+            ..profile
+        };
+        assert!(usability(&fine, &check).usable);
+        // Before the router exists nothing is called unknown.
+        let early = access(Vec::new(), credentials, |_| None);
+        assert!(usability(&fine, &early).usable);
     }
 
     #[test]

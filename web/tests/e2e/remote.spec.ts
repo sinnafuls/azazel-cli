@@ -292,7 +292,8 @@ test('a slash command runs in the browser and never reaches the model', async ({
 	const box = page.getByRole('combobox', { name: 'Message' });
 	const card = page.locator('[data-item="command"][data-command="cost"]');
 	await box.fill('/cost');
-	await box.press('Enter');
+	// The Send button, not Enter: a pointer or a tap on it must submit as Enter does.
+	await page.getByRole('button', { name: 'Send', exact: true }).click();
 	await expect(card).toBeVisible();
 	await expect(card).toContainText('requests:');
 	// The script has no answer left: a message that reached the model would fail with an error.

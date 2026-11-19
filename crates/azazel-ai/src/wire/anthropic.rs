@@ -856,22 +856,28 @@ fn error_fields(envelope: &Value) -> (&str, &str) {
 
 /// How the refusal of a subscription whose usage window is full reads.
 const EXTRA_USAGE: &str = "out of extra usage";
+/// How the API refuses a request of an account whose prepaid credit is used up.
+const NO_CREDIT: &str = "credit balance is too low";
 
 /// What the error object alone says, whatever the HTTP status was.
 fn classify_kind(kind: &str, message: &str) -> Option<AiError> {
     match kind {
         "overloaded_error" => Some(AiError::Overloaded),
         "rate_limit_error" => Some(AiError::RateLimit { retry_after: None }),
-        // A billing failure is an account problem too: another model may still answer.
-        "authentication_error" | "permission_error" | "billing_error" => {
-            Some(AiError::Auth(message.to_string()))
-        }
+        // An API account out of credit is out of allowance, with no reset time: the next account
+        // answers the same model, and this one is left alone until it is picked again.
+        "billing_error" => Some(AiError::Quota {
+            resets_at: None,
+            message: message.to_string(),
+        }),
+        "authentication_error" | "permission_error" => Some(AiError::Auth(message.to_string())),
         "request_too_large" => Some(AiError::ContextOverflow),
         _ if is_context_overflow(message) => Some(AiError::ContextOverflow),
         // A subscription refuses requests it will not bill to the plan (some tool names, a used-up
         // usage window) with a 400 about extra usage. Retrying on the same account does not help,
         // but another account or another model in the chain may answer.
-        _ if message.contains(EXTRA_USAGE) => Some(AiError::Quota {
+        // The API says the same of an empty balance with a 400 `invalid_request_error`.
+        _ if message.contains(EXTRA_USAGE) || message.contains(NO_CREDIT) => Some(AiError::Quota {
             resets_at: None,
             message: message.to_string(),
         }),

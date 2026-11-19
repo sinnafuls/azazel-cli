@@ -1270,7 +1270,10 @@ fn classify_error_returns_only_what_the_generic_mapping_would_miss() {
     let overflow = Some(AiError::ContextOverflow);
     let overloaded = Some(AiError::Overloaded);
     let rate_limit = Some(AiError::RateLimit { retry_after: None });
-    let billing = Some(AiError::Auth(credit.to_string()));
+    let billing = Some(AiError::Quota {
+        resets_at: None,
+        message: credit.to_string(),
+    });
     let cases = [
         (400, invalid, too_long, overflow.clone()),
         (400, invalid, over_limit, overflow.clone()),
@@ -1279,8 +1282,9 @@ fn classify_error_returns_only_what_the_generic_mapping_would_miss() {
         // The generic mapping would call this a plain server error.
         (500, "overloaded_error", "Overloaded", overloaded),
         (400, "rate_limit_error", "Slow down", rate_limit.clone()),
-        // Not retryable on this account, but another model in the chain may answer.
-        (402, "billing_error", credit, billing),
+        // Out of credit: another account or model may answer.
+        (402, "billing_error", credit, billing.clone()),
+        (400, invalid, credit, billing),
         // A subscription refusing to bill the request to the plan: the account's allowance is
         // used up, so another account or model may answer.
         (

@@ -26,7 +26,7 @@ use azazel_core::{EntryKind, Event, EventHandler, ExtCtx, Level, Outcome, Sessio
 use azazel_protocol::Frame;
 use azazel_team::Team;
 
-use super::{Profile, Reason, switch, usability};
+use super::{AccessCheck, Profile, Reason, switch, usability};
 
 /// What a switch on a usage limit leaves behind, until the window has reset.
 #[derive(Debug, Clone, PartialEq)]
@@ -63,7 +63,7 @@ pub struct ProfileSwitcher {
     on_limit: String,
     on_reset: ProfileReset,
     profiles: Vec<Profile>,
-    logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    access: AccessCheck,
     services: Arc<Services>,
     /// Unix seconds; a test sets the time.
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
@@ -137,7 +137,7 @@ impl ProfileSwitcher {
         on_limit: &str,
         on_reset: ProfileReset,
         profiles: Vec<Profile>,
-        logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+        access: AccessCheck,
         services: Arc<Services>,
         current: Option<String>,
     ) -> Self {
@@ -152,7 +152,7 @@ impl ProfileSwitcher {
             on_limit: on_limit.trim().to_string(),
             on_reset,
             profiles,
-            logged_in,
+            access,
             services,
             clock: Arc::new(|| now_ms() / 1000),
             lead_chain,
@@ -230,7 +230,7 @@ impl ProfileSwitcher {
         {
             return None;
         }
-        let usable = usability(target, &*self.logged_in);
+        let usable = usability(target, &*self.access);
         if !usable.usable {
             drop(state);
             announce(
@@ -239,7 +239,7 @@ impl ProfileSwitcher {
                 &format!(
                     "usage limit reached; not switching to profile {}, which {}",
                     target.name,
-                    crate::routing::needs_login(&usable.missing_logins).unwrap_or_default()
+                    usable.problem().unwrap_or_default()
                 ),
             );
             return None;
@@ -348,7 +348,7 @@ impl ProfileSwitcher {
                 let back = active.from.as_deref().and_then(|name| self.profile(name));
                 let done = match back {
                     Some(profile) => {
-                        let usable = usability(profile, &*self.logged_in);
+                        let usable = usability(profile, &*self.access);
                         if !usable.usable {
                             drop(state);
                             announce(
@@ -358,7 +358,7 @@ impl ProfileSwitcher {
                                     "The usage limit of {} has reset, but profile {} {}",
                                     active.provider,
                                     profile.name,
-                                    crate::routing::needs_login(&usable.missing_logins).unwrap_or_default()
+                                    usable.problem().unwrap_or_default()
                                 ),
                             );
                             return;
@@ -435,6 +435,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Duration;
 
+    use super::super::Access;
     use azazel_ai::{Catalog, RetryPolicy};
     use azazel_core::{ApprovalDecision, ApprovalRequest, Question, UiBridge, UiError};
 
@@ -527,7 +528,10 @@ mod tests {
                 profile("b", "acme/b"),
                 profile("c", "other/c"),
             ],
-            Arc::new(logged_in),
+            Arc::new(move |id: &str| match logged_in(id) {
+                true => Access::Ready,
+                false => Access::NoLogin,
+            }),
             services,
             current.map(str::to_string),
         )
@@ -774,7 +778,7 @@ mod tests {
         bench.switcher.at_turn_boundary();
         assert_eq!(lead_model(&bench), "acme/a");
         assert_eq!(session.last_profile(None), None);
-        let book = crate::profiles::Book::new(Vec::new(), Arc::new(|_| true), None);
+        let book = crate::profiles::Book::new(Vec::new(), Arc::new(|_: &str| Access::Ready), None);
         assert_eq!(book.current(&session), None);
     }
 

@@ -774,6 +774,13 @@ impl Router {
             state.give_up(model, self.policy.max_attempts);
             return None;
         }
+        // A wait of more than a minute is a used-up allowance, not throttling: asking again
+        // after the capped backoff would only fail again, so the model is out for this request
+        // and the error reaches whoever can move to another provider.
+        if matches!(error, AiError::RateLimit { .. }) && blocked_until(error).is_some() {
+            state.give_up(model, self.policy.max_attempts);
+            return None;
+        }
         let attempt = state.record(model, error, self.policy.max_attempts);
         (attempt < self.policy.max_attempts).then_some(attempt)
     }
@@ -1172,6 +1179,24 @@ mod tests {
         assert_eq!(r.thinking(&smol, None), ThinkingLevel::High);
         assert_eq!(r.thinking(&smol, Some(ThinkingLevel::Low)), ThinkingLevel::Low);
         assert_eq!(r.thinking(&chain(&["mock/b"]), None), ThinkingLevel::Off);
+    }
+
+    #[tokio::test]
+    async fn a_rate_limit_that_asks_for_hours_is_not_retried_in_place() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push(
+            "a",
+            MockStep::fail(AiError::RateLimit {
+                retry_after: Some(Duration::from_secs(7200)),
+            }),
+        );
+        let r = router(mock.clone(), &[]);
+        let result = r
+            .stream(&chain(&["mock/a"]), &Request::default(), CancellationToken::new())
+            .await;
+        // The error reaches the caller at once, which may move to another provider.
+        assert!(matches!(result, Err(AiError::RateLimit { .. })));
+        assert_eq!(mock.requests_for("a").len(), 1);
     }
 
     #[tokio::test]

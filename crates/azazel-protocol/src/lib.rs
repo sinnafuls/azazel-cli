@@ -959,11 +959,15 @@ pub struct ProfileInfo {
     pub name: String,
     /// `builtin`, `user` (the home config) or `project`.
     pub source: String,
-    /// Whether every provider the profile names has a login.
+    /// Whether every provider the profile names exists and has a login.
     pub usable: bool,
     /// The providers the profile names that have no login.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub missing_logins: Vec<String>,
+    /// The providers the profile names that this session has none of (a typo, or an extension
+    /// that is not installed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unknown_providers: Vec<String>,
     /// The first model of each role the profile sets, as `provider/id[:level]`.
     #[serde(default)]
     pub roles: std::collections::BTreeMap<String, String>,

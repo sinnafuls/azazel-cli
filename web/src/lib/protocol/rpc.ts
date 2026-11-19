@@ -928,13 +928,18 @@ export interface ProfileInfo {
 	 */
 	source: string;
 	/**
-	 * Whether every provider the profile names has a login.
+	 * Whether every provider the profile names exists and has a login.
 	 */
 	usable: boolean;
 	/**
 	 * The providers the profile names that have no login.
 	 */
 	missing_logins?: string[];
+	/**
+	 * The providers the profile names that this session has none of (a typo, or an extension
+	 * that is not installed).
+	 */
+	unknown_providers?: string[];
 	/**
 	 * The first model of each role the profile sets, as `provider/id[:level]`.
 	 */

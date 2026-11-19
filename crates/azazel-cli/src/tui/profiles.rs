@@ -118,6 +118,7 @@ mod tests {
             source: source.to_string(),
             usable: missing.is_empty(),
             missing_logins: missing.iter().map(ToString::to_string).collect(),
+            unknown_providers: Vec::new(),
             roles: [("default", "openai/gpt-5"), ("smol", "openai/gpt-5-mini")]
                 .into_iter()
                 .map(|(role, model)| (role.to_string(), model.to_string()))

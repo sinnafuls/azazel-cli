@@ -14,6 +14,7 @@
 		variant = 'ghost',
 		size = 'icon-sm',
 		class: className,
+		type = 'button',
 		children,
 		child,
 		...rest
@@ -40,7 +41,9 @@
 					<!-- Merged, not spread one over the other: the caller's handlers (a held Stop listens to
 					     the pointer) and the tooltip's both run. Button's props are a union with a link's, so
 					     the result is typed loosely. -->
-					<Button {variant} {size} class={className} {...mergeProps(rest, props) as object}>
+					<!-- `type` last: the trigger's props carry `type="button"`, which would turn a submit
+					     button (the composer's Send) into one that does nothing. -->
+					<Button {variant} {size} class={className} {...mergeProps(rest, props) as object} {type}>
 						{@render children?.()}
 					</Button>
 				{/snippet}

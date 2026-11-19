@@ -24,6 +24,10 @@ GitHub are its section here.
 - `azazel --profile <name> <subcommand>` (and `--preset`) applies the profile, for example to `azazel --profile gpt roles`; an unknown name exits with status 2.
 - A profile switch (on a usage limit, with `/profile`, or on the way back) leaves sub-agents that are already running on their models; agents started afterwards use the new profile. After a usage-limit switch the request is sent again with the tools and instructions of the new model.
 - `on_reset = "auto"` asks instead of going back by itself when the provider did not say when the limit resets; a model picked by hand after the switch is kept; going back to no named profile is recorded, so the status line and a resumed session no longer show the on_limit profile.
+- An Anthropic API account that is out of credit (`billing_error`, "credit balance is too low") counts as out of allowance: the request moves to the next account in `[accounts] order` with the same model, and that account stays marked until you pick it again in `/account`. Before, azazel only fell to the next model.
+- A usage limit that asks for a wait of more than a minute (a 429 with a long `retry-after`) reaches `[profiles] on_limit` at once instead of being retried in place first.
+- A profile that names a provider this session doesn't have (a typo, an extension that isn't installed) is listed as unusable and refused by `/profile`, instead of counting as logged in; RPC `profiles` entries carry `unknown_providers`.
+- `azazel remote`: the Send button sends again; since 0.15.0 only Enter did, on phones and desktop alike.
 - `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.
 - `azazel remote`: long words and trailing spaces in your messages, thinking and branch summaries wrap inside their box on narrow screens.

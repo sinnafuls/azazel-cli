@@ -157,7 +157,7 @@ impl ProfileCommand {
         for profile in self.book.list() {
             let usable = self.book.usability(&profile);
             out.push_str(&format!("{} ({})", profile.name, source_label(profile.source)));
-            if let Some(why) = needs_login(&usable.missing_logins) {
+            if let Some(why) = usable.problem() {
                 out.push_str(&format!(" - {why}"));
             }
             out.push('\n');
@@ -345,7 +345,7 @@ impl Extension for RoutingExt {
             &self.on_limit,
             self.on_reset,
             self.book.list(),
-            self.book.logged_in_fn(),
+            self.book.access_fn(),
             r.services().clone(),
             self.started_on.clone(),
         ));
@@ -457,9 +457,9 @@ mod tests {
         );
     }
 
-    fn command(dir: &std::path::Path, logged_in: fn(&str) -> bool) -> ProfileCommand {
+    fn command(dir: &std::path::Path, access: fn(&str) -> crate::profiles::Access) -> ProfileCommand {
         ProfileCommand {
-            book: Arc::new(Book::new(crate::profiles::builtin(), Arc::new(logged_in), None)),
+            book: Arc::new(Book::new(crate::profiles::builtin(), Arc::new(access), None)),
             home_config: dir.join("config.toml"),
         }
     }
@@ -472,7 +472,10 @@ mod tests {
             ("lead", &["@default"]),
             ("smol", &["acme/small", "@default"]),
         ]);
-        let command = command(dir.path(), |id| id != "openai-codex");
+        let command = command(dir.path(), |id| match id {
+            "openai-codex" => crate::profiles::Access::NoLogin,
+            _ => crate::profiles::Access::Ready,
+        });
         let listed = show(&command, "", &ctx).await.unwrap();
         assert!(
             listed.contains("claude (built-in)\n  default     anthropic/claude-opus-5-5\n"),
@@ -527,5 +530,42 @@ mod tests {
         let loaded: ProfileConfig = table["profiles"]["big"].clone().try_into().unwrap();
         assert_eq!(loaded.roles["default"], chain(&["acme/other"]));
         assert!(table["profiles"].get("small").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_profile_naming_a_provider_nobody_has_is_listed_unusable_and_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ctx, router) = context(&[("default", &["acme/big"]), ("lead", &["@default"])]);
+        let user = |name: &str, models: &[&str]| crate::profiles::Profile {
+            name: name.to_string(),
+            source: crate::profiles::ProfileSource::User,
+            roles: [("default".to_string(), chain(models))].into(),
+        };
+        let credentials = Arc::new(azazel_ai::Credentials::new(dir.path().join("auth.json")));
+        // `acme` (an extension's) and `mock` are registered providers without an HTTP endpoint.
+        let access =
+            crate::profiles::access(Vec::new(), credentials, |id| Some(matches!(id, "acme" | "mock")));
+        let command = ProfileCommand {
+            book: Arc::new(Book::new(
+                vec![
+                    user("x", &["anthropc/claude-x"]),
+                    user("ext", &["acme/a", "mock/lead"]),
+                ],
+                Arc::new(access),
+                None,
+            )),
+            home_config: dir.path().join("config.toml"),
+        };
+        let listed = show(&command, "", &ctx).await.unwrap();
+        assert!(
+            listed.contains("x (yours) - names an unknown provider `anthropc`"),
+            "{listed}"
+        );
+        assert!(listed.contains("ext (yours)\n"), "{listed}");
+        let refused = show(&command, "x", &ctx).await.unwrap_err();
+        assert!(refused.contains("unknown provider `anthropc`"), "{refused}");
+        assert_eq!(router.roles()["default"], chain(&["acme/big"]));
+        show(&command, "ext", &ctx).await.unwrap();
+        assert_eq!(router.roles()["default"], chain(&["acme/a", "mock/lead"]));
     }
 }

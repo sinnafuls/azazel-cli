@@ -2729,7 +2729,7 @@
         },
         "usable": {
           "type": "boolean",
-          "description": "Whether every provider the profile names has a login."
+          "description": "Whether every provider the profile names exists and has a login."
         },
         "missing_logins": {
           "type": "array",
@@ -2737,6 +2737,13 @@
             "type": "string"
           },
           "description": "The providers the profile names that have no login."
+        },
+        "unknown_providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The providers the profile names that this session has none of (a typo, or an extension\nthat is not installed)."
         },
         "roles": {
           "type": "object",
