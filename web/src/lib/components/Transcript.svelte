@@ -191,7 +191,7 @@
 									{/each}
 								</div>
 							{/if}
-							<p class="text-sm leading-relaxed break-words whitespace-pre-wrap">{item.text}</p>
+							<p class="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">{item.text}</p>
 						</div>
 						<div class="mt-1.5 flex gap-2 px-1 text-xs text-muted-foreground empty:hidden">
 							{#if item.via !== 'prompt'}<span class="text-warning"
@@ -331,7 +331,7 @@
 						<p class="mb-0.5 font-medium">
 							The agent was told what happened on the branch you left
 						</p>
-						<p class="break-words whitespace-pre-wrap">{item.text}</p>
+						<p class="wrap-anywhere whitespace-pre-wrap">{item.text}</p>
 					</aside>
 				{:else}
 					<Alert.Root
