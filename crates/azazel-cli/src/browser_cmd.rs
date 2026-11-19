@@ -24,6 +24,9 @@ async fn open(url: Option<&str>, paths: &Paths, config: &Config) -> u8 {
         eprintln!("azazel: {}", azazel_browser::NOT_FOUND);
         return EXIT_FAILED;
     };
+    // The window is the command: it ends when the window is closed, which a person who sees
+    // nothing happen would otherwise take for a hang.
+    println!("opening the agents' browser profile; this waits until the window is closed");
     match azazel_browser::open_profile(&binary, &paths.browser_profile_dir(), url).await {
         Ok(()) => EXIT_OK,
         Err(why) => {

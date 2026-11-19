@@ -169,10 +169,10 @@ pub async fn examine(paths: &Paths, trusted: bool) -> Report {
                 report.warn("providers: no API key found; only local servers can be used");
             }
             if !without.is_empty() {
+                // Hundreds of names bury the report; the models listing and /login name them.
                 report.ok(format!(
-                    "providers without a credential ({}): {}",
-                    without.len(),
-                    without.join(", ")
+                    "providers without a credential: {} (`azazel login` signs in to one; `azazel models --all` lists the models of every provider)",
+                    without.len()
                 ));
             }
         }

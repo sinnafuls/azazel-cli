@@ -627,6 +627,21 @@ fn invocations(page: &Page) -> Vec<(usize, String)> {
     found
 }
 
+/// Whether the words after the first bare word of `azazel …` are the rest of a sentence: at least
+/// two, unquoted, made of letters only, up to the first flag.
+fn reads_as_prompt(rest: &[Token]) -> bool {
+    let words: Vec<&Token> = rest
+        .iter()
+        .take_while(|token| !token.text.starts_with('-'))
+        .collect();
+    words.len() >= 2
+        && words.iter().all(|token| {
+            !token.quoted
+                && !token.placeholder
+                && token.text.chars().all(|c| c.is_ascii_alphabetic() || c == '\'')
+        })
+}
+
 /// Checks one command line a page shows against the command line the code defines: every
 /// subcommand it names exists, and so does every flag, on the command it is given to.
 fn check_invocation(code: &Code, page: &str, line: usize, shown: &str, out: &mut Vec<Finding>) {
@@ -636,7 +651,7 @@ fn check_invocation(code: &Code, page: &str, line: usize, shown: &str, out: &mut
     let words = tokens(shown);
     let mut positional = false;
     let mut skip = false;
-    for token in words.iter().skip(1) {
+    for (index, token) in words.iter().enumerate().skip(1) {
         if std::mem::take(&mut skip) {
             continue;
         }
@@ -700,6 +715,23 @@ fn check_invocation(code: &Code, page: &str, line: usize, shown: &str, out: &mut
                     page,
                     line,
                     format!("`{shown}`: `{text}` is not an action of `{}`", current.name()),
+                ));
+                positional = true;
+            }
+            // A bare word at the root that is no subcommand starts a prompt, which reads as
+            // prose: two or more plain words. Anything else after it (`get x.y`, one word, a
+            // number) is a command that does not exist.
+            None if plain(text, "-")
+                && current.path.is_empty()
+                && !reads_as_prompt(&words[index + 1..])
+                && !words
+                    .iter()
+                    .any(|word| matches!(word.text.as_str(), "-p" | "--print")) =>
+            {
+                out.push(Finding::line(
+                    page,
+                    line,
+                    format!("`{shown}`: `{text}` is not a subcommand of `azazel`, and what follows does not read as a prompt"),
                 ));
                 positional = true;
             }

@@ -380,6 +380,36 @@ fn flags_and_subcommands_are_checked_in_their_tables_and_wherever_a_command_line
 }
 
 #[test]
+fn a_command_line_with_a_first_word_that_is_no_subcommand_is_found_unless_it_is_a_prompt() {
+    let copy = Copy::new();
+    copy.edit("docs/sessions-and-checkpoints.md", |text| {
+        text + "
+Run `azazel config frobnicate triggers.x 1`, or `azazel fix the failing test`, or `azazel -p hi`.
+"
+    });
+    let findings = copy.findings();
+    let wrong = about(
+        &findings,
+        "docs/sessions-and-checkpoints.md",
+        "is not a subcommand of `azazel`",
+    );
+    assert_eq!(wrong.len(), 0, "{findings:?}");
+    // `config` exists, so its unknown action is the finding; a lone unknown word is one too.
+    copy.edit("docs/sessions-and-checkpoints.md", |text| {
+        text + "
+Run `azazel confg get triggers.x`.
+"
+    });
+    let findings = copy.findings();
+    let wrong = about(
+        &findings,
+        "docs/sessions-and-checkpoints.md",
+        "`confg` is not a subcommand of `azazel`",
+    );
+    assert_eq!(wrong.len(), 1, "{findings:?}");
+}
+
+#[test]
 fn pages_must_be_linked_and_links_must_lead_somewhere() {
     let copy = Copy::new();
     std::fs::write(copy.dir.path().join("docs/orphan.md"), "# Orphan\n\nSee [tools](tools.md#no-such-heading), [the UI](tui.md#keys), [gone](gone.md) and [the web](https://example.com/x.md).\n").unwrap();

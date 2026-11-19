@@ -7,6 +7,7 @@ mod acp;
 mod background;
 mod cache;
 mod checks;
+mod cli_usage;
 mod client;
 mod common;
 mod context;

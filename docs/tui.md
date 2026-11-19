@@ -721,7 +721,7 @@ doing or was asked.
 The chat is the popup of [the fleet view](#the-fleet-view) for that agent. An agent that was not watched from
 its start (it ran before the UI opened, or in an earlier run of the session) is read from its transcript file,
 so the chat shows its whole work; from then on it follows live. A session in another process on this machine
-has its files here too; over `azazel ssh` the chat shows only what happened since the UI attached. `Esc`, or
+has its files here too; over `azazel --ssh HOST` the chat shows only what happened since the UI attached. `Esc`, or
 `Left` twice on an empty line, goes back to the hub; `Esc` there returns to the session.
 
 ### Mentions

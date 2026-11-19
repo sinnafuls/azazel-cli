@@ -11,6 +11,7 @@ mod browser_cmd;
 pub mod bug;
 pub mod changelog;
 pub mod cli;
+mod config_cli;
 pub mod context;
 #[cfg(feature = "detach")]
 pub mod detach;
@@ -84,7 +85,6 @@ use azazel_core::trust::needs_trust;
 use azazel_core::{Config, Extension, LoadOptions, Paths, TrustStore};
 use azazel_team::goal::goal_prompt;
 use azazel_team::{GoalStatus, Goals};
-use clap::Parser;
 
 use crate::app::{App, discover_paths};
 use crate::cli::{Cli, Sub};
@@ -119,7 +119,7 @@ impl Builder {
                 // Before anything can build an HTTPS client: also those inside libraries, which do
                 // not go through `azazel_ai::tls`.
                 azazel_ai::tls::install();
-                let cli = Cli::parse();
+                let cli = Cli::parse_args();
                 let runtime = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
                     Ok(runtime) => runtime,
                     Err(e) => {
@@ -416,6 +416,7 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Logout { provider, account }) => {
             return login::logout(provider, account.as_deref(), &paths);
         }
+        Some(Sub::Config { action }) => return config_cli::run(action, &cli, &paths, trusted),
         Some(Sub::Secrets { action }) => return secrets::run(action, &paths),
         Some(Sub::Sessions { action }) => return sessions::run(action, &paths).await,
         Some(Sub::Changelog { since }) => return changelog::run(since.as_deref()),

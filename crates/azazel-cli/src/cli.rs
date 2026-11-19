@@ -272,6 +272,27 @@ pub enum PresetAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigAction {
+    /// Print the value of a setting in effect and which layer sets it: `get permissions.mode`
+    Get {
+        /// The setting, as `table.key`
+        key: String,
+    },
+    /// Write a setting into the home config: `set retry.max_attempts 5`, or a list as TOML
+    /// (`set triggers.slack_users '["U0123ABCD"]'`)
+    Set {
+        /// The setting, as `table.key`
+        key: String,
+        /// The value; a list is comma-separated or written as a TOML array. Empty puts the
+        /// setting back on its default
+        value: String,
+        /// Write this project's config instead of the home config (a trusted project only)
+        #[arg(long)]
+        project: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SecretsAction {
     /// Store a credential that is added to the agents' requests to one host
     Add {
@@ -364,6 +385,11 @@ pub enum Sub {
     Auth {
         #[command(subcommand)]
         action: AuthAction,
+    },
+    /// Read and change settings without opening the UI
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
     },
     /// Credentials the agents use without seeing them: API keys by host, logins by site
     Secrets {
@@ -825,7 +851,7 @@ pub struct Cli {
     #[arg(long, value_name = "MODE", global = true)]
     pub mode: Option<String>,
 
-    /// Primary agent the lead is for this run: build, plan or one of your own (see azazel agents)
+    /// Primary agent the lead is for this run: build, plan or one of your own (`/agents` lists them in the UI)
     #[arg(long, value_name = "NAME", global = true)]
     pub agent: Option<String>,
 
@@ -1057,7 +1083,125 @@ pub struct Cli {
     pub debug: bool,
 }
 
+/// What each subcommand does with the options every command line accepts (the global ones):
+/// the names of those it uses, or `None` when it uses them all, as a command that runs a session.
+/// Its `--help` lists only these; the others are still accepted.
+fn global_options_of(subcommand: &str) -> Option<&'static [&'static str]> {
+    const LIGHT: &[&str] = &["cwd", "set", "trust", "profile"];
+    const WITH_SESSIONS: &[&str] = &["cwd", "set", "trust", "profile", "session-dir"];
+    const WITH_HOST: &[&str] = &[
+        "cwd",
+        "set",
+        "trust",
+        "profile",
+        "ssh",
+        "remote-dir",
+        "remote-azazel",
+    ];
+    match subcommand {
+        "goal" | "rpc" | "acp" | "host" | "bg" | "attach" | "remote" | "schedule" | "mcp" | "open" => None,
+        "ps" | "logs" | "kill" => Some(WITH_HOST),
+        "sessions" | "context" | "export" => Some(WITH_SESSIONS),
+        "roles" => Some(&["cwd", "set", "trust", "profile", "thinking"]),
+        _ => Some(LIGHT),
+    }
+}
+
+/// The number of single-character edits (insertions, deletions, substitutions and swaps of two
+/// neighbours) that turn `a` into `b`.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut rows = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in rows.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in rows[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            let mut best = (rows[i - 1][j] + 1)
+                .min(rows[i][j - 1] + 1)
+                .min(rows[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                best = best.min(rows[i - 2][j - 2] + 1);
+            }
+            rows[i][j] = best;
+        }
+    }
+    rows[a.len()][b.len()]
+}
+
+/// The visible subcommand `word` is a near miss of: one edit away for a short word, two for a
+/// longer one. A word that is a subcommand itself is not a near miss.
+fn closest_subcommand(command: &clap::Command, word: &str) -> Option<String> {
+    let allowed = if word.chars().count() >= 6 { 2 } else { 1 };
+    if word.chars().count() < 4 {
+        return None;
+    }
+    command
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+        .flat_map(|sub| std::iter::once(sub.get_name()).chain(sub.get_all_aliases()))
+        .map(|name| (edit_distance(word, name), name))
+        .filter(|(distance, name)| (1..=allowed).contains(distance) && *name != word)
+        .min()
+        .map(|(_, name)| name.to_string())
+}
+
+/// `command` with the global options a subcommand does not use hidden from that subcommand's
+/// help, so that `azazel roles --help` does not offer `--model`. The option stays accepted: the
+/// subcommand gets a hidden copy of it, which clap passes on to its own subcommands too.
+fn tidy_help(command: clap::Command) -> clap::Command {
+    let globals: Vec<clap::Arg> = command
+        .get_arguments()
+        .filter(|arg| arg.is_global_set() && !arg.is_hide_set())
+        .cloned()
+        .collect();
+    let names: Vec<String> = command
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .collect();
+    names.into_iter().fold(command, |command, name| {
+        let Some(used) = global_options_of(&name) else {
+            return command;
+        };
+        command.mut_subcommand(&name, |sub| {
+            globals
+                .iter()
+                .filter(|arg| arg.get_long().is_some_and(|long| !used.contains(&long)))
+                .fold(sub, |sub, arg| sub.arg(arg.clone().hide(true)))
+        })
+    })
+}
+
 impl Cli {
+    /// Reads the process arguments; ends the process with the usage status (2) on a mistake, and
+    /// on `--help` or `--version`, as clap does.
+    pub fn parse_args() -> Cli {
+        use clap::FromArgMatches;
+        let mut command = tidy_help(<Cli as clap::CommandFactory>::command());
+        let matches = command.get_matches_mut();
+        let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+        let escaped = std::env::args_os().any(|arg| arg == "--");
+        if !escaped && let Some(word) = cli.mistyped_subcommand(&command) {
+            let close = closest_subcommand(&command, &word).unwrap_or_default();
+            eprintln!("azazel: unknown command `{word}`; did you mean `{close}`?");
+            std::process::exit(i32::from(crate::print::EXIT_USAGE));
+        }
+        cli
+    }
+
+    /// The only word of the command line when it is no subcommand but close to one, so that it
+    /// is a typo and not a prompt. Several words, `-p` and `--` make a prompt.
+    fn mistyped_subcommand(&self, command: &clap::Command) -> Option<String> {
+        match (&self.command, self.prompt.as_slice(), self.print) {
+            (None, [word], false) => closest_subcommand(command, word).map(|_| word.clone()),
+            _ => None,
+        }
+    }
+
     /// The prompt as one text; empty when none was given.
     pub fn prompt_text(&self) -> String {
         self.prompt.join(" ")

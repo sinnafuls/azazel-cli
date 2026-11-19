@@ -643,7 +643,7 @@ impl App {
             Some(level) => Some(
                 level
                     .parse::<ThinkingLevel>()
-                    .map_err(|e| anyhow!("--thinking: {e}"))?,
+                    .map_err(|e| UsageError(format!("--thinking: {e}")))?,
             ),
             None => None,
         };

@@ -354,7 +354,7 @@ azazel secrets add-site "https://github.com/login*" --username octocat
 - The agent is paused meanwhile. It then gets your note, the list of tabs as you left them, and a snapshot of the current page, and carries on in the same window: the browser stays visible for the rest of the session.
 - It needs someone to ask: in print mode and other runs without a user the action fails.
 
-**Sign in from the web page.** In the Browser tab of `azazel remote`, **Sign in** shows the agents' own browser profile in a window on the computer that runs azazel, optionally opened on an address, without pausing the agents and without asking anyone. It needs a control link. The window stays until the session ends. To sign in without a session, `azazel browser open [URL]` opens the same profile in a window and waits until you close it; it fails with a message when the agents' browser is already running on the profile.
+**Sign in from the web page.** In the Browser tab of `azazel remote`, **Sign in** shows the agents' own browser profile in a window on the computer that runs azazel, optionally opened on an address, without pausing the agents and without asking anyone. It needs a control link. The window stays until the session ends. To sign in without a session, `azazel browser open [URL]` opens the same profile in a window; it prints a line saying so and then waits until you close the window, because the browser is the command and ends with it; it fails with a message when the agents' browser is already running on the profile.
 
 ### Watching and taking over from the web page
 

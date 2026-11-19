@@ -61,7 +61,7 @@ environment variable `AZAZEL_NO_UPDATE_CHECK=1`.
 
 With `[update] auto = true` the background check also downloads a newer release, verifies it against its
 published SHA-256 and keeps it in `~/.azazel/cache/update/<version>/`. When you leave the UI, azazel installs it
-the way `azazel update` does and prints one line (`azazel updated 0.2.0 -> 0.3.0; the next start runs it`). A
+the way `azazel update` does and prints one line ("azazel updated 0.2.0 -> 0.3.0; the next start runs it"). A
 download that does not match its checksum is thrown away. Print mode, RPC mode and the subcommands never
 install anything on their own, and nothing is downloaded when the release cannot be reached. A GitHub token in
 `GITHUB_TOKEN` or `GH_TOKEN` is used when set, which lifts GitHub's limit on anonymous requests.
