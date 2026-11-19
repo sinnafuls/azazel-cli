@@ -138,16 +138,12 @@ mod real {
             self.session.holds(holder)
         }
 
-        /// Does `command` for `holder` and answers with `reply`. Taking and handing back are done
-        /// at once; the rest waits its turn, as it needs the browser itself.
+        /// Does `command` for `holder` and answers with `reply`. Taking is done at once, as it
+        /// waits for nothing; handing back and the rest wait their turn, so that the inputs
+        /// that came before a hand back are done first.
         pub(crate) fn run(&self, holder: String, command: Command, reply: Reply) {
-            if let Command::BrowserTake { on } = command {
-                let outcome = if on {
-                    self.session.take(&holder)
-                } else {
-                    self.session.give_back(&holder);
-                    Ok(())
-                };
+            if let Command::BrowserTake { on: true, force } = command {
+                let outcome = self.session.take(&holder, force);
                 return reply(outcome.and_then(|()| state_data(&self.session, &holder)));
             }
             let _ = self.jobs.send(Job::Do {
@@ -296,6 +292,11 @@ mod real {
                 watching.remove(holder)
             }
         };
+        // Finds out a hold that ran out, so that the clients are told even when no agent waits.
+        let keeper = tokio::spawn({
+            let session = session.clone();
+            async move { session.keep_lease().await }
+        });
         while let Some(job) = queue.recv().await {
             match job {
                 Job::Leave { holder } => {
@@ -322,13 +323,18 @@ mod real {
                             Ok(input) => session.user_input(&holder, input).await,
                             Err(why) => Err(why),
                         },
-                        Command::BrowserSignIn { url } => session.sign_in(url.as_deref()).await,
+                        Command::BrowserTake { .. } => {
+                            session.give_back(&holder);
+                            Ok(())
+                        }
+                        Command::BrowserSignIn { url } => session.sign_in(&holder, url.as_deref()).await,
                         _ => Err("not a browser command".to_string()),
                     };
                     reply(outcome.and_then(|()| state_data(&session, &holder)));
                 }
             }
         }
+        keeper.abort();
     }
 }
 

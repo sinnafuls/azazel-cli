@@ -374,8 +374,15 @@ pub enum Command {
     BrowserWatch { on: bool },
     /// Takes over the agents' browser (`on`), or hands it back. While it is taken over, the
     /// agents' next browser action waits, and `browser_input` is accepted from this client only;
-    /// when it is handed back the agent is told what you did. Answers with [`BrowserState`].
-    BrowserTake { on: bool },
+    /// when it is handed back the agent is told what you did. Fails while another client has
+    /// it, unless `force` takes it from them (a client that may control the session can; the
+    /// other client is told through `browser_state`). A hold with no input for ten minutes is
+    /// let go of. Answers with [`BrowserState`].
+    BrowserTake {
+        on: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        force: bool,
+    },
     /// Clicks, types, scrolls or navigates in the agents' browser. Refused unless this client
     /// has taken the browser over with `browser_take`. Answers with [`BrowserState`].
     BrowserInput { input: BrowserInput },

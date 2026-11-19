@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::broadcast::{Receiver, error::RecvError};
 use tokio::sync::{Notify, watch};
+use tokio::time::Instant as Moment;
 use tokio_util::sync::CancellationToken;
 
 use crate::cdp::{CLOSED, Cdp, CdpEvent};
@@ -49,6 +50,10 @@ const NAME_FIELDS: [&str; 6] = ["text", "email", "tel", "search", "url", "number
 const LEAVE: Duration = Duration::from_secs(5);
 /// The longest pause before the browser is started once more on a profile still held.
 const RETRY_PAUSE: Duration = Duration::from_secs(4);
+/// How long a client that has taken the browser over may go without input before the agents get
+/// it back: a device that went away without closing its connection must not keep them waiting.
+pub const HOLD_LEASE: Duration = Duration::from_secs(600);
+const ANOTHER_HOLDS: &str = "another device has the browser";
 
 #[derive(Debug, Clone)]
 pub struct Settings {
@@ -1303,12 +1308,22 @@ pub struct BrowserSession {
     /// How many clients watch: the screencast runs while there is one.
     watchers: AtomicU32,
     /// The client that has taken the browser over; the agents' actions wait while there is one.
-    hold: Mutex<Option<String>>,
+    hold: Mutex<Option<Hold>>,
+    /// How long a hold lasts without input from its client.
+    lease: Duration,
+    /// Told when a hold is set, for [`BrowserSession::keep_lease`].
+    held: Notify,
     released: Notify,
     /// What the holder did, to tell the agent when it gets the browser back.
     acted: Mutex<UserActions>,
     /// The screencast that runs now.
     cast: tokio::sync::Mutex<Option<Cast>>,
+}
+
+/// Who has taken the browser over, and when it last did something with it.
+struct Hold {
+    holder: String,
+    last: Moment,
 }
 
 /// A running screencast of one tab.
@@ -1331,10 +1346,18 @@ impl BrowserSession {
             state_tx: watch::channel(BrowserStateInfo::default()).0,
             watchers: AtomicU32::new(0),
             hold: Mutex::new(None),
+            lease: HOLD_LEASE,
+            held: Notify::new(),
             released: Notify::new(),
             acted: Mutex::default(),
             cast: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// How long a client may hold the browser without input ([`HOLD_LEASE`] unless this says).
+    pub fn with_lease(mut self, lease: Duration) -> Self {
+        self.lease = lease;
+        self
     }
 
     /// Lets `fill_login` type the site logins kept in `stored`.
@@ -1410,8 +1433,7 @@ impl BrowserSession {
         input: Input,
         artifacts: Option<&ArtifactStore>,
     ) -> Result<Vec<Block>, String> {
-        self.wait_for_release().await;
-        let mut state = self.state.lock().await;
+        let mut state = self.begin().await;
         // The user closed the window, or the browser crashed: start over.
         if state.as_ref().is_some_and(|running| running.cdp.is_closed()) {
             *state = None;
@@ -1552,8 +1574,7 @@ impl BrowserSession {
             .map(str::trim)
             .filter(|reason| !reason.is_empty())
             .ok_or("`handoff` needs `reason`: what the user is asked to do in the browser")?;
-        self.wait_for_release().await;
-        let mut state = self.state.lock().await;
+        let mut state = self.begin().await;
         self.show(
             &mut state,
             headless,
@@ -1655,12 +1676,13 @@ impl BrowserSession {
 
     /// Shows the browser in a window, on the agents' profile and with their tabs, for the user to
     /// sign in to sites; `url` is opened when given. The agents are not held and nobody is asked:
-    /// the window stays until the session ends.
-    pub async fn sign_in(&self, url: Option<&str>) -> Result<(), String> {
-        self.sign_in_with(url, false).await
+    /// the window stays until the session ends. Refused while a client other than `holder` has the
+    /// browser: it may be started again, and the holder's page would go with it.
+    pub async fn sign_in(&self, holder: &str, url: Option<&str>) -> Result<(), String> {
+        self.sign_in_with(holder, url, false).await
     }
 
-    async fn sign_in_with(&self, url: Option<&str>, headless: bool) -> Result<(), String> {
+    async fn sign_in_with(&self, holder: &str, url: Option<&str>, headless: bool) -> Result<(), String> {
         if let Some(url) = url
             && page::host_of(url).is_none()
             && url != "about:blank"
@@ -1668,7 +1690,16 @@ impl BrowserSession {
             return Err(format!("`{url}` is not an http or https URL"));
         }
         let mut state = self.state.lock().await;
+        self.lapse_if_stale();
+        if self.held_by().is_some_and(|other| other != holder) {
+            return Err(ANOTHER_HOLDS.to_string());
+        }
         self.show(&mut state, headless, url, None, "").await?;
+        // The browser may be another one now: what the agents were shown is not what is there.
+        if let Some(running) = state.as_mut() {
+            running.taken = None;
+        }
+        self.baselines.forget_all();
         self.settle(state.as_ref()).await;
         Ok(())
     }
@@ -1701,27 +1732,43 @@ impl BrowserSession {
     }
 
     /// Takes the browser over for `holder`: the agents' next browser action waits until
-    /// [`BrowserSession::give_back`]. Fails while another holder has it.
-    pub fn take(&self, holder: &str) -> Result<(), String> {
-        {
+    /// [`BrowserSession::give_back`], or until `holder` has been silent for the lease. Fails while
+    /// another holder has it, unless `force` takes it from them. An action that is running
+    /// finishes; one that starts later sees the hold, because it reads the hold under the lock of
+    /// the browser (see [`BrowserSession::begin`]).
+    pub fn take(&self, holder: &str, force: bool) -> Result<(), String> {
+        self.lapse_if_stale();
+        let taken_from = {
             let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
-            match hold.as_deref() {
-                Some(other) if other != holder => return Err("another device has the browser".to_string()),
-                Some(_) => {}
-                None => *hold = Some(holder.to_string()),
+            let other = hold
+                .as_ref()
+                .filter(|hold| hold.holder != holder)
+                .map(|hold| hold.holder.clone());
+            if other.is_some() && !force {
+                return Err(ANOTHER_HOLDS.to_string());
             }
-        }
+            if other.is_some() || hold.is_none() {
+                *hold = Some(Hold {
+                    holder: holder.to_string(),
+                    last: Moment::now(),
+                });
+            }
+            other
+        };
+        self.touch(holder);
         self.mark();
+        if taken_from.is_some() {
+            // `held` stays true, but who holds changed: the clients are told again.
+            self.state_tx.send_modify(|_| {});
+        }
+        self.held.notify_waiters();
         Ok(())
     }
 
     /// Whether `holder` has the browser.
     pub fn holds(&self, holder: &str) -> bool {
-        self.hold
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .as_deref()
-            == Some(holder)
+        self.lapse_if_stale();
+        self.held_by().as_deref() == Some(holder)
     }
 
     /// Hands the browser back, if `holder` has it: the agents go on, their next snapshot is whole
@@ -1729,7 +1776,7 @@ impl BrowserSession {
     pub fn give_back(&self, holder: &str) {
         {
             let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
-            if hold.as_deref() != Some(holder) {
+            if hold.as_ref().map(|hold| hold.holder.as_str()) != Some(holder) {
                 return;
             }
             *hold = None;
@@ -1739,13 +1786,97 @@ impl BrowserSession {
         self.released.notify_waiters();
     }
 
+    /// The client that has the browser.
+    fn held_by(&self) -> Option<String> {
+        self.hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|hold| hold.holder.clone())
+    }
+
+    /// Notes that `holder` did something with the browser, which keeps its hold.
+    fn touch(&self, holder: &str) {
+        if let Some(hold) = self.hold.lock().unwrap_or_else(PoisonError::into_inner).as_mut()
+            && hold.holder == holder
+        {
+            hold.last = Moment::now();
+        }
+    }
+
+    /// When the hold ends if its client does nothing more; `None` when nobody has the browser.
+    /// A hold that has run out is let go of first.
+    fn held_until(&self) -> Option<Moment> {
+        self.lapse_if_stale();
+        self.hold
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(|hold| hold.last + self.lease)
+    }
+
+    /// Lets go of a hold whose client has done nothing for the length of the lease, and has the
+    /// agents' next result say so.
+    fn lapse_if_stale(&self) {
+        {
+            let mut hold = self.hold.lock().unwrap_or_else(PoisonError::into_inner);
+            match &*hold {
+                Some(held) if Moment::now() >= held.last + self.lease => *hold = None,
+                _ => return,
+            }
+        }
+        self.acted
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .lapsed(self.lease);
+        self.baselines.forget_all();
+        self.mark();
+        self.released.notify_waiters();
+    }
+
+    /// Lets go of every hold that runs out, for as long as it is polled: a device that went away
+    /// without closing its connection is found out even when no agent waits. [`Browser`] in the
+    /// command line spawns it with the session.
+    pub async fn keep_lease(&self) {
+        loop {
+            let held = self.held.notified();
+            tokio::pin!(held);
+            held.as_mut().enable();
+            match self.held_until() {
+                None => held.await,
+                Some(until) => tokio::select! {
+                    () = &mut held => {}
+                    () = tokio::time::sleep_until(until) => {}
+                },
+            }
+        }
+    }
+
+    /// Waits until nobody has the browser, then takes the state. The hold is read again under the
+    /// state's lock, which an action keeps while it runs: one that was waiting for the lock when a
+    /// client took the browser over does not run.
+    async fn begin(&self) -> tokio::sync::MutexGuard<'_, Option<Running>> {
+        loop {
+            self.wait_for_release().await;
+            let state = self.state.lock().await;
+            if self.held_until().is_none() {
+                return state;
+            }
+        }
+    }
+
     /// Does what `holder` did in the picture, in the tab shown. Fails unless `holder` has the
     /// browser.
     pub async fn user_input(&self, holder: &str, input: LiveInput) -> Result<(), String> {
         if !self.holds(holder) {
             return Err("take the browser over first".to_string());
         }
+        self.touch(holder);
         let mut state = self.state.lock().await;
+        // It may have been taken from `holder` while this waited for the browser.
+        if !self.holds(holder) {
+            return Err("take the browser over first".to_string());
+        }
         let running = state
             .as_mut()
             .filter(|running| !running.cdp.is_closed())
@@ -1809,27 +1940,31 @@ impl BrowserSession {
             .record(&input);
         // Let what the input started (a script, a navigation) take hold before it is described.
         tokio::time::sleep(Duration::from_millis(150)).await;
+        self.touch(holder);
         self.settle(state.as_ref()).await;
         Ok(())
     }
 
-    /// Waits while a client has taken the browser over.
+    /// Waits while a client has taken the browser over, or until its lease runs out.
     async fn wait_for_release(&self) {
         loop {
             let released = self.released.notified();
             tokio::pin!(released);
             // Registered before the hold is read, so a release in between is not missed.
             released.as_mut().enable();
-            if self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_none() {
+            let Some(until) = self.held_until() else {
                 return;
+            };
+            tokio::select! {
+                () = &mut released => {}
+                () = tokio::time::sleep_until(until) => {}
             }
-            released.await;
         }
     }
 
     /// Copies the hold and the watchers into the state the clients see.
     fn mark(&self) {
-        let held = self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+        let held = self.held_by().is_some();
         let watchers = self.watchers.load(Ordering::SeqCst);
         self.state_tx.send_if_modified(|state| {
             let changed = state.held != held || state.watchers != watchers;
@@ -1847,7 +1982,7 @@ impl BrowserSession {
             Some(running) => {
                 if self.state_tx.receiver_count() > 0 {
                     let mut info = running.describe().await;
-                    info.held = self.hold.lock().unwrap_or_else(PoisonError::into_inner).is_some();
+                    info.held = self.held_by().is_some();
                     info.watchers = watchers;
                     self.state_tx.send_if_modified(|state| {
                         let changed = *state != info;
@@ -1928,6 +2063,7 @@ impl BrowserSession {
     /// Closes the browser if it runs and lets go of a hold. The next action starts a new browser.
     pub async fn shutdown(&self) {
         self.hold.lock().unwrap_or_else(PoisonError::into_inner).take();
+        self.mark();
         self.released.notify_waiters();
         if let Some(old) = self.cast.lock().await.take() {
             old.cancel.cancel();
@@ -2091,6 +2227,116 @@ mod tests {
             ]
         );
         assert!(log.in_flight.is_empty());
+    }
+
+    fn idle_session() -> Arc<BrowserSession> {
+        Arc::new(BrowserSession::new(Settings {
+            path: String::new(),
+            headless: true,
+            profile: PathBuf::new(),
+            screenshot_scale: 1.0,
+            snapshot_diff: true,
+            live: crate::live::LiveSettings::default(),
+        }))
+    }
+
+    /// An action that needs no browser: it answers at once unless the hold stops it.
+    fn tabs() -> Input {
+        Input {
+            action: "tabs".into(),
+            ..Input::default()
+        }
+    }
+
+    async fn pause() {
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+
+    #[tokio::test]
+    async fn an_action_queued_when_a_device_takes_the_browser_waits_for_the_hand_back() {
+        let session = idle_session();
+        // The action has passed the hold and waits for the browser's lock.
+        let lock = session.state.lock().await;
+        let acting = tokio::spawn({
+            let session = session.clone();
+            async move { session.act(tabs(), None).await }
+        });
+        pause().await;
+        session.take("a", false).unwrap();
+        drop(lock);
+        pause().await;
+        assert!(!acting.is_finished(), "the action ran while a device held the browser");
+        session.give_back("a");
+        let done = tokio::time::timeout(Duration::from_secs(5), acting).await.unwrap().unwrap();
+        assert_eq!(text(done.unwrap()), "no tabs are open
+");
+    }
+
+    #[tokio::test]
+    async fn a_hold_without_input_is_released_with_a_note_to_the_agent() {
+        let session = Arc::new(
+            Arc::into_inner(idle_session())
+                .unwrap()
+                .with_lease(Duration::from_millis(200)),
+        );
+        session.take("a", false).unwrap();
+        assert!(session.holds("a"));
+        let done = tokio::time::timeout(Duration::from_secs(5), session.act(tabs(), None))
+            .await
+            .expect("the agent is freed when the holder is silent");
+        assert!(done.is_ok());
+        assert!(!session.holds("a"));
+        assert!(!session.states().borrow().held);
+        let note = session.user_note().unwrap();
+        assert!(note.contains("came back to you"), "{note}");
+        assert_eq!(session.user_input("a", LiveInput::Back).await.unwrap_err(), "take the browser over first");
+    }
+
+    #[tokio::test]
+    async fn the_lease_keeper_tells_the_clients_when_a_hold_runs_out() {
+        let session = Arc::new(
+            Arc::into_inner(idle_session())
+                .unwrap()
+                .with_lease(Duration::from_millis(200)),
+        );
+        let keeper = tokio::spawn({
+            let session = session.clone();
+            async move { session.keep_lease().await }
+        });
+        let mut states = session.states();
+        session.take("a", false).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), states.wait_for(|state| !state.held))
+            .await
+            .expect("the state says the hold ended")
+            .unwrap();
+        keeper.abort();
+    }
+
+    #[tokio::test]
+    async fn another_device_takes_the_browser_only_by_force() {
+        let session = idle_session();
+        session.take("a", false).unwrap();
+        assert_eq!(session.take("b", false).unwrap_err(), "another device has the browser");
+        assert!(session.holds("a"));
+        session.take("b", true).unwrap();
+        assert!(session.holds("b") && !session.holds("a"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_tells_the_clients_the_hold_is_gone() {
+        let session = idle_session();
+        session.take("a", false).unwrap();
+        assert!(session.states().borrow().held);
+        session.shutdown().await;
+        assert!(!session.states().borrow().held);
+    }
+
+    #[tokio::test]
+    async fn signing_in_is_refused_while_another_device_holds_the_browser() {
+        let session = idle_session();
+        session.take("a", false).unwrap();
+        assert_eq!(session.sign_in("b", None).await.unwrap_err(), "another device has the browser");
+        assert!(session.holds("a"));
     }
 
     /// The user at the other end of a handoff: remembers what it was asked and answers `reply`.

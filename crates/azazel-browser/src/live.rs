@@ -181,9 +181,16 @@ pub struct UserActions {
     fields: u32,
     /// Whether the last thing was typing, which the next key belongs to as well.
     typing: bool,
+    /// How long the user had the browser without input before it was taken back.
+    lapsed: Option<Duration>,
 }
 
 impl UserActions {
+    /// The user's hold ran out after `lease` without input.
+    pub(crate) fn lapsed(&mut self, lease: Duration) {
+        self.lapsed = Some(lease);
+    }
+
     pub(crate) fn record(&mut self, input: &LiveInput) {
         let mut moved = |what: String| {
             if self.moves.len() == MOVES {
@@ -238,6 +245,17 @@ impl UserActions {
         if self.fields > 0 {
             let fields = if self.fields == 1 { "field" } else { "fields" };
             parts.push(format!("typed in {} {fields}", self.fields));
+        }
+        if let Some(lease) = self.lapsed {
+            let secs = lease.as_secs();
+            let span = if secs >= 120 {
+                format!("{} minutes", secs / 60)
+            } else {
+                format!("{secs} s")
+            };
+            parts.push(format!(
+                "gave no input for {span}, so the browser came back to you"
+            ));
         }
         (!parts.is_empty()).then(|| {
             format!(
