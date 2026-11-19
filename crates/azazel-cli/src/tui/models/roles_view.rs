@@ -73,7 +73,7 @@ impl Models {
     }
 
     /// `left` with `right` set against the right edge; the left side is cut to make room.
-    fn spread(left: &str, right: &str, width: usize, theme: &Theme) -> String {
+    pub(super) fn spread(left: &str, right: &str, width: usize, theme: &Theme) -> String {
         let right_width = text::width(right);
         let room = width.saturating_sub(right_width + usize::from(right_width > 0));
         let left = text::truncate(left, room, theme.glyph(Glyph::Ellipsis));

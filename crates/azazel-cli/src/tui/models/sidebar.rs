@@ -37,6 +37,21 @@ impl Models {
             dim: false,
             skip: roles_left,
         });
+        let profiles = &self.data.profiles;
+        let (profiles_label, profiles_left) = match searching {
+            true => {
+                let found = profiles.iter().filter(|entry| self.profile_matches(entry)).count();
+                (found.to_string(), found == 0)
+            }
+            false => (profiles.len().to_string(), false),
+        };
+        side.push(Side {
+            scope: Some(Scope::Profiles),
+            label: "Profiles".to_string(),
+            count: profiles_label,
+            dim: false,
+            skip: profiles_left,
+        });
         let recent = self
             .data
             .recent

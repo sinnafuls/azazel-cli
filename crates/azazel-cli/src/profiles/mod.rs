@@ -14,6 +14,7 @@ use azazel_core::{Config, EntryKind, SessionStore};
 use azazel_team::Team;
 
 pub mod builtin;
+pub mod edit;
 pub mod limit;
 
 /// A named set of role chains.
@@ -94,16 +95,26 @@ impl Usability {
 pub struct UnknownProfile {
     pub name: String,
     pub known: Vec<String>,
+    /// The profile exists but `[profiles] disabled` switches it off.
+    pub disabled: bool,
 }
 
 impl std::fmt::Display for UnknownProfile {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "unknown profile `{}`; known: {}",
-            self.name,
-            self.known.join(", ")
-        )
+        match self.disabled {
+            true => write!(
+                f,
+                "profile `{}` is disabled (profiles.disabled; enable it on the Profiles page of /models); known: {}",
+                self.name,
+                self.known.join(", ")
+            ),
+            false => write!(
+                f,
+                "unknown profile `{}`; known: {}",
+                self.name,
+                self.known.join(", ")
+            ),
+        }
     }
 }
 
@@ -135,16 +146,24 @@ pub fn builtin() -> Vec<Profile> {
     builtin::all()
 }
 
-/// Every profile: the built-in ones in their order, a config entry of the same name replacing a
-/// built-in whole, then the other config entries by name. Every config entry counts as the
-/// user's; [`all_in`] tells a project's from the user's.
+/// The profiles that can be used: the built-in ones in their order, a config entry of the same
+/// name replacing a built-in whole, then the other config entries by name, without those that
+/// `[profiles] disabled` names. Every config entry counts as the user's; [`all_in`] tells a
+/// project's from the user's.
 pub fn all(config: &Config) -> Vec<Profile> {
-    all_in(&config.profiles.entries, &[])
+    all_in(&config.profiles.entries, &config.profiles.disabled, &[])
 }
 
-/// [`all`] over `entries`, with the config `layers` they were read from to tell a project's
-/// profile from the user's.
-pub fn all_in(entries: &BTreeMap<String, ProfileConfig>, layers: &[Layer]) -> Vec<Profile> {
+/// [`all`] over `entries` without the `disabled` ones, with the config `layers` they were read
+/// from to tell a project's profile from the user's.
+pub fn all_in(entries: &BTreeMap<String, ProfileConfig>, disabled: &[String], layers: &[Layer]) -> Vec<Profile> {
+    let mut profiles = every_in(entries, layers);
+    profiles.retain(|profile| !disabled.contains(&profile.name));
+    profiles
+}
+
+/// [`all_in`] with the disabled profiles too, for the page that switches them on again.
+pub fn every_in(entries: &BTreeMap<String, ProfileConfig>, layers: &[Layer]) -> Vec<Profile> {
     let from_config = |name: &str, entry: &ProfileConfig| Profile {
         name: name.to_string(),
         source: source_of(layers, name),
@@ -191,17 +210,29 @@ fn source_of(layers: &[Layer], name: &str) -> ProfileSource {
 
 /// The profile `name`, or what the known ones are.
 pub fn resolve(config: &Config, name: &str) -> Result<Profile, UnknownProfile> {
-    resolve_in(&config.profiles.entries, name)
+    resolve_in(&config.profiles.entries, &config.profiles.disabled, name)
 }
 
-/// [`resolve`] over `entries`.
-pub fn resolve_in(entries: &BTreeMap<String, ProfileConfig>, name: &str) -> Result<Profile, UnknownProfile> {
-    let mut profiles = all_in(entries, &[]);
-    match profiles.iter().position(|profile| profile.name == name) {
-        Some(index) => Ok(profiles.swap_remove(index)),
-        None => Err(UnknownProfile {
+/// [`resolve`] over `entries` without the `disabled` ones.
+pub fn resolve_in(
+    entries: &BTreeMap<String, ProfileConfig>,
+    disabled: &[String],
+    name: &str,
+) -> Result<Profile, UnknownProfile> {
+    let every = every_in(entries, &[]);
+    let known = || {
+        every
+            .iter()
+            .filter(|profile| !disabled.contains(&profile.name))
+            .map(|profile| profile.name.clone())
+            .collect()
+    };
+    match every.iter().find(|profile| profile.name == name) {
+        Some(profile) if !disabled.contains(&profile.name) => Ok(profile.clone()),
+        found => Err(UnknownProfile {
             name: name.to_string(),
-            known: profiles.into_iter().map(|profile| profile.name).collect(),
+            known: known(),
+            disabled: found.is_some(),
         }),
     }
 }
@@ -292,35 +323,94 @@ pub(crate) fn switch(
     format!("profile {}{because}: {done}", profile.name)
 }
 
+/// A profile as the Profiles page shows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Entry {
+    pub profile: Profile,
+    pub usability: Usability,
+    /// Not listed in `[profiles] disabled`.
+    pub enabled: bool,
+    /// One of the profiles that ship with azazel (its roles may be overridden).
+    pub builtin: bool,
+}
+
+/// What an edit came to: the line to tell the user, and the profile to apply to the session
+/// when the edit changed the one it is on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Edited {
+    pub line: String,
+    pub reapply: Option<String>,
+}
+
+struct Held {
+    /// Every profile, the disabled ones too.
+    profiles: Vec<Profile>,
+    disabled: Vec<String>,
+}
+
 /// The profiles of this process (the built-in ones, those of the configuration and those saved
 /// since), and whether their providers have a login. A service: `/profile`, RPC and the
 /// terminal's picker all switch through it, so that they agree on what can be used.
 pub struct Book {
-    profiles: Mutex<Vec<Profile>>,
+    held: Mutex<Held>,
     access: AccessCheck,
     /// The profile `--profile` named, which is the current one until a switch is recorded.
     launch: Option<String>,
+    /// `[profiles] on_limit`, which an edit must leave usable.
+    on_limit: String,
 }
 
 impl Book {
-    pub fn new(profiles: Vec<Profile>, access: AccessCheck, launch: Option<String>) -> Book {
+    /// `profiles` are all of them, the ones `disabled` names included.
+    pub fn new(
+        profiles: Vec<Profile>,
+        disabled: Vec<String>,
+        access: AccessCheck,
+        launch: Option<String>,
+    ) -> Book {
         Book {
-            profiles: Mutex::new(profiles),
+            held: Mutex::new(Held { profiles, disabled }),
             access,
             launch,
+            on_limit: String::new(),
         }
     }
 
-    fn lock(&self) -> MutexGuard<'_, Vec<Profile>> {
-        self.profiles.lock().unwrap_or_else(PoisonError::into_inner)
+    pub fn with_on_limit(mut self, on_limit: &str) -> Book {
+        self.on_limit = on_limit.trim().to_string();
+        self
     }
 
+    fn lock(&self) -> MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The profiles that can be used: those not disabled.
     pub fn list(&self) -> Vec<Profile> {
-        self.lock().clone()
+        let held = self.lock();
+        held.profiles
+            .iter()
+            .filter(|profile| !held.disabled.contains(&profile.name))
+            .cloned()
+            .collect()
+    }
+
+    /// Every profile with what the Profiles page shows of it, the disabled ones too.
+    pub fn entries(&self) -> Vec<Entry> {
+        let held = self.lock();
+        held.profiles
+            .iter()
+            .map(|profile| Entry {
+                usability: usability(profile, &*self.access),
+                enabled: !held.disabled.contains(&profile.name),
+                builtin: azazel_core::config::BUILTIN_PROFILES.contains(&profile.name.as_str()),
+                profile: profile.clone(),
+            })
+            .collect()
     }
 
     pub fn find(&self, name: &str) -> Result<Profile, String> {
-        let profiles = self.lock();
+        let profiles = self.list();
         profiles
             .iter()
             .find(|profile| profile.name == name)
@@ -377,18 +467,55 @@ impl Book {
         name: &str,
         roles: &BTreeMap<String, Vec<ModelSpec>>,
     ) -> Result<(), String> {
-        crate::routing::save_roles(home_config, name, roles)?;
-        let saved = Profile {
+        crate::routing::profile_name(name)?;
+        let change = edit::Change::Write {
             name: name.to_string(),
-            source: ProfileSource::User,
             roles: roles.clone(),
         };
-        let mut profiles = self.lock();
-        match profiles.iter_mut().find(|profile| profile.name == name) {
-            Some(old) => *old = saved,
-            None => profiles.push(saved),
-        }
+        let mut held = self.lock();
+        self.write(&mut held, home_config, &change)
+    }
+
+    /// One atomic write of `change` into the home config, then into the profiles held here.
+    fn write(&self, held: &mut Held, home_config: &Path, change: &edit::Change) -> Result<(), String> {
+        crate::init::edit_config(home_config, |doc| {
+            edit::write_doc(doc, change).map_err(|e| anyhow::anyhow!(e))
+        })
+        .map_err(|e| format!("{e:#}"))?;
+        edit::write_state(&mut held.profiles, &mut held.disabled, change);
         Ok(())
+    }
+
+    /// Carries out `edit` on the home config in one atomic write, and on the profiles held here.
+    /// `current` is the roles of the session (for a profile made from them) and `on` the profile
+    /// the session is on, which comes back as [`Edited::reapply`] when the edit changed it.
+    pub fn edit(
+        &self,
+        home_config: &Path,
+        edit: &edit::Edit,
+        current: &BTreeMap<String, Vec<ModelSpec>>,
+        on: Option<&str>,
+    ) -> Result<Edited, String> {
+        let mut held = self.lock();
+        let change = edit::plan(
+            &edit::Known {
+                profiles: &held.profiles,
+                disabled: &held.disabled,
+                on_limit: &self.on_limit,
+                current,
+            },
+            edit,
+        )?;
+        self.write(&mut held, home_config, &change)?;
+        let (line, touched) = edit::describe(&change);
+        let reapply = touched
+            .filter(|name| on == Some(name.as_str()))
+            .map(|name| match &change {
+                // The session's record names the new name from now on.
+                edit::Change::Rename { to, .. } => to.clone(),
+                _ => name,
+            });
+        Ok(Edited { line, reapply })
     }
 
     /// Moves the session to profile `name` with [`switch`], unless a provider it names has no
@@ -409,7 +536,6 @@ impl Book {
         Ok(switch(&profile, router, lead, team, reason))
     }
 }
-
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
@@ -533,7 +659,7 @@ mod tests {
             ("a".to_string(), entry("default", "acme/a")),
             ("b".to_string(), entry("default", "acme/b")),
         ]);
-        let sources: Vec<_> = all_in(&entries, &layers)
+        let sources: Vec<_> = all_in(&entries, &[], &layers)
             .into_iter()
             .skip(6)
             .map(|p| (p.name, p.source.as_str()))

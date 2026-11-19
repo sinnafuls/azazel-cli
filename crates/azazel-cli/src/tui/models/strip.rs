@@ -5,11 +5,20 @@ use azazel_ai::ThinkingLevel;
 use azazel_tui::{Editor, Glyph, Line, Role, Theme, text};
 use crossterm::event::{KeyCode, KeyEvent};
 
+use super::screen::How;
+use crate::profiles::edit::Edit;
+
 /// What a name typed into the strip is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Purpose {
     NewRole,
     Preset,
+    /// A profile of the roles the session has now.
+    NewProfile,
+    /// A copy of the profile the screen has in `profile_target`.
+    CopyProfile,
+    /// A new name for the profile in `profile_target`.
+    RenameProfile,
 }
 
 pub(super) enum Strip {
@@ -32,6 +41,25 @@ pub(super) enum Strip {
         role: String,
         entry: usize,
         options: Vec<Option<ThinkingLevel>>,
+        at: usize,
+        /// The profile whose chain it is, when it is not the session's roles.
+        profile: Option<String>,
+    },
+    /// The roles of `profile` to choose one from, to give it a model (`how`). `copy` when the
+    /// profile is a built-in one that the change turns into a copy of the user's own.
+    ProfileRoles {
+        profile: String,
+        roles: Vec<String>,
+        how: How,
+        copy: bool,
+        at: usize,
+    },
+    /// Asks before `edit` is made: the first chip keeps things as they are, the second (`yes`)
+    /// does it.
+    Confirm {
+        question: String,
+        yes: String,
+        edit: Edit,
         at: usize,
     },
     /// The saved presets, to load one.
@@ -79,7 +107,7 @@ impl Strip {
                 labels.push(format!("+ fallback for{}", theme.glyph(Glyph::Ellipsis)));
                 labels
             }
-            Strip::Fallback { roles, .. } => roles.clone(),
+            Strip::Fallback { roles, .. } | Strip::ProfileRoles { roles, .. } => roles.clone(),
             Strip::Thinking { options, .. } => options
                 .iter()
                 .map(|option| match option {
@@ -88,6 +116,7 @@ impl Strip {
                 })
                 .collect(),
             Strip::Presets { names, .. } => names.clone(),
+            Strip::Confirm { yes, .. } => vec!["keep".to_string(), yes.clone()],
             Strip::Name { .. } => Vec::new(),
         }
     }
@@ -100,6 +129,20 @@ impl Strip {
             Strip::Fallback { model, .. } => format!("{} as a fallback for", short(model)),
             Strip::Thinking { role, entry: 0, .. } => format!("thinking for {role}:"),
             Strip::Thinking { role, .. } => format!("thinking for this fallback of {role}:"),
+            Strip::ProfileRoles {
+                profile, how, copy, ..
+            } => {
+                let what = match how {
+                    How::Add => "add a fallback to",
+                    _ => "model of",
+                };
+                let own = match copy {
+                    true => " (saves your own copy of the built-in profile)",
+                    false => "",
+                };
+                format!("{what} a role of {profile}{own}:")
+            }
+            Strip::Confirm { question, .. } => question.clone(),
             Strip::Presets { .. } => "load preset:".to_string(),
             Strip::Name {
                 purpose: Purpose::NewRole,
@@ -109,6 +152,18 @@ impl Strip {
                 purpose: Purpose::Preset,
                 ..
             } => "save the roles as preset:".to_string(),
+            Strip::Name {
+                purpose: Purpose::NewProfile,
+                ..
+            } => "new profile from the roles in use, named:".to_string(),
+            Strip::Name {
+                purpose: Purpose::CopyProfile,
+                ..
+            } => "copy as:".to_string(),
+            Strip::Name {
+                purpose: Purpose::RenameProfile,
+                ..
+            } => "rename to:".to_string(),
         }
     }
 
@@ -116,7 +171,9 @@ impl Strip {
         match self {
             Strip::Roles { at, .. }
             | Strip::Fallback { at, .. }
+            | Strip::ProfileRoles { at, .. }
             | Strip::Thinking { at, .. }
+            | Strip::Confirm { at, .. }
             | Strip::Presets { at, .. } => Some(at),
             Strip::Name { .. } => None,
         }
@@ -126,7 +183,9 @@ impl Strip {
         match self {
             Strip::Roles { at, .. }
             | Strip::Fallback { at, .. }
+            | Strip::ProfileRoles { at, .. }
             | Strip::Thinking { at, .. }
+            | Strip::Confirm { at, .. }
             | Strip::Presets { at, .. } => Some(*at),
             Strip::Name { .. } => None,
         }
@@ -136,9 +195,10 @@ impl Strip {
     fn len(&self) -> usize {
         match self {
             Strip::Roles { roles, .. } => roles.len() + 1,
-            Strip::Fallback { roles, .. } => roles.len(),
+            Strip::Fallback { roles, .. } | Strip::ProfileRoles { roles, .. } => roles.len(),
             Strip::Thinking { options, .. } => options.len(),
             Strip::Presets { names, .. } => names.len(),
+            Strip::Confirm { .. } => 2,
             Strip::Name { .. } => 0,
         }
     }

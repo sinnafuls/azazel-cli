@@ -800,18 +800,22 @@ impl App {
         // The router is built after the extensions, so the check asks for it when it is used.
         let access_services = Arc::downgrade(&services);
         registry.load(&crate::routing::RoutingExt {
-            book: Arc::new(crate::profiles::Book::new(
-                crate::profiles::all_in(&config.profiles.entries, &loaded.layers),
-                Arc::new(crate::profiles::access(
-                    endpoints_now,
-                    access_credentials,
-                    move |id| {
-                        let router = access_services.upgrade()?.get::<Router>()?;
-                        Some(router.provider(id).is_some())
-                    },
-                )),
-                cli.profile.clone(),
-            )),
+            book: Arc::new(
+                crate::profiles::Book::new(
+                    crate::profiles::every_in(&config.profiles.entries, &loaded.layers),
+                    config.profiles.disabled.clone(),
+                    Arc::new(crate::profiles::access(
+                        endpoints_now,
+                        access_credentials,
+                        move |id| {
+                            let router = access_services.upgrade()?.get::<Router>()?;
+                            Some(router.provider(id).is_some())
+                        },
+                    )),
+                    cli.profile.clone(),
+                )
+                .with_on_limit(&config.profiles.on_limit),
+            ),
             home_config: paths.home_config(),
             on_limit: config.profiles.on_limit.clone(),
             on_reset: config.profiles.on_reset,

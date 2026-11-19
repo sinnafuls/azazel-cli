@@ -459,7 +459,7 @@ mod tests {
 
     fn command(dir: &std::path::Path, access: fn(&str) -> crate::profiles::Access) -> ProfileCommand {
         ProfileCommand {
-            book: Arc::new(Book::new(crate::profiles::builtin(), Arc::new(access), None)),
+            book: Arc::new(Book::new(crate::profiles::builtin(), Vec::new(), Arc::new(access), None)),
             home_config: dir.join("config.toml"),
         }
     }
@@ -551,6 +551,7 @@ mod tests {
                     user("x", &["anthropc/claude-x"]),
                     user("ext", &["acme/a", "mock/lead"]),
                 ],
+                Vec::new(),
                 Arc::new(access),
                 None,
             )),

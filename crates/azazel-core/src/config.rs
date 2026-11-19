@@ -672,6 +672,9 @@ pub struct ProfilesConfig {
     pub on_limit: String,
     /// What happens when the limit window has reset: ask whether to go back, go back, or stay.
     pub on_reset: ProfileReset,
+    /// Profiles that are switched off: hidden from `/profile`, the picker, `--profile` and RPC,
+    /// and not allowed as `on_limit`. Built-in profiles are turned off this way.
+    pub disabled: Vec<String>,
     /// Any other key is the name of a profile. `deny_unknown_fields` does not work beside a
     /// flattened map; the map's entries are checked by their own type instead.
     #[serde(flatten)]
@@ -1283,20 +1286,27 @@ impl Config {
             tracing::warn!("{warning}");
         }
         let on_limit = config.profiles.on_limit.trim();
-        if !on_limit.is_empty()
-            && !BUILTIN_PROFILES.contains(&on_limit)
-            && !config.profiles.entries.contains_key(on_limit)
-        {
+        let on_limit_problem = if on_limit.is_empty() {
+            None
+        } else if config.profiles.disabled.iter().any(|name| name == on_limit) {
+            Some(format!(
+                "profiles.on_limit: profile `{on_limit}` is disabled by profiles.disabled; enable it or name another"
+            ))
+        } else if !BUILTIN_PROFILES.contains(&on_limit) && !config.profiles.entries.contains_key(on_limit) {
             let mut known: Vec<&str> = BUILTIN_PROFILES.to_vec();
             for name in config.profiles.entries.keys().map(String::as_str) {
                 if !known.contains(&name) {
                     known.push(name);
                 }
             }
-            let message = format!(
+            Some(format!(
                 "profiles.on_limit: unknown profile `{on_limit}`; known: {}",
                 known.join(", ")
-            );
+            ))
+        } else {
+            None
+        };
+        if let Some(message) = on_limit_problem {
             let setter = layers.iter().rev().find(|layer| {
                 layer
                     .table

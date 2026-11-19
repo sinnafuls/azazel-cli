@@ -95,6 +95,8 @@ pub(crate) struct ModelsAt {
     pub role: Option<String>,
     /// On this provider's models.
     pub provider: Option<String>,
+    /// On the Profiles page.
+    pub profiles: bool,
 }
 
 /// How the settings open `/models`: called with where it is to open, it shows the screen and
@@ -274,7 +276,10 @@ impl Settings {
         router: Option<&Router>,
         models: Option<&ModelsHost>,
     ) -> Result<Option<String>, String> {
-        let open = |role: Option<String>| models.map(|host| (host.0)(ModelsAt { role, provider: None }));
+        let open = |role: Option<String>| models.map(|host| (host.0)(ModelsAt {
+            role,
+            ..ModelsAt::default()
+        }));
         match request {
             Request::Close => Ok(None),
             Request::Models => {
@@ -327,6 +332,7 @@ impl Settings {
                     let at = ModelsAt {
                         role: Some("default".to_string()),
                         provider: Some(provider),
+                        ..ModelsAt::default()
                     };
                     let _ = (host.0)(at).await;
                     if let Some(chosen) = self.default_model(router) {
@@ -1005,6 +1011,7 @@ mod tests {
                 ModelsAt {
                     role: Some("default".to_string()),
                     provider: None,
+                    profiles: false,
                 }
             ]
         );

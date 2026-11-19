@@ -243,6 +243,8 @@ settings! {
             "The profile a session moves to when its provider reports a usage limit; empty never switches.";
         "profiles.on_reset": Choice(ProfileReset::NAMES), "When the limit resets",
             "ask: offer to go back to the first profile; auto: go back; off: stay on the second.";
+        "profiles.disabled": List, "Disabled profiles",
+            "Profiles that are switched off, such as cheap: hidden from /profile, the picker, --profile and RPC, and not allowed as the profile on a usage limit. The Profiles page of /models changes it.";
     }
     Models / "Requests" {
         "retry.max_attempts": Number, "Tries per model", "Tries per model before the router moves down the chain.";
@@ -596,7 +598,7 @@ pub const NOT_EDITABLE: &[(&str, &str)] = &[
     ),
     (
         "profiles",
-        "Saved sets of role chains, each written as [profiles.<name>.roles]: `/profile save <name>` writes one, `/profile <name>` applies it.",
+        "Saved sets of role chains, each written as [profiles.<name>.roles]: `/profile save <name>` writes one, `/profile <name>` applies it, and the Profiles page of /models creates, renames, edits and deletes them.",
     ),
     (
         "hooks",

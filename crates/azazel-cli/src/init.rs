@@ -36,6 +36,26 @@ fn default_role_is_set(config: &Path) -> Result<bool> {
         .is_some())
 }
 
+/// Reads the config file at `config`, lets `change` edit it, and writes it back in one go, keeping
+/// comments and everything else as written: the new text goes to a file beside it that then
+/// replaces it, so a failure leaves the old file as it was. Nothing is written when `change`
+/// fails.
+pub fn edit_config(config: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
+    let mut doc = read_document(config)?;
+    change(&mut doc)?;
+    if let Some(dir) = config.parent() {
+        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
+    }
+    let mut staged = config.as_os_str().to_owned();
+    staged.push(format!(".{}.tmp", std::process::id()));
+    let staged = std::path::PathBuf::from(staged);
+    std::fs::write(&staged, doc.to_string()).with_context(|| format!("cannot write {}", staged.display()))?;
+    std::fs::rename(&staged, config).map_err(|e| {
+        let _ = std::fs::remove_file(&staged);
+        anyhow!("cannot write {}: {e}", config.display())
+    })
+}
+
 /// Sets the key at `path` (`["editor", "mode"]`) in the config file at `config` to `value`, or
 /// removes it when `value` is `None`, keeping comments and everything else as written. Missing
 /// tables on the way are created.
@@ -43,33 +63,31 @@ pub fn set_config_value(config: &Path, path: &[&str], value: Option<Item>) -> Re
     let Some((key, tables)) = path.split_last() else {
         bail!("no setting named");
     };
-    let mut doc = read_document(config)?;
-    let mut table = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
-    for (depth, name) in tables.iter().enumerate() {
-        table = table
-            .entry(name)
-            .or_insert(Item::Table(Table::new()))
-            .as_table_like_mut()
-            .ok_or_else(|| {
-                anyhow!(
-                    "`{}` in {} is not a table",
-                    tables[..=depth].join("."),
-                    config.display()
-                )
-            })?;
-    }
-    match value {
-        Some(value) => {
-            table.insert(key, value);
+    edit_config(config, |doc| {
+        let mut table = doc.as_table_mut() as &mut dyn toml_edit::TableLike;
+        for (depth, name) in tables.iter().enumerate() {
+            table = table
+                .entry(name)
+                .or_insert(Item::Table(Table::new()))
+                .as_table_like_mut()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "`{}` in {} is not a table",
+                        tables[..=depth].join("."),
+                        config.display()
+                    )
+                })?;
         }
-        None => {
-            table.remove(key);
+        match value {
+            Some(value) => {
+                table.insert(key, value);
+            }
+            None => {
+                table.remove(key);
+            }
         }
-    }
-    if let Some(dir) = config.parent() {
-        std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
-    }
-    std::fs::write(config, doc.to_string()).with_context(|| format!("cannot write {}", config.display()))
+        Ok(())
+    })
 }
 
 /// Sets `roles.<role>` to `model` in the config file at `config`, or removes it when `model` is

@@ -83,6 +83,9 @@ fn roles(project: bool) -> Roles {
 
 fn data() -> Data {
     Data {
+        profiles: Vec::new(),
+        profile: None,
+        profiles_editable: true,
         rows: vec![
             model(OPUS, &["low", "medium", "high"], true),
             model(HAIKU, &[], true),
@@ -110,6 +113,7 @@ fn on_role(role: &str) -> Models {
     screen(Opening {
         role: Some(role.to_string()),
         provider: None,
+        profiles: false,
     })
 }
 
@@ -497,6 +501,7 @@ fn a_provider_without_a_credential_offers_a_key_and_its_catalogue() {
     let mut screen = screen(Opening {
         role: None,
         provider: Some("groq".into()),
+        profiles: false,
     });
     let lines = shown(&screen, 120, 20);
     assert!(lines.iter().any(|line| line.contains("groq has no credential")));
@@ -520,6 +525,7 @@ fn a_provider_without_a_credential_offers_a_key_and_its_catalogue() {
         &Opening {
             role: None,
             provider: Some("anthropic".into()),
+            profiles: false,
         },
         &BTreeSet::new(),
         Glyphs::default(),

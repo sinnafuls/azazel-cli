@@ -318,6 +318,14 @@ pub(crate) trait Backend: Send {
     /// Moves the session to profile `name`, as `/profile <name>` does.
     async fn set_profile(&mut self, name: &str) -> Result<(), String>;
 
+    /// Every profile, the disabled ones too, the one the session is on, and whether they can be
+    /// changed from here (not when the session runs elsewhere).
+    fn profile_entries(&self) -> (Vec<crate::profiles::Entry>, Option<String>, bool);
+
+    /// Changes the profiles in the home config in one write; when that changed the profile the
+    /// session is on, the session follows at once. Returns what was done, in a line.
+    async fn edit_profile(&mut self, edit: crate::profiles::edit::Edit) -> Result<String, String>;
+
     async fn set_mode(&mut self, mode: PermissionMode) -> Result<(), String>;
 
     /// The primary agents the lead can be, in the order `tab` steps through them, and the name
@@ -937,6 +945,43 @@ impl Backend for Local {
             crate::profiles::Reason::User,
         )
         .map(drop)
+    }
+
+    fn profile_entries(&self) -> (Vec<crate::profiles::Entry>, Option<String>, bool) {
+        match self.app.registry.services.get::<crate::profiles::Book>() {
+            Some(book) => (book.entries(), book.current(&self.active.session), true),
+            None => (Vec::new(), None, false),
+        }
+    }
+
+    async fn edit_profile(&mut self, edit: crate::profiles::edit::Edit) -> Result<String, String> {
+        let book = self
+            .app
+            .registry
+            .services
+            .get::<crate::profiles::Book>()
+            .ok_or("this session has no profiles")?;
+        let on = book.current(&self.active.session);
+        let done = book.edit(
+            &self.app.paths.home_config(),
+            &edit,
+            &self.app.router.roles(),
+            on.as_deref(),
+        )?;
+        let Some(name) = done.reapply else {
+            return Ok(done.line);
+        };
+        // The session is on the profile that changed: apply it now.
+        match book.switch(
+            &name,
+            &self.app.router,
+            Some((&self.active.lead, Some(&*self.active.session))),
+            self.team.as_deref(),
+            crate::profiles::Reason::User,
+        ) {
+            Ok(_) => Ok(format!("{}; the session uses it now", done.line)),
+            Err(why) => Err(format!("{}; but the session could not follow: {why}", done.line)),
+        }
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {

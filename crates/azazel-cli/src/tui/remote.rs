@@ -1168,6 +1168,43 @@ impl Backend for Remote {
         (state.profiles, state.profile)
     }
 
+    fn profile_entries(&self) -> (Vec<crate::profiles::Entry>, Option<String>, bool) {
+        let (infos, current) = self.profiles();
+        let entries = infos
+            .into_iter()
+            .map(|info| {
+                let roles = info
+                    .roles
+                    .iter()
+                    .filter_map(|(role, model)| Some((role.clone(), vec![model.parse().ok()?])))
+                    .collect();
+                crate::profiles::Entry {
+                    builtin: azazel_core::config::BUILTIN_PROFILES.contains(&info.name.as_str()),
+                    enabled: true,
+                    usability: crate::profiles::Usability {
+                        usable: info.usable,
+                        missing_logins: info.missing_logins,
+                        unknown_providers: info.unknown_providers,
+                    },
+                    profile: crate::profiles::Profile {
+                        source: match info.source.as_str() {
+                            "builtin" => crate::profiles::ProfileSource::Builtin,
+                            "project" => crate::profiles::ProfileSource::Project,
+                            _ => crate::profiles::ProfileSource::User,
+                        },
+                        name: info.name,
+                        roles,
+                    },
+                }
+            })
+            .collect();
+        (entries, current, false)
+    }
+
+    async fn edit_profile(&mut self, _edit: crate::profiles::edit::Edit) -> Result<String, String> {
+        Err("this session runs elsewhere: change its profiles on the machine it runs on".to_string())
+    }
+
     async fn set_profile(&mut self, name: &str) -> Result<(), String> {
         let state: State = ask(
             &self.client,

@@ -4,6 +4,7 @@
 //! same way; the screen itself ([`Models`]) only says what is to be done.
 
 mod list;
+mod profiles_view;
 mod roles_view;
 mod screen;
 #[cfg(test)]
@@ -36,6 +37,10 @@ pub(crate) enum Request {
     },
     SavePreset(String),
     ApplyPreset(String),
+    /// Move the session to this profile.
+    SwitchProfile(String),
+    /// Change the profiles in the home config; see `Book::edit`.
+    EditProfile(crate::profiles::edit::Edit),
     /// Ask this provider for its models.
     Refresh(String),
     /// Change what ctrl+p steps through.
@@ -103,7 +108,11 @@ impl Tui {
                 project: false,
             }
         });
+        let (profiles, profile, profiles_editable) = self.backend.profile_entries();
         let data = Data {
+            profiles,
+            profile,
+            profiles_editable,
             rows,
             providers,
             roles,
@@ -144,6 +153,15 @@ impl Tui {
                 let result = self.backend.apply_preset(&name).await;
                 self.roles_changed(result);
             }
+            Request::SwitchProfile(name) => {
+                let result = self.backend.set_profile(&name).await;
+                let line = result.map(|()| format!("profile {name} is in use for this session"));
+                self.profiles_changed(line).await;
+            }
+            Request::EditProfile(edit) => {
+                let result = self.backend.edit_profile(edit).await;
+                self.profiles_changed(result).await;
+            }
             Request::Refresh(provider) => {
                 self.models_asked.insert(provider.clone());
                 self.backend.refresh_models(provider, self.internal_tx.clone());
@@ -151,6 +169,15 @@ impl Tui {
             Request::Cycle { spec, change } => self.change_favourite(&spec, change),
             Request::SignIn(provider) => self.models_sign_in(provider, false),
             Request::AddKey(provider) => self.models_sign_in(provider, true),
+        }
+    }
+
+    /// A profile was switched or edited: the page shows the profiles and roles as they are now.
+    async fn profiles_changed(&mut self, result: Result<String, String>) {
+        let (entries, current, _) = self.backend.profile_entries();
+        let roles = self.backend.roles().await.ok();
+        if let Some(screen) = self.models_screen() {
+            screen.profiles_changed(result, entries, current, roles);
         }
     }
 

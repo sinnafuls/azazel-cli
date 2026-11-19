@@ -11,6 +11,8 @@ use super::overlay::{Action, Overlay};
 pub(super) struct Row {
     pub name: String,
     pub missing_logins: Vec<String>,
+    /// The last row: opens the Profiles page of `/models` instead of switching.
+    pub manage: bool,
 }
 
 /// What the source of a profile is called to a user.
@@ -56,6 +58,10 @@ pub(super) fn picker(profiles: &[ProfileInfo], current: Option<&str>, theme: &Th
             };
             SelectItem::new(profile.name.as_str(), detail)
         })
+        .chain(std::iter::once(SelectItem::new(
+            format!("Manage profiles{}", theme.glyph(Glyph::Ellipsis)),
+            "make, copy, rename, edit, delete, disable (the Profiles page of /models)",
+        )))
         .collect();
     let rows = profiles
         .iter()
@@ -66,7 +72,13 @@ pub(super) fn picker(profiles: &[ProfileInfo], current: Option<&str>, theme: &Th
             } else {
                 profile.missing_logins.clone()
             },
+            manage: false,
         })
+        .chain(std::iter::once(Row {
+            name: String::new(),
+            missing_logins: Vec::new(),
+            manage: true,
+        }))
         .collect();
     let body = match current {
         Some(name) => vec![format!("current: {name}")],
@@ -92,6 +104,13 @@ impl Tui {
     /// A row of the picker was chosen.
     pub(super) async fn choose_profile(&mut self, row: Option<&Row>) {
         let Some(row) = row else { return };
+        if row.manage {
+            let opening = super::models::Opening {
+                profiles: true,
+                ..Default::default()
+            };
+            return self.open_models(opening, None).await;
+        }
         if !row.missing_logins.is_empty() {
             return self.fail(&format!(
                 "profile {} {}",

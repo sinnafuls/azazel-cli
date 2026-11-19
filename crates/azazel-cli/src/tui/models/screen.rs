@@ -15,6 +15,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use super::Request;
 use super::list::{self, Hit, Ranker};
 use super::strip::{self, Purpose, Strip};
+use crate::profiles::Entry;
+use crate::profiles::edit::Edit;
 use crate::settings::View;
 use crate::tui::input::{FavouriteChange, favourites_changed};
 
@@ -36,6 +38,12 @@ pub(crate) struct Data {
     pub recent: Vec<String>,
     /// What ctrl+p steps through: `tui.favourites`.
     pub cycle: Vec<String>,
+    /// Every profile, the disabled ones too.
+    pub profiles: Vec<Entry>,
+    /// The profile the session is on.
+    pub profile: Option<String>,
+    /// Whether this process can change the profiles (a session that runs elsewhere cannot).
+    pub profiles_editable: bool,
 }
 
 pub(crate) use crate::settings::ModelsAt as Opening;
@@ -44,6 +52,7 @@ pub(crate) use crate::settings::ModelsAt as Opening;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) enum Scope {
     Roles,
+    Profiles,
     Recent,
     All,
     Provider(String),
@@ -80,6 +89,8 @@ pub(super) struct Assign {
     pub how: How,
     /// Whether the Roles view comes back once the model is picked.
     pub back: bool,
+    /// The profile the model is for, when it is not one of the session's roles.
+    pub profile: Option<String>,
 }
 
 /// A row of the model list.
@@ -167,6 +178,13 @@ pub(crate) struct Models {
     /// The selected row of the list, of the Roles view and of a locked provider's actions.
     pub(super) cursor: usize,
     pub(super) role_cursor: usize,
+    /// The rows of the Profiles page: indices into the profiles of the data, by search.
+    pub(super) profile_items: Vec<usize>,
+    pub(super) profile_cursor: usize,
+    /// The profile a name being typed, a copy or a confirmation is about.
+    pub(super) profile_target: Option<String>,
+    /// A profile to put the cursor on once the next change is answered.
+    pub(super) profile_pick: Option<String>,
     pub(super) action: usize,
     pub(super) top: Cell<usize>,
     pub(super) side_top: Cell<usize>,
@@ -219,6 +237,10 @@ impl Models {
             side: Vec::new(),
             cursor: 0,
             role_cursor: 0,
+            profile_items: Vec::new(),
+            profile_cursor: 0,
+            profile_target: None,
+            profile_pick: None,
             action: 0,
             top: Cell::new(0),
             side_top: Cell::new(0),
@@ -236,6 +258,7 @@ impl Models {
                     role: role.clone(),
                     how: How::Set,
                     back: false,
+                    profile: None,
                 });
             }
             (Some(role), None) => {
@@ -246,8 +269,15 @@ impl Models {
             (None, Some(provider)) => screen.scope = Scope::Provider(provider.clone()),
             (None, None) => {}
         }
+        if opening.profiles {
+            screen.scope = Scope::Profiles;
+        }
         screen.refilter();
-        if screen.scope != Scope::Roles {
+        if screen.scope == Scope::Profiles {
+            let current = screen.data.profile.clone();
+            screen.select_profile(current.as_deref());
+        }
+        if !matches!(screen.scope, Scope::Roles | Scope::Profiles) {
             let current = screen.data.current.clone();
             screen.select_model(current.as_deref());
         }
@@ -500,7 +530,13 @@ impl Models {
             // A search left nothing where the screen was: the first scope of models that has
             // something, or the roles.
             let models =
-                |entry: &&Side| !entry.skip && entry.scope.as_ref().is_some_and(|s| *s != Scope::Roles);
+                |entry: &&Side| {
+                    !entry.skip
+                        && entry
+                            .scope
+                            .as_ref()
+                            .is_some_and(|s| !matches!(s, Scope::Roles | Scope::Profiles))
+                };
             let found = self.side.iter().find(models).or_else(|| {
                 self.side
                     .iter()
@@ -512,6 +548,7 @@ impl Models {
         }
         self.items = self.model_items();
         self.lines = self.role_lines();
+        self.refilter_profiles();
 
         self.cursor = model
             .and_then(|model| {
@@ -543,7 +580,7 @@ impl Models {
     fn model_items(&self) -> Vec<Item> {
         let usable = |row: &ModelRow| row.usable;
         let base: Vec<usize> = match &self.scope {
-            Scope::Roles => return Vec::new(),
+            Scope::Roles | Scope::Profiles => return Vec::new(),
             Scope::All => (0..self.data.rows.len())
                 .filter(|&at| usable(&self.data.rows[at]))
                 .collect(),
@@ -609,7 +646,7 @@ impl Models {
     }
 
     /// Puts the cursor on the row of `model`, when the list has it.
-    fn select_model(&mut self, model: Option<&str>) {
+    pub(super) fn select_model(&mut self, model: Option<&str>) {
         let Some(model) = model.map(list::bare) else {
             return;
         };
@@ -691,6 +728,9 @@ impl Models {
         if self.scope == Scope::Roles {
             return self.roles_key(key);
         }
+        if self.scope == Scope::Profiles {
+            return self.profiles_key(key);
+        }
         if self.locked().is_some() {
             return self.locked_key(key);
         }
@@ -701,10 +741,19 @@ impl Models {
     fn escape(&mut self) -> Step {
         if let Some(assign) = self.assign.take() {
             if assign.back {
-                self.scope = Scope::Roles;
                 self.focus = Focus::Body;
-                self.refilter();
-                self.select_role(&assign.role);
+                match &assign.profile {
+                    Some(profile) => {
+                        self.scope = Scope::Profiles;
+                        self.refilter();
+                        self.select_profile(Some(profile));
+                    }
+                    None => {
+                        self.scope = Scope::Roles;
+                        self.refilter();
+                        self.select_role(&assign.role);
+                    }
+                }
             }
             return Step::Pending;
         }
@@ -717,7 +766,7 @@ impl Models {
     }
 
     /// A letter for the search, or backspace.
-    fn search_key(&mut self, key: &KeyEvent) -> bool {
+    pub(super) fn search_key(&mut self, key: &KeyEvent) -> bool {
         match key.code {
             KeyCode::Backspace => {
                 self.query.pop();
@@ -734,6 +783,7 @@ impl Models {
         self.refilter();
         self.cursor = 0;
         self.role_cursor = 0;
+        self.profile_cursor = 0;
         self.top.set(0);
         self.settle_cursor();
     }
@@ -796,7 +846,7 @@ impl Models {
         if scope == self.scope {
             return;
         }
-        if scope == Scope::Roles {
+        if matches!(scope, Scope::Roles | Scope::Profiles) {
             self.assign = None;
         }
         self.due = match &scope {
@@ -951,6 +1001,9 @@ impl Models {
 
     /// Makes `model` what `assign` says, then offers its thinking levels.
     fn commit(&mut self, assign: Assign, model: &str) -> Step {
+        if assign.profile.is_some() {
+            return self.commit_profile(assign, model);
+        }
         let role = assign.role.clone();
         let mut chain = self.chain(&role);
         let set = self.role(&role).is_some_and(is_set);
@@ -978,7 +1031,7 @@ impl Models {
             self.focus = Focus::Body;
             self.query.clear();
         }
-        self.strip = self.thinking_strip(&role, entry, model);
+        self.strip = self.thinking_strip(&role, entry, model, None);
         let step = self.set_role(&role, Some(chain));
         // The Roles view comes back on the role.
         self.refilter();
@@ -989,7 +1042,13 @@ impl Models {
     /// The thinking levels of `model` for entry `entry` of `role`: `inherit`, `off`, then the
     /// levels the model takes (every one when the catalogue names none); none for a model that
     /// does not think.
-    fn thinking_strip(&self, role: &str, entry: usize, model: &str) -> Option<Strip> {
+    pub(super) fn thinking_strip(
+        &self,
+        role: &str,
+        entry: usize,
+        model: &str,
+        profile: Option<String>,
+    ) -> Option<Strip> {
         let row = self.data.rows.iter().find(|row| row.model == list::bare(model))?;
         if !row.reasoning {
             return None;
@@ -1016,6 +1075,7 @@ impl Models {
             entry,
             options,
             at,
+            profile,
         })
     }
 
@@ -1030,6 +1090,7 @@ impl Models {
                         role: role.clone(),
                         how: How::Set,
                         back: false,
+                        profile: None,
                     };
                     self.commit(assign, &model)
                 }
@@ -1045,6 +1106,7 @@ impl Models {
                         role: role.clone(),
                         how: How::Add,
                         back: false,
+                        profile: None,
                     };
                     self.commit(assign, &model)
                 }
@@ -1055,6 +1117,33 @@ impl Models {
                 entry,
                 options,
                 at,
+                profile: Some(profile),
+            } => {
+                let level = options.get(index).copied().flatten();
+                let mut chain = self.profile_chain(&profile, &role);
+                let Some(spec) = chain.get_mut(entry) else {
+                    return Step::Pending;
+                };
+                if level_of(spec) == level && index == at {
+                    return Step::Pending;
+                }
+                let model = list::bare(spec);
+                *spec = match level {
+                    Some(level) => format!("{model}:{level}"),
+                    None => model,
+                };
+                self.edit_profile(Edit::SetChain {
+                    name: profile,
+                    role,
+                    chain: Some(chain),
+                })
+            }
+            Strip::Thinking {
+                role,
+                entry,
+                options,
+                at,
+                profile: None,
             } => {
                 let level = options.get(index).copied().flatten();
                 let mut chain = self.chain(&role);
@@ -1082,6 +1171,18 @@ impl Models {
                 }
                 None => Step::Pending,
             },
+            Strip::ProfileRoles {
+                profile, roles, how, ..
+            } => {
+                if let Some(role) = roles.get(index) {
+                    self.start_assign_profile(&profile, role, how);
+                }
+                Step::Pending
+            }
+            Strip::Confirm { edit, .. } => match index {
+                1 => self.edit_profile(edit),
+                _ => Step::Pending,
+            },
             Strip::Name { .. } => Step::Pending,
         }
     }
@@ -1091,6 +1192,12 @@ impl Models {
             return Step::Pending;
         };
         let purpose = *purpose;
+        if matches!(
+            purpose,
+            Purpose::NewProfile | Purpose::CopyProfile | Purpose::RenameProfile
+        ) {
+            return self.profile_name_typed(purpose, name);
+        }
         if !crate::routing::plain_name(&name) {
             if let Some(strip) = &mut self.strip {
                 strip.refuse("letters, digits, - and _, starting with a letter".to_string());
@@ -1106,6 +1213,7 @@ impl Models {
                 });
                 Step::Do(Request::SavePreset(name))
             }
+            Purpose::NewProfile | Purpose::CopyProfile | Purpose::RenameProfile => Step::Pending,
             Purpose::NewRole if self.role(&name).is_some() => {
                 self.status = Some((Role::Warning, format!("there is a role {name} already")));
                 self.select_role(&name);
@@ -1130,6 +1238,7 @@ impl Models {
             role: role.to_string(),
             how,
             back: true,
+            profile: None,
         });
         self.query.clear();
         self.scope = Scope::All;
@@ -1187,7 +1296,7 @@ impl Models {
         match chain.get(entry) {
             Some(spec) if set && !spec.starts_with('@') => {
                 let spec = spec.clone();
-                self.strip = self.thinking_strip(&role, entry, &spec);
+                self.strip = self.thinking_strip(&role, entry, &spec, None);
                 if self.strip.is_none() {
                     self.status = Some((Role::Muted, format!("{} does not think", list::bare(&spec))));
                 }
@@ -1428,7 +1537,12 @@ impl Models {
     }
 
     fn wheel(&mut self, by: isize) -> Step {
-        if self.scope == Scope::Roles {
+        if self.scope == Scope::Profiles {
+            self.profile_cursor = self
+                .profile_cursor
+                .saturating_add_signed(by)
+                .min(self.profile_items.len().saturating_sub(1));
+        } else if self.scope == Scope::Roles {
             self.role_cursor = self
                 .role_cursor
                 .saturating_add_signed(by)
@@ -1443,6 +1557,17 @@ impl Models {
     fn body_click(&mut self, at: usize) -> Step {
         let again = self.focus == Focus::Body;
         self.focus = Focus::Body;
+        if self.scope == Scope::Profiles {
+            let index = self.top.get() + at;
+            if index >= self.profile_items.len() {
+                return Step::Pending;
+            }
+            if again && index == self.profile_cursor {
+                return self.switch_profile();
+            }
+            self.profile_cursor = index;
+            return Step::Pending;
+        }
         if self.scope == Scope::Roles {
             let index = self.top.get() + at;
             if index >= self.lines.len() {
@@ -1564,6 +1689,7 @@ impl Models {
             Scope::Roles => {
                 "Model roles: where each one's model comes from, its fallbacks and its thinking".to_string()
             }
+            Scope::Profiles => "Profiles: sets of roles to switch between; changes go to your home config".to_string(),
             Scope::Recent => "Models chosen lately".to_string(),
             Scope::All => "Every model you have a credential for".to_string(),
             Scope::Provider(id) => {
@@ -1625,6 +1751,7 @@ impl Models {
     fn scope_total(&self) -> usize {
         match &self.scope {
             Scope::Roles => self.data.roles.roles.len(),
+            Scope::Profiles => self.data.profiles.len(),
             Scope::Recent => self.data.recent.len(),
             Scope::All => self.data.rows.iter().filter(|row| row.usable).count(),
             Scope::Provider(id) => self.data.rows.iter().filter(|row| row.provider == *id).count(),
@@ -1642,6 +1769,9 @@ impl Models {
     ) -> (Vec<Line>, Option<(usize, Scroll)>) {
         if self.scope == Scope::Roles {
             return self.roles_rows(width, rows, theme, placed);
+        }
+        if self.scope == Scope::Profiles {
+            return self.profiles_rows(width, rows, theme, placed);
         }
         if let Some(provider) = self.locked() {
             return (self.locked_rows(provider, width, rows, theme, placed), None);
@@ -1736,7 +1866,7 @@ impl Models {
                 Some(Fetch::Done) => format!("{id} lists no models"),
                 None => format!("{id} has not been asked for its models yet (f5 asks now)"),
             },
-            Scope::Roles => String::new(),
+            Scope::Roles | Scope::Profiles => String::new(),
         }
     }
 
@@ -1822,6 +1952,12 @@ impl Models {
         };
         let mut hints = Vec::new();
         match &self.strip {
+            Some(Strip::Confirm { .. }) => {
+                hints.push(Hint::new(format!("{left}{right}"), "choose"));
+                hints.push(Hint::new("enter", "confirm"));
+                hints.push(Hint::new("esc", "cancel"));
+                return hints;
+            }
             Some(Strip::Name { .. }) => {
                 hints.push(Hint::new("enter", "save"));
                 hints.push(Hint::new("esc", "cancel"));
@@ -1840,6 +1976,8 @@ impl Models {
             hints.push(Hint::new(right, "models"));
             hints.push(Hint::new("type", "to search"));
             hints.push(Hint::new("f5", "refresh"));
+        } else if self.scope == Scope::Profiles {
+            hints.extend(self.profile_hints());
         } else if self.scope == Scope::Roles {
             hints.push(Hint::new("enter", "pick"));
             hints.push(Hint::new("t", "thinking"));
