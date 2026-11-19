@@ -26,7 +26,7 @@ use azazel_core::{EntryKind, Event, EventHandler, ExtCtx, Level, Outcome, Sessio
 use azazel_protocol::Frame;
 use azazel_team::Team;
 
-use super::{AccessCheck, Profile, Reason, switch, usability};
+use super::{Book, Profile, Reason, switch};
 
 /// What a switch on a usage limit leaves behind, until the window has reset.
 #[derive(Debug, Clone, PartialEq)]
@@ -62,8 +62,9 @@ struct State {
 pub struct ProfileSwitcher {
     on_limit: String,
     on_reset: ProfileReset,
-    profiles: Vec<Profile>,
-    access: AccessCheck,
+    /// The profiles as the editor leaves them: looked up when a switch happens, so that a change
+    /// made since the start counts.
+    book: Arc<Book>,
     services: Arc<Services>,
     /// Unix seconds; a test sets the time.
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
@@ -136,8 +137,7 @@ impl ProfileSwitcher {
     pub fn new(
         on_limit: &str,
         on_reset: ProfileReset,
-        profiles: Vec<Profile>,
-        access: AccessCheck,
+        book: Arc<Book>,
         services: Arc<Services>,
         current: Option<String>,
     ) -> Self {
@@ -151,8 +151,7 @@ impl ProfileSwitcher {
         ProfileSwitcher {
             on_limit: on_limit.trim().to_string(),
             on_reset,
-            profiles,
-            access,
+            book,
             services,
             clock: Arc::new(|| now_ms() / 1000),
             lead_chain,
@@ -184,8 +183,10 @@ impl ProfileSwitcher {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn profile(&self, name: &str) -> Option<&Profile> {
-        self.profiles.iter().find(|profile| profile.name == name)
+    /// The profile `name` as it is now, which is not as it was at the start when the editor
+    /// changed it since.
+    fn profile(&self, name: &str) -> Option<Profile> {
+        self.book.find(name).ok()
     }
 
     /// The profile the session is on: the one the session's record names when it changed since
@@ -208,6 +209,7 @@ impl ProfileSwitcher {
         let (until, known) = limit_window(error)?;
         let router = self.services.get::<Router>()?;
         let target = self.profile(&self.on_limit)?;
+        let target = &target;
         let team = self.services.get::<Team>();
         let lead_handle = team.as_ref().and_then(|team| team.lead());
         let session = self.services.get::<SessionStore>();
@@ -230,7 +232,7 @@ impl ProfileSwitcher {
         {
             return None;
         }
-        let usable = usability(target, &*self.access);
+        let usable = self.book.usability(target);
         if !usable.usable {
             drop(state);
             announce(
@@ -348,7 +350,7 @@ impl ProfileSwitcher {
                 let back = active.from.as_deref().and_then(|name| self.profile(name));
                 let done = match back {
                     Some(profile) => {
-                        let usable = usability(profile, &*self.access);
+                        let usable = self.book.usability(&profile);
                         if !usable.usable {
                             drop(state);
                             announce(
@@ -365,7 +367,7 @@ impl ProfileSwitcher {
                         }
                         state.current = Some(profile.name.clone());
                         (
-                            switch(profile, &router, lead, team.as_deref(), Reason::Reset),
+                            switch(&profile, &router, lead, team.as_deref(), Reason::Reset),
                             Some(profile.name.clone()),
                         )
                     }
@@ -504,6 +506,16 @@ mod tests {
         current: Option<&str>,
         logged_in: fn(&str) -> bool,
     ) -> Bench {
+        bench_with_book(on_limit, on_reset, current, logged_in).0
+    }
+
+    /// A bench and the book its switcher looks profiles up in, which the editor changes.
+    fn bench_with_book(
+        on_limit: &str,
+        on_reset: ProfileReset,
+        current: Option<&str>,
+        logged_in: fn(&str) -> bool,
+    ) -> (Bench, Arc<Book>) {
         let roles = BTreeMap::from([
             ("default".to_string(), chain(&["acme/a"])),
             ("lead".to_string(), chain(&["@default"])),
@@ -520,28 +532,66 @@ mod tests {
         services.insert(Arc::new(Ui(notes.clone())));
         let ahead = Arc::new(AtomicU64::new(0));
         let offset = ahead.clone();
+        let book = Arc::new(
+            Book::new(
+                vec![
+                    profile("a", "acme/a"),
+                    profile("b", "acme/b"),
+                    profile("c", "other/c"),
+                ],
+                Vec::new(),
+                Arc::new(move |id: &str| match logged_in(id) {
+                    true => Access::Ready,
+                    false => Access::NoLogin,
+                }),
+                None,
+            )
+            .with_on_limit(on_limit),
+        );
         let switcher = ProfileSwitcher::new(
             on_limit,
             on_reset,
-            vec![
-                profile("a", "acme/a"),
-                profile("b", "acme/b"),
-                profile("c", "other/c"),
-            ],
-            Arc::new(move |id: &str| match logged_in(id) {
-                true => Access::Ready,
-                false => Access::NoLogin,
-            }),
+            book.clone(),
             services,
             current.map(str::to_string),
         )
         .with_clock(Arc::new(move || now() + offset.load(Ordering::SeqCst)));
-        Bench {
+        let bench = Bench {
             switcher,
             router,
             notes,
             ahead,
-        }
+        };
+        (bench, book)
+    }
+
+    /// Sets the `default` chain of profile `name` as the Profiles page does.
+    fn edit_default(book: &Book, home: &std::path::Path, name: &str, model: &str) {
+        book.edit(
+            &home.join("config.toml"),
+            &crate::profiles::edit::Edit::SetChain {
+                name: name.to_string(),
+                role: "default".to_string(),
+                chain: Some(vec![model.to_string()]),
+            },
+            &BTreeMap::new(),
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_profile_edited_since_the_start_is_what_a_limit_switches_to_and_goes_back_to() {
+        let home = tempfile::tempdir().unwrap();
+        let (bench, book) = bench_with_book("b", ProfileReset::Auto, Some("a"), |_| true);
+        // The Profiles page changes both the `on_limit` profile and the one the session is on.
+        edit_default(&book, home.path(), "b", "acme/b2");
+        edit_default(&book, home.path(), "a", "acme/a2");
+        hit(&bench, &limit(3600)).unwrap();
+        assert_eq!(lead_model(&bench), "acme/b2");
+        bench.ahead.store(3601, Ordering::SeqCst);
+        bench.switcher.at_turn_boundary();
+        assert_eq!(lead_model(&bench), "acme/a2");
     }
 
     fn agent(depth: u32) -> AgentInfo {

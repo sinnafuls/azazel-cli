@@ -228,6 +228,53 @@ fn set_disabled(table: &mut dyn TableLike, names: Vec<String>) {
     }
 }
 
+fn chain_texts(chain: &[ModelSpec]) -> Vec<String> {
+    chain.iter().map(ToString::to_string).collect()
+}
+
+/// Whether `item` is already the array of `texts`, so that it can stay as written (with its
+/// comment).
+fn holds(item: &Item, texts: &[String]) -> bool {
+    item.as_array().is_some_and(|array| {
+        array.len() == texts.len() && array.iter().zip(texts).all(|(a, t)| a.as_str() == Some(t))
+    })
+}
+
+/// Sets the roles of `[profiles.<name>]` to `roles`. A profile that is in the file keeps the
+/// roles that stay as they are, comments included; only what differs is changed.
+fn write_roles(profiles: &mut dyn TableLike, name: &str, roles: &Roles) {
+    let existing = profiles
+        .get_mut(name)
+        .and_then(Item::as_table_like_mut)
+        .and_then(|profile| profile.get_mut("roles"))
+        .and_then(Item::as_table_like_mut);
+    if let Some(existing) = existing {
+        let stale: Vec<String> = existing
+            .iter()
+            .map(|(role, _)| role.to_string())
+            .filter(|role| !roles.contains_key(role))
+            .collect();
+        for role in stale {
+            existing.remove(&role);
+        }
+        for (role, chain) in roles {
+            let texts = chain_texts(chain);
+            if !existing.get(role).is_some_and(|item| holds(item, &texts)) {
+                existing.insert(role, toml_edit::value(Array::from_iter(texts)));
+            }
+        }
+        return;
+    }
+    let mut by_role = Table::new();
+    for (role, chain) in roles {
+        by_role.insert(role, toml_edit::value(Array::from_iter(chain_texts(chain))));
+    }
+    let mut table = Table::new();
+    table.set_implicit(true);
+    table.insert("roles", Item::Table(by_role));
+    profiles.insert(name, Item::Table(table));
+}
+
 /// Takes the old-named table (`[presets.<name>]`) of a profile out, when there is one.
 fn take_preset(doc: &mut DocumentMut, name: &str) -> Option<Item> {
     doc.get_mut("presets")
@@ -261,15 +308,9 @@ pub fn describe(change: &Change) -> (String, Option<String>) {
 pub fn write_doc(doc: &mut DocumentMut, change: &Change) -> Result<(), String> {
     match change {
         Change::Write { name, roles } => {
-            let mut by_role = Table::new();
-            for (role, chain) in roles {
-                let models = Array::from_iter(chain.iter().map(ToString::to_string));
-                by_role.insert(role, toml_edit::value(models));
-            }
-            let mut table = Table::new();
-            table.set_implicit(true);
-            table.insert("roles", Item::Table(by_role));
-            profiles_table(doc)?.insert(name, Item::Table(table));
+            // The old name of the table is migrated: a profile left there would warn on every start.
+            take_preset(doc, name);
+            write_roles(profiles_table(doc)?, name, roles);
         }
         Change::Rename { from, to } => {
             let moved = profiles_table(doc)?.remove(from);
@@ -544,6 +585,59 @@ mod tests {
         world.profiles.push(saved("old", "acme/old"));
         world.run(delete("old")).unwrap();
         assert!(world.loaded().1.is_empty());
+    }
+
+    #[test]
+    fn editing_one_role_keeps_the_comments_on_the_others() {
+        let mut world = World::new();
+        world.text = "[profiles.mine.roles]
+# the big one
+default = [\"acme/mine\"] # keep me
+smol = [\"acme/s\"]
+scout = [\"acme/x\"]
+
+[tui]
+theme = \"light\"
+"
+        .parse()
+        .unwrap();
+        world.profiles.retain(|p| p.name != "mine");
+        let mut mine = saved("mine", "acme/mine");
+        mine.roles.insert("smol".into(), chain(&["acme/s"]));
+        mine.roles.insert("scout".into(), chain(&["acme/x"]));
+        world.profiles.push(mine);
+        world.run(set("mine", "smol", Some(&["acme/tiny"]))).unwrap();
+        world.run(set("mine", "scout", None)).unwrap();
+        assert_eq!(
+            world.text.to_string(),
+            "[profiles.mine.roles]
+# the big one
+default = [\"acme/mine\"] # keep me
+smol = [\"acme/tiny\"]
+
+[tui]
+theme = \"light\"
+"
+        );
+    }
+
+    #[test]
+    fn editing_a_profile_still_stored_as_a_preset_moves_it_to_profiles() {
+        let mut world = World::new();
+        world.text = "[presets.old.roles]
+default = [\"acme/old\"]
+smol = [\"acme/s\"]
+"
+        .parse()
+        .unwrap();
+        let mut old = saved("old", "acme/old");
+        old.roles.insert("smol".into(), chain(&["acme/s"]));
+        world.profiles.push(old);
+        world.run(set("old", "smol", Some(&["acme/tiny"]))).unwrap();
+        let (profiles, presets) = world.loaded();
+        assert!(presets.is_empty(), "{}", world.text);
+        assert_eq!(profiles.entries["old"].roles["smol"], chain(&["acme/tiny"]));
+        assert_eq!(profiles.entries["old"].roles["default"], chain(&["acme/old"]));
     }
 
     #[test]

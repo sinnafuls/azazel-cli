@@ -344,8 +344,7 @@ impl Extension for RoutingExt {
         let switcher = Arc::new(crate::profiles::limit::ProfileSwitcher::new(
             &self.on_limit,
             self.on_reset,
-            self.book.list(),
-            self.book.access_fn(),
+            self.book.clone(),
             r.services().clone(),
             self.started_on.clone(),
         ));

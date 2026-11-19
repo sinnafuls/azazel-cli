@@ -1,8 +1,9 @@
 //! `azazel init`: first-run setup of the default model and of a project's config file.
 
 use std::io::{BufRead, Write};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -36,20 +37,68 @@ fn default_role_is_set(config: &Path) -> Result<bool> {
         .is_some())
 }
 
+/// Most links followed to find the file behind a symlinked config; more is a loop.
+const MAX_LINKS: usize = 40;
+
+/// The file `path` stands for when it is a symlink (a dotfile manager's config), followed to its
+/// end; `path` itself when it is not one, or when the links cannot be followed.
+fn resolve_link(path: &Path) -> PathBuf {
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_LINKS {
+        let is_link = std::fs::symlink_metadata(&current).is_ok_and(|meta| meta.file_type().is_symlink());
+        let Some(target) = is_link.then(|| std::fs::read_link(&current).ok()).flatten() else {
+            return current;
+        };
+        current = match current.parent() {
+            Some(dir) => dir.join(target),
+            None => target,
+        };
+    }
+    path.to_path_buf()
+}
+
+/// Held while a config file is read, changed and replaced, so that two writers of one process
+/// cannot each start from the text the other is about to replace.
+static WRITING: Mutex<()> = Mutex::new(());
+
+/// Makes the names of staged files differ between writers of one process.
+static STAGED: AtomicU64 = AtomicU64::new(0);
+
 /// Reads the config file at `config`, lets `change` edit it, and writes it back in one go, keeping
-/// comments and everything else as written: the new text goes to a file beside it that then
-/// replaces it, so a failure leaves the old file as it was. Nothing is written when `change`
-/// fails.
+/// comments and everything else as written: the new text goes to a file beside it, with the
+/// permissions of the old one, that is flushed to disk and then replaces it, so a failure leaves
+/// the old file as it was. A symlinked `config` stays a link and its target is what is replaced.
+/// Nothing is written when `change` fails. Writers of one process take turns; `change` must not
+/// write a config file itself.
 pub fn edit_config(config: &Path, change: impl FnOnce(&mut DocumentMut) -> Result<()>) -> Result<()> {
+    let _turn = WRITING.lock().unwrap_or_else(PoisonError::into_inner);
+    let config = resolve_link(config);
+    let config = config.as_path();
     let mut doc = read_document(config)?;
     change(&mut doc)?;
     if let Some(dir) = config.parent() {
         std::fs::create_dir_all(dir).with_context(|| format!("cannot create {}", dir.display()))?;
     }
     let mut staged = config.as_os_str().to_owned();
-    staged.push(format!(".{}.tmp", std::process::id()));
-    let staged = std::path::PathBuf::from(staged);
-    std::fs::write(&staged, doc.to_string()).with_context(|| format!("cannot write {}", staged.display()))?;
+    staged.push(format!(
+        ".{}.{}.tmp",
+        std::process::id(),
+        STAGED.fetch_add(1, Ordering::Relaxed)
+    ));
+    let staged = PathBuf::from(staged);
+    let stage = || -> std::io::Result<()> {
+        let mut file = std::fs::File::create(&staged)?;
+        // Before the text goes in, so that a private config is never readable by others.
+        if let Ok(old) = std::fs::metadata(config) {
+            file.set_permissions(old.permissions())?;
+        }
+        file.write_all(doc.to_string().as_bytes())?;
+        file.sync_all()
+    };
+    if let Err(e) = stage() {
+        let _ = std::fs::remove_file(&staged);
+        return Err(e).with_context(|| format!("cannot write {}", staged.display()));
+    }
     std::fs::rename(&staged, config).map_err(|e| {
         let _ = std::fs::remove_file(&staged);
         anyhow!("cannot write {}: {e}", config.display())
@@ -284,6 +333,105 @@ mod tests {
         let error =
             set_config_value(&config, &["editor", "mode", "x"], Some(toml_edit::value(1))).unwrap_err();
         assert!(format!("{error:#}").contains("`editor.mode`"), "{error:#}");
+    }
+
+    /// Makes `link` a symlink to `target`; `false` where the platform or the user may not.
+    fn symlink(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(target, link);
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(target, link);
+        made.is_ok()
+    }
+
+    #[test]
+    fn a_symlinked_config_stays_a_link_and_its_target_is_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles").join("real.toml");
+        std::fs::create_dir_all(real.parent().unwrap()).unwrap();
+        std::fs::write(&real, "# kept\n[tui]\ntheme = \"light\"\n").unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let config = home.join("config.toml");
+        // A relative link, as dotfile managers make them, and a second hop through it.
+        let hop = home.join("hop.toml");
+        if !symlink(Path::new("..").join("dotfiles").join("real.toml").as_path(), &hop)
+            || !symlink(Path::new("hop.toml"), &config)
+        {
+            // Creating links needs a privilege here; the resolution itself is covered below.
+            assert_eq!(resolve_link(&config), config);
+            return;
+        }
+        assert_eq!(
+            azazel_core::paths::canonical(&resolve_link(&config)),
+            azazel_core::paths::canonical(&real)
+        );
+        set_config_value(&config, &["editor", "mode"], Some(toml_edit::value("vim"))).unwrap();
+        assert!(
+            std::fs::symlink_metadata(&config)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the config is a regular file now"
+        );
+        assert!(std::fs::symlink_metadata(&hop).unwrap().file_type().is_symlink());
+        let text = std::fs::read_to_string(&real).unwrap();
+        assert_eq!(
+            text,
+            "# kept\n[tui]\ntheme = \"light\"\n\n[editor]\nmode = \"vim\"\n"
+        );
+    }
+
+    #[test]
+    fn a_path_that_is_not_a_link_resolves_to_itself() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("config.toml");
+        assert_eq!(resolve_link(&plain), plain, "missing");
+        std::fs::write(&plain, "").unwrap();
+        assert_eq!(resolve_link(&plain), plain, "a file");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_permissions_of_the_config_survive_a_write() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "[tui]\ntheme = \"light\"\n").unwrap();
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600)).unwrap();
+        set_config_value(&config, &["tui", "theme"], Some(toml_edit::value("dark"))).unwrap();
+        let mode = std::fs::metadata(&config).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(std::fs::read_to_string(&config).unwrap().contains("dark"));
+    }
+
+    #[test]
+    fn writers_in_one_process_all_land_and_leave_nothing_behind() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, "# mine\n").unwrap();
+        let writers: Vec<_> = (0..16)
+            .map(|n| {
+                let config = config.clone();
+                std::thread::spawn(move || {
+                    for round in 0..5 {
+                        let key = format!("k{n}_{round}");
+                        set_config_value(&config, &["tools", "format", &key], Some(toml_edit::value(n)))
+                            .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        let parsed: toml::Table = std::fs::read_to_string(&config).unwrap().parse().unwrap();
+        assert_eq!(parsed["tools"]["format"].as_table().unwrap().len(), 80);
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "{left:?}");
     }
 
     #[test]
