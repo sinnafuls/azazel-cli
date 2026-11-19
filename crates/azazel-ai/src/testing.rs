@@ -1,4 +1,13 @@
 //! A scripted provider for tests: replays canned responses and records every request.
+//!
+//! A script is `{ "<model id>": [ <step>, … ] }`. A step is a `reply`, verbatim `events`, or a
+//! failure of the call itself:
+//!
+//! - `{"events": [{"type": "error", "error": {"kind": "overloaded"}}]}` is a transient failure
+//!   the router retries.
+//! - `{"usage_limit": {"resets_in_secs": 7200}}` is a usage limit: the account is out of
+//!   allowance until that long from now (`message` is optional). Asking again does not help
+//!   before the reset, so the router does not retry it.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
@@ -42,6 +51,19 @@ pub struct MockStep {
     pub events: Vec<StreamEvent>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply: Option<MockReply>,
+    /// The call fails with a usage limit that resets in `resets_in_secs`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_limit: Option<MockLimit>,
+}
+
+/// A usage limit as the provider reports it.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MockLimit {
+    /// Seconds from the moment of the request until the window resets.
+    pub resets_in_secs: u64,
+    #[serde(default)]
+    pub message: String,
 }
 
 /// Shorthand for a complete assistant message.
@@ -119,6 +141,17 @@ impl MockStep {
         }
     }
 
+    /// The call fails with a usage limit that resets in `resets_in_secs`.
+    pub fn usage_limit(resets_in_secs: u64) -> Self {
+        MockStep {
+            usage_limit: Some(MockLimit {
+                resets_in_secs,
+                message: String::new(),
+            }),
+            ..MockStep::default()
+        }
+    }
+
     pub fn delayed(mut self, delay: Duration) -> Self {
         self.delay_ms = delay.as_millis() as u64;
         self
@@ -132,6 +165,22 @@ impl MockStep {
     }
 
     fn into_events(self, model: &str) -> Vec<StreamEvent> {
+        if let Some(limit) = self.usage_limit {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs());
+            let message = match limit.message.is_empty() {
+                true => "the usage limit of this account is reached".to_string(),
+                false => limit.message,
+            };
+            return vec![StreamEvent::Error {
+                error: AiError::Quota {
+                    resets_at: Some(now + limit.resets_in_secs.max(1)),
+                    message,
+                },
+                partial: None,
+            }];
+        }
         let Some(reply) = self.reply else {
             return self.events;
         };

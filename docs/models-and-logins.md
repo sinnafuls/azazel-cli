@@ -109,6 +109,15 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 
 `[profiles]` also has two keys for switching on a usage limit: `on_limit`, the profile to switch to (empty, the default, never switches; a name that is no built-in and has no table is a load error), and `on_reset`, what happens when the limit has reset: `ask` (the default), `auto` or `off`.
 
+#### Switching on a usage limit
+
+When a request of the lead fails because the account is out of allowance, and no other account or fallback model of its chain can take it, azazel moves the lead to the `on_limit` profile, sends the request again on its models and tells you: a notice in the terminal UI, a notification in the web page and other `azazel rpc` clients, a line on standard error in print mode. The notice names the provider, when the limit resets, and the cost: a model change starts a new prompt cache, so the whole conversation is sent to the new model once and the next reply costs more.
+
+- **Only limits with a reset window count.** A refusal that says when the allowance returns, or a 429 that asks for more than a minute of waiting, is a limit. A 429 with a short `retry-after`, an overloaded provider (529) and server errors are throttling: they are retried on the same model as before and never switch the profile.
+- **Once per window.** While a switch is in force nothing else switches. If the `on_limit` profile hits a limit too, the request ends with the usual error.
+- **No switch** when `on_limit` is empty, is the profile the session is already on, offers no model the failed request had not tried, or needs a login you do not have (the notice says which). Sub-agents keep their own models.
+- **After the reset**, `on_reset` decides, when you send the next prompt (never in the middle of a run): `ask` says that the limit has reset and which `/profile` command goes back; `auto` goes back by itself to the profile you were on (or, if you were on none, to the models the roles had before) and says so; `off` stays. Moving to another profile by hand in the meantime cancels the way back.
+
 ## Choosing the model
 
 | Where | Effect |

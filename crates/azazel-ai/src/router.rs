@@ -409,6 +409,25 @@ impl Router {
         out
     }
 
+    /// [`Router::resolve`] as it would be if the roles in `overrides` pointed where they say,
+    /// without changing any role.
+    pub fn resolve_with(
+        &self,
+        overrides: &BTreeMap<String, Vec<ModelSpec>>,
+        chain: &[ModelSpec],
+    ) -> Vec<ModelRef> {
+        let mut roles = self.roles();
+        roles.extend(
+            overrides
+                .iter()
+                .map(|(role, chain)| (role.clone(), chain.clone())),
+        );
+        let mut out = Vec::new();
+        let mut visiting = Vec::new();
+        expand(&roles, chain, &mut visiting, &mut out);
+        out
+    }
+
     /// The thinking level a request on `chain` goes out at: the level `set` for the session
     /// when there is one, else the `:level` of the model the chain asks first, else off.
     pub fn thinking(&self, chain: &[ModelSpec], set: Option<ThinkingLevel>) -> ThinkingLevel {

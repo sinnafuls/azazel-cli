@@ -11,6 +11,7 @@ use azazel_core::config::{Layer, LayerKind, ProfileConfig};
 use azazel_core::{Config, EntryKind, SessionStore};
 
 pub mod builtin;
+pub mod limit;
 
 /// A named set of role chains.
 #[derive(Debug, Clone, PartialEq)]

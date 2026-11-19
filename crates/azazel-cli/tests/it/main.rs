@@ -24,6 +24,7 @@ mod mcp_cli;
 mod mcp_serve;
 mod migrate;
 mod modes;
+mod on_limit;
 mod orchestration;
 mod packages;
 mod places;

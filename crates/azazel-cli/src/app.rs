@@ -806,6 +806,9 @@ impl App {
                     .find(|p| p.id == id)
                     .is_none_or(|p| crate::models::usable(&logged_in_credentials, p))
             }),
+            on_limit: config.profiles.on_limit.clone(),
+            on_reset: config.profiles.on_reset,
+            started_on: cli.profile.clone(),
         })?;
         registry.load(&PermissionsExt {
             state: permissions.clone(),

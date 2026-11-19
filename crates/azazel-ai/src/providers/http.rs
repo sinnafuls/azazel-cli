@@ -154,8 +154,10 @@ pub(crate) const LONG_WAIT: Duration = Duration::from_secs(60);
 pub(crate) const UNKNOWN_RESET: Duration = Duration::from_secs(15 * 60);
 
 /// Until when (Unix seconds) the account that got `error` is out of allowance; `None` for an
-/// error that says nothing about the account's allowance.
-pub(crate) fn blocked_until(error: &AiError) -> Option<u64> {
+/// error that says nothing about the account's allowance. This is also what tells a usage limit
+/// from throttling: a refusal with a reset time, or a 429 that asks for more than [`LONG_WAIT`],
+/// counts; a 429 that a short wait clears, and an overloaded provider, do not.
+pub fn blocked_until(error: &AiError) -> Option<u64> {
     let now = now_ms() / 1000;
     match error {
         AiError::Quota { resets_at, .. } => Some(

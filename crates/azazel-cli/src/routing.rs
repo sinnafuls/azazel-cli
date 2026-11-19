@@ -336,6 +336,11 @@ pub struct RoutingExt {
     pub home_config: PathBuf,
     /// Whether a provider has credentials, for telling which profiles can be used.
     pub logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// `[profiles] on_limit` and `on_reset`.
+    pub on_limit: String,
+    pub on_reset: azazel_core::config::ProfileReset,
+    /// `--profile`: the profile the run starts on.
+    pub started_on: Option<String>,
 }
 
 impl Extension for RoutingExt {
@@ -358,6 +363,19 @@ impl Extension for RoutingExt {
                 handler: Arc::new(TierCommand(tier)),
             });
         }
+        let switcher = Arc::new(profiles::limit::ProfileSwitcher::new(
+            &self.on_limit,
+            self.on_reset,
+            self.profiles.clone(),
+            self.logged_in.clone(),
+            r.services().clone(),
+            self.started_on.clone(),
+        ));
+        r.service(switcher.clone());
+        r.on(
+            azazel_core::EventKind::UserPrompt,
+            Arc::new(profiles::limit::AtPrompt(switcher)),
+        );
         let profile = Arc::new(ProfileCommand {
             profiles: Mutex::new(self.profiles.clone()),
             home_config: self.home_config.clone(),

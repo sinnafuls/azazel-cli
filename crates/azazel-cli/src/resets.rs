@@ -765,9 +765,15 @@ impl LimitHandler for LimitFlow {
         &self,
         agent: &AgentInfo,
         chain: &[ModelSpec],
-        _error: &AiError,
+        error: &AiError,
         cancel: &CancellationToken,
     ) -> Recovery {
+        // A profile to go on with, when the settings name one, comes before any question.
+        if let Some(switcher) = self.services.get::<crate::profiles::limit::ProfileSwitcher>()
+            && let Some(recovery) = switcher.on_limit(agent, chain, error)
+        {
+            return recovery;
+        }
         let Some(hit) = self.hit(chain) else {
             return Recovery::Fail;
         };
