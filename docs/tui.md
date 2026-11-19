@@ -1498,6 +1498,14 @@ The body shows the scope selected in the sidebar:
   `Ctrl+P` cycle and where its value comes from (`home`, `project`, `local`, `session`, `built-in`). Its
   fallbacks stand under it as `↳ model` rows. The last row makes a new role, and the foot of the view shows the
   `Ctrl+P` cycle.
+- **The Profiles view**: every [profile](models-and-logins.md#profiles), built-in and saved, with where it
+  comes from, whether your logins can use it, whether it is turned off, and a mark on the current one.
+  `Enter` switches to it, `n` makes a new one from the roles as they are now, `c` copies the selected one,
+  `e` sets one of its roles with the model picker and `f` adds a fallback to one, `r` renames a saved
+  profile, `d` turns a built-in off or on (`[profiles] disabled`), and `x` deletes a saved profile or, on a
+  built-in you edited, goes back to the built-in. Editing a built-in saves your own
+  `[profiles.<name>.roles]` over it. Every change is written to `~/.azazel/config.toml` at once, and a
+  change to the current profile applies to the session straight away. The `/profile` picker opens this view too.
 - **A provider without a credential**: which variable to set, `Sign in` for a provider with a sign-in and
   `Add API key` for one that takes a key, then the models its catalogue entry lists. `Enter` runs the sign-in or
   asks for the key, and the screen comes back on that provider with its models.

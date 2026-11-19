@@ -778,7 +778,8 @@ mod tests {
         bench.switcher.at_turn_boundary();
         assert_eq!(lead_model(&bench), "acme/a");
         assert_eq!(session.last_profile(None), None);
-        let book = crate::profiles::Book::new(Vec::new(), Vec::new(), Arc::new(|_: &str| Access::Ready), None);
+        let book =
+            crate::profiles::Book::new(Vec::new(), Vec::new(), Arc::new(|_: &str| Access::Ready), None);
         assert_eq!(book.current(&session), None);
     }
 

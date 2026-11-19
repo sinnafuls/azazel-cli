@@ -130,6 +130,7 @@ thinking = "low"
 | | `account` | the default account | Which stored account of the provider to use; see [several accounts](models-and-logins.md#several-accounts) |
 | `[profiles]` | `on_limit` | `""` | The profile to switch to when a usage limit is reached; empty never switches. Must be a built-in profile or have a `[profiles.<name>.roles]` table; see [profiles](models-and-logins.md#profiles) |
 | | `on_reset` | `"ask"` | When the limit has reset: `ask`, `auto` or `off` |
+| | `disabled` | `[]` | Built-in profiles to hide from `/profile`, `--profile`, the web page and `on_limit`; the Profiles view of `/models` turns them on and off |
 | `[profiles.<name>.roles]` | `<role>` | none | A set of role chains that `/profile <name>` and `--profile <name>` apply; a name of a built-in profile replaces it |
 | `[presets.<name>.roles]` | `<role>` | none | The old name of `[profiles.<name>.roles]`; `[profiles]` wins when both have the name |
 | `[models."<provider>/<id>"]` | `name` | catalogue | Display name |

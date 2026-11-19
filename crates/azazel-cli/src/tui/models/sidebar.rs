@@ -40,7 +40,10 @@ impl Models {
         let profiles = &self.data.profiles;
         let (profiles_label, profiles_left) = match searching {
             true => {
-                let found = profiles.iter().filter(|entry| self.profile_matches(entry)).count();
+                let found = profiles
+                    .iter()
+                    .filter(|entry| self.profile_matches(entry))
+                    .count();
                 (found.to_string(), found == 0)
             }
             false => (profiles.len().to_string(), false),

@@ -276,10 +276,14 @@ impl Settings {
         router: Option<&Router>,
         models: Option<&ModelsHost>,
     ) -> Result<Option<String>, String> {
-        let open = |role: Option<String>| models.map(|host| (host.0)(ModelsAt {
-            role,
-            ..ModelsAt::default()
-        }));
+        let open = |role: Option<String>| {
+            models.map(|host| {
+                (host.0)(ModelsAt {
+                    role,
+                    ..ModelsAt::default()
+                })
+            })
+        };
         match request {
             Request::Close => Ok(None),
             Request::Models => {

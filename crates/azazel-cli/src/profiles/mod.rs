@@ -156,7 +156,11 @@ pub fn all(config: &Config) -> Vec<Profile> {
 
 /// [`all`] over `entries` without the `disabled` ones, with the config `layers` they were read
 /// from to tell a project's profile from the user's.
-pub fn all_in(entries: &BTreeMap<String, ProfileConfig>, disabled: &[String], layers: &[Layer]) -> Vec<Profile> {
+pub fn all_in(
+    entries: &BTreeMap<String, ProfileConfig>,
+    disabled: &[String],
+    layers: &[Layer],
+) -> Vec<Profile> {
     let mut profiles = every_in(entries, layers);
     profiles.retain(|profile| !disabled.contains(&profile.name));
     profiles

@@ -529,14 +529,13 @@ impl Models {
         if self.scope_entry().is_none_or(|entry| entry.skip) {
             // A search left nothing where the screen was: the first scope of models that has
             // something, or the roles.
-            let models =
-                |entry: &&Side| {
-                    !entry.skip
-                        && entry
-                            .scope
-                            .as_ref()
-                            .is_some_and(|s| !matches!(s, Scope::Roles | Scope::Profiles))
-                };
+            let models = |entry: &&Side| {
+                !entry.skip
+                    && entry
+                        .scope
+                        .as_ref()
+                        .is_some_and(|s| !matches!(s, Scope::Roles | Scope::Profiles))
+            };
             let found = self.side.iter().find(models).or_else(|| {
                 self.side
                     .iter()
@@ -1689,7 +1688,9 @@ impl Models {
             Scope::Roles => {
                 "Model roles: where each one's model comes from, its fallbacks and its thinking".to_string()
             }
-            Scope::Profiles => "Profiles: sets of roles to switch between; changes go to your home config".to_string(),
+            Scope::Profiles => {
+                "Profiles: sets of roles to switch between; changes go to your home config".to_string()
+            }
             Scope::Recent => "Models chosen lately".to_string(),
             Scope::All => "Every model you have a credential for".to_string(),
             Scope::Provider(id) => {
