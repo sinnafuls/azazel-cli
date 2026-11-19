@@ -375,6 +375,186 @@ impl Default for Keymap {
     }
 }
 
+/// What the characters after an `esc` make of themselves; see [`decode_escape`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Escape {
+    /// A sequence that has begun and has not ended: wait for more characters.
+    Incomplete,
+    /// A complete sequence for this key.
+    Key(KeyEvent),
+    /// A complete sequence that names no key azazel knows. It is dropped, never typed.
+    Ignored,
+    /// Not a key sequence: the `esc` was a key of its own and these characters are typed text.
+    Invalid,
+}
+
+/// Longest sequence looked at; a longer one is not a key report.
+const MAX_ESCAPE: usize = 40;
+
+/// Decodes the characters that follow an `esc` when a console hands a terminal's key report over
+/// as separate key presses (the Windows console does; the terminals of other systems are read by
+/// crossterm, which decodes them itself). Understands the kitty form `CSI code ; modifiers u`, the
+/// xterm forms of the arrows, home, end, the function keys and `shift+tab`, with their
+/// modifiers, and `SS3` keys. Any other complete `CSI` or `SS3` sequence is [`Escape::Ignored`].
+pub fn decode_escape(after_esc: &str) -> Escape {
+    let mut chars = after_esc.chars();
+    let lead = chars.next();
+    let rest: Vec<char> = chars.collect();
+    match lead {
+        None => Escape::Incomplete,
+        Some('[') => decode_csi(&rest),
+        Some('O') => match rest.as_slice() {
+            [] => Escape::Incomplete,
+            [last] => match xterm_key(*last) {
+                Some(event) => Escape::Key(event),
+                None if (' '..='~').contains(last) => Escape::Ignored,
+                None => Escape::Invalid,
+            },
+            _ => Escape::Invalid,
+        },
+        Some(_) => Escape::Invalid,
+    }
+}
+
+fn decode_csi(body: &[char]) -> Escape {
+    let Some(end) = body.iter().position(|c| ('@'..='~').contains(c)) else {
+        // Parameters and intermediate bytes only so far.
+        let well_formed = body.iter().all(|c| (' '..='?').contains(c));
+        return if well_formed && body.len() < MAX_ESCAPE {
+            Escape::Incomplete
+        } else {
+            Escape::Invalid
+        };
+    };
+    if end + 1 != body.len() || !body[..end].iter().all(|c| (' '..='?').contains(c)) {
+        return Escape::Invalid;
+    }
+    let final_byte = body[end];
+    let params: String = body[..end].iter().collect();
+    let fields: Vec<&str> = params.split(';').collect();
+    let number = |field: Option<&&str>, default: u32| -> Option<u32> {
+        match field.copied() {
+            None | Some("") => Some(default),
+            Some(text) => text.split(':').next().and_then(|n| n.parse().ok()),
+        }
+    };
+    // `modifiers[:event]`; the event is 1 press, 2 repeat, 3 release.
+    let modifiers_and_kind = |field: Option<&&str>| -> Option<(KeyModifiers, KeyEventKind)> {
+        let mods = number(field, 1)?;
+        let kind = match field.and_then(|f| f.split(':').nth(1)) {
+            Some("2") => KeyEventKind::Repeat,
+            Some("3") => KeyEventKind::Release,
+            _ => KeyEventKind::Press,
+        };
+        Some((modifier_bits(mods), kind))
+    };
+    let decoded = match final_byte {
+        'u' => {
+            let code = fields.first().copied().unwrap_or_default();
+            let mut parts = code.split(':');
+            let first = parts.next().and_then(|n| n.parse::<u32>().ok());
+            let shifted = parts.next().and_then(|n| n.parse::<u32>().ok());
+            first
+                .zip(modifiers_and_kind(fields.get(1)))
+                .and_then(|(code, (mods, kind))| {
+                    let key = kitty_key(code, shifted, mods)?;
+                    Some(KeyEvent::new_with_kind(key.0, key.1, kind))
+                })
+        }
+        '~' => number(fields.first(), 0)
+            .zip(modifiers_and_kind(fields.get(1)))
+            .and_then(|(n, (mods, kind))| {
+                let code = match n {
+                    1 | 7 => KeyCode::Home,
+                    2 => KeyCode::Insert,
+                    3 => KeyCode::Delete,
+                    4 | 8 => KeyCode::End,
+                    5 => KeyCode::PageUp,
+                    6 => KeyCode::PageDown,
+                    11..=15 => KeyCode::F((n - 10) as u8),
+                    17..=21 => KeyCode::F((n - 11) as u8),
+                    23 | 24 => KeyCode::F((n - 12) as u8),
+                    _ => return None,
+                };
+                Some(KeyEvent::new_with_kind(code, mods, kind))
+            }),
+        'Z' => Some(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+        other => modifiers_and_kind(fields.get(1)).and_then(|(mods, kind)| {
+            let key = xterm_key(other)?;
+            Some(KeyEvent::new_with_kind(key.code, mods, kind))
+        }),
+    };
+    match decoded {
+        Some(event) => Escape::Key(event),
+        None => Escape::Ignored,
+    }
+}
+
+/// The modifiers of the number a report carries: 1 plus the sum of shift 1, alt 2, ctrl 4,
+/// super 8, hyper 16 and meta 32.
+fn modifier_bits(number: u32) -> KeyModifiers {
+    let bits = number.saturating_sub(1);
+    let mut mods = KeyModifiers::NONE;
+    for (bit, flag) in [
+        (1, KeyModifiers::SHIFT),
+        (2, KeyModifiers::ALT),
+        (4, KeyModifiers::CONTROL),
+        (8, KeyModifiers::SUPER),
+        (16, KeyModifiers::HYPER),
+        (32, KeyModifiers::META),
+    ] {
+        if bits & bit != 0 {
+            mods |= flag;
+        }
+    }
+    mods
+}
+
+/// The key an xterm report ends in (`A` is up, `H` is home, `P` is f1), with no modifiers.
+fn xterm_key(final_byte: char) -> Option<KeyEvent> {
+    let code = match final_byte {
+        'A' => KeyCode::Up,
+        'B' => KeyCode::Down,
+        'C' => KeyCode::Right,
+        'D' => KeyCode::Left,
+        'H' => KeyCode::Home,
+        'F' => KeyCode::End,
+        'P' => KeyCode::F(1),
+        'Q' => KeyCode::F(2),
+        'R' => KeyCode::F(3),
+        'S' => KeyCode::F(4),
+        _ => return None,
+    };
+    Some(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+/// A key of the kitty form: its code point (and the one shift makes of it) and modifiers.
+fn kitty_key(code: u32, shifted: Option<u32>, mods: KeyModifiers) -> Option<(KeyCode, KeyModifiers)> {
+    let named = match code {
+        13 => Some(KeyCode::Enter),
+        9 if mods.contains(KeyModifiers::SHIFT) => Some(KeyCode::BackTab),
+        9 => Some(KeyCode::Tab),
+        27 => Some(KeyCode::Esc),
+        8 | 127 => Some(KeyCode::Backspace),
+        _ => None,
+    };
+    if let Some(code) = named {
+        return Some((code, mods));
+    }
+    // Other control characters and the private-use area (lock keys, keypad, media keys) name no
+    // key azazel has.
+    let c = char::from_u32(code).filter(|c| !c.is_control() && !('\u{e000}'..='\u{f8ff}').contains(c))?;
+    let c = match (
+        mods.contains(KeyModifiers::SHIFT),
+        shifted.and_then(char::from_u32),
+    ) {
+        (true, Some(shifted)) => shifted,
+        (true, None) => c.to_uppercase().next().unwrap_or(c),
+        _ => c,
+    };
+    Some((KeyCode::Char(c), mods))
+}
+
 // Kitty keyboard protocol: push and pop the "disambiguate escape codes" flag.
 const PUSH_DISAMBIGUATE: &[u8] = b"\x1b[>1u";
 const POP_KEYBOARD_FLAGS: &[u8] = b"\x1b[<1u";
@@ -707,6 +887,62 @@ mod tests {
         );
         // A key taken from an action the file does not name is not a duplicate.
         assert!(keymap.keys_for("toggle_tool_output").is_empty());
+    }
+
+    fn key_of(text: &str) -> KeyEvent {
+        match decode_escape(text) {
+            Escape::Key(event) => event,
+            other => panic!("{text:?} decoded as {other:?}"),
+        }
+    }
+
+    #[test]
+    fn kitty_reports_decode_with_their_modifiers() {
+        assert_eq!(key_of("[13;2u"), press(KeyCode::Enter, KeyModifiers::SHIFT));
+        assert_eq!(key_of("[13u"), press(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(key_of("[13;5u"), press(KeyCode::Enter, KeyModifiers::CONTROL));
+        assert_eq!(key_of("[13;3u"), press(KeyCode::Enter, KeyModifiers::ALT));
+        assert_eq!(key_of("[97;5u"), press(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        assert_eq!(
+            key_of("[112;6u"),
+            press(KeyCode::Char('P'), KeyModifiers::CONTROL | KeyModifiers::SHIFT)
+        );
+        assert_eq!(key_of("[27u"), press(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(key_of("[9;2u"), press(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(key_of("[13;2:3u").kind, KeyEventKind::Release);
+        // Shift+Enter in this form is the key the keymap calls `newline`.
+        assert_eq!(Keymap::defaults().action_for(&key_of("[13;2u")), Some("newline"));
+    }
+
+    #[test]
+    fn xterm_reports_decode_with_their_modifiers() {
+        assert_eq!(key_of("[A"), press(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(key_of("[1;2A"), press(KeyCode::Up, KeyModifiers::SHIFT));
+        assert_eq!(key_of("[1;3D"), press(KeyCode::Left, KeyModifiers::ALT));
+        assert_eq!(key_of("[3~"), press(KeyCode::Delete, KeyModifiers::NONE));
+        assert_eq!(key_of("[15~"), press(KeyCode::F(5), KeyModifiers::NONE));
+        assert_eq!(key_of("[24;5~"), press(KeyCode::F(12), KeyModifiers::CONTROL));
+        assert_eq!(key_of("[Z"), press(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(key_of("OP"), press(KeyCode::F(1), KeyModifiers::NONE));
+        assert_eq!(key_of("OH"), press(KeyCode::Home, KeyModifiers::NONE));
+    }
+
+    #[test]
+    fn unknown_complete_sequences_are_swallowed_not_typed() {
+        for text in ["[57358u", "[99999999;2u", "[1;2X", "[200~", "[?1;2c", "[0m", "OZ"] {
+            assert_eq!(decode_escape(text), Escape::Ignored, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn partial_sequences_wait_and_other_text_is_not_a_sequence() {
+        for text in ["", "[", "[13", "[13;", "[13;2", "O", "[1;"] {
+            assert_eq!(decode_escape(text), Escape::Incomplete, "{text:?}");
+        }
+        for text in ["x", "hello", "[13;2uX", "[\u{e9}", "OPQ", "\n"] {
+            assert_eq!(decode_escape(text), Escape::Invalid, "{text:?}");
+        }
+        assert_eq!(decode_escape(&format!("[{}", "1;".repeat(40))), Escape::Invalid);
     }
 
     #[test]

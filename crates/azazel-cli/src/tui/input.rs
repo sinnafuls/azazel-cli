@@ -156,6 +156,64 @@ pub(super) fn read_burst(first: char) -> (String, Option<Event>) {
     (text, None)
 }
 
+/// What came after an `esc` key press.
+#[derive(Debug, PartialEq)]
+pub(super) enum AfterEsc {
+    /// Nothing: the `esc` is a key of its own.
+    Alone,
+    /// The rest of a key report the console handed over as key presses (`ESC [ 13 ; 2 u`).
+    Report(KeyEvent),
+    /// A complete report of a key azazel has no use for: dropped, never typed.
+    Swallowed,
+    /// Characters that are not a report: `esc` was a key and these were typed after it.
+    Typed(String),
+}
+
+/// Reads what follows an `esc` the Windows console reported as a key press. A terminal's key
+/// report arrives there as `esc` and the characters of the report, one key press each, which
+/// would otherwise be typed into the input. `next` gives the next waiting event, or `None` when
+/// none arrives within a moment. Returns what it made of them, and the event that ended the
+/// sequence when it was not a key that types.
+pub(super) fn read_after_esc(mut next: impl FnMut() -> Option<Event>) -> (AfterEsc, Option<Event>) {
+    let mut text = String::new();
+    loop {
+        let Some(event) = next() else {
+            return (typed_or_alone(text), None);
+        };
+        let typed = match &event {
+            Event::Key(key) if key.kind == KeyEventKind::Release => continue,
+            Event::Key(key) => typed_char(key).filter(|c| *c != '\n' && *c != '\t'),
+            _ => None,
+        };
+        let Some(c) = typed else {
+            return (typed_or_alone(text), Some(event));
+        };
+        text.push(c);
+        match azazel_tui::decode_escape(&text) {
+            azazel_tui::Escape::Incomplete => {}
+            azazel_tui::Escape::Key(key) => return (AfterEsc::Report(key), None),
+            azazel_tui::Escape::Ignored => return (AfterEsc::Swallowed, None),
+            azazel_tui::Escape::Invalid => return (AfterEsc::Typed(text), None),
+        }
+    }
+}
+
+fn typed_or_alone(text: String) -> AfterEsc {
+    if text.is_empty() {
+        AfterEsc::Alone
+    } else {
+        AfterEsc::Typed(text)
+    }
+}
+
+/// The next event when one arrives within [`BURST_GAP`].
+pub(super) fn next_within_gap() -> Option<Event> {
+    match crossterm::event::poll(BURST_GAP) {
+        Ok(true) => crossterm::event::read().ok(),
+        _ => None,
+    }
+}
+
 /// Whether a burst of key presses was pasted rather than typed. A few keys that queued up while
 /// the UI was busy are typing, and so is a short line that ends with `enter`: it is sent, as it
 /// would be in a shell.
@@ -1076,6 +1134,49 @@ impl Tui {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn typed(text: &str) -> VecDeque<Event> {
+        text.chars().map(|c| Event::Key(key_for(c))).collect()
+    }
+
+    fn after_esc(text: &str) -> (AfterEsc, Option<Event>) {
+        let mut events = typed(text);
+        read_after_esc(|| events.pop_front())
+    }
+
+    #[test]
+    fn a_kitty_shift_enter_after_esc_is_a_key_not_text() {
+        let (after, rest) = after_esc("[13;2u");
+        assert_eq!(
+            after,
+            AfterEsc::Report(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT))
+        );
+        assert_eq!(rest, None);
+    }
+
+    #[test]
+    fn an_unknown_report_after_esc_is_swallowed() {
+        assert_eq!(after_esc("[57358u").0, AfterEsc::Swallowed);
+        assert_eq!(after_esc("[1;2X").0, AfterEsc::Swallowed);
+    }
+
+    #[test]
+    fn esc_alone_and_esc_before_text_stay_keys() {
+        assert_eq!(after_esc("").0, AfterEsc::Alone);
+        assert_eq!(after_esc("hi").0, AfterEsc::Typed("h".into()));
+        // A report cut short by a pause is typed, the way the terminal sent it.
+        assert_eq!(after_esc("[13;").0, AfterEsc::Typed("[13;".into()));
+    }
+
+    #[test]
+    fn a_key_that_does_not_type_ends_the_sequence_and_is_handed_back() {
+        let mut events = typed("[1");
+        let stop = Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        events.push_back(stop.clone());
+        let (after, rest) = read_after_esc(|| events.pop_front());
+        assert_eq!(after, AfterEsc::Typed("[1".into()));
+        assert_eq!(rest, Some(stop));
+    }
 
     #[test]
     fn the_editor_is_the_setting_then_visual_then_editor_then_a_default() {

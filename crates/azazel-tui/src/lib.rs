@@ -31,7 +31,9 @@ pub use components::todo::TodoState;
 pub use components::tool_card::{Card, CardState};
 pub use components::vim::Vim;
 pub use glyphs::{Glyph, GlyphLevel, Glyphs};
-pub use keys::{KeyCombo, KeyError, Keymap, disable_enhanced_keys, enable_enhanced_keys};
+pub use keys::{
+    Escape, KeyCombo, KeyError, Keymap, decode_escape, disable_enhanced_keys, enable_enhanced_keys,
+};
 pub use modal::Modal;
 pub use render::{Floor, Frame, HistoryItem, Line, Renderer};
 pub use theme::{Color, ColorDepth, RESET, Role, Theme, ThemeError};

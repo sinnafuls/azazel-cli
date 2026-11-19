@@ -1788,6 +1788,38 @@ impl Tui {
                 return;
             }
         }
+        // A terminal's key report (`ESC [ 13 ; 2 u`) can reach a Windows console as an `esc` key
+        // press followed by the characters of the report, which must not be typed.
+        let event = if cfg!(windows)
+            && let Event::Key(key) = &event
+            && key.code == KeyCode::Esc
+            && key.kind == KeyEventKind::Press
+            && key.modifiers.is_empty()
+        {
+            let esc = *key;
+            let (after, next) = input::read_after_esc(input::next_within_gap);
+            match after {
+                input::AfterEsc::Alone => self.on_key(esc).await,
+                input::AfterEsc::Report(key) => {
+                    if key.kind != KeyEventKind::Release {
+                        self.on_key(key).await;
+                    }
+                }
+                input::AfterEsc::Swallowed => {}
+                input::AfterEsc::Typed(text) => {
+                    self.on_key(esc).await;
+                    for typed in text.chars() {
+                        self.on_key(input::key_for(typed)).await;
+                    }
+                }
+            }
+            match next {
+                Some(event) => event,
+                None => return,
+            }
+        } else {
+            event
+        };
         // Windows consoles have no bracketed paste: a paste is a burst of key presses.
         let event = if cfg!(windows)
             && let Event::Key(key) = &event
