@@ -589,15 +589,12 @@ impl SessionStore {
     /// deleted. A copy held for reading is never deleted.
     pub fn discard_if_empty(&self) -> bool {
         let inner = self.lock();
-        let said = inner
-            .entries
-            .iter()
-            .any(|entry| {
-                matches!(
-                    entry.kind,
-                    EntryKind::Message { .. } | EntryKind::SessionInfo { .. } | EntryKind::Pin { .. }
-                )
-            });
+        let said = inner.entries.iter().any(|entry| {
+            matches!(
+                entry.kind,
+                EntryKind::Message { .. } | EntryKind::SessionInfo { .. } | EntryKind::Pin { .. }
+            )
+        });
         if said || inner.file.is_none() {
             return false;
         }
@@ -1237,7 +1234,8 @@ impl SessionStore {
     /// (see [`SessionStore::list_all`]).
     pub fn list(dir: &Path) -> Vec<SessionSummary> {
         let mut sessions = SessionStore::list_all(dir);
-        sessions.retain(|session| session.messages > 0);
+        // The same rule as `discard_if_empty`: a named or pinned session is kept, so it is listed.
+        sessions.retain(|session| session.messages > 0 || session.name.is_some() || session.pinned);
         sessions
     }
 
@@ -2096,7 +2094,8 @@ mod tests {
         named.append(EntryKind::SessionInfo { name: "kept".into() });
 
         let listed: Vec<String> = SessionStore::list(dir.path()).into_iter().map(|s| s.id).collect();
-        assert_eq!(listed, [said.id()]);
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&said.id()) && listed.contains(&named.id()));
         assert_eq!(SessionStore::list_all(dir.path()).len(), 3);
 
         assert!(empty.discard_if_empty());

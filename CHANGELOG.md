@@ -38,6 +38,8 @@ GitHub are its section here.
 - A usage limit that asks for a wait of more than a minute (a 429 with a long `retry-after`) reaches `[profiles] on_limit` at once instead of being retried in place first.
 - A profile that names a provider this session doesn't have (a typo, an extension that isn't installed) is listed as unusable and refused by `/profile`, instead of counting as logged in; RPC `profiles` entries carry `unknown_providers`.
 - `azazel remote`: long prompts in the rewind sheet and long agent names in the agents panel end in an ellipsis instead of widening the panel; an agent's state dot stands on its name's line; a long agent name no longer runs under the header buttons on a phone; the sidebar rail no longer sticks out of the phone drawer.
+- Key reports a terminal sends as escape sequences, such as kitty's Shift+Enter (`ESC[13;2u`), are read as keys in the Windows console, and unknown ones are ignored instead of being typed into the input.
+- Starting azazel and leaving without sending anything no longer leaves an empty session in `/resume`; a session with no message is listed only when it is named or pinned.
 - `azazel remote`: the Send button sends again; since 0.15.0 only Enter did, on phones and desktop alike.
 - `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.
