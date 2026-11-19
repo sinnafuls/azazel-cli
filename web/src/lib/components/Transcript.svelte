@@ -191,7 +191,9 @@
 									{/each}
 								</div>
 							{/if}
-							<p class="text-sm leading-relaxed wrap-anywhere whitespace-pre-wrap">{item.text}</p>
+							<p class="text-sm leading-relaxed whitespace-break-spaces wrap-anywhere">
+								{item.text}
+							</p>
 						</div>
 						<div class="mt-1.5 flex gap-2 px-1 text-xs text-muted-foreground empty:hidden">
 							{#if item.via !== 'prompt'}<span class="text-warning"
@@ -249,7 +251,7 @@
 										</Collapsible.Trigger>
 										<Collapsible.Content>
 											<p
-												class="mt-1 ml-1 border-l pl-3 text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground"
+												class="mt-1 ml-1 border-l pl-3 text-sm leading-relaxed whitespace-break-spaces wrap-anywhere text-muted-foreground"
 											>
 												{b.text}
 											</p>
@@ -331,7 +333,7 @@
 						<p class="mb-0.5 font-medium">
 							The agent was told what happened on the branch you left
 						</p>
-						<p class="wrap-anywhere whitespace-pre-wrap">{item.text}</p>
+						<p class="whitespace-break-spaces wrap-anywhere">{item.text}</p>
 					</aside>
 				{:else}
 					<Alert.Root
