@@ -738,6 +738,7 @@ impl Session {
             name,
             &self.app.router,
             Some((&self.active.lead, Some(&*self.active.session))),
+            self.app.registry.services.get::<azazel_team::Team>().as_deref(),
             crate::profiles::Reason::User,
         )?;
         self.profile_changed(name, from);

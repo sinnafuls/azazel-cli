@@ -19,10 +19,10 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use async_trait::async_trait;
 use azazel_agent::{AgentInfo, Recovery, Services};
 use azazel_ai::credentials::now_ms;
-use azazel_ai::providers::http::blocked_until;
+use azazel_ai::providers::http::limit_window;
 use azazel_ai::{AiError, ModelSpec, Router};
 use azazel_core::config::ProfileReset;
-use azazel_core::{Event, EventHandler, ExtCtx, Level, Outcome, SessionStore, Ui};
+use azazel_core::{EntryKind, Event, EventHandler, ExtCtx, Level, Outcome, SessionStore, Ui};
 use azazel_protocol::Frame;
 use azazel_team::Team;
 
@@ -38,6 +38,11 @@ pub struct Switched {
     pub provider: String,
     /// Unix seconds at which the window resets.
     pub until: u64,
+    /// Whether the provider said when the window resets. A guessed time (the provider named
+    /// none) is no reason to go back by itself: the limit may still stand then.
+    pub known: bool,
+    /// The chain the lead was left on; another one means somebody picked a model by hand.
+    left: Vec<ModelSpec>,
     /// The roles the target profile replaced, as they were: what going back restores when
     /// there was no named profile to go back to.
     saved: BTreeMap<String, Vec<ModelSpec>>,
@@ -62,6 +67,8 @@ pub struct ProfileSwitcher {
     services: Arc<Services>,
     /// Unix seconds; a test sets the time.
     clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+    /// The chain the lead asks now; a test sets it, as there is no lead there.
+    lead_chain: Arc<dyn Fn() -> Option<Vec<ModelSpec>> + Send + Sync>,
     state: Mutex<State>,
 }
 
@@ -85,6 +92,28 @@ fn announce_switch(services: &Services, frame: Frame, text: &str) {
         Some(frames) => (frames.0)(frame),
         None => announce(services, Level::Info, text),
     }
+}
+
+/// The provider whose limit was reached, among those of the models `tried`: the one whose
+/// account was blocked last, else the last model's.
+fn failed_provider(router: &Router, tried: &[azazel_ai::ModelRef]) -> String {
+    let blocked = router
+        .limits()
+        .snapshot()
+        .into_iter()
+        .filter(|account| tried.iter().any(|model| model.provider == account.provider))
+        .flat_map(|account| {
+            let provider = account.provider;
+            account
+                .blocks
+                .into_iter()
+                .map(move |block| (block.since, provider.clone()))
+        })
+        .max_by_key(|(since, _)| *since)
+        .map(|(_, provider)| provider);
+    blocked
+        .or_else(|| tried.last().map(|model| model.provider.clone()))
+        .unwrap_or_default()
 }
 
 /// What ran out at `provider`, as a person calls it (`5-hour limit`): the block that lasts
@@ -112,6 +141,13 @@ impl ProfileSwitcher {
         services: Arc<Services>,
         current: Option<String>,
     ) -> Self {
+        let lead_chain = {
+            let services = services.clone();
+            Arc::new(move || {
+                let lead = services.get::<Team>()?.lead()?;
+                Some(lead.status().chain)
+            })
+        };
         ProfileSwitcher {
             on_limit: on_limit.trim().to_string(),
             on_reset,
@@ -119,6 +155,7 @@ impl ProfileSwitcher {
             logged_in,
             services,
             clock: Arc::new(|| now_ms() / 1000),
+            lead_chain,
             state: Mutex::new(State {
                 current,
                 ..State::default()
@@ -129,6 +166,12 @@ impl ProfileSwitcher {
     #[cfg(test)]
     fn with_clock(mut self, clock: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
         self.clock = clock;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_lead_chain(mut self, lead_chain: Arc<dyn Fn() -> Option<Vec<ModelSpec>> + Send + Sync>) -> Self {
+        self.lead_chain = lead_chain;
         self
     }
 
@@ -162,10 +205,11 @@ impl ProfileSwitcher {
         if agent.depth != 0 || self.on_limit.is_empty() {
             return None;
         }
-        let until = blocked_until(error)?;
+        let (until, known) = limit_window(error)?;
         let router = self.services.get::<Router>()?;
         let target = self.profile(&self.on_limit)?;
-        let lead_handle = self.services.get::<Team>().and_then(|team| team.lead());
+        let team = self.services.get::<Team>();
+        let lead_handle = team.as_ref().and_then(|team| team.lead());
         let session = self.services.get::<SessionStore>();
         let mut state = self.state();
         // One switch per window.
@@ -200,11 +244,7 @@ impl ProfileSwitcher {
             );
             return None;
         }
-        // The failure that reached here is the last model of the chain's.
-        let provider = tried
-            .last()
-            .map(|model| model.provider.clone())
-            .unwrap_or_default();
+        let provider = failed_provider(&router, &tried);
         let roles = router.roles();
         let saved = target
             .roles
@@ -215,6 +255,7 @@ impl ProfileSwitcher {
             target,
             &router,
             lead_handle.as_ref().map(|lead| (lead, session.as_deref())),
+            team.as_deref(),
             Reason::Limit,
         );
         state.current = Some(target.name.clone());
@@ -224,6 +265,8 @@ impl ProfileSwitcher {
             to: target.name.clone(),
             provider: provider.clone(),
             until,
+            known,
+            left: lead.clone(),
             saved,
         });
         drop(state);
@@ -248,7 +291,8 @@ impl ProfileSwitcher {
     /// reset, `[profiles] on_reset` decides what happens.
     pub fn at_turn_boundary(&self) {
         let now = (self.clock)();
-        let lead_handle = self.services.get::<Team>().and_then(|team| team.lead());
+        let team = self.services.get::<Team>();
+        let lead_handle = team.as_ref().and_then(|team| team.lead());
         // Never in the middle of a run: a prompt that arrives while the lead works waits.
         if lead_handle.as_ref().is_some_and(|lead| lead.status().busy) {
             return;
@@ -264,7 +308,13 @@ impl ProfileSwitcher {
         if Self::current(&state, session.as_deref()).as_deref() != Some(active.to.as_str()) {
             return;
         }
-        match self.on_reset {
+        // A reset time the provider did not give is a guess: going back by itself could land on
+        // the limit again and switch once more every window, so the user is asked instead.
+        let on_reset = match self.on_reset {
+            ProfileReset::Auto if !active.known => ProfileReset::Ask,
+            other => other,
+        };
+        match on_reset {
             ProfileReset::Off => {}
             ProfileReset::Ask => {
                 drop(state);
@@ -276,9 +326,13 @@ impl ProfileSwitcher {
                     &self.services,
                     Level::Info,
                     &format!(
-                        "The usage limit of {} has reset. {how} Going back sends the conversation in full to \
+                        "The usage limit of {} {} {how} Going back sends the conversation in full to \
                          the other model once, so the next reply costs more.",
-                        active.provider
+                        active.provider,
+                        match active.known {
+                            true => "has reset.",
+                            false => "may have reset (the provider did not say when).",
+                        }
                     ),
                 );
             }
@@ -286,6 +340,10 @@ impl ProfileSwitcher {
                 let Some(router) = self.services.get::<Router>() else {
                     return;
                 };
+                // A model picked by hand since the switch stays.
+                if (self.lead_chain)().is_some_and(|chain| chain != active.left) {
+                    return;
+                }
                 let lead = lead_handle.as_ref().map(|lead| (lead, session.as_deref()));
                 let back = active.from.as_deref().and_then(|name| self.profile(name));
                 let done = match back {
@@ -307,16 +365,24 @@ impl ProfileSwitcher {
                         }
                         state.current = Some(profile.name.clone());
                         (
-                            switch(profile, &router, lead, Reason::Reset),
+                            switch(profile, &router, lead, team.as_deref(), Reason::Reset),
                             Some(profile.name.clone()),
                         )
                     }
                     None => {
                         state.current = None;
+                        // Written down, so that the record stops naming the profile of the limit.
+                        if let Some(session) = session.as_deref()
+                            && session.last_profile(None).is_some()
+                        {
+                            session.append(EntryKind::ProfileChange {
+                                profile: String::new(),
+                            });
+                        }
                         (
                             format!(
                                 "the models from before the limit: {}",
-                                crate::routing::apply_roles(&router, &active.saved, lead)
+                                crate::routing::apply_roles(&router, &active.saved, lead, team.as_deref())
                             ),
                             None,
                         )
@@ -619,6 +685,97 @@ mod tests {
         bench.ahead.store(3601, Ordering::SeqCst);
         bench.switcher.at_turn_boundary();
         assert_eq!(lead_model(&bench), "acme/mine");
+    }
+
+    fn guessed() -> AiError {
+        AiError::Quota {
+            resets_at: None,
+            message: "out of extra usage".to_string(),
+        }
+    }
+
+    #[test]
+    fn auto_asks_instead_of_going_back_when_the_reset_time_was_a_guess() {
+        let bench = bench("b", ProfileReset::Auto, Some("a"), |_| true);
+        hit(&bench, &guessed()).unwrap();
+        assert!(!bench.switcher.active().unwrap().known);
+        bench.ahead.store(15 * 60 + 1, Ordering::SeqCst);
+        bench.switcher.at_turn_boundary();
+        assert_eq!(lead_model(&bench), "acme/b");
+        let notes = told(&bench);
+        assert!(
+            notes[1].contains("may have reset") && notes[1].contains("/profile a"),
+            "{notes:?}"
+        );
+        assert!(bench.switcher.active().is_none());
+    }
+
+    #[test]
+    fn a_model_picked_by_hand_after_the_switch_stays_when_auto_would_go_back() {
+        let bench = bench("b", ProfileReset::Auto, Some("a"), |_| true);
+        hit(&bench, &limit(3600)).unwrap();
+        // The lead was left on `@lead`; `/model x` moved it elsewhere.
+        let picked = Arc::new(Mutex::new(Some(chain(&["acme/x"]))));
+        let seen = picked.clone();
+        let Bench {
+            switcher,
+            router,
+            notes,
+            ahead,
+        } = bench;
+        let bench = Bench {
+            switcher: switcher.with_lead_chain(Arc::new(move || seen.lock().unwrap().clone())),
+            router,
+            notes,
+            ahead,
+        };
+        bench.ahead.store(3601, Ordering::SeqCst);
+        bench.switcher.at_turn_boundary();
+        assert_eq!(lead_model(&bench), "acme/b");
+        assert_eq!(told(&bench).len(), 1, "nothing said, nothing changed");
+
+        // On `@lead` still, the way back is taken.
+        let again = bench_with_lead_on_role();
+        hit(&again, &limit(3600)).unwrap();
+        again.ahead.store(3601, Ordering::SeqCst);
+        again.switcher.at_turn_boundary();
+        assert_eq!(lead_model(&again), "acme/a");
+    }
+
+    fn bench_with_lead_on_role() -> Bench {
+        let bench = bench("b", ProfileReset::Auto, Some("a"), |_| true);
+        let Bench {
+            switcher,
+            router,
+            notes,
+            ahead,
+        } = bench;
+        Bench {
+            switcher: switcher.with_lead_chain(Arc::new(|| Some(chain(&["@lead"])))),
+            router,
+            notes,
+            ahead,
+        }
+    }
+
+    #[test]
+    fn going_back_to_no_named_profile_is_written_into_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let session = Arc::new(SessionStore::create(dir.path(), dir.path(), None).unwrap());
+        let bench = bench("b", ProfileReset::Auto, None, |_| true);
+        bench.switcher.services.insert(session.clone());
+        hit(&bench, &limit(3600)).unwrap();
+        // What the switch records when there is a lead.
+        session.append(EntryKind::ProfileChange {
+            profile: "b".to_string(),
+        });
+        assert_eq!(session.last_profile(None).as_deref(), Some("b"));
+        bench.ahead.store(3601, Ordering::SeqCst);
+        bench.switcher.at_turn_boundary();
+        assert_eq!(lead_model(&bench), "acme/a");
+        assert_eq!(session.last_profile(None), None);
+        let book = crate::profiles::Book::new(Vec::new(), Arc::new(|_| true), None);
+        assert_eq!(book.current(&session), None);
     }
 
     #[test]

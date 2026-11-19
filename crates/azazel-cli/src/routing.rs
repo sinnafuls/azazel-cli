@@ -176,10 +176,12 @@ impl ProfileCommand {
         let Some(router) = ctx.services.get::<Router>() else {
             return Err("no model router in this session".to_string());
         };
-        let lead = ctx.services.get::<Team>().and_then(|team| team.lead());
+        let team = ctx.services.get::<Team>();
+        let lead = team.as_ref().and_then(|team| team.lead());
         let session = ctx.services.get::<SessionStore>();
         let lead = lead.as_ref().map(|lead| (lead, session.as_deref()));
-        self.book.switch(name, &router, lead, Reason::User)
+        self.book
+            .switch(name, &router, lead, team.as_deref(), Reason::User)
     }
 
     /// Writes the roles as they are now under `[profiles.<name>.roles]`, replacing a profile of
@@ -219,12 +221,18 @@ impl CommandHandler for ProfileCommand {
 /// Points every role in `roles` at its chain for the rest of the process. When the roles say
 /// what the lead or the default model is, the lead goes back to following its role, so a model
 /// picked by hand does not outlive them; the change is recorded in `session` when given.
+/// Sub-agents that are running keep the models they resolve to now (`team`), so a switch never
+/// moves one in the middle of its task; agents started later use the new roles.
 /// Returns what was done, e.g. `3 roles set; the lead now runs on provider/model`.
 pub(crate) fn apply_roles(
     router: &Router,
     roles: &BTreeMap<String, Vec<ModelSpec>>,
     lead: Option<(&AgentHandle, Option<&SessionStore>)>,
+    team: Option<&Team>,
 ) -> String {
+    if let Some(team) = team {
+        team.pin_running();
+    }
     for (role, chain) in roles {
         router.set_role(role, chain.clone());
     }
@@ -285,15 +293,20 @@ pub(crate) fn save_roles(
     roles: &BTreeMap<String, Vec<ModelSpec>>,
 ) -> Result<(), String> {
     profile_name(name)?;
-    let write = |path: &[&str], value| {
-        crate::init::set_config_value(home_config, path, value).map_err(|e| format!("{e:#}"))
-    };
-    write(&["profiles", name], None)?;
+    // One table, written in one go: a failure leaves the old profile as it was.
+    let mut table = toml_edit::Table::new();
+    let mut by_role = toml_edit::Table::new();
     for (role, chain) in roles {
         let models = toml_edit::Array::from_iter(chain.iter().map(ToString::to_string));
-        write(&["profiles", name, "roles", role], Some(toml_edit::value(models)))?;
+        by_role.insert(role, toml_edit::value(models));
     }
-    Ok(())
+    table.insert("roles", toml_edit::Item::Table(by_role));
+    crate::init::set_config_value(
+        home_config,
+        &["profiles", name],
+        Some(toml_edit::Item::Table(table)),
+    )
+    .map_err(|e| format!("{e:#}"))
 }
 
 /// Registers `/fast`, `/slow` and `/profile` (and `/preset`, its old name).

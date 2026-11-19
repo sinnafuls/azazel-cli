@@ -25,6 +25,8 @@ pub struct Place<'a> {
     pub lead: Option<(&'a AgentHandle, Option<&'a SessionStore>)>,
     /// The profiles of the process, which saving one adds to.
     pub book: Option<Arc<crate::profiles::Book>>,
+    /// The team, whose running sub-agents keep their models when a profile is applied.
+    pub team: Option<Arc<azazel_team::Team>>,
 }
 
 impl<'a> Place<'a> {
@@ -36,6 +38,7 @@ impl<'a> Place<'a> {
             router: &app.router,
             lead,
             book: app.registry.services.get::<crate::profiles::Book>(),
+            team: app.registry.services.get::<azazel_team::Team>(),
         }
     }
 }
@@ -243,7 +246,13 @@ pub fn save_preset(place: &Place<'_>, name: &str) -> Result<Roles, String> {
 pub fn apply_preset(place: &Place<'_>, name: &str) -> Result<Roles, String> {
     let config = files(place).0;
     let profile = crate::profiles::resolve(&config, name).map_err(|e| e.to_string())?;
-    crate::profiles::switch(&profile, place.router, place.lead, crate::profiles::Reason::User);
+    crate::profiles::switch(
+        &profile,
+        place.router,
+        place.lead,
+        place.team.as_deref(),
+        crate::profiles::Reason::User,
+    );
     Ok(list(place))
 }
 
@@ -322,6 +331,7 @@ mod tests {
             router: &f.router,
             lead: None,
             book: None,
+            team: None,
         }
     }
 

@@ -37,7 +37,8 @@
 	onMount(() => {
 		void roles.load();
 		void models.load();
-		void settings.load();
+		// Reading the settings is a control call; a view device would only be refused.
+		if (app.canControl) void settings.load();
 		if (!ui.session) void host.load();
 	});
 
@@ -215,9 +216,15 @@
 					<Button type="submit" variant="outline" disabled={!profileName.trim()}>Save</Button>
 				</form>
 			</Row>
+		{:else if app.canControl}
+			<p class="py-2 text-xs leading-relaxed text-muted-foreground">
+				Saving the current roles as a profile needs full access.
+			</p>
 		{/if}
 	{/if}
-	{#if settings.state !== 'ready'}
+	{#if !app.canControl}
+		<!-- A view device may not read the settings, so the rows are left out. -->
+	{:else if settings.state !== 'ready'}
 		<Unavailable of={settings} what="what a usage limit does" />
 	{:else if onLimit && onReset}
 		<Row label={onLimit.label} hint={onLimit.description} data-profile-setting="on_limit">

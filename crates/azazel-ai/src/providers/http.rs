@@ -153,23 +153,30 @@ pub(crate) const LONG_WAIT: Duration = Duration::from_secs(60);
 /// when it resets.
 pub(crate) const UNKNOWN_RESET: Duration = Duration::from_secs(15 * 60);
 
-/// Until when (Unix seconds) the account that got `error` is out of allowance; `None` for an
-/// error that says nothing about the account's allowance. This is also what tells a usage limit
-/// from throttling: a refusal with a reset time, or a 429 that asks for more than [`LONG_WAIT`],
-/// counts; a 429 that a short wait clears, and an overloaded provider, do not.
-pub fn blocked_until(error: &AiError) -> Option<u64> {
+/// Until when (Unix seconds) the account that got `error` is out of allowance, and whether the
+/// provider said so (`true`) or the time is a guess ([`UNKNOWN_RESET`] from now, for a refusal
+/// that names no reset time); `None` for an error that says nothing about the account's
+/// allowance. This is also what tells a usage limit from throttling: a refusal, or a 429 that
+/// asks for more than [`LONG_WAIT`], counts; a 429 that a short wait clears, and an overloaded
+/// provider, do not.
+pub fn limit_window(error: &AiError) -> Option<(u64, bool)> {
     let now = now_ms() / 1000;
     match error {
-        AiError::Quota { resets_at, .. } => Some(
-            resets_at
-                .filter(|at| *at > now)
-                .unwrap_or(now + UNKNOWN_RESET.as_secs()),
-        ),
+        AiError::Quota { resets_at, .. } => Some(match resets_at.filter(|at| *at > now) {
+            Some(at) => (at, true),
+            None => (now + UNKNOWN_RESET.as_secs(), false),
+        }),
         AiError::RateLimit {
             retry_after: Some(wait),
-        } if *wait > LONG_WAIT => Some(now + wait.as_secs()),
+        } if *wait > LONG_WAIT => Some((now + wait.as_secs(), true)),
         _ => None,
     }
+}
+
+/// Until when (Unix seconds) the account that got `error` is out of allowance; see
+/// [`limit_window`].
+pub fn blocked_until(error: &AiError) -> Option<u64> {
+    limit_window(error).map(|(until, _)| until)
 }
 
 /// A refusal for lack of allowance, with what is known about the account added to it: which

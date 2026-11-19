@@ -933,6 +933,7 @@ impl Backend for Local {
             name,
             &self.app.router,
             Some((&self.active.lead, Some(&*self.active.session))),
+            self.team.as_deref(),
             crate::profiles::Reason::User,
         )
         .map(drop)

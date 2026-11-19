@@ -8,8 +8,8 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use azazel_agent::{
-    Agent, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, ArtifactSink, CompactionSettings,
-    Gate, Limits, Services, Tool, ToolSource, UserInput,
+    Agent, AgentCmd, AgentConfig, AgentEvent, AgentHandle, AgentHooks, AgentInfo, ArtifactSink,
+    CompactionSettings, Gate, Limits, Services, Tool, ToolSource, UserInput,
 };
 use azazel_ai::{ModelRef, ModelSpec, Router, StopReason, StreamEvent, Usage};
 use azazel_core::agents::{AgentDef, AgentDefs, Isolation};
@@ -1775,6 +1775,33 @@ impl Team {
     pub fn manages(&self, caller: &AgentInfo, id: &str) -> bool {
         caller.depth == 0
             || (id != caller.id && self.inner.family(&caller.id).iter().any(|member| member == id))
+    }
+
+    /// Fixes the models of the sub-agents that are working or waiting for a slot to the ones their
+    /// role chains resolve to now. Roles are resolved on every request, so a sub-agent that runs
+    /// while roles change (a switch of profile) would otherwise move to the new models in the
+    /// middle of its task, losing its cache; call this before changing them. Agents started
+    /// later resolve the roles as they are then. Returns how many were pinned.
+    pub fn pin_running(&self) -> usize {
+        let router = &self.inner.deps.router;
+        let mut pinned = 0;
+        for member in self.inner.members().iter() {
+            if member.state.is_finished() {
+                continue;
+            }
+            let Some(handle) = &member.handle else {
+                continue;
+            };
+            let chain = handle.status().chain;
+            if !chain.iter().any(|spec| matches!(spec, ModelSpec::Role(_))) {
+                continue;
+            }
+            let fixed: Vec<ModelSpec> = router.resolve(&chain).into_iter().map(ModelSpec::Model).collect();
+            if !fixed.is_empty() && handle.send(AgentCmd::SetModel(fixed)) {
+                pinned += 1;
+            }
+        }
+        pinned
     }
 
     /// What routing made of each sub-agent's task, for the agents it rated.

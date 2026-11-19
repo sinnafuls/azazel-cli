@@ -1985,6 +1985,68 @@ async fn a_request_refused_for_lack_of_allowance_can_go_on_with_other_models() {
     assert_eq!(hooks.asked.lock().unwrap().len(), 1);
 }
 
+/// Offered only to the models of one provider model id, as `edit` and `apply_patch` are to
+/// their families.
+struct ForModel {
+    name: &'static str,
+    model: &'static str,
+}
+
+#[async_trait]
+impl Tool for ForModel {
+    fn name(&self) -> &str {
+        self.name
+    }
+    fn description(&self) -> &str {
+        "for one model"
+    }
+    fn schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn access(&self, _: &Value) -> Access {
+        Access::Read
+    }
+    fn subjects(&self, _: &Value) -> Vec<String> {
+        Vec::new()
+    }
+    fn offered_to(&self, model: &azazel_ai::ModelRef) -> bool {
+        model.model == self.model
+    }
+    async fn call(&self, _: Value, _: &ToolCtx) -> ToolOutput {
+        ToolOutput::text("done")
+    }
+}
+
+#[tokio::test]
+async fn the_retry_on_other_models_carries_the_tools_of_those_models() {
+    let other: Vec<ModelSpec> = vec!["mock/b".parse().unwrap()];
+    let hooks = Allowance::answering(vec![Recovery::Model(other)]);
+    let mut session = start(Setup {
+        hooks,
+        tools: vec![
+            Arc::new(ForModel {
+                name: "edit",
+                model: "a",
+            }),
+            Arc::new(ForModel {
+                name: "apply_patch",
+                model: "b",
+            }),
+        ],
+        ..Setup::default()
+    });
+    session.mock.push("a", MockStep::fail(used_up()));
+    session.mock.push("b", MockStep::text("answered"));
+    session.run("go").await;
+
+    let names = |request: &Request| request.tools.iter().map(|t| t.name.clone()).collect::<Vec<_>>();
+    let first = session.mock.requests_for("a");
+    let second = session.mock.requests_for("b");
+    assert_eq!((first.len(), second.len()), (1, 1));
+    assert_eq!(names(&first[0]), ["edit"]);
+    assert_eq!(names(&second[0]), ["apply_patch"]);
+}
+
 #[tokio::test]
 async fn a_stream_that_fails_part_way_is_discarded_and_retried() {
     let mut session = start(Setup::default());

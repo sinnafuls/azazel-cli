@@ -682,7 +682,7 @@ impl Actor {
             if let Err(error) = self.inbox.drive(self.core.maintain_context(&chain, cancel)).await {
                 tracing::warn!("compaction skipped: {error}");
             }
-            let (request, tools) = self
+            let (request, mut tools) = self
                 .inbox
                 .drive(self.core.build_request(
                     &chain,
@@ -691,7 +691,7 @@ impl Actor {
                     self.core.turns_left_note(turn),
                 ))
                 .await;
-            let request = Arc::new(request);
+            let mut request = Arc::new(request);
             self.core.record_request(&request);
 
             let watched = rule_stops < MAX_RULE_STOPS;
@@ -721,6 +721,20 @@ impl Actor {
                         self.inbox.chain = next.clone();
                         locked(&self.core.status).chain = next.clone();
                         chain = next;
+                        // The tools and the system text depend on the model that is asked (the
+                        // edit tools differ by family), so the request is built again for it.
+                        let (next_request, next_tools) = self
+                            .inbox
+                            .drive(self.core.build_request(
+                                &chain,
+                                thinking,
+                                !final_report,
+                                self.core.turns_left_note(turn),
+                            ))
+                            .await;
+                        request = Arc::new(next_request);
+                        tools = next_tools;
+                        self.core.record_request(&request);
                     }
                 }
             };

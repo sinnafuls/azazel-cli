@@ -5,8 +5,26 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-11-19
+
+### Added
+
+- Profiles: a set of models per role that you switch as one. Six are built in: `claude`, `gpt` (on a ChatGPT/Codex login: Astra, Sol, Terra and Luna in the places of Fable, Opus, Sonnet and Haiku), `cheap`, `thorough`, `frontend` and `research`; save your own with `/profile save <name>` or `[profiles.<name>.roles]`, which replaces a built-in of the same name. Switch with `/profile <name>` or `azazel --profile <name>`. A profile that needs a login you don't have is listed with the `azazel login <provider>` it needs and is not applied.
+- `/profile` with no name opens a picker, and the status line has a `profile` segment.
+- `[profiles] on_limit = "<name>"`: when a request hits a usage limit with a reset time, the lead moves to that profile once, the request is retried there, and you are told that the change starts a new prompt cache. Ordinary overload retries never switch. When the limit resets, `on_reset` = `ask` (default) offers the way back, `auto` takes it, `off` stays.
+- `azazel remote`: a profile chip beside the model in the message box, a Profiles section in Settings, Models and roles (saving needs full access), and a notice when a usage limit moved the session and until when.
+- RPC: `set_profile`, `save_profile`, `profile` and `profiles` in `get_state`, and the `profile_changed` frame (`reason` `user`, `limit` or `reset`). A control device may switch profiles; saving one needs full access.
+
+### Changed
+
+- Presets are now profiles: `[profiles]`, `/profile` and `--profile`. `[presets]`, `/preset` and `--preset` still work; when both name the same profile, `[profiles]` wins with a warning.
+
 ### Fixed
 
+- `azazel --profile <name> <subcommand>` (and `--preset`) applies the profile, for example to `azazel --profile gpt roles`; an unknown name exits with status 2.
+- A profile switch (on a usage limit, with `/profile`, or on the way back) leaves sub-agents that are already running on their models; agents started afterwards use the new profile. After a usage-limit switch the request is sent again with the tools and instructions of the new model.
+- `on_reset = "auto"` asks instead of going back by itself when the provider did not say when the limit resets; a model picked by hand after the switch is kept; going back to no named profile is recorded, so the status line and a resumed session no longer show the on_limit profile.
+- `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.
 - `azazel remote`: long words and trailing spaces in your messages, thinking and branch summaries wrap inside their box on narrow screens.
 

@@ -11,6 +11,7 @@ use azazel_ai::providers::presets::ProviderConfig;
 use azazel_ai::{Credentials, ModelSpec, Router};
 use azazel_core::config::{Layer, LayerKind, ProfileConfig};
 use azazel_core::{Config, EntryKind, SessionStore};
+use azazel_team::Team;
 
 pub mod builtin;
 pub mod limit;
@@ -214,15 +215,17 @@ pub fn apply(config: &mut Config, name: &str) -> Result<Profile, UnknownProfile>
 /// The one way a running session moves to a profile (`/profile`, RPC, an automatic switch): every
 /// role of the profile points at its models, the lead follows its role again when the profile
 /// sets it, and the switch is written into the session so that a resumed one shows it. Roles the
-/// profile does not name stay as they are. Returns what was done, in a line.
+/// profile does not name stay as they are, and so do the models of sub-agents that are running.
+/// Returns what was done, in a line.
 pub(crate) fn switch(
     profile: &Profile,
     router: &Router,
     lead: Option<(&AgentHandle, Option<&SessionStore>)>,
+    team: Option<&Team>,
     reason: Reason,
 ) -> String {
     let session = lead.and_then(|(_, session)| session);
-    let done = crate::routing::apply_roles(router, &profile.roles, lead);
+    let done = crate::routing::apply_roles(router, &profile.roles, lead, team);
     if let Some(session) = session
         && session.last_profile(None).as_deref() != Some(profile.name.as_str())
     {
@@ -346,6 +349,7 @@ impl Book {
         name: &str,
         router: &Router,
         lead: Option<(&AgentHandle, Option<&SessionStore>)>,
+        team: Option<&Team>,
         reason: Reason,
     ) -> Result<String, String> {
         let profile = self.find(name)?;
@@ -353,7 +357,7 @@ impl Book {
         if let Some(why) = crate::routing::needs_login(&usable.missing_logins) {
             return Err(format!("profile {name} {why}"));
         }
-        Ok(switch(&profile, router, lead, reason))
+        Ok(switch(&profile, router, lead, team, reason))
     }
 }
 
@@ -386,7 +390,6 @@ mod tests {
         let catalog = Catalog::embedded();
         // The ChatGPT subscription lists its own models, so the catalogue holds them only under
         // `openai`; the router discovers them under `openai-codex`.
-        let discovered = ["openai-codex"];
         for profile in builtin() {
             assert!(profile.roles.len() >= 8, "{}: {:?}", profile.name, profile.roles);
             for (role, chain) in &profile.roles {
@@ -399,9 +402,11 @@ mod tests {
                     let ModelSpec::Model(model) = spec else {
                         panic!("{}: {role} names a role", profile.name)
                     };
-                    let known = catalog.contains(&model.provider, &model.model)
-                        || (discovered.contains(&model.provider.as_str())
-                            && catalog.contains("openai", &model.model));
+                    let known = match model.provider.as_str() {
+                        "anthropic" => catalog.contains("anthropic", &model.model),
+                        "openai-codex" => catalog.contains("openai", &model.model),
+                        other => panic!("{}: {role} names provider `{other}`", profile.name),
+                    };
                     assert!(
                         known,
                         "{}: {role} = {model} is not in the catalogue",

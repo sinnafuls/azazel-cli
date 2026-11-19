@@ -1086,6 +1086,52 @@ async fn the_status_of_a_working_agent_shows_its_tool_its_words_and_its_files() 
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_running_agent_keeps_its_models_when_roles_change_and_a_new_one_uses_them() {
+    let bench = Bench::new(4, false).await;
+    let on_role = |prompt: &str| azazel_team::SpawnRequest {
+        def: "worker".to_string(),
+        prompt: prompt.to_string(),
+        name: None,
+        model: Some(vec!["@scout".parse().unwrap()]),
+        isolation: None,
+        tools: None,
+        schema: None,
+    };
+    bench.mock.push(
+        "scout",
+        MockStep::tools("", &[("n1", "nap", json!({ "ms": 400 }))]),
+    );
+    bench
+        .mock
+        .push("scout", MockStep::text("finished on the old model"));
+    let first = bench
+        .team
+        .spawn(bench.lead.info(), on_role("one"), false)
+        .await
+        .unwrap();
+    until_state(&bench, &first, napping).await;
+
+    // What a switch of profile does: pin the agents that run, then move the role.
+    assert_eq!(bench.team.pin_running(), 1);
+    let router = bench.team.router();
+    router.set_role("scout", vec!["mock/other".parse().unwrap()]);
+
+    bench
+        .mock
+        .push("other", MockStep::text("started on the new model"));
+    let second = bench
+        .team
+        .spawn(bench.lead.info(), on_role("two"), false)
+        .await
+        .unwrap();
+    until_state(&bench, &first, |state| *state == MemberState::Done).await;
+    until_state(&bench, &second, |state| *state == MemberState::Done).await;
+    // The first agent's second request still went to the model its role named when it started.
+    assert_eq!(bench.mock.requests_for("scout").len(), 2);
+    assert_eq!(bench.mock.requests_for("other").len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_question_asked_on_the_side_is_answered_while_the_agent_keeps_working() {
     let mut bench = Bench::new(4, false).await;
     bench.lead_calls(

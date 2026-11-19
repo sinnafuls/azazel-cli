@@ -425,6 +425,20 @@ pub(crate) fn proxies_on(serve: &str, https: u16) -> Vec<String> {
     proxies
 }
 
+/// Whether `serve status --json` has Funnel on for HTTPS port `https`: the entry then reaches the
+/// internet, which the user turned on after the run that made it, and is no longer only ours.
+fn funnel_on(serve: &str, https: u16) -> bool {
+    let Ok(serve) = serde_json::from_str::<Value>(serve) else {
+        return false;
+    };
+    let suffix = format!(":{https}");
+    serve["AllowFunnel"]
+        .as_object()
+        .into_iter()
+        .flatten()
+        .any(|(host, on)| host.ends_with(&suffix) && on.as_bool() == Some(true))
+}
+
 /// Turns off the entries that `azazel remote` runs killed before they could clean up left on
 /// Tailscale Serve: those whose marker's process is gone and whose entry still proxies to what the
 /// marker says. Nothing without a marker is touched. `serve` is refreshed after a change. Returns
@@ -460,8 +474,10 @@ async fn clear_stale(program: &Path, dir: &Path, serve: &mut String) -> Vec<Stri
             continue;
         }
         let proxies = proxies_on(serve, port);
-        if proxies.is_empty() || proxies.iter().any(|proxy| *proxy != marker.target) {
-            // Gone, or changed by the user since: nothing of ours is left to clear.
+        if proxies.is_empty() || proxies.iter().any(|proxy| *proxy != marker.target) || funnel_on(serve, port)
+        {
+            // Gone, or changed by the user since (a Funnel they turned on included): nothing of
+            // ours is left to clear.
             let _ = std::fs::remove_file(&file);
             continue;
         }
@@ -565,6 +581,16 @@ mod tests {
         let out = r#"{"BackendState":"NeedsLogin","Self":{"DNSName":""}}"#;
         assert!(tailnet_name(out).unwrap_err().contains("tailscale up"));
         assert!(tailnet_name("nope").is_err());
+    }
+
+    #[test]
+    fn an_entry_with_funnel_on_is_not_ours_to_turn_off() {
+        let serve = r#"{"TCP":{"443":{"HTTPS":true}},"AllowFunnel":{"laptop.ts.net:443":true}}"#;
+        assert!(funnel_on(serve, 443));
+        assert!(!funnel_on(serve, 8443));
+        let off = r#"{"TCP":{"443":{"HTTPS":true}},"AllowFunnel":{"laptop.ts.net:443":false}}"#;
+        assert!(!funnel_on(off, 443));
+        assert!(!funnel_on("{}", 443));
     }
 
     #[test]

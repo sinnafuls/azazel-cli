@@ -1278,11 +1278,12 @@ impl Config {
             && !BUILTIN_PROFILES.contains(&on_limit)
             && !config.profiles.entries.contains_key(on_limit)
         {
-            let known: Vec<&str> = BUILTIN_PROFILES
-                .iter()
-                .copied()
-                .chain(config.profiles.entries.keys().map(String::as_str))
-                .collect();
+            let mut known: Vec<&str> = BUILTIN_PROFILES.to_vec();
+            for name in config.profiles.entries.keys().map(String::as_str) {
+                if !known.contains(&name) {
+                    known.push(name);
+                }
+            }
             let message = format!(
                 "profiles.on_limit: unknown profile `{on_limit}`; known: {}",
                 known.join(", ")

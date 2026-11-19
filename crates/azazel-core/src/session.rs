@@ -97,7 +97,8 @@ pub enum EntryKind {
     AgentChange {
         agent: String,
     },
-    /// The profile (a named set of roles) the session switched to.
+    /// The profile (a named set of roles) the session switched to; an empty name says the
+    /// session is on no named profile again.
     ProfileChange {
         profile: String,
     },
@@ -984,12 +985,17 @@ impl SessionStore {
         })
     }
 
-    /// The profile the branch ending at `leaf` last switched to.
+    /// The profile the branch ending at `leaf` last switched to; `None` when it never did, or
+    /// when its last change says it is on no named profile again.
     pub fn last_profile(&self, leaf: Option<&str>) -> Option<String> {
-        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
-            EntryKind::ProfileChange { profile } => Some(profile),
-            _ => None,
-        })
+        self.branch(leaf)
+            .into_iter()
+            .rev()
+            .find_map(|e| match e.kind {
+                EntryKind::ProfileChange { profile } => Some(profile),
+                _ => None,
+            })
+            .filter(|profile| !profile.is_empty())
     }
 
     /// The last message you sent on the branch ending at `leaf`, skipping those `skip` says the

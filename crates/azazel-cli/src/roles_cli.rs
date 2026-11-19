@@ -65,6 +65,7 @@ impl Setup {
             router,
             lead: None,
             book: None,
+            team: None,
         }
     }
 
