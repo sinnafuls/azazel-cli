@@ -33,6 +33,7 @@ use tokio::task::JoinHandle;
 use super::tunnel::{self, Tunnel};
 use crate::app::App;
 use crate::print::event_json;
+use crate::rpc::browser::{self as live, Browser};
 use crate::rpc::session::{agent_messages_of, messages_of, roster_of, state_of, tree_of};
 use crate::rpc::{
     self, Fenced, Pending, Waiting, answered, approval_frame, asked, level_name, locked, team_frame,
@@ -638,6 +639,9 @@ pub(crate) struct TerminalSessions {
     redact: bool,
     started: String,
     next_conn: AtomicU64,
+    /// The agents' browser, which the browsers of the server may watch and take over. Its pictures
+    /// go to the one that asked, not through the [`Feed`]: they are never kept for a later one.
+    browser: Option<Arc<Browser>>,
 }
 
 impl TerminalSessions {
@@ -647,6 +651,7 @@ impl TerminalSessions {
         waiting: Arc<Waiting>,
         web: mpsc::UnboundedSender<Web>,
         redact: bool,
+        browser: Option<Arc<Browser>>,
     ) -> Arc<TerminalSessions> {
         Arc::new(TerminalSessions {
             source,
@@ -656,6 +661,7 @@ impl TerminalSessions {
             redact,
             started: jiff::Timestamp::now().to_string(),
             next_conn: AtomicU64::new(1),
+            browser,
         })
     }
 
@@ -795,6 +801,8 @@ impl TerminalSessions {
         out: mpsc::Sender<String>,
     ) {
         let mut forward: Option<JoinHandle<()>> = None;
+        let mut browser_pump: Option<JoinHandle<()>> = None;
+        let holder = live::holder_of(conn);
         while let Some(line) = commands.recv().await {
             let (id, command) = Request::parse(&line);
             let reply = match command {
@@ -841,6 +849,26 @@ impl TerminalSessions {
                     }));
                     continue;
                 }
+                Ok(command) if live::is_browser(&command) => {
+                    if browser_pump.is_none()
+                        && let Some(browser) = &self.browser
+                    {
+                        browser_pump = Some(browser.pump_to(holder.clone(), tell(&out)));
+                    }
+                    let (answer, answered) = oneshot::channel();
+                    live::dispatch(
+                        self.browser.as_ref(),
+                        holder.clone(),
+                        command,
+                        Box::new(move |outcome| {
+                            let _ = answer.send(outcome);
+                        }),
+                    );
+                    let outcome = answered
+                        .await
+                        .unwrap_or_else(|_| Err("the browser did not answer".to_string()));
+                    self.respond(id, outcome)
+                }
                 Ok(command) => {
                     // What a browser sent is echoed to the others, not to itself.
                     let echo = match &command {
@@ -865,6 +893,25 @@ impl TerminalSessions {
         if let Some(forward) = forward {
             forward.abort();
         }
+        if let Some(pump) = browser_pump {
+            pump.abort();
+        }
+        // A browser that held the agents' browser and went must not leave them waiting.
+        if let Some(browser) = &self.browser {
+            browser.leave(&holder);
+        }
+    }
+}
+
+/// What the pump of the agents' browser writes to the browser on `out`. A picture is dropped when
+/// a line already waits, so that a slow device sees fewer of them and is never let go for them.
+fn tell(out: &mpsc::Sender<String>) -> impl Fn(String, bool) + Send + Sync + 'static {
+    let out = out.clone();
+    move |line, picture| {
+        if picture && out.max_capacity() - out.capacity() > 1 {
+            return;
+        }
+        let _ = out.try_send(line);
     }
 }
 
@@ -906,6 +953,7 @@ impl Sessions for TerminalSessions {
             redact: self.redact,
             started: self.started.clone(),
             next_conn: AtomicU64::new(0),
+            browser: self.browser.clone(),
         });
         tokio::spawn(this.serve(conn, commands_rx, frames_tx));
         Ok(Conn { frames, commands })
@@ -957,7 +1005,14 @@ impl Sharing {
             team: team.clone(),
             listed: crate::models::Listed::default(),
         });
-        let sessions = TerminalSessions::new(source, feed.clone(), waiting.clone(), web, remote.redact);
+        let sessions = TerminalSessions::new(
+            source,
+            feed.clone(),
+            waiting.clone(),
+            web,
+            remote.redact,
+            Browser::of(&services),
+        );
         let server = Server::start(options(&app.config), sessions)
             .await
             .map_err(|e| format!("could not start the server: {e}"))?;
@@ -1330,7 +1385,7 @@ mod tests {
     async fn a_prompt_from_a_browser_reaches_the_terminals_loop_and_is_echoed_to_the_others() {
         let feed = Arc::new(Feed::default());
         let (web, mut loop_rx) = mpsc::unbounded_channel();
-        let sessions = TerminalSessions::new(Arc::new(Stub), feed.clone(), Arc::default(), web, false);
+        let sessions = TerminalSessions::new(Arc::new(Stub), feed.clone(), Arc::default(), web, false, None);
         assert_eq!(sessions.list().await[0].id, ID);
         assert!(sessions.open("nope").await.is_err());
         let mut one = sessions.open(ID).await.unwrap();
@@ -1378,7 +1433,8 @@ mod tests {
     #[tokio::test]
     async fn a_shared_terminal_answers_what_it_cannot_do_instead_of_waiting() {
         let (web, mut loop_rx) = mpsc::unbounded_channel();
-        let sessions = TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false);
+        let sessions =
+            TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false, None);
         let mut conn = sessions.open(ID).await.unwrap();
         assert_eq!(frame(&mut conn).await["type"], "hello");
         let commands = [
@@ -1403,7 +1459,8 @@ mod tests {
     #[tokio::test]
     async fn a_browser_on_a_shared_terminal_can_read_the_model_list() {
         let (web, _loop_rx) = mpsc::unbounded_channel();
-        let sessions = TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false);
+        let sessions =
+            TerminalSessions::new(Arc::new(Stub), Arc::default(), Arc::default(), web, false, None);
         let mut conn = sessions.open(ID).await.unwrap();
         assert_eq!(frame(&mut conn).await["type"], "hello");
         conn.commands

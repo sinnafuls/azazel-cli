@@ -1154,3 +1154,39 @@ async fn going_on_with_a_session_twice_at_once_starts_one_host_and_never_restore
     assert_eq!(rows.len(), 1, "{rows:?}");
     assert_ne!(rows[0]["mode"], "bypass", "{rows:?}");
 }
+
+/// A view link may be let watch the agents' browser, never take it over or steer it.
+#[cfg(feature = "browser")]
+#[tokio::test]
+async fn a_view_link_is_refused_the_browser_unless_it_may_watch_and_never_takes_it() {
+    let sandbox = Sandbox::new();
+    let id = sandbox.bg("manual");
+    sandbox.wait_for_state(&id, "waiting for you");
+    let mut remote = sandbox.remote(&["--view"], &[]);
+    let view = remote.pair_with(&remote.secret()).await;
+    let mut watcher = connect(remote.port(), &id, Some(&view), &remote.base()).await;
+    next(&mut watcher).await;
+    assert_eq!(attach(&mut watcher, "none").await["success"], true);
+    for (n, command) in [
+        json!({ "type": "browser_watch", "on": true }),
+        json!({ "type": "browser_take", "on": true }),
+        json!({ "type": "browser_input", "input": { "kind": "back" } }),
+        json!({ "type": "browser_sign_in" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut command = command;
+        command["id"] = format!("b{n}").into();
+        send(&mut watcher, command).await;
+        let answer = until(&mut watcher, |frame| frame["id"] == format!("b{n}"))
+            .await
+            .pop()
+            .unwrap();
+        assert_eq!(answer["success"], false, "{answer}");
+        assert!(
+            answer["error"].as_str().unwrap().contains("control link"),
+            "{answer}"
+        );
+    }
+}

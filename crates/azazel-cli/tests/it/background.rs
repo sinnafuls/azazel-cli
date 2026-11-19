@@ -1298,3 +1298,65 @@ fn options_that_cannot_apply_to_a_running_session_are_refused_when_attaching() {
     assert_eq!(sandbox.ps().len(), 1);
     assert_eq!(sandbox.session_files().len(), 1);
 }
+
+/// The agents' browser is shared by the clients of a session: one holds it, the others are
+/// refused, and it is handed back when the holder goes. What it sends is never logged or
+/// replayed.
+#[cfg(feature = "browser")]
+#[test]
+fn the_browser_goes_to_one_client_and_back_when_it_disconnects_and_is_never_logged() {
+    let (sandbox, id) = session_waiting_for_approval();
+    let (mut one, _) = Bridge::attach(&sandbox, &id, "none");
+    let (mut two, _) = Bridge::attach(&sandbox, &id, "none");
+
+    one.send(json!({ "id": "w", "type": "browser_watch", "on": true }));
+    let watching = one.until(|frame| frame["id"] == "w").pop().unwrap();
+    assert_eq!(watching["success"], true, "{watching}");
+    assert_eq!(watching["data"]["running"], false, "{watching}");
+
+    one.send(json!({ "id": "t", "type": "browser_take", "on": true }));
+    let taken = one.until(|frame| frame["id"] == "t").pop().unwrap();
+    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
+    // The other client is told it is held, and that it is not its own.
+    let told = two
+        .until(|frame| frame["type"] == "browser_state" && frame["held"] == true)
+        .pop()
+        .unwrap();
+    assert_eq!(
+        (&told["held"], &told["held_by_you"]),
+        (&json!(true), &json!(false)),
+        "{told}"
+    );
+
+    two.send(json!({ "id": "t", "type": "browser_take", "on": true }));
+    let refused = two.until(|frame| frame["id"] == "t").pop().unwrap();
+    assert_eq!(refused["error"], "another device has the browser", "{refused}");
+    two.send(json!({ "id": "i", "type": "browser_input", "input": { "kind": "back" } }));
+    let refused = two.until(|frame| frame["id"] == "i").pop().unwrap();
+    assert_eq!(refused["error"], "take the browser over first", "{refused}");
+
+    // The holder goes without handing back; the other can have it.
+    one.detach();
+    let freed = two
+        .until(|frame| frame["type"] == "browser_state" && frame["held"] == false)
+        .pop()
+        .unwrap();
+    assert_eq!(freed["held"], false, "{freed}");
+    two.send(json!({ "id": "t2", "type": "browser_take", "on": true }));
+    let taken = two.until(|frame| frame["id"] == "t2").pop().unwrap();
+    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
+
+    // A client that comes late is replayed the whole log, and finds no browser frame in it.
+    let (late, _) = Bridge::attach(&sandbox, &id, "all");
+    let replayed = late.until(|frame| frame["type"] == "approval_request");
+    assert!(
+        replayed
+            .iter()
+            .all(|frame| !frame["type"].as_str().unwrap().starts_with("browser_")),
+        "{replayed:?}"
+    );
+    let log = std::fs::read_to_string(sandbox.run_file(&format!("{id}.log"))).unwrap();
+    assert!(!log.contains("browser_"), "the log holds browser frames");
+    late.detach();
+    two.detach();
+}

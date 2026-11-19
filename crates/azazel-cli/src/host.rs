@@ -23,6 +23,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use azazel_core::{Event, Level};
@@ -38,6 +39,7 @@ use crate::app::{Active, App};
 use crate::attention::{Attention, Kind};
 use crate::detach::socket::{self, Accept, Listener};
 use crate::print::{EXIT_FAILED, EXIT_OK};
+use crate::rpc::browser::{self, Browser};
 use crate::rpc::{self, Waiting};
 use crate::running::{self, Entry, Lock};
 use crate::schedule::Scheduler;
@@ -172,6 +174,14 @@ struct Host {
     waiting: Arc<Waiting>,
     /// What each open connection is written, by connection.
     conns: HashMap<u64, mpsc::UnboundedSender<String>>,
+    /// How many pictures of the agents' browser wait to be written to each connection: one that
+    /// is behind is sent no more until it has caught up.
+    pictures: HashMap<u64, Arc<AtomicUsize>>,
+    /// The agents' browser, as the clients see it. Its pictures and states go to the clients
+    /// only: they are not frames of the session, and are neither logged nor replayed.
+    browser: Option<Arc<Browser>>,
+    /// What tells each attached client about the browser.
+    pumps: HashMap<u64, tokio::task::JoinHandle<()>>,
     /// The connections that are clients of the session, and the process each said it is.
     attached: BTreeMap<u64, Option<u32>>,
     pending: Vec<Pending>,
@@ -263,6 +273,9 @@ pub async fn run(app: Arc<App>, active: Active, options: Options) -> u8 {
         input: Some(input),
         waiting: waiting.clone(),
         conns: HashMap::new(),
+        pictures: HashMap::new(),
+        browser: Browser::of(&app.registry.services),
+        pumps: HashMap::new(),
         attached: BTreeMap::new(),
         pending: Vec::new(),
         live: Live::default(),
@@ -313,6 +326,9 @@ pub async fn run(app: Arc<App>, active: Active, options: Options) -> u8 {
     drop(alive);
     EXIT_OK
 }
+
+/// The start of a `browser_frame` line, as the protocol writes it.
+const PICTURE: &str = r#"{"type":"browser_frame""#;
 
 /// Whether a `ui_request` frame asks for an answer.
 fn asks(frame: &Value) -> bool {
@@ -741,10 +757,17 @@ impl Host {
             let _ = lines.send(hello);
         }
         self.conns.insert(conn, lines);
+        let pictures = Arc::new(AtomicUsize::new(0));
+        self.pictures.insert(conn, pictures.clone());
         tokio::spawn(async move {
             while let Some(mut line) = queued.recv().await {
+                let picture = line.starts_with(PICTURE);
                 line.push('\n');
-                if writer.write_all(line.as_bytes()).await.is_err() || writer.flush().await.is_err() {
+                let written = writer.write_all(line.as_bytes()).await.is_ok() && writer.flush().await.is_ok();
+                if picture {
+                    pictures.fetch_sub(1, Ordering::SeqCst);
+                }
+                if !written {
                     break;
                 }
             }
@@ -763,6 +786,14 @@ impl Host {
 
     fn gone(&mut self, conn: u64) {
         self.conns.remove(&conn);
+        self.pictures.remove(&conn);
+        if let Some(pump) = self.pumps.remove(&conn) {
+            pump.abort();
+        }
+        // A client that held the browser and went must not leave the agents waiting.
+        if let Some(browser) = &self.browser {
+            browser.leave(&browser::holder_of(conn));
+        }
         if self.attached.remove(&conn).is_some() && self.attached.is_empty() {
             self.seen = self.log_len;
             self.settle();
@@ -794,6 +825,9 @@ impl Host {
             Err(error) => return self.respond(conn, id, Err(error)),
             Ok(command) => command,
         };
+        if browser::is_browser(&command) {
+            return self.browser_command(conn, id, command);
+        }
         if self.input.is_none() {
             return self.respond(conn, id, Err("the session is ending".to_string()));
         }
@@ -830,6 +864,49 @@ impl Host {
         };
         if let Ok(line) = serde_json::to_string(&renamed) {
             self.send_line(line);
+        }
+    }
+
+    /// A command about the agents' browser: it is served here, not by the session, so that what
+    /// it makes the browser send does not become frames of the session.
+    fn browser_command(&self, conn: u64, id: Value, command: Command) {
+        let lines = self.conns.get(&conn).cloned();
+        browser::dispatch(
+            self.browser.as_ref(),
+            browser::holder_of(conn),
+            command,
+            Box::new(move |outcome| {
+                let response = match outcome {
+                    Ok(data) => Response::ok(id, data),
+                    Err(error) => Response::err(id, error),
+                };
+                if let (Some(lines), Ok(line)) = (lines, serde_json::to_string(&Frame::Response(response))) {
+                    let _ = lines.send(line);
+                }
+            }),
+        );
+    }
+
+    /// Starts telling the client on `conn` what the agents' browser does.
+    fn watch_browser(&mut self, conn: u64) {
+        let (Some(browser), Some(lines), Some(pictures)) = (
+            &self.browser,
+            self.conns.get(&conn).cloned(),
+            self.pictures.get(&conn).cloned(),
+        ) else {
+            return;
+        };
+        let pump = browser.pump_to(browser::holder_of(conn), move |line, picture| {
+            if picture {
+                if pictures.load(Ordering::SeqCst) > 0 {
+                    return;
+                }
+                pictures.fetch_add(1, Ordering::SeqCst);
+            }
+            let _ = lines.send(line);
+        });
+        if let Some(old) = self.pumps.insert(conn, pump) {
+            old.abort();
         }
     }
 
@@ -886,6 +963,8 @@ impl Host {
             }
             self.to(conn, pending.line.clone());
         }
+        // Only after the answer and the replay, so a client reads `attach`'s answer first.
+        self.watch_browser(conn);
     }
 
     /// Whether the log holds a frame whose line starts at byte `at`.

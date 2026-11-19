@@ -564,6 +564,7 @@ unknown tier or profile) exits with status 2.
 | `azazel mcp` | `list`, `add`, `remove`, `login`, `logout`, `approve`, `reject`, `serve`, `import` | Manage MCP servers, or serve azazel as one; see [MCP](mcp.md) |
 | `azazel pkg` | `add`, `list`, `update`, `remove` | Install and manage packages; see [packages](packages.md) |
 | `azazel skills` | `add`, `list`, `remove` | Install and list skills; see [packages](packages.md#azazel-skills) |
+| `azazel browser` | `open` | Show the agents' browser profile in a window to sign in to sites: `azazel browser open [URL]`; see [signing in](web-and-browser.md#signing-in) |
 | `azazel lsp` | `list`, `install` | List the language servers and install the ones azazel can; see [installing servers](lsp.md#installing-servers) |
 | `azazel rules` | `list`, `test` | Show the rule files of the project and test one; see [rules](rules.md) |
 | `azazel memory` | `list`, `search`, `forget`, `export` | What is remembered about the project; see [memory](memory.md) |

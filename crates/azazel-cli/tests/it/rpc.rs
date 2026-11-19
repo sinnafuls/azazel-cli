@@ -822,3 +822,86 @@ fn trust_directories_and_approvals_are_changed_like_the_slash_commands() {
 
     assert_eq!(client.finish(), Some(0));
 }
+
+#[cfg(feature = "browser")]
+#[test]
+fn the_browser_view_can_be_taken_and_handed_back_and_input_needs_the_hold_and_a_page() {
+    let mut client = Client::start("write_read.json");
+
+    let (_, watching) = client.ask(1, json!({ "type": "browser_watch", "on": true }));
+    assert_eq!(watching["success"], true, "{watching}");
+    assert_eq!(watching["data"]["running"], false, "{watching}");
+    assert_eq!(watching["data"]["held_by_you"], false, "{watching}");
+
+    let click = json!({ "type": "browser_input", "input": { "kind": "click", "x": 0.5, "y": 0.5 } });
+    let (_, refused) = client.ask(2, click.clone());
+    assert_eq!(refused["error"], "take the browser over first", "{refused}");
+
+    let (frames, taken) = client.ask(3, json!({ "type": "browser_take", "on": true }));
+    assert_eq!(taken["data"]["held"], true, "{taken}");
+    assert_eq!(taken["data"]["held_by_you"], true, "{taken}");
+    // What the client is told of the hold is a frame of its own, not an event of the session.
+    let told = frames
+        .iter()
+        .find(|frame| frame["type"] == "browser_state")
+        .unwrap_or(&taken);
+    assert!(
+        told["held_by_you"] == true || told["data"]["held_by_you"] == true,
+        "{told}"
+    );
+
+    let (_, no_page) = client.ask(4, click);
+    assert!(
+        no_page["error"]
+            .as_str()
+            .unwrap()
+            .contains("no browser is running"),
+        "{no_page}"
+    );
+    let (_, off_screen) = client.ask(
+        5,
+        json!({ "type": "browser_input", "input": { "kind": "click", "x": 2.0, "y": 0.5 } }),
+    );
+    assert!(
+        off_screen["error"].as_str().unwrap().contains("between 0 and 1"),
+        "{off_screen}"
+    );
+
+    let (_, back) = client.ask(6, json!({ "type": "browser_take", "on": false }));
+    assert_eq!(back["data"]["held"], false, "{back}");
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[cfg(not(feature = "browser"))]
+#[test]
+fn without_the_browser_feature_the_view_commands_say_so() {
+    let mut client = Client::start("write_read.json");
+    for (id, command) in [
+        json!({ "type": "browser_watch", "on": true }),
+        json!({ "type": "browser_take", "on": true }),
+        json!({ "type": "browser_sign_in" }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (_, answer) = client.ask(id as u64 + 1, command);
+        assert_eq!(
+            answer["error"], "the browser is not part of this build",
+            "{answer}"
+        );
+    }
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[cfg(feature = "browser")]
+#[test]
+fn browser_open_refuses_an_address_that_is_not_http() {
+    let dir = tempfile::tempdir().unwrap();
+    let output = Command::new(assert_cmd::cargo::cargo_bin("azazel"))
+        .env("AZAZEL_HOME", dir.path())
+        .args(["browser", "open", "file:///etc/passwd"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not an http or https URL"));
+}

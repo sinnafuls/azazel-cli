@@ -8,6 +8,7 @@
 //! The session ends when the input closes.
 
 pub(crate) mod admin;
+pub(crate) mod browser;
 pub(crate) mod session;
 
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -374,6 +375,10 @@ struct Session {
     handing_off: Option<(u64, CancellationToken)>,
     /// Numbers the hand-offs.
     handoffs: u64,
+    /// The agents' browser, when this build and session have one.
+    browser: Option<Arc<browser::Browser>>,
+    /// Tells the client what the browser does, from the first `browser_*` command on.
+    browser_pump: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Session {
@@ -776,18 +781,38 @@ impl Session {
             Command::AddDir { path } => data(admin::add_dir(&self.app, &path)?).map(Some),
             Command::ForgetApprovals => data(admin::forget_approvals(&self.app)?).map(Some),
             Command::RunCommand { name, args, only } => self.command(id, &name, args, only.as_deref()).await,
-            // WP3 serves these from the session's `BrowserSession`.
-            Command::BrowserWatch { .. }
+            command @ (Command::BrowserWatch { .. }
             | Command::BrowserTake { .. }
             | Command::BrowserInput { .. }
-            | Command::BrowserSignIn { .. } => {
-                Err("the live browser view is not available in this session".to_string())
+            | Command::BrowserSignIn { .. }) => {
+                self.browser_command(id.clone(), command);
+                Ok(None)
             }
             // A background session answers these itself, before its lines get here.
             Command::Attach { .. } | Command::Stop { .. } => Err(
                 "this is not a background session: it serves the one client it was started for".to_string(),
             ),
         }
+    }
+
+    /// A command about the agents' browser. Its answer comes later, from the browser's own task;
+    /// the pictures and states the client asked for are written as frames beside the events.
+    fn browser_command(&mut self, id: Value, command: Command) {
+        if self.browser_pump.is_none()
+            && let Some(browser) = &self.browser
+        {
+            let out = self.out.clone();
+            self.browser_pump = Some(browser.pump_to(browser::HOLDER.to_string(), move |line, _| {
+                let _ = out.0.send(Some(line));
+            }));
+        }
+        let out = self.out.clone();
+        browser::dispatch(
+            self.browser.as_ref(),
+            browser::HOLDER.to_string(),
+            command,
+            Box::new(move |outcome| out.respond(id, outcome)),
+        );
     }
 
     /// `shell`: the command runs beside the loop, so the session keeps answering meanwhile.
@@ -1137,6 +1162,7 @@ pub(crate) async fn serve_lines(
     }))));
 
     let team = app.registry.services.get::<Team>();
+    let app_services = app.registry.services.clone();
     let mut team_events = team.as_ref().map(|team| team.subscribe());
     let source = if active.resumed {
         StartSource::Resume
@@ -1166,6 +1192,8 @@ pub(crate) async fn serve_lines(
         named: HashSet::new(),
         cancel: CancellationToken::new(),
         listed: Default::default(),
+        browser: browser::Browser::of(&app_services),
+        browser_pump: None,
     };
 
     let mut input = std::pin::pin!(input);
@@ -1215,6 +1243,12 @@ pub(crate) async fn serve_lines(
     pending.flush(&out);
     // Requests still open end the way they do when nobody is there.
     session.cancel.cancel();
+    if let Some(pump) = session.browser_pump.take() {
+        pump.abort();
+    }
+    if let Some(browser) = &session.browser {
+        browser.leave(browser::HOLDER);
+    }
     locked(&session.waiting.approvals).clear();
     locked(&session.waiting.answers).clear();
     session.app.finish(&session.active).await;

@@ -527,6 +527,12 @@ pub enum Sub {
         #[command(subcommand)]
         action: LspAction,
     },
+    /// Sign in to sites in the agents' own browser profile
+    #[cfg(feature = "browser")]
+    Browser {
+        #[command(subcommand)]
+        action: BrowserAction,
+    },
     /// Show the rule files of this project and test one
     Rules {
         #[command(subcommand)]
@@ -727,6 +733,16 @@ pub enum LspAction {
     Install {
         /// A name from `azazel lsp list` (rust, typescript, python, go)
         server: String,
+    },
+}
+
+#[cfg(feature = "browser")]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum BrowserAction {
+    /// Show the agents' browser profile in a window, to sign in to sites; waits until it is closed
+    Open {
+        /// An http or https address to open the window on
+        url: Option<String>,
     },
 }
 

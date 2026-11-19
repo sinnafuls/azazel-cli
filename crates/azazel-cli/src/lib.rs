@@ -6,6 +6,8 @@ pub mod acp;
 pub mod app;
 mod attention;
 mod branch;
+#[cfg(feature = "browser")]
+mod browser_cmd;
 pub mod bug;
 pub mod changelog;
 pub mod cli;
@@ -374,6 +376,13 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         Some(Sub::Rules { action }) => return rules::run(action, &paths, trusted),
         #[cfg(feature = "lsp")]
         Some(Sub::Lsp { action }) => return lsp_cli::run(action, &paths, trusted).await,
+        #[cfg(feature = "browser")]
+        Some(Sub::Browser { action }) => {
+            let Some(config) = load_config(&cli, &paths, trusted) else {
+                return print::EXIT_FAILED;
+            };
+            return browser_cmd::run(action, &paths, &config).await;
+        }
         Some(Sub::Doctor) => return doctor::run(&paths, trusted).await,
         Some(Sub::Bug {
             description,
