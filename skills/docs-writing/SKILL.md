@@ -85,6 +85,7 @@ Keep it under a few screens. Move anything long to `docs/` and link it.
 
 ## 9. Sentences
 
+- Plain, human prose: apply the `writing-style` skill to anything you write, and again on a final read.
 - Second person and active voice: "Run the migration", not "The migration should be run".
 - One idea per sentence. Short paragraphs. The important word early.
 - Present tense. No "simply", "just", "easily", "obviously": if it were, the reader would not be here.

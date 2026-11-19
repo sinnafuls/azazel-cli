@@ -9,6 +9,9 @@ GitHub are its section here.
 
 ### Added
 
+- Built-in skills `writing-style` (write prose a person would write, and rewrite or edit text that reads as machine-written), `lean` (take the smallest complete change; mark a deliberate limit with `shortcut: <limit>; upgrade when <trigger>`), `debt-ledger` (list those shortcuts) and `audit` (a ranked audit of a whole repository in a reviewer sub-agent).
+- A built-in primary agent `lean`, reached with Tab or `/agent lean`, that takes the smallest complete change and pushes back on scope the need doesn't justify.
+- `/commit` and `/pr` ask the drafting model for plain wording with no filler; every agent's built-in rules ask for plain prose and a closing line on what wasn't checked and any risk; the `coder` agent loads the `lean` skill; `code-review` reports a finding only with a concrete failing case, numbers findings across severities, says what happens if each is skipped, and ends with a verdict and what wasn't reviewed.
 - The status line has a `checked` segment, on by default: `⚠ unchecked` after the lead or any sub-agent changes a code file, and `✔ checked` once a build, test or lint command has run since (whether it passed or not). RPC `get_state` carries it as `checked`.
 - In the input, Up on the first row moves the cursor to the start of the text and Down on the last row moves it to the end before they step through prompt history; wrapped rows count as rows, and a recalled prompt puts the cursor where the next press keeps stepping.
 - Edit profiles without touching the config: the Profiles view of `/models` (also opened from the `/profile` picker) switches, creates, copies, renames and deletes profiles, sets a profile's roles with the model picker, and turns built-in profiles off and on (`[profiles] disabled`). Editing a built-in saves your own copy, and `x` goes back to the built-in.

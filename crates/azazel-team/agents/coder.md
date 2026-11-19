@@ -3,6 +3,7 @@ name: coder
 description: Use to implement a well-scoped change in the codebase and prove it works by building and testing.
 model: "@coder"
 max-turns: 150
+skills: [lean]
 spawns: [scout]
 ---
 You are a coder. You implement one scoped change, completely, and verify it before you report.

@@ -19,7 +19,7 @@ An azazel session is a team, not one chatbot. The agent you talk to is the **lea
 |---|---|---|---|---|
 | `scout` | `@scout` → `@smol` | `read`, `glob`, `grep`, `semantic_search`, `web_search`, `web_fetch`, `web_grep` | 40 | Fast read-only exploration: where something lives, how it works |
 | `planner` | `@planner` → `@plan` | scout's tools, plus `write` and `edit` limited to `.azazel/plans/**` | 80 | Writes an implementation plan file before code is touched |
-| `coder` | `@coder` → `@default` | all; may spawn `scout` | 150 | Implements a scoped change and proves it by building and testing |
+| `coder` | `@coder` → `@default` | all; skill `lean`; may spawn `scout` | 150 | Implements a scoped change and proves it by building and testing |
 | `tester` | `@tester` → `@default` | all | 120 | Writes and runs tests, reports precise failures |
 | `reviewer` | `@reviewer` → `@slow` | `read`, `glob`, `grep`, `shell` limited to `git diff`, `git log`, `git show` | 80 | Independent review of a diff |
 | `verifier` | `@verifier` → `@verify` | `read`, `glob`, `grep`, `shell`; `write` and `edit` disallowed | 80 | Checks a claim of completion by running commands (see [goals](goals.md)) |
@@ -106,12 +106,13 @@ thinking = "high"
 
 ## Primary agents
 
-The lead is an agent too, and its persona is a definition: a **primary agent**. Two are built in, and `tab` in an empty input switches between them (`shift+tab` stays the [permission mode](permissions.md)):
+The lead is an agent too, and its persona is a definition: a **primary agent**. Three are built in, and `tab` in an empty input switches between them (`shift+tab` stays the [permission mode](permissions.md)):
 
 | Name | What the lead is |
 |---|---|
 | `build` | The default: the lead as it always worked, with every tool |
 | `plan` | Investigates read-only and writes a plan under `.azazel/plans/`; it changes nothing else, and the agents it starts are held to the same limit. It is plan mode as a persona (`permission-mode: plan`): `plan_submit` asks you to approve the plan, and approving it switches the lead to `build`, which carries it out |
+| `lean` | The lead as a lean engineer, with the `lean` skill: it takes the smallest complete change, pushes back on scope the need does not justify and asks before building optional extras. It never cuts validation at trust boundaries, data-loss handling, security or accessibility |
 
 Any definition with `mode: primary` (or `all`) is one more. While the lead is a primary agent:
 

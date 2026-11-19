@@ -105,15 +105,18 @@ The built-in skills are extracted to `~/.azazel/cache/skills-<hash>/` the first 
 | Skill | Use it for |
 |---|---|
 | `api-design` | Designing or reviewing an HTTP or RPC API, a library surface or a wire format |
+| `audit` | Auditing a whole repository in a `reviewer` sub-agent: entry points and load first, then at most 20 ranked findings and what was not read |
 | `azazel-extensions` | Customising Azazel: Luau extensions, hooks, agent definitions, commands, skills, packages |
 | `browser-testing` | Checking a web page or app in a real browser with the `browser` tool |
 | `code-review` | Reviewing a diff, branch or pull request: rubric, severities, findings format |
+| `debt-ledger` | Listing the `shortcut: <limit>; upgrade when <trigger>` comments of a codebase as a table, flagging those without a trigger |
 | `debugging` | Finding the cause of a failure: reproduce, isolate, hypothesise, instrument, fix, prove |
 | `design-tokens` | Deriving colour, type, spacing, radius and shadow tokens and emitting them as CSS and a Tailwind theme |
 | `docs-writing` | READMEs, tutorials, how-to guides, reference pages, changelogs |
 | `frontend-design` | Building or restyling a user interface so that it looks designed |
 | `game-dev` | Working in Godot, Unity, Unreal Engine, Roblox or Bevy projects, including the asset pipeline |
 | `git-workflow` | Commits, branches, conflicts, bisecting, recovering lost work |
+| `lean` | Choosing the smallest complete change before writing code: a ladder from "does it need to exist" to "the minimum that works", what is never cut, and the `shortcut:` marker |
 | `mcp-builder` | Writing, extending or debugging an MCP server |
 | `media-generation` | Prompts for images, video, 3D models, audio and sprite sheets |
 | `performance` | Measuring, profiling and proving a speed or memory improvement |
@@ -124,6 +127,7 @@ The built-in skills are extracted to `~/.azazel/cache/skills-<hash>/` the first 
 | `security-review` | Looking for security defects in code you are allowed to assess |
 | `testing` | Writing tests, choosing their level, fixing flaky or slow tests |
 | `ui-review` | Auditing an interface for accessibility and usability problems |
+| `writing-style` | Writing prose a person would write: the habits that mark text as machine-written, and how to rewrite pasted text, edit a file or return text for a commit or pull request |
 
 ## Custom commands
 

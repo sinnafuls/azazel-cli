@@ -1240,7 +1240,8 @@ while the viewer is open; if it needs you, the last row says so and the request 
    whether to stage everything (`git add -A`); stage a part yourself with `!git add <path>` first to commit only
    that.
 2. The `smol` role drafts a message in the style of the recent subjects. Anything you write after `/commit` is
-   passed to it as a hint. The draft costs a small request, listed by `/cost` under `commit`.
+   passed to it as a hint. The request carries a few lines of style rules (plain words, no filler, no invented
+   facts; the short form of the `writing-style` skill). The draft costs a small request, listed by `/cost` under `commit`.
 3. The message opens in an input. Edit it; `Shift+Enter` adds a line and `Ctrl+G` opens it in your editor.
    `Enter` commits, `Esc` or an empty message cancels.
 4. `git commit` runs with your identity, hooks and signing. Its output is shown, and the agent is told about the

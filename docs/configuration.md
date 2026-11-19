@@ -452,7 +452,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--models <SPECS>` | What `Ctrl+P` steps through in this run, in place of `tui.favourites`: models and `@roles` separated by commas, named as for `--model`; see [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `--thinking <LEVEL>` | `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; wins over the level of the lead's role. Without it the lead asks for its model's `:level`, else `off` |
 | `--mode <MODE>` | Permission mode: `plan`, `manual`, `accept-edits`, `auto`, `bypass` |
-| `--agent <NAME>` | The [primary agent](team.md#primary-agents) the lead is for this run: `build`, `plan` or one of your own; a name that is no primary agent exits with status 2 |
+| `--agent <NAME>` | The [primary agent](team.md#primary-agents) the lead is for this run: `build`, `plan`, `lean` or one of your own; a name that is no primary agent exits with status 2 |
 | `--output <text\|json>` | Output of print mode; default `text` |
 | `-c`, `--continue` | Continue the most recent session of this project |
 | `--new` | Start a new session, also when `[session] resume = "last"` would continue the latest; cannot go with `-c`, `--session` or `--fork` |

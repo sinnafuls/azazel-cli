@@ -34,7 +34,7 @@ Popup lists of the repository's issues or pull requests: number, title, author, 
 Opens a pull request from the current branch.
 
 1. It refuses, saying what to do, on the repository's default branch, with a detached `HEAD`, with uncommitted changes, or when the branch has no commits the default branch lacks.
-2. The lead's small model drafts a title and description from `git log <base>..HEAD` and the diff. Text after `/pr` is used as the title.
+2. The lead's small model drafts a title and description from `git log <base>..HEAD` and the diff. Text after `/pr` is used as the title. The request carries the same few lines of style rules as `/commit`.
 3. You edit the draft in a form: the first line is the title, the rest the description. An empty text cancels.
 4. It asks whether to push the branch to `origin` and open the pull request, and shows what will be sent. Nothing is pushed before you say yes (in `bypass` mode the question is skipped).
 5. It pushes the branch, runs `gh pr create` and prints the pull request's address.

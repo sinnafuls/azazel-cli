@@ -12,6 +12,7 @@ Refactoring changes structure and preserves behaviour. The discipline is in prov
 - Name the problem the structure causes: a change that had to be made in four places, a function nobody can test, a module that knows too much. Refactor toward the next real change, not toward an ideal.
 - Define done: which code moves where, which interface results. Write it in the plan.
 - Agree the limits: public interfaces that must not change, files that are out of scope.
+- Leave `shortcut: <limit>; upgrade when <trigger>` comments alone: each records a decision to do less. Remove one only when its trigger has happened and the refactoring is the upgrade; the `debt-ledger` skill lists them.
 
 ## 2. Pin the behaviour
 

@@ -6,6 +6,7 @@ pub const BUILTIN_AGENTS: &[(&str, &str)] = &[
     ("build.md", include_str!("../agents/build.md")),
     ("coder.md", include_str!("../agents/coder.md")),
     ("designer.md", include_str!("../agents/designer.md")),
+    ("lean.md", include_str!("../agents/lean.md")),
     ("plan.md", include_str!("../agents/plan.md")),
     ("planner.md", include_str!("../agents/planner.md")),
     ("playtester.md", include_str!("../agents/playtester.md")),
@@ -22,11 +23,12 @@ mod tests {
 
     use super::*;
 
-    const NAMES: [&str; 12] = [
+    const NAMES: [&str; 13] = [
         "artist",
         "build",
         "coder",
         "designer",
+        "lean",
         "plan",
         "planner",
         "playtester",
@@ -52,13 +54,13 @@ mod tests {
     }
 
     #[test]
-    fn every_builtin_parses_and_the_set_is_the_documented_ten_and_two_primaries() {
+    fn every_builtin_parses_and_the_set_is_the_documented_ten_and_three_primaries() {
         let defs = builtins();
         assert!(defs.invalid().is_empty(), "{:?}", defs.invalid());
         let names: Vec<String> = defs.list().iter().map(|def| def.name.clone()).collect();
         assert_eq!(names, NAMES);
         let primaries: Vec<String> = defs.primaries().iter().map(|def| def.name.clone()).collect();
-        assert_eq!(primaries, ["build", "plan"]);
+        assert_eq!(primaries, ["build", "lean", "plan"]);
         for def in defs.list() {
             assert_eq!(def.source, DefSource::Builtin, "{}", def.name);
             assert!(!def.body.is_empty(), "{} has no system prompt", def.name);
@@ -84,6 +86,16 @@ mod tests {
         let build = defs.primary("build").unwrap();
         assert!(!build.plan_mode && build.tools.is_none() && build.color.is_none());
         assert!(defs.subagent("plan").is_none() && defs.subagent("build").is_none());
+    }
+
+    #[test]
+    fn the_lean_agent_is_a_primary_in_the_tab_cycle_and_the_coder_loads_the_lean_skill() {
+        let defs = builtins();
+        let lean = defs.primary("lean").unwrap();
+        assert_eq!(lean.skills, ["lean"]);
+        assert!(defs.subagent("lean").is_none());
+        assert!(!lean.plan_mode && lean.tools.is_none());
+        assert_eq!(defs.get("coder").unwrap().skills, ["lean"]);
     }
 
     #[test]

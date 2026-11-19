@@ -91,17 +91,20 @@ mod tests {
     use crate::skills::{SkillRoot, SkillSource, discover};
 
     /// The skills every installation has.
-    const REQUIRED: [&str; 20] = [
+    const REQUIRED: [&str; 24] = [
         "api-design",
+        "audit",
         "azazel-extensions",
         "browser-testing",
         "code-review",
+        "debt-ledger",
         "debugging",
         "design-tokens",
         "docs-writing",
         "frontend-design",
         "game-dev",
         "git-workflow",
+        "lean",
         "mcp-builder",
         "media-generation",
         "performance",
@@ -112,6 +115,7 @@ mod tests {
         "security-review",
         "testing",
         "ui-review",
+        "writing-style",
     ];
 
     /// The targets of the relative Markdown links in `text`.

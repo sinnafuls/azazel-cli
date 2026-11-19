@@ -440,7 +440,7 @@ fn commands_change_the_session_and_mistakes_are_answered() {
         bad_agent["error"]
             .as_str()
             .unwrap()
-            .contains("the primary agents are: build, plan"),
+            .contains("the primary agents are: build, lean, plan"),
         "{bad_agent}"
     );
     let (_, state) = client.ask(53, json!({ "type": "get_state" }));
@@ -451,7 +451,7 @@ fn commands_change_the_session_and_mistakes_are_answered() {
         .iter()
         .map(|agent| agent["name"].as_str().unwrap())
         .collect();
-    assert_eq!(primaries, ["build", "plan"]);
+    assert_eq!(primaries, ["build", "lean", "plan"]);
     client.ask(54, json!({ "type": "set_agent", "agent": "build" }));
 
     for (id, command, error) in [

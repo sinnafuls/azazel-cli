@@ -147,6 +147,7 @@ pub fn pr_request(plan: &Plan, hint: &str) -> String {
          - Reply with the title and description only: no quotes, no code fence, nothing before or after.\n",
         plan.branch, plan.base
     );
+    out.push_str(git::WRITING_RULES);
     if !hint.trim().is_empty() {
         out.push_str(&format!("\nThe author wants the title to be: {}\n", hint.trim()));
     }
@@ -302,6 +303,21 @@ mod tests {
             )
         );
         assert_eq!(age("2026-11-05T09:30:00Z", now), "30m");
+    }
+
+    #[test]
+    fn the_pull_request_request_carries_the_style_rules_and_the_commits() {
+        let plan = Plan {
+            top: PathBuf::new(),
+            branch: "topic".into(),
+            base: "main".into(),
+            log: "abc Add x".into(),
+            diff: "+x".into(),
+        };
+        let request = pr_request(&plan, "Add x");
+        assert!(request.contains(git::WRITING_RULES));
+        assert!(request.contains("The author wants the title to be: Add x"));
+        assert!(request.contains("abc Add x") && request.contains("+x"));
     }
 
     #[test]

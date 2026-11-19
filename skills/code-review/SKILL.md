@@ -13,7 +13,8 @@ A review answers one question: is this change safe and correct to merge, and if 
 3. **Read the surrounding code**, not just the changed lines. Open each changed function in full, and at least one caller and one callee. Most review defects are interactions with code outside the diff.
 4. **Run it.** Build, run the tests that cover the change, and exercise the new behaviour once by hand. A reviewer who has not run the code is reviewing a text.
 5. **Walk the rubric** below. Write each finding when you see it, with its location.
-6. **Verify each finding** before reporting it: reproduce the bug, or point to the exact path that fails. Drop what you cannot support, or mark it as a question.
+6. **Verify each finding** before reporting it: reproduce the bug, or point to the exact path that fails. **No concrete failing case, no finding**: if you cannot name the input, state or sequence that goes wrong, drop it or move it to Questions.
+7. **Leave marked decisions alone.** A `shortcut: <limit>; upgrade when <trigger>` comment is a decision, not a finding. Raise it only when its trigger has already happened or the limit is not what the comment says.
 
 ## Rubric
 
@@ -67,7 +68,7 @@ A review answers one question: is this change safe and correct to merge, and if 
 | `nit` | Preference. Say it once, never insist | Yes |
 | `question` | You do not understand something or cannot verify it | Answer first |
 
-Be honest about level. A review with ten blockers that are really preferences teaches the author to ignore reviews.
+Be honest about level. A review with ten blockers that are really preferences teaches the author to ignore reviews. Order findings by severity, but number them in one sequence across all levels, so the author can answer "fix 2 and 5".
 
 ## Output format
 
@@ -75,7 +76,6 @@ Be honest about level. A review with ten blockers that are really preferences te
 # Review: <what was reviewed, base..head>
 
 Intent as I understand it: <one or two sentences>
-Verdict: approve | approve with minor changes | changes required
 Checked by: <build and test commands run, with results>
 
 ## Findings
@@ -83,6 +83,7 @@ Checked by: <build and test commands run, with results>
 1. [blocker] src/sync/queue.rs:142 — retries reuse the same idempotency key after a partial write
    The second attempt is rejected as a duplicate and the item is dropped.
    Reproduce: <command or steps>
+   If skipped: every retry after a partial write silently loses its item.
    Suggested fix: derive the key from the attempt's payload hash, or clear it when the write is rolled back.
 
 2. [major] …
@@ -90,13 +91,18 @@ Checked by: <build and test commands run, with results>
 ## Questions
 - …
 
+## Verdict
+approve | approve with minor changes | changes required
+Net effect of the fixes: <lines the fixes would remove and add, when it matters>
+
 ## Not reviewed
 - <files or aspects you skipped, and why>
 ```
 
 Rules for findings:
 
-- One finding per problem, with `path:line`, what is wrong, why it matters, and a concrete suggestion.
+- One finding per problem, with `path:line`, what is wrong, a concrete failing case, what happens if it is skipped, and a concrete suggestion.
+- Numbers run through the whole list (not restarting per severity) and stay stable if you are asked to revise.
 - Quote the code only as much as needed to locate it.
 - Describe the problem in the code, not the author.
 - Say what is good when it is notable; it tells the author what to keep doing.

@@ -107,7 +107,7 @@ You write migrations for …
 | `isolation` | `none`, or `worktree` to work in its own git worktree and hand back a patch |
 | `output-schema` | A JSON Schema the agent's result must match. The agent gets a `report` tool and finishes by calling it; its report is that value as JSON |
 
-`[agents.<name>]` in `config.toml` overrides `model` and `thinking` without editing the file. `/agents` lists definitions and running agents. The built-in definitions are `scout`, `planner`, `coder`, `tester`, `reviewer`, `verifier`, `researcher`, `designer`, `artist` and `playtester`; a file with the same `name` replaces one.
+`[agents.<name>]` in `config.toml` overrides `model` and `thinking` without editing the file. `/agents` lists definitions and running agents. The built-in definitions are `scout`, `planner`, `coder`, `tester`, `reviewer`, `verifier`, `researcher`, `designer`, `artist` and `playtester`, plus the primary agents `build`, `plan` and `lean`; a file with the same `name` replaces one.
 
 ## Hooks
 

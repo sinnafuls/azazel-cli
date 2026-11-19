@@ -365,6 +365,13 @@ pub async fn changes(top: &Path) -> Result<Option<Changes>, String> {
     }))
 }
 
+/// Style rules for text a person will read, added to the request that drafts a commit message or
+/// a pull request (the short form of the `writing-style` skill). It is part of every such request,
+/// so keep it short.
+pub const WRITING_RULES: &str = "Write it as a person would: plain words, what changed and why. \
+No filler (\"This commit\", \"Overall\"), no inflated words (robust, seamless, crucial, enhance), no claims \
+of significance, no vague \"improvements\": name the thing that changed. Add no fact the changes do not show.\n";
+
 /// What the model that drafts the commit message is asked.
 pub fn message_request(changes: &Changes, hint: &str) -> String {
     let mut out = String::from(
@@ -375,6 +382,7 @@ pub fn message_request(changes: &Changes, hint: &str) -> String {
          - Follow the style of the recent subjects (prefixes, capitals, tense) when there are any.\n\
          - Reply with the message only: no quotes, no code fence, nothing before or after it.\n",
     );
+    out.push_str(WRITING_RULES);
     if !hint.trim().is_empty() {
         out.push_str(&format!("\nThe author says about this commit: {}\n", hint.trim()));
     }
@@ -696,6 +704,10 @@ new mode 100755
         assert!(request.contains("Recent subjects:\nAdd a\n"));
         assert!(request.contains("The author says about this commit: the b file is a fixture"));
         assert!(request.contains("?? b.txt"));
+        assert!(
+            request.contains(WRITING_RULES),
+            "the style rules are part of the request"
+        );
 
         // With something staged, only that is committed.
         run(&top, &["add", "b.txt"]).await.unwrap();
