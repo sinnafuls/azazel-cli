@@ -9,6 +9,7 @@ GitHub are its section here.
 
 ### Added
 
+- In the input, Up on the first row moves the cursor to the start of the text and Down on the last row moves it to the end before they step through prompt history; wrapped rows count as rows, and a recalled prompt puts the cursor where the next press keeps stepping.
 - Edit profiles without touching the config: the Profiles view of `/models` (also opened from the `/profile` picker) switches, creates, copies, renames and deletes profiles, sets a profile's roles with the model picker, and turns built-in profiles off and on (`[profiles] disabled`). Editing a built-in saves your own copy, and `x` goes back to the built-in.
 - `azazel remote`: a Browser tab beside Agents and Usage shows the agents' browser live. With a control link, **Take over** lets you click, scroll, type and go to an address while the agents' browser actions wait, and **Hand back** returns it; the agent is told what you did, never what you typed. **Sign in** opens the agents' browser profile in a window on the computer running azazel.
 - `azazel browser open [URL]` shows the agents' browser profile in a window, so you can sign in to sites yourself; the logins stay for later agent runs.

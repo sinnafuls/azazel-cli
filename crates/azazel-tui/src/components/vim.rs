@@ -150,6 +150,23 @@ impl Vim {
                 self.command(editor, 'x');
                 true
             }
+            // The arrows move by lines like `j` and `k`; the jump to the start and end of the
+            // text is for insert mode, where the cursor may rest after the last character.
+            KeyCode::Up | KeyCode::Down if !ctrl && !alt => {
+                for _ in 0..self.count.unwrap_or(1) {
+                    let moved = if key.code == KeyCode::Up {
+                        editor.move_up()
+                    } else {
+                        editor.move_down()
+                    };
+                    if !moved {
+                        break;
+                    }
+                }
+                self.reset();
+                self.rest(editor);
+                true
+            }
             _ => false,
         }
     }
@@ -614,6 +631,22 @@ mod tests {
         assert_eq!(run(text, "2G").1, 17);
         assert_eq!(run(text, "3gg").1, 29);
         assert_eq!(run(text, "wj").1, 21, "j keeps the column");
+    }
+
+    #[test]
+    fn arrows_in_normal_mode_move_by_lines_and_never_jump_to_the_text_ends() {
+        let (mut vim, mut editor) = normal("one\ntwo");
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+        assert!(vim.handle_key(&mut editor, &up));
+        assert_eq!(editor.cursor(), 0);
+        // On the first line, normal mode stays put like `k`.
+        assert!(vim.handle_key(&mut editor, &up));
+        assert_eq!(editor.cursor(), 0);
+        assert!(vim.handle_key(&mut editor, &down));
+        assert_eq!(editor.cursor(), 4);
+        assert!(vim.handle_key(&mut editor, &down));
+        assert_eq!(editor.cursor(), 4, "the last line does not jump to the end");
     }
 
     #[test]

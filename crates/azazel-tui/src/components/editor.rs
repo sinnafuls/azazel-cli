@@ -184,6 +184,9 @@ pub struct Editor {
     preferred_col: Option<usize>,
     /// First row shown by the last [`Editor::view`]; moved only as far as the cursor demands.
     scroll: Cell<usize>,
+    /// Cells a row of text had in the last [`Editor::view`], where up and down find the rows the
+    /// text wraps to. 0 until something was drawn: lines are then not wrapped.
+    avail: Cell<usize>,
     /// Text cut with the kill keys, newest last.
     kills: Vec<String>,
     /// Set while the last key was a yank.
@@ -536,8 +539,8 @@ impl Editor {
             KeyCode::Right => self.move_to(self.next_boundary(self.cursor)),
             KeyCode::Home => self.move_to(self.line_start(self.cursor)),
             KeyCode::End => self.move_to(self.line_end(self.cursor)),
-            KeyCode::Up => return self.move_up(),
-            KeyCode::Down => return self.move_down(),
+            KeyCode::Up => return self.arrow_up(),
+            KeyCode::Down => return self.arrow_down(),
             _ => return false,
         }
         true
@@ -562,6 +565,7 @@ impl Editor {
             (prompt, prompt_width)
         };
         let avail = width - prompt_width;
+        self.avail.set(avail);
 
         let mut rows: Vec<Row> = Vec::new();
         let mut cursor = (0usize, 0usize);
@@ -862,6 +866,95 @@ impl Editor {
         self.preferred_col = None;
     }
 
+    /// The rows the text is drawn in as byte ranges, wrapped as [`Editor::view`] wraps them.
+    /// The cursor at the end of a line that fills its last row has a row of its own, as there.
+    fn visual_rows(&self) -> Vec<(usize, usize)> {
+        let avail = match self.avail.get() {
+            0 => usize::MAX,
+            n => n,
+        };
+        let mut rows = Vec::new();
+        let mut offset = 0usize;
+        for line in self.text.split('\n') {
+            let mut start = offset;
+            let mut col = 0usize;
+            for (i, grapheme) in line.grapheme_indices(true) {
+                let w = self.cell_width(offset + i, grapheme);
+                if col + w > avail && col > 0 {
+                    rows.push((start, offset + i));
+                    start = offset + i;
+                    col = 0;
+                }
+                col += w;
+            }
+            let end = offset + line.len();
+            if end == self.cursor && col >= avail {
+                rows.push((start, end));
+                start = end;
+            }
+            rows.push((start, end));
+            offset = end + 1;
+        }
+        rows
+    }
+
+    /// Index in `rows` of the row the cursor is drawn in.
+    fn cursor_row(&self, rows: &[(usize, usize)]) -> usize {
+        rows.iter()
+            .rposition(|(start, _)| *start <= self.cursor)
+            .unwrap_or(0)
+    }
+
+    /// Puts the cursor on row `to`, at the display column it has in row `from` or the one that
+    /// vertical movement is keeping.
+    fn step_row(&mut self, rows: &[(usize, usize)], from: usize, to: usize) {
+        let col = self
+            .preferred_col
+            .unwrap_or_else(|| self.columns(rows[from].0, self.cursor));
+        let (start, end) = rows[to];
+        let mut target = self.offset_at_col(start, end, col);
+        // The end of a row that wraps is the start of the next one.
+        if target == end && end > start && rows.get(to + 1).is_some_and(|next| next.0 == end) {
+            target = self.prev_boundary(end);
+        }
+        self.cursor = self.snap(target, false);
+        self.run = Run::None;
+        self.preferred_col = Some(col);
+    }
+
+    /// The up key: a row up, keeping the column; on the first row, to the start of the text, and
+    /// from there back through the history.
+    fn arrow_up(&mut self) -> bool {
+        let rows = self.visual_rows();
+        let row = self.cursor_row(&rows);
+        if row > 0 {
+            self.step_row(&rows, row, row - 1);
+            true
+        } else if self.cursor > 0 {
+            self.move_to(0);
+            true
+        } else {
+            self.history_previous()
+        }
+    }
+
+    /// The down key: a row down, keeping the column; on the last row, to the end of the text, and
+    /// from there forward through the history.
+    fn arrow_down(&mut self) -> bool {
+        let rows = self.visual_rows();
+        let row = self.cursor_row(&rows);
+        if row + 1 < rows.len() {
+            self.step_row(&rows, row, row + 1);
+            true
+        } else if self.cursor < self.text.len() {
+            self.move_to(self.text.len());
+            true
+        } else {
+            self.history_next()
+        }
+    }
+
+    /// A line up, for Vim's `k`: the first line goes on to the history.
     pub(crate) fn move_up(&mut self) -> bool {
         let start = self.line_start(self.cursor);
         if start == 0 {
@@ -879,6 +972,7 @@ impl Editor {
         true
     }
 
+    /// A line down, for Vim's `j`: the last line goes on to the history.
     pub(crate) fn move_down(&mut self) -> bool {
         let end = self.line_end(self.cursor);
         if end == self.text.len() {
@@ -907,7 +1001,7 @@ impl Editor {
         if self.history_pos.is_none() {
             self.draft = self.text.clone();
         }
-        self.show_history(Some(target));
+        self.show_history(Some(target), true);
         true
     }
 
@@ -915,23 +1009,26 @@ impl Editor {
         match self.history_pos {
             None => false,
             Some(i) if i + 1 < self.history.len() => {
-                self.show_history(Some(i + 1));
+                self.show_history(Some(i + 1), false);
                 true
             }
             Some(_) => {
-                self.show_history(None);
+                self.show_history(None, false);
                 true
             }
         }
     }
 
-    fn show_history(&mut self, position: Option<usize>) {
+    /// Shows an entry, or the draft for `None`. Stepping back leaves the cursor at the start of
+    /// the entry and stepping forward at its end, so the next press of the same key goes on
+    /// through the history instead of first crossing the entry.
+    fn show_history(&mut self, position: Option<usize>, cursor_at_start: bool) {
         self.begin_edit(Run::None);
         self.text = match position {
             Some(i) => self.history[i].clone(),
             None => std::mem::take(&mut self.draft),
         };
-        self.cursor = self.text.len();
+        self.cursor = if cursor_at_start { 0 } else { self.text.len() };
         self.history_pos = position;
     }
 
@@ -1425,6 +1522,9 @@ mod tests {
         editor.push_history("   ".to_string());
         typed(&mut editor, "draft");
 
+        // The first press only goes to the start of the draft.
+        assert!(editor.handle_key(&key(KeyCode::Up)));
+        assert_eq!((editor.text(), editor.cursor()), ("draft", 0));
         assert!(editor.handle_key(&key(KeyCode::Up)));
         assert_eq!(editor.text(), "second");
         assert!(editor.handle_key(&key(KeyCode::Up)));
@@ -1432,8 +1532,16 @@ mod tests {
         assert!(editor.handle_key(&key(KeyCode::Up)));
         assert_eq!(editor.text(), "first", "the oldest entry stays");
 
+        // Going back, the cursor is at the start of the entry: one press to its end.
+        assert!(editor.handle_key(&key(KeyCode::Down)));
+        assert_eq!((editor.text(), editor.cursor()), ("first", 5));
         assert!(editor.handle_key(&key(KeyCode::Down)));
         assert_eq!(editor.text(), "second");
+        assert_eq!(
+            editor.cursor(),
+            6,
+            "a recalled-forward entry has the cursor at its end"
+        );
         assert!(editor.handle_key(&key(KeyCode::Down)));
         assert_eq!(
             editor.text(),
@@ -1452,7 +1560,142 @@ mod tests {
         editor.handle_key(&key(KeyCode::Up));
         assert_eq!(editor.text(), "one\ntwo", "moved to the first line");
         editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), "one\ntwo", "moved to the start");
+        assert_eq!(editor.cursor(), 0);
+        editor.handle_key(&key(KeyCode::Up));
         assert_eq!(editor.text(), "old");
+    }
+
+    #[test]
+    fn up_on_the_first_line_goes_to_the_start_before_the_history() {
+        let mut editor = Editor::new();
+        editor.push_history("old".to_string());
+        editor.set_text("hello");
+        editor.handle_key(&key(KeyCode::Left));
+        assert!(editor.handle_key(&key(KeyCode::Up)));
+        assert_eq!((editor.text(), editor.cursor()), ("hello", 0));
+        assert!(editor.handle_key(&key(KeyCode::Up)));
+        assert_eq!(editor.text(), "old");
+    }
+
+    #[test]
+    fn down_on_the_last_line_goes_to_the_end_before_the_history() {
+        let mut editor = Editor::new();
+        editor.push_history("old".to_string());
+        editor.push_history("newer".to_string());
+        editor.handle_key(&key(KeyCode::Up));
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), "old");
+        editor.handle_key(&key(KeyCode::Right));
+        // Mid-text on the only line: the end first.
+        assert!(editor.handle_key(&key(KeyCode::Down)));
+        assert_eq!((editor.text(), editor.cursor()), ("old", 3));
+        assert!(editor.handle_key(&key(KeyCode::Down)));
+        assert_eq!(editor.text(), "newer");
+
+        // Multi-line: Down on the last line with the cursor before its end.
+        let mut editor = with_text("ab\ncd");
+        editor.handle_key(&key(KeyCode::Home));
+        assert_eq!(editor.cursor(), 3);
+        assert!(editor.handle_key(&key(KeyCode::Down)));
+        assert_eq!(editor.cursor(), 5);
+        assert!(!editor.handle_key(&key(KeyCode::Down)), "nothing to browse");
+    }
+
+    #[test]
+    fn arrows_keep_their_line_movement_in_the_middle_of_a_text() {
+        let mut editor = with_text("abc\ndef\nghi");
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 7, "to the middle line, same column");
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 3);
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 0, "the first line goes to the start");
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 4, "and down again keeps moving by lines");
+    }
+
+    #[test]
+    fn arrows_on_an_empty_editor_only_browse_the_history() {
+        let mut editor = Editor::new();
+        assert!(!editor.handle_key(&key(KeyCode::Up)));
+        assert!(!editor.handle_key(&key(KeyCode::Down)));
+        editor.push_history("old".to_string());
+        assert!(editor.handle_key(&key(KeyCode::Up)));
+        assert_eq!(editor.text(), "old");
+    }
+
+    #[test]
+    fn recalled_entries_can_be_stepped_through_without_extra_presses() {
+        let mut editor = Editor::new();
+        editor.push_history("one\ntwo".to_string());
+        editor.push_history("three\nfour".to_string());
+        editor.push_history("five".to_string());
+        for want in ["five", "three\nfour", "one\ntwo"] {
+            editor.handle_key(&key(KeyCode::Up));
+            assert_eq!(editor.text(), want);
+            assert_eq!(editor.cursor(), 0, "Up-recall leaves the cursor at the start");
+        }
+        // Down-recall leaves it at the end, so the next Down goes on at once.
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 4, "from the start, a line down");
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 7, "then the end of the entry");
+        for want in ["three\nfour", "five"] {
+            editor.handle_key(&key(KeyCode::Down));
+            assert_eq!(editor.text(), want);
+            assert_eq!(editor.cursor(), want.len());
+        }
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.text(), "");
+    }
+
+    #[test]
+    fn arrows_move_between_wrapped_rows() {
+        let theme = Theme::dark();
+        // Rows of 8 cells after the prompt: "abcdefgh" and "ijkl".
+        let mut editor = with_text("abcdefghijkl");
+        editor.render(10, &theme, "> ");
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 4, "to the row above, same column");
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 12, "to the row below, clamped to its end");
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 4);
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 0, "the first row goes to the start of the text");
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 8, "the column of the start is kept");
+        editor.handle_key(&key(KeyCode::Down));
+        assert_eq!(editor.cursor(), 12, "the last row goes to the end of the text");
+        assert!(!editor.handle_key(&key(KeyCode::Down)));
+    }
+
+    #[test]
+    fn up_from_a_wrapped_row_does_not_reach_the_history() {
+        let theme = Theme::dark();
+        let mut editor = Editor::new();
+        editor.push_history("old".to_string());
+        editor.set_text("abcdefghijkl");
+        editor.render(10, &theme, "> ");
+        editor.handle_key(&key(KeyCode::Up));
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), "abcdefghijkl");
+        assert_eq!(editor.cursor(), 0);
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.text(), "old");
+    }
+
+    #[test]
+    fn a_cursor_after_a_full_row_moves_up_into_it() {
+        let theme = Theme::dark();
+        let mut editor = with_text("abcdefgh");
+        editor.render(10, &theme, "> ");
+        // The cursor is drawn on a row of its own after the full one.
+        editor.handle_key(&key(KeyCode::Up));
+        assert_eq!(editor.cursor(), 0);
+        assert!(editor.handle_key(&key(KeyCode::Down)));
+        assert_eq!(editor.cursor(), 8);
     }
 
     #[test]

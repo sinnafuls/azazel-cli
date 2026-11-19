@@ -607,9 +607,14 @@ work in the transcript.
 Editing keys in the input: arrows, `Home`/`End`, `Ctrl+A`/`Ctrl+E` (line start/end), `Ctrl+Left`/`Ctrl+Right` or
 `Alt+B`/`Alt+F` (word), `Ctrl+W` and `Ctrl+Backspace` (delete word back), `Alt+D` and `Ctrl+Delete` (delete word
 forward), `Ctrl+U` (delete to line start), `Ctrl+K` (delete to line end), `Ctrl+Z` (undo), `Ctrl+Shift+Z` (redo).
-`Up` on the first line and `Down` on the last walk through earlier prompts, those of earlier sessions of the
-project included; see [prompt history](sessions-and-checkpoints.md#prompt-history). `Down` in an empty input
-goes to the roster while sub-agents are at work; see [the fleet view](#the-fleet-view).
+`Up` and `Down` move between the rows of the input, wrapped rows included, and keep the column. `Up` on the first
+row with the cursor not at the start of the text moves it there; `Up` again walks back through earlier prompts, those of
+earlier sessions of the project included; see [prompt history](sessions-and-checkpoints.md#prompt-history). `Down`
+on the last row likewise moves the cursor to the end of the text first, and then walks forward. A prompt recalled
+with `Up` has the cursor at its start and one recalled with `Down` at its end, so the same key keeps stepping through
+the history. In Vim normal mode the arrows move by lines like `j` and `k`. `Down` in an empty input
+goes to the roster while sub-agents are at work; see [the fleet view](#the-fleet-view). The completion menu keeps
+`Up` and `Down` for itself while it is open.
 
 What `Ctrl+K`, `Ctrl+U`, `Ctrl+W` and `Alt+D` cut goes onto a kill ring of 20 entries. `Ctrl+Y` pastes the newest
 one; `Alt+Y` right after that swaps in the one before, and so on around the ring.
