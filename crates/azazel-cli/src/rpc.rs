@@ -1110,6 +1110,17 @@ pub(crate) async fn serve_lines(
     // Requests from agents go through the loop below rather than straight out, so they are written
     // in their place among the lead's events (see `Requests`).
     let (request_lines, mut requests) = mpsc::unbounded_channel::<Fenced>();
+    // The `profile_changed` frame of a switch on a usage limit is written in its place among the
+    // lead's events too, and takes the place of the notice an RPC client would be sent.
+    let profile_frames = Requests {
+        lead: active.lead.clone(),
+        lines: request_lines.clone(),
+    };
+    app.registry
+        .services
+        .insert(Arc::new(crate::profiles::limit::ProfileFrames(Arc::new(
+            move |frame| profile_frames.line(&frame),
+        ))));
     app.registry.services.insert(Arc::new(Ui(Arc::new(RpcBridge {
         out: Requests {
             lead: active.lead.clone(),

@@ -23,6 +23,7 @@ use azazel_ai::providers::http::blocked_until;
 use azazel_ai::{AiError, ModelSpec, Router};
 use azazel_core::config::ProfileReset;
 use azazel_core::{Event, EventHandler, ExtCtx, Level, Outcome, SessionStore, Ui};
+use azazel_protocol::Frame;
 use azazel_team::Team;
 
 use super::{Profile, Reason, switch, usability};
@@ -64,14 +65,39 @@ pub struct ProfileSwitcher {
     state: Mutex<State>,
 }
 
+/// Where an RPC host sends the `profile_changed` frame of a switch the switcher made. A service
+/// the RPC host registers: the terminal UI and print mode have none, and get the notice instead.
+pub struct ProfileFrames(pub Arc<dyn Fn(Frame) + Send + Sync>);
+
 /// Tells the user, wherever there is one: a notice in the terminal UI, a `notify` request to an
-/// RPC client (the web page shows a toast), a line on standard error without either. The one
-/// place to change when a `profile_changed` frame exists.
+/// RPC client, a line on standard error without either.
 fn announce(services: &Services, level: Level, text: &str) {
     match services.get::<Ui>().filter(|ui| ui.0.present()) {
         Some(ui) => ui.0.notify(level, text),
         None => eprintln!("azazel: {text}"),
     }
+}
+
+/// Tells the user of a switch to profile `to`: an RPC client gets the `profile_changed` frame and
+/// nothing else, so that it hears of the switch once; elsewhere it is [`announce`]d as `text`.
+fn announce_switch(services: &Services, frame: Frame, text: &str) {
+    match services.get::<ProfileFrames>() {
+        Some(frames) => (frames.0)(frame),
+        None => announce(services, Level::Info, text),
+    }
+}
+
+/// What ran out at `provider`, as a person calls it (`5-hour limit`): the block that lasts
+/// longest, else `usage limit`.
+fn limit_label(router: &Router, provider: &str) -> String {
+    router
+        .limits()
+        .snapshot()
+        .into_iter()
+        .filter(|account| account.provider == provider)
+        .flat_map(|account| account.blocks)
+        .max_by_key(|block| block.until)
+        .map_or_else(|| "usage limit".to_string(), |block| block.limit())
 }
 
 const CACHE_COST: &str =
@@ -194,16 +220,22 @@ impl ProfileSwitcher {
         state.current = Some(target.name.clone());
         state.seen = session.as_deref().and_then(|session| session.last_profile(None));
         state.active = Some(Switched {
-            from,
+            from: from.clone(),
             to: target.name.clone(),
             provider: provider.clone(),
             until,
             saved,
         });
         drop(state);
-        announce(
+        announce_switch(
             &self.services,
-            Level::Info,
+            Frame::ProfileChanged {
+                from,
+                to: target.name.clone(),
+                reason: Reason::Limit.as_str().to_string(),
+                until: Some(until),
+                limit: Some(limit_label(&router, &provider)),
+            },
             &format!(
                 "{provider}: usage limit reached until {}. Switched to {done}. {CACHE_COST}",
                 crate::accounts::clock(until)
@@ -274,26 +306,44 @@ impl ProfileSwitcher {
                             return;
                         }
                         state.current = Some(profile.name.clone());
-                        switch(profile, &router, lead, Reason::Reset)
+                        (
+                            switch(profile, &router, lead, Reason::Reset),
+                            Some(profile.name.clone()),
+                        )
                     }
                     None => {
                         state.current = None;
-                        format!(
-                            "the models from before the limit: {}",
-                            crate::routing::apply_roles(&router, &active.saved, lead)
+                        (
+                            format!(
+                                "the models from before the limit: {}",
+                                crate::routing::apply_roles(&router, &active.saved, lead)
+                            ),
+                            None,
                         )
                     }
                 };
                 state.seen = session.as_deref().and_then(|session| session.last_profile(None));
                 drop(state);
-                announce(
-                    &self.services,
-                    Level::Info,
-                    &format!(
-                        "The usage limit of {} has reset; went back to {done}. {CACHE_COST}",
-                        active.provider
-                    ),
+                let (done, back_to) = done;
+                let text = format!(
+                    "The usage limit of {} has reset; went back to {done}. {CACHE_COST}",
+                    active.provider
                 );
+                match back_to {
+                    Some(to) => announce_switch(
+                        &self.services,
+                        Frame::ProfileChanged {
+                            from: Some(active.to.clone()),
+                            to,
+                            reason: Reason::Reset.as_str().to_string(),
+                            until: None,
+                            limit: None,
+                        },
+                        &text,
+                    ),
+                    // No named profile to report: the roles are back as they were.
+                    None => announce(&self.services, Level::Info, &text),
+                }
             }
         }
     }
