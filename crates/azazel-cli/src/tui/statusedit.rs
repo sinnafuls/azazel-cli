@@ -371,7 +371,7 @@ mod tests {
             "  ▣ extensions  left   what extensions show with azazel.status"
         );
         assert_eq!(rows[16], "  ▣ model       right  the model that answers");
-        assert_eq!(rows[19], "  □ todo               todo items done");
+        assert_eq!(rows[20], "  □ todo               todo items done");
         // Every segment and the two choices, whatever is on the line.
         assert_eq!(rows.len(), 2 + 2 + Name::ALL.len());
         // A small box keeps the list.

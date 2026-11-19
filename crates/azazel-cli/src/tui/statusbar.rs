@@ -203,6 +203,7 @@ impl Tui {
             extensions,
             model: &model,
             tier: facts.tier.map(crate::routing::tier_word),
+            profile: facts.profile.as_deref(),
             thinking: &status.thinking.to_string(),
         }
         .render(layout, self.status.command.line.as_deref(), width, &self.theme)

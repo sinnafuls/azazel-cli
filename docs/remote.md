@@ -413,7 +413,7 @@ Without `remote.full_access` a control device may not send:
 | `export` with a `path` | It would write a file on this machine. |
 | `resume_session` with a `path` | It would read a file on this machine. |
 | `set_role` with `save` other than `session` | It would change the config files. |
-| `save_preset` | It would change the config files. |
+| `save_preset`, `save_profile` | It would change the config files. |
 | `set_mode` to `bypass` | Refused unless `remote.allow_bypass` is set. |
 | `run_command` of a command outside the list a browser may run | The list is the reports (`cost`, `context`, `session`, `tools`, `todo`, `rules`, `doctor`, `usage`, `memory`, `agents`, ...), the commands of the built-in extensions that act on the session itself, `skill:<name>` and `mcp:<server>:<prompt>`. Commands that reach the machine are never run: `login`, `logout`, `settings`, `trust`, `add-dir`, `hooks`, `forget-approvals`, `reload`, `bg` and the like. A project's own custom commands and the commands of Luau scripts run only with `remote.allow_bypass`, whatever their name: the session knows where each command comes from (`source` in `list_commands`: `builtin`, `skill`, `mcp`, `custom` or `script`) and refuses to run a `custom` or `script` command for a browser that may not, so a project command named like `/memory` or `/mcp` does not pass for the built-in one. The prefixes `skill:` and `mcp:` belong to skills and MCP prompts; a custom command or a script cannot take them. |
 | `run_command` of `/preset` with anything but a name | `/preset <name>` (letters, digits, `-`, `_`, `.`) is fine; `/preset save ...` would change the config files. |

@@ -64,6 +64,7 @@ impl Setup {
             trusted: self.trusted,
             router,
             lead: None,
+            book: None,
         }
     }
 

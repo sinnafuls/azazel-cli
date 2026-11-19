@@ -64,7 +64,9 @@ Every command has a `type` and should carry an `id` of your choosing; the respon
 | `list_roles` | | Every [model role](models-and-logins.md#roles): its chain, where that comes from, what it resolves to, and the saved presets | [Roles](#roles) |
 | `set_role` | `role`, `chain?`, `save?` | Points `role` at `chain` (`["provider/model:high", "@slow"]`), or without `chain` takes away the value `save` names so the role falls back to the next config file or its built-in value. `save` is `session` (the default: this session only), `home` (also writes `~/.azazel/config.toml`) or `project` (the project's `.azazel/config.toml`, refused when the project is not trusted). Setting `default` or `lead` puts the lead back on its role | [Roles](#roles) |
 | `save_preset` | `name` | Writes every role as it is now under `[presets.<name>.roles]` in the home config | [Roles](#roles) |
-| `apply_preset` | `name` | Points every role of a saved preset at its models for this session | [Roles](#roles) |
+| `apply_preset` | `name` | The old name of `set_profile`: points every role of a profile at its models for this session. Sends `profile_changed` too | [Roles](#roles) |
+| `set_profile` | `name` | Moves the session to a [profile](models-and-logins.md#profiles), built-in or from the configuration: each role it names is pointed at its models and the lead follows its role again. A name that is no profile, or a profile whose providers have no login, is refused with the login to run. Sends a `profile_changed` frame | The new state (see `get_state`) |
+| `save_profile` | `name` | Writes every role as it is now under `[profiles.<name>.roles]` in the home config | The new state (see `get_state`) |
 | `get_usage` | | What is known of each provider account's usage windows | A list of `{"provider", "account", "windows": [{"name", "used", "resets_at?", "status", "scope?"}], "blocked_until?", "blocks?": [{"until", "since", "window?", "scope?"}]}`. A window or block with a `scope` is about one model family only; `blocked_until` is about every model |
 | `get_settings` | | Every setting of the terminal's settings screen | `{"settings": [{"path", "page", "group", "label", "kind": "switch\|choice\|theme\|number\|text\|list\|table\|role", "choices?", "live", "description", "value", "default", "source?": "session\|flag\|env\|local\|project\|home", "gated"}], "pages", "project", "home_config", "project_config"}` |
 | `set_setting` | `path`, `value`, `scope?` (`session`, `home`, `project`; default `session`) | Changes one setting; `value: null` takes it out of the file `scope` names. `session` changes nothing on disk. A session with a terminal UI takes every `live` setting; any other session (`azazel rpc`, a background session) takes only `tui.theme`, by name (`auto`, a built-in theme or one in the home's `themes` directory, never a path), and refuses the rest with a message. `project` needs a trusted project. A change of `tui.theme` sends a `theme` frame before the response (the frame is left out, and the response still succeeds, when the theme cannot be read) | `{"setting": <row of get_settings>, "message"}` |
@@ -110,6 +112,8 @@ The session commands report the saved sessions and the open one, change which se
 | `chain` | The lead's model chain as given, e.g. `["@default"]` |
 | `thinking` | The thinking level the lead's requests go out at: the one chosen for the session (`set_thinking`, `--thinking`, the primary agent's), else the `:level` of the model its chain asks first, else `off` |
 | `tier` | The service tier, or `null` at the standard tier |
+| `profile` | The [profile](models-and-logins.md#profiles) the session last moved to, or the one `--profile` named; absent when there is none |
+| `profiles` | The profiles `set_profile` takes, built-in ones first: `{"name", "source" (`builtin`, `user` or `project`), "usable", "missing_logins"?, "roles"}`. `usable` is false when a provider the profile names has no login, and `missing_logins` lists those providers; `roles` maps each role the profile sets to its first model |
 | `context_tokens`, `context_window` | Context in use and the model's window |
 | `usage`, `requests` | Token and cost totals of the lead, and how many model requests it has made |
 | `agents` | The roster, with the same members as the `roster` event below |
@@ -136,7 +140,7 @@ Where `set_role` keeps a change is its `save` member, one of three words (`SaveT
 changes the running session only, `home` writes `~/.azazel/config.toml` too, and `project` writes the project's
 `.azazel/config.toml`, which a project that is not trusted refuses. Taking a value away (no `chain`) removes it from
 the file `save` names. The other three commands do not take it: `save_preset` always writes the home config, and
-`apply_preset` changes the session only.
+`apply_preset` and `set_profile` change the session only.
 
 In a role, `chain` is the value as configured, `resolved` the usable models it comes to in order, `builtin` the value it falls back to when nothing sets it, and `thinking` the level written with its first model (`provider/model:high`). `source` says where the chain comes from: `builtin`, `home`, `project`, `project_local`, `session` (changed in this session and not saved) or `unset` (nothing sets it, so it resolves to no model).
 
@@ -201,6 +205,7 @@ Every event of every agent is written as it happens, with the agent's id added a
 | `retry` | `attempt`, `model`, `stalled_secs?`: the message in progress was discarded and the same model is asked again; `stalled_secs` is there when the model had sent nothing for that long ([stalls](models-and-logins.md#stalls)) |
 | `fallback` | `from`, `to` |
 | `account` | `provider`, `from`, `to`, `until` (Unix seconds), `limit`: the provider's account `from` ran out of allowance and requests now use `to` |
+| `profile_changed` | `from?`, `to`, `reason` (`user`, `limit` or `reset`), `until?`, `limit?`: the session moved to profile `to`. `until` (Unix seconds) and `limit` are there for `limit`. Not tied to an agent |
 | `tier_dropped` | `model`, `tier`: the model refused the service tier and is asked without one from now on |
 | `rule` | `name`: a [stream rule](rules.md#stream-rules) matched, or the reply looped (`runaway`, see [guards](tools.md#guards)); the message in progress was discarded and the request is sent again |
 | `compaction` | `tokens_before`, `tokens_after` |

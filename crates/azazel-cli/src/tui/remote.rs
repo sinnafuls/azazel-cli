@@ -691,6 +691,11 @@ async fn pump(
                 shared.stale.store(true, Ordering::SeqCst);
                 incoming.send(Incoming::UserInput { kind, text })
             }
+            // Another client, or the session itself, moved to another profile.
+            Frame::ProfileChanged { .. } => {
+                refresh(&client, &shared);
+                Ok(())
+            }
             Frame::BtwDelta { delta, .. } => {
                 if let Some((id, updates)) = locked(&shared.btw).as_ref() {
                     let _ = updates.send(Internal::Btw(btw::Update::Text { id: *id, delta }));
@@ -946,6 +951,7 @@ impl Backend for Remote {
             waiting: None,
             account: None,
             account_email: None,
+            profile: state.profile,
         }
     }
 
@@ -1155,6 +1161,24 @@ impl Backend for Remote {
         .await?;
         self.refresh_state().await;
         Ok(roles)
+    }
+
+    fn profiles(&self) -> (Vec<azazel_protocol::ProfileInfo>, Option<String>) {
+        let state = self.state();
+        (state.profiles, state.profile)
+    }
+
+    async fn set_profile(&mut self, name: &str) -> Result<(), String> {
+        let state: State = ask(
+            &self.client,
+            Command::SetProfile {
+                name: name.to_string(),
+            },
+        )
+        .await?;
+        *locked(&self.shared.state) = state;
+        self.shared.stale.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {

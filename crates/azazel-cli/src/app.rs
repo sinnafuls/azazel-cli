@@ -798,14 +798,17 @@ impl App {
         let endpoints_now = presets::resolve(&config.providers).map_err(|e| anyhow!(e))?;
         let logged_in_credentials = credentials.clone();
         registry.load(&crate::routing::RoutingExt {
-            profiles: crate::profiles::all_in(&config.profiles.entries, &loaded.layers),
+            book: Arc::new(crate::profiles::Book::new(
+                crate::profiles::all_in(&config.profiles.entries, &loaded.layers),
+                Arc::new(move |id| {
+                    endpoints_now
+                        .iter()
+                        .find(|p| p.id == id)
+                        .is_none_or(|p| crate::models::usable(&logged_in_credentials, p))
+                }),
+                cli.profile.clone(),
+            )),
             home_config: paths.home_config(),
-            logged_in: Arc::new(move |id| {
-                endpoints_now
-                    .iter()
-                    .find(|p| p.id == id)
-                    .is_none_or(|p| crate::models::usable(&logged_in_credentials, p))
-            }),
             on_limit: config.profiles.on_limit.clone(),
             on_reset: config.profiles.on_reset,
             started_on: cli.profile.clone(),

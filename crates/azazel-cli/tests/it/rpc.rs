@@ -499,6 +499,82 @@ fn commands_change_the_session_and_mistakes_are_answered() {
 }
 
 #[test]
+fn set_profile_switches_the_roles_and_says_so() {
+    let config = "[profiles.mine.roles]
+default = [\"mock/lead\"]
+smol = [\"mock/other\"]
+
+                  [profiles.needy.roles]
+default = [\"anthropic/claude-opus-4-5\"]
+";
+    let mut client = Client::start_with("write_read.json", config);
+
+    let (_, state) = client.ask(1, json!({ "type": "get_state" }));
+    assert_eq!(state["data"]["profile"], Value::Null);
+    let listed: Vec<(&str, &str, bool)> = state["data"]["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["name"].as_str().unwrap(),
+                p["source"].as_str().unwrap(),
+                p["usable"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert!(listed.contains(&("mine", "user", true)), "{listed:?}");
+    assert!(listed.contains(&("needy", "user", false)), "{listed:?}");
+    assert!(
+        listed.iter().any(|(_, source, _)| *source == "builtin"),
+        "{listed:?}"
+    );
+
+    let (events, response) = client.ask(2, json!({ "type": "set_profile", "name": "mine" }));
+    assert_eq!(response["success"], true, "{response}");
+    assert_eq!(response["data"]["profile"], "mine");
+    assert_eq!(response["data"]["roles"]["smol"], "mock/other");
+    let frame = events
+        .iter()
+        .find(|line| line["type"] == "profile_changed")
+        .unwrap();
+    assert_eq!((&frame["to"], &frame["reason"]), (&json!("mine"), &json!("user")));
+    let (_, state) = client.ask(3, json!({ "type": "get_state" }));
+    assert_eq!(state["data"]["profile"], "mine");
+
+    // A profile that is not there, or whose provider has no login, changes nothing.
+    let (events, unknown) = client.ask(4, json!({ "type": "set_profile", "name": "nowhere" }));
+    assert!(
+        unknown["error"]
+            .as_str()
+            .unwrap()
+            .contains("no profile `nowhere`"),
+        "{unknown}"
+    );
+    let (more, needy) = client.ask(5, json!({ "type": "set_profile", "name": "needy" }));
+    assert!(
+        needy["error"]
+            .as_str()
+            .unwrap()
+            .contains("azazel login anthropic"),
+        "{needy}"
+    );
+    assert!(
+        !kinds(&events).contains(&"profile_changed") && !kinds(&more).contains(&"profile_changed"),
+        "{events:?} {more:?}"
+    );
+    let (_, state) = client.ask(6, json!({ "type": "get_state" }));
+    assert_eq!(state["data"]["profile"], "mine");
+
+    // The old command still works and moves the session too.
+    let (events, old) = client.ask(7, json!({ "type": "apply_preset", "name": "mine" }));
+    assert_eq!(old["success"], true, "{old}");
+    assert!(kinds(&events).contains(&"profile_changed"), "{events:?}");
+
+    assert_eq!(client.finish(), Some(0));
+}
+
+#[test]
 fn settings_are_listed_and_changed_in_the_scope_asked_for() {
     let mut client = Client::start("write_read.json");
 

@@ -3,6 +3,8 @@
 //! config file adds more, or replaces a built-in of the same name whole.
 
 use std::collections::BTreeMap;
+use std::path::Path;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use azazel_agent::AgentHandle;
 use azazel_ai::providers::presets::ProviderConfig;
@@ -234,6 +236,125 @@ pub(crate) fn switch(
         Reason::Reset => " (the limit has reset)",
     };
     format!("profile {}{because}: {done}", profile.name)
+}
+
+/// The profiles of this process (the built-in ones, those of the configuration and those saved
+/// since), and whether their providers have a login. A service: `/profile`, RPC and the
+/// terminal's picker all switch through it, so that they agree on what can be used.
+pub struct Book {
+    profiles: Mutex<Vec<Profile>>,
+    logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    /// The profile `--profile` named, which is the current one until a switch is recorded.
+    launch: Option<String>,
+}
+
+impl Book {
+    pub fn new(
+        profiles: Vec<Profile>,
+        logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+        launch: Option<String>,
+    ) -> Book {
+        Book {
+            profiles: Mutex::new(profiles),
+            logged_in,
+            launch,
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Vec<Profile>> {
+        self.profiles.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn list(&self) -> Vec<Profile> {
+        self.lock().clone()
+    }
+
+    pub fn find(&self, name: &str) -> Result<Profile, String> {
+        let profiles = self.lock();
+        profiles
+            .iter()
+            .find(|profile| profile.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<&str> = profiles.iter().map(|profile| profile.name.as_str()).collect();
+                format!("no profile `{name}`; there are: {}", known.join(", "))
+            })
+    }
+
+    /// Whether a provider has a login, for the code that decides on its own (a usage limit).
+    pub fn logged_in_fn(&self) -> Arc<dyn Fn(&str) -> bool + Send + Sync> {
+        self.logged_in.clone()
+    }
+
+    pub fn usability(&self, profile: &Profile) -> Usability {
+        usability(profile, &*self.logged_in)
+    }
+
+    /// The profile the session is on: the last switch recorded in it, else the one `--profile`
+    /// named.
+    pub fn current(&self, session: &SessionStore) -> Option<String> {
+        session.last_profile(None).or_else(|| self.launch.clone())
+    }
+
+    /// Every profile as the protocol shows it.
+    pub fn infos(&self) -> Vec<azazel_protocol::ProfileInfo> {
+        self.list()
+            .into_iter()
+            .map(|profile| {
+                let usable = self.usability(&profile);
+                azazel_protocol::ProfileInfo {
+                    name: profile.name,
+                    source: profile.source.as_str().to_string(),
+                    usable: usable.usable,
+                    missing_logins: usable.missing_logins,
+                    roles: profile
+                        .roles
+                        .iter()
+                        .filter_map(|(role, chain)| Some((role.clone(), chain.first()?.to_string())))
+                        .collect(),
+                }
+            })
+            .collect()
+    }
+
+    /// Writes `roles` as profile `name` in `home_config`, and makes it one of the profiles here,
+    /// replacing one of that name.
+    pub fn save(
+        &self,
+        home_config: &Path,
+        name: &str,
+        roles: &BTreeMap<String, Vec<ModelSpec>>,
+    ) -> Result<(), String> {
+        crate::routing::save_roles(home_config, name, roles)?;
+        let saved = Profile {
+            name: name.to_string(),
+            source: ProfileSource::User,
+            roles: roles.clone(),
+        };
+        let mut profiles = self.lock();
+        match profiles.iter_mut().find(|profile| profile.name == name) {
+            Some(old) => *old = saved,
+            None => profiles.push(saved),
+        }
+        Ok(())
+    }
+
+    /// Moves the session to profile `name` with [`switch`], unless a provider it names has no
+    /// login. Returns the line [`switch`] gives.
+    pub(crate) fn switch(
+        &self,
+        name: &str,
+        router: &Router,
+        lead: Option<(&AgentHandle, Option<&SessionStore>)>,
+        reason: Reason,
+    ) -> Result<String, String> {
+        let profile = self.find(name)?;
+        let usable = self.usability(&profile);
+        if let Some(why) = crate::routing::needs_login(&usable.missing_logins) {
+            return Err(format!("profile {name} {why}"));
+        }
+        Ok(switch(&profile, router, lead, reason))
+    }
 }
 
 #[cfg(test)]

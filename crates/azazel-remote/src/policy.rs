@@ -62,6 +62,7 @@ const CONTROL: &[&str] = &[
     "list_providers",
     "refresh_models",
     "apply_preset",
+    "set_profile",
     "list_files",
     "get_settings",
     "stop",
@@ -75,6 +76,7 @@ const RESTRICTED: &[&str] = &[
     "set_mode",
     "set_role",
     "save_preset",
+    "save_profile",
     "shell",
     "export",
     "resume_session",
@@ -306,7 +308,7 @@ pub fn check(access: Access, command: &Value, grants: Grants) -> Result<(), Stri
         "shell" => refused("it would run a command on this machine"),
         "export" if given("path") => refused("it would write a file on this machine"),
         "resume_session" if given("path") => refused("it would read a file on this machine"),
-        "save_preset" => refused("it would change the configuration"),
+        "save_preset" | "save_profile" => refused("it would change the configuration"),
         "set_role" if !matches!(text("save"), "" | "session") => {
             refused("it would change the configuration; use `save: session`")
         }
@@ -418,6 +420,7 @@ mod tests {
             [
                 "shell",
                 "save_preset",
+                "save_profile",
                 "run_command",
                 "trust_project",
                 "add_dir",
@@ -774,6 +777,26 @@ mod tests {
     }
 
     #[test]
+    fn switching_profiles_is_a_control_device_s_to_do_and_saving_one_needs_full_access() {
+        let switch = json!({ "type": "set_profile", "name": "cheap" });
+        let old = json!({ "type": "apply_preset", "name": "cheap" });
+        let save = json!({ "type": "save_profile", "name": "mine" });
+        // The tier that may change the model may choose among the owner's profiles.
+        let model = json!({ "type": "set_model", "chain": ["@default"] });
+        for grants in [bypass(false), bypass(true), full()] {
+            assert!(check(Access::Control, &model, grants).is_ok());
+            assert!(check(Access::Control, &switch, grants).is_ok());
+            assert!(check(Access::Control, &old, grants).is_ok());
+            assert!(check(Access::View, &switch, grants).is_err());
+            assert!(check(Access::View, &save, grants).is_err());
+        }
+        // Writing the configuration file stays with full access, as `save_preset` did.
+        assert!(check(Access::Control, &save, bypass(false)).is_err());
+        assert!(check(Access::Control, &save, bypass(true)).is_err());
+        assert!(check(Access::Control, &save, full()).is_ok());
+    }
+
+    #[test]
     fn trusting_adding_directories_and_forgetting_approvals_need_full_access() {
         for kind in ["trust_project", "add_dir", "forget_approvals"] {
             let command = json!({ "type": kind, "path": "x" });
@@ -791,6 +814,7 @@ mod tests {
             json!({ "type": "export", "path": "/tmp/a.html" }),
             json!({ "type": "resume_session", "path": "x.jsonl" }),
             json!({ "type": "save_preset", "name": "p" }),
+            json!({ "type": "save_profile", "name": "p" }),
             json!({ "type": "set_role", "role": "default", "save": "home" }),
             json!({ "type": "set_mode", "mode": "bypass" }),
             json!({ "type": "set_setting", "path": "permissions.mode", "value": "bypass", "scope": "project" }),

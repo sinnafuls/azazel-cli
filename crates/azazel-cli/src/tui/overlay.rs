@@ -83,6 +83,8 @@ pub enum Action {
     /// Whether to enter bypass mode: the second row says yes.
     Bypass,
     Theme(Vec<String>),
+    /// `/profile`: what each row of the picker is.
+    Profile(Vec<super::profiles::Row>),
     /// `/glyphs`: the symbol set of each row; `None` is `auto`.
     Glyphs(Vec<Option<GlyphLevel>>),
     /// The session file of each row; choosing one resumes it.

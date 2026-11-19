@@ -110,6 +110,8 @@ pub(crate) struct Facts {
     pub account: Option<String>,
     /// The e-mail address that account signed in with, as `usage.redact_email` shows it.
     pub account_email: Option<String>,
+    /// The profile the session is on, when it is on one.
+    pub profile: Option<String>,
 }
 
 /// How the lead's model is paid for, which decides what the status line says about money.
@@ -309,6 +311,12 @@ pub(crate) trait Backend: Send {
     async fn save_preset(&mut self, name: &str) -> Result<Roles, String>;
 
     async fn apply_preset(&mut self, name: &str) -> Result<Roles, String>;
+
+    /// The profiles that can be switched to and the name of the one the session is on.
+    fn profiles(&self) -> (Vec<azazel_protocol::ProfileInfo>, Option<String>);
+
+    /// Moves the session to profile `name`, as `/profile <name>` does.
+    async fn set_profile(&mut self, name: &str) -> Result<(), String>;
 
     async fn set_mode(&mut self, mode: PermissionMode) -> Result<(), String>;
 
@@ -668,6 +676,9 @@ impl Backend for Local {
                 .and_then(|waits| waits.current()),
             account,
             account_email,
+            profile: services
+                .get::<crate::profiles::Book>()
+                .and_then(|book| book.current(&self.active.session)),
         }
     }
 
@@ -902,6 +913,29 @@ impl Backend for Local {
 
     async fn apply_preset(&mut self, name: &str) -> Result<Roles, String> {
         crate::roles::apply_preset(&self.roles_place(), name)
+    }
+
+    fn profiles(&self) -> (Vec<azazel_protocol::ProfileInfo>, Option<String>) {
+        match self.app.registry.services.get::<crate::profiles::Book>() {
+            Some(book) => (book.infos(), book.current(&self.active.session)),
+            None => (Vec::new(), None),
+        }
+    }
+
+    async fn set_profile(&mut self, name: &str) -> Result<(), String> {
+        let book = self
+            .app
+            .registry
+            .services
+            .get::<crate::profiles::Book>()
+            .ok_or("this session has no profiles")?;
+        book.switch(
+            name,
+            &self.app.router,
+            Some((&self.active.lead, Some(&*self.active.session))),
+            crate::profiles::Reason::User,
+        )
+        .map(drop)
     }
 
     async fn set_thinking(&mut self, level: ThinkingLevel) -> Result<(), String> {

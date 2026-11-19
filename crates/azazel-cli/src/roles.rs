@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use azazel_agent::AgentHandle;
 use azazel_ai::{ModelSpec, Router};
@@ -22,6 +23,8 @@ pub struct Place<'a> {
     pub router: &'a Router,
     /// The lead and its session, which follow `default` and `lead` when those change.
     pub lead: Option<(&'a AgentHandle, Option<&'a SessionStore>)>,
+    /// The profiles of the process, which saving one adds to.
+    pub book: Option<Arc<crate::profiles::Book>>,
 }
 
 impl<'a> Place<'a> {
@@ -32,6 +35,7 @@ impl<'a> Place<'a> {
             trusted: app.trusted,
             router: &app.router,
             lead,
+            book: app.registry.services.get::<crate::profiles::Book>(),
         }
     }
 }
@@ -227,7 +231,11 @@ pub fn set(
 
 /// Writes every role as it is now as preset `name` in the home config.
 pub fn save_preset(place: &Place<'_>, name: &str) -> Result<Roles, String> {
-    crate::routing::save_roles(&place.paths.home_config(), name, &place.router.roles())?;
+    let (home, roles) = (place.paths.home_config(), place.router.roles());
+    match &place.book {
+        Some(book) => book.save(&home, name, &roles)?,
+        None => crate::routing::save_roles(&home, name, &roles)?,
+    }
     Ok(list(place))
 }
 
@@ -313,6 +321,7 @@ mod tests {
             trusted,
             router: &f.router,
             lead: None,
+            book: None,
         }
     }
 

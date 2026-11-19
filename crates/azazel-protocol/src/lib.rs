@@ -297,8 +297,16 @@ pub enum Command {
     /// Answers with [`Roles`].
     SavePreset { name: String },
     /// Points every role of a saved preset at its models for this session. Answers with
-    /// [`Roles`].
+    /// [`Roles`]. The old name of `set_profile`.
     ApplyPreset { name: String },
+    /// Moves the session to profile `name` (a built-in one or one of the configuration): every
+    /// role the profile names points at its models for this session, and the lead follows its
+    /// role again. A profile whose providers have no login is refused. Sends a
+    /// [`Frame::ProfileChanged`] and answers with the new [`State`].
+    SetProfile { name: String },
+    /// Writes every role as it is now as profile `name` under `[profiles.<name>.roles]` in the
+    /// home config. Answers with the new [`State`].
+    SaveProfile { name: String },
     /// The commands `run_command` takes: those of extensions, the built-in reports, and the
     /// skills as `skill:<name>`. Answers with a list of [`CommandRow`].
     ListCommands,
@@ -706,6 +714,22 @@ pub enum Frame {
         until: u64,
         limit: String,
     },
+    /// The session moved to profile `to`. Not tied to an agent.
+    ProfileChanged {
+        /// The profile the session was on, when it was on one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        from: Option<String>,
+        to: String,
+        /// Why: `user` (a command, from a client or the terminal), `limit` (the provider
+        /// reported a usage limit) or `reset` (the limit window has reset).
+        reason: String,
+        /// For `limit`: when the window resets, in Unix seconds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        until: Option<u64>,
+        /// For `limit`: which limit it was, e.g. `5-hour limit`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        limit: Option<String>,
+    },
     /// The model refused the service tier and is asked without one from now on.
     TierDropped {
         agent: String,
@@ -904,6 +928,12 @@ pub struct State {
     /// The model each role (`default`, `smol`, ...) resolves to first.
     #[serde(default)]
     pub roles: std::collections::BTreeMap<String, String>,
+    /// The profile the session last moved to, or the one `--profile` named.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<String>,
+    /// The profiles `set_profile` takes: the built-in ones, then those of the configuration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub profiles: Vec<ProfileInfo>,
     /// Where the session's last run stopped, when the end of a process cut it short and
     /// `continue_run` can go on with it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -921,6 +951,22 @@ pub struct State {
     /// How long the provider keeps the cache, in seconds, with `cache_left_secs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl_secs: Option<u64>,
+}
+
+/// A profile: a named set of role chains.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ProfileInfo {
+    pub name: String,
+    /// `builtin`, `user` (the home config) or `project`.
+    pub source: String,
+    /// Whether every provider the profile names has a login.
+    pub usable: bool,
+    /// The providers the profile names that have no login.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_logins: Vec<String>,
+    /// The first model of each role the profile sets, as `provider/id[:level]`.
+    #[serde(default)]
+    pub roles: std::collections::BTreeMap<String, String>,
 }
 
 /// A primary agent: a persona the lead can be.

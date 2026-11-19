@@ -414,6 +414,7 @@ branch outside a repository, no cost on a subscription) is left out.
 | `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with. It follows the account when work [moves to another one](models-and-logins.md#several-accounts) |
 | `extensions` | a [Luau extension](extensions.md#in-the-terminal-ui) has set a text with `azazel.status` | The texts of all scripts in the order they were first set, each a piece of its own with the separator of the line between them; one line of each, cut to 32 columns |
 | `model` | always | `⬢ provider/model`: the model answering. With a [virtual model](models-and-logins.md#virtual-models) it is `virtual/auto -> provider/model`: what you chose and the model the last request went to |
+| `profile` | the session is on a [profile](models-and-logins.md#profiles) | The profile's name, cut to 16 columns, right after the model. Switch with [`/profile`](#slash-commands) |
 | `tier` | a [service tier](models-and-logins.md#service-tiers) is on | `fast` or `slow` |
 | `thinking` | always | The thinking level |
 | `time` | always | `◷ 14:05`: the time of day |
@@ -425,11 +426,11 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 
 | Preset | Left | Right |
 |---|---|---|
-| `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `tier`, `thinking` |
+| `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `profile`, `tier`, `thinking` |
 | `minimal` | `mode`, `path`, `agents` | `model` |
 | `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
 | `lean` | `mode`, `agent`, `branch`, `path`, `rate` | `model`, `thinking`, `context` |
-| `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `tier`, `thinking`, `time` |
+| `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `profile`, `tier`, `thinking`, `time` |
 
 `statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
 preset's, less what the other list took, and `["none"]` is a side with nothing on it. A segment stands once: named
@@ -472,7 +473,7 @@ An option a segment does not take, or a value it cannot be, is named in a warnin
 at its default.
 
 **A narrow terminal.** When the line does not fit, whole segments leave it, the one with the lowest priority
-first: `bar` (5), `time` (15), `account` (20), `session` (25), `cache` (30), `extensions` (32), `todo` (35),
+first: `bar` (5), `profile` (10), `time` (15), `account` (20), `session` (25), `cache` (30), `extensions` (32), `todo` (35),
 `queue` (38), `tier` (40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70),
 `context` (75), `path` (80), `git_dirty` (84), `branch` (85), `agent` (90), `model` (95), `mode` (100). The segment with the
 highest priority of each side stays; only then is the right side shortened, and after that left out. The texts
@@ -998,7 +999,7 @@ Models, permissions and setup:
 | `/account [provider]` | The provider's accounts, their usage and until when one is out of allowance: use one for this session, make it the default, sign it out, add another |
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
-| `/profile [name \| save <name>]` | List the [profiles](models-and-logins.md#profiles) (sets of models), apply one, or save the current one |
+| `/profile [name \| save <name>]` | Pick a [profile](models-and-logins.md#profiles) (a set of models) in a list that shows where each comes from, its models and the login a profile lacks, or apply one by name, or save the current one |
 | `/preset [name \| save <name>]` | The old name of `/profile` |
 | `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked, and who [replaced or wraps](extensions.md#replacing-and-wrapping-tools) a tool |
 | `/jobs` | Background jobs; choose one to read its output or stop it |

@@ -238,6 +238,7 @@ impl Settings {
             trusted: self.options.trusted,
             router,
             lead: None,
+            book: None,
         };
         let roles = crate::roles::set(&place, role, chain, azazel_protocol::SaveTo::Home)?;
         let row = roles.roles.iter().find(|row| row.role == role);

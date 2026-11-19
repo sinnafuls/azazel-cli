@@ -29,6 +29,7 @@ mod paste;
 mod places;
 mod popup;
 mod probe;
+mod profiles;
 mod quick;
 mod rate;
 mod recent;
@@ -2406,6 +2407,7 @@ impl Tui {
                     self.apply_mode(PermissionMode::Bypass).await;
                 }
             }
+            Action::Profile(rows) => self.choose_profile(rows.get(choice)).await,
             Action::Theme(names) => {
                 if let Some(name) = names.get(choice) {
                     self.set_theme(name);

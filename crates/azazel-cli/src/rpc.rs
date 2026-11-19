@@ -732,7 +732,13 @@ impl Session {
                 data(crate::roles::save_preset(&self.roles_place(), &name)?).map(Some)
             }
             Command::ApplyPreset { name } => {
-                data(crate::roles::apply_preset(&self.roles_place(), &name)?).map(Some)
+                let roles = crate::roles::apply_preset(&self.roles_place(), &name)?;
+                self.profile_changed(&name, None);
+                data(roles).map(Some)
+            }
+            Command::SetProfile { name } => self.set_profile(&name).map(Some),
+            Command::SaveProfile { name } => {
+                data(crate::roles::save_preset(&self.roles_place(), &name).map(|_| self.state())?).map(Some)
             }
             Command::ListCommands => data(self.commands()).map(Some),
             Command::ListFiles => {

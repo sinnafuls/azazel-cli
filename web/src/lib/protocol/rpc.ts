@@ -196,6 +196,14 @@ export type Request1 =
 			name: string;
 	  }
 	| {
+			type: 'set_profile';
+			name: string;
+	  }
+	| {
+			type: 'save_profile';
+			name: string;
+	  }
+	| {
 			type: 'list_commands';
 	  }
 	| {
@@ -369,6 +377,27 @@ export type Frame =
 			to: string;
 			until: number;
 			limit: string;
+	  }
+	| {
+			type: 'profile_changed';
+			/**
+			 * The profile the session was on, when it was on one.
+			 */
+			from?: string | null;
+			to: string;
+			/**
+			 * Why: `user` (a command, from a client or the terminal), `limit` (the provider
+			 * reported a usage limit) or `reset` (the limit window has reset).
+			 */
+			reason: string;
+			/**
+			 * For `limit`: when the window resets, in Unix seconds.
+			 */
+			until?: number | null;
+			/**
+			 * For `limit`: which limit it was, e.g. `5-hour limit`.
+			 */
+			limit?: string | null;
 	  }
 	| {
 			type: 'tier_dropped';
@@ -569,6 +598,7 @@ export interface Rpc {
 	Usage?: Usage1;
 	PrimaryAgent?: PrimaryAgent;
 	Todo?: Todo;
+	ProfileInfo?: ProfileInfo;
 	Models?: Models;
 	SessionRow?: SessionRow;
 	MessageRow?: MessageRow;
@@ -824,6 +854,14 @@ export interface State {
 		[k: string]: string;
 	};
 	/**
+	 * The profile the session last moved to, or the one `--profile` named.
+	 */
+	profile?: string | null;
+	/**
+	 * The profiles `set_profile` takes: the built-in ones, then those of the configuration.
+	 */
+	profiles?: ProfileInfo[];
+	/**
 	 * Where the session's last run stopped, when the end of a process cut it short and
 	 * `continue_run` can go on with it.
 	 */
@@ -879,6 +917,30 @@ export interface Todo {
 	 * `pending`, `in_progress` or `done`.
 	 */
 	status: string;
+}
+/**
+ * A profile: a named set of role chains.
+ */
+export interface ProfileInfo {
+	name: string;
+	/**
+	 * `builtin`, `user` (the home config) or `project`.
+	 */
+	source: string;
+	/**
+	 * Whether every provider the profile names has a login.
+	 */
+	usable: boolean;
+	/**
+	 * The providers the profile names that have no login.
+	 */
+	missing_logins?: string[];
+	/**
+	 * The first model of each role the profile sets, as `provider/id[:level]`.
+	 */
+	roles?: {
+		[k: string]: string;
+	};
 }
 /**
  * Token and cost totals.

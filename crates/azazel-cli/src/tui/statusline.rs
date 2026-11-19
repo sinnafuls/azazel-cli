@@ -28,6 +28,7 @@ const PATH_MIN: usize = 16;
 const SESSION_MAX: usize = 24;
 /// The widest one text of an extension is shown, unless `max` says otherwise.
 const EXTENSION_MAX: usize = 32;
+const PROFILE_MAX: usize = 16;
 /// In a list of segments: the side is empty, where an empty list would take the preset's.
 pub(crate) const NONE: &str = "none";
 
@@ -37,6 +38,7 @@ pub(crate) enum Name {
     Mode,
     Agent,
     Model,
+    Profile,
     Thinking,
     Tier,
     Path,
@@ -59,10 +61,11 @@ pub(crate) enum Name {
 }
 
 impl Name {
-    pub(crate) const ALL: [Name; 22] = [
+    pub(crate) const ALL: [Name; 23] = [
         Name::Mode,
         Name::Agent,
         Name::Model,
+        Name::Profile,
         Name::Thinking,
         Name::Tier,
         Name::Path,
@@ -91,6 +94,7 @@ impl Name {
             Name::Agent => "agent",
             Name::Model => "model",
             Name::Thinking => "thinking",
+            Name::Profile => "profile",
             Name::Tier => "tier",
             Name::Path => "path",
             Name::Branch => "branch",
@@ -123,6 +127,7 @@ impl Name {
             Name::Agent => "the primary agent the lead is",
             Name::Model => "the model that answers",
             Name::Thinking => "the thinking level",
+            Name::Profile => "the profile the session is on, once there is one",
             Name::Tier => "the service tier, while one is on",
             Name::Path => "the working directory",
             Name::Branch => "the git branch",
@@ -167,6 +172,7 @@ impl Name {
             Name::Session => 25,
             Name::Account => 20,
             Name::Time => 15,
+            Name::Profile => 10,
             Name::Bar => 5,
         }
     }
@@ -200,7 +206,7 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
             &[
                 Mode, Agent, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Extensions,
             ],
-            &[Model, Tier, Thinking],
+            &[Model, Profile, Tier, Thinking],
         ),
         // Sub-agents at work are counted even on the shortest line: they run unseen otherwise.
         StatusPreset::Minimal => (&[Mode, Path, Agents], &[Model]),
@@ -215,7 +221,7 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
                 Mode, Agent, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal,
                 Todo, Queue, Extensions,
             ],
-            &[Session, Account, Model, Tier, Thinking, Time],
+            &[Session, Account, Model, Profile, Tier, Thinking, Time],
         ),
     }
 }
@@ -473,6 +479,8 @@ pub(super) struct StatusLine<'a> {
     /// The model the lead answers with; empty when there is none.
     pub model: &'a str,
     pub tier: Option<&'a str>,
+    /// The profile the session is on.
+    pub profile: Option<&'a str>,
     pub thinking: &'a str,
 }
 
@@ -707,6 +715,9 @@ impl StatusLine<'_> {
                 )
             }
             Name::Tier => self.tier.map(|tier| Segment::new(Role::Muted, tier)),
+            Name::Profile => self
+                .profile
+                .map(|profile| Segment::new(Role::Muted, cut(profile, Some(PROFILE_MAX)))),
             Name::Thinking => Some(Segment::new(Role::Thinking, self.thinking)),
             Name::Time => self.clock.map(|(hour, minute, second)| {
                 let mut time = match options.hour12 {
@@ -769,6 +780,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
         extensions: vec!["ci ok".to_string()],
         model: "anthropic/claude-opus-5-5",
         tier: Some("priority"),
+        profile: None,
         thinking: "high",
     }
 }
@@ -818,6 +830,7 @@ mod tests {
             extensions: Vec::new(),
             model: "anthropic/claude-opus-5-5",
             tier: Some("priority"),
+            profile: None,
             thinking: "high",
         }
     }
@@ -872,6 +885,7 @@ mod tests {
             agents: 0,
             goal: None,
             tier: None,
+            profile: None,
             ..full(&METERED)
         };
         assert!(shown(&short, 99, &theme).contains("◫ 42% · ↯ 78 tok/s · $0.42  "));
@@ -1060,6 +1074,7 @@ mod tests {
             goal: None,
             model: "",
             tier: None,
+            profile: None,
             thinking: "off",
             cwd: "~",
             ..full(&METERED)
@@ -1153,6 +1168,30 @@ mod tests {
     }
 
     #[test]
+    fn the_profile_follows_the_model_and_is_the_first_to_go_on_a_narrow_line() {
+        let theme = Theme::dark();
+        let on = StatusLine {
+            profile: Some("gpt"),
+            ..sample(&METERED)
+        };
+        let wide = shown(&on, 200, &theme);
+        assert!(
+            wide.contains("anthropic/claude-opus-5-5 · gpt · priority · high"),
+            "{wide:?}"
+        );
+        // Without a profile there is no segment.
+        let off = shown(&sample(&METERED), 200, &theme);
+        assert!(!off.contains("gpt"), "{off:?}");
+        // Narrowing the line drops it before the model, which goes last but the mode.
+        let mut width = 200;
+        while shown(&on, width, &theme).contains("gpt") {
+            width -= 1;
+        }
+        let narrow = shown(&on, width, &theme);
+        assert!(narrow.contains("claude-opus-5-5"), "{width}: {narrow:?}");
+    }
+
+    #[test]
     fn what_cannot_be_understood_is_said_and_left_out() {
         let found = problems("left = [\"mode\", \"clock\", \"mode\"]\nright = [\"mode\"]");
         assert_eq!(found.len(), 3, "{found:?}");
@@ -1172,7 +1211,7 @@ mod tests {
         assert_eq!(
             found,
             [
-                "statusline.segments.clock: there is no segment `clock` (segments: mode, agent, model, thinking, \
+                "statusline.segments.clock: there is no segment `clock` (segments: mode, agent, model, profile, thinking, \
                  tier, path, branch, context, bar, rate, cost, usage, agents, goal, todo, queue, session, \
                  time, git_dirty, account, cache, extensions)",
                 "statusline.segments.mode: there is no option `max` (options: icon, priority)",
@@ -1354,6 +1393,7 @@ mod tests {
             agents: 0,
             goal: None,
             tier: None,
+            profile: None,
             // A script decides what the text is: one line of it is shown, and nothing of it
             // reaches the terminal as an escape sequence.
             extensions: vec![

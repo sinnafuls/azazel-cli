@@ -420,6 +420,7 @@ impl Tui {
                     "unknown glyph set `{args}`: nerd, unicode, ascii or auto"
                 )),
             },
+            "profile" if args.is_empty() => self.open_profile_picker(),
             "statusline" if args.is_empty() => self.open_statusline(),
             "statusline" => self.statusline_preset(args),
             "keys" => self.show_keys(),

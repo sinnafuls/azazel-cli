@@ -813,7 +813,41 @@
             "type",
             "name"
           ],
-          "description": "Points every role of a saved preset at its models for this session. Answers with\n[`Roles`]."
+          "description": "Points every role of a saved preset at its models for this session. Answers with\n[`Roles`]. The old name of `set_profile`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "set_profile"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Moves the session to profile `name` (a built-in one or one of the configuration): every\nrole the profile names points at its models for this session, and the lead follows its\nrole again. A profile whose providers have no login is refused. Sends a\n[`Frame::ProfileChanged`] and answers with the new [`State`]."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "save_profile"
+            },
+            "name": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "name"
+          ],
+          "description": "Writes every role as it is now as profile `name` under `[profiles.<name>.roles]` in the\nhome config. Answers with the new [`State`]."
         },
         {
           "type": "object",
@@ -1536,6 +1570,51 @@
             "limit"
           ],
           "description": "The provider's account `from` ran out of allowance until `until` (Unix seconds);\nrequests now use account `to`."
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "profile_changed"
+            },
+            "from": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "The profile the session was on, when it was on one."
+            },
+            "to": {
+              "type": "string"
+            },
+            "reason": {
+              "type": "string",
+              "description": "Why: `user` (a command, from a client or the terminal), `limit` (the provider\nreported a usage limit) or `reset` (the limit window has reset)."
+            },
+            "until": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "uint64",
+              "minimum": 0,
+              "description": "For `limit`: when the window resets, in Unix seconds."
+            },
+            "limit": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For `limit`: which limit it was, e.g. `5-hour limit`."
+            }
+          },
+          "required": [
+            "type",
+            "to",
+            "reason"
+          ],
+          "description": "The session moved to profile `to`. Not tied to an agent."
         },
         {
           "type": "object",
@@ -2494,6 +2573,20 @@
           "description": "The model each role (`default`, `smol`, ...) resolves to first.",
           "default": {}
         },
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The profile the session last moved to, or the one `--profile` named."
+        },
+        "profiles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProfileInfo"
+          },
+          "description": "The profiles `set_profile` takes: the built-in ones, then those of the configuration."
+        },
         "interrupted": {
           "type": [
             "string",
@@ -2623,6 +2716,43 @@
         "status"
       ],
       "description": "One item of the lead's task list."
+    },
+    "ProfileInfo": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string",
+          "description": "`builtin`, `user` (the home config) or `project`."
+        },
+        "usable": {
+          "type": "boolean",
+          "description": "Whether every provider the profile names has a login."
+        },
+        "missing_logins": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "The providers the profile names that have no login."
+        },
+        "roles": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The first model of each role the profile sets, as `provider/id[:level]`.",
+          "default": {}
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "usable"
+      ],
+      "description": "A profile: a named set of role chains."
     },
     "Models": {
       "type": "object",

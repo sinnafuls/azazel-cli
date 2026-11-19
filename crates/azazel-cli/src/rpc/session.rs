@@ -295,6 +295,13 @@ pub(crate) fn state_of(
                 Some((role.clone(), first.first()?.to_string()))
             })
             .collect(),
+        profile: services
+            .get::<crate::profiles::Book>()
+            .and_then(|book| book.current(session)),
+        profiles: services
+            .get::<crate::profiles::Book>()
+            .map(|book| book.infos())
+            .unwrap_or_default(),
         // A run that is being gone on with has no end in the file yet either.
         interrupted: (!busy)
             .then(|| session.interrupted_run(None))
@@ -715,6 +722,37 @@ impl Session {
     /// Where role changes over RPC land: this session, whose lead follows `default`.
     pub(super) fn roles_place(&self) -> crate::roles::Place<'_> {
         crate::roles::Place::of(&self.app, Some((&self.active.lead, Some(&*self.active.session))))
+    }
+
+    /// `set_profile`: moves the session to the profile with the one switch function, tells the
+    /// client with a `profile_changed` frame, and answers with the state.
+    pub(super) fn set_profile(&self, name: &str) -> Result<Value, String> {
+        let book = self
+            .app
+            .registry
+            .services
+            .get::<crate::profiles::Book>()
+            .ok_or("this session has no profiles")?;
+        let from = book.current(&self.active.session);
+        book.switch(
+            name,
+            &self.app.router,
+            Some((&self.active.lead, Some(&*self.active.session))),
+            crate::profiles::Reason::User,
+        )?;
+        self.profile_changed(name, from);
+        data(self.state())
+    }
+
+    /// Sends the `profile_changed` frame of a switch the user asked for.
+    pub(super) fn profile_changed(&self, to: &str, from: Option<String>) {
+        self.out.line(&azazel_protocol::Frame::ProfileChanged {
+            from,
+            to: to.to_string(),
+            reason: crate::profiles::Reason::User.as_str().to_string(),
+            until: None,
+            limit: None,
+        });
     }
 
     /// The models of the providers there is a credential for, or with `all` of every one.

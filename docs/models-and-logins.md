@@ -102,7 +102,8 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 
 | Where | Effect |
 |---|---|
-| `/profile` (or `/preset`) | Lists the profiles, where each comes from (`built-in`, `yours`, `project`), whether it needs a login, and its `default`, `slow` and `smol` models |
+| `/profile` | Opens a picker of the profiles: where each comes from (`built-in`, `yours`, `project`), its `default`, `slow` and `smol` models, and for one that cannot be used the login it needs (`azazel login <provider>`); the current profile is marked, and choosing one applies it. The status line's `profile` segment shows the current one |
+| `/preset` | The old name of `/profile`; as a command of a client over [RPC](rpc.md) it is `set_profile` (`apply_preset` still works) |
 | `/profile <name>` | Points each role of the profile at its models, for this session, and records the switch in the session. Roles the profile does not name stay as they are. When it sets `lead` or `default`, the lead goes back to following its role, so a model picked with `/model` does not outlive the profile |
 | `/profile save <name>` | Writes every role as it is now to `[profiles.<name>.roles]` in `~/.azazel/config.toml`, replacing a profile of that name. `save`, `on_limit` and `on_reset` cannot be profile names |
 | `--profile <name>` (or `--preset`) | Applies the profile to the roles of this run, also before a subcommand (`azazel --profile cheap roles`); an unknown name exits with status 2 and lists the profiles |

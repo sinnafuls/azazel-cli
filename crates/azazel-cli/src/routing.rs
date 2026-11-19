@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentHandle};
@@ -12,7 +12,7 @@ use azazel_core::{
 };
 use azazel_team::Team;
 
-use crate::profiles::{self, Profile, ProfileSource, Reason};
+use crate::profiles::{Book, ProfileSource, Reason};
 
 /// The tier as the status line and the commands call it.
 pub fn tier_word(tier: Tier) -> &'static str {
@@ -147,34 +147,15 @@ pub(crate) fn needs_login(missing: &[String]) -> Option<String> {
 
 /// `/profile` (and `/preset`, its old name).
 struct ProfileCommand {
-    /// The built-in and configured profiles plus the ones saved in this process.
-    profiles: Mutex<Vec<Profile>>,
+    book: Arc<Book>,
     home_config: PathBuf,
-    /// Whether a provider has credentials.
-    logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
 impl ProfileCommand {
-    fn profiles(&self) -> std::sync::MutexGuard<'_, Vec<Profile>> {
-        self.profiles.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn find(&self, name: &str) -> Result<Profile, String> {
-        let profiles = self.profiles();
-        profiles
-            .iter()
-            .find(|profile| profile.name == name)
-            .cloned()
-            .ok_or_else(|| {
-                let known: Vec<&str> = profiles.iter().map(|profile| profile.name.as_str()).collect();
-                format!("no profile `{name}`; there are: {}", known.join(", "))
-            })
-    }
-
     fn list(&self) -> String {
         let mut out = String::new();
-        for profile in self.profiles().iter() {
-            let usable = profiles::usability(profile, &*self.logged_in);
+        for profile in self.book.list() {
+            let usable = self.book.usability(&profile);
             out.push_str(&format!("{} ({})", profile.name, source_label(profile.source)));
             if let Some(why) = needs_login(&usable.missing_logins) {
                 out.push_str(&format!(" - {why}"));
@@ -195,15 +176,10 @@ impl ProfileCommand {
         let Some(router) = ctx.services.get::<Router>() else {
             return Err("no model router in this session".to_string());
         };
-        let profile = self.find(name)?;
-        let usable = profiles::usability(&profile, &*self.logged_in);
-        if let Some(why) = needs_login(&usable.missing_logins) {
-            return Err(format!("profile {name} {why}"));
-        }
         let lead = ctx.services.get::<Team>().and_then(|team| team.lead());
         let session = ctx.services.get::<SessionStore>();
         let lead = lead.as_ref().map(|lead| (lead, session.as_deref()));
-        Ok(profiles::switch(&profile, &router, lead, Reason::User))
+        self.book.switch(name, &router, lead, Reason::User)
     }
 
     /// Writes the roles as they are now under `[profiles.<name>.roles]`, replacing a profile of
@@ -213,20 +189,10 @@ impl ProfileCommand {
             return Err("no model router in this session".to_string());
         };
         let roles = router.roles();
-        save_roles(&self.home_config, name, &roles)?;
-        let count = roles.len();
-        let saved = Profile {
-            name: name.to_string(),
-            source: ProfileSource::User,
-            roles,
-        };
-        let mut profiles = self.profiles();
-        match profiles.iter_mut().find(|profile| profile.name == name) {
-            Some(old) => *old = saved,
-            None => profiles.push(saved),
-        }
+        self.book.save(&self.home_config, name, &roles)?;
         Ok(format!(
-            "profile {name} saved with the {count} roles as they are now (in {})",
+            "profile {name} saved with the {} roles as they are now (in {})",
+            roles.len(),
             self.home_config.display()
         ))
     }
@@ -332,10 +298,9 @@ pub(crate) fn save_roles(
 
 /// Registers `/fast`, `/slow` and `/profile` (and `/preset`, its old name).
 pub struct RoutingExt {
-    pub profiles: Vec<Profile>,
+    /// The profiles and which of them can be used; also a service for RPC and the terminal.
+    pub book: Arc<Book>,
     pub home_config: PathBuf,
-    /// Whether a provider has credentials, for telling which profiles can be used.
-    pub logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     /// `[profiles] on_limit` and `on_reset`.
     pub on_limit: String,
     pub on_reset: azazel_core::config::ProfileReset,
@@ -363,23 +328,23 @@ impl Extension for RoutingExt {
                 handler: Arc::new(TierCommand(tier)),
             });
         }
-        let switcher = Arc::new(profiles::limit::ProfileSwitcher::new(
+        let switcher = Arc::new(crate::profiles::limit::ProfileSwitcher::new(
             &self.on_limit,
             self.on_reset,
-            self.profiles.clone(),
-            self.logged_in.clone(),
+            self.book.list(),
+            self.book.logged_in_fn(),
             r.services().clone(),
             self.started_on.clone(),
         ));
         r.service(switcher.clone());
         r.on(
             azazel_core::EventKind::UserPrompt,
-            Arc::new(profiles::limit::AtPrompt(switcher)),
+            Arc::new(crate::profiles::limit::AtPrompt(switcher)),
         );
+        r.service(self.book.clone());
         let profile = Arc::new(ProfileCommand {
-            profiles: Mutex::new(self.profiles.clone()),
+            book: self.book.clone(),
             home_config: self.home_config.clone(),
-            logged_in: self.logged_in.clone(),
         });
         for (name, description) in [
             (
@@ -481,9 +446,8 @@ mod tests {
 
     fn command(dir: &std::path::Path, logged_in: fn(&str) -> bool) -> ProfileCommand {
         ProfileCommand {
-            profiles: Mutex::new(profiles::builtin()),
+            book: Arc::new(Book::new(crate::profiles::builtin(), Arc::new(logged_in), None)),
             home_config: dir.join("config.toml"),
-            logged_in: Arc::new(logged_in),
         }
     }
 
