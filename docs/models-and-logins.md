@@ -90,7 +90,7 @@ Six profiles are built in. Each names models for the lead (`default`), planning 
 
 A `[profiles.<name>.roles]` table of the same name replaces a built-in whole. A profile whose providers have no credentials is listed with the login it needs (`azazel login <provider>`) and `/profile <name>` refuses it.
 
-You don't have to edit the file: the Profiles view of [`/models`](tui.md#models) creates, copies, renames, deletes and edits profiles, and turns built-ins off and on. A built-in named in `[profiles] disabled` is hidden from `/profile`, `--profile`, the web page and RPC, and cannot be `on_limit`.
+You don't have to edit the file: the Profiles view of [`/models`](tui.md#models) creates, copies, renames, deletes and edits profiles, and turns built-ins off and on. A built-in named in `[profiles] disabled` is hidden from `/profile`, `--profile`, the web page and RPC, and cannot be `on_limit`. The view writes `disabled` to `~/.azazel/config.toml` only; a project that sets `[profiles] disabled` replaces that list in that project. Edits to a profile reach usage-limit switching and `on_reset = "auto"` at once, and changing one role keeps the comments on the others.
 
 ```toml
 # ~/.azazel/config.toml
