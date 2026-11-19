@@ -27,6 +27,8 @@ const SESSION_ROWS: [string, string, string?][] = [
 	['export', 'Write the session to a file', '[markdown|html|jsonl]'],
 	['btw', 'Ask on the side, without interrupting', '<question>'],
 	['model', 'Choose the model', '[provider/model]'],
+	['profile', 'Choose the profile: the models of every role at once', '[name | save <name>]'],
+	['preset', 'The old name of /profile', '[name | save <name>]'],
 	['mode', 'Choose the permission mode', '[mode]'],
 	['thinking', 'Choose how hard the model thinks', '[level]'],
 	['rewind', 'Go back to an earlier prompt']

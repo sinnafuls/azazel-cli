@@ -1,14 +1,26 @@
 <script lang="ts">
-	// Which models answer for each role, the saved presets, and how hard the open session thinks.
+	// Which models answer for each role, the profiles that set every role at once, and how hard the
+	// open session thinks.
 	import { onMount } from 'svelte';
 	import { app } from '$lib/app.svelte';
 	import { ui } from '$lib/ui.svelte';
 	import { hostRpc } from '$lib/host';
 	import { toasts } from '$lib/toasts.svelte';
-	import { THINKING_LEVELS, type ModelRow, type Roles, type SaveTo } from '$lib/protocol';
+	import {
+		THINKING_LEVELS,
+		type ModelRow,
+		type Roles,
+		type SaveTo,
+		type SettingList,
+		type State
+	} from '$lib/protocol';
+	import { profileLogins, profileModels, profileSource } from '$lib/profiles';
 	import * as NativeSelect from '$lib/components/ui/native-select';
+	import * as Card from '$lib/components/ui/card';
+	import { Badge } from '$lib/components/ui/badge';
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
+	import Check from '@lucide/svelte/icons/check';
 	import { Loaded } from './load.svelte';
 	import Unavailable from './Unavailable.svelte';
 	import ListEditor from './ListEditor.svelte';
@@ -18,13 +30,20 @@
 
 	const roles = new Loaded<Roles>(() => hostRpc<Roles>({ type: 'list_roles' }));
 	const models = new Loaded<ModelRow[]>(() => hostRpc<ModelRow[]>({ type: 'list_models' }));
+	// An open session shows its own profiles, live; with none open they are read from a running one.
+	const host = new Loaded<State>(() => hostRpc<State>({ type: 'get_state' }));
+	// `[profiles] on_limit` and `on_reset`, shown as they are set; All settings changes them.
+	const settings = new Loaded<SettingList>(() => hostRpc<SettingList>({ type: 'get_settings' }));
 	onMount(() => {
 		void roles.load();
 		void models.load();
+		void settings.load();
+		if (!ui.session) void host.load();
 	});
 
 	let scope = $state<SaveTo>('session');
-	let preset = $state('');
+	let profileName = $state('');
+	let switching = $state<string | null>(null);
 	const usable = $derived((models.data ?? []).filter((m) => m.usable).map((m) => m.model));
 	const st = $derived(ui.session?.state ?? null);
 	const fail = (e: unknown) => toasts.push(e instanceof Error ? e.message : String(e), 'error');
@@ -37,22 +56,35 @@
 			fail(e);
 		}
 	}
-	async function applyPreset(name: string) {
+	const profileState = $derived(st ?? host.data);
+	const profiles = $derived(profileState?.profiles ?? []);
+	const current = $derived(profileState?.profile ?? null);
+	const setting = (path: string) => settings.data?.settings.find((r) => r.path === path);
+	const onLimit = $derived(setting('profiles.on_limit'));
+	const onReset = $derived(setting('profiles.on_reset'));
+
+	/** A profile belongs to a session: the one that is open moves to it. */
+	async function setProfile(name: string) {
+		const s = ui.session;
+		if (!s || switching) return;
+		switching = name;
 		try {
-			roles.set(await hostRpc<Roles>({ type: 'apply_preset', name }));
-			void ui.session?.refreshState().catch(() => {});
-			toasts.push(`Applied the preset ${name}.`, 'success', 2500);
+			await s.setProfile(name);
+			void roles.load(true);
 		} catch (e) {
 			fail(e);
+		} finally {
+			switching = null;
 		}
 	}
-	async function savePreset() {
-		const name = preset.trim();
+	async function saveProfile() {
+		const name = profileName.trim();
 		if (!name) return;
 		try {
-			roles.set(await hostRpc<Roles>({ type: 'save_preset', name }));
-			preset = '';
-			toasts.push(`Saved the roles as the preset ${name}.`, 'success', 2500);
+			if (ui.session) await ui.session.saveProfile(name);
+			else host.set(await hostRpc<State>({ type: 'save_profile', name }));
+			profileName = '';
+			toasts.push(`Saved the roles as the profile ${name}.`, 'success', 2500);
 		} catch (e) {
 			fail(e);
 		}
@@ -97,6 +129,115 @@
 	</Section>
 {/if}
 
+<Section title="Profiles" id="set-profiles">
+	{#if !profileState}
+		<Unavailable of={host} what="profiles" />
+	{:else if !profiles.length}
+		<p class="py-2 text-xs leading-relaxed text-muted-foreground">
+			This computer reports no profiles: its azazel is older than 0.16.
+		</p>
+	{:else}
+		<p class="mb-2 text-xs leading-relaxed text-muted-foreground">
+			A profile sets the models of every role at once. {ui.session
+				? 'Switching moves the open session; its next reply starts a new prompt cache.'
+				: 'Open a session to switch its profile.'}
+		</p>
+		<Card.Root size="sm" data-profiles>
+			<Card.Content>
+				<ul aria-label="Profiles">
+					{#each profiles as p (p.name)}
+						<!-- The button sits beside the name, so the models below have the whole width. -->
+						<li
+							class="grid gap-1 border-b py-3 first:pt-0 last:border-b-0 last:pb-0"
+							data-profile={p.name}
+							aria-current={p.name === current ? 'true' : undefined}
+						>
+							<div class="flex min-h-8 min-w-0 items-center gap-3">
+								<div class="flex min-w-0 flex-1 items-center gap-1.5">
+									<span class="truncate font-medium">{p.name}</span>
+									<Badge variant="outline" class="font-normal text-muted-foreground"
+										>{profileSource(p)}</Badge
+									>
+									{#if p.name === current}
+										<Badge variant="secondary"><Check />in use</Badge>
+									{/if}
+								</div>
+								{#if app.canControl && p.name !== current}
+									<Button
+										variant="outline"
+										class="shrink-0"
+										disabled={!p.usable || !ui.session || switching !== null}
+										aria-label="Switch to the profile {p.name}"
+										onclick={() => setProfile(p.name)}>Switch</Button
+									>
+								{/if}
+							</div>
+							<dl
+								class="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 font-mono text-xs text-muted-foreground"
+							>
+								{#each profileModels(p) as m (m.role)}
+									<dt>@{m.role}</dt>
+									<dd class="break-all">{m.model}</dd>
+								{/each}
+							</dl>
+							{#if !p.usable}
+								<p class="text-xs text-muted-foreground">
+									needs <code class="font-mono text-foreground">{profileLogins(p).join(', ')}</code>
+								</p>
+							{/if}
+						</li>
+					{/each}
+				</ul>
+			</Card.Content>
+		</Card.Root>
+		{#if app.fullAccess}
+			<Row
+				label="Save current as…"
+				for="set-profile-name"
+				hint="Writes the roles as they stand to your config, as a profile of that name."
+				orientation="responsive"
+			>
+				<form
+					class="flex shrink-0 gap-2"
+					onsubmit={(e) => {
+						e.preventDefault();
+						void saveProfile();
+					}}
+				>
+					<Input
+						id="set-profile-name"
+						class="w-44"
+						bind:value={profileName}
+						placeholder="Profile name"
+						autocomplete="off"
+						spellcheck={false}
+					/>
+					<Button type="submit" variant="outline" disabled={!profileName.trim()}>Save</Button>
+				</form>
+			</Row>
+		{/if}
+	{/if}
+	{#if settings.state !== 'ready'}
+		<Unavailable of={settings} what="what a usage limit does" />
+	{:else if onLimit && onReset}
+		<Row label={onLimit.label} hint={onLimit.description} data-profile-setting="on_limit">
+			{#if onLimit.value}
+				<span class="shrink-0 font-mono text-xs">{onLimit.value}</span>
+			{:else}
+				<span class="shrink-0 text-xs text-muted-foreground">never switches</span>
+			{/if}
+		</Row>
+		<Row label={onReset.label} hint={onReset.description} data-profile-setting="on_reset">
+			<span class="shrink-0 font-mono text-xs">{onReset.value}</span>
+		</Row>
+		<p class="mt-2 text-xs leading-relaxed text-muted-foreground">
+			These two are shown as they are set. Change them under All settings, or as
+			<code class="font-mono">on_limit</code> and <code class="font-mono">on_reset</code> of
+			<code class="font-mono">[profiles]</code> in the config file.
+		</p>
+	{/if}
+</Section>
+
 <Section title="Roles">
 	{#snippet action()}
 		{#if roles.state === 'ready' && app.canControl}
@@ -138,43 +279,3 @@
 		</ul>
 	{/if}
 </Section>
-
-{#if roles.state === 'ready' && roles.data}
-	<Section title="Presets">
-		{#if roles.data.presets.length}
-			<ul class="flex flex-wrap gap-2" aria-label="Presets">
-				{#each roles.data.presets as p (p)}
-					<li>
-						<Button variant="outline" disabled={!app.canControl} onclick={() => applyPreset(p)}
-							>{p}</Button
-						>
-					</li>
-				{/each}
-			</ul>
-		{:else}
-			<p class="text-xs text-muted-foreground">No presets saved yet.</p>
-		{/if}
-		{#if app.fullAccess}
-			<form
-				class="mt-3 flex gap-2"
-				onsubmit={(e) => {
-					e.preventDefault();
-					void savePreset();
-				}}
-			>
-				<Input
-					class="max-w-56"
-					bind:value={preset}
-					placeholder="Name of a new preset"
-					aria-label="Name of a new preset"
-				/>
-				<Button type="submit" variant="outline" disabled={!preset.trim()}>Save current roles</Button
-				>
-			</form>
-		{:else}
-			<p class="mt-2 text-xs leading-relaxed text-muted-foreground">
-				Saving a preset changes the configuration: it needs full access.
-			</p>
-		{/if}
-	</Section>
-{/if}

@@ -1,7 +1,7 @@
 <script lang="ts">
-	// The session's model, thinking level, mode and primary agent: four ghost Buttons, each opening
-	// a Popover (the model: a Command list with a search) or a DropdownMenu anchored to it. It sits
-	// inside the composer, so what the next message will be sent with is beside the message.
+	// The session's model, profile, thinking level, mode and primary agent: ghost Buttons, each
+	// opening a Popover (the model: a Command list with a search) or a DropdownMenu anchored to it.
+	// It sits inside the composer, so what the next message will be sent with is beside the message.
 	import { Button } from '$lib/components/ui/button';
 	import * as Popover from '$lib/components/ui/popover';
 	import * as Command from '$lib/components/ui/command';
@@ -22,10 +22,11 @@
 	import Hourglass from '@lucide/svelte/icons/hourglass';
 	import { cacheLeft, tokens } from '$lib/format';
 	import { modelLabel, pickableRoles, shortModel, splitModel } from '$lib/models';
+	import ProfileChip from './ProfileChip.svelte';
 
 	let { session, canControl }: { session: Session; canControl: boolean } = $props();
 
-	type Which = 'model' | 'thinking' | 'mode' | 'agent' | null;
+	type Which = 'model' | 'profile' | 'thinking' | 'mode' | 'agent' | null;
 	let which = $state<Which>(null);
 	let query = $state('');
 	let confirmBypass = $state(false);
@@ -91,7 +92,7 @@
 			toasts.push(e instanceof Error ? e.message : String(e), 'error');
 		}
 	}
-	// A `/model`, `/mode` or `/thinking` typed in the message box opens the picker here.
+	// A `/model`, `/profile`, `/mode` or `/thinking` typed in the message box opens the picker here.
 	$effect(() => {
 		const w = ui.picker;
 		if (!w) return;
@@ -202,6 +203,14 @@
 			</Command.Root>
 		</Popover.Content>
 	</Popover.Root>
+
+	<ProfileChip
+		{session}
+		{canControl}
+		class={chip}
+		bind:open={() => isOpen('profile'), change('profile')}
+		onpick={(name) => run(() => session.setProfile(name))}
+	/>
 
 	<DropdownMenu.Root bind:open={() => isOpen('thinking'), change('thinking')}>
 		<DropdownMenu.Trigger>

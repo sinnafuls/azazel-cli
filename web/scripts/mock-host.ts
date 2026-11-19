@@ -9,6 +9,8 @@
 // starting with `full` a device with full access (`[remote] full_access`), which shows the red strip.
 // The 0.14 commands (get_theme, get_settings, set_setting, get_context, get_cost, run_command) answer
 // with made-up but realistic data; `MOCK_THEME=light` makes the terminal's theme a light one.
+// Profiles (0.16): the state carries `profile` and `profiles`, `set_profile` and `save_profile` are
+// answered, and a prompt of `/limit` or `/reset` plays the switch a usage limit makes and the way back.
 import { existsSync, readFileSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
 
@@ -202,6 +204,81 @@ interface WsData {
 	full: boolean;
 }
 
+const OPUS = 'bedrock/anthropic.claude-opus-4-8';
+
+// Declared before the sessions: each is built with the profiles in its state.
+// The profiles of `State.profiles`: the built-in ones as azazel 0.16 has them, then those of the
+// configuration. `gpt` lacks its login, so the page can show a profile that cannot be chosen.
+const tiers = (def: string, slow: string, work: string, smol: string) => ({
+	coder: work,
+	default: def,
+	reviewer: slow,
+	scout: work,
+	slow,
+	smol,
+	tester: work,
+	vision: work
+});
+const A = {
+	opus: 'anthropic/claude-opus-5-5',
+	fable: 'anthropic/claude-fable-5-2',
+	sonnet: 'anthropic/claude-sonnet-5-5',
+	haiku: 'anthropic/claude-haiku-5-5'
+};
+const profile = (
+	name: string,
+	source: string,
+	roles: Record<string, string>,
+	missing: string[] = []
+) => ({ name, source, usable: !missing.length, missing_logins: missing, roles });
+const profiles = [
+	profile('claude', 'builtin', tiers(A.opus, A.fable, A.sonnet, A.haiku)),
+	profile(
+		'gpt',
+		'builtin',
+		tiers(
+			'openai-codex/gpt-6.1-sol',
+			'openai-codex/gpt-6-astra',
+			'openai-codex/gpt-6.1-terra',
+			'openai-codex/gpt-6-luna'
+		),
+		['openai-codex']
+	),
+	profile('cheap', 'builtin', tiers(A.sonnet, A.sonnet, A.haiku, A.haiku)),
+	profile('thorough', 'builtin', tiers(A.fable, A.fable, A.opus, A.sonnet)),
+	profile('frontend', 'builtin', {
+		...tiers(A.opus, A.fable, A.sonnet, A.haiku),
+		designer: A.fable
+	}),
+	profile('research', 'builtin', {
+		...tiers(A.opus, A.fable, A.sonnet, A.haiku),
+		researcher: A.opus,
+		scout: A.opus
+	}),
+	profile(
+		'bedrock',
+		'user',
+		tiers(OPUS, OPUS, 'bedrock/anthropic.claude-sonnet-4-8', 'bedrock/anthropic.claude-haiku-4-8')
+	)
+];
+
+/** Moves a session to a profile, as `set_profile` and a usage limit both do. */
+function switchProfile(
+	s: MockSession,
+	to: string,
+	reason: 'user' | 'limit' | 'reset',
+	extra: Frame = {}
+) {
+	const p = profiles.find((x) => x.name === to);
+	if (!p) return;
+	const from = s.state.profile ?? null;
+	s.state.profile = p.name;
+	s.state.roles = { ...p.roles };
+	s.state.model = p.roles.default;
+	s.state.chain = [p.roles.default];
+	s.emit({ type: 'profile_changed', from, to: p.name, reason, ...extra });
+}
+
 class MockSession {
 	log: Frame[] = [];
 	rows: Frame[] = [];
@@ -250,6 +327,9 @@ class MockSession {
 				cost_usd: null
 			}
 		];
+		st.profile = 'claude';
+		st.profiles = profiles;
+		st.roles = { ...profiles[0].roles };
 		st.todo = [
 			{ text: 'Read the current retry policy', status: 'done' },
 			{ text: 'Make backoff exponential with a 30 s cap', status: 'in_progress' },
@@ -446,7 +526,6 @@ const j = (body: unknown, init: ResponseInit = {}) =>
 
 // --- commands ------------------------------------------------------------------------------
 
-const OPUS = 'bedrock/anthropic.claude-opus-4-8';
 const roleRow = (
 	role: string,
 	chain: string[],
@@ -664,6 +743,27 @@ const settings = [
 		true,
 		['anthropic/claude-haiku-4-5'],
 		'home'
+	),
+	setting(
+		'Models',
+		'Profiles',
+		'profiles.on_limit',
+		'Profile on a usage limit',
+		txt,
+		'',
+		'The profile a session moves to when its provider reports a usage limit; empty never switches.',
+		true,
+		'cheap',
+		'home'
+	),
+	setting(
+		'Models',
+		'Profiles',
+		'profiles.on_reset',
+		'When the limit resets',
+		pick('ask', 'auto', 'off'),
+		'ask',
+		'ask: offer to go back to the first profile; auto: go back; off: stay on the second.'
 	),
 	setting(
 		'Models',
@@ -1308,6 +1408,31 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 			if (!roles.presets.includes(msg.name))
 				return fail(c, id, `There is no preset \`${msg.name}\`.`);
 			return respond(c, id, roles);
+		case 'set_profile': {
+			const p = profiles.find((x) => x.name === msg.name);
+			if (!p) return fail(c, id, `There is no profile \`${msg.name}\`.`);
+			if (!p.usable)
+				return fail(
+					c,
+					id,
+					`The profile \`${p.name}\` needs a login: run \`azazel login ${p.missing_logins[0]}\`.`
+				);
+			switchProfile(s, p.name, 'user');
+			return respond(c, id, { ...s.state, busy: s.busy });
+		}
+		case 'save_profile': {
+			if (!full) return fail(c, id, 'Saving a profile needs full access.');
+			const name = String(msg.name ?? '').trim();
+			if (!/^[A-Za-z0-9_-]+$/.test(name))
+				return fail(c, id, 'A profile name is letters, digits, `-` and `_`.');
+			const saved = profile(name, 'user', { ...(s.state.roles ?? {}) });
+			const at = profiles.findIndex((x) => x.name === name);
+			if (at < 0) profiles.push(saved);
+			else if (profiles[at].source === 'builtin')
+				return fail(c, id, `\`${name}\` is a built-in profile: choose another name.`);
+			else profiles[at] = saved;
+			return respond(c, id, { ...s.state, busy: s.busy });
+		}
 		case 'attach': {
 			const since: number | undefined = msg.since;
 			const known =
@@ -1397,6 +1522,13 @@ function handle(s: MockSession, c: Client, access: 'view' | 'control', full: boo
 		case 'steer':
 		case 'follow_up': {
 			respond(c, id, null);
+			// What a usage limit does to a session, and the way back, on demand.
+			if (type === 'prompt' && msg.text === '/limit')
+				return switchProfile(s, 'cheap', 'limit', {
+					until: Math.floor(Date.now() / 1000) + 2 * 3600 + 14 * 60,
+					limit: '5-hour limit'
+				});
+			if (type === 'prompt' && msg.text === '/reset') return switchProfile(s, 'claude', 'reset');
 			if (type === 'prompt' && !s.busy) {
 				// `run` emits the user_input itself, to everyone but the sender.
 				void s.run(lines(s.s.frames), 0, msg.text, c).catch(() => {});

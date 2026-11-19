@@ -26,7 +26,9 @@
 //   the middle of the whole row. Segments of a joined toggle group round only their outer corners,
 //   so only their heights are compared.
 //
-// Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS.
+// Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS;
+// those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
+// their own beside each size's, `<size>-<theme>-profiles`.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { test, expect, Stack, type Page } from './stack';
@@ -522,6 +524,28 @@ const PIXEL = Buffer.from(
 	'base64'
 );
 
+/**
+ * Profiles for the scripted provider: `mine` keeps the lead on its model, `fallback` is where a
+ * usage limit sends it. The built-in ones are listed too, and need logins this home does not have.
+ */
+const PROFILES = [
+	'[profiles]',
+	'on_limit = "fallback"',
+	'',
+	'[profiles.mine.roles]',
+	'default = ["mock/lead"]',
+	'smol = ["mock/scout"]',
+	'',
+	'[profiles.fallback.roles]',
+	'default = ["mock/scout"]',
+	''
+].join('\n');
+/** A session whose second request runs out of allowance, and is answered by the fallback. */
+const LIMITED = {
+	lead: [{ reply: { text: 'Ready.' } }, { usage_limit: { resets_in_secs: 8040 } }],
+	scout: [{ reply: { text: 'On the fallback.' } }]
+};
+
 test.describe.configure({ timeout: 300_000 });
 
 for (const [width, height] of SIZES)
@@ -549,6 +573,7 @@ for (const [width, height] of SIZES)
 			};
 
 			const stack = new Stack();
+			stack.config = PROFILES;
 			try {
 				const work = join(stack.dir, 'work');
 				await stack.start(
@@ -829,7 +854,7 @@ for (const [width, height] of SIZES)
 				}
 
 				// The pickers of the status bar.
-				for (const which of ['Model', 'Thinking', 'Mode', 'Agent']) {
+				for (const which of ['Model', 'Profile', 'Thinking', 'Mode', 'Agent']) {
 					const chip = page
 						.locator('[data-statusbar]')
 						.getByRole('button', { name: new RegExp(`^${which}:`) });
@@ -988,6 +1013,130 @@ for (const [width, height] of SIZES)
 				});
 				await page.mouse.move(width - 2, 2);
 				await page.mouse.up();
+			} finally {
+				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
+				await stack.stop();
+			}
+
+			const report = [...where].map(([f, states]) => `${f}  [${states.join(', ')}]`).sort();
+			expect(report.join('\n'), `${basename(dir)}: ${report.length} findings`).toBe('');
+		});
+
+// Profiles, on a device with full access (which may save one): the chip before and after a profile
+// is chosen, its menu, the Profiles section of the settings, and the notice of a usage limit.
+for (const [width, height] of SIZES)
+	for (const theme of THEMES)
+		test(`profiles hold at ${width}x${height}, ${theme}`, async ({ page }) => {
+			const dir = join(SHOTS, `${width}x${height}-${theme}-profiles`);
+			mkdirSync(dir, { recursive: true });
+			const measured: Record<string, Measured> = {};
+			const where = new Map<string, string[]>();
+			let shot = 0;
+			const capture = async (state: string) => {
+				await settle(page);
+				const m = await page.evaluate(audit, 'body');
+				const file = `${String(++shot).padStart(2, '0')}-${state}`;
+				await page.screenshot({ path: join(dir, `${file}.png`) });
+				measured[file] = m;
+				for (const f of m.findings) where.set(f, [...(where.get(f) ?? []), state]);
+				expect(m.rows, `${state}: rows measured`).toBeGreaterThan(0);
+				expect(m.texts, `${state}: texts measured`).toBeGreaterThan(0);
+				return m;
+			};
+
+			const stack = new Stack();
+			stack.config = `${PROFILES}\n[remote]\nfull_access = true\n`;
+			try {
+				await stack.start('auto', false, [], LIMITED);
+				await page.setViewportSize({ width, height });
+				await page.addInitScript((t) => localStorage.setItem('azazel-theme', t), theme);
+				await page.goto(stack.pair);
+				await page.locator('[data-session-list]:visible a').first().click();
+				await page.waitForURL(/\/s\/[^/]+$/);
+				await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${theme}\\b`));
+				await expect(page.getByRole('paragraph').filter({ hasText: 'Ready.' })).toBeVisible();
+				const box = page.getByRole('combobox', { name: 'Message' });
+				await expect(box).toBeVisible();
+
+				// The chip, beside the model's: the session is on no profile yet.
+				const chip = page.locator('[data-statusbar]').getByRole('button', { name: /^Profile:/ });
+				await expect(chip).toHaveAccessibleName('Profile: none');
+				await page.mouse.move(width - 2, 2);
+				await capture('chip');
+
+				// Its menu: the built-in profiles need a login and cannot be chosen, the two of the
+				// configuration can. Every row is one height.
+				await chip.click();
+				const menu = page.getByRole('menu');
+				const item = (name: string) => menu.locator(`[role=menuitemradio][data-profile="${name}"]`);
+				await expect(item('mine')).toBeVisible();
+				await expect(item('mine')).toContainText('your config');
+				await expect(item('mine')).toContainText('lead · scout');
+				await expect(item('gpt')).toHaveAttribute('aria-disabled', 'true');
+				await expect(item('gpt')).toContainText('needs azazel login openai-codex');
+				await page.mouse.move(width - 2, 2);
+				await capture('menu');
+				await item('mine').click();
+				await expect(menu).toHaveCount(0);
+				await expect(chip).toHaveAccessibleName('Profile: mine');
+				await chip.click();
+				await expect(item('mine')).toHaveAttribute('aria-checked', 'true');
+				await page.mouse.move(width - 2, 2);
+				await capture('menu-checked');
+				await closeAll(page);
+
+				// Settings > Models and roles: the same list in a card, the name to save under, and what
+				// a usage limit does.
+				await page.keyboard.press('Control+.');
+				const win = page.locator('[role=dialog][data-settings]');
+				await expect(win).toBeVisible();
+				await win.getByRole('tab', { name: 'Models and roles', exact: true }).click();
+				await expect(win.locator('[data-pane="models"]')).toBeVisible();
+				await expect(win.locator('[aria-busy=true]')).toHaveCount(0);
+				const card = win.locator('[data-profiles]');
+				await expect(card.locator('[data-profile="mine"]')).toHaveAttribute('aria-current', 'true');
+				await expect(card.locator('[data-profile="mine"]')).toContainText('in use');
+				await expect(
+					card.getByRole('button', { name: 'Switch to the profile gpt' })
+				).toBeDisabled();
+				await win
+					.getByRole('heading', { name: 'Profiles' })
+					.evaluate((el) => el.scrollIntoView({ block: 'start' }));
+				await page.mouse.move(width - 2, 2);
+				await capture('settings-profiles');
+				const name = win.getByLabel('Save current as…');
+				await name.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+				await name.fill('kept');
+				await page.mouse.move(width - 2, 2);
+				await capture('settings-save');
+				await win.getByRole('button', { name: 'Save', exact: true }).click();
+				const toast = page.locator('[data-sonner-toast]');
+				await expect(toast).toContainText('Saved the roles as the profile kept.');
+				await expect(card.locator('[data-profile="kept"]')).toContainText('your config');
+				await expect(name).toHaveValue('');
+				await expect(toast).toHaveCount(0, { timeout: 20_000 });
+				const limit = win.locator('[data-profile-setting="on_limit"]');
+				await expect(limit).toContainText('fallback');
+				await expect(win.locator('[data-profile-setting="on_reset"]')).toContainText('ask');
+				await limit.evaluate((el) => el.scrollIntoView({ block: 'center' }));
+				await page.mouse.move(width - 2, 2);
+				await capture('settings-on-limit');
+				await closeAll(page);
+
+				// The next message runs out of allowance: the session moves to the fallback, the chip
+				// follows and a notice says why, until when, and what the next reply costs.
+				await box.fill('go on');
+				await box.press('Enter');
+				await expect(toast).toContainText('Switched to the profile fallback.');
+				await expect(toast).toContainText('mock reached its');
+				await expect(toast).toContainText('(in 2 h)');
+				await expect(toast).toContainText('new prompt cache');
+				await expect(chip).toHaveAccessibleName('Profile: fallback');
+				await expect(
+					page.getByRole('paragraph').filter({ hasText: 'On the fallback.' })
+				).toBeVisible();
+				await page.mouse.move(width - 2, 2);
+				await capture('limit-toast');
 			} finally {
 				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
 				await stack.stop();

@@ -1,6 +1,7 @@
 // A pure reducer: protocol frames in, a model of the conversation out. Nothing here touches the
 // DOM or the network, so it runs the same in the page, in the tests and over recorded logs.
 import type { AnyFrame, Block, Member, Row, SnapshotRemote, State } from '$lib/protocol';
+import { profileNotice } from '$lib/profiles';
 
 export type ToolStatus = 'pending' | 'running' | 'done' | 'error';
 
@@ -78,6 +79,8 @@ export interface Toast {
 	id: string;
 	level: 'info' | 'warn' | 'error';
 	text: string;
+	/** How long it stays, when that is not the usual time. */
+	ms?: number;
 }
 
 export interface AgentRun {
@@ -429,6 +432,18 @@ export function reduce(m: Model, frame: AnyFrame): Model {
 				'warn',
 				`Model fell back from ${f.from as string} to ${f.to as string}`
 			);
+		case 'profile_changed': {
+			// The chip follows at once; the models the profile brought come with the next `get_state`.
+			const frame = frame0(f) as Extract<AnyFrame, { type: 'profile_changed' }>;
+			const notice = profileNotice(frame, base.state?.model);
+			return {
+				...base,
+				state: base.state ? { ...base.state, profile: frame.to } : base.state,
+				toasts: notice
+					? [...base.toasts, { id: `profile-${at ?? base.seq}-${frame.to}`, ...notice }]
+					: base.toasts
+			};
+		}
 		case 'account':
 			return addNotice(
 				base,

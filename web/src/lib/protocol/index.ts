@@ -14,6 +14,7 @@ export type {
 	Todo,
 	Usage1 as Usage,
 	PrimaryAgent,
+	ProfileInfo,
 	RoleRow,
 	Roles,
 	CommandRow,

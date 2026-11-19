@@ -156,6 +156,18 @@
 					if (args) await session.setModel(args);
 					else ui.picker = 'model';
 					break;
+				case 'profile':
+				case 'preset': {
+					const save = /^save(?:\s+(\S+))?$/.exec(args);
+					if (!args) ui.picker = 'profile';
+					else if (!save) await session.setProfile(args);
+					else if (!save[1]) throw new Error('Name the profile to save: /profile save <name>.');
+					else {
+						await session.saveProfile(save[1]);
+						toasts.push(`Saved the roles as the profile ${save[1]}.`, 'success');
+					}
+					break;
+				}
 				case 'thinking':
 					if (!args) ui.picker = 'thinking';
 					else if (!(THINKING_LEVELS as readonly string[]).includes(args))

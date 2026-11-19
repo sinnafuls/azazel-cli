@@ -47,7 +47,7 @@
 	const id = $derived(page.params.id as string);
 	const session = new Session({
 		id: page.params.id as string,
-		onToast: (t) => toasts.push(t.text, t.level),
+		onToast: (t) => toasts.push(t.text, t.level, t.ms),
 		onTheme: (t) => app.setTerminalTheme(t)
 	});
 	setSession(session);

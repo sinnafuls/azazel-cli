@@ -46,6 +46,8 @@ export class Stack {
 	sessionId = '';
 	/** Offers the sessions started from now on the tool `test_wait`, a call that takes as long as it is told to. */
 	mockTools = false;
+	/** The `config.toml` of the home, written before the first session starts: profiles, say. */
+	config = '';
 
 	private azazel(args: string[], cwd = this.project) {
 		return [
@@ -131,6 +133,7 @@ export class Stack {
 			throw new Error('the project is not new: hello.txt exists before the run');
 		mkdirSync(join(this.project, '.git'), { recursive: true });
 		mkdirSync(join(this.dir, 'home'), { recursive: true });
+		if (this.config) writeFileSync(join(this.dir, 'home', 'config.toml'), this.config);
 		cpSync(join(root, 'tests/fixtures/scripts/web_session.json'), join(this.dir, 'script.json'));
 		if (failure) {
 			writeFileSync(

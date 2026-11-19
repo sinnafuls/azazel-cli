@@ -131,15 +131,19 @@ export class Session {
 		if (!this.queue.length) return;
 		let m = this.model;
 		let sawEnd = false;
+		let switched = false;
 		for (const f of this.queue) {
 			m = reduce(m, f);
 			if (f.type === 'idle' || f.type === 'failed' || f.type === 'compaction') sawEnd = true;
+			// Another profile is other models: the state and the role chains are read again.
+			if (f.type === 'profile_changed') switched = true;
 		}
 		this.queue = [];
 		const [m2, toasts] = takeToasts(m);
 		this.model = m2;
 		for (const t of toasts) this.o.onToast?.(t);
-		if (sawEnd) this.refreshStateSoon();
+		if (sawEnd || switched) this.refreshStateSoon();
+		if (switched && this.roles) void this.refreshRoles().catch(() => {});
 	}
 
 	private push(f: AnyFrame) {
@@ -354,12 +358,19 @@ export class Session {
 		this.roles = await this.client.send<Roles>({ type: 'set_role', role, chain, save });
 		await this.refreshState().catch(() => {});
 	}
-	async savePreset(name: string) {
-		this.roles = await this.client.send<Roles>({ type: 'save_preset', name });
+	/** Moves the session to a profile: every role it sets changes at once. The answer is the new state. */
+	async setProfile(name: string) {
+		const state = await this.client.send<State>({ type: 'set_profile', name });
+		if (state) this.model = withState(this.model, state);
+		else await this.refreshState().catch(() => {});
+		// The role chains the model picker lists are the profile's now.
+		if (this.roles) void this.refreshRoles().catch(() => {});
 	}
-	async applyPreset(name: string) {
-		this.roles = await this.client.send<Roles>({ type: 'apply_preset', name });
-		await this.refreshState().catch(() => {});
+	/** Writes the roles as they stand as a profile of the configuration; it needs full access. */
+	async saveProfile(name: string) {
+		const state = await this.client.send<State>({ type: 'save_profile', name });
+		if (state) this.model = withState(this.model, state);
+		else await this.refreshState().catch(() => {});
 	}
 	async loadFiles() {
 		if (this.files) return;

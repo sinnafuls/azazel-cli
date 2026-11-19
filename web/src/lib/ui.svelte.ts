@@ -56,7 +56,7 @@ class Ui {
 	search = $state(false);
 	pairing = $state(false);
 	/** A picker of the status bar that something else asked to open. */
-	picker = $state<'model' | 'thinking' | 'mode' | null>(null);
+	picker = $state<'model' | 'profile' | 'thinking' | 'mode' | null>(null);
 	/** The rewind sheet: open on the list of prompts, or on one entry. */
 	rewind = $state<{ entryId?: string; text?: string } | null>(null);
 	/** The prompt being rewritten: sending goes back to before it first (edit and resend). */

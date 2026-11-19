@@ -209,6 +209,84 @@ async function openSettings(page: Page) {
 	return win;
 }
 
+test('a profile is switched from its chip, and a view link only reads it', async ({
+	browser,
+	page
+}) => {
+	const stack = new Stack();
+	// Two profiles for the scripted provider; the built-in ones need logins this home lacks.
+	stack.config = [
+		'[profiles.mine.roles]',
+		'default = ["mock/lead"]',
+		'smol = ["mock/scout"]',
+		'',
+		'[profiles.other.roles]',
+		'default = ["mock/scout"]',
+		''
+	].join('\n');
+	try {
+		await stack.start('auto');
+		await openSession(page, stack);
+		const chip = page.locator('[data-statusbar]').getByRole('button', { name: /^Profile:/ });
+		await expect(chip).toHaveAccessibleName('Profile: none');
+		await chip.click();
+		const menu = page.getByRole('menu');
+		const item = (name: string) => menu.locator(`[role=menuitemradio][data-profile="${name}"]`);
+		// Each row: the name, where it comes from, its models; one without a login cannot be chosen.
+		await expect(item('mine')).toContainText('your config');
+		await expect(item('mine')).toContainText('lead · scout');
+		await expect(item('claude')).toContainText('built-in');
+		await expect(item('claude')).toHaveAttribute('aria-disabled', 'true');
+		await expect(item('claude')).toContainText('needs azazel login anthropic');
+		await item('mine').click();
+		await expect(menu).toHaveCount(0);
+		await expect(chip).toHaveAccessibleName('Profile: mine');
+		// A switch somebody chose says nothing.
+		await expect(page.locator('[data-sonner-toast]')).toHaveCount(0);
+		await chip.click();
+		await expect(item('mine')).toHaveAttribute('aria-checked', 'true');
+		await page.keyboard.press('Escape');
+
+		// The settings list the same profiles; without full access nothing can be saved.
+		const win = await openSettings(page);
+		await win.getByRole('tab', { name: 'Models and roles', exact: true }).click();
+		const card = win.locator('[data-profiles]');
+		await expect(card.locator('[data-profile="mine"]')).toHaveAttribute('aria-current', 'true');
+		await expect(win.getByLabel('Save current as…')).toHaveCount(0);
+		await expect(win.locator('[data-profile-setting="on_reset"]')).toContainText('ask');
+		await card.getByRole('button', { name: 'Switch to the profile other' }).click();
+		await expect(card.locator('[data-profile="other"]')).toHaveAttribute('aria-current', 'true');
+		await page.keyboard.press('Escape');
+		await expect(chip).toHaveAccessibleName('Profile: other');
+		// The computer keeps it: a reload reads the same profile back.
+		await page.reload();
+		await expect(chip).toHaveAccessibleName('Profile: other');
+
+		// `/profile <name>` switches too, and never reaches the model.
+		const box = page.getByRole('combobox', { name: 'Message' });
+		await box.fill('/profile mine');
+		await box.press('Enter');
+		await expect(chip).toHaveAccessibleName('Profile: mine');
+		await expect(page.getByRole('paragraph').filter({ hasText: FINAL })).toHaveCount(1);
+
+		// A view device sees which profile the session is on, and cannot open the list.
+		const view = await browser.newContext();
+		try {
+			const watcher = await view.newPage();
+			await watcher.goto(await stack.newLink('v'));
+			await watcher.locator('[data-session-list]:visible a').first().click();
+			await watcher.waitForURL(/\/s\/[^/]+$/);
+			const seen = watcher.locator('[data-statusbar]').getByRole('button', { name: /^Profile:/ });
+			await expect(seen).toHaveAccessibleName('Profile: mine');
+			await expect(seen).toBeDisabled();
+		} finally {
+			await view.close();
+		}
+	} finally {
+		await stack.stop();
+	}
+});
+
 test('a slash command runs in the browser and never reaches the model', async ({ page, auto }) => {
 	await openSession(page, auto);
 	const box = page.getByRole('combobox', { name: 'Message' });
