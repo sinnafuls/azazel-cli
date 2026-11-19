@@ -572,6 +572,10 @@ impl Local {
         let problem = match opened {
             Ok(active) => {
                 self.events = active.lead.subscribe();
+                // Leaving a session nobody spoke in leaves no file behind.
+                if active.session.id() != self.active.session.id() {
+                    self.active.session.discard_if_empty();
+                }
                 self.active = active;
                 self.app.start(source).await;
                 return Ok(Moved {

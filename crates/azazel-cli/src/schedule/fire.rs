@@ -199,7 +199,7 @@ pub async fn deliver(scheduler: &Scheduler, schedule: &Schedule, prompt: &str) -
     if let Some(entry) = host {
         return send(&entry, prompt).await;
     }
-    let file = SessionStore::list(&scheduler.paths.sessions_dir())
+    let file = SessionStore::list_all(&scheduler.paths.sessions_dir())
         .into_iter()
         .find(|session| session.id == *session_id)
         .map(|session| session.path)

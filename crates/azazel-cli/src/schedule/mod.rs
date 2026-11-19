@@ -737,7 +737,7 @@ pub fn table(schedules: &[Schedule], now: &Zoned) -> String {
 
 /// The session `wanted` names in this project: its id in full.
 pub fn session_id(paths: &Paths, wanted: &str) -> Result<String, String> {
-    let matches: Vec<String> = SessionStore::list(&paths.sessions_dir())
+    let matches: Vec<String> = SessionStore::list_all(&paths.sessions_dir())
         .into_iter()
         .filter(|session| session.id.starts_with(wanted))
         .map(|session| session.id)

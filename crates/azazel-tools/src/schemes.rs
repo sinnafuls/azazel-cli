@@ -101,7 +101,7 @@ impl SessionScheme {
     /// The file of the session whose id starts with `wanted`, among those stored beside `open`.
     fn find(open: &SessionStore, wanted: &str) -> Result<PathBuf, String> {
         let dir = open.path().parent().map(Path::to_path_buf).unwrap_or_default();
-        let matches: Vec<SessionSummary> = SessionStore::list(&dir)
+        let matches: Vec<SessionSummary> = SessionStore::list_all(&dir)
             .into_iter()
             .filter(|summary| summary.id.starts_with(wanted))
             .collect();

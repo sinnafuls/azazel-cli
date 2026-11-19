@@ -1439,7 +1439,7 @@ impl App {
             }
             return Ok(path);
         }
-        let matches: Vec<_> = SessionStore::list(&self.paths.sessions_dir())
+        let matches: Vec<_> = SessionStore::list_all(&self.paths.sessions_dir())
             .into_iter()
             .filter(|s| s.id.starts_with(wanted))
             .collect();
@@ -1923,6 +1923,8 @@ impl App {
         took("session_end handlers");
         self.close(active).await;
         took("closing the lead");
+        // A start that sent nothing leaves no file to pile up in `/resume`.
+        active.session.discard_if_empty();
         if let Some(telemetry) = &self.telemetry {
             telemetry.flush().await;
         }

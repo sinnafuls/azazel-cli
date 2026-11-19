@@ -584,6 +584,31 @@ impl SessionStore {
         self.lock().path.clone()
     }
 
+    /// Deletes the session's file when nobody said anything in it and it was not named or
+    /// pinned, so that a start that sent nothing leaves nothing behind. Returns whether it was
+    /// deleted. A copy held for reading is never deleted.
+    pub fn discard_if_empty(&self) -> bool {
+        let inner = self.lock();
+        let said = inner
+            .entries
+            .iter()
+            .any(|entry| {
+                matches!(
+                    entry.kind,
+                    EntryKind::Message { .. } | EntryKind::SessionInfo { .. } | EntryKind::Pin { .. }
+                )
+            });
+        if said || inner.file.is_none() {
+            return false;
+        }
+        let folder = inner.path.parent().map(|dir| dir.join(&inner.header.id));
+        let gone = std::fs::remove_file(&inner.path).is_ok();
+        if gone && let Some(folder) = folder.filter(|folder| folder.is_dir()) {
+            let _ = std::fs::remove_dir_all(folder);
+        }
+        gone
+    }
+
     /// The session's scratch files, the directory `local://` addresses name: in the session's
     /// folder beside its sub-agents' transcripts, shared by the lead and every sub-agent, and
     /// deleted with the session.
@@ -1152,7 +1177,8 @@ impl SessionStore {
         keep: Option<&str>,
         dry_run: bool,
     ) -> Vec<SessionSummary> {
-        let old: Vec<SessionSummary> = SessionStore::list(dir)
+        // Sessions without a message are in the list of none, so this is where old ones go.
+        let old: Vec<SessionSummary> = SessionStore::list_all(dir)
             .into_iter()
             .filter(|s| !s.pinned && Some(s.id.as_str()) != keep)
             .filter(|s| {
@@ -1207,8 +1233,16 @@ impl SessionStore {
 
     /// Sessions in `dir`, most recently used first. Summaries come from the directory's index
     /// where a file is unchanged since it was summarised; the index is rewritten when anything
-    /// changed.
+    /// changed. A session nobody has said anything in has nothing to go back to and is left out
+    /// (see [`SessionStore::list_all`]).
     pub fn list(dir: &Path) -> Vec<SessionSummary> {
+        let mut sessions = SessionStore::list_all(dir);
+        sessions.retain(|session| session.messages > 0);
+        sessions
+    }
+
+    /// Like [`SessionStore::list`], with the sessions that hold no message too.
+    pub fn list_all(dir: &Path) -> Vec<SessionSummary> {
         let Ok(read_dir) = std::fs::read_dir(dir) else {
             return Vec::new();
         };
@@ -2050,6 +2084,26 @@ mod tests {
         let left: Vec<String> = SessionStore::list(dir.path()).into_iter().map(|s| s.id).collect();
         assert_eq!(left.len(), 3);
         assert!(left.contains(&pinned.id()) && left.contains(&open.id()) && left.contains(&recent.id()));
+    }
+
+    #[test]
+    fn a_session_nobody_spoke_in_is_not_listed_and_is_discarded() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        let said = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        said.message(&Message::user("hello"));
+        let named = SessionStore::create(dir.path(), Path::new("/work"), None).unwrap();
+        named.append(EntryKind::SessionInfo { name: "kept".into() });
+
+        let listed: Vec<String> = SessionStore::list(dir.path()).into_iter().map(|s| s.id).collect();
+        assert_eq!(listed, [said.id()]);
+        assert_eq!(SessionStore::list_all(dir.path()).len(), 3);
+
+        assert!(empty.discard_if_empty());
+        assert!(!empty.path().exists());
+        assert!(!said.discard_if_empty() && said.path().exists());
+        assert!(!named.discard_if_empty() && named.path().exists());
+        assert_eq!(SessionStore::list_all(dir.path()).len(), 2);
     }
 
     #[test]
