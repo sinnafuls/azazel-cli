@@ -1059,7 +1059,7 @@ pub(crate) async fn open_tunnel(
             let program: PathBuf = tunnel::ensure_cloudflared(&paths, Some(&ask)).await?;
             tunnel::cloudflare(&program, port).await
         }
-        Way::Tailscale => tunnel::tailscale(port).await,
+        Way::Tailscale => tunnel::tailscale(&paths, port).await,
     }
 }
 

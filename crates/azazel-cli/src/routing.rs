@@ -1,4 +1,4 @@
-//! Service tiers (`/fast`, `/slow`, `--tier`) and model presets (`/preset`, `--preset`).
+//! Service tiers (`/fast`, `/slow`, `--tier`) and the command that switches profiles (`/profile`).
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -7,12 +7,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use async_trait::async_trait;
 use azazel_agent::{AgentCmd, AgentHandle};
 use azazel_ai::{ModelRef, ModelSpec, Router, Tier};
-use azazel_core::config::PresetConfig;
 use azazel_core::{
-    Command, CommandHandler, CommandOutcome, Config, EntryKind, ExtCtx, ExtError, Extension, Registrar,
-    SessionStore,
+    Command, CommandHandler, CommandOutcome, EntryKind, ExtCtx, ExtError, Extension, Registrar, SessionStore,
 };
 use azazel_team::Team;
+
+use crate::profiles::{self, Profile, ProfileSource, Reason};
 
 /// The tier as the status line and the commands call it.
 pub fn tier_word(tier: Tier) -> &'static str {
@@ -120,26 +120,6 @@ impl CommandHandler for TierCommand {
     }
 }
 
-/// The roles of preset `name`, or which presets there are.
-fn preset<'a>(presets: &'a BTreeMap<String, PresetConfig>, name: &str) -> Result<&'a PresetConfig, String> {
-    presets.get(name).ok_or_else(|| match presets.is_empty() {
-        true => {
-            format!("no preset `{name}`: none is saved yet (/preset save <name> keeps the current models)")
-        }
-        false => format!(
-            "no preset `{name}`; there are: {}",
-            presets.keys().cloned().collect::<Vec<_>>().join(", ")
-        ),
-    })
-}
-
-/// `--preset`: the preset's roles replace the configured ones for this run.
-pub fn launch_preset(config: &mut Config, name: &str) -> Result<(), String> {
-    let roles = preset(&config.presets, name)?.roles.clone();
-    config.roles.extend(roles);
-    Ok(())
-}
-
 fn chain_label(chain: &[ModelSpec]) -> String {
     chain
         .iter()
@@ -148,49 +128,85 @@ fn chain_label(chain: &[ModelSpec]) -> String {
         .join(", ")
 }
 
-struct PresetCommand {
-    /// The configured presets plus the ones saved in this process.
-    presets: Mutex<BTreeMap<String, PresetConfig>>,
-    home_config: PathBuf,
+/// How a profile's source reads in a list.
+fn source_label(source: ProfileSource) -> &'static str {
+    match source {
+        ProfileSource::Builtin => "built-in",
+        ProfileSource::User => "yours",
+        ProfileSource::Project => "project",
+    }
 }
 
-impl PresetCommand {
-    fn presets(&self) -> std::sync::MutexGuard<'_, BTreeMap<String, PresetConfig>> {
-        self.presets.lock().unwrap_or_else(PoisonError::into_inner)
+/// What a profile needs that is not there yet, as one sentence; `None` when it can be used.
+pub(crate) fn needs_login(missing: &[String]) -> Option<String> {
+    (!missing.is_empty()).then(|| {
+        let logins: Vec<String> = missing.iter().map(|id| format!("`azazel login {id}`")).collect();
+        format!("needs a login: run {}", logins.join(" and "))
+    })
+}
+
+/// `/profile` (and `/preset`, its old name).
+struct ProfileCommand {
+    /// The built-in and configured profiles plus the ones saved in this process.
+    profiles: Mutex<Vec<Profile>>,
+    home_config: PathBuf,
+    /// Whether a provider has credentials.
+    logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+}
+
+impl ProfileCommand {
+    fn profiles(&self) -> std::sync::MutexGuard<'_, Vec<Profile>> {
+        self.profiles.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn find(&self, name: &str) -> Result<Profile, String> {
+        let profiles = self.profiles();
+        profiles
+            .iter()
+            .find(|profile| profile.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                let known: Vec<&str> = profiles.iter().map(|profile| profile.name.as_str()).collect();
+                format!("no profile `{name}`; there are: {}", known.join(", "))
+            })
     }
 
     fn list(&self) -> String {
-        let presets = self.presets();
-        if presets.is_empty() {
-            return "no preset is saved yet: /preset save <name> keeps the current models".to_string();
-        }
         let mut out = String::new();
-        for (name, preset) in presets.iter() {
-            out.push_str(name);
+        for profile in self.profiles().iter() {
+            let usable = profiles::usability(profile, &*self.logged_in);
+            out.push_str(&format!("{} ({})", profile.name, source_label(profile.source)));
+            if let Some(why) = needs_login(&usable.missing_logins) {
+                out.push_str(&format!(" - {why}"));
+            }
             out.push('\n');
-            for (role, chain) in &preset.roles {
-                out.push_str(&format!("  {role:<11} {}\n", chain_label(chain)));
+            for role in ["default", "slow", "smol"] {
+                if let Some(chain) = profile.roles.get(role) {
+                    out.push_str(&format!("  {role:<11} {}\n", chain_label(chain)));
+                }
             }
         }
-        out.push_str("/preset <name> applies one · /preset save <name> keeps the current models");
+        out.push_str("/profile <name> applies one · /profile save <name> keeps the current models");
         out
     }
 
-    /// Points every role of the preset at its models. The lead goes back to following its role
-    /// when the preset says what the lead or the default model is, so a model picked by hand
-    /// does not outlive it.
+    /// Switches to the profile, unless a provider it names has no login.
     fn apply(&self, name: &str, ctx: &ExtCtx) -> Result<String, String> {
         let Some(router) = ctx.services.get::<Router>() else {
             return Err("no model router in this session".to_string());
         };
-        let roles = preset(&self.presets(), name)?.roles.clone();
+        let profile = self.find(name)?;
+        let usable = profiles::usability(&profile, &*self.logged_in);
+        if let Some(why) = needs_login(&usable.missing_logins) {
+            return Err(format!("profile {name} {why}"));
+        }
         let lead = ctx.services.get::<Team>().and_then(|team| team.lead());
         let session = ctx.services.get::<SessionStore>();
         let lead = lead.as_ref().map(|lead| (lead, session.as_deref()));
-        Ok(format!("preset {name}: {}", apply_roles(&router, &roles, lead)))
+        Ok(profiles::switch(&profile, &router, lead, Reason::User))
     }
 
-    /// Writes the roles as they are now under `[presets.<name>.roles]`, replacing a preset of
+    /// Writes the roles as they are now under `[profiles.<name>.roles]`, replacing a profile of
     /// that name.
     fn save(&self, name: &str, ctx: &ExtCtx) -> Result<String, String> {
         let Some(router) = ctx.services.get::<Router>() else {
@@ -199,24 +215,33 @@ impl PresetCommand {
         let roles = router.roles();
         save_roles(&self.home_config, name, &roles)?;
         let count = roles.len();
-        self.presets().insert(name.to_string(), PresetConfig { roles });
+        let saved = Profile {
+            name: name.to_string(),
+            source: ProfileSource::User,
+            roles,
+        };
+        let mut profiles = self.profiles();
+        match profiles.iter_mut().find(|profile| profile.name == name) {
+            Some(old) => *old = saved,
+            None => profiles.push(saved),
+        }
         Ok(format!(
-            "preset {name} saved with the {count} roles as they are now (in {})",
+            "profile {name} saved with the {count} roles as they are now (in {})",
             self.home_config.display()
         ))
     }
 }
 
 #[async_trait]
-impl CommandHandler for PresetCommand {
+impl CommandHandler for ProfileCommand {
     async fn run(&self, args: &str, ctx: &ExtCtx) -> CommandOutcome {
         let mut words = args.split_whitespace();
         let done = match (words.next(), words.next(), words.next()) {
             (None, ..) => Ok(self.list()),
             (Some("save"), Some(name), None) => self.save(name, ctx),
-            (Some("save"), ..) => Err("usage: /preset save <name>".to_string()),
+            (Some("save"), ..) => Err("usage: /profile save <name>".to_string()),
             (Some(name), None, _) => self.apply(name, ctx),
-            _ => Err("usage: /preset [name] or /preset save <name>".to_string()),
+            _ => Err("usage: /profile [name] or /profile save <name>".to_string()),
         };
         match done {
             Ok(line) => CommandOutcome::Show(line),
@@ -266,7 +291,7 @@ pub(crate) fn follow_role(lead: &AgentHandle, session: Option<&SessionStore>) {
     }
 }
 
-/// Whether `name` can name a preset or a role: letters, digits, `-` and `_`, starting with a
+/// Whether `name` can name a profile or a role: letters, digits, `-` and `_`, starting with a
 /// letter.
 pub(crate) fn plain_name(name: &str) -> bool {
     name.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
@@ -275,39 +300,42 @@ pub(crate) fn plain_name(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
 }
 
-/// `Err` when `name` cannot name a preset.
-pub(crate) fn preset_name(name: &str) -> Result<(), String> {
-    match plain_name(name) && name != "save" {
+/// `Err` when `name` cannot name a profile. `save` is the word of `/profile save`, and `on_limit`
+/// and `on_reset` are keys of `[profiles]`.
+pub(crate) fn profile_name(name: &str) -> Result<(), String> {
+    match plain_name(name) && !matches!(name, "save" | "on_limit" | "on_reset") {
         true => Ok(()),
         false => Err(format!(
-            "`{name}` cannot name a preset: use letters, digits, `-` and `_`, starting with a letter"
+            "`{name}` cannot name a profile: use letters, digits, `-` and `_`, starting with a letter              (not save, on_limit or on_reset)"
         )),
     }
 }
 
-/// Writes `roles` as preset `name` in the config file `home_config`, replacing a preset of
-/// that name.
+/// Writes `roles` as profile `name` in the config file `home_config`, replacing a profile of
+/// that name. A preset of that name (the old table) is left alone; the profile wins over it.
 pub(crate) fn save_roles(
     home_config: &std::path::Path,
     name: &str,
     roles: &BTreeMap<String, Vec<ModelSpec>>,
 ) -> Result<(), String> {
-    preset_name(name)?;
+    profile_name(name)?;
     let write = |path: &[&str], value| {
         crate::init::set_config_value(home_config, path, value).map_err(|e| format!("{e:#}"))
     };
-    write(&["presets", name], None)?;
+    write(&["profiles", name], None)?;
     for (role, chain) in roles {
         let models = toml_edit::Array::from_iter(chain.iter().map(ToString::to_string));
-        write(&["presets", name, "roles", role], Some(toml_edit::value(models)))?;
+        write(&["profiles", name, "roles", role], Some(toml_edit::value(models)))?;
     }
     Ok(())
 }
 
-/// Registers `/fast`, `/slow` and `/preset`.
+/// Registers `/fast`, `/slow` and `/profile` (and `/preset`, its old name).
 pub struct RoutingExt {
-    pub presets: BTreeMap<String, PresetConfig>,
+    pub profiles: Vec<Profile>,
     pub home_config: PathBuf,
+    /// Whether a provider has credentials, for telling which profiles can be used.
+    pub logged_in: Arc<dyn Fn(&str) -> bool + Send + Sync>,
 }
 
 impl Extension for RoutingExt {
@@ -330,15 +358,25 @@ impl Extension for RoutingExt {
                 handler: Arc::new(TierCommand(tier)),
             });
         }
-        r.command(Command {
-            name: "preset".to_string(),
-            description: "List the saved sets of models, apply one, or save the current one".to_string(),
-            argument_hint: Some("[name | save <name>]".to_string()),
-            handler: Arc::new(PresetCommand {
-                presets: Mutex::new(self.presets.clone()),
-                home_config: self.home_config.clone(),
-            }),
+        let profile = Arc::new(ProfileCommand {
+            profiles: Mutex::new(self.profiles.clone()),
+            home_config: self.home_config.clone(),
+            logged_in: self.logged_in.clone(),
         });
+        for (name, description) in [
+            (
+                "profile",
+                "List the profiles (sets of models), apply one, or save the current one",
+            ),
+            ("preset", "The old name of /profile"),
+        ] {
+            r.command(Command {
+                name: name.to_string(),
+                description: description.to_string(),
+                argument_hint: Some("[name | save <name>]".to_string()),
+                handler: profile.clone(),
+            });
+        }
         Ok(())
     }
 }
@@ -349,6 +387,7 @@ mod tests {
 
     use azazel_agent::Services;
     use azazel_ai::{Catalog, RetryPolicy};
+    use azazel_core::config::ProfileConfig;
 
     use super::*;
 
@@ -422,39 +461,46 @@ mod tests {
         );
     }
 
+    fn command(dir: &std::path::Path, logged_in: fn(&str) -> bool) -> ProfileCommand {
+        ProfileCommand {
+            profiles: Mutex::new(profiles::builtin()),
+            home_config: dir.join("config.toml"),
+            logged_in: Arc::new(logged_in),
+        }
+    }
+
     #[tokio::test]
-    async fn a_preset_is_saved_listed_and_applied() {
+    async fn a_profile_is_saved_listed_and_applied() {
         let dir = tempfile::tempdir().unwrap();
         let (ctx, router) = context(&[
             ("default", &["acme/big"]),
             ("lead", &["@default"]),
             ("smol", &["acme/small", "@default"]),
         ]);
-        let command = PresetCommand {
-            presets: Mutex::default(),
-            home_config: dir.path().join("config.toml"),
-        };
+        let command = command(dir.path(), |id| id != "openai-codex");
+        let listed = show(&command, "", &ctx).await.unwrap();
         assert!(
-            show(&command, "", &ctx)
-                .await
-                .unwrap()
-                .starts_with("no preset is saved yet")
+            listed.contains("claude (built-in)\n  default     anthropic/claude-opus-5-5\n"),
+            "{listed}"
         );
         assert!(
-            show(&command, "cheap", &ctx)
-                .await
-                .unwrap_err()
-                .contains("none is saved yet")
+            listed.contains("gpt (built-in) - needs a login: run `azazel login openai-codex`"),
+            "{listed}"
         );
+        // A profile that needs a login is refused, and nothing changes.
+        let refused = show(&command, "gpt", &ctx).await.unwrap_err();
+        assert!(refused.contains("azazel login openai-codex"), "{refused}");
+        assert_eq!(router.roles()["default"], chain(&["acme/big"]));
         assert!(show(&command, "save", &ctx).await.is_err());
         assert!(show(&command, "save a/b", &ctx).await.is_err());
+        assert!(show(&command, "save on_limit", &ctx).await.is_err());
 
         let saved = show(&command, "save big", &ctx).await.unwrap();
-        assert!(saved.starts_with("preset big saved with the 3 roles"), "{saved}");
+        assert!(saved.starts_with("profile big saved with the 3 roles"), "{saved}");
         // What was written is configuration that loads.
         let written = std::fs::read_to_string(&command.home_config).unwrap();
         let table: toml::Table = written.parse().unwrap();
-        let loaded: PresetConfig = table["presets"]["big"].clone().try_into().unwrap();
+        let loaded: ProfileConfig = table["profiles"]["big"].clone().try_into().unwrap();
         assert_eq!(loaded.roles["smol"], chain(&["acme/small", "@default"]));
 
         router.set_role("default", chain(&["acme/tiny"]));
@@ -462,46 +508,29 @@ mod tests {
         show(&command, "save small", &ctx).await.unwrap();
         let listed = show(&command, "", &ctx).await.unwrap();
         assert!(
-            listed.contains(
-                "big\n  default     acme/big\n  lead        @default\n  smol        acme/small, @default\n"
-            ),
+            listed.contains("big (yours)\n  default     acme/big\n  smol        acme/small, @default\n"),
             "{listed}"
         );
 
         let applied = show(&command, "big", &ctx).await.unwrap();
-        assert_eq!(applied, "preset big: 3 roles set; the lead now runs on acme/big");
+        assert_eq!(applied, "profile big: 3 roles set; the lead now runs on acme/big");
         assert_eq!(router.roles()["smol"], chain(&["acme/small", "@default"]));
-        assert_eq!(
-            show(&command, "nope", &ctx).await.unwrap_err(),
-            "no preset `nope`; there are: big, small"
+        let error = show(&command, "nope", &ctx).await.unwrap_err();
+        assert!(
+            error.starts_with("no profile `nope`; there are: claude, gpt,"),
+            "{error}"
         );
+        assert!(error.ends_with("big, small"), "{error}");
 
-        // Saving under a used name replaces the preset, role for role.
+        // Saving under a used name replaces the profile, role for role.
         router.set_role("default", chain(&["acme/other"]));
         show(&command, "save big", &ctx).await.unwrap();
         let table: toml::Table = std::fs::read_to_string(&command.home_config)
             .unwrap()
             .parse()
             .unwrap();
-        let loaded: PresetConfig = table["presets"]["big"].clone().try_into().unwrap();
+        let loaded: ProfileConfig = table["profiles"]["big"].clone().try_into().unwrap();
         assert_eq!(loaded.roles["default"], chain(&["acme/other"]));
-        assert!(table["presets"].get("small").is_some());
-    }
-
-    #[test]
-    fn a_preset_named_at_launch_replaces_the_configured_roles() {
-        let mut config = Config::default();
-        config.presets.insert(
-            "cheap".to_string(),
-            PresetConfig {
-                roles: BTreeMap::from([("default".to_string(), chain(&["acme/small"]))]),
-            },
-        );
-        launch_preset(&mut config, "cheap").unwrap();
-        assert_eq!(config.roles["default"], chain(&["acme/small"]));
-        assert_eq!(
-            launch_preset(&mut config, "dear").unwrap_err(),
-            "no preset `dear`; there are: cheap"
-        );
+        assert!(table["profiles"].get("small").is_some());
     }
 }

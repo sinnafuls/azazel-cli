@@ -111,36 +111,46 @@ pub fn list(place: &Place<'_>) -> Roles {
         .collect();
     Roles {
         roles,
-        presets: config.presets.keys().cloned().collect(),
+        presets: crate::profiles::all(&config)
+            .into_iter()
+            .map(|p| p.name)
+            .collect(),
         project: place.trusted,
     }
+}
+
+const ORDER: [&str; 20] = [
+    "default",
+    "smol",
+    "slow",
+    "plan",
+    "vision",
+    "verify",
+    "memory",
+    "judge",
+    "lead",
+    "scout",
+    "planner",
+    "coder",
+    "tester",
+    "reviewer",
+    "verifier",
+    "researcher",
+    "designer",
+    "artist",
+    "playtester",
+    "advisor",
+];
+
+/// Whether `role` is one of the roles the program itself uses (the others are the user's own).
+#[cfg(test)]
+pub(crate) fn is_known_role(role: &str) -> bool {
+    order(role) < ORDER.len()
 }
 
 /// Where a role goes in the list: the general roles, then the lead and the built-in agents,
 /// then the user's own roles.
 fn order(role: &str) -> usize {
-    const ORDER: [&str; 20] = [
-        "default",
-        "smol",
-        "slow",
-        "plan",
-        "vision",
-        "verify",
-        "memory",
-        "judge",
-        "lead",
-        "scout",
-        "planner",
-        "coder",
-        "tester",
-        "reviewer",
-        "verifier",
-        "researcher",
-        "designer",
-        "artist",
-        "playtester",
-        "advisor",
-    ];
     ORDER
         .iter()
         .position(|known| *known == role)
@@ -221,19 +231,11 @@ pub fn save_preset(place: &Place<'_>, name: &str) -> Result<Roles, String> {
     Ok(list(place))
 }
 
-/// Points every role of the saved preset `name` at its models for this session.
+/// Points every role of the profile `name` (built-in or saved) at its models for this session.
 pub fn apply_preset(place: &Place<'_>, name: &str) -> Result<Roles, String> {
-    let presets = files(place).0.presets;
-    let Some(preset) = presets.get(name) else {
-        return Err(match presets.is_empty() {
-            true => format!("no preset `{name}`: none is saved yet"),
-            false => format!(
-                "no preset `{name}`; there are: {}",
-                presets.keys().cloned().collect::<Vec<_>>().join(", ")
-            ),
-        });
-    };
-    crate::routing::apply_roles(place.router, &preset.roles, place.lead);
+    let config = files(place).0;
+    let profile = crate::profiles::resolve(&config, name).map_err(|e| e.to_string())?;
+    crate::profiles::switch(&profile, place.router, place.lead, crate::profiles::Reason::User);
     Ok(list(place))
 }
 
@@ -245,13 +247,12 @@ pub fn parse_chain(texts: &[String]) -> Result<Vec<ModelSpec>, String> {
         .collect()
 }
 
-/// The presets the files keep, by name.
+/// The profiles of the files (and the built-in ones), by name.
 pub fn presets(place: &Place<'_>) -> BTreeMap<String, Vec<(String, Vec<String>)>> {
-    files(place)
-        .0
-        .presets
+    crate::profiles::all(&files(place).0)
         .into_iter()
-        .map(|(name, preset)| {
+        .map(|preset| {
+            let name = preset.name;
             let roles = preset
                 .roles
                 .iter()
@@ -421,7 +422,7 @@ mod tests {
         let p = place(&f, true);
         set(&p, "default", Some(chain(&["a/one"])), SaveTo::Session).unwrap();
         let roles = save_preset(&p, "deep").unwrap();
-        assert_eq!(roles.presets, ["deep"]);
+        assert!(roles.presets.contains(&"deep".to_string()));
         assert_eq!(
             presets(&p)["deep"]
                 .iter()
@@ -433,6 +434,10 @@ mod tests {
         set(&p, "default", Some(chain(&["a/two"])), SaveTo::Session).unwrap();
         let roles = apply_preset(&p, "deep").unwrap();
         assert_eq!(row(&roles, "default").chain, ["a/one"]);
-        assert!(apply_preset(&p, "none").unwrap_err().contains("there are: deep"));
+        assert!(
+            apply_preset(&p, "none")
+                .unwrap_err()
+                .contains("known: claude, gpt, cheap, thorough, frontend, research, deep")
+        );
     }
 }

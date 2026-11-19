@@ -151,6 +151,14 @@ yet, and shows the link and QR code for `https://<name>.ts.net`. The phone needs
 same account. When the server stops, only the entry azazel added is removed (`tailscale serve --https=<port> off`);
 your other serve settings stay.
 
+If `azazel remote` is killed instead of stopped (a crash, a closed window), its entry stays and points at a port nobody
+listens on. Before it adds the entry, azazel writes a marker, `tailscale-serve-<port>.json` in `~/.azazel/remote/`, with the
+HTTPS port, the address it proxies to and the process id; a clean stop removes it. The next `azazel remote --tailscale` (or
+`/remote tailscale`) looks at each marker: when its process is gone and the entry on that port still proxies to the address
+in the marker, it turns the entry off and says so (`Removed the Tailscale entry an earlier azazel remote left on port
+8443.`). When the entry is gone or points elsewhere now, only the marker is deleted. An entry without a marker is never
+touched, so your own `tailscale serve` settings are safe, even ones that point at a port nothing listens on.
+
 azazel never installs Tailscale. When it is missing or not signed in, the run says what to do: install it from
 <https://tailscale.com/download>, sign in with `tailscale up`, and install the app on the phone. Turn on MagicDNS and
 HTTPS certificates in the Tailscale admin console if the machine has no name.

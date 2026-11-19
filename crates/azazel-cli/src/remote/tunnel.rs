@@ -7,11 +7,12 @@
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use azazel_core::Paths;
 use azazel_core::ui::UiBridge;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -48,6 +49,8 @@ impl Chooser for std::sync::Arc<dyn UiBridge> {
 pub(crate) struct Tunnel {
     /// `https://<host>[:port]`
     pub url: String,
+    /// What starting it did besides, for the person to read: the entries it cleared away.
+    pub notes: Vec<String>,
     child: Option<Child>,
     undo: Option<Undo>,
 }
@@ -56,16 +59,22 @@ pub(crate) struct Tunnel {
 struct Undo {
     program: PathBuf,
     https: u16,
+    /// Tells the next start which entry this run made, in case this one is killed.
+    marker: PathBuf,
 }
 
 impl Undo {
     fn run_blocking(&self) {
-        let _ = std::process::Command::new(&self.program)
+        let off = std::process::Command::new(&self.program)
             .args(["serve", &format!("--https={}", self.https), "off"])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
+        // An entry that could not be turned off keeps its marker, for the next start to try.
+        if off.is_ok_and(|status| status.success()) {
+            let _ = std::fs::remove_file(&self.marker);
+        }
     }
 }
 
@@ -267,6 +276,7 @@ pub(crate) async fn cloudflare(program: &Path, port: u16) -> Result<Tunnel, Stri
     match found {
         Ok(Some(url)) => Ok(Tunnel {
             url,
+            notes: Vec::new(),
             child: Some(child),
             undo: None,
         }),
@@ -377,29 +387,148 @@ pub(crate) fn free_https_port(serve: &str) -> Option<u16> {
     [443, 8443, 10000].into_iter().find(|port| !used.contains(port))
 }
 
+/// What a `tailscale serve --bg` of azazel leaves for the next start, in `tailscale-serve-<port>.json`
+/// of the remote directory: which entry is ours, and who made it. Only an entry with a marker is ever
+/// cleared away later; Tailscale Serve is also the user's own, and an entry that points at a dead
+/// local port may be theirs.
+#[derive(Debug, Serialize, Deserialize)]
+struct Marker {
+    https_port: u16,
+    target: String,
+    pid: u32,
+    started: u64,
+}
+
+fn marker_file(dir: &Path, https: u16) -> PathBuf {
+    dir.join(format!("tailscale-serve-{https}.json"))
+}
+
+/// What `serve status --json` says HTTPS port `https` proxies to. Empty when nothing is served on
+/// it; a handler that is not a proxy (files, text) is listed as an empty target, which no marker has.
+pub(crate) fn proxies_on(serve: &str, https: u16) -> Vec<String> {
+    let Ok(serve) = serde_json::from_str::<Value>(serve) else {
+        return Vec::new();
+    };
+    if serve["TCP"][https.to_string()].is_null() {
+        return Vec::new();
+    }
+    let suffix = format!(":{https}");
+    let mut proxies = Vec::new();
+    for (host, site) in serve["Web"].as_object().into_iter().flatten() {
+        if !host.ends_with(&suffix) {
+            continue;
+        }
+        for handler in site["Handlers"].as_object().into_iter().flatten().map(|(_, h)| h) {
+            proxies.push(handler["Proxy"].as_str().unwrap_or_default().to_string());
+        }
+    }
+    proxies
+}
+
+/// Turns off the entries that `azazel remote` runs killed before they could clean up left on
+/// Tailscale Serve: those whose marker's process is gone and whose entry still proxies to what the
+/// marker says. Nothing without a marker is touched. `serve` is refreshed after a change. Returns
+/// what it did, one line each.
+async fn clear_stale(program: &Path, dir: &Path, serve: &mut String) -> Vec<String> {
+    let mut done = Vec::new();
+    let Ok(files) = std::fs::read_dir(dir) else {
+        return done;
+    };
+    let mut ports: Vec<u16> = files
+        .filter_map(|file| {
+            let name = file.ok()?.file_name().into_string().ok()?;
+            name.strip_prefix("tailscale-serve-")?
+                .strip_suffix(".json")?
+                .parse()
+                .ok()
+        })
+        .collect();
+    ports.sort_unstable();
+    for port in ports {
+        let file = marker_file(dir, port);
+        let marker: Option<Marker> = std::fs::read_to_string(&file)
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok());
+        let Some(marker) = marker.filter(|m| m.https_port == port) else {
+            // Not a marker of ours: it can say nothing, and nothing is turned off for it.
+            let _ = std::fs::remove_file(&file);
+            continue;
+        };
+        // A run that lives keeps its entry. A pid another program took over looks alive, which only
+        // leaves the entry where it is.
+        if marker.pid == std::process::id() || azazel_core::process::pid_alive(marker.pid) {
+            continue;
+        }
+        let proxies = proxies_on(serve, port);
+        if proxies.is_empty() || proxies.iter().any(|proxy| *proxy != marker.target) {
+            // Gone, or changed by the user since: nothing of ours is left to clear.
+            let _ = std::fs::remove_file(&file);
+            continue;
+        }
+        if tailscale_output(program, &["serve", &format!("--https={port}"), "off"])
+            .await
+            .is_err()
+        {
+            continue;
+        }
+        let _ = std::fs::remove_file(&file);
+        done.push(format!(
+            "Removed the Tailscale entry an earlier `azazel remote` left on port {port}."
+        ));
+        *serve = tailscale_output(program, &["serve", "status", "--json"])
+            .await
+            .unwrap_or_default();
+    }
+    done
+}
+
 /// Serves the port over HTTPS to the tailnet.
-pub(crate) async fn tailscale(port: u16) -> Result<Tunnel, String> {
+pub(crate) async fn tailscale(paths: &Paths, port: u16) -> Result<Tunnel, String> {
     let program = find_tailscale().ok_or(TAILSCALE_HELP)?;
     let status = tailscale_output(&program, &["status", "--json"])
         .await
         .map_err(|e| format!("{e}\n  {TAILSCALE_HELP}"))?;
     let name = tailnet_name(&status)?;
     // Without a configuration, `serve status` has nothing to say; that is no error.
-    let serve = tailscale_output(&program, &["serve", "status", "--json"])
+    let mut serve = tailscale_output(&program, &["serve", "status", "--json"])
         .await
         .unwrap_or_default();
+    let dir = paths.remote_dir();
+    let notes = clear_stale(&program, &dir, &mut serve).await;
     let https = free_https_port(&serve)
         .ok_or("Tailscale Serve uses ports 443, 8443 and 10000 already: free one with `tailscale serve --https=<port> off`")?;
     let target = format!("http://127.0.0.1:{port}");
-    tailscale_output(&program, &["serve", "--bg", &format!("--https={https}"), &target]).await?;
+    // Written before the entry exists, so that a kill at any later point leaves a marker.
+    let marker = marker_file(&dir, https);
+    let content = Marker {
+        https_port: https,
+        target: target.clone(),
+        pid: std::process::id(),
+        started: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |since| since.as_secs()),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    let text = serde_json::to_vec_pretty(&content).map_err(|e| e.to_string())?;
+    std::fs::write(&marker, text).map_err(|e| format!("cannot write {}: {e}", marker.display()))?;
+    if let Err(e) = tailscale_output(&program, &["serve", "--bg", &format!("--https={https}"), &target]).await
+    {
+        let _ = std::fs::remove_file(&marker);
+        return Err(e);
+    }
     let url = match https {
         443 => format!("https://{name}"),
         other => format!("https://{name}:{other}"),
     };
     Ok(Tunnel {
         url,
+        notes,
         child: None,
-        undo: Some(Undo { program, https }),
+        undo: Some(Undo {
+            program,
+            https,
+            marker,
+        }),
     })
 }
 

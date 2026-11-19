@@ -122,6 +122,9 @@ pub async fn run(cli: &Cli, paths: &Paths, config: &Config, args: &RemoteArgs) -
             return EXIT_FAILED;
         }
     };
+    for note in tunnel.iter().flat_map(|tunnel| &tunnel.notes) {
+        eprintln!("azazel: {note}");
+    }
     if let Some(tunnel) = &tunnel
         && let Err(e) = server.set_public_url(&tunnel.url)
     {
@@ -197,7 +200,7 @@ async fn open_tunnel(paths: &Paths, way: Way, port: u16) -> Result<Option<Tunnel
         }
         Way::Tailscale => {
             eprintln!("azazel: serving the port through Tailscale…");
-            tunnel::tailscale(port).await.map(Some)
+            tunnel::tailscale(paths, port).await.map(Some)
         }
     }
 }

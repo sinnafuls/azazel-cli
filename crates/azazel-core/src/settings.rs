@@ -13,8 +13,9 @@ use toml::{Table, Value};
 use crate::config::{
     AdvisorWhen, Autocomplete, CacheWarming, CheckReport, Config, DesktopNotify, DestructivePolicy, DiffView,
     DigestMode, EditorMode, GlyphSetting, ImageMode, Indicator, LspInstall, ModelRouting, PasteMode,
-    PatchMode, PermissionMode, ProcessPriority, QueueMode, ReadGuard, RemoteAccess, SessionResume,
-    StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WorktreeTarget, WriteSeverity,
+    PatchMode, PermissionMode, ProcessPriority, ProfileReset, QueueMode, ReadGuard, RemoteAccess,
+    SessionResume, StatusPreset, StatusSeparator, TelemetryExporter, ToolStyle, WorktreeTarget,
+    WriteSeverity,
 };
 
 /// A page of the settings screen.
@@ -236,6 +237,12 @@ settings! {
             "The primary agent the lead is when a session starts: build, plan or one of your own (tab switches).";
         "agents": Kind::Table, "Agent overrides",
             "Per agent, a model chain and a thinking level that replace its definition's, such as scout = { model = [\"@smol\"], thinking = \"low\" }.";
+    }
+    Models / "Profiles" {
+        "profiles.on_limit": Text, "Profile on a usage limit",
+            "The profile a session moves to when its provider reports a usage limit; empty never switches.";
+        "profiles.on_reset": Choice(ProfileReset::NAMES), "When the limit resets",
+            "ask: offer to go back to the first profile; auto: go back; off: stay on the second.";
     }
     Models / "Requests" {
         "retry.max_attempts": Number, "Tries per model", "Tries per model before the router moves down the chain.";
@@ -581,7 +588,11 @@ pub const NOT_EDITABLE: &[(&str, &str)] = &[
     ),
     (
         "presets",
-        "Saved sets of role chains: `/preset save <name>` writes one, `/preset <name>` applies it.",
+        "The old name of profiles: `[presets.<name>]` still loads, as `[profiles.<name>]`.",
+    ),
+    (
+        "profiles",
+        "Saved sets of role chains, each written as [profiles.<name>.roles]: `/profile save <name>` writes one, `/profile <name>` applies it.",
     ),
     (
         "hooks",
@@ -679,10 +690,11 @@ mod tests {
         // are an open table, and `embeddings` is absent until it is set.
         let leaves: BTreeSet<&str> = leaves.iter().map(String::as_str).collect();
         for path in rows.iter().chain(&fixed) {
-            // `agents` holds the overrides the user names beside its own `default`.
+            // `agents` and `profiles` hold the entries the user names beside their own keys.
             let known = leaves.contains(path)
                 || *path == "roles.default"
                 || *path == "agents"
+                || *path == "profiles"
                 || (*path == "embeddings" && TABLES.contains(path));
             assert!(known, "{path} is not a configuration key");
         }

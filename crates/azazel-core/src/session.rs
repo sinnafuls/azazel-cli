@@ -97,6 +97,10 @@ pub enum EntryKind {
     AgentChange {
         agent: String,
     },
+    /// The profile (a named set of roles) the session switched to.
+    ProfileChange {
+        profile: String,
+    },
     /// Pinned sessions are listed first.
     Pin {
         pinned: bool,
@@ -976,6 +980,14 @@ impl SessionStore {
     pub fn last_agent(&self, leaf: Option<&str>) -> Option<String> {
         self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
             EntryKind::AgentChange { agent } => Some(agent),
+            _ => None,
+        })
+    }
+
+    /// The profile the branch ending at `leaf` last switched to.
+    pub fn last_profile(&self, leaf: Option<&str>) -> Option<String> {
+        self.branch(leaf).into_iter().rev().find_map(|e| match e.kind {
+            EntryKind::ProfileChange { profile } => Some(profile),
             _ => None,
         })
     }

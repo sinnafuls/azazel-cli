@@ -133,3 +133,54 @@ fn a_level_chosen_for_the_run_beats_the_level_of_the_role() {
     assert_eq!(level(&["--thinking", "low"]), "low");
     assert_eq!(level(&["--thinking", "off"]), "off");
 }
+
+/// `--profile` before a subcommand used to be ignored; `--preset` is its old name.
+#[test]
+fn a_profile_named_before_a_subcommand_is_applied_or_refused() {
+    let sandbox = Sandbox::new("[profiles.mine.roles]\nsmol = [\"acme/tiny\"]\n");
+    let chain = |args: &[&str], role: &str| {
+        let output = sandbox.azazel(args);
+        assert!(output.status.success(), "{}", stderr(&output));
+        lines(&output)
+            .into_iter()
+            .find(|row| row["role"] == role)
+            .map(|row| row["chain"].clone())
+            .unwrap_or(Value::Null)
+    };
+    assert_eq!(
+        chain(&["--profile", "cheap", "roles", "--json"], "default"),
+        json!(["anthropic/claude-sonnet-5-5"])
+    );
+    assert_eq!(
+        chain(&["--preset", "mine", "roles", "--json"], "smol"),
+        json!(["acme/tiny"])
+    );
+    // Without it the roles are the configured ones.
+    assert_ne!(chain(&["roles", "--json"], "smol"), json!(["acme/tiny"]));
+
+    for flag in ["--profile", "--preset"] {
+        let output = sandbox.azazel(&[flag, "nope", "roles"]);
+        assert_eq!(output.status.code(), Some(2), "{}", stderr(&output));
+        let error = stderr(&output);
+        assert!(
+            error.contains("unknown profile `nope`") && error.contains("claude, gpt, cheap"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn an_on_limit_naming_no_profile_stops_the_start_and_a_built_in_is_accepted() {
+    let sandbox = Sandbox::new("[profiles]\non_limit = \"nope\"\n");
+    let output = sandbox.azazel(&["roles"]);
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("profiles.on_limit: unknown profile `nope`"),
+        "{}",
+        stderr(&output)
+    );
+
+    let sandbox = Sandbox::new("[profiles]\non_limit = \"gpt\"\non_reset = \"auto\"\n");
+    let output = sandbox.azazel(&["roles"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+}

@@ -138,6 +138,7 @@ const COMMANDS: &[&str] = &[
     "fast",
     "slow",
     "preset",
+    "profile",
     "usage",
     "stats",
     "skills",
@@ -197,7 +198,7 @@ fn plain_word(word: &str) -> bool {
 /// raw text, and a quote or any other character outside [`plain_word`] fails it: the handlers
 /// split the arguments their own way (`/mcp` strips quotes), and the two must not disagree.
 fn subcommand_allowed(name: &str, args: &str) -> bool {
-    if !matches!(name, "mcp" | "preset" | "memory" | "media") {
+    if !matches!(name, "mcp" | "preset" | "profile" | "memory" | "media") {
         return true;
     }
     let words: Vec<&str> = args.split_whitespace().collect();
@@ -209,9 +210,9 @@ fn subcommand_allowed(name: &str, args: &str) -> bool {
         // `disable`, `approve`, `reject`, `login` and `logout` change the configuration, what
         // starts or the stored sign-in.
         ("mcp", [] | ["list"] | ["reconnect", _]) => true,
-        // Applying a preset changes this session's roles; `save` writes the configuration.
-        ("preset", []) => true,
-        ("preset", [word]) => *word != "save",
+        // Applying a profile changes this session's roles; `save` writes the configuration.
+        ("preset" | "profile", []) => true,
+        ("preset" | "profile", [word]) => *word != "save",
         // `forget` deletes a memory and `auto` changes what is remembered from now on.
         ("memory", [] | ["list"]) => true,
         // `/media` reports the backends and takes no arguments.
@@ -494,6 +495,7 @@ mod tests {
             "memory",
             "agents",
             "preset",
+            "profile",
             "mcp",
         ] {
             assert!(run(name, "", false).is_ok(), "{name}");
@@ -516,6 +518,8 @@ mod tests {
             assert!(run(name, "", true).is_err(), "{name}");
         }
         assert!(run("preset", "save fast", true).is_err());
+        assert!(run("profile", "save fast", true).is_err());
+        assert!(run("profile", "fast", false).is_ok());
         assert!(run("preset", "fast", false).is_ok());
         assert!(run("mcp", "approve github", true).is_err());
         assert!(run("mcp", "reconnect github", false).is_ok());
@@ -567,6 +571,7 @@ mod tests {
         }
         for args in ["", "fast", " fast ", "my-preset"] {
             assert!(run("preset", args).is_ok(), "preset {args:?}");
+            assert!(run("profile", args).is_ok(), "profile {args:?}");
         }
         for args in [
             "save fast",
@@ -578,6 +583,11 @@ mod tests {
             "a b",
             "fa\"st",
         ] {
+            assert_eq!(
+                run("profile", args).is_ok(),
+                run("preset", args).is_ok(),
+                "{args:?}"
+            );
             let outcome = run("preset", args);
             // `SAVE` is a preset name the handler looks up, and it is not `save`.
             if args == "SAVE" {

@@ -410,6 +410,34 @@ pub fn lower_running(pid: u32, priority: ProcessPriority) {
 #[cfg(not(windows))]
 pub fn lower_running(_pid: u32, _priority: ProcessPriority) {}
 
+/// Whether the process `pid` still runs. A pid another program has taken over since counts as
+/// running: that is the safe answer for a caller that only acts on a process that is gone.
+#[cfg(windows)]
+pub fn pid_alive(pid: u32) -> bool {
+    use winsafe::co::{ERROR, PROCESS};
+    /// What `GetExitCodeProcess` says of a process that has not ended.
+    const STILL_ACTIVE: u32 = 259;
+    match winsafe::HPROCESS::OpenProcess(PROCESS::QUERY_LIMITED_INFORMATION, false, pid) {
+        Ok(process) => process
+            .GetExitCodeProcess()
+            .map_or(true, |code| code == STILL_ACTIVE),
+        // One that is not ours to open is still there.
+        Err(e) => e == ERROR::ACCESS_DENIED,
+    }
+}
+
+#[cfg(not(windows))]
+pub fn pid_alive(pid: u32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        // Without `kill` there is no telling.
+        .map_or(true, |status| status.success())
+}
+
 /// On Unix the priority goes in the command line, see [`lowered`].
 #[cfg(not(windows))]
 pub fn lower(_command: &mut CommandWrap, _priority: ProcessPriority) {}

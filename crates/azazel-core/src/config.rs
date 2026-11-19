@@ -640,11 +640,33 @@ config_table!(RulesConfig {
     compat: bool = true
 });
 
-/// `[presets.<name>]`: a saved set of role chains.
+/// `[profiles.<name>]`: a saved set of role chains. `[presets.<name>]` is the old name of the
+/// same table.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-pub struct PresetConfig {
+pub struct ProfileConfig {
     pub roles: BTreeMap<String, Vec<ModelSpec>>,
+}
+
+/// The old name of [`ProfileConfig`], kept for one release.
+pub type PresetConfig = ProfileConfig;
+
+/// The profiles the program ships (`claude`, `gpt`, …), so that `[profiles] on_limit` can name
+/// one without a `[profiles.<name>]` table. `azazel-cli` defines their roles.
+pub const BUILTIN_PROFILES: [&str; 6] = ["claude", "gpt", "cheap", "thorough", "frontend", "research"];
+
+/// `[profiles]`: what to do on a usage limit, and `[profiles.<name>]` for each saved profile.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ProfilesConfig {
+    /// The profile to switch to when the current one hits a usage limit; empty never switches.
+    pub on_limit: String,
+    /// What happens when the limit window has reset: ask whether to go back, go back, or stay.
+    pub on_reset: ProfileReset,
+    /// Any other key is the name of a profile. `deny_unknown_fields` does not work beside a
+    /// flattened map; the map's entries are checked by their own type instead.
+    #[serde(flatten)]
+    pub entries: BTreeMap<String, ProfileConfig>,
 }
 
 /// `[[stream_rules]]`: a pattern that stops a reply as it is written.
@@ -720,6 +742,7 @@ config_enum!(DesktopNotify { Auto = "auto", Terminal = "terminal", System = "sys
 config_enum!(EditorMode { Emacs = "emacs", Vim = "vim" } default Emacs);
 config_enum!(PasteMode { Attachment = "attachment", File = "file", Inline = "inline" } default Attachment);
 config_enum!(AdvisorWhen { Off = "off", Stop = "stop" } default Off);
+config_enum!(ProfileReset { Ask = "ask", Auto = "auto", Off = "off" } default Ask);
 config_enum!(SessionResume { New = "new", Last = "last" } default New);
 config_enum!(CacheWarming { Off = "off", Idle = "idle" } default Off);
 config_enum!(TelemetryExporter { Off = "off", Otlp = "otlp", Langsmith = "langsmith" } default Off);
@@ -900,8 +923,10 @@ pub struct Config {
     pub statusline: StatuslineConfig,
     pub usage: UsageConfig,
     pub accounts: AccountsConfig,
-    /// Saved sets of roles, by name.
-    pub presets: BTreeMap<String, PresetConfig>,
+    /// Saved sets of roles, by name. The old name of `profiles`: on load, entries that `profiles`
+    /// does not have are added to it.
+    pub presets: BTreeMap<String, ProfileConfig>,
+    pub profiles: ProfilesConfig,
     pub stream_rules: Vec<StreamRuleConfig>,
     /// Event name (one of [`HOOK_EVENTS`]) to hooks, in layer order.
     pub hooks: BTreeMap<String, Vec<HookConfig>>,
@@ -982,6 +1007,7 @@ impl Default for Config {
             usage: UsageConfig::default(),
             accounts: AccountsConfig::default(),
             presets: BTreeMap::new(),
+            profiles: ProfilesConfig::default(),
             stream_rules: Vec::new(),
             hooks: BTreeMap::new(),
         }
@@ -989,7 +1015,7 @@ impl Default for Config {
 }
 
 /// Top-level tables; an `AZAZEL_<TABLE>__<KEY>` environment variable overrides a key in one of them.
-pub const TABLES: [&str; 42] = [
+pub const TABLES: [&str; 43] = [
     "roles",
     "providers",
     "models",
@@ -1023,6 +1049,7 @@ pub const TABLES: [&str; 42] = [
     "advisor",
     "rules",
     "presets",
+    "profiles",
     "guards",
     "schedule",
     "triggers",
@@ -1084,6 +1111,8 @@ pub struct LoadedConfig {
     pub models_files: Vec<ModelsLayer>,
     /// Project settings skipped because the project is not trusted, as `file: key`.
     pub ignored: Vec<String>,
+    /// Things worth telling the user that do not stop the configuration from loading.
+    pub warnings: Vec<String>,
 }
 
 /// Reads a file that may be absent.
@@ -1236,10 +1265,46 @@ impl Config {
             })?;
             merge(&mut merged, options.overrides.clone(), &mut Vec::new());
         }
-        let config = finish(merged).map_err(|message| ConfigError::Override {
+        let mut config = finish(merged).map_err(|message| ConfigError::Override {
             source_name: "merged configuration".to_string(),
             message,
         })?;
+        let warnings = fold_presets(&mut config);
+        for warning in &warnings {
+            tracing::warn!("{warning}");
+        }
+        let on_limit = config.profiles.on_limit.trim();
+        if !on_limit.is_empty()
+            && !BUILTIN_PROFILES.contains(&on_limit)
+            && !config.profiles.entries.contains_key(on_limit)
+        {
+            let known: Vec<&str> = BUILTIN_PROFILES
+                .iter()
+                .copied()
+                .chain(config.profiles.entries.keys().map(String::as_str))
+                .collect();
+            let message = format!(
+                "profiles.on_limit: unknown profile `{on_limit}`; known: {}",
+                known.join(", ")
+            );
+            let setter = layers.iter().rev().find(|layer| {
+                layer
+                    .table
+                    .get("profiles")
+                    .and_then(|t| t.get("on_limit"))
+                    .is_some()
+            });
+            return Err(match setter {
+                Some(layer) => ConfigError::File {
+                    file: layer.path.clone(),
+                    message,
+                },
+                None => ConfigError::Override {
+                    source_name: "merged configuration".to_string(),
+                    message,
+                },
+            });
+        }
         // A provider that is not built in exists only once some layer gives it an API and an
         // address; the layers may share that between them.
         for (id, settings) in &config.providers {
@@ -1266,8 +1331,26 @@ impl Config {
             layers,
             models_files,
             ignored,
+            warnings,
         })
     }
+}
+
+/// `[presets.<name>]` is `[profiles.<name>]` under its old name: entries `[profiles]` lacks are
+/// added to it, and where both exist `[profiles]` wins. Returns one warning per name that both have.
+fn fold_presets(config: &mut Config) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (name, preset) in &config.presets {
+        match config.profiles.entries.contains_key(name) {
+            true => warnings.push(format!(
+                "[presets.{name}] is ignored because [profiles.{name}] exists; move it to [profiles]"
+            )),
+            false => {
+                config.profiles.entries.insert(name.clone(), preset.clone());
+            }
+        }
+    }
+    warnings
 }
 
 fn parse_layer(path: &Path, text: &str) -> Result<Table, ConfigError> {
@@ -1714,6 +1797,98 @@ mod tests {
         assert!(error.contains("before_everything"), "{error}");
 
         let f = fixture("[roles]\ndefault = [\"not-a-model\"]\n", "", "");
+        assert!(Config::load(&f.paths, &trusted()).is_err());
+    }
+
+    #[test]
+    fn presets_load_as_profiles_and_profiles_win_with_a_warning() {
+        let f = fixture(
+            "[presets.a.roles]
+default = [\"mock/old\"]
+[presets.b.roles]
+default = [\"mock/b\"]
+             [profiles.a.roles]
+default = [\"mock/new\"]
+",
+            "",
+            "",
+        );
+        let loaded = Config::load(&f.paths, &trusted()).unwrap();
+        let entries = &loaded.config.profiles.entries;
+        assert_eq!(entries["a"].roles["default"][0].to_string(), "mock/new");
+        assert_eq!(entries["b"].roles["default"][0].to_string(), "mock/b");
+        assert_eq!(loaded.warnings.len(), 1, "{:?}", loaded.warnings);
+        assert!(loaded.warnings[0].contains("[presets.a]") && loaded.warnings[0].contains("[profiles.a]"));
+        assert_eq!(loaded.config.profiles.on_reset, ProfileReset::Ask);
+        assert_eq!(loaded.config.profiles.on_limit, "");
+    }
+
+    #[test]
+    fn on_limit_must_name_a_known_profile() {
+        let f = fixture(
+            "[profiles]
+on_limit = \"nope\"
+",
+            "",
+            "",
+        );
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(
+            error.contains("config.toml") && error.contains("`nope`") && error.contains("claude"),
+            "{error}"
+        );
+
+        let f = fixture(
+            "[profiles]
+on_limit = \"b\"
+on_reset = \"auto\"
+[profiles.b.roles]
+default = [\"mock/b\"]
+",
+            "",
+            "",
+        );
+        let config = Config::load(&f.paths, &trusted()).unwrap().config;
+        assert_eq!(config.profiles.on_limit, "b");
+        assert_eq!(config.profiles.on_reset, ProfileReset::Auto);
+        // A built-in needs no table of its own.
+        let f = fixture(
+            "[profiles]
+on_limit = \"gpt\"
+",
+            "",
+            "",
+        );
+        assert!(Config::load(&f.paths, &trusted()).is_ok());
+    }
+
+    #[test]
+    fn profile_names_and_keys_are_checked() {
+        // `on_limit` is a key of `[profiles]`, so a table of that name is not a profile.
+        let f = fixture(
+            "[profiles.on_limit.roles]
+default = [\"mock/b\"]
+",
+            "",
+            "",
+        );
+        assert!(Config::load(&f.paths, &trusted()).is_err());
+        let f = fixture(
+            "[profiles.x]
+model = \"mock/b\"
+",
+            "",
+            "",
+        );
+        let error = Config::load(&f.paths, &trusted()).unwrap_err().to_string();
+        assert!(error.contains("model"), "{error}");
+        let f = fixture(
+            "[profiles]
+on_reset = \"sometimes\"
+",
+            "",
+            "",
+        );
         assert!(Config::load(&f.paths, &trusted()).is_err());
     }
 

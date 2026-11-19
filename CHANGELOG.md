@@ -5,6 +5,11 @@ GitHub are its section here.
 
 ## [Unreleased]
 
+### Fixed
+
+- `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.
+- `azazel remote`: long words and trailing spaces in your messages, thinking and branch summaries wrap inside their box on narrow screens.
+
 ## [0.15.0] - 2026-11-19
 
 ### Added

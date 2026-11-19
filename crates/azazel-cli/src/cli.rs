@@ -985,9 +985,9 @@ pub struct Cli {
     #[arg(long = "json-schema", value_name = "FILE|JSON", requires = "print")]
     pub json_schema: Option<String>,
 
-    /// Use the models of a saved preset ([presets.<name>]) for this run
-    #[arg(long, value_name = "NAME", global = true)]
-    pub preset: Option<String>,
+    /// Use the models of a profile (built-in, or [profiles.<name>]) for this run
+    #[arg(long, visible_alias = "preset", value_name = "NAME", global = true)]
+    pub profile: Option<String>,
 
     /// Work in this directory instead of the current one
     #[arg(long, value_name = "DIR", global = true)]
@@ -1116,8 +1116,8 @@ impl Cli {
         if let Some(tier) = &self.tier {
             value("--tier", tier.into());
         }
-        if let Some(preset) = &self.preset {
-            value("--preset", preset.into());
+        if let Some(profile) = &self.profile {
+            value("--profile", profile.into());
         }
         if let Some(key) = &self.api_key {
             value("--api-key", key.into());

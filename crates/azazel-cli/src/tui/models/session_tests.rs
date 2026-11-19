@@ -104,7 +104,7 @@ async fn exercise(backend: &mut dyn Backend, home_config: &Path) {
 
     // A preset holds the roles as they are; loading it brings them back for the session.
     let roles = backend.save_preset("mine").await.unwrap();
-    assert_eq!(roles.presets, ["mine"]);
+    assert!(roles.presets.contains(&"mine".to_string()));
     let roles = backend.set_role("smol", None, SaveTo::Home).await.unwrap();
     assert_eq!(row(&roles, "smol").source, RoleSource::Builtin);
     assert_eq!(filed(), None, "{}", config());

@@ -59,13 +59,13 @@ A thinking level written on a role's model (`smol = ["openai/gpt-5-mini:low"]`) 
 | `azazel roles` | Lists every role: its chain, the model it resolves to, that model's thinking level and where the value comes from (`built-in`, `home`, `project`, `local`, or `unset`) |
 | `azazel roles set <role> <model> [fallback…] [--thinking LEVEL] [--project]` | Points the role at the model, then the fallbacks in order, in the home config (or the project's with `--project`, which a project that is not trusted refuses). A model is named as `--model` takes it (`@role`, `provider/id`, or part of a name); `--thinking` writes the level on the first model (`provider/id:high`). Comments in the file are kept |
 | `azazel roles clear <role> [--project]` | Takes the role out of the home config (or the project's), so it falls back to the next file, or its built-in value; a role of your own goes away |
-| `azazel roles preset save <name>` | Saves every role as it is now as `[presets.<name>.roles]` in the home config |
-| `azazel roles preset load <name> [--project]` | Writes every role of the preset into the home config (or the project's) |
+| `azazel roles preset save <name>` | Saves every role as it is now as `[profiles.<name>.roles]` in the home config |
+| `azazel roles preset load <name> [--project]` | Writes every role of the [profile](#profiles) (built-in or saved) into the home config (or the project's) |
 
 Every form takes `--json`: the listing prints one JSON object per role (`role`, `chain`, `source`, `builtin`,
-`resolved`, `thinking`), a change prints the rows of the roles it changed, and `preset save` prints the preset's name,
+`resolved`, `thinking`), a change prints the rows of the roles it changed, and `preset save` prints the profile's name,
 roles and file. A mistake in how the command is called (an unknown level, a name that cannot be a role, a project
-that is not trusted, a preset that does not exist) exits with status 2; a config file that cannot be written exits
+that is not trusted, a profile that does not exist) exits with status 2; a config file that cannot be written exits
 with status 1.
 
 ```sh
@@ -73,26 +73,41 @@ azazel roles set smol anthropic/claude-haiku-4-5 @default --thinking low
 azazel roles preset save cheap
 ```
 
-### Presets
+### Profiles
 
-A preset is a saved set of role chains, for switching the whole team between, say, a cheap and a thorough set of models.
+A profile is a named set of role chains, for switching the whole team between, say, a cheap and a thorough set of models. Profiles were called presets before 0.16: `[presets.<name>]`, `/preset` and `--preset` still work. When a name is in both `[profiles]` and `[presets]`, the profile wins and azazel logs a warning.
+
+Six profiles are built in. Each names models for the lead (`default`), planning and review (`slow`, `reviewer`), the coders, testers, scouts and `vision` (the middle tier) and quick structured tasks (`smol`):
+
+| Profile | Models |
+|---|---|
+| `claude` | Anthropic: Opus for the lead, Fable for `slow` and `reviewer`, Sonnet for the workers, Haiku for `smol` |
+| `gpt` | ChatGPT subscription (`openai-codex`): `gpt-6.1-sol` for the lead, `gpt-6-astra` for `slow` and `reviewer`, `gpt-6.1-terra` for the workers, `gpt-6-luna` for `smol` |
+| `cheap` | Sonnet for the lead and `slow`, Haiku for the workers and `smol` |
+| `thorough` | Fable for the lead and `slow`, Opus for the workers, Sonnet for `smol` |
+| `frontend` | As `claude`, with Fable for `designer` |
+| `research` | As `claude`, with Opus for `researcher` and `scout` |
+
+A `[profiles.<name>.roles]` table of the same name replaces a built-in whole. A profile whose providers have no credentials is listed with the login it needs (`azazel login <provider>`) and `/profile <name>` refuses it.
 
 ```toml
 # ~/.azazel/config.toml
-[presets.cheap.roles]
+[profiles.mine.roles]
 default = ["anthropic/claude-haiku-4-5"]
 slow    = ["anthropic/claude-sonnet-4-5"]
 
-[presets.thorough.roles]
+[profiles.deep.roles]
 default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 ```
 
 | Where | Effect |
 |---|---|
-| `/preset` | Lists the presets and the roles each one sets |
-| `/preset <name>` | Points each role of the preset at its models, for this session. Roles the preset does not name stay as they are. When it sets `lead` or `default`, the lead goes back to following its role, so a model picked with `/model` does not outlive the preset |
-| `/preset save <name>` | Writes every role as it is now to `[presets.<name>.roles]` in `~/.azazel/config.toml`, replacing a preset of that name |
-| `--preset <name>` | Applies the preset to the roles of this run; an unknown name exits with status 2 and lists the presets |
+| `/profile` (or `/preset`) | Lists the profiles, where each comes from (`built-in`, `yours`, `project`), whether it needs a login, and its `default`, `slow` and `smol` models |
+| `/profile <name>` | Points each role of the profile at its models, for this session, and records the switch in the session. Roles the profile does not name stay as they are. When it sets `lead` or `default`, the lead goes back to following its role, so a model picked with `/model` does not outlive the profile |
+| `/profile save <name>` | Writes every role as it is now to `[profiles.<name>.roles]` in `~/.azazel/config.toml`, replacing a profile of that name. `save`, `on_limit` and `on_reset` cannot be profile names |
+| `--profile <name>` (or `--preset`) | Applies the profile to the roles of this run, also before a subcommand (`azazel --profile cheap roles`); an unknown name exits with status 2 and lists the profiles |
+
+`[profiles]` also has two keys for switching on a usage limit: `on_limit`, the profile to switch to (empty, the default, never switches; a name that is no built-in and has no table is a load error), and `on_reset`, what happens when the limit has reset: `ask` (the default), `auto` or `off`.
 
 ## Choosing the model
 
@@ -102,11 +117,11 @@ default = ["anthropic/claude-opus-4-5:high", "openai/gpt-5"]
 | `/settings` → Models → `default` | Same, from inside the TUI; takes effect at once |
 | `--model <spec>` | The lead's chain for this run; repeat the flag to add fallbacks. Part of a name is enough |
 | `--provider <id>` | Only this provider's models for this run: part of a name given to `--model` or `/model` is looked up among them, `provider/model` of another provider is refused, and the `/model` picker lists only them. Without `--model` the lead keeps the models of its configured chain that are this provider's, and the run ends with status 2 when there are none. Roles that name their own models (`smol`, `verify`, agent definitions) are not changed. A [virtual model](#virtual-models) picks among every provider's models, so it is refused and left out of the picker while `--provider` is given |
-| `/models` (or `/model` alone) | [One screen](tui.md#models) for the model of every role, its fallbacks and thinking level, the `Ctrl+P` cycle and presets, with the models of every provider; providers without a credential are signed in to or given a key from there. Changes go to `~/.azazel/config.toml`, or the project's config |
+| `/models` (or `/model` alone) | [One screen](tui.md#models) for the model of every role, its fallbacks and thinking level, the `Ctrl+P` cycle and profiles, with the models of every provider; providers without a credential are signed in to or given a key from there. Changes go to `~/.azazel/config.toml`, or the project's config |
 | `Ctrl+L` or `Alt+P` | Picker over roles, favourites, the models chosen lately, [virtual models](#virtual-models) and the models of providers that have a credential: the lead's model for this session |
 | `Ctrl+P`, `Ctrl+Shift+P` | The next or previous favourite model or role (`tui.favourites`, or `--models a,b,c` for one run); a step onto a role makes its chain the lead's. See [models and roles at a key](tui.md#models-and-roles-at-a-key) |
 | `/model <spec> [fallback …]` | Sets the lead's chain for this session; part of a name is enough |
-| `/preset <name>`, `--preset <name>` | Re-points every role a [preset](#presets) names |
+| `/profile <name>`, `--profile <name>` | Re-points every role a [profile](#profiles) names |
 | `model:` in an agent definition, `[agents.<name>] model` | Per-agent chain (see [team](team.md)) |
 
 When every `--model` is a concrete model, that chain also becomes this run's `default` role, so the roles and agents built on `@default` follow it.

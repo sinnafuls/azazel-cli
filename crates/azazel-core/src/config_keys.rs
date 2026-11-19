@@ -15,7 +15,7 @@ use serde::de::value::Error as NoValue;
 use serde_json::Value;
 
 use crate::config::{
-    AgentOverride, Config, DebugAdapterConfig, EmbeddingsConfig, HookConfig, LspServerConfig, PresetConfig,
+    AgentOverride, Config, DebugAdapterConfig, EmbeddingsConfig, HookConfig, LspServerConfig, ProfileConfig,
     StreamRuleConfig,
 };
 
@@ -61,7 +61,8 @@ fn named_entries() -> Vec<(&'static str, Vec<&'static str>)> {
         ("providers.*", fields_of::<ProviderSettings>()),
         ("models.*", fields_of::<ModelOverride>()),
         ("agents.*", fields_of::<AgentOverride>()),
-        ("presets.*", fields_of::<PresetConfig>()),
+        ("presets.*", fields_of::<ProfileConfig>()),
+        ("profiles.*", fields_of::<ProfileConfig>()),
         ("hooks.*", fields_of::<HookConfig>()),
         ("stream_rules", fields_of::<StreamRuleConfig>()),
         ("embeddings", fields_of::<EmbeddingsConfig>()),
@@ -154,6 +155,9 @@ mod tests {
         assert!(has("agents.*.thinking"));
         assert_eq!(default("agents.default"), Some("\"build\""));
         assert!(has("presets.*.roles"));
+        assert!(has("profiles.*.roles"));
+        assert_eq!(default("profiles.on_reset"), Some("\"ask\""));
+        assert_eq!(default("profiles.on_limit"), Some("\"\""));
         assert!(has("hooks.*.if"));
         assert!(has("hooks.*.async"));
         assert!(!has("hooks.*.when"));

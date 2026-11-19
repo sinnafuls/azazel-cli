@@ -982,7 +982,7 @@ Models, permissions and setup:
 | Command | Description |
 |---|---|
 | `/model [name [fallback …]]` | Set the lead's chain for this session; part of a name or `@role` works too. Alone it opens `/models` |
-| `/models` | [Choose the model of every role](#models), with fallbacks, thinking, the `Ctrl+P` cycle and presets |
+| `/models` | [Choose the model of every role](#models), with fallbacks, thinking, the `Ctrl+P` cycle and profiles |
 | `/thinking [level]` | Pick or set the lead's thinking level for the session; it wins over the `:level` of the lead's role. The picker offers `off` and the levels the model takes, on the one in use; a typed level the model does not take becomes the nearest one it does, and the transcript says so. See [thinking levels](models-and-logins.md#thinking-levels) |
 | `/mode [mode]` | Pick or set the permission mode. `bypass` opens a warning box that starts on `No`; see [permissions](permissions.md#bypass) |
 | `/agent [name]` | Pick the [primary agent](team.md#primary-agents) the lead is, or switch to one: `/agent plan`. `Tab` in an empty input steps through them |
@@ -998,7 +998,8 @@ Models, permissions and setup:
 | `/account [provider]` | The provider's accounts, their usage and until when one is out of allowance: use one for this session, make it the default, sign it out, add another |
 | `/fast [on\|off\|status]` | Faster replies at a higher price (the priority [service tier](models-and-logins.md#service-tiers)) |
 | `/slow [on\|off\|status]` | Cheaper, slower replies (the economy tier) |
-| `/preset [name \| save <name>]` | List the saved sets of models, apply one, or save the current one |
+| `/profile [name \| save <name>]` | List the [profiles](models-and-logins.md#profiles) (sets of models), apply one, or save the current one |
+| `/preset [name \| save <name>]` | The old name of `/profile` |
 | `/tools` | The tools offered to the lead, grouped by where they come from (core, each MCP server, scripts, team), with disabled and deferred ones marked, and who [replaced or wraps](extensions.md#replacing-and-wrapping-tools) a tool |
 | `/jobs` | Background jobs; choose one to read its output or stop it |
 | `/terminals` | Programs agents run in [terminals](#terminals); choose one to watch it, type into it or stop it |
@@ -1460,7 +1461,7 @@ A role's models are typed, the first one then its fallbacks with spaces between 
 ## Models
 
 `/models` (or `/model` alone) opens one screen for choosing models: the model of every role, its fallbacks
-and its thinking level, the `Ctrl+P` cycle and presets, beside the models of every provider. It is a large
+and its thinking level, the `Ctrl+P` cycle and profiles, beside the models of every provider. It is a large
 popup, as wide as the window less four columns (at most 150) and as tall as it less four rows.
 
 ```

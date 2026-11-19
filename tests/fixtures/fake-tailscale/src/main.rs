@@ -3,8 +3,9 @@
 //!
 //! - `status --json` prints `status.json`, or says the daemon is not running (exit 1);
 //! - `serve status --json` prints `serve.json`, or `{}`;
-//! - `serve --bg --https=<port> <target>` adds the port to `serve.json`;
-//! - `serve --https=<port> off` removes it.
+//! - `serve --bg --https=<port> <target>` adds the port to `serve.json`, with the target as the proxy
+//!   of its `Web` entry, as the real `serve status --json` shows it;
+//! - `serve --https=<port> off` removes both.
 //!
 //! Every call adds a line to `calls.log`: its arguments, with a tab between them.
 
@@ -47,11 +48,21 @@ fn main() -> ExitCode {
         ["serve", "status", "--json"] => println!("{serve}"),
         ["serve", "--bg", _, target] if target.starts_with("http://127.0.0.1:") => {
             serve["TCP"][&https] = json!({ "HTTPS": true });
+            let dns = std::fs::read_to_string(data.join("status.json"))
+                .ok()
+                .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+                .and_then(|status| status["Self"]["DNSName"].as_str().map(str::to_string))
+                .unwrap_or_default();
+            let host = format!("{}:{https}", dns.trim_end_matches('.'));
+            serve["Web"][host] = json!({ "Handlers": { "/": { "Proxy": target } } });
             let _ = std::fs::write(&serve_file, serve.to_string());
         }
         ["serve", _, "off"] => {
             if let Some(tcp) = serve["TCP"].as_object_mut() {
                 tcp.remove(&https);
+            }
+            if let Some(web) = serve["Web"].as_object_mut() {
+                web.retain(|host, _| !host.ends_with(&format!(":{https}")));
             }
             let _ = std::fs::write(&serve_file, serve.to_string());
         }

@@ -128,7 +128,10 @@ thinking = "low"
 | | `project`, `location` | unset | Google Cloud settings, for `vertex` |
 | | `oauth`, `oauth_headers` | preset | A sign-in instead of a key; see [models and logins](models-and-logins.md) |
 | | `account` | the default account | Which stored account of the provider to use; see [several accounts](models-and-logins.md#several-accounts) |
-| `[presets.<name>.roles]` | `<role>` | none | A saved set of role chains that `/preset <name>` and `--preset <name>` apply; see [presets](models-and-logins.md#presets) |
+| `[profiles]` | `on_limit` | `""` | The profile to switch to when a usage limit is reached; empty never switches. Must be a built-in profile or have a `[profiles.<name>.roles]` table; see [profiles](models-and-logins.md#profiles) |
+| | `on_reset` | `"ask"` | When the limit has reset: `ask`, `auto` or `off` |
+| `[profiles.<name>.roles]` | `<role>` | none | A set of role chains that `/profile <name>` and `--profile <name>` apply; a name of a built-in profile replaces it |
+| `[presets.<name>.roles]` | `<role>` | none | The old name of `[profiles.<name>.roles]`; `[profiles]` wins when both have the name |
 | `[models."<provider>/<id>"]` | `name` | catalogue | Display name |
 | | `context_window`, `max_output` | catalogue | Token limits; unknown models get 128000 and 8192 |
 | | `vision`, `reasoning` | catalogue | Capabilities; unknown models get `false` |
@@ -476,7 +479,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--worktree[=NAME]` | With `-p`: run in a new git worktree, `.azazel/worktrees/<NAME>` on a new branch `azazel/<NAME>` from HEAD (named after the time when no name is given); its path is printed at the end. See [worktrees](sessions-and-checkpoints.md#worktrees) |
 | `--archived` | With `-p`: keep the session out of `/resume`, `/open`, `-c` and `azazel sessions list` (`--all` lists it); for runs from scripts and CI |
 | `--tier <TIER>` | [Service tier](models-and-logins.md#service-tiers) of the requests: `priority`, `standard`, `economy` |
-| `--preset <NAME>` | Use the models of a saved [preset](models-and-logins.md#presets) for this run |
+| `--profile <NAME>` | Use the models of a [profile](models-and-logins.md#profiles), built-in or saved, for this run; also before a subcommand. `--preset` is the old name |
 | `--cwd <DIR>` | Work in this directory instead of the current one |
 | `--trust` | Trust this project's configuration for this run |
 | `--ssh <HOST>` | Work on another machine: azazel runs there and is shown here; see [remote work](background-and-remote.md#remote-work-over-ssh) |
@@ -488,7 +491,7 @@ In a trusted project each MCP server the project defines still waits for your ap
 | `--version`, `--help` | Print the version or the usage |
 
 `--model`, `--thinking`, `--mode`, `--agent`, `--output`, `--cwd`, `--trust`, `--session-dir`, `--add-dir`, `--set`,
-`--tier`, `--preset`, `--theme`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and
+`--tier`, `--profile`, `--theme`, `--coordinator`, `--max-turns`, `--ssh`, `--remote-dir`, `--remote-azazel` and
 `--plain` may also follow a subcommand, as in `azazel goal "make the tests pass" --mode auto`.
 
 ### Resources for one run
@@ -517,7 +520,7 @@ Nothing is copied and nothing is remembered; the next run without the flag does 
   name files of this machine and cannot be combined with `--ssh`.
 
 A wrong flag value (an unknown tool, a model name that matches nothing or several models, a bad `--set`, an
-unknown tier or preset) exits with status 2.
+unknown tier or profile) exits with status 2.
 
 ## Subcommands
 
@@ -537,7 +540,7 @@ unknown tier or preset) exits with status 2.
 | `azazel auth` | `status` | Where each provider's credential comes from |
 | `azazel models` | | List the models of the providers you have a credential for, with the roles that use them; see [choosing the model](models-and-logins.md#choosing-the-model) |
 | `azazel roles` | `set`, `clear`, `preset` | List the model roles with their models, thinking levels and sources, and change them in the home or project config; see [`azazel roles`](models-and-logins.md#azazel-roles) |
-| `azazel roles preset` | `save`, `load` | Save every role as a preset, or write a preset's roles into a config file |
+| `azazel roles preset` | `save`, `load` | Save every role as a profile, or write a profile's roles into a config file |
 | `azazel usage` | | What your subscriptions have left; see [usage](models-and-logins.md#usage) |
 | `azazel secrets` | `add`, `add-site`, `list`, `rm` | Credentials agents use without seeing them; see [stored credentials](web-and-browser.md#credentials-for-services) |
 | `azazel sessions` | `list`, `search`, `delete`, `prune`, `export`, `import` | Manage saved sessions, and bring one in from a file; see [sessions](sessions-and-checkpoints.md#from-the-shell) |

@@ -624,9 +624,8 @@ impl App {
         let ignored_settings = loaded.ignored;
         let mut config = loaded.config;
 
-        if let Some(name) = &cli.preset {
-            crate::routing::launch_preset(&mut config, name)
-                .map_err(|e| UsageError(format!("--preset: {e}")))?;
+        if let Some(name) = &cli.profile {
+            crate::profiles::apply(&mut config, name).map_err(|e| UsageError(format!("--profile: {e}")))?;
         }
         let tier = match &cli.tier {
             Some(tier) => crate::routing::parse_tier(tier).map_err(|e| UsageError(format!("--tier: {e}")))?,
@@ -796,9 +795,17 @@ impl App {
             only: cli.provider.clone(),
             providers: presets::resolve(&config.providers).map_err(|e| anyhow!(e))?,
         })?;
+        let endpoints_now = presets::resolve(&config.providers).map_err(|e| anyhow!(e))?;
+        let logged_in_credentials = credentials.clone();
         registry.load(&crate::routing::RoutingExt {
-            presets: config.presets.clone(),
+            profiles: crate::profiles::all_in(&config.profiles.entries, &loaded.layers),
             home_config: paths.home_config(),
+            logged_in: Arc::new(move |id| {
+                endpoints_now
+                    .iter()
+                    .find(|p| p.id == id)
+                    .is_none_or(|p| crate::models::usable(&logged_in_credentials, p))
+            }),
         })?;
         registry.load(&PermissionsExt {
             state: permissions.clone(),

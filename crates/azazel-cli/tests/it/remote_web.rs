@@ -620,6 +620,153 @@ fn tailscale_serves_the_port_and_only_that_entry_is_removed_afterwards() {
     );
 }
 
+const TAILNET: &str = r#"{"BackendState":"Running","Self":{"DNSName":"Laptop.tail1234.ts.net."}}"#;
+
+/// The id of a process that has ended.
+fn dead_pid() -> u32 {
+    let mut child = Command::new(assert_cmd::cargo::cargo_bin("azazel"))
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = child.id();
+    child.wait().unwrap();
+    pid
+}
+
+/// What `serve status --json` says with the user's own entry on 443 and a proxy on `https` to `target`.
+fn serving(https: u16, target: &str) -> String {
+    json!({
+        "TCP": { "443": { "HTTPS": true }, https.to_string(): { "HTTPS": true } },
+        "Web": {
+            "laptop.tail1234.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } } },
+            format!("laptop.tail1234.ts.net:{https}"): { "Handlers": { "/": { "Proxy": target } } },
+        },
+    })
+    .to_string()
+}
+
+/// Leaves the marker an `azazel remote` run of process `pid` makes for its entry on `https`.
+fn leave_marker(sandbox: &Sandbox, https: u16, target: &str, pid: u32) -> PathBuf {
+    let dir = sandbox.home().join("remote");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join(format!("tailscale-serve-{https}.json"));
+    let marker = json!({ "https_port": https, "target": target, "pid": pid, "started": 1_700_000_000 });
+    std::fs::write(&file, marker.to_string()).unwrap();
+    file
+}
+
+/// Starts `remote --tailscale`, stops it again, and returns the calls the stand-in `tailscale` saw.
+fn tailscale_calls(sandbox: &Sandbox, tool: &Path) -> String {
+    let mut remote = sandbox.remote(&["--tailscale"], &[tool]);
+    assert!(remote.quit().success());
+    std::fs::read_to_string(tool.join("tailscale-data/calls.log")).unwrap()
+}
+
+fn serve_json(tool: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(tool.join("tailscale-data/serve.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn an_entry_a_killed_run_left_is_turned_off_at_the_next_start() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(&tool, Some(TAILNET));
+    let dead = "http://127.0.0.1:1";
+    let gone = dead_pid();
+    std::fs::write(tool.join("tailscale-data/serve.json"), serving(8443, dead)).unwrap();
+    let marker = leave_marker(&sandbox, 8443, dead, gone);
+
+    let mut remote = sandbox.remote(&["--tailscale"], &[&tool]);
+    // The entry of the killed run is gone, so its port is the first free one again.
+    assert_eq!(remote.first["url"], "https://laptop.tail1234.ts.net:8443");
+    let said = remote.said("earlier").join("\n");
+    assert!(
+        said.contains("Removed the Tailscale entry an earlier `azazel remote` left on port 8443"),
+        "{said}"
+    );
+    let calls = std::fs::read_to_string(tool.join("tailscale-data/calls.log")).unwrap();
+    let off = calls.find("serve\t--https=8443\toff").expect(&calls);
+    let bg = calls.find("serve\t--bg\t--https=8443").expect(&calls);
+    assert!(off < bg, "{calls}");
+    assert!(
+        !calls.contains("--https=443\toff"),
+        "the user's entry is left alone: {calls}"
+    );
+    // The marker now belongs to this run.
+    let now: Value = serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+    assert_ne!(now["pid"], json!(gone));
+    assert_eq!(now["target"], format!("http://127.0.0.1:{}", remote.port()));
+
+    assert!(remote.quit().success());
+    // A clean stop turns the entry off and takes the marker away.
+    assert!(!marker.exists());
+    let left = serve_json(&tool);
+    assert!(
+        left["TCP"]["8443"].is_null() && left["TCP"]["443"].is_object(),
+        "{left}"
+    );
+}
+
+#[test]
+fn a_marker_whose_entry_the_user_changed_since_only_goes_away() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(&tool, Some(TAILNET));
+    // The entry on 8443 points somewhere else now: it is the user's.
+    let theirs = "http://127.0.0.1:4000";
+    std::fs::write(tool.join("tailscale-data/serve.json"), serving(8443, theirs)).unwrap();
+    let marker = leave_marker(&sandbox, 8443, "http://127.0.0.1:1", dead_pid());
+
+    let calls = tailscale_calls(&sandbox, &tool);
+    assert!(!calls.contains("--https=8443\toff"), "{calls}");
+    // 8443 is theirs, so the run used the next port.
+    assert!(calls.contains("serve\t--bg\t--https=10000"), "{calls}");
+    assert!(!marker.exists());
+    let kept = serve_json(&tool);
+    assert_eq!(
+        kept["Web"]["laptop.tail1234.ts.net:8443"]["Handlers"]["/"]["Proxy"],
+        theirs
+    );
+}
+
+#[test]
+fn an_entry_without_a_marker_is_never_turned_off() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(&tool, Some(TAILNET));
+    // It points at a port nothing listens on, which is what a stale entry looks like too.
+    std::fs::write(
+        tool.join("tailscale-data/serve.json"),
+        serving(8443, "http://127.0.0.1:1"),
+    )
+    .unwrap();
+
+    let calls = tailscale_calls(&sandbox, &tool);
+    assert!(!calls.contains("--https=8443\toff"), "{calls}");
+    assert!(!calls.contains("--https=443\toff"), "{calls}");
+    // 8443 is skipped, as when the user serves it.
+    assert!(calls.contains("serve\t--bg\t--https=10000"), "{calls}");
+    assert!(serve_json(&tool)["TCP"]["8443"].is_object());
+}
+
+#[test]
+fn the_entry_of_a_run_that_still_lives_is_not_turned_off() {
+    let sandbox = Sandbox::new();
+    let tool = sandbox.tool("tailscale", &TAILSCALE);
+    tailscale_knows(&tool, Some(TAILNET));
+    let target = "http://127.0.0.1:1";
+    std::fs::write(tool.join("tailscale-data/serve.json"), serving(8443, target)).unwrap();
+    // The marker is of a process that runs: this test.
+    let marker = leave_marker(&sandbox, 8443, target, std::process::id());
+
+    let calls = tailscale_calls(&sandbox, &tool);
+    assert!(!calls.contains("--https=8443\toff"), "{calls}");
+    assert!(calls.contains("serve\t--bg\t--https=10000"), "{calls}");
+    assert!(marker.exists(), "the other run still has its marker");
+}
+
 #[test]
 fn tailscale_that_is_not_signed_in_is_left_alone_and_the_run_says_what_to_do() {
     let sandbox = Sandbox::new();

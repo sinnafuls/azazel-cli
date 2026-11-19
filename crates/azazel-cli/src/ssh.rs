@@ -76,7 +76,7 @@ fn carried(cli: &Cli) -> Vec<String> {
     value("--thinking", cli.thinking.as_ref());
     value("--mode", cli.mode.as_ref());
     value("--tier", cli.tier.as_ref());
-    value("--preset", cli.preset.as_ref());
+    value("--profile", cli.profile.as_ref());
     value("--provider", cli.provider.as_ref());
     value("--session", cli.session.as_ref());
     value("--fork", cli.fork.as_ref());

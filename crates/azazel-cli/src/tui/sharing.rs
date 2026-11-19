@@ -144,7 +144,11 @@ impl Tui {
                 match tunnel {
                     Ok(tunnel) => match sharing.set_public_url(&tunnel.url) {
                         Ok(()) => {
+                            let notes = tunnel.notes.clone();
                             sharing.tunnel = Some(*tunnel);
+                            for note in notes {
+                                self.warn(&note);
+                            }
                             self.show_link(access);
                         }
                         Err(why) => self.fail(&format!("/remote: {why}")),

@@ -42,6 +42,7 @@ pub mod models;
 pub mod orchestration;
 pub mod pkg;
 pub mod print;
+pub mod profiles;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod reports;
@@ -354,6 +355,14 @@ async fn run(cli: Cli, extensions: Vec<Box<dyn Extension>>) -> u8 {
         },
         None => (paths, None),
     };
+    // `--profile` before a subcommand is checked too, instead of being ignored.
+    if let Some(name) = cli.profile.as_deref().filter(|_| cli.command.is_some())
+        && let Some(config) = quiet_config(&cli, &paths, trusted)
+        && let Err(e) = profiles::resolve(&config, name)
+    {
+        eprintln!("azazel: --profile: {e}");
+        return print::EXIT_USAGE;
+    }
     let goal = match &cli.command {
         Some(Sub::Init) => {
             let code = init::run(&paths).await;
@@ -753,8 +762,19 @@ pub(crate) fn host_carried(cli: &Cli) -> Vec<String> {
     carried
 }
 
-/// The configuration as this run has it, for commands that open no session. A configuration
-/// that cannot be read is complained about.
+/// The configuration, or nothing when it cannot be read (the command that needs it says so).
+fn quiet_config(cli: &Cli, paths: &Paths, trusted: bool) -> Option<Config> {
+    let overrides = app::config_overrides(cli, paths).ok()?;
+    let options = LoadOptions {
+        trusted,
+        overrides,
+        env: std::env::vars().collect(),
+    };
+    Config::load(paths, &options).ok().map(|loaded| loaded.config)
+}
+
+/// The configuration as this run has it, for commands that open no session: `--profile` applied.
+/// A configuration that cannot be read is complained about.
 fn load_config(cli: &Cli, paths: &Paths, trusted: bool) -> Option<Config> {
     let loaded = app::config_overrides(cli, paths).and_then(|overrides| {
         Config::load(
@@ -768,7 +788,16 @@ fn load_config(cli: &Cli, paths: &Paths, trusted: bool) -> Option<Config> {
         .map_err(Into::into)
     });
     match loaded {
-        Ok(loaded) => Some(loaded.config),
+        Ok(loaded) => {
+            let mut config = loaded.config;
+            if let Some(name) = &cli.profile
+                && let Err(e) = profiles::apply(&mut config, name)
+            {
+                eprintln!("azazel: --profile: {e}");
+                return None;
+            }
+            Some(config)
+        }
         Err(e) => {
             eprintln!("azazel: {e:#}");
             None

@@ -30,7 +30,10 @@ impl Setup {
             overrides,
             env: std::env::vars().collect(),
         };
-        let config = Config::load(&paths, &load).map_err(|e| format!("{e:#}"))?.config;
+        let mut config = Config::load(&paths, &load).map_err(|e| format!("{e:#}"))?.config;
+        if let Some(name) = &cli.profile {
+            crate::profiles::apply(&mut config, name).map_err(|e| format!("--profile: {e}"))?;
+        }
         let providers = crate::models::providers(&config)?;
         let credentials = crate::app::credentials(&paths, trusted).configured(&config.providers);
         Ok(Setup {
@@ -213,7 +216,7 @@ fn report(roles: &Roles, role: &str, json: bool, line: impl Fn(&RoleRow) -> Stri
 }
 
 fn save_preset(place: &Place<'_>, name: &str, json: bool) -> Result<(), Failure> {
-    crate::routing::preset_name(name).map_err(Failure::Usage)?;
+    crate::routing::profile_name(name).map_err(Failure::Usage)?;
     roles::save_preset(place, name).map_err(Failure::Failed)?;
     let saved: Vec<String> = roles::presets(place)
         .remove(name)
