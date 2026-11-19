@@ -944,6 +944,7 @@ impl Backend for Remote {
                     },
                 })
                 .collect(),
+            checked: state.checked,
             // How the other process pays is not part of its state: what it reports as cost
             // is shown, and nothing when it reports none.
             billing: Billing::Metered,

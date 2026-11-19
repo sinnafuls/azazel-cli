@@ -214,7 +214,7 @@ mod tests {
             // What the script set while it loaded: a segment after the facts of the session,
             // and rows above the input that are cut, not wrapped.
             assert!(
-                line(&extras).contains("⚑ goal active · ci passing  "),
+                line(&extras).contains("⚠ unchecked · ci passing  "),
                 "{}",
                 line(&extras)
             );

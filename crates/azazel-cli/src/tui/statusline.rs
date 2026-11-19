@@ -51,6 +51,7 @@ pub(crate) enum Name {
     Agents,
     Goal,
     Todo,
+    Checked,
     Queue,
     Session,
     Time,
@@ -61,7 +62,7 @@ pub(crate) enum Name {
 }
 
 impl Name {
-    pub(crate) const ALL: [Name; 23] = [
+    pub(crate) const ALL: [Name; 24] = [
         Name::Mode,
         Name::Agent,
         Name::Model,
@@ -78,6 +79,7 @@ impl Name {
         Name::Agents,
         Name::Goal,
         Name::Todo,
+        Name::Checked,
         Name::Queue,
         Name::Session,
         Name::Time,
@@ -106,6 +108,7 @@ impl Name {
             Name::Agents => "agents",
             Name::Goal => "goal",
             Name::Todo => "todo",
+            Name::Checked => "checked",
             Name::Queue => "queue",
             Name::Session => "session",
             Name::Time => "time",
@@ -139,6 +142,7 @@ impl Name {
             Name::Agents => "sub-agents at work",
             Name::Goal => "the open goal",
             Name::Todo => "todo items done",
+            Name::Checked => "whether the code was checked since the last change",
             Name::Queue => "messages queued for the agent",
             Name::Session => "the session's name",
             Name::Time => "the time of day",
@@ -167,6 +171,7 @@ impl Name {
             Name::Tier => 40,
             Name::Queue => 38,
             Name::Todo => 35,
+            Name::Checked => 36,
             Name::Extensions => 32,
             Name::Cache => 30,
             Name::Session => 25,
@@ -204,7 +209,7 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
     match preset {
         StatusPreset::Default => (
             &[
-                Mode, Agent, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Extensions,
+                Mode, Agent, Branch, Path, Context, Bar, Rate, Cost, Usage, Agents, Goal, Checked, Extensions,
             ],
             &[Model, Profile, Tier, Thinking],
         ),
@@ -219,7 +224,7 @@ pub(crate) fn preset(preset: StatusPreset) -> (&'static [Name], &'static [Name])
         StatusPreset::Full => (
             &[
                 Mode, Agent, Branch, GitDirty, Path, Context, Bar, Rate, Cost, Usage, Cache, Agents, Goal,
-                Todo, Queue, Extensions,
+                Todo, Checked, Queue, Extensions,
             ],
             &[Session, Account, Model, Profile, Tier, Thinking, Time],
         ),
@@ -468,6 +473,8 @@ pub(super) struct StatusLine<'a> {
     pub goal: Option<&'a str>,
     /// Todo items done, and how many there are.
     pub todo: Option<(usize, usize)>,
+    /// Whether the code was checked since the last change: none while nothing was changed.
+    pub checked: Option<bool>,
     /// Messages waiting for the agent to finish.
     pub queued: usize,
     /// The session's name; empty while it has none.
@@ -665,6 +672,10 @@ impl StatusLine<'_> {
                 let role = if done == total { Role::Success } else { Role::Muted };
                 Segment::new(role, labelled(Glyph::Tasks, &format!("{done}/{total}")))
             }),
+            Name::Checked => self.checked.map(|checked| match checked {
+                true => Segment::new(Role::Success, labelled(Glyph::Success, "checked")),
+                false => Segment::new(Role::Warning, labelled(Glyph::Warning, "unchecked")),
+            }),
             Name::Queue => (self.queued > 0).then(|| {
                 Segment::new(
                     Role::Accent,
@@ -774,6 +785,7 @@ pub(super) fn sample(billing: &Billing) -> StatusLine<'_> {
         agents: 2,
         goal: Some("goal active"),
         todo: Some((2, 5)),
+        checked: Some(false),
         queued: 1,
         session: "fix the build",
         clock: Some((14, 5, 9)),
@@ -824,6 +836,7 @@ mod tests {
             agents: 2,
             goal: Some("goal active, attempt 1"),
             todo: None,
+            checked: None,
             queued: 0,
             session: "",
             clock: None,
@@ -1121,27 +1134,27 @@ mod tests {
         let theme = Theme::dark();
         let full = layout("preset = \"full\"");
         assert_eq!(
-            shown_in(&sample(&METERED), &full, 240, &theme),
+            shown_in(&sample(&METERED), &full, 260, &theme),
             sides(
                 "⏵ accept-edits · build · ⑂ main · ± 3 · ~/src/app · ◫ 42% [━━━╸────] · ↯ 78 tok/s · $0.42 · \
-                 ≋ 87% · ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⏵ 1 queued · ci ok",
+                 ≋ 87% · ⇶ 2 agents · ⚑ goal active · ☑ 2/5 · ⚠ unchecked · ⏵ 1 queued · ci ok",
                 "❖ fix the build · ♙ work · ⬢ anthropic/claude-opus-5-5 · priority · high · ◷ 14:05",
-                240
+                260
             )
         );
         let subscription = Billing::Subscription {
             window: Some(("5h".to_string(), 0.61)),
         };
-        let row = shown_in(&sample(&subscription), &full, 240, &theme);
+        let row = shown_in(&sample(&subscription), &full, 260, &theme);
         assert!(row.contains(" · ↯ 78 tok/s · ◔ 61% 5h · ≋ 87% · "), "{row:?}");
         let ascii = Theme::dark().with_glyphs(GlyphLevel::Ascii);
         assert_eq!(
-            shown_in(&sample(&METERED), &full, 250, &ascii),
+            shown_in(&sample(&METERED), &full, 270, &ascii),
             sides(
                 "> accept-edits | build | git: main | +- 3 | ~/src/app | ctx 42% [===>----] | 78 tok/s | \
-                 $0.42 | cache 87% | 2 agents | goal active | todo 2/5 | > 1 queued | ci ok",
+                 $0.42 | cache 87% | 2 agents | goal active | todo 2/5 | [!] unchecked | > 1 queued | ci ok",
                 "fix the build | as work | anthropic/claude-opus-5-5 | priority | high | 14:05",
-                250
+                270
             )
         );
         // A clean tree, a finished list and an empty queue.
@@ -1151,7 +1164,7 @@ mod tests {
             queued: 0,
             ..sample(&METERED)
         };
-        let row = done.render(&full, None, 240, &theme);
+        let row = done.render(&full, None, 260, &theme);
         assert!(row.contains(&theme.paint(Role::Success, "☑ 5/5")), "{row:?}");
         let row = text::strip_ansi(&row);
         assert!(!row.contains('±') && !row.contains("queued"), "{row:?}");
@@ -1165,6 +1178,66 @@ mod tests {
                 72
             )
         );
+    }
+
+    #[test]
+    fn the_checked_segment_is_silent_until_code_changes_then_warns_and_clears() {
+        let nz = |n| std::num::NonZeroU16::new(n).unwrap();
+        let theme = Theme::dark();
+        let on = layout("left = [\"checked\"]\nright = [\"none\"]");
+        let at = |checked, theme: &Theme| {
+            let line = StatusLine {
+                checked,
+                ..full(&METERED)
+            };
+            (shown_in(&line, &on, 40, theme), line.render(&on, None, 40, theme))
+        };
+        assert_eq!(at(None, &theme).0.trim(), "");
+        assert_eq!(at(Some(false), &theme).0.trim(), "⚠ unchecked");
+        assert_eq!(at(Some(true), &theme).0.trim(), "✔ checked");
+
+        // Every glyph set has it.
+        let ascii = Theme::dark().with_glyphs(GlyphLevel::Ascii);
+        assert_eq!(at(Some(false), &ascii).0.trim(), "[!] unchecked");
+        assert_eq!(at(Some(true), &ascii).0.trim(), "[+] checked");
+        let nerd = Theme::dark().with_glyphs(GlyphLevel::Nerd);
+        assert_eq!(at(Some(true), &nerd).0.trim(), "\u{f00c} checked");
+
+        // As a terminal shows it: the text on the row, in the colour of its role.
+        let colour_of = |theme: &Theme, role| {
+            let mut sample = vt100::Parser::new(nz(1), nz(10), 0);
+            sample.process(format!("{}x", theme.fg(role)).as_bytes());
+            sample.screen().cell(0, 0).map(|cell| cell.fgcolor())
+        };
+        for (level, checked, text, role) in [
+            (GlyphLevel::Ascii, false, "[!] unchecked", Role::Warning),
+            (GlyphLevel::Ascii, true, "[+] checked", Role::Success),
+            (GlyphLevel::Unicode, false, "⚠ unchecked", Role::Warning),
+            (GlyphLevel::Unicode, true, "✔ checked", Role::Success),
+        ] {
+            let theme = Theme::dark().with_glyphs(level);
+            let mut terminal = vt100::Parser::new(nz(1), nz(40), 0);
+            terminal.process(at(Some(checked), &theme).1.as_bytes());
+            let screen = terminal.screen();
+            assert!(screen.contents().starts_with(text), "{:?}", screen.contents());
+            let last = u16::try_from(text.chars().count() - 1).unwrap();
+            assert_eq!(
+                screen.cell(0, last).map(|cell| cell.fgcolor()),
+                colour_of(&theme, role),
+                "{text}"
+            );
+        }
+        assert_ne!(colour_of(&theme, Role::Warning), colour_of(&theme, Role::Success));
+
+        // It is on the line of the default and the full preset.
+        for preset in ["default", "full"] {
+            let line = StatusLine {
+                checked: Some(false),
+                ..full(&METERED)
+            };
+            let table = format!("preset = \"{preset}\"");
+            assert!(shown_in(&line, &layout(&table), 200, &theme).contains("⚠ unchecked"));
+        }
     }
 
     #[test]
@@ -1212,7 +1285,7 @@ mod tests {
             found,
             [
                 "statusline.segments.clock: there is no segment `clock` (segments: mode, agent, model, profile, thinking, \
-                 tier, path, branch, context, bar, rate, cost, usage, agents, goal, todo, queue, session, \
+                 tier, path, branch, context, bar, rate, cost, usage, agents, goal, todo, checked, queue, session, \
                  time, git_dirty, account, cache, extensions)",
                 "statusline.segments.mode: there is no option `max` (options: icon, priority)",
                 "statusline.segments.mode: `priority` is a whole number from 0 to 100",

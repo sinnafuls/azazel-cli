@@ -982,6 +982,11 @@ pub struct State {
     /// How long the provider keeps the cache, in seconds, with `cache_left_secs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_ttl_secs: Option<u64>,
+    /// Whether the code was checked since it was last changed: absent while nothing was changed,
+    /// `false` after a change to a file other than prose, `true` once a build, test or lint ran after
+    /// it. Counts the changes and checks of every agent of the session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
 }
 
 /// A profile: a named set of role chains.

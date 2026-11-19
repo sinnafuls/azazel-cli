@@ -100,6 +100,8 @@ pub(crate) struct Facts {
     /// The open goal, in a few words.
     pub goal: Option<String>,
     pub todo: Vec<TodoItem>,
+    /// Whether the code was checked since it was last changed; none while nothing was changed.
+    pub checked: Option<bool>,
     /// How the lead's model is paid for.
     pub billing: Billing,
     /// What a run is waiting for while its account is out of allowance, and the Unix seconds
@@ -678,6 +680,9 @@ impl Backend for Local {
                 .get::<TodoStore>()
                 .map(|store| store.get(&self.active.lead.id))
                 .unwrap_or_default(),
+            checked: services
+                .get::<azazel_tools::guards::Verification>()
+                .and_then(|verified| verified.state()),
             billing,
             waiting: services
                 .get::<crate::resets::Waits>()

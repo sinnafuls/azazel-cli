@@ -11,10 +11,10 @@ use azazel_ai::Block;
 use azazel_core::config::CheckReport;
 use azazel_core::process::Shell;
 use azazel_core::runaway::Runaway;
-use azazel_core::{Event, ExtCtx, Outcome, Registry};
+use azazel_core::{Event, ExtCtx, Outcome, Registry, StartSource};
 use azazel_tools::CoreToolsExt;
 use azazel_tools::check::ChecksExt;
-use azazel_tools::guards::GuardsExt;
+use azazel_tools::guards::{GuardsExt, Verification};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
@@ -402,4 +402,71 @@ async fn each_guard_is_off_when_its_setting_is() {
         assert_eq!(result, "out\nexit code: 1");
     }
     assert!(done_only.lead_stops().await.is_some());
+}
+
+#[tokio::test]
+async fn the_session_knows_whether_its_changes_were_checked_whichever_guards_are_on() {
+    for options in [
+        guards(),
+        GuardsExt {
+            done_check: false,
+            stuck_after: 0,
+            runaway: false,
+            verify: vec!["tools/ok --all".to_string()],
+        },
+    ] {
+        let bench = bench(options);
+        let lead = agent("lead", 0);
+        let state = || bench.registry.services.get::<Verification>().unwrap().state();
+        bench.prompt().await;
+        // Nothing is said until code is changed; a check of nothing changed, or prose, adds none.
+        assert_eq!(state(), None);
+        bench.shell(&lead, "c0", "cargo test", 0).await;
+        bench.write("README.md", "# readme\n").await;
+        assert_eq!(state(), None);
+
+        bench.write("src/a.rs", "fn a() {}\n").await;
+        assert_eq!(state(), Some(false));
+        // Looking around is not a check.
+        bench.shell(&lead, "c1", "git status", 0).await;
+        assert_eq!(state(), Some(false));
+        // A test run counts, passing or failing, and so does the project's own command.
+        bench.shell(&lead, "c2", "cargo test", 1).await;
+        assert_eq!(state(), Some(true));
+        bench.write("src/a.rs", "fn a() { }\n").await;
+        assert_eq!(state(), Some(false));
+        bench.shell(&lead, "c3", "tools/ok --all", 0).await;
+        assert_eq!(state(), Some(true));
+
+        // What an agent the lead started changes or checks is the session's.
+        let coder = agent("coder-1", 1);
+        bench.changed(&coder, "src/b.rs").await;
+        assert_eq!(state(), Some(false));
+        bench.shell(&coder, "c4", "pytest -q", 0).await;
+        assert_eq!(state(), Some(true));
+
+        // It lasts across prompts, and a claimed goal counts as checked.
+        bench.prompt().await;
+        assert_eq!(state(), Some(true));
+        bench.changed(&lead, "src/c.rs").await;
+        bench.prompt().await;
+        assert_eq!(state(), Some(false));
+        bench
+            .emit(Event::ToolResult {
+                agent: lead.clone(),
+                call_id: "g".into(),
+                tool: "goal_done".into(),
+                output: ToolOutput::text("verified"),
+            })
+            .await;
+        assert_eq!(state(), Some(true));
+
+        // A session that starts has changed nothing.
+        bench
+            .emit(Event::SessionStart {
+                source: StartSource::Startup,
+            })
+            .await;
+        assert_eq!(state(), None);
+    }
 }

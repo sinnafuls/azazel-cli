@@ -315,6 +315,9 @@ pub(crate) fn state_of(
             }),
         cache_left_secs,
         cache_ttl_secs,
+        checked: services
+            .get::<azazel_tools::guards::Verification>()
+            .and_then(|verified| verified.state()),
     }
 }
 

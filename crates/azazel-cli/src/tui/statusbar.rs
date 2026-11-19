@@ -197,6 +197,7 @@ impl Tui {
             agents: self.active_agents(),
             goal: facts.goal.as_deref(),
             todo: Some((done, facts.todo.len())),
+            checked: facts.checked,
             queued: self.queued.len(),
             session: &session,
             clock,

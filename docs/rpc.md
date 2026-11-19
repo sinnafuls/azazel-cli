@@ -128,6 +128,7 @@ The session commands report the saved sessions and the open one, change which se
 | `roles` | The model each role (`default`, `smol`, ...) resolves to first |
 | `interrupted` | Present when the session's last run was cut short by the end of a process and `continue_run` can go on with it: where it stopped, in a few words (`stopped while shell ran`) |
 | `show_thinking` | Whether the terminal shows the model's thinking right now: the `tui.show_thinking` setting as the terminal's thinking key (`Ctrl+T`) left it. A process without a terminal reports the setting. The web page follows it unless its own setting says otherwise |
+| `checked` | Whether the code was checked since it was last changed: absent until a file other than prose is changed, `false` after a change, `true` once a build, test or lint command ran after it. Changes and checks of every agent of the session count |
 | `cache_left_secs`, `cache_ttl_secs` | Seconds until the provider drops the lead's prompt cache unless a request reads it first (`0`: it has), and how long it keeps it. Absent while the lead works and when the cache is too small to matter. A client that shows a clock counts down from when the answer arrived |
 
 ### Roles

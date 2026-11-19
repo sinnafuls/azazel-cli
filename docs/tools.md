@@ -447,7 +447,7 @@ return table.concat(counts, "\n")
 - Limits: 120 seconds of the script's own running time (waiting for a tool, an agent or a model does not count), 50 calls of tools, agents and `classify` together, 64 KB of result. A longer result is cut and kept whole as `artifact://<call id>-code`.
 - `run_code` itself, `task` and the other team tools cannot be called through `tools`; a script starts agents with `agents.run`.
 
-The tool's description lists the callable tools with their arguments, within about 3000 tokens; tools that do not fit are named, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
+The tool's description lists the names of the callable tools only, within about 2000 characters, because the agent already has every tool's schema in its tool list; a script gets a tool's arguments with `tools.describe(name)`, and every tool the agent has is callable by name. The tool is there when azazel is built with the `lua` feature (the default), also with `--no-extensions`.
 
 Beside `tools`, `print` and `json` a script has these:
 

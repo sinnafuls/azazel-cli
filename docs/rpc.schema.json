@@ -2944,6 +2944,13 @@
           "format": "uint64",
           "minimum": 0,
           "description": "How long the provider keeps the cache, in seconds, with `cache_left_secs`."
+        },
+        "checked": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "Whether the code was checked since it was last changed: absent while nothing was changed,\n`false` after a change to a file other than prose, `true` once a build, test or lint ran after\nit. Counts the changes and checks of every agent of the session."
         }
       },
       "required": [

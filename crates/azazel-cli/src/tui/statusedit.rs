@@ -368,10 +368,14 @@ mod tests {
         assert_eq!(rows[5], "  ▣ agent       left   the primary agent the lead is");
         assert_eq!(
             rows[15],
+            "  ▣ checked     left   whether the code was checked since the last change"
+        );
+        assert_eq!(
+            rows[16],
             "  ▣ extensions  left   what extensions show with azazel.status"
         );
-        assert_eq!(rows[16], "  ▣ model       right  the model that answers");
-        assert_eq!(rows[20], "  □ todo               todo items done");
+        assert_eq!(rows[17], "  ▣ model       right  the model that answers");
+        assert_eq!(rows[21], "  □ todo               todo items done");
         // Every segment and the two choices, whatever is on the line.
         assert_eq!(rows.len(), 2 + 2 + Name::ALL.len());
         // A small box keeps the list.

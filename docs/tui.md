@@ -409,6 +409,7 @@ branch outside a repository, no cost on a subscription) is left out.
 | `agents` | sub-agents are active | `⇶ 2 agents`: how many are queued, working or waiting for approval |
 | `goal` | a goal is open | `⚑ goal …`: the goal's state and the attempt number; see [goals](goals.md) |
 | `todo` | the lead has a todo list | `☑ 2/5`: items done and items in all; in the colour of success once all are done |
+| `checked` | a file other than prose was changed in this session | `⚠ unchecked` in the warning colour after a `write`, `edit` or `patch` by the lead or any sub-agent; `✔ checked` in the colour of success once a build, test or lint command ran after the last change. It uses the same idea of a check as the [done-check](tools.md) guard (and `verify.commands`), and spans prompts: a new change makes it `unchecked` again. A passing goal check counts as a check. Nothing until the first change; a new or resumed session starts over |
 | `queue` | messages wait for the agent to finish | `⏵ 1 queued`; see [queued messages](#queued-messages-and-stashed-drafts) |
 | `session` | the session has a name | `❖ fix the build`, cut to 24 columns |
 | `account` | the lead's provider is used with an account of `auth.json` | `♙ work`: the label of the sign-in or stored key that requests go out with. It follows the account when work [moves to another one](models-and-logins.md#several-accounts) |
@@ -426,11 +427,11 @@ The symbols follow [`tui.glyphs`](#symbols): at the `ascii` level the line is pl
 
 | Preset | Left | Right |
 |---|---|---|
-| `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `extensions` | `model`, `profile`, `tier`, `thinking` |
+| `default` | `mode`, `agent`, `branch`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `agents`, `goal`, `checked`, `extensions` | `model`, `profile`, `tier`, `thinking` |
 | `minimal` | `mode`, `path`, `agents` | `model` |
 | `powerline` | `mode`, `branch`, `git_dirty`, `path`, `context`, `agents`, `extensions` | `cost`, `usage`, `thinking`, `model` |
 | `lean` | `mode`, `agent`, `branch`, `path`, `rate` | `model`, `thinking`, `context` |
-| `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `queue`, `extensions` | `session`, `account`, `model`, `profile`, `tier`, `thinking`, `time` |
+| `full` | `mode`, `agent`, `branch`, `git_dirty`, `path`, `context`, `bar`, `rate`, `cost`, `usage`, `cache`, `agents`, `goal`, `todo`, `checked`, `queue`, `extensions` | `session`, `account`, `model`, `profile`, `tier`, `thinking`, `time` |
 
 `statusline.left` and `statusline.right` name the segments of a side yourself; an empty list takes the
 preset's, less what the other list took, and `["none"]` is a side with nothing on it. A segment stands once: named
@@ -474,7 +475,7 @@ at its default.
 
 **A narrow terminal.** When the line does not fit, whole segments leave it, the one with the lowest priority
 first: `bar` (5), `profile` (10), `time` (15), `account` (20), `session` (25), `cache` (30), `extensions` (32), `todo` (35),
-`queue` (38), `tier` (40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70),
+`checked` (36), `queue` (38), `tier` (40), `goal` (45), `agents` (50), `cost` and `usage` (55), `rate` (60), `thinking` (70),
 `context` (75), `path` (80), `git_dirty` (84), `branch` (85), `agent` (90), `model` (95), `mode` (100). The segment with the
 highest priority of each side stays; only then is the right side shortened, and after that left out. The texts
 of `extensions` leave one by one, the last first.

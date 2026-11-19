@@ -329,6 +329,38 @@ fn is_prose(path: &Path) -> bool {
         .is_some_and(|extension| PROSE.contains(&extension.to_ascii_lowercase().as_str()))
 }
 
+/// Whether the code the session changed has been checked since: `None` until a file other than
+/// prose is changed, then `Some(false)` until a check runs, and `Some(true)` after it, until the
+/// next change. Registered as a service for the status line and the RPC state; unlike the
+/// done-check it spans prompts, and it counts the changes and checks of every agent.
+#[derive(Default)]
+pub struct Verification(Mutex<Option<bool>>);
+
+impl Verification {
+    /// `None` while nothing has been changed, else whether a check ran after the last change.
+    pub fn state(&self) -> Option<bool> {
+        *locked(&self.0)
+    }
+
+    /// A file was changed.
+    fn edited(&self) {
+        *locked(&self.0) = Some(false);
+    }
+
+    /// A check ran. It says nothing about code that was never changed.
+    fn checked(&self) {
+        let mut state = locked(&self.0);
+        if state.is_some() {
+            *state = Some(true);
+        }
+    }
+
+    /// A session starts: nothing has been changed in it.
+    fn reset(&self) {
+        *locked(&self.0) = None;
+    }
+}
+
 /// What the guards know of the prompt being worked on.
 #[derive(Default)]
 struct Prompt {
@@ -347,6 +379,7 @@ struct Guards {
     stuck_after: u32,
     verify: Vec<String>,
     prompt: Mutex<Prompt>,
+    verified: Arc<Verification>,
 }
 
 impl Guards {
@@ -363,6 +396,10 @@ impl Guards {
         let command = prompt.calls.remove(&(agent.to_string(), call_id.to_string()))?;
         if is_check(&command, &self.verify) {
             prompt.unverified.clear();
+            self.verified.checked();
+        }
+        if self.stuck_after == 0 {
+            return None;
         }
         let key = (agent.to_string(), command);
         if !failed(is_error, details) {
@@ -371,7 +408,7 @@ impl Guards {
         }
         let count = prompt.failures.entry(key).or_insert(0);
         *count += 1;
-        (self.stuck_after > 0 && count.is_multiple_of(self.stuck_after)).then(|| {
+        count.is_multiple_of(self.stuck_after).then(|| {
             format!(
                 "[stuck] this command has failed {count} times in a row in this turn. Running it again \
                  will fail the same way: form a new hypothesis about the cause and test that before \
@@ -426,6 +463,7 @@ impl EventHandler for Guards {
     async fn handle(&self, event: &mut Event, ctx: &ExtCtx) -> Outcome {
         match event {
             Event::UserPrompt { .. } => *locked(&self.prompt) = Prompt::default(),
+            Event::SessionStart { .. } => self.verified.reset(),
             Event::ToolCall {
                 agent,
                 call_id,
@@ -454,8 +492,10 @@ impl EventHandler for Guards {
             // it, whatever they said.
             Event::ToolResult { tool, .. } if tool == "goal_done" => {
                 locked(&self.prompt).unverified.clear();
+                self.verified.checked();
             }
             Event::FileChanged { path, .. } if !is_prose(path) => {
+                self.verified.edited();
                 let mut prompt = locked(&self.prompt);
                 if !prompt.unverified.contains(path) {
                     prompt.unverified.push(path.clone());
@@ -498,16 +538,18 @@ impl Extension for GuardsExt {
         if self.runaway {
             r.service(Arc::new(Runaway));
         }
-        if !self.done_check && self.stuck_after == 0 {
-            return Ok(());
-        }
+        // The handler always runs: the [`Verification`] it keeps is wanted whichever guards are on.
+        let verified = Arc::new(Verification::default());
+        r.service(verified.clone());
         let guards = Arc::new(Guards {
             done_check: self.done_check,
             stuck_after: self.stuck_after,
             verify: self.verify.clone(),
             prompt: Mutex::default(),
+            verified,
         });
         for kind in [
+            EventKind::SessionStart,
             EventKind::UserPrompt,
             EventKind::ToolCall,
             EventKind::ToolResult,

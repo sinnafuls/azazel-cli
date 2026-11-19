@@ -986,6 +986,12 @@ export interface State {
 	 * How long the provider keeps the cache, in seconds, with `cache_left_secs`.
 	 */
 	cache_ttl_secs?: number | null;
+	/**
+	 * Whether the code was checked since it was last changed: absent while nothing was changed,
+	 * `false` after a change to a file other than prose, `true` once a build, test or lint ran after
+	 * it. Counts the changes and checks of every agent of the session.
+	 */
+	checked?: boolean | null;
 }
 /**
  * Totals of the lead.
