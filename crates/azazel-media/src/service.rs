@@ -2,7 +2,7 @@
 //! generated files go.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 use azazel_ai::providers::presets;
@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 use tokio_util::sync::CancellationToken;
 
 use crate::backend::{MediaBackend, MediaFile, MediaKind, MediaRequest};
-use crate::codex::CodexImages;
+use crate::codex::{CodexImages, CodexOff};
 use crate::fal::{FAL_URL, Fal, POLL_INTERVAL};
 use crate::google::GoogleImages;
 use crate::openai::OpenAiImages;
@@ -29,8 +29,9 @@ enum Entry {
     Provider {
         provider: Box<ProviderConfig>,
         credentials: Arc<Credentials>,
-        /// Why `openai-codex` is switched off, kept here because a backend is made for each call.
-        codex_off: Arc<OnceLock<String>>,
+        /// Why `openai-codex` is switched off, per account, kept here because a backend is made
+        /// for each call.
+        codex_off: CodexOff,
     },
 }
 
@@ -112,7 +113,7 @@ impl Media {
                 entries.push(Entry::Provider {
                     provider: Box::new(provider),
                     credentials: credentials.clone(),
-                    codex_off: Arc::default(),
+                    codex_off: CodexOff::default(),
                 });
             }
         }

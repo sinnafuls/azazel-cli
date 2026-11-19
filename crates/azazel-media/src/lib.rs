@@ -11,7 +11,7 @@ pub mod sprite;
 pub mod tools;
 
 pub use backend::{MediaBackend, MediaError, MediaFile, MediaKind, MediaRequest};
-pub use codex::CodexImages;
+pub use codex::{CodexImages, CodexOff};
 pub use ext::MediaExt;
 pub use fal::Fal;
 pub use google::GoogleImages;

@@ -294,23 +294,37 @@ pub(crate) fn error_text(body: &str) -> String {
     }
 }
 
-/// Sends `request` and returns the JSON body of a successful response.
-pub(crate) async fn fetch_json(backend: &str, request: reqwest::RequestBuilder) -> Result<Value, MediaError> {
+/// Sends `request` and returns the status and body of the answer, whatever the status.
+pub(crate) async fn send(
+    backend: &str,
+    request: reqwest::RequestBuilder,
+) -> Result<(u16, String), MediaError> {
     let offline = |error: reqwest::Error| {
         MediaError::Network(format!("{backend} could not be reached: {}", describe(error)))
     };
     let response = request.send().await.map_err(offline)?;
-    let status = response.status();
+    let status = response.status().as_u16();
     let body = response.text().await.map_err(offline)?;
-    if !status.is_success() {
+    Ok((status, body))
+}
+
+/// The JSON body of a successful answer, or the error a failed one is.
+pub(crate) fn json_reply(backend: &str, status: u16, body: &str) -> Result<Value, MediaError> {
+    if !(200..300).contains(&status) {
         return Err(MediaError::Api {
             backend: backend.to_string(),
-            status: status.as_u16(),
-            message: error_text(&body),
+            status,
+            message: error_text(body),
         });
     }
-    serde_json::from_str(&body)
+    serde_json::from_str(body)
         .map_err(|e| MediaError::Failed(format!("{backend} sent a response that could not be read: {e}")))
+}
+
+/// Sends `request` and returns the JSON body of a successful response.
+pub(crate) async fn fetch_json(backend: &str, request: reqwest::RequestBuilder) -> Result<Value, MediaError> {
+    let (status, body) = send(backend, request).await?;
+    json_reply(backend, status, &body)
 }
 
 /// Fetches a generated file from where the service left it, without credentials: file hosts are

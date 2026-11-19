@@ -96,6 +96,11 @@ pub struct RouteState {
     direct: bool,
     /// The virtual model the latest stream was dispatched by.
     via: Option<ModelRef>,
+    /// The request is the lead's and the router was told the application can move the lead to
+    /// another profile when its allowance runs out ([`Router::with_limit_hand_over`]).
+    hand_over: bool,
+    /// Another model of the chain is left to try after the one being asked.
+    later_model: bool,
     events: Option<UnboundedSender<RouteEvent>>,
 }
 
@@ -174,6 +179,9 @@ pub struct Router {
     usage: Option<Arc<dyn UsageSink>>,
     /// Which providers are used through a subscription login, by id.
     logins: Option<LoginCheck>,
+    /// The application can move the lead to another profile when its allowance runs out, so the
+    /// lead's requests give up a long rate limit at once ([`Router::with_limit_hand_over`]).
+    limit_hand_over: bool,
 }
 
 /// Whether a provider, by id, is used through a subscription login.
@@ -217,7 +225,18 @@ impl Router {
             virtuals: Arc::default(),
             usage: None,
             logins: None,
+            limit_hand_over: false,
         }
+    }
+
+    /// Tells the router that the application moves the lead to another profile when its
+    /// allowance runs out (`[profiles] on_limit`). The lead's requests then give up a 429 that
+    /// asks for more than a minute at once, so that the application can do that, instead of
+    /// waiting it out on the same model. Other agents' requests are not affected: only the lead
+    /// is moved.
+    pub fn with_limit_hand_over(mut self) -> Self {
+        self.limit_hand_over = true;
+        self
     }
 
     /// Tells the router which providers are used through a subscription login.
@@ -461,6 +480,8 @@ impl Router {
             return Err(AiError::InvalidRequest("no model configured".to_string()));
         }
         state.via = None;
+        state.hand_over =
+            self.limit_hand_over && req.origin.as_ref().is_some_and(|origin| origin.agent == "lead");
         if let Some(delay) = state.wait.take() {
             tokio::select! {
                 _ = cancel.cancelled() => return Err(AiError::Aborted),
@@ -480,7 +501,9 @@ impl Router {
         let ready: Vec<&ModelRef> = open.iter().copied().filter(|m| !self.in_cooldown(m)).collect();
         let candidates = if ready.is_empty() { open } else { ready };
 
-        for model in candidates {
+        let count = candidates.len();
+        for (index, model) in candidates.into_iter().enumerate() {
+            state.later_model = index + 1 < count;
             if let Some((from, error)) = state.gave_up.take() {
                 state.emit(RouteEvent::Fallback {
                     from,
@@ -775,9 +798,14 @@ impl Router {
             return None;
         }
         // A wait of more than a minute is a used-up allowance, not throttling: asking again
-        // after the capped backoff would only fail again, so the model is out for this request
-        // and the error reaches whoever can move to another provider.
-        if matches!(error, AiError::RateLimit { .. }) && blocked_until(error).is_some() {
+        // after the capped backoff would only fail again, so when something else can take the
+        // request (a later model of the chain, or the application moving the lead to another
+        // profile) the model is out for this request. Otherwise there is nowhere to go, and the
+        // request waits at the capped delay, as it would for any other rate limit.
+        if matches!(error, AiError::RateLimit { .. })
+            && blocked_until(error).is_some()
+            && (state.later_model || state.hand_over)
+        {
             state.give_up(model, self.policy.max_attempts);
             return None;
         }
@@ -1181,22 +1209,135 @@ mod tests {
         assert_eq!(r.thinking(&chain(&["mock/b"]), None), ThinkingLevel::Off);
     }
 
-    #[tokio::test]
-    async fn a_rate_limit_that_asks_for_hours_is_not_retried_in_place() {
+    fn waits(secs: u64) -> MockStep {
+        MockStep::fail(AiError::RateLimit {
+            retry_after: Some(Duration::from_secs(secs)),
+        })
+    }
+
+    fn lead_request() -> Request {
+        Request {
+            origin: Some(RequestOrigin::purpose("s", "lead")),
+            ..Request::default()
+        }
+    }
+
+    // The tests below run on a paused clock: a wait of a minute passes at once.
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limit_of_a_minute_is_retried_in_place() {
         let mock = Arc::new(MockProvider::new());
-        mock.push(
-            "a",
-            MockStep::fail(AiError::RateLimit {
-                retry_after: Some(Duration::from_secs(7200)),
-            }),
+        mock.push("a", waits(60));
+        mock.push("a", MockStep::text("again"));
+        let r = router(mock.clone(), &[]).with_limit_hand_over();
+        let (_, stream) = r
+            .stream(&chain(&["mock/a"]), &lead_request(), CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "again");
+        assert_eq!(mock.requests_for("a").len(), 2);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_longer_rate_limit_with_nowhere_to_go_is_retried_at_the_capped_delay() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", waits(61));
+        mock.push("a", waits(7200));
+        mock.push("a", MockStep::text("back"));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let r = router(mock.clone(), &[]);
+        let mut state = RouteState::with_events(tx);
+        let started = tokio::time::Instant::now();
+        let (_, stream) = r
+            .stream_with(
+                &chain(&["mock/a"]),
+                &Request::default(),
+                CancellationToken::new(),
+                &mut state,
+            )
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "back");
+        assert_eq!(mock.requests_for("a").len(), 3);
+        // Neither wait is slept for longer than the cap.
+        assert!(
+            started.elapsed() < Duration::from_secs(125),
+            "{:?}",
+            started.elapsed()
         );
+        assert!(started.elapsed() >= Duration::from_secs(120));
+        let delays: Vec<Duration> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                RouteEvent::Retry { delay, .. } => Some(delay),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(delays, [MAX_DELAY, MAX_DELAY]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_single_model_that_keeps_asking_for_hours_fails_after_its_attempts() {
+        let mock = Arc::new(MockProvider::new());
+        for _ in 0..3 {
+            mock.push("a", waits(7200));
+        }
         let r = router(mock.clone(), &[]);
         let result = r
             .stream(&chain(&["mock/a"]), &Request::default(), CancellationToken::new())
             .await;
-        // The error reaches the caller at once, which may move to another provider.
+        assert!(matches!(result, Err(AiError::RateLimit { .. })));
+        assert_eq!(mock.requests_for("a").len(), 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_rate_limit_that_asks_for_hours_hands_the_request_to_the_next_model() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", waits(7200));
+        mock.push("b", MockStep::text("from b"));
+        let r = router(mock.clone(), &[]);
+        let started = tokio::time::Instant::now();
+        let (model, stream) = r
+            .stream(
+                &chain(&["mock/a", "mock/b"]),
+                &Request::default(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(model.model, "b");
+        assert_eq!(final_text(stream).await, "from b");
+        assert_eq!(mock.requests_for("a").len(), 1);
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_lead_gives_up_a_long_rate_limit_at_once_when_the_application_can_move_it() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", waits(7200));
+        let r = router(mock.clone(), &[]).with_limit_hand_over();
+        let result = r
+            .stream(&chain(&["mock/a"]), &lead_request(), CancellationToken::new())
+            .await;
         assert!(matches!(result, Err(AiError::RateLimit { .. })));
         assert_eq!(mock.requests_for("a").len(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_sub_agent_waits_out_a_long_rate_limit_even_when_the_lead_can_be_moved() {
+        let mock = Arc::new(MockProvider::new());
+        mock.push("a", waits(7200));
+        mock.push("a", MockStep::text("waited"));
+        let r = router(mock.clone(), &[]).with_limit_hand_over();
+        let request = Request {
+            origin: Some(RequestOrigin::purpose("s", "agent-1")),
+            ..Request::default()
+        };
+        let (_, stream) = r
+            .stream(&chain(&["mock/a"]), &request, CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(final_text(stream).await, "waited");
+        assert_eq!(mock.requests_for("a").len(), 2);
     }
 
     #[tokio::test]

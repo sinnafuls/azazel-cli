@@ -42,6 +42,8 @@ GitHub are its section here.
 - Starting azazel and leaving without sending anything no longer leaves an empty session in `/resume`; a session with no message is listed only when it is named or pinned.
 - Saving a setting no longer replaces a symlinked `config.toml` with a plain file, keeps the file's permissions and flushes it to disk; two saves at once no longer lose one of them.
 - A profile changed on the Profiles page is what a usage limit switches to, and what `on_reset = "auto"` goes back to, straight away instead of after a restart; editing one of its roles keeps the comments on the others, and a profile still stored as `[presets.<name>]` moves to `[profiles.<name>]`.
+- A rate limit that asks for more than a minute is waited out on the same model (at the capped delay) when nothing else can take the request; it is given up at once only when another account or model can take it, or when `[profiles] on_limit` can move the lead. Sub-agents always wait it out.
+- `openai-codex` image generation is switched off per ChatGPT account, and only by a 404, 405 or 501, or by an error that names the plan; a passing or proxy 403 no longer turns it off for the session.
 - `azazel remote`: the Send button sends again; since 0.15.0 only Enter did, on phones and desktop alike.
 - `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.

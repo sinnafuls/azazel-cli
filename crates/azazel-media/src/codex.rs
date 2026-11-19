@@ -4,10 +4,13 @@
 //!
 //! OpenAI documents image generation for ChatGPT plans but not these endpoints; the request is
 //! the OpenAI Images API's, as the Codex client sends it. So the backend checks what it is told:
-//! a reply that says the endpoint or the plan is not there switches it off for the rest of the
-//! session, with a message that says so, and no later call makes a request.
+//! a reply that says the endpoint or the plan is not there switches it off for that account for
+//! the rest of the session, with a message that says so, and no later call of that account makes
+//! a request. A refusal that may be passing (a 403 that is not the backend's own, such as a
+//! proxy's page, or one that does not name the plan) is reported and switches nothing off.
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
 use azazel_ai::Auth;
@@ -16,7 +19,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::backend::{
     MediaBackend, MediaError, MediaFile, MediaKind, MediaRequest, REQUEST_TIMEOUT, clip, data_url,
-    decode_file, fetch_json, until_cancelled,
+    decode_file, json_reply, send, until_cancelled,
 };
 use crate::openai::size;
 
@@ -33,14 +36,38 @@ const NOT_OFFERED: &str =
 const NOT_ON_PLAN: &str =
     "image generation is not available to this ChatGPT plan (it needs a paid plan; Free has none)";
 
+/// Why the backend is off, by ChatGPT account id. Shared by the backends made for one provider,
+/// because the service builds a new one for each call (a login's token is renewed in between);
+/// keyed by account, so that signing in to another account gives the backend a new chance.
+#[derive(Clone, Default)]
+pub struct CodexOff(Arc<Mutex<HashMap<String, String>>>);
+
+impl CodexOff {
+    fn get(&self, account: &str) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(account)
+            .cloned()
+    }
+
+    /// Records `why` for `account` unless an answer got there first; returns what is recorded.
+    fn set(&self, account: &str, why: &str) -> String {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(account.to_string())
+            .or_insert_with(|| why.to_string())
+            .clone()
+    }
+}
+
 pub struct CodexImages {
     base_url: String,
     auth: Auth,
     headers: Vec<(String, String)>,
     client: reqwest::Client,
-    /// Why the backend is off. Shared by the backends made for one provider, because the service
-    /// builds a new one for each call (a login's token is renewed in between).
-    disabled: Arc<OnceLock<String>>,
+    disabled: CodexOff,
 }
 
 impl CodexImages {
@@ -52,19 +79,28 @@ impl CodexImages {
             auth,
             headers,
             client: azazel_ai::tls::client(),
-            disabled: Arc::new(OnceLock::new()),
+            disabled: CodexOff::default(),
         }
     }
 
-    /// Makes this backend share its off switch with others made for the same login.
-    pub(crate) fn sharing(mut self, disabled: Arc<OnceLock<String>>) -> Self {
+    /// Makes this backend share its off switch with others made for the same provider.
+    pub(crate) fn sharing(mut self, disabled: CodexOff) -> Self {
         self.disabled = disabled;
         self
     }
 
+    /// The ChatGPT account the login belongs to: the key of the off switch. A login that names
+    /// none counts as one account.
+    fn account(&self) -> &str {
+        self.headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("chatgpt-account-id"))
+            .map_or("", |(_, value)| value.as_str())
+    }
+
     fn refuse_when_disabled(&self) -> Result<(), MediaError> {
-        match self.disabled.get() {
-            Some(message) => Err(MediaError::Unsupported(message.clone())),
+        match self.disabled.get(self.account()) {
+            Some(message) => Err(MediaError::Unsupported(message)),
             None => Ok(()),
         }
     }
@@ -111,15 +147,23 @@ impl CodexImages {
         for (name, value) in &self.headers {
             request = request.header(name, value);
         }
-        let reply = match fetch_json(ID, request).await {
-            Ok(reply) => reply,
-            Err(MediaError::Api { status, message, .. })
-                if let Some(why) = self.switch_off(status, &message) =>
-            {
-                return Err(MediaError::Unsupported(why));
-            }
-            Err(error) => return Err(error),
-        };
+        let (status, body) = send(ID, request).await?;
+        if let Some(why) = self.switch_off(status, &body) {
+            return Err(MediaError::Unsupported(why));
+        }
+        if status == 403 && !is_json(&body) {
+            // Not the backend's own answer, so it says nothing about the endpoint or the plan.
+            return Err(MediaError::Api {
+                backend: ID.to_string(),
+                status,
+                message: format!(
+                    "the answer is not from the ChatGPT backend's API (a proxy or network filter?); \
+                     image generation stays on, so try again: {}",
+                    clip(body.trim(), 200)
+                ),
+            });
+        }
+        let reply = json_reply(ID, status, &body)?;
 
         let stated = reply["output_format"]
             .as_str()
@@ -138,22 +182,58 @@ impl CodexImages {
         Ok(files)
     }
 
-    /// Switches the backend off when `status` and `message` say it is not offered, and returns
-    /// the message to give. A 429 is a usage limit, which passes.
-    fn switch_off(&self, status: u16, message: &str) -> Option<String> {
-        let lower = message.to_ascii_lowercase();
-        let names_plan = ["plan", "entitle", "subscription", "upgrade", "free tier"]
-            .iter()
-            .any(|word| lower.contains(word));
+    /// Switches the backend off for this account when `status` and `body` say it is not
+    /// offered, and returns the message to give. A 429 is a usage limit, and a 403 that is not
+    /// JSON or does not name the plan may pass, so none of them switches anything off.
+    fn switch_off(&self, status: u16, body: &str) -> Option<String> {
         let why = match status {
-            400 | 403 if names_plan => NOT_ON_PLAN,
-            403 | 404 | 405 | 501 => NOT_OFFERED,
+            400 | 403 if names_plan(body) => NOT_ON_PLAN,
+            404 | 405 | 501 => NOT_OFFERED,
             _ => return None,
         };
-        tracing::warn!(status, message = %clip(message, 200), "the ChatGPT backend refused image generation; switching it off");
+        tracing::warn!(status, body = %clip(body, 200), "the ChatGPT backend refused image generation; switching it off");
         // The first answer wins when two calls race.
-        Some(self.disabled.get_or_init(|| why.to_string()).clone())
+        Some(self.disabled.set(self.account(), why))
     }
+}
+
+fn is_json(body: &str) -> bool {
+    serde_json::from_str::<Value>(body).is_ok_and(|value| value.is_object())
+}
+
+/// Whether an error body in JSON says the plan has no image generation: the error's code, type
+/// or message has a word of that meaning. Whole words only, so `explanation` and `planet` do
+/// not count; a body that is not JSON (a proxy's page) says nothing about the plan.
+fn names_plan(body: &str) -> bool {
+    let Ok(Value::Object(root)) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let error = root.get("error").unwrap_or(&Value::Null);
+    let fields = [
+        &error["code"],
+        &error["type"],
+        &error["message"],
+        root.get("detail").unwrap_or(&Value::Null),
+        root.get("message").unwrap_or(&Value::Null),
+    ];
+    fields.into_iter().filter_map(Value::as_str).any(|text| {
+        let words: Vec<String> = text
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect();
+        let has = |wanted: &[&str]| words.iter().any(|word| wanted.contains(&word.as_str()));
+        has(&[
+            "plan",
+            "plans",
+            "entitled",
+            "entitlement",
+            "entitlements",
+            "subscription",
+        ]) || words
+            .windows(2)
+            .any(|pair| pair[0] == "free" && pair[1] == "tier")
+    })
 }
 
 #[async_trait]
@@ -310,7 +390,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let state = Arc::new(OnceLock::new());
+        let state = CodexOff::default();
         let first = backend(&server).sharing(state.clone());
         run(&first, &request(Vec::new())).await.unwrap_err();
         let later = backend(&server).sharing(state);
@@ -357,5 +437,129 @@ mod tests {
         );
         assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    /// A backend of the account `id`, over the shared off switch `off`.
+    fn account(server: &MockServer, id: &str, off: &CodexOff) -> CodexImages {
+        let (auth, _) = login();
+        let headers = vec![("chatgpt-account-id".to_string(), id.to_string())];
+        CodexImages::new(format!("{}/backend-api/codex", server.uri()), auth, headers).sharing(off.clone())
+    }
+
+    #[tokio::test]
+    async fn signing_in_to_another_account_gives_the_backend_a_new_chance() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("chatgpt-account-id", "free"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(header("chatgpt-account-id", "paid"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let off = CodexOff::default();
+        let error = run(&account(&server, "free", &off), &request(Vec::new()))
+            .await
+            .unwrap_err();
+        assert_eq!(error, MediaError::Unsupported(NOT_OFFERED.to_string()));
+        // The account that was refused stays off, and the other is asked.
+        assert!(
+            run(&account(&server, "free", &off), &request(Vec::new()))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            run(&account(&server, "paid", &off), &request(Vec::new()))
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_403_page_from_a_proxy_is_reported_and_the_next_call_is_made() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(403)
+                    .insert_header("content-type", "text/html")
+                    .set_body_string(
+                        "<html><body>Access denied: upgrade your plan of the firewall</body></html>",
+                    ),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+
+        let first = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert!(
+            matches!(&first, MediaError::Api { status: 403, message, .. } if message.contains("try again")),
+            "{first}"
+        );
+        assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_json_403_that_does_not_name_the_plan_does_not_switch_the_backend_off() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(403).set_body_json(json!({
+                "error": { "message": "Request blocked, try again later." }
+            })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(image_reply())
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+
+        let first = run(&backend, &request(Vec::new())).await.unwrap_err();
+        assert!(matches!(first, MediaError::Api { status: 403, .. }), "{first}");
+        assert_eq!(run(&backend, &request(Vec::new())).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_plan_is_recognised_by_its_error_code_or_by_a_whole_word() {
+        for body in [
+            json!({ "error": { "code": "plan_not_supported", "message": "Not available." } }),
+            json!({ "error": { "message": "Your subscription does not include images." } }),
+            json!({ "error": { "message": "Not on the Free tier." } }),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(403).set_body_json(body.clone()))
+                .mount(&server)
+                .await;
+            let error = run(&backend(&server), &request(Vec::new())).await.unwrap_err();
+            assert_eq!(error, MediaError::Unsupported(NOT_ON_PLAN.to_string()), "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn words_that_only_contain_plan_do_not_say_the_plan_lacks_images() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+                "error": { "message": "No explanation given: the planet in the prompt cannot be drawn; upgrade-insecure." }
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let backend = backend(&server);
+        for _ in 0..2 {
+            let error = run(&backend, &request(Vec::new())).await.unwrap_err();
+            assert!(matches!(error, MediaError::Api { status: 400, .. }), "{error}");
+        }
     }
 }

@@ -245,6 +245,7 @@ cooldown_secs = 300   # how long a failed model is skipped
 ```
 
 - Network errors, overload, rate limits and HTTP 5xx are retried on the same model. The delay is the provider's `retry-after` when it sends one, otherwise 1 s doubling per attempt, capped at 60 s, plus up to 250 ms of jitter.
+- A rate limit that asks for more than 60 s is treated as a used-up allowance, and the model is given up at once only when something else can take the request: another [account](#several-accounts) of the provider, a later model in the chain, or, for the lead only, a profile named by `[profiles] on_limit`. Sub-agents, and a single model with nowhere to go (for example an API key from the environment), keep retrying on the same model at the capped 60 s delay until the attempts are used up.
 - When the attempts are used up, or at once on an authentication failure, the model goes into cooldown and the next one in the chain is tried. The TUI prints `<from> is unavailable; falling back to <to>`.
 - Models in cooldown are skipped unless every model in the chain is.
 - A response that breaks off mid-stream is discarded and counts as one attempt.

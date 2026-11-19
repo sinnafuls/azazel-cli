@@ -1137,6 +1137,10 @@ impl App {
         let mut router = Router::new(providers, catalog, config.roles.clone(), policy)
             .with_accounts(credentials.clone())
             .with_virtual(registry.virtual_models.clone());
+        // The lead gives up a long rate limit at once only when a profile can take it over.
+        if !config.profiles.on_limit.trim().is_empty() {
+            router = router.with_limit_hand_over();
+        }
         {
             let (accounts, configs) = (credentials.clone(), endpoints.clone());
             router = router.with_logins(Arc::new(move |provider: &str| {
