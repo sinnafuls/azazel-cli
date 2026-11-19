@@ -35,9 +35,9 @@ use azazel_core::session::InterruptedRun;
 use azazel_core::side::{Side, SideCosts};
 use azazel_core::skills::{SkillGrantsExt, SkillsExt, standard_roots};
 use azazel_core::{
-    ArtifactStore, Config, EntryKind, Event, ExtCtx, Extension, FileTracker, Headless, Level, LoadOptions,
-    Outcome, OutputRedactor, Paths, PermissionGate, PermissionMode, PermissionState, Registry, SessionStore,
-    StartSource, ToolCaller, Ui,
+    ArtifactStore, Command, CommandHandler, CommandOutcome, Config, EntryKind, Event, ExtCtx, ExtError,
+    Extension, FileTracker, Headless, Level, LoadOptions, Outcome, OutputRedactor, Paths, PermissionGate,
+    PermissionMode, PermissionState, Registrar, Registry, SessionStore, StartSource, ToolCaller, Ui,
 };
 use azazel_team::{
     Advisor, Checker, Coordinator, GoalExt, GoalSettings, Goals, LeadTools, Team, TeamDeps, TeamExt, Typed,
@@ -506,6 +506,52 @@ mod mock_tools {
     }
 }
 
+/// Stands in for `/memory` in a session that runs without memory.
+struct MemoryOffExt {
+    why: String,
+}
+
+impl Extension for MemoryOffExt {
+    fn id(&self) -> &str {
+        "memory-off"
+    }
+
+    fn register(&self, r: &mut Registrar) -> Result<(), ExtError> {
+        r.command(Command {
+            name: "memory".to_string(),
+            description: "What is remembered (memory is turned off in this session)".to_string(),
+            argument_hint: None,
+            handler: Arc::new(MemoryOff(self.why.clone())),
+        });
+        Ok(())
+    }
+}
+
+struct MemoryOff(String);
+
+#[async_trait::async_trait]
+impl CommandHandler for MemoryOff {
+    async fn run(&self, _: &str, _: &ExtCtx) -> CommandOutcome {
+        CommandOutcome::Show(self.0.clone())
+    }
+}
+
+/// Why this session has no memory, and what turns it on.
+fn memory_off_reason(cli: &Cli, config: &Config) -> String {
+    if cli.bare {
+        "memory is turned off: --bare was given. Start without --bare to turn it on.".to_string()
+    } else if cli.no_memory {
+        "memory is turned off: --no-memory was given. Start without --no-memory to turn it on.".to_string()
+    } else if !cfg!(feature = "memory") {
+        "memory is not in this build of azazel.".to_string()
+    } else if !config.memory.enabled {
+        "memory is turned off: `[memory] enabled = false`. Set it to true (or remove it) and start a new session to turn it on."
+            .to_string()
+    } else {
+        "memory is turned off in this session.".to_string()
+    }
+}
+
 /// The `mcp.json` files read in the usual places: those of installed packages, then the user's,
 /// then, for a trusted project, the project's.
 #[cfg(feature = "mcp")]
@@ -955,10 +1001,20 @@ impl App {
             media: Arc::new(azazel_media::Media::from_config(&config, &paths, credentials.clone()).await),
         })?;
         #[cfg(feature = "memory")]
-        if config.memory.enabled && !cli.skips(Discovery::Memory) {
+        let memory_on = config.memory.enabled && !cli.skips(Discovery::Memory);
+        #[cfg(not(feature = "memory"))]
+        let memory_on = false;
+        #[cfg(feature = "memory")]
+        if memory_on {
             let memory = azazel_memory::MemoryExt::open(&paths, &config, credentials.clone())
                 .map_err(|e| anyhow!("memory: {e} (set `[memory] enabled = false` to start without it)"))?;
             registry.load(&memory)?;
+        }
+        if !memory_on {
+            // `/memory` stays a known command, so that it can say why it does nothing.
+            registry.load(&MemoryOffExt {
+                why: memory_off_reason(cli, &config),
+            })?;
         }
         #[cfg(feature = "repomap")]
         registry.load(&azazel_repomap::RepoMapExt::new(
@@ -1976,6 +2032,53 @@ mod tests {
             Some(_) => panic!("not a session file"),
             None => None,
         }
+    }
+
+    /// The text `/memory` answers in a session started with `args`.
+    async fn memory_command_says(args: &[&str]) -> Option<String> {
+        let dir = tempfile::tempdir().unwrap();
+        let (home, project) = (dir.path().join("home"), dir.path().join("project"));
+        std::fs::create_dir_all(project.join(".azazel")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let mut argv = vec![
+            "azazel".as_ref(),
+            "--home".as_ref(),
+            home.as_os_str(),
+            "--cwd".as_ref(),
+        ];
+        argv.push(project.as_os_str());
+        argv.extend(args.iter().map(std::ffi::OsStr::new));
+        let cli = Cli::try_parse_from(argv).unwrap();
+        let paths = discover_paths(&cli).unwrap();
+        let app = App::build(&cli, paths, true, &[]).await.unwrap();
+        let command = app.registry.command("memory")?;
+        match command.handler.run("list", &app.registry.bus.ctx()).await {
+            CommandOutcome::Show(text) => Some(text),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_stays_a_known_command_and_says_why_it_is_off() {
+        let said = memory_command_says(&["--no-memory"]).await.unwrap();
+        assert!(
+            said.contains("turned off") && said.contains("--no-memory"),
+            "{said}"
+        );
+        let said = memory_command_says(&["--set", "memory.enabled=false"])
+            .await
+            .unwrap();
+        assert!(
+            said.contains("turned off") && said.contains("[memory] enabled"),
+            "{said}"
+        );
+    }
+
+    #[cfg(feature = "memory")]
+    #[tokio::test]
+    async fn memory_command_is_the_real_one_when_memory_is_on() {
+        let said = memory_command_says(&[]).await.unwrap();
+        assert!(!said.contains("turned off"), "{said}");
     }
 
     #[test]

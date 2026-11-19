@@ -47,6 +47,7 @@ GitHub are its section here.
 - `openai-codex` image generation is switched off per ChatGPT account, and only by a 404, 405 or 501, or by an error that names the plan; a passing or proxy 403 no longer turns it off for the session.
 - A mistyped one-word subcommand (`azazel sesions`) fails with a "did you mean" hint instead of being sent to the model as a prompt; a bad `--thinking` value exits with status 2 like other usage errors.
 - A subcommand's `--help` lists only the options that apply to it; `azazel doctor` shows how many providers have no credential instead of naming them all; `azazel browser open` says it waits until the window is closed; the `--agent` help points at `/agents`.
+- `/memory` stays a known command when memory is turned off (`--no-memory`, `--bare`, `[memory] enabled = false`) and says how to turn it on, instead of answering "unknown command".
 - `azazel remote`: the Send button sends again; since 0.15.0 only Enter did, on phones and desktop alike.
 - `azazel remote`: view-only devices are no longer asked for settings on the Models page, and saving a profile says it needs full access; the Tailscale clean-up leaves an entry with Funnel on alone.
 - `azazel remote --tailscale` cleans up after a hard kill: the next start turns off the `tailscale serve` entry the dead run left behind, and says so. An entry azazel did not make is never touched.

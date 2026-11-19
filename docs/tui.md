@@ -1052,7 +1052,7 @@ Skills, extensions and services:
 | `/speak on\|off\|stop` | Read replies aloud, stop doing so, or stop the one being read |
 
 Custom commands from `commands/` directories and commands registered by extensions appear in `/help` and in
-completion as well. `/memory` is absent when memory is disabled in the configuration.
+completion as well. When memory is turned off (`--no-memory`, `--bare`, `[memory] enabled = false`, or a build without it), `/memory` stays and says why memory is off and how to turn it on.
 
 `/copy` uses the system clipboard. Inside tmux it hands the text to tmux first (`tmux load-buffer -w`), which
 keeps it as its newest buffer and passes it on to the terminal's clipboard. Over SSH, or when the system
