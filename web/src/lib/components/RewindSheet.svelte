@@ -78,10 +78,12 @@
 	{#if chosen}
 		<div class="grid gap-4">
 			{#if ui.rewind?.text}
+				<!-- The clamp is on the text, not on the padded box: a clamped box still lays out the
+				     lines it leaves out, and the top of the fourth showed in the padding below the third. -->
 				<blockquote
-					class="line-clamp-3 rounded-xl bg-secondary px-3 py-2 text-sm leading-relaxed text-secondary-foreground"
+					class="rounded-xl bg-secondary px-3 py-2 text-sm leading-relaxed text-secondary-foreground"
 				>
-					{ui.rewind.text}
+					<p class="line-clamp-3">{ui.rewind.text}</p>
 				</blockquote>
 			{/if}
 			<RadioGroup.Root
@@ -115,7 +117,8 @@
 			<Empty.Description>There is no earlier prompt to go back to.</Empty.Description>
 		</Empty.Root>
 	{:else}
-		<ul class="-mx-2.5 grid gap-0.5" aria-label="Prompts">
+		<!-- One column no wider than the sheet: a long prompt ends in an ellipsis, it does not widen the list. -->
+		<ul class="-mx-2.5 grid grid-cols-1 gap-0.5" aria-label="Prompts">
 			{#each prompts as p (p.id)}
 				<li>
 					<Item.Root size="xs" class="w-full flex-nowrap text-left hover:bg-muted">

@@ -73,7 +73,8 @@
 			</h3>
 			{#if live}<Badge variant="secondary" class="num">{live} active</Badge>{/if}
 		</div>
-		<ul class="-mx-2.5 grid gap-0.5">
+		<!-- One column no wider than the pane: a long name ends in an ellipsis, it does not widen the list. -->
+		<ul class="-mx-2.5 grid grid-cols-1 gap-0.5">
 			{#each members as m (m.id)}
 				<li
 					class="flex items-center gap-1"
@@ -82,16 +83,22 @@
 				>
 					<Item.Root
 						size="xs"
-						class="min-w-0 flex-1 flex-nowrap hover:bg-muted aria-[current=page]:bg-muted"
+						class="min-w-0 flex-1 flex-nowrap items-start hover:bg-muted aria-[current=page]:bg-muted"
 					>
 						{#snippet child({ props })}
 							<a {...props} href={href(m.id)} aria-current={active === m.id ? 'page' : undefined}>
-								<Item.Media variant="icon"><StateDot state={m.state} /></Item.Media>
+								<!-- A row of two or three lines, read from the top: the mark stands on the name's
+								     line, which is as tall as the mark, so the stock nudge down is not wanted. -->
+								<Item.Media
+									variant="icon"
+									class="group-has-data-[slot=item-description]/item:translate-y-0"
+									><StateDot state={m.state} /></Item.Media
+								>
 								<Item.Content class="min-w-0">
+									<!-- The name has its line to itself but for the time: in a narrow pane a state
+									     beside it left one letter of the name. The state leads the line below. -->
 									<Item.Title class="w-full">
 										<span class="truncate font-mono text-xs">{m.id}</span>
-										<span class="shrink-0 text-xs font-normal text-muted-foreground">{m.state}</span
-										>
 										{#if elapsed(m) >= 1000}
 											<span class="num ml-auto shrink-0 text-xs font-normal text-muted-foreground"
 												>{duration(elapsed(m))}</span
@@ -99,7 +106,7 @@
 										{/if}
 									</Item.Title>
 									<Item.Description class="line-clamp-1 break-all"
-										>{m.activity ||
+										>{m.state} · {m.activity ||
 											(m.id === 'lead'
 												? 'Lead agent'
 												: `Started by ${m.parent ?? 'lead'}`)}</Item.Description

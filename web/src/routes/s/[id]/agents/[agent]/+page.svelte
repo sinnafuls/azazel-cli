@@ -93,11 +93,8 @@
 					bind:value={text}
 				/>
 				<InputGroup.Addon align="inline-end">
-					<InputGroup.Button
-						type="submit"
-						variant="default"
-						size="sm"
-						disabled={sending || !text.trim()}>Send</InputGroup.Button
+					<InputGroup.Button type="submit" variant="default" disabled={sending || !text.trim()}
+						>Send</InputGroup.Button
 					>
 				</InputGroup.Addon>
 			</InputGroup.Root>

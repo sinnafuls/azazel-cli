@@ -1,5 +1,6 @@
-// The layout, measured. Every state of the page is opened at four sizes in both themes, and what
-// the browser laid out is read back with getBoundingClientRect and getComputedStyle:
+// The layout, measured. Every state of the page is opened at five sizes and once zoomed to 200%, in
+// both themes, and what the browser laid out is read back with getBoundingClientRect and
+// getComputedStyle:
 //
 // - centre: in every row (button, link, menu item, option, tab, badge) that lays its parts out in a
 //   line, each part's vertical middle is within 1px of the row's middle and of every other part's;
@@ -8,11 +9,14 @@
 //   of the middle of the row's button, and the title ends before the ••• button. In a row of two
 //   lines (a title over its folder) the two lines together are what is centred;
 // - head: the first line of a sheet's title is within 1px of the middle of the buttons beside it;
+// - item: the mark of an item of several lines (an agent's state dot) stands at the top, within 1px
+//   of the middle of the title's line;
 // - uniform: controls of one kind (buttons by size, inputs, selects, menu items, options, sidebar
 //   buttons, tabs of one list, badges, switches) have one height and one corner radius;
 // - clip, spill, cut, scroll, viewport: text wider than its box is only ever hidden behind an
-//   ellipsis, nothing reaches outside the page or past a box that clips it, and only code, diffs
-//   and tables scroll sideways, inside their own box;
+//   ellipsis, nothing reaches outside the page or past a box that clips it, no line shows past
+//   the lines a box is clamped to, and only code, diffs and tables scroll sideways, inside their
+//   own box;
 // - overlap: the parts of a row do not cover each other;
 // - font: text is set in Geist, code in Geist Mono, and both fonts are loaded.
 //
@@ -26,6 +30,12 @@
 //   the middle of the whole row. Segments of a joined toggle group round only their outer corners,
 //   so only their heights are compared.
 //
+// Zoomed to 200%, a window of 1440x900 is a viewport of 720x450 CSS pixels drawn at two device
+// pixels each: that is what the browser's own zoom does, so it is what is emulated (a viewport of
+// that size with deviceScaleFactor 2). Media queries, `dvh` and `matchMedia` then answer as they do
+// in a zoomed window, and the page takes its phone layout as it does there. CSS `zoom` on <html>
+// would leave all three at 1440x900 and scale the rectangles that are measured here.
+//
 // Screenshots and the measurements of every state go to tmp/layout, or to AZAZEL_LAYOUT_SHOTS;
 // those of the profiles (their chip, menu, settings and the notice of a usage limit) to a folder of
 // their own beside each size's, `<size>-<theme>-profiles`.
@@ -37,13 +47,37 @@ const SHOTS =
 	process.env.AZAZEL_LAYOUT_SHOTS ??
 	join(resolve(import.meta.dirname, '../../..'), 'tmp', 'layout');
 
-const SIZES = [
-	[390, 844],
-	[1024, 768],
-	[1440, 900],
-	[1920, 1080]
-] as const;
+interface View {
+	/** The window, as the test is named and its folder is called. */
+	name: string;
+	/** The viewport in CSS pixels, and how many device pixels each is drawn with. */
+	width: number;
+	height: number;
+	scale: number;
+}
+const VIEWS: View[] = [
+	...[
+		[390, 844],
+		[768, 1024],
+		[1024, 768],
+		[1440, 900],
+		[1920, 1080]
+	].map(([width, height]) => ({ name: `${width}x${height}`, width, height, scale: 1 })),
+	{ name: '1440x900-zoom200', width: 720, height: 450, scale: 2 }
+];
 const THEMES = ['dark', 'light'] as const;
+
+/** Declares a test of `view`: a zoomed one gets a browser that draws every CSS pixel `scale` times. */
+function at(view: View, title: string, body: Parameters<typeof test>[2]) {
+	if (view.scale === 1) return test(title, body);
+	test.describe(() => {
+		test.use({
+			viewport: { width: view.width, height: view.height },
+			deviceScaleFactor: view.scale
+		});
+		test(title, body);
+	});
+}
 /** The accents of Settings > General, the default one last so that it is the one left chosen. */
 const ACCENTS = [
 	['blue', 'Blue'],
@@ -82,6 +116,8 @@ const WELCOME = [
 	'',
 	'<h1>Welcome</h1>'
 ].join('\n');
+
+const UNVERIFIED = 'Nothing was run after the write, so the change is unverified.';
 
 /**
  * The session on screen: a write that asks first and a read (one run), two commands, the second
@@ -137,9 +173,17 @@ const MAIN = {
 				tool_calls: [{ id: 'c5', name: 'read', input: { path: 'missing.txt' } }]
 			}
 		},
-		{ reply: { text: MARKDOWN } }
+		{ reply: { text: MARKDOWN } },
+		// The write is followed by a note that nothing has checked it (the done check), which is a
+		// request of its own; then come the prompts sent from the page (see the rewind sheet).
+		{ reply: { text: UNVERIFIED } },
+		{ reply: { text: 'Noted.' } },
+		{ reply: { text: 'Noted, again.' } }
 	]
 };
+/** A prompt too long for its row in the rewind sheet, and for three lines of its quote. */
+const LONG_PROMPT =
+	'Now the same for the settings page, and keep the copy short: one line per setting, no jargon, and say what happens when it is switched off. Where a setting needs the server to start again, say that too, in the same line, and do not repeat it in a tooltip or anywhere else on the page.';
 const DONE = { lead: [{ reply: { text: 'Done.' } }] };
 /** A session at work: a read that fails, then a call that outlives the test (`test_wait`). */
 const BUSY = {
@@ -154,9 +198,115 @@ const BUSY = {
 	]
 };
 
+const ROUTES = 'api-routes';
+const CALLERS = 'callers';
+/** As long as the name of an agent may be. */
+const LONG_AGENT = 'migrate-the-settings-store-to-the-new-schema-v2';
+/**
+ * A lead with a team: two coders at work (one waits for the scout it started, one for a command
+ * that outlives the test), that scout, which is never answered, and a scout that is done. Every
+ * agent is answered from a queue of its own, so none takes another's step.
+ */
+const TEAM = {
+	lead: [
+		{
+			reply: {
+				text: 'Three hands for this.',
+				tool_calls: [
+					{
+						id: 't1',
+						name: 'task',
+						input: {
+							agents: [
+								{
+									agent: 'coder',
+									name: ROUTES,
+									model: 'mock/routes',
+									prompt: 'Move the routes of the API into a module of their own.'
+								},
+								{
+									agent: 'coder',
+									name: LONG_AGENT,
+									model: 'mock/store',
+									prompt: 'Move the settings store to the new schema and run its tests.'
+								},
+								{
+									agent: 'scout',
+									name: 'docs',
+									model: 'mock/docs',
+									prompt: 'Find where the docs name the routes.'
+								}
+							]
+						}
+					}
+				]
+			}
+		}
+	],
+	routes: [
+		{
+			reply: {
+				text: 'First, who calls them.',
+				tool_calls: [
+					{
+						id: 'r1',
+						name: 'task',
+						input: {
+							agents: [
+								{
+									agent: 'scout',
+									name: CALLERS,
+									model: 'mock/callers',
+									prompt: 'List every caller of the routes.'
+								}
+							]
+						}
+					}
+				]
+			}
+		}
+	],
+	store: [
+		{
+			reply: {
+				text: 'Running the tests of the store.',
+				tool_calls: [
+					{
+						id: 's1',
+						name: 'test_wait',
+						// The roster shows a call by its command: one too long for its line.
+						input: {
+							ms: 600_000,
+							command: 'cargo test --package settings-store --lib -- schema::migrate --nocapture'
+						}
+					}
+				]
+			}
+		}
+	],
+	docs: [
+		{
+			reply: {
+				text: 'docs/api.md names every route, in the table under "Routes".',
+				usage: {
+					input: 18_400,
+					output: 620,
+					cache_read: 0,
+					cache_write: 0,
+					reasoning: 0,
+					cost_usd: 0.0312
+				}
+			}
+		}
+	],
+	callers: [{ delay_ms: 600_000, reply: { text: 'Never said.' } }]
+};
+
 interface Measured {
 	rows: number;
 	actions: number;
+	/** Marks of items of several lines, measured against the line of their title. */
+	marks: number;
 	kinds: number;
 	texts: number;
 	findings: string[];
@@ -287,6 +437,7 @@ function audit(scope: string): Measured {
 		}
 	}
 
+	let marks = 0;
 	// head: a sheet's head is aligned at the top, with a title line as tall as its buttons.
 	for (const head of all) {
 		if (!head.matches('[data-slot=sheet-head]') || !shown(head)) continue;
@@ -302,6 +453,27 @@ function audit(scope: string): Measured {
 			if (Math.abs(d) > 1)
 				found.add(`head: ${name(b)} sits ${px(d)}px off the title line of ${name(title)}`);
 		}
+	}
+
+	// item: an item of several lines is read from the top, and its mark stands on its title's line.
+	for (const item of all) {
+		if (!item.matches('[data-slot=item]') || !shown(item)) continue;
+		const media = item.querySelector(':scope > [data-slot=item-media]');
+		const title = item.querySelector('[data-slot=item-title]');
+		if (!media || !title || !shown(media) || !shown(title)) continue;
+		// The browser names the top `flex-start`, `start` or `flow-start`, by how it was written.
+		const own = css(media).alignSelf;
+		const top = (own === 'auto' ? css(item).alignItems : own).endsWith('start');
+		// A mark in the middle of its item is a part of a centred row, measured above.
+		if (!top) continue;
+		const range = document.createRange();
+		range.selectNodeContents(title);
+		const line = Array.from(range.getClientRects()).find((r) => r.width > 0 && r.height > 0);
+		if (!line) continue;
+		marks++;
+		const d = mid(rect(media)) - mid(line);
+		if (Math.abs(d) > 1)
+			found.add(`item: the mark of ${name(item)} sits ${px(d)}px off the line of its title`);
 	}
 
 	// uniform: one height and one corner radius for the controls of a kind.
@@ -461,13 +633,22 @@ function audit(scope: string): Measured {
 				const by = past(t, rect(cy), 'y');
 				if (by > 1)
 					found.add(`clip: the text "${said}" is cut ${px(by)}px at the edge of ${name(cy)}`);
+			} else if (cy && clamps(cy)) {
+				// The lines a clamp leaves out are still laid out below the last one it keeps: a box
+				// with padding under its lines shows the top of the next one there.
+				const edge = rect(cy).bottom - parseFloat(css(cy).borderBottomWidth);
+				const inner = edge - parseFloat(css(cy).paddingBottom);
+				const range = document.createRange();
+				range.selectNodeContents(n);
+				if (Array.from(range.getClientRects()).some((l) => l.top >= inner - 1 && l.top < edge - 1))
+					found.add(`clip: a line of "${said}" past the clamp of ${name(cy)} shows in its padding`);
 			}
 		}
 	}
 	for (const font of ['Geist Variable', 'Geist Mono Variable'])
 		if (!document.fonts.check(`14px "${font}"`)) found.add(`font: ${font} is not loaded`);
 
-	return { rows, actions, kinds: kinds.size, texts, findings: [...found].sort() };
+	return { rows, actions, marks, kinds: kinds.size, texts, findings: [...found].sort() };
 }
 
 /** Waits until nothing is moving: every transition and animation that ends has ended. */
@@ -548,11 +729,12 @@ const LIMITED = {
 
 test.describe.configure({ timeout: 300_000 });
 
-for (const [width, height] of SIZES)
+for (const view of VIEWS)
 	for (const theme of THEMES)
-		test(`layout holds at ${width}x${height}, ${theme}`, async ({ page }) => {
+		at(view, `layout holds at ${view.name}, ${theme}`, async ({ page }) => {
+			const { width, height } = view;
 			const narrow = width < 768;
-			const dir = join(SHOTS, `${width}x${height}-${theme}`);
+			const dir = join(SHOTS, `${view.name}-${theme}`);
 			mkdirSync(dir, { recursive: true });
 			const measured: Record<string, Measured> = {};
 			const where = new Map<string, string[]>();
@@ -595,6 +777,8 @@ for (const [width, height] of SIZES)
 				stack.mockTools = true;
 				const busy = stack.session('wait for it', BUSY, 'auto', join(work, 'api'));
 				await stack.until({ [busy]: 'working' });
+				const team = stack.session('split the work', TEAM, 'auto', join(work, 'team'));
+				await stack.until({ [team]: 'working' });
 
 				await page.setViewportSize({ width, height });
 				await page.addInitScript((t) => localStorage.setItem('azazel-theme', t), theme);
@@ -627,7 +811,7 @@ for (const [width, height] of SIZES)
 
 				// The sessions, before one is open.
 				await page.goto(stack.pair);
-				await expect(list.getByRole('link')).toHaveCount(5);
+				await expect(list.getByRole('link')).toHaveCount(6);
 				await expect(page.locator('html')).toHaveClass(new RegExp(`\\b${theme}\\b`));
 				await capture('home');
 
@@ -638,6 +822,7 @@ for (const [width, height] of SIZES)
 				} else await open(main);
 				await expect(page.getByRole('heading', { name: 'All done' })).toBeVisible();
 				await expect(page.locator('[data-transcript] pre').first()).toBeVisible();
+				await expect(page.getByRole('paragraph').filter({ hasText: UNVERIFIED })).toBeVisible();
 				await expect(box).toBeVisible();
 				await page.mouse.move(width - 2, height - 2);
 				await capture('session');
@@ -890,6 +1075,30 @@ for (const [width, height] of SIZES)
 				// It leaves by itself; nothing after this is measured while it does.
 				await expect(toast).toHaveCount(0, { timeout: 20_000 });
 				await box.fill('');
+				// An error, in one line, and the button that closes it.
+				const closeToast = page.getByRole('button', { name: 'Close toast' });
+				await box.fill('/export pdf');
+				await box.press('Enter');
+				await expect(toast).toHaveText(/Export as markdown, html or jsonl\./);
+				await expect(toast).toHaveAttribute('data-type', 'error');
+				await page.mouse.move(width - 2, 2);
+				await capture('toast-error');
+				// A warning that comes while the error is still there: the two, one above the other.
+				await box.fill('/name ');
+				await box.press('Enter');
+				await expect(toast).toHaveCount(2);
+				await expect(toast.first()).toHaveAttribute('data-type', 'warning');
+				await expect(toast.first()).toHaveText(/\/name needs <title>\./);
+				await toast.first().hover();
+				await expect(toast.last()).toHaveAttribute('data-expanded', 'true');
+				await capture('toast-stack');
+				await closeToast.last().click();
+				await expect(toast).toHaveCount(1);
+				await page.mouse.move(width - 2, 2);
+				await capture('toast-warning');
+				await closeToast.click();
+				await expect(toast).toHaveCount(0);
+				await box.fill('');
 
 				// Search, a new chat, the resume picker.
 				await page.keyboard.press('Control+k');
@@ -990,6 +1199,78 @@ for (const [width, height] of SIZES)
 				}
 				await closeAll(page);
 
+				// The sidebar folded to a rail of icons (a phone has a drawer in its place), and the
+				// tooltip that names an icon.
+				if (!narrow) {
+					const rail = page.locator('[data-slot=sidebar][data-collapsible=icon]');
+					await page.getByRole('button', { name: 'Hide the sidebar' }).click();
+					await expect(rail).toBeVisible();
+					await expect(page.locator('[data-session-list]:visible')).toHaveCount(0);
+					await page.mouse.move(width - 2, height - 2);
+					const folded = await capture('sidebar-icons');
+					expect(folded.actions, 'no ••• button on the rail').toBe(0);
+					// Every icon of the rail is in the middle of it, sideways too.
+					expect(
+						await rail.evaluate((el) => {
+							const inner = el.querySelector('[data-slot=sidebar-inner]')!.getBoundingClientRect();
+							const middle = inner.left + inner.width / 2;
+							return Array.from(el.querySelectorAll('button:not([data-sidebar=rail])'))
+								.filter((b) => b.checkVisibility())
+								.map((b) => {
+									const r = b.querySelector('svg')!.getBoundingClientRect();
+									return `${b.getAttribute('aria-label')}: ${Math.round((r.left + r.width / 2 - middle) * 100) / 100}`;
+								})
+								.filter((s) => Math.abs(Number(s.split(': ')[1])) > 1);
+						}),
+						'icons off the middle of the rail'
+					).toEqual([]);
+					await rail.getByRole('button', { name: /^Search sessions/ }).hover();
+					await expect(page.locator('[data-slot=tooltip-content]')).toBeVisible();
+					await capture('sidebar-icons-tip');
+					await page.mouse.move(width - 2, height - 2);
+					await page.getByRole('button', { name: 'Show the sidebar' }).click();
+					await expect(rail).toHaveCount(0);
+					await expect(page.locator('[data-session-list]:visible')).toHaveCount(1);
+					await page.mouse.move(width - 2, height - 2);
+				}
+
+				// Going back: two more prompts, the sheet that lists them (one too long for its row), and
+				// the choice of what to restore, with the prompt quoted above it.
+				for (const [prompt, answer] of [
+					[LONG_PROMPT, 'Noted.'],
+					['And thanks.', 'Noted, again.']
+				]) {
+					await box.fill(prompt);
+					await box.press('Enter');
+					await expect(
+						page.getByRole('paragraph').filter({ hasText: new RegExp(`^${answer}$`) })
+					).toBeVisible();
+				}
+				await page.getByRole('button', { name: 'Session actions' }).click();
+				await page.getByRole('menuitem', { name: 'Rewind…' }).click();
+				const rewind = page.getByRole('dialog', { name: 'Rewind' });
+				const prompts = rewind.getByRole('list', { name: 'Prompts' }).getByRole('button');
+				// Newest first: the two from the page, the note of the done check, the first prompt.
+				await expect(prompts).toHaveCount(4);
+				await expect(prompts.first().locator('[data-slot=item-title]')).toHaveText('And thanks.');
+				const wordy = prompts.filter({ hasText: 'Now the same for the settings' });
+				await expect(wordy.locator('[data-slot=item-title]')).toHaveCSS(
+					'text-overflow',
+					'ellipsis'
+				);
+				await page.mouse.move(width - 2, 2);
+				await capture('rewind');
+				await wordy.click();
+				await expect(rewind.getByRole('radiogroup', { name: 'What to restore' })).toBeVisible();
+				await expect(rewind.getByRole('radio')).toHaveCount(3);
+				await expect(rewind.locator('blockquote')).toContainText('Now the same for the settings');
+				await expect(rewind.getByRole('button', { name: 'Back' })).toBeVisible();
+				await page.mouse.move(width - 2, 2);
+				await capture('rewind-choose');
+				await rewind.getByRole('button', { name: 'Cancel' }).click();
+				await expect(rewind).toHaveCount(0);
+				await closeAll(page);
+
 				// A session that asks: the approval, docked beside the chat or as a sheet on a phone.
 				await open(asks);
 				await expect(page.locator('[data-request="approval"]')).toBeVisible();
@@ -1013,6 +1294,63 @@ for (const [width, height] of SIZES)
 				});
 				await page.mouse.move(width - 2, 2);
 				await page.mouse.up();
+
+				// A lead with a team: three agents at work (one of them started by another, one with a
+				// name as long as a name may be) and one that is done, in the pane beside the chat or in
+				// its sheet; the question before one is stopped; and the page of one of them.
+				if (narrow) await page.goto(`http://127.0.0.1:${stack.port}/s/${team}`);
+				else await open(team);
+				await expect(box).toBeVisible();
+				const hub = page.locator('[data-agent-hub]:visible');
+				if (width >= 1024) {
+					await expect(page.locator('[data-right-pane]')).toHaveAttribute(
+						'data-right-pane',
+						'open'
+					);
+					await page.locator('[data-right-pane]').getByRole('tab', { name: 'Agents' }).click();
+				} else await page.getByRole('button', { name: 'Agents and usage' }).click();
+				const member = (id: string) => hub.locator(`[data-agent="${id}"]`);
+				await expect(hub.locator('[data-agent]')).toHaveCount(5);
+				for (const id of [ROUTES, LONG_AGENT, CALLERS])
+					await expect(member(id).locator('[data-slot=state-dot]')).toHaveAttribute(
+						'data-state',
+						'working'
+					);
+				await expect(member('docs').locator('[data-slot=state-dot]')).toHaveAttribute(
+					'data-state',
+					'done'
+				);
+				await expect(member(LONG_AGENT)).toContainText('test_wait cargo test');
+				await expect(hub.getByRole('button', { name: /^Stop / })).toHaveCount(3);
+				// The lead waits for its team, so it is at work too.
+				await expect(hub.locator('[data-slot=badge]')).toHaveText('4 active');
+				await page.mouse.move(width - 2, 2);
+				const agents = await capture('agents');
+				expect(agents.marks, 'the state dots measured against their names').toBe(5);
+				// The Stop buttons are one column, whatever the depth of their agent.
+				const stops = await hub
+					.getByRole('button', { name: /^Stop / })
+					.evaluateAll((els) => els.map((el) => el.getBoundingClientRect().right));
+				for (const right of stops)
+					expect(Math.abs(right - stops[0]), 'the Stop buttons end on one edge').toBeLessThan(0.5);
+				await hub.getByRole('button', { name: `Stop ${CALLERS}` }).click();
+				const sure = page.getByRole('alertdialog', { name: `Stop ${CALLERS}?` });
+				await expect(sure.getByRole('button', { name: 'Keep' })).toBeVisible();
+				await page.mouse.move(width - 2, 2);
+				await capture('agent-stop');
+				await sure.getByRole('button', { name: 'Keep' }).click();
+				await expect(sure).toHaveCount(0);
+				await member(LONG_AGENT).getByRole('link').click();
+				await page.waitForURL(new RegExp(`/agents/${LONG_AGENT}$`));
+				await closeAll(page);
+				const bar = page.locator('[data-agent-bar]');
+				await expect(bar).toContainText(LONG_AGENT);
+				await expect(page.getByLabel(`Message ${LONG_AGENT}`)).toBeVisible();
+				await expect(page.locator('[data-transcript]')).toContainText(
+					'Running the tests of the store.'
+				);
+				await page.mouse.move(width - 2, 2);
+				await capture('agent-page');
 			} finally {
 				writeFileSync(join(dir, 'measured.json'), JSON.stringify(measured, null, '\t'));
 				await stack.stop();
@@ -1024,10 +1362,11 @@ for (const [width, height] of SIZES)
 
 // Profiles, on a device with full access (which may save one): the chip before and after a profile
 // is chosen, its menu, the Profiles section of the settings, and the notice of a usage limit.
-for (const [width, height] of SIZES)
+for (const view of VIEWS)
 	for (const theme of THEMES)
-		test(`profiles hold at ${width}x${height}, ${theme}`, async ({ page }) => {
-			const dir = join(SHOTS, `${width}x${height}-${theme}-profiles`);
+		at(view, `profiles hold at ${view.name}, ${theme}`, async ({ page }) => {
+			const { width, height } = view;
+			const dir = join(SHOTS, `${view.name}-${theme}-profiles`);
 			mkdirSync(dir, { recursive: true });
 			const measured: Record<string, Measured> = {};
 			const where = new Map<string, string[]>();

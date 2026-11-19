@@ -158,5 +158,7 @@
 			</Sidebar.MenuItem>
 		</Sidebar.Menu>
 	</Sidebar.Footer>
-	<Sidebar.Rail />
+	<!-- The rail folds a sidebar that stands beside the page. In the drawer of a narrow window it has
+	     no side to stand on: from 640px it lay over the drawer's left edge, half out of the window. -->
+	{#if !sidebar.isMobile}<Sidebar.Rail />{/if}
 </Sidebar.Root>

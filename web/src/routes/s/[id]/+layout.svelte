@@ -207,7 +207,10 @@
 			>
 				<StateDot state={stateName} />
 				<span class="truncate">{title}</span>
-				{#if agentId}<span class="shrink-0 font-normal text-muted-foreground">/ {agentId}</span
+				<!-- The agent's name takes what the title leaves and ends in an ellipsis: a long one ran
+				     under the buttons of a phone's header and left the title no room at all. -->
+				{#if agentId}<span class="min-w-16 flex-1 truncate font-normal text-muted-foreground"
+						>/ {agentId}</span
 					>{/if}
 			</h1>
 			<div class="-mr-1.5 flex shrink-0 items-center gap-0.5">
